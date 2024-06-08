@@ -1,7 +1,7 @@
 # smftools
 A tool for processing raw sequencing data for single molecule footprinting experiments at single genomic loci. Outputs an [anndata](https://github.com/scverse/anndata) object to be used in downstream analyses provided by [smfplot](https://github.com/jkmckenna/smfplot).
 
-**Current biologic questions include, but are not limited to:**
+**Current biological questions include, but are not limited to:**
 1) Site specific transcription factor binding kinetics, both in vitro and in permeabilized nuclei.
 2) Locus specific nucleosome remodeling kinetics in permeabilized nuclei.
 3) Thermodynamic modeling of transcriptional states as a function of transcription factor binding occupancy in permeabilized nuclei.
