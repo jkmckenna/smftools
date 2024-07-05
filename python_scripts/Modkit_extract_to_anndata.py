@@ -142,6 +142,10 @@ if __name__ == "__main__":
         # Give indices of dictionaries to skip for analysis and final dictionary saving.
         dict_to_skip = [0, 1, 4]
         combined_dicts = [7, 8]
+        A_stranded_dicts = [2, 3]
+        C_stranded_dicts = [5, 6]
+        dict_to_skip = dict_to_skip + combined_dicts + A_stranded_dicts + C_stranded_dicts
+        dict_to_skip = set(dict_to_skip)
 
         # Initialize a max_position variable to hold the maximum coordinate value in the experiment
         max_position = 0
@@ -168,6 +172,8 @@ if __name__ == "__main__":
         # Iterate over dict_total of all the tsv files and extract the modification specific and strand specific dataframes into dictionaries
         for i in dict_total.keys():
             if '6mA' in args.mods:
+                # Remove Adenine stranded dicts from the dicts to skip set
+                dict_to_skip.difference_update(A_stranded_dicts)
                 # get a dictionary of dataframes that only contain methylated adenine positions
                 dict_a[i] = dict_total[i][dict_total[i]['modified_primary_base'] == 'A']
                 print('{}: Successfully created a methyl-adenine dictionary for '.format(time_string()) + str(i))
@@ -180,6 +186,8 @@ if __name__ == "__main__":
                 print('{}: Successfully created a plus strand methyl-adenine dictionary for '.format(time_string()) + str(i))
 
             if '5mC' in args.mods:
+                # Remove Cytosine stranded dicts from the dicts to skip set
+                dict_to_skip.difference_update(C_stranded_dicts)
                 # get a dictionary of dataframes that only contain methylated cytosine positions
                 dict_c[i] = dict_total[i][dict_total[i]['modified_primary_base'] == 'C']
                 print('{}: Successfully created a methyl-cytosine dictionary for '.format(time_string()) + str(i))
@@ -191,12 +199,15 @@ if __name__ == "__main__":
                 # In the strand specific dictionaries, only keep positions that are informative for GpC SMF
                 dict_c_bottom[i] = dict_c_bottom[i][dict_c_bottom[i]['ref_position'].isin(gpc_bottom_set)]   
                 dict_c_top[i] = dict_c_top[i][dict_c_top[i]['ref_position'].isin(gpc_top_set)] 
-
-            # Initialize the sample keys for the combined dictionaries
-            print('{}: Successfully created a minus strand combined methylation dictionary for '.format(time_string()) + str(i))
-            dict_combined_bottom[i] = []
-            print('{}: Successfully created a plus strand combined methylation dictionary for '.format(time_string()) + str(i))
-            dict_combined_top[i] = []
+            
+            if '6mA' in args.mods and '5mC' in args.mods:
+                # Remove combined stranded dicts from the dicts to skip set
+                dict_to_skip.difference_update(combined_dicts)                
+                # Initialize the sample keys for the combined dictionaries
+                print('{}: Successfully created a minus strand combined methylation dictionary for '.format(time_string()) + str(i))
+                dict_combined_bottom[i] = []
+                print('{}: Successfully created a plus strand combined methylation dictionary for '.format(time_string()) + str(i))
+                dict_combined_top[i] = []
 
         # Iterate over the stranded modification dictionaries and replace the dataframes with a dictionary of read names pointing to a list of values from the dataframe
         for i, dict in enumerate(dict_list):

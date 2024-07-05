@@ -3,23 +3,23 @@
 ###################################################################################################
 #### User defined parameters ####
 
-## Input files ##
+BASE_dir='/Users/base_dir_for_analysis'
 # Path to directory containing input POD5 files
-POD5_dir='/pod5' 
+POD5_dir="${BASE_dir}/pod5"
 # Path to reference FASTA
-FASTA='/Users/path_to_FASTA'
+FASTA="${BASE_dir}/.fa"
 
 ## Output files ##
 # Path to your output directory for the overall analysis
-output_directory="/results/data/SMF" 
+output_directory="${BASE_dir}dir_name" 
 # Path to the anticipated output converted FASTA file
 converted_FASTA='' 
 
 ## Conversion parameters ##
 # Options include 6mA, 5mC, unconverted
-modification_types='['unconverted', '5mC', '6mA']' 
+modification_types="unconverted,5mC,6mA"
 # Options include top and bottom
-strands='['top', 'bottom']' 
+strands="top,bottom"
 
 ## dorado basecaller parameters ##
 # Path to your basecalling model
@@ -28,8 +28,10 @@ model='/dorado_models/dna_r10.4.1_e8.2_400bps_hac@v4.3.0'
 barcode_kit='SQK-NBD114-24'
 
 ## Path to accompanying python scripts ##
-convert_FASTA='/Generate_converted_FASTA.py' 
-BAM_to_anndata='/Converted_BAM_to_anndata.py' 
+script_dir='/smftools/python_scripts'
+convert_FASTA="${script_dir}/Generate_converted_FASTA.py"
+BAM_to_anndata="${script_dir}/Converted_BAM_to_anndata.py" 
+sep_BAM_by_BC="${script_dir}/separate_BAM_by_tag.py" 
 
 ## Minimum proportion of reads mapping to a reference to further use that reference (Ranges from 0-1 as a proportion of mapped reads) ##
 mapping_threshold=0.05
@@ -40,10 +42,10 @@ EXPERIMENT_NAME='SMF_pilot'
 
 #################################
 #### Other variables ####
-BAM=''$output_directory'/HAC_basecalls'
-aligned_BAM=''$BAM'_aligned'
-aligned_sorted_BAM=''$aligned_BAM'_sorted'
-split_dir=''$output_directory'/split_BAMS' 
+BAM="${output_directory}/HAC_basecalls"
+aligned_BAM="${BAM}_aligned"
+aligned_sorted_BAM="${aligned_BAM}_sorted"
+split_dir="${output_directory}/split_BAMS" 
 #################################
 
 ###################################################################################################
@@ -66,9 +68,9 @@ samtools sort -o ''$aligned_sorted_BAM''$BAM_SUFFIX'' ''$aligned_BAM''$BAM_SUFFI
 # Create a BAM index file
 samtools index ''$aligned_sorted_BAM''$BAM_SUFFIX''
 # Make a bed file of coordinates for the BAM
-samtools view ''$aligned_sorted_BAM''$BAM_SUFFIX'' | awk '{print $3, $4, $4+length($10)-1}' > ''$aligned_sorted_BAM'_bed.bed'
+samtools view ''$aligned_sorted_BAM''$BAM_SUFFIX'' | awk '{print $3, $4, $4+length($10)-1}' > "${aligned_sorted_BAM}_bed.bed"
 # Make a text file of reads for the BAM
-samtools view ''$aligned_sorted_BAM''$BAM_SUFFIX'' | cut -f1 | > ''$aligned_sorted_BAM'_read_names.txt'
+samtools view ''$aligned_sorted_BAM''$BAM_SUFFIX'' | cut -f1 | > "${aligned_sorted_BAM}_read_names.txt"
 
 ### 4) Split BAM files by barcode ###
 # Takes an aligned, sorted, BAM file as input.

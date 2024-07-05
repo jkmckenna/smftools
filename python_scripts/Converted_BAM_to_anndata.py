@@ -156,7 +156,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     converted_fasta_file = args.input_fasta
     bam_directory = args.input_bams
-    mapping_threshold = args.mapping_threshold
+    mapping_threshold = float(args.mapping_threshold)
     experiment_name = args.experiment_name
     bam_suffix = '.bam'
 # Get all of the input BAM files

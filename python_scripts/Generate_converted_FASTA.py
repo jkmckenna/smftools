@@ -56,8 +56,9 @@ if __name__ == "__main__":
     parser.add_argument("strands", help="Indicate strands that could have been converted in your experiment (relative to the FASTA orientation)")
     parser.add_argument("output_fasta", help="converted FASTA file output path")
     args = parser.parse_args()
-    modification_types = args.modification_types
-    strands = args.strands
+    modification_types = args.modification_types.split(',')
+    print(modification_types)
+    strands = args.strands.split(',')
     input_fasta = args.input_fasta
     output_fasta = args.output_fasta
     ####################
@@ -73,6 +74,7 @@ if __name__ == "__main__":
                         pass
                     else:
                         # Add the modified record to the list of modified records
+                        print(f'converting {modification_type} on the {strand} strand of record {record}')
                         modified_records.append(modify_sequence_and_id(record, modification_type, strand))
         # write out the concatenated FASTA file of modified sequences
         SeqIO.write(modified_records, output_handle, 'fasta')
