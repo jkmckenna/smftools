@@ -57,8 +57,7 @@ dependencies = [
 dynamic = ["version"]
 
 [project.urls]
-Documentation = ""
-Source = ""
+Source = "https://github.com/jkmckenna/smftools"
 
 [project.optional-dependencies]
 torch = ["torch>=1.9.0", "pomeganate>=1.0.0"]
