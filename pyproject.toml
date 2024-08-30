@@ -1,0 +1,133 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "smftools"
+description = "Single Molecule Footprinting Analysis in Python."
+requires-python = ">=3.9"
+license = "MIT"
+authors = [
+    {name = "Joseph McKenna"}
+]
+maintainers = [
+    {name = "Joseph McKenna", email = "jkmckenna@berkeley.edu"}
+]
+keywords = [
+  "single-molecule-footprinting",
+  "chromatin-accessibility",
+  "protein-dna-binding",
+  "nanopore",
+  "single-locus",
+  "anndata",
+  "machine-learning"
+]
+readme = "README.md"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Visualization"
+]
+dependencies = [
+    "anndata>=0.10.0",
+    "biopython>=1.79",
+    "Cython>=0.29.28",
+    "networkx>=3.2",
+    "numpy>=1.22.0,<2",
+    "pandas>=1.4.2",
+    "pomegranate>1.0.0",
+    "pysam>=0.19.1",
+    "scanpy>=1.9",
+    "scikit-learn>=1.0.2",
+    "scipy>=1.7.3",
+    "seaborn>=0.11",
+    "tqdm"
+]
+dynamic = ["version"]
+
+[project.urls]
+Documentation = ""
+Source = ""
+
+[project.optional-dependencies]
+torch = ["torch>=1.9.0", "pomeganate>=1.0.0"]
+base_tests = [
+    "pytest",
+    "pytest-cov"
+]
+
+torch_tests = [
+    "smftools[base_tests]",
+    # Optional dependencies
+    "smftools[torch]"
+]
+
+doc = [
+    "sphinx>=7",
+    "sphinx-book-theme>=1.1.0",
+    "sphinx-autodoc-typehints>=1.25.2",
+    "myst-parser>=2",
+    "myst-nb>=1",
+    "sphinx-design",
+    "readthedocs-sphinx-search",
+    "sphinxext-opengraph", # for nice cards when sharing on social
+    "sphinx-copybutton",
+    "nbsphinx>=0.9",
+    "ipython>=7.20",  # for nbsphinx code highlighting
+    "matplotlib!=3.6.1",
+    "sphinxcontrib-bibtex",
+    "setuptools"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/smftools"]
+
+[tool.hatch.version]
+path = "src/smftools/_version.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+xfail_strict = true
+markers = [
+    "internet: mark tests that requires internet access",
+    "optional: mark optional tests",
+    "private: mark tests that are private",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["smftools"]
+omit = ["tests/*"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 99
+indent-width = 4
+
+[tool.ruff.lint]
+select = [
+    "E",       # Error detected by Pycodestyle
+    "F",       # Errors detected by Pyflakes
+    "W",       # Warning detected by Pycodestyle
+    "UP",      # pyupgrade
+    "I",       # isort
+    "TCH",     # manage type checking blocks
+    "TID251",  # Banned imports
+    "ICN",     # Follow import conventions
+    "PTH",     # Pathlib instead of os.path
+    "PLR0917", # Ban APIs with too many positional parameters
+    "FBT",     # No positional boolean parameters
+    "PT"      # Pytest style
+]

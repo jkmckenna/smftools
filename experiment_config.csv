@@ -1,0 +1,20 @@
+﻿variable,value,help,options,type
+base_dir,,Path to directory to act as root directory for analysis,,string
+smf_modality,,Modality of SMF. Can either be conversion or direct.,"conversion, direct",string
+pod5_dir,,Path to directory containing input POD5 files (If doing Nanopore SMF),,string
+fastq_dir,,Path to directory containing input FASTQ files (if doing Illumina based conversion SMF),,string
+fasta,,Path to initial FASTA file,,string
+bam_suffix,,The file suffix used for BAM files.,,string
+output_directory,,Directory within BASE_dir to create for analysis outputs,,string
+experiment_name,,An experiment name for the final h5ad file,,string
+model,,The dorado basecalling model to use,,string
+barcode_kit,,The barcoding kit used for the experiment,,string
+mapping_threshold,,Minimum proportion of reads mapping to a reference to further use that reference (Ranges from 0-1 as a proportion of mapped reads),,float
+filter_threshold,,Minimum probability to call a canonical base identity,,float
+m6A_threshold,,Minimum probability to flag m6A as True,,float
+m5C_threshold,,Minimum probability to flag m5C as True,,float
+hm5C_threshold,,Minimum probability to flag hm5C as True,,float
+mod_list,,Modified base names for Dorado,"""6mA"", ""5mC_5hmC""",list
+batch_size,,number of samples to analyze at a time,,int
+conversion_types,,Types of modification types to use in conversion SMF,"unconverted', '5mC', '6mA'",list
+strands,,Converted strands to analyze for conversion SMF,"top','bottom'",list

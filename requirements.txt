@@ -1,0 +1,14 @@
+# Essential packages
+anndata>=0.10.0
+biopython>=1.79
+Cython>=0.29.28
+networkx>=3
+numpy>=1.22.0,<2
+pandas>=1.4.2
+pomegranate>1.0.0
+pysam>=0.19.1
+scanpy>=1.9
+scikit-learn>=1.0.2
+scipy>=1.7.3
+seaborn>=0.11
+tqdm

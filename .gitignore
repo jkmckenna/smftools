@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+/src/smftools/_version.py
+
+# Build files
+build/
+dist/
+/hatch.toml
+/Pipfile
+/Pipfile.lock
+
+# Environments
+.env
+.venv
+/*-env/
+/*-venv/
+/env-*/
+/venv-*/
+/environment.yml
+
+# OS
+*.DS_Store
+*.LSOverride
+*Thumbs.db
+*.ipynb_checkpoints/
+*.directory
+
+# IDEs and editors
+*.vscode/
+*.idea/
+*.iml
+
+# Logs
+*.log
+
+# temp files
+temp/
+tmp/
+
+# Coverage reports
+.coverage
+htmlcov/
+
+# Docs
+/docs
