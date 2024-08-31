@@ -10,7 +10,7 @@ class SMFConfig:
         *,
         datasetdir: Path | str = "./datasets/"
     ):
-        self.datasetdir = datasetdir
+         self._datasetdir = Path(datasetdir) if isinstance(datasetdir, str) else datasetdir
 
     @property
     def datasetdir(self) -> Path:
