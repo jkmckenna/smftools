@@ -1,10 +1,9 @@
 # Python
 __pycache__/
-/src/smftools/_version.py
 
 # Build files
 build/
-dist/
+/dist/
 /hatch.toml
 /Pipfile
 /Pipfile.lock
