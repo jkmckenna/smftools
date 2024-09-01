@@ -37,7 +37,6 @@ html_title = project
 html_theme_options = {
     "repository_url": repository_url,
     "use_repository_button": True,
-    "logo_only": True,
     "show_toc_level": 1,
     "path_to_docs": "docs/",
     "repository_branch": release,
