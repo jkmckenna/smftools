@@ -33,8 +33,10 @@ Thumbs.db
 *.log
 
 # temp files
-temp/
-tmp/
+/temp*
+/tmp*
+*.temp
+*.tmp
 
 # Coverage reports
 .coverage
