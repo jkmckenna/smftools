@@ -42,4 +42,9 @@ tmp/
 htmlcov/
 
 # Docs
-/docs
+/docs/_build/
+/docs/generated/
+/docs/data/
+/docs/api/generated
+/docs/external/generated
+/docs/jupyter_execute
