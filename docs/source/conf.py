@@ -15,7 +15,14 @@ repository_url = 'https://github.com/jkmckenna/smftools'
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
-extensions = ["myst_nb"]
+extensions = [
+    'myst_nb',
+    'sphinx.ext.autodoc',
+    'sphinx.ext.napoleon',  # for Google-style and NumPy-style docstrings
+    'sphinx.ext.viewcode',  # adds links to highlighted source code
+    'sphinx.ext.autosummary',  # create summary pages
+    'sphinx_autodoc_typehints',  # integrate type hints
+]
 
 templates_path = ['_templates']
 exclude_patterns = []
@@ -31,7 +38,7 @@ html_context = {
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "sphinx_book_theme"
+html_theme = "sphinx_rtd_theme"
 html_title = project
 
 html_theme_options = {
