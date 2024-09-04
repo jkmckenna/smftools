@@ -34,7 +34,13 @@ extensions = [
     "sphinx.ext.coverage",
     "sphinx.ext.mathjax",
     "sphinx.ext.napoleon",
-    "sphinx.ext.autosummary"
+    "sphinx.ext.autosummary",
+    "sphinx.ext.extlinks",
+    "matplotlib.sphinxext.plot_directive",
+    "sphinx_autodoc_typehints",
+    "sphinx_design",
+    "sphinx_search.extension",
+    "sphinxext.opengraph",
 ]
 
 # Generate the API documentation when building
@@ -57,7 +63,7 @@ myst_enable_extensions = [
     "html_admonition",
 ]
 myst_url_schemes = ("http", "https", "mailto", "ftp")
-myst_heading_anchors = 3
+myst_heading_anchors = 2
 nb_output_stderr = "remove"
 nb_execution_mode = "off"
 nb_merge_streams = True
