@@ -1,4 +1,3 @@
-.. smftools documentation master file
 smftools documentation
 ======================
 
@@ -47,6 +46,8 @@ tutorials/index
 api/index
 release-notes/index
 dev/index
+contributors
+references
 ```
 
 [github]: https://github.com/jkmckenna/smftools

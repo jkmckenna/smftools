@@ -14,7 +14,9 @@ release = '0.1.0'
 repository_url = 'https://github.com/jkmckenna/smftools'
 
 # -- General configuration ---------------------------------------------------
-# https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
+# Bibliography settings
+bibtex_bibfiles = ["references.bib"]
+bibtex_reference_style = "author_year"
 
 master_doc = "index"
 templates_path = ['_templates']
