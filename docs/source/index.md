@@ -2,7 +2,7 @@
 smftools documentation
 ======================
 
-```{include} .../README.md
+```{include} ../../README.md
 :end-before: '## Citation'
 ```
 

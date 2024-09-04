@@ -63,10 +63,14 @@ myst_enable_extensions = [
     "html_admonition",
 ]
 myst_url_schemes = ("http", "https", "mailto", "ftp")
-myst_heading_anchors = 2
+myst_heading_anchors = 3
 nb_output_stderr = "remove"
 nb_execution_mode = "off"
 nb_merge_streams = True
+
+suppress_warnings = [
+    "myst.header"
+]
 
 typehints_defaults = "braces"
 
