@@ -3,7 +3,7 @@ smftools documentation
 ======================
 
 ```{include} ../../README.md
-:end-before: '## Citation'
+:end-before: '## Dependencies'
 ```
 
 ::::{grid} 1 2 2 2
