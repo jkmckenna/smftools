@@ -17,7 +17,6 @@ package_name = "smftools"
 __version__ = version(package_name)
 
 __all__ = [
-    "AnnData",
     "inform",
     "pp",
     "tl",
