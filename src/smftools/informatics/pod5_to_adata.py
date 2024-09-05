@@ -3,9 +3,15 @@ from .helpers import load_experiment_config
 from.pod5_direct import pod5_direct
 from.pod5_conversion import pod5_conversion
 
-def pod5_to_adata(config_path, ):
+def pod5_to_adata(config_path):
     """
-    
+    High-level function to call for converting raw sequencing data to an adata object.
+
+    Parameters:
+        config_path (str): A string representing the file path to the experiment configuration csv file.
+
+    Returns:
+        None
     """
     # Load experiment config parameters into global variables
     load_experiment_config(config_path)

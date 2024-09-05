@@ -4,8 +4,13 @@ import os
 # General
 def make_dirs(directories):
     """
-    Input: Takes a list of file paths to make directories for
-    Output: Makes each directory in the list if the directory doesn't already exist.
+    Takes a list of file paths and makes new directories if the directory does not already exist.
+
+    Parameters:
+        directories (list): A list of directories to make
+    
+    Returns:
+        None
     """
     for directory in directories:
         if not os.path.isdir(directory):

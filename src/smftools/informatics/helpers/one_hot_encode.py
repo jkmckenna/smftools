@@ -1,11 +1,15 @@
 # one_hot_encode
-from .. import readwrite
+import numpy as np
 
 # String encodings
 def one_hot_encode(sequence):
     """
-    Input: A sequence string of a read.
-    Output: One hot encoding of the sequence string.
+    One hot encodes a sequence string.
+    Parameters:
+        sequence (str): A DNA sequence string.
+
+    Returns:
+        one_hot_matrix (ndarray): A numpy ndarray holding a vstacked one hot encoding of the input sequence string.
     """
     mapping = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 'N': 4}
     one_hot_matrix = np.zeros((len(sequence), 5), dtype=int)

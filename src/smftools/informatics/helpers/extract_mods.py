@@ -7,6 +7,17 @@ import zipfile
 def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix):
     """
     Takes all of the aligned, sorted, split modified BAM files and runs Nanopore Modkit Extract to load the modification data into zipped TSV files
+
+    Parameters:
+        thresholds (list): A list of thresholds to use for marking each basecalled base as passing or failing on canonical and modification call status.
+        mod_tsv_dir (str): A string representing the file path to the directory to hold the modkit extract outputs.
+        split_dit (str): A string representing the file path to the directory containing the converted aligned_sorted_split BAM files.
+        bam_suffix (str): The suffix to use for the BAM file.
+
+    Returns:
+        None
+        Runs modkit extract on input aligned_sorted_split modified BAM files to output zipped TSVs containing modification calls.
+
     """
     os.chdir(mod_tsv_dir)
     filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold = thresholds

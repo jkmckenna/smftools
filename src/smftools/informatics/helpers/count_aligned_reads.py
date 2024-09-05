@@ -6,8 +6,16 @@ import pysam
 # General
 def count_aligned_reads(bam_file):
     """
-    Input: A BAM alignment file.
-    Output: The number of aligned/unaligned reads in the BAM file. Also returns a dictionary, keyed by reference id that points to a tuple. The tuple contains an integer number of mapped reads to that reference, followed by the proportion of mapped reads that map to that reference
+    Counts the number of aligned reads in a bam file that map to each reference record.
+    
+    Parameters:
+        bam_file (str): A string representing the path to an aligned BAM file.
+    
+    Returns:
+       aligned_reads_count (int): The total number or reads aligned in the BAM.
+       unaligned_reads_count (int): The total number of reads not aligned in the BAM.
+       record_counts (dict): A dictionary keyed by reference record instance that points toa tuple containing the total reads mapped to the record and the fraction of mapped reads which map to the record.
+
     """
     print('{0}: Counting aligned reads in BAM > {1}'.format(readwrite.time_string(), bam_file))
     aligned_reads_count = 0

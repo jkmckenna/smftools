@@ -6,9 +6,17 @@ import pysam
 # General
 def extract_base_identities(bam_file, chromosome, positions, max_reference_length):
     """
-    Input: A position sorted BAM file, chromosome number, position coordinate set, and reference length to extract the base identitity from the read.
-    Output: A dictionary, keyed by read name, that points to a list of Base identities from each read.
-    If the read does not contain that position, fill the list at that index with a N value.
+    Extracts the base identities from every position within the read that has a reference coordinate
+
+    Parameters:
+        bam (str): File path to the BAM file to align (excluding the file suffix).
+        chromosome (str): A string representing the name of the record within the reference FASTA.
+        positions (list): A list of position coordinates within the record to extract.
+        max_reference_length (int): The maximum length of a record in the reference set.
+
+    Returns:
+        base_identities (dict): A dictionary, keyed by read name, that points to a list of base identities. If the read does not contain that position, fill the list at that index with a N value.
+    
     """
     positions = set(positions)
     # Initialize a base identity dictionary that will hold key-value pairs that are: key (read-name) and value (list of base identities at positions of interest)

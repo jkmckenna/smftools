@@ -5,7 +5,12 @@ import subprocess
 # Direct SMF
 def make_modbed(aligned_sorted_output, thresholds, mod_bed_dir):
     """
-    Generating Barcode position methylation summaries starting from the overall BAM file that was direct output of dorado aligner
+    Generating position methylation summaries for each barcoded sample starting from the overall BAM file that was direct output of dorado aligner.
+    Parameters:
+        aligned_sorted_output (str): A string representing the file path to the aligned_sorted non-split BAM file.
+    
+    Returns:
+        None
     """
     os.chdir(mod_bed_dir)
     filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold = thresholds
