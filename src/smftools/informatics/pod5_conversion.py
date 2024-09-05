@@ -4,7 +4,23 @@ import subprocess
 
 def pod5_conversion(fasta, output_directory, conversion_types, strands, model, pod5_dir, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix):
     """
-    Converts a POD5 file from a nanopore conversion SMF experiment to an adata object
+    Converts a POD5 file from a nanopore conversion SMF experiment to an adata object.
+
+    Parameters:
+        fasta (str): File path to the reference genome to align to.
+        output_directory (str): A file path to the directory to output all the analyses.
+        conversion_type (list): A list of strings of the conversion types to use in the analysis.
+        strands (list): A list of converstion strands to use in the experiment.
+        model (str): a string representing the file path to the dorado basecalling model.
+        pod5_dir (str): a string representing the file path to the experiment directory containing the POD5 files.
+        split_dir (str): A string representing the file path to the directory to split the BAMs into.
+        barcode_kit (str): A string representing the barcoding kit used in the experiment.
+        mapping_threshold (float): A value in between 0 and 1 to threshold the minimal fraction of aligned reads which map to the reference region. References with values above the threshold are included in the output adata.
+        experiment_name (str): A string to provide an experiment name to the output adata file.
+        bam_suffix (str): A suffix to add to the bam file.
+
+    Returns:
+        None
     """
     bam=f"{output_directory}/HAC_basecalls"
     aligned_BAM=f"{bam}_aligned"

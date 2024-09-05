@@ -4,8 +4,15 @@ import pysam
 # General
 def separate_bam_by_bc(input_bam, output_prefix):
     """
-    Input: Takes a single BAM input. Also takes an output prefix to append to the output file.
-    Output: Splits the BAM based on the BC SAM tag value.
+    Separates an input BAM file on the BC SAM tag values.
+
+    Parameters:
+        input_bam (str): File path to the BAM file to split.
+        output_prefix (str): A prefix to append to the output BAM.
+    
+    Returns:
+        None
+            Writes out split BAM files.
     """
     # Open the input BAM file for reading
     with pysam.AlignmentFile(input_bam, "rb") as bam:

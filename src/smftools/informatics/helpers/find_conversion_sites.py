@@ -9,9 +9,13 @@ def find_conversion_sites(fasta_file, modification_type):
     """
     A function to find genomic coordinates in every unconverted record contained within a FASTA file of every cytosine.
     If searching for adenine conversions, it will find coordinates of all adenines.
-    Input: A FASTA file and the modification_types of interest
+
+    Parameters:
+        fasta_file (str): A string representing the file path to the unconverted reference FASTA.
+        modification_type (str): A string representing the modification type of interest (options are '5mC' and '6mA').
+
     Returns: 
-    A dictionary called record_dict, which is keyed by unconverted record ids contained within the FASTA. Points to a list containing: 1) sequence length of the record, 2) top strand coordinate list, 3) bottom strand coorinate list, 4) sequence string
+        record_dict (dict): A dictionary keyed by unconverted record ids contained within the FASTA. Points to a list containing: 1) sequence length of the record, 2) top strand coordinate list, 3) bottom strand coorinate list, 4) sequence string
     """
     print('{0}: Finding positions of interest in reference FASTA > {1}'.format(readwrite.time_string(), fasta_file))
     # Initialize lists to hold top and bottom strand positional coordinates of interest

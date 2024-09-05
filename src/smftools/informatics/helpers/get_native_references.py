@@ -8,9 +8,13 @@ from Bio.Seq import Seq
 # Direct methylation specific
 def get_native_references(fasta_file):
     """
-    Input: A FASTA file
+    Makes a dictionary keyed by record id which points to the record length and record sequence.
+
+    Paramaters:
+        fasta_file (str): A string representing the path to the FASTA file for the experiment.
+
     Returns: 
-    A dictionary called record_dict, which is keyed by record ids contained within the FASTA. Points to a list containing: 1) sequence length of the record, 2) sequence of the record
+        None
     """
     record_dict = {}
     print('{0}: Opening FASTA file {1}'.format(readwrite.time_string(), fasta_file))

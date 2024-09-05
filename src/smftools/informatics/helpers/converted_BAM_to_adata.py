@@ -12,7 +12,19 @@ import os
 
 def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix):
     """
+    A wrapper function to take converted aligned_sorted_split BAM files and format the data into an anndata object.
+
+    Parameters:
+        converted_FASTA (str): A string representing the file path to the converted FASTA reference.
+        split_dir (str): A string representing the file path to the directory containing the converted aligned_sorted_split BAM files.
+        mapping_threshold (float): A value in between 0 and 1 to threshold the minimal fraction of aligned reads which map to the reference region. References with values above the threshold are included in the output adata.
+        experiment_name (str): A string to provide an experiment name to the output adata file.
+        conversion_types (list): A list of strings of the conversion types to use in the analysis.
+        bam_suffix (str): The suffix to use for the BAM file.
     
+    Returns:
+        None
+        Outputs a single gzipped adata object for the experiment.
     """
     # Get all of the input BAM files
     files = os.listdir(split_dir)

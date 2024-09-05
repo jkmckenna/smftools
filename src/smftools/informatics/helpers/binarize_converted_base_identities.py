@@ -3,8 +3,15 @@ import numpy as np
 # Conversion SMF specific
 def binarize_converted_base_identities(base_identities, strand, modification_type):
     """
-    Input: The base identities dictionary returned by extract_base_identity_at_coordinates.
-    Output: A binarized format of the dictionary, where 1 represents a methylated site. 0 represents an unmethylated site. NaN represents a site that does not carry SMF information.
+    Binarizes conversion SMF data within a sequence string
+
+    Parameters:
+        base_identities (dict): A dictionary returned by extract_base_identity_at_coordinates.
+        strand (str): A string indicating which strand was converted in the experiment (options are 'top' and 'bottom').
+        modification_type (str): A string indicating the modification type of interest (options are '5mC' and '6mA').
+    
+    Returns:
+        binarized_base_identities (dict): A binarized dictionary, where 1 represents a methylated site. 0 represents an unmethylated site. NaN represents a site that does not carry methylation information.
     """
     binarized_base_identities = {}
     # Iterate over base identity keys to binarize the base identities

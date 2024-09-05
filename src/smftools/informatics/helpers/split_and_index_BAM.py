@@ -7,7 +7,15 @@ from .separate_bam_by_bc import separate_bam_by_bc
 
 def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     """
-    A wrapper function for splitting BAMS and indexing them
+    A wrapper function for splitting BAMS and indexing them.
+    Parameters:
+        aligned_sorted_BAM (str): A string representing the file path of the aligned_sorted BAM file.
+        split_dir (str): A string representing the file path to the directory to split the BAMs into.
+        bam_suffix (str): A suffix to add to the bam file.
+    
+    Returns:
+        None
+            Splits an input BAM file on barcode value and makes a BAM index file.
     """
     os.chdir(split_dir)
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix

@@ -4,6 +4,15 @@ import subprocess
 def align_BAM(fasta, bam, bam_suffix):
     """
     A wrapper for running dorado aligner and samtools functions
+    
+    Parameters:
+        fasta (str): File path to the reference genome to align to.
+        bam (str): File path to the BAM file to align (excluding the file suffix).
+        bam_suffix (str): The suffix to use for the BAM file.
+
+    Returns:
+        None
+            The function writes out files for: 1) An aligned BAM, 2) and aligned_sorted BAM, 3) an index file for the aligned_sorted BAM, 4) A bed file for the aligned_sorted BAM, 5) A text file containing read names in the aligned_sorted BAM
     """
     aligned_BAM=f"{bam}_aligned"
     aligned_sorted_BAM=f"{aligned_BAM}_sorted"
