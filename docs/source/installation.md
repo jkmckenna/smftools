@@ -15,7 +15,7 @@ pip install smftools
 ## Development Version
 
 ```shell
-gh repo clone jkmckenna/smftools
+git clone https://github.com/jkmckenna/smftools.git
 cd smftools
 ```
 
