@@ -1,15 +1,21 @@
 ## calculate_coverage
-from .. import readwrite
-import numpy as np
-import anndata as ad
-import pandas as pd
-
 
 def calculate_coverage(adata, obs_column='Reference', position_nan_threshold=0.05):
     """
-    Input: An adata object and an observation column of interest. Assess if the position is present in the dataset category.
-    Output: Append position level metadata indicating whether the position is informative within the given observation category.
+    Append position level metadata regarding whether the position is informative within the given observation category.
+
+    Parameters:
+        adata (AnnData): An AnnData object
+        obs_column (str): Observation column value to subset on prior to calculating position statistics for that category.
+        position_nan_threshold (float): A minimal threshold of coverage to call the position as valid.
+
+    Returns:
+        None
     """
+    import numpy as np
+    import anndata as ad
+    import pandas as pd
+
     categories = adata.obs[obs_column].cat.categories
     n_categories_with_position = np.zeros(adata.shape[1])
     # Loop over categories

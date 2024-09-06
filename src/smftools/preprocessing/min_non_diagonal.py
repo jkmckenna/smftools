@@ -1,12 +1,17 @@
 ## min_non_diagonal
-import numpy as np
 
 def min_non_diagonal(matrix):
     """
-    Takes a matrix and returns the smallest value from each row with the diagonal masked
-    Input: A data matrix
-    Output: A list of minimum values from each row of the matrix
+    Takes a matrix and returns the smallest value from each row with the diagonal masked.
+
+    Parameters:
+        matrix (ndarray): A 2D ndarray.
+
+    Returns:
+        min_values (list): A list of minimum values from each row of the matrix
     """
+    import numpy as np
+
     n = matrix.shape[0]
     min_values = []
     for i in range(n):

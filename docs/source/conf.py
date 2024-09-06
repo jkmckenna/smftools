@@ -50,8 +50,8 @@ extensions = [
 # Generate the API documentation when building
 autosummary_generate = True
 autodoc_member_order = "bysource"
-napoleon_google_docstring = False
-napoleon_numpy_docstring = True
+napoleon_google_docstring = True
+napoleon_numpy_docstring = False
 napoleon_include_init_with_doc = False
 napoleon_use_rtype = True  # having a separate entry generally helps readability
 napoleon_use_param = True

@@ -1,15 +1,20 @@
 ## calculate_read_length_stats
-import numpy as np
-import anndata as ad
-import pandas as pd
 
 # Read length QC
 def calculate_read_length_stats(adata):
     """
-    Input: An adata object
-    Output: Append first valid position in a read and last valid position in the read. From this determine and append the read length. 
-    Return two new variable which hold the first and last valid positions in the entire dataset
+    Append first valid position in a read and last valid position in the read. From this determine and append the read length. 
+
+    Parameters:
+        adata (AnnData): An adata object
+    
+    Returns:
+        upper_bound (int): last valid position in the dataset
+        lower_bound (int): first valid position in the dataset
     """
+    import numpy as np
+    import anndata as ad
+    import pandas as pd
     ## Add basic observation-level (read-level) metadata to the object: first valid position in a read and last valid position in the read. From this determine the read length. Save two new variable which hold the first and last valid positions in the entire dataset
 
     # Add some basic observation-level (read-level) metadata to the anndata object

@@ -1,15 +1,20 @@
 ## calculate_pairwise_hamming_distances
-import numpy as np
-import tqdm
-from scipy.spatial.distance import hamming
 
 ## Conversion SMF Specific 
 def calculate_pairwise_hamming_distances(arrays):
     """
-    Calculate the pairwise Hamming distances for a list of ndarrays.
-    Input: A list of ndarrays
-    Output: a 2D array containing the pairwise Hamming distances.
+    Calculate the pairwise Hamming distances for a list of h-stacked ndarrays.
+
+    Parameters:
+        arrays (str): A list of ndarrays.
+
+    Returns:
+        distance_matrix (ndarray): a 2D array containing the pairwise Hamming distances between all arrays.
+
     """
+    import numpy as np
+    import tqdm
+    from scipy.spatial.distance import hamming
     num_arrays = len(arrays)
     # Initialize an empty distance matrix
     distance_matrix = np.zeros((num_arrays, num_arrays))
