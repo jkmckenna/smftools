@@ -10,7 +10,10 @@ PARENT_PARENT_HERE = HERE.parents[1]
 SRC_PATH = PARENT_PARENT_HERE / 'src'
 sys.path.insert(0, str(PARENT_PARENT_HERE))
 print(sys.path)
-import smftools
+try:
+    import smftools
+except ImportError:
+    print("smftools is not imported.")
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
