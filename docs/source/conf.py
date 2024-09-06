@@ -3,12 +3,13 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 import sys
+import os
 from pathlib import Path
 HERE = Path(__file__).parent
-print(HERE)
 PARENT_PARENT_HERE = HERE.parents[1]
-print(PARENT_PARENT_HERE)
-sys.path.insert(0, PARENT_PARENT_HERE)
+SRC_PATH = PARENT_PARENT_HERE / 'src'
+sys.path.insert(0, str(PARENT_PARENT_HERE))
+print(sys.path)
 import smftools
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
