@@ -1,20 +1,28 @@
 ## calculate_position_Youden
-import numpy as np
-import pandas as pd
-import anndata as ad
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, roc_auc_score
-
-
 
 ## Calculating and applying position level thresholds for methylation calls to binarize the SMF data
 def calculate_position_Youden(adata, positive_control_sample, negative_control_sample, J_threshold=0.4, obs_column='Reference', save=False, output_directory=''):
     """
-    Input: An adata object, a plus MTase control, a minus MTase control, the minimal J-statistic threshold, and a categorical observation column to iterate over.
-    Input notes: The control samples are passed as string names of the samples as they appear in the 'Sample_names' obs column
-    Output: Adds new variable metadata to each position indicating whether the position provides reliable SMF methylation calls. Also outputs plots of the positional ROC curves.
-    Can optionally save the output plots of the ROC curve
+    Adds new variable metadata to each position indicating whether the position provides reliable SMF methylation calls. Also outputs plots of the positional ROC curves.
+
+    Parameters:
+        adata (AnnData): An AnnData object.
+        positive_control_sample (str): string representing the sample name corresponding to the Plus MTase control sample.
+        negative_control_sample (str): string representing the sample name corresponding to the Minus MTase control sample.
+        J_threshold (float): A float indicating the J-statistic used to indicate whether a position passes QC for methylation calls.
+        obs_column (str): The category to iterate over.
+        save (bool): Whether to save the ROC plots.
+        output_directory (str): String representing the path to the output directory to output the ROC curves.
+    
+    Returns: 
+        None
     """
+    import numpy as np
+    import pandas as pd
+    import anndata as ad
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import roc_curve, roc_auc_score
+
     control_samples = [positive_control_sample, negative_control_sample]
     categories = adata.obs[obs_column].cat.categories 
     # Iterate over each category in the specified obs_column
@@ -89,7 +97,8 @@ def calculate_position_Youden(adata, positive_control_sample, negative_control_s
             plt.savefig(save_name)
             plt.close()
         else:
-            plt.show()    
+            plt.show()   
+
         adata.var[f'{cat}_position_methylation_thresholding_Youden_stats'] = probability_thresholding_list
         J_max_list = [probability_thresholding_list[i][1] for i in range(adata.shape[1])]
         adata.var[f'{cat}_position_passed_QC'] = [True if i > J_threshold else False for i in J_max_list]

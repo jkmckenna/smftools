@@ -1,21 +1,32 @@
 ## calculate_complexity
-import numpy as np
-import pandas as pd
-from scipy.optimize import curve_fit
-import matplotlib.pyplot as plt
 
-def lander_waterman(x, C0):
-    return C0 * (1 - np.exp(-x / C0))
-
-def count_unique_reads(reads, depth):
-    subsample = np.random.choice(reads, depth, replace=False)
-    return len(np.unique(subsample))
-
-def calculate_complexity(adata, obs_column='Reference', sample_col='Sample_names', plot=True, save_plot=False):
+def calculate_complexity(adata, obs_column='Reference', sample_col='Sample_names', plot=True, save_plot=False, output_directory=''):
     """
-    Input: adata object with mark_duplicates already run.
-    Output: A complexity analysis of the library
+    A complexity analysis of the library.
+
+    Parameters:
+        adata (AnnData): An adata object with mark_duplicates already run.
+        obs_column (str): String of the obs column to iterate over.
+        sample_col (str): String of the sample column to iterate over.
+        plot (bool): Whether to plot the complexity model.
+        save_plot (bool): Whether to save the complexity model.
+        output_directory (str): String representing the path to the output directory.
+
+    Returns:
+        None
+
     """
+    import numpy as np
+    import pandas as pd
+    from scipy.optimize import curve_fit
+
+    def lander_waterman(x, C0):
+        return C0 * (1 - np.exp(-x / C0))
+
+    def count_unique_reads(reads, depth):
+        subsample = np.random.choice(reads, depth, replace=False)
+        return len(np.unique(subsample))
+
     categories = adata.obs[obs_column].cat.categories 
     sample_names = adata.obs[sample_col].cat.categories 
 
@@ -40,6 +51,7 @@ def calculate_complexity(adata, obs_column='Reference', sample_col='Sample_names
             y_data = lander_waterman(x_data, *popt)
             adata.uns[f'Library_complexity_{sample}_on_{cat}'] = popt[0]
             if plot:
+                import matplotlib.pyplot as plt
                 # Plot the complexity curve
                 plt.figure(figsize=(6, 4))
                 plt.plot(total_reads, unique_reads, 'o', label='Observed unique reads')
@@ -52,7 +64,7 @@ def calculate_complexity(adata, obs_column='Reference', sample_col='Sample_names
                 plt.grid(True)
                 if save_plot:
                     date_string = date_string()
-                    save_name = output_directory + f'/{date_string} {title}'
+                    save_name = output_directory + f'/{date_string}_{title}'
                     plt.savefig(save_name, bbox_inches='tight', pad_inches=0.1)
                     plt.close()
                 else:

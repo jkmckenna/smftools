@@ -1,16 +1,23 @@
 ## calculate_converted_read_methylation_stats
-import numpy as np
-import anndata as ad
-import pandas as pd
 
 ## Conversion SMF Specific 
 # Read methylation QC
 
 def calculate_converted_read_methylation_stats(adata, obs_column='Reference'):
     """
-    Input: adata and the observation category of interest
-    Output: Adds methylation statistics for each read. Indicates whether the read GpC methylation exceeded other_C methylation (background false positives)
+    Adds methylation statistics for each read. Indicates whether the read GpC methylation exceeded other_C methylation (background false positives)
+
+    Parameters:
+        adata (AnnData): An AnnData object
+        obs_column (str): observation category of interest
+
+    Returns:
+        None 
     """
+    import numpy as np
+    import anndata as ad
+    import pandas as pd
+
     site_types = ['GpC_site', 'CpG_site', 'ambiguous_GpC_site', 'ambiguous_CpG_site', 'other_C']
     categories = adata.obs[obs_column].cat.categories
     for site_type in site_types:

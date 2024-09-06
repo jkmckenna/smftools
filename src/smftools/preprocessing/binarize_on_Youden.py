@@ -1,13 +1,17 @@
 ## binarize_on_Youden
-import numpy as np
-import pandas as pd
-import anndata as ad
 
 def binarize_on_Youden(adata, obs_column='Reference'):
     """
+    Add a new layer to the adata object that has binarized SMF values based on the position thresholds determined by calculate_position_Youden
+
+    Parameters:
+        adata (AnnData): The anndata object to binarize. pp.calculate_position_Youden function has to be run first.
+        obs_column (str): The obs_column to stratify on. Needs to be the same as passed in pp.calculate_position_Youden.
     Input: adata object that has had calculate_position_Youden called on it.
-    Output: Add a new layer to the adata object that has binarized SMF values based on the position thresholds determined by calculate_position_Youden
+    Output: 
     """
+    import numpy as np
+    import anndata as ad
     temp_adata = None
     categories = adata.obs[obs_column].cat.categories 
     for cat in categories:

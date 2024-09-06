@@ -1,14 +1,22 @@
 ## filter_reads_on_length
-import numpy as np
-import anndata as ad
-import pandas as pd
 
 def filter_reads_on_length(adata, filter_on_coordinates=False, min_read_length=2700):
     """
-    Input: Adata object. a list of lower and upper bound (set to False or None if not wanted), and a minimum read length integer.
-    Output: Susbets the adata object to keep a defined coordinate window, as well as reads that are over a minimum threshold in length
-    """
+    Filters the adata object to keep a defined coordinate window, as well as reads that are over a minimum threshold in length.
 
+    Parameters:
+        adata (AnnData): An adata object.
+        filter_on_coordinates (bool | list): If False, skips filtering. Otherwise, provide a list containing integers representing the lower and upper bound coordinates to filter on. Default is False.
+        min_read_length (int): The minimum read length to keep in the filtered dataset. Default is 2700.
+
+    Returns:
+        None
+    Input: Adata object. a list of lower and upper bound (set to False or None if not wanted), and a minimum read length integer.
+ 
+    """
+    import numpy as np
+    import anndata as ad
+    import pandas as pd
     if filter_on_coordinates:
         lower_bound, upper_bound = filter_on_coordinates
         # Extract the position information from the adata object as an np array

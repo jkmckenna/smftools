@@ -1,19 +1,28 @@
 ## mark_duplicates
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
-import networkx as nx
-from .binary_layers_to_ohe import binary_layers_to_ohe
-from .calculate_pairwise_hamming_distances import calculate_pairwise_hamming_distances
-from .min_non_diagonal import min_non_diagonal
-
 
 def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_names'):
     """
-    Input: adata object, list of binary layers, column names to use.
-    Output: Marks duplicates in the adata object
+    Marks duplicates in the adata object.
+
+    Parameters:
+        adata (AnnData): An adata object.
+        layers (list): A list of strings representing the layers to use.
+        obs_column (str): A string representing the obs column name to first subset on. Default is 'Reference'.
+        sample_col (str):L A string representing the obs column name to second subset on. Default is 'Sample_names'.
+    
+    Returns:
+        None
     """
+
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from scipy.signal import find_peaks
+    import networkx as nx
+    from .binary_layers_to_ohe import binary_layers_to_ohe
+    from .calculate_pairwise_hamming_distances import calculate_pairwise_hamming_distances
+    from .min_non_diagonal import min_non_diagonal
+
     categories = adata.obs[obs_column].cat.categories 
     sample_names = adata.obs[sample_col].cat.categories 
 
