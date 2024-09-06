@@ -5,8 +5,10 @@
 import sys
 from pathlib import Path
 HERE = Path(__file__).parent
+print(HERE)
 PARENT_PARENT_HERE = HERE.parents[1]
-sys.path[:0] = str(PARENT_PARENT_HERE)
+print(PARENT_PARENT_HERE)
+sys.path.insert(0, PARENT_PARENT_HERE)
 import smftools
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
