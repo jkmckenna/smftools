@@ -1,4 +1,6 @@
 version: 2
+submodules:
+  include: all
 build:
   os: ubuntu-22.04
   tools:
@@ -12,4 +14,5 @@ python:
   install:
     - method: pip
       path: .
-    - requirements: docs/source/requirements.txt
+      extra_requirements:
+      - docs
