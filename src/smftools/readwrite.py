@@ -1,27 +1,12 @@
 ## readwrite ##
 
-# Basic I/O
-import os
-# Datetime
-from datetime import datetime
-# Data structures and basic operations
-import math
-import numpy as np
-import pandas as pd
-import anndata as ad
-import scipy.sparse as sp
-
-# Runtime warnings
-import warnings
-warnings.filterwarnings('ignore', category=UserWarning, module='anndata')
-warnings.filterwarnings('ignore', category=FutureWarning, module='anndata')
-
 ######################################################################################################
 ## Datetime functionality
 def date_string():
     """
     Each time this is called, it returns the current date string
     """
+    from datetime import datetime
     current_date = datetime.now()
     date_string = current_date.strftime("%Y%m%d")
     date_string = date_string[2:]
@@ -31,6 +16,7 @@ def time_string():
     """
     Each time this is called, it returns the current time string
     """
+    from datetime import datetime
     current_time = datetime.now()
     return current_time.strftime("%H:%M:%S")
 ######################################################################################################
@@ -42,6 +28,9 @@ def adata_to_df(adata, layer=None):
     Input: An adata object with a specified layer.
     Output: A dataframe for the specific layer.
     """
+    import pandas as pd
+    import anndata as ad
+
     # Extract the data matrix from the given layer
     if layer:
         data_matrix = adata.layers[layer]
@@ -60,6 +49,7 @@ def save_matrix(matrix, save_name):
     Input: A numpy matrix and a save_name
     Output: A txt file representation of the data matrix
     """
+    import numpy as np
     np.savetxt(f'{save_name}.txt', matrix)
 
 def concatenate_h5ads(output_file, file_suffix='h5ad.gz', delete_inputs=True):
@@ -67,6 +57,13 @@ def concatenate_h5ads(output_file, file_suffix='h5ad.gz', delete_inputs=True):
     Concatenate all h5ad files in a directory and delete them after the final adata is written out.
     Input: an output file path relative to the directory in which the function is called
     """
+    import os
+    import anndata as ad
+    # Runtime warnings
+    import warnings
+    warnings.filterwarnings('ignore', category=UserWarning, module='anndata')
+    warnings.filterwarnings('ignore', category=FutureWarning, module='anndata')
+    
     # List all files in the directory
     files = os.listdir(os.getcwd())
     # get current working directory

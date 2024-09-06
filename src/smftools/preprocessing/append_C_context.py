@@ -1,22 +1,29 @@
 ## append_C_context
-import numpy as np
-import anndata as ad
-import pandas as pd
 
 ## Conversion SMF Specific 
 # Read methylation QC
 def append_C_context(adata, obs_column='Reference', use_consensus=False):
     """
+    Adds Cytosine context to the position within the given category. When use_consensus is True, it uses the consensus sequence, otherwise it defaults to the FASTA sequence.
+
+    Parameters:
+        adata (AnnData): The input adata object.
+        obs_column (str): The observation column in which to stratify on. Default is 'Reference', which should not be changed for most purposes.
+        use_consensus (bool): A truth statement indicating whether to use the consensus sequence from the reads mapped to the reference. If False, the reference FASTA is used instead.
     Input: An adata object, the obs_column of interst, and whether to use the consensus sequence from the category.
-    Output: Adds Cytosine context to the position within the given category. When use_consensus is True, it uses the consensus sequence, otherwise it defaults to the FASTA sequence.
+    
+    Returns:
+        None
     """
+    import numpy as np
+    import anndata as ad
     site_types = ['GpC_site', 'CpG_site', 'ambiguous_GpC_site', 'ambiguous_CpG_site', 'other_C']
     categories = adata.obs[obs_column].cat.categories
-    if use_consensus:
-        sequence = adata.uns[f'{cat}_consensus_sequence']
-    else:
-        sequence = adata.uns[f'{cat}_FASTA_sequence']
     for cat in categories:
+        if use_consensus:
+            sequence = adata.uns[f'{cat}_consensus_sequence']
+        else:
+            sequence = adata.uns[f'{cat}_FASTA_sequence']
         boolean_dict = {}
         for site_type in site_types:
             boolean_dict[f'{cat}_{site_type}'] = np.full(len(sequence), False, dtype=bool)

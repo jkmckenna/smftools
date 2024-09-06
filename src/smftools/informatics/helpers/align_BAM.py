@@ -1,5 +1,4 @@
 ## align_BAM
-import subprocess
 
 def align_BAM(fasta, bam, bam_suffix):
     """
@@ -14,6 +13,8 @@ def align_BAM(fasta, bam, bam_suffix):
         None
             The function writes out files for: 1) An aligned BAM, 2) and aligned_sorted BAM, 3) an index file for the aligned_sorted BAM, 4) A bed file for the aligned_sorted BAM, 5) A text file containing read names in the aligned_sorted BAM
     """
+    import subprocess
+    
     aligned_BAM=f"{bam}_aligned"
     aligned_sorted_BAM=f"{aligned_BAM}_sorted"
     output = bam + bam_suffix

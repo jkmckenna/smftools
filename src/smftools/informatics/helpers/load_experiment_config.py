@@ -1,5 +1,4 @@
 ## load_experiment_config
-import csv
 
 def load_experiment_config(experiment_config):
     """
@@ -10,6 +9,8 @@ def load_experiment_config(experiment_config):
     Returns:
         None
     """
+    import csv
+
     with open(experiment_config, mode='r', encoding='utf-8-sig') as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:

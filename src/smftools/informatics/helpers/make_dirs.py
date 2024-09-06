@@ -1,5 +1,4 @@
 ## make_dirs
-import os
 
 # General
 def make_dirs(directories):
@@ -12,6 +11,8 @@ def make_dirs(directories):
     Returns:
         None
     """
+    import os
+
     for directory in directories:
         if not os.path.isdir(directory):
             os.mkdir(directory)

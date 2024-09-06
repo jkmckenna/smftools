@@ -1,5 +1,4 @@
 ## modQC
-import subprocess
 
 # Direct SMF
 def modQC(aligned_sorted_output, thresholds):
@@ -14,6 +13,8 @@ def modQC(aligned_sorted_output, thresholds):
     Returns:
         None
     """
+    import subprocess
+
     filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold = thresholds
     subprocess.run(["modkit", "sample-probs", aligned_sorted_output])
     command = [

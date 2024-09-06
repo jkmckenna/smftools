@@ -1,6 +1,4 @@
 ## pod5_conversion
-from .helpers import align_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM
-import subprocess
 
 def pod5_conversion(fasta, output_directory, conversion_types, strands, model, pod5_dir, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix):
     """
@@ -22,6 +20,8 @@ def pod5_conversion(fasta, output_directory, conversion_types, strands, model, p
     Returns:
         None
     """
+    from .helpers import align_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM
+    import subprocess
     bam=f"{output_directory}/HAC_basecalls"
     aligned_BAM=f"{bam}_aligned"
     aligned_sorted_BAM=f"{aligned_BAM}_sorted"

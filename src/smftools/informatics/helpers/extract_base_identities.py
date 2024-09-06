@@ -1,7 +1,4 @@
 ## extract_base_identities
-from .. import readwrite
-# bioinformatic operations
-import pysam
 
 # General
 def extract_base_identities(bam_file, chromosome, positions, max_reference_length):
@@ -18,6 +15,8 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
         base_identities (dict): A dictionary, keyed by read name, that points to a list of base identities. If the read does not contain that position, fill the list at that index with a N value.
     
     """
+    from .. import readwrite
+    import pysam
     positions = set(positions)
     # Initialize a base identity dictionary that will hold key-value pairs that are: key (read-name) and value (list of base identities at positions of interest)
     base_identities = {}

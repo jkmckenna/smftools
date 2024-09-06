@@ -1,5 +1,4 @@
 ## binarize_converted_base_identities
-import numpy as np
 # Conversion SMF specific
 def binarize_converted_base_identities(base_identities, strand, modification_type):
     """
@@ -13,6 +12,7 @@ def binarize_converted_base_identities(base_identities, strand, modification_typ
     Returns:
         binarized_base_identities (dict): A binarized dictionary, where 1 represents a methylated site. 0 represents an unmethylated site. NaN represents a site that does not carry methylation information.
     """
+    import numpy as np
     binarized_base_identities = {}
     # Iterate over base identity keys to binarize the base identities
     for key in base_identities.keys():

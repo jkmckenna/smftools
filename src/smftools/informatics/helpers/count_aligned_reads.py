@@ -1,7 +1,4 @@
 ## count_aligned_reads
-from .. import readwrite
-# bioinformatic operations
-import pysam
 
 # General
 def count_aligned_reads(bam_file):
@@ -17,6 +14,8 @@ def count_aligned_reads(bam_file):
        record_counts (dict): A dictionary keyed by reference record instance that points toa tuple containing the total reads mapped to the record and the fraction of mapped reads which map to the record.
 
     """
+    from .. import readwrite
+    import pysam
     print('{0}: Counting aligned reads in BAM > {1}'.format(readwrite.time_string(), bam_file))
     aligned_reads_count = 0
     unaligned_reads_count = 0

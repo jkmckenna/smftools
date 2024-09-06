@@ -1,14 +1,4 @@
 ## converted_BAM_to_adata
-from .. import readwrite
-from .binarize_converted_base_identities import binarize_converted_base_identities
-from .find_conversion_sites import find_conversion_sites
-from .count_aligned_reads import count_aligned_reads
-from .extract_base_identities import extract_base_identities
-from .one_hot_encode import one_hot_encode
-import pandas as pd
-import numpy as np
-import anndata as ad
-import os
 
 def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix):
     """
@@ -26,6 +16,17 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
         None
         Outputs a single gzipped adata object for the experiment.
     """
+    from .. import readwrite
+    from .binarize_converted_base_identities import binarize_converted_base_identities
+    from .find_conversion_sites import find_conversion_sites
+    from .count_aligned_reads import count_aligned_reads
+    from .extract_base_identities import extract_base_identities
+    from .one_hot_encode import one_hot_encode
+    import pandas as pd
+    import numpy as np
+    import anndata as ad
+    import os
+
     # Get all of the input BAM files
     files = os.listdir(split_dir)
     # Change directory to the BAM directory

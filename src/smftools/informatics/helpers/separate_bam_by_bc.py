@@ -1,5 +1,4 @@
 ## separate_bam_by_bc
-import pysam
 
 # General
 def separate_bam_by_bc(input_bam, output_prefix):
@@ -14,6 +13,8 @@ def separate_bam_by_bc(input_bam, output_prefix):
         None
             Writes out split BAM files.
     """
+    import pysam
+
     # Open the input BAM file for reading
     with pysam.AlignmentFile(input_bam, "rb") as bam:
         # Create a dictionary to store output BAM files

@@ -1,9 +1,4 @@
 ## find_conversion_sites
-from .. import readwrite
-# bioinformatic operations
-from Bio import SeqIO
-from Bio.SeqRecord import SeqRecord
-from Bio.Seq import Seq
 
 def find_conversion_sites(fasta_file, modification_type):
     """
@@ -17,6 +12,11 @@ def find_conversion_sites(fasta_file, modification_type):
     Returns: 
         record_dict (dict): A dictionary keyed by unconverted record ids contained within the FASTA. Points to a list containing: 1) sequence length of the record, 2) top strand coordinate list, 3) bottom strand coorinate list, 4) sequence string
     """
+    from .. import readwrite
+    from Bio import SeqIO
+    from Bio.SeqRecord import SeqRecord
+    from Bio.Seq import Seq
+    
     print('{0}: Finding positions of interest in reference FASTA > {1}'.format(readwrite.time_string(), fasta_file))
     # Initialize lists to hold top and bottom strand positional coordinates of interest
     top_strand_coordinates = []
