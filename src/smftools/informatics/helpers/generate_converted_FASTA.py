@@ -1,9 +1,4 @@
 ## generate_converted_FASTA
-from .. import readwrite
-# bioinformatic operations
-from Bio import SeqIO
-from Bio.SeqRecord import SeqRecord
-from Bio.Seq import Seq
 
 def convert_FASTA_record(record, modification_type, strand):
     """
@@ -14,7 +9,8 @@ def convert_FASTA_record(record, modification_type, strand):
         modification_type (str): The modification type to convert for (options are '5mC' and '6mA').
         strand (str): The strand that is being converted in the experiment (options are 'top' and 'bottom').
     Returns:
-        new_record (SeqRecord): A SeqRecord object containing the converted sequence and new record ID
+        new_seq (str): Converted sequence string.
+        new_id (str): Record id for the converted sequence string.
     """
     if modification_type == '5mC':
         if strand == 'top':
@@ -39,9 +35,7 @@ def convert_FASTA_record(record, modification_type, strand):
     else:
         print('need to provide a valid modification_type string: 5mC, 6mA, or unconverted')   
     new_id = '{0}_{1}_{2}'.format(record.id, modification_type, strand)      
-    new_record = SeqRecord(Seq(new_seq), id=new_id)
-    # Return a new SeqRecord with modified sequence and ID
-    return new_record
+    return new_seq, new_id
 
 def generate_converted_FASTA(input_fasta, modification_types, strands, output_fasta):
     """
@@ -56,6 +50,10 @@ def generate_converted_FASTA(input_fasta, modification_types, strands, output_fa
         None
         Writes out a converted FASTA reference for the experiment.
     """
+    from .. import readwrite
+    from Bio import SeqIO
+    from Bio.SeqRecord import SeqRecord
+    from Bio.Seq import Seq
     modified_records = []
     # Iterate over each record in the input FASTA
     for record in SeqIO.parse(input_fasta, 'fasta'):
@@ -68,7 +66,9 @@ def generate_converted_FASTA(input_fasta, modification_types, strands, output_fa
                 else:
                     # Add the modified record to the list of modified records
                     print(f'converting {modification_type} on the {strand} strand of record {record}')
-                    modified_records.append(convert_FASTA_record(record, modification_type, strand))
+                    new_seq, new_id = convert_FASTA_record(record, modification_type, strand)
+                    new_record = SeqRecord(Seq(new_seq), id=new_id)
+                    modified_records.append(new_record)
     with open(output_fasta, 'w') as output_handle:
         # write out the concatenated FASTA file of modified sequences
         SeqIO.write(modified_records, output_handle, 'fasta')

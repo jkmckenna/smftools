@@ -1,9 +1,4 @@
 ## get_native_references
-from .. import readwrite
-# bioinformatic operations
-from Bio import SeqIO
-from Bio.SeqRecord import SeqRecord
-from Bio.Seq import Seq
 
 # Direct methylation specific
 def get_native_references(fasta_file):
@@ -16,6 +11,10 @@ def get_native_references(fasta_file):
     Returns: 
         None
     """
+    from .. import readwrite
+    from Bio import SeqIO
+    from Bio.SeqRecord import SeqRecord
+    from Bio.Seq import Seq
     record_dict = {}
     print('{0}: Opening FASTA file {1}'.format(readwrite.time_string(), fasta_file))
     # Open the FASTA record as read only

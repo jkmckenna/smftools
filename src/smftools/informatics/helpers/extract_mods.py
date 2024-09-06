@@ -1,8 +1,4 @@
 ## extract_mods
-import os
-import subprocess
-import glob
-import zipfile
 
 def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix):
     """
@@ -19,6 +15,11 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix):
         Runs modkit extract on input aligned_sorted_split modified BAM files to output zipped TSVs containing modification calls.
 
     """
+    import os
+    import subprocess
+    import glob
+    import zipfile
+    
     os.chdir(mod_tsv_dir)
     filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold = thresholds
     bam_files = glob.glob(os.path.join(split_dir, f"*{bam_suffix}"))

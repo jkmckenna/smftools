@@ -1,5 +1,4 @@
 ## modcall
-import subprocess
 
 # Direct methylation specific
 def modcall(model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix):
@@ -18,6 +17,7 @@ def modcall(model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix):
         None
             Outputs a BAM file holding the modified base calls output by the dorado basecaller.
     """
+    import subprocess
     output = bam + bam_suffix
     command = [
     "dorado", "basecaller", model, pod5_dir, "--kit-name", barcode_kit, "-Y",

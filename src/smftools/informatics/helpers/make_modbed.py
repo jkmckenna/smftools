@@ -1,6 +1,4 @@
 ## make_modbed
-import os
-import subprocess
 
 # Direct SMF
 def make_modbed(aligned_sorted_output, thresholds, mod_bed_dir):
@@ -12,6 +10,9 @@ def make_modbed(aligned_sorted_output, thresholds, mod_bed_dir):
     Returns:
         None
     """
+    import os
+    import subprocess
+    
     os.chdir(mod_bed_dir)
     filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold = thresholds
     command = [

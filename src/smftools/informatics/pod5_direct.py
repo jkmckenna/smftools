@@ -1,5 +1,4 @@
 ## pod5_direct
-from .helpers import align_BAM, extract_mods, make_modbed, modcall, modkit_extract_to_adata, modQC, split_and_index_BAM
 
 def pod5_direct(fasta, output_directory, mod_list, model, thresholds, pod5_dir, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size):
     """
@@ -22,6 +21,7 @@ def pod5_direct(fasta, output_directory, mod_list, model, thresholds, pod5_dir, 
     Returns:
         None   
     """
+    from .helpers import align_BAM, extract_mods, make_modbed, modcall, modkit_extract_to_adata, modQC, split_and_index_BAM
     bam=f"{output_directory}/HAC_mod_calls"
     aligned_BAM=f"{bam}_aligned"
     aligned_sorted_BAM=f"{aligned_BAM}_sorted"

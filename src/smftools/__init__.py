@@ -3,7 +3,6 @@
 import logging
 import warnings
 
-from anndata import AnnData
 from . import informatics as inform
 from . import preprocessing as pp
 from . import tools as tl

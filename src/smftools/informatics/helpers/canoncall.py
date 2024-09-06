@@ -1,5 +1,4 @@
 ## canoncall
-import subprocess
 
 # Conversion SMF specific
 def canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix):
@@ -17,6 +16,7 @@ def canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix):
         None
             Outputs a BAM file holding the canonical base calls output by the dorado basecaller.
     """
+    import subprocess
     output = bam + bam_suffix
     command = ["dorado", "basecaller", model, pod5_dir, "--kit-name", barcode_kit, "-Y"]
     with open(output, "w") as outfile:

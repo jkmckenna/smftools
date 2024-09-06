@@ -1,9 +1,4 @@
 ## split_and_index_BAM
-from .. import readwrite
-import os
-import subprocess
-import glob
-from .separate_bam_by_bc import separate_bam_by_bc
 
 def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     """
@@ -17,6 +12,12 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
         None
             Splits an input BAM file on barcode value and makes a BAM index file.
     """
+    from .. import readwrite
+    import os
+    import subprocess
+    import glob
+    from .separate_bam_by_bc import separate_bam_by_bc
+
     os.chdir(split_dir)
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     file_prefix = readwrite.datestring()

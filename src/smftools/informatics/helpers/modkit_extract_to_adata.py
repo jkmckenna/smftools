@@ -1,20 +1,31 @@
 ## modkit_extract_to_adata
-from .. import readwrite
-from .get_native_references import get_native_references
-from .count_aligned_reads import count_aligned_reads
-from .extract_base_identities import extract_base_identities
-from .one_hot_encode import one_hot_encode
-import pandas as pd
-import anndata as ad
-import os
-import gc
-import math
-import numpy as np
 
 def modkit_extract_to_adata(fasta, bam, mapping_threshold, experiment_name, mods, batch_size):
     """
-    
+    Takes modkit extract outputs and organizes it into an adata object
+
+    Parameters:
+        fasta (str): File path to the reference genome to align to.
+        bam (str): File path to the aligned_sorted non-split modified BAM file
+        mapping_threshold (float): A value in between 0 and 1 to threshold the minimal fraction of aligned reads which map to the reference region. References with values above the threshold are included in the output adata.
+        experiment_name (str): A string to provide an experiment name to the output adata file.
+        mods (list): A list of strings of the modification types to use in the analysis.
+        batch_size (int): An integer number of TSV files to analyze in memory at once while loading the final adata object.
+
+    Returns:
+        None
     """
+    from .. import readwrite
+    from .get_native_references import get_native_references
+    from .count_aligned_reads import count_aligned_reads
+    from .extract_base_identities import extract_base_identities
+    from .one_hot_encode import one_hot_encode
+    import pandas as pd
+    import anndata as ad
+    import os
+    import gc
+    import math
+    import numpy as np
     ###################################################
     ### Get input tsv file names into a sorted list ###
     # List all files in the directory
