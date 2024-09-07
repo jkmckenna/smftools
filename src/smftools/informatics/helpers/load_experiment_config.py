@@ -1,6 +1,6 @@
 ## load_experiment_config
 
-def load_experiment_config(experiment_config):
+class load_experiment_config:
     """
     Loads in the experiment configuration csv and saves global variables with experiment configuration parameters.
     Parameters:
@@ -9,15 +9,16 @@ def load_experiment_config(experiment_config):
     Returns:
         None
     """
-    import csv
-
-    with open(experiment_config, mode='r', encoding='utf-8-sig') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            # Extract variable name and value from each row
-            var_name = row['variable']
-            value = row['value']
-
-            # Alternatively, set it directly in the globals() dictionary
-            globals()[var_name] = value
+    def __init__(self, experiment_config):
+        import csv
+        with open(experiment_config, mode='r', encoding='utf-8-sig') as csvfile:
+            reader = csv.DictReader(csvfile)
+            var_dict = {}
+            for row in reader:
+                # Extract variable name and value from each row
+                var_name = row['variable']
+                value = row['value']
+                dtype = row['type']
+                var_dict[var_name] = value
+        self.var_dict = var_dict
 
