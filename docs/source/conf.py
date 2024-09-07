@@ -8,7 +8,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 PARENT_PARENT_HERE = HERE.parents[1]
 SRC_PATH = PARENT_PARENT_HERE / 'src'
-sys.path.insert(0, str(PARENT_PARENT_HERE))
+sys.path.insert(0, str(SRC_PATH))
 print(sys.path)
 try:
     import smftools
@@ -27,6 +27,8 @@ repository_url = 'https://github.com/jkmckenna/smftools'
 # Bibliography settings
 bibtex_bibfiles = ["references.bib"]
 bibtex_reference_style = "author_year"
+nitpicky = True
+needs_sphinx = "4.0"
 
 master_doc = "index"
 templates_path = ['_templates']
