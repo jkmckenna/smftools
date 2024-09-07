@@ -9,11 +9,3 @@
 ```
 
 Processes raw sequencing data to load an adata object.
-
-```{eval-rst}
-.. autosummary::
-   :nosignatures:
-   :toctree: ../generated/
-
-   inform.pod5_to_adata
-```
