@@ -9,6 +9,8 @@ HERE = Path(__file__).parent
 PARENT_PARENT_HERE = HERE.parents[1]
 SRC_PATH = PARENT_PARENT_HERE / 'src'
 sys.path.insert(0, str(SRC_PATH))
+for x in os.walk(str(SRC_PATH)):
+  sys.path.insert(0, x[0])
 print(sys.path)
 try:
     import smftools
