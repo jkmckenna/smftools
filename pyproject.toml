@@ -52,6 +52,7 @@ dependencies = [
     "scikit-learn>=1.0.2",
     "scipy>=1.7.3",
     "seaborn>=0.11",
+    "torch>=1.9.0",
     "tqdm"
 ]
 dynamic = ["version"]
@@ -60,16 +61,9 @@ dynamic = ["version"]
 Source = "https://github.com/jkmckenna/smftools"
 
 [project.optional-dependencies]
-torch = ["torch>=1.9.0", "pomeganate>=1.0.0"]
 base_tests = [
     "pytest",
     "pytest-cov"
-]
-
-torch_tests = [
-    "smftools[base_tests]",
-    # Optional dependencies
-    "smftools[torch]"
 ]
 
 docs = [
@@ -109,24 +103,3 @@ markers = [
 branch = true
 source = ["smftools"]
 omit = ["tests/*"]
-
-[tool.ruff]
-src = ["src"]
-line-length = 99
-indent-width = 4
-
-[tool.ruff.lint]
-select = [
-    "E",       # Error detected by Pycodestyle
-    "F",       # Errors detected by Pyflakes
-    "W",       # Warning detected by Pycodestyle
-    "UP",      # pyupgrade
-    "I",       # isort
-    "TCH",     # manage type checking blocks
-    "TID251",  # Banned imports
-    "ICN",     # Follow import conventions
-    "PTH",     # Pathlib instead of os.path
-    "PLR0917", # Ban APIs with too many positional parameters
-    "FBT",     # No positional boolean parameters
-    "PT"      # Pytest style
-]
