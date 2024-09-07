@@ -12,6 +12,7 @@ sys.path.insert(0, str(SRC_PATH))
 print(sys.path)
 try:
     import smftools
+    print("smftools imported successfully.")
 except ImportError:
     print("smftools is not imported.")
 # -- Project information -----------------------------------------------------
