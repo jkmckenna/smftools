@@ -43,7 +43,8 @@ def pod5_direct(fasta, output_directory, mod_list, model, thresholds, pod5_dir, 
     # 1) Basecall using dorado
     modcall(model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix)
     # 2) Align the BAM to the reference FASTA. Also make an index and a bed file of mapped reads
-    align_and_sort_BAM(fasta, bam, bam_suffix, output_directory)
+    input_BAM = bam + bam_suffix
+    align_and_sort_BAM(fasta, input_BAM, bam_suffix, output_directory)
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
     # 4) Using nanopore modkit to work with modified BAM files ###
