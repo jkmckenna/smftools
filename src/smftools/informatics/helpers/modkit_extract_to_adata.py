@@ -67,7 +67,8 @@ def modkit_extract_to_adata(fasta, bam, mapping_threshold, experiment_name, mods
         delta_max_length = max_reference_length - current_reference_length
         sequence = reference_dict[record][1] + 'N'*delta_max_length
         # Get a dictionary of positional base identities keyed by read id
-        base_identities = extract_base_identities(bam, record, current_reference_length, max_reference_length)
+        positions = range(current_reference_length)
+        base_identities = extract_base_identities(bam, record, positions, max_reference_length)
         # One hot encode the sequence string of the reads
         one_hot_reads = {read_name: one_hot_encode(seq) for read_name, seq in base_identities.items()}
         record_seq_dict[record] = (one_hot_reads, sequence)

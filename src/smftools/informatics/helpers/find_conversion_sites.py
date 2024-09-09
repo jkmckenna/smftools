@@ -1,6 +1,6 @@
 ## find_conversion_sites
 
-def find_conversion_sites(fasta_file, modification_type):
+def find_conversion_sites(fasta_file, modification_type, conversion_types):
     """
     A function to find genomic coordinates in every unconverted record contained within a FASTA file of every cytosine.
     If searching for adenine conversions, it will find coordinates of all adenines.
@@ -8,6 +8,7 @@ def find_conversion_sites(fasta_file, modification_type):
     Parameters:
         fasta_file (str): A string representing the file path to the unconverted reference FASTA.
         modification_type (str): A string representing the modification type of interest (options are '5mC' and '6mA').
+        conversion_types (list): A list of strings of the conversion types to use in the analysis. Used here to pass the unconverted record name.
 
     Returns: 
         record_dict (dict): A dictionary keyed by unconverted record ids contained within the FASTA. Points to a list containing: 1) sequence length of the record, 2) top strand coordinate list, 3) bottom strand coorinate list, 4) sequence string
@@ -21,6 +22,7 @@ def find_conversion_sites(fasta_file, modification_type):
     # Initialize lists to hold top and bottom strand positional coordinates of interest
     top_strand_coordinates = []
     bottom_strand_coordinates = []
+    unconverted = conversion_types[0]
     record_dict = {}
     print('{0}: Opening FASTA file {1}'.format(readwrite.time_string(), fasta_file))
     # Open the FASTA record as read only
@@ -28,7 +30,7 @@ def find_conversion_sites(fasta_file, modification_type):
         # Iterate over records in the FASTA
         for record in SeqIO.parse(f, "fasta"):
             # Only iterate over the unconverted records for the reference
-            if 'unconverted' in record.id:
+            if unconverted in record.id:
                 print('{0}: Iterating over record {1} in FASTA file {2}'.format(readwrite.time_string(), record, fasta_file))
                 # Extract the sequence string of the record
                 sequence = str(record.seq).upper()

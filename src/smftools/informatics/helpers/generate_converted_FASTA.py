@@ -20,7 +20,8 @@ def convert_FASTA_record(record, modification_type, strand, unconverted):
             # Replace every 'G' with 'A' in the sequence
             new_seq = record.seq.upper().replace('G', 'A')
         else:
-            print('need to provide a valid strand string: top or bottom')        
+            print('need to provide a valid strand string: top or bottom')
+        new_id = '{0}_{1}_{2}'.format(record.id, modification_type, strand)        
     elif modification_type == '6mA':
         if strand == 'top':
             # Replace every 'A' with 'G' in the sequence
@@ -30,11 +31,13 @@ def convert_FASTA_record(record, modification_type, strand, unconverted):
             new_seq = record.seq.upper().replace('T', 'C')
         else:
             print('need to provide a valid strand string: top or bottom')
+        new_id = '{0}_{1}_{2}'.format(record.id, modification_type, strand)
     elif modification_type == unconverted:
         new_seq = record.seq.upper()
+        new_id = '{0}_{1}_top'.format(record.id, modification_type)
     else:
         print(f'need to provide a valid modification_type string: 5mC, 6mA, or {unconverted}')   
-    new_id = '{0}_{1}_{2}'.format(record.id, modification_type, strand)      
+          
     return new_seq, new_id
 
 def generate_converted_FASTA(input_fasta, modification_types, strands, output_fasta):
@@ -63,7 +66,7 @@ def generate_converted_FASTA(input_fasta, modification_types, strands, output_fa
         for modification_type in modification_types:
             # Iterate over the strands of interest
             for i, strand in enumerate(strands):
-                if i > 0 and modification_type == unconverted: # This ensures that the unconverted only is added once and takes on the strand that is provided at the 0 index on strands.
+                if i > 0 and modification_type == unconverted: # This ensures that the unconverted is only added once.
                     pass
                 else:
                     # Add the modified record to the list of modified records

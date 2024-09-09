@@ -43,7 +43,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     # While populating the dictionary, also extract the longest sequence record in the input references
     max_reference_length = 0
     for conversion_type in conversion_types:
-        modification_dict[conversion_type] = find_conversion_sites(converted_FASTA, conversion_type)
+        modification_dict[conversion_type] = find_conversion_sites(converted_FASTA, conversion_type, conversion_types)
         for record in modification_dict[conversion_type].keys():
             if modification_dict[conversion_type][record][0] > max_reference_length:
                 max_reference_length = modification_dict[conversion_type][record][0]
@@ -75,7 +75,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                 strand_index = 2
 
             chromosome = record.split('_{0}_{1}'.format(mod_type, strand))[0]
-            unconverted_chromosome_name = chromosome + '_unconverted_top'
+            unconverted_chromosome_name = f'{chromosome}_{conversion_types[0]}_top'
             positions = modification_dict[mod_type][unconverted_chromosome_name][strand_index]
             current_reference_length = modification_dict[mod_type][unconverted_chromosome_name][0]
             delta_max_length = max_reference_length - current_reference_length

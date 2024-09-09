@@ -34,6 +34,7 @@ def pod5_to_adata(config_path):
         pod5_conversion(fasta, output_directory, conversions, strands, model, pod5_dir, split_path, barcode_kit, mapping_threshold, experiment_name, bam_suffix)
     elif smf_modality == 'direct':
         from .pod5_direct import pod5_direct
+        thresholds = [filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold]
         pod5_direct(fasta, output_directory, mod_list, model, thresholds, pod5_dir, split_path, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size)
     else:
         print("Error")

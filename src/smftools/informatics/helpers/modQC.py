@@ -19,7 +19,7 @@ def modQC(aligned_sorted_output, thresholds):
     subprocess.run(["modkit", "sample-probs", aligned_sorted_output])
     command = [
         "modkit", "summary", aligned_sorted_output,
-        "--filter-threshold", filter_threshold,
+        "--filter-threshold", f"{filter_threshold}",
         "--mod-thresholds", f"m:{m5C_threshold}",
         "--mod-thresholds", f"a:{m6A_threshold}",
         "--mod-thresholds", f"h:{hm5C_threshold}"

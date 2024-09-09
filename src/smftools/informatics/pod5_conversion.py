@@ -43,7 +43,8 @@ def pod5_conversion(fasta, output_directory, conversion_types, strands, model, p
     canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix)
 
     # 3) Align the BAM to the converted reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
-    align_and_sort_BAM(converted_FASTA, bam, bam_suffix, output_directory)
+    input_BAM = bam + bam_suffix
+    align_and_sort_BAM(converted_FASTA, input_BAM, bam_suffix, output_directory)
 
     ### 4) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory###
     split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)

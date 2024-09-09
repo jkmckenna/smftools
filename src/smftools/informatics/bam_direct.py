@@ -38,8 +38,7 @@ def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_di
     os.chdir(output_directory)
 
     # 1) Align the BAM to the reference FASTA. Also make an index and a bed file of mapped reads
-    input_bam = bam_path.split(bam_suffix)[0]
-    align_and_sort_BAM(fasta, input_bam, bam_suffix, output_directory)
+    align_and_sort_BAM(fasta, bam_path, bam_suffix, output_directory)
     # 2) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
     # 3) Using nanopore modkit to work with modified BAM files ###

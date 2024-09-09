@@ -6,7 +6,7 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
     
     Parameters:
         fasta (str): File path to the reference genome to align to.
-        input (str): File path to the basecalled file to align.
+        input (str): File path to the basecalled file to align. Works for .bam and .fastq files
         bam_suffix (str): The suffix to use for the BAM file.
         output_directory (str): A file path to the directory to output all the analyses.
 

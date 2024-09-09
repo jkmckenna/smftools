@@ -35,7 +35,7 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix):
         # Run modkit extract
         subprocess.run([
             "modkit", "extract",
-            "--filter-threshold", filter_threshold,
+            "--filter-threshold", f'{filter_threshold}',
             "--mod-thresholds", f"m:{m5C_threshold}",
             "--mod-thresholds", f"a:{m6A_threshold}",
             "--mod-thresholds", f"h:{hm5C_threshold}",
