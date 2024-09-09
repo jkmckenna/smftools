@@ -14,6 +14,12 @@ The following CLI tools need to be installed and configured before using the inf
 3) [Minimap2](https://github.com/lh3/minimap2) -> The aligner used by Dorado
 4) [Modkit](https://github.com/nanoporetech/modkit) -> Extracting summary statistics and read level methylation calls from modified BAM files
 
+## Modules
+- Informatics: Processes raw SMF data coming from Nanopore POD5 files, BAM files, or FASTQ files and organizes it into an AnnData object.
+- Preprocessing: Filters the AnnData object on read length, total methylation, and a variety of QC metrics.
+- Tools: Appends various analyses to the AnnData object.
+- Plotting: Visualization of analyses stored within the AnnData object.
+
 ## Announcements
 ### 08/30/24 - The pre-alpha phase package ([smftools-0.1.0](https://pypi.org/project/smftools/)) is installable through pypi!
 Currently, this package (smftools-0.1.0) is going through rapid improvement (dependency handling accross Linux and Mac OS, testing, documentation, debugging) and is still too early in development for standard use. The underlying functionality was originally developed as a collection of scripts for single molecule footprinting (SMF) experiments in our lab, but is being packaged/developed to facilitate the expansion of SMF to any lab that is interested in performing these styles of experiments/analyses. The alpha-phase package is expected to be available within a couple months, so stay tuned!

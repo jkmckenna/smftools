@@ -1,10 +1,6 @@
 # Installation
 
-## Anaconda
-
-```shell
-conda install -c conda-forge smftools
-```
+## PyPi version
 
 Pull smftools from [PyPI](https://pypi.org/project/smftools):
 
