@@ -20,13 +20,20 @@ def pod5_conversion(fasta, output_directory, conversion_types, strands, model, p
     Returns:
         None
     """
-    from .helpers import align_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM
+    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM
     import os
-    bam=f"{output_directory}/HAC_basecalls"
+    model_basename = os.path.basename(model)
+    model_basename = model_basename.replace('.', '_')
+    bam=f"{output_directory}/{model_basename}_canonical_basecalls"
     aligned_BAM=f"{bam}_aligned"
     aligned_sorted_BAM=f"{aligned_BAM}_sorted"
+
+    os.chdir(output_directory)
+    
     # 1) Convert FASTA file
-    converted_FASTA=fasta.split('.fa')[0]+'_converted.fasta'
+    fasta_basename = os.path.basename(fasta)
+    converted_FASTA_basename = fasta_basename.split('.fa')[0]+'_converted.fasta'
+    converted_FASTA = os.path.join(output_directory, converted_FASTA_basename)
     if os.path.exists(converted_FASTA):
         print(converted_FASTA + ' already exists. Using existing converted FASTA.')
     else:
@@ -36,7 +43,7 @@ def pod5_conversion(fasta, output_directory, conversion_types, strands, model, p
     canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix)
 
     # 3) Align the BAM to the converted reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
-    align_BAM(converted_FASTA, bam, bam_suffix)
+    align_and_sort_BAM(converted_FASTA, bam, bam_suffix, output_directory)
 
     ### 4) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory###
     split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)

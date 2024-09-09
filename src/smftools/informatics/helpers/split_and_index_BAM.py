@@ -20,7 +20,7 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
 
     os.chdir(split_dir)
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
-    file_prefix = readwrite.datestring()
+    file_prefix = readwrite.date_string()
     separate_bam_by_bc(aligned_sorted_output, file_prefix)
     # Make a BAM index file for the BAMs in that directory
     bam_pattern = '*' + bam_suffix

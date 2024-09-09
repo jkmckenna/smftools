@@ -21,8 +21,12 @@ def pod5_direct(fasta, output_directory, mod_list, model, thresholds, pod5_dir, 
     Returns:
         None   
     """
-    from .helpers import align_BAM, extract_mods, make_modbed, modcall, modkit_extract_to_adata, modQC, split_and_index_BAM, make_dirs
-    bam=f"{output_directory}/HAC_mod_calls"
+    from .helpers import align_and_sort_BAM, extract_mods, make_modbed, modcall, modkit_extract_to_adata, modQC, split_and_index_BAM, make_dirs
+    import os
+    model_basename = os.path.basename(model)
+    model_basename = model_basename.replace('.', '_')
+    mod_string = "_".join(mod_list)
+    bam=f"{output_directory}/{model_basename}_{mod_string}_calls"
     aligned_BAM=f"{bam}_aligned"
     aligned_sorted_BAM=f"{aligned_BAM}_sorted"
     mod_bed_dir=f"{output_directory}/split_mod_beds"
@@ -34,10 +38,12 @@ def pod5_direct(fasta, output_directory, mod_list, model, thresholds, pod5_dir, 
     mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
     mods = [mod_map[mod] for mod in mod_list]
 
+    os.chdir(output_directory)
+
     # 1) Basecall using dorado
     modcall(model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix)
     # 2) Align the BAM to the reference FASTA. Also make an index and a bed file of mapped reads
-    align_BAM(fasta, bam, bam_suffix)
+    align_and_sort_BAM(fasta, bam, bam_suffix, output_directory)
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
     # 4) Using nanopore modkit to work with modified BAM files ###

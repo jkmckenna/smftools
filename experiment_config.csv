@@ -1,21 +1,17 @@
 ﻿variable,value,help,options,type
-base_dir,,Path to directory to act as root directory for analysis,,str 
-smf_modality,,Modality of SMF. Can either be conversion or direct.,"conversion, direct",str 
-pod5_dir,,Path to directory containing input POD5 files (If doing Nanopore SMF),,str 
-bam_path,,Path to directory containing input BAM file (if doing SMF from an already basecalled experiment),,str 
-fasta,,Path to initial FASTA file,,str 
-bam_suffix,,The file suffix used for BAM files.,,str 
-output_directory,,Directory within BASE_dir to create for analysis outputs,,str 
+smf_modality,conversion,Modality of SMF. Can either be conversion or direct.,"conversion, direct",str 
+pod5_dir,/path_to_POD5_directory,Path to directory containing input POD5 files (If doing Nanopore SMF),,str 
+basecalled_path,/path_to_basecalled_HTS_file.bam,Path to directory containing input BAM file (if doing SMF from an already basecalled experiment). Can also be a path to a FASTQ for conversion SMF.,,str 
+fasta,/path_to_fasta.fasta,Path to initial FASTA file,,str 
+output_directory,/outputs,Directory to act as root for all analysis outputs,,str 
 experiment_name,,An experiment name for the final h5ad file,,str 
-model,,The dorado basecalling model to use,,str 
-barcode_kit,,The barcoding kit used for the experiment,,str 
-mapping_threshold,,Minimum proportion of reads mapping to a reference to further use that reference (Ranges from 0-1 as a proportion of mapped reads),,float
-filter_threshold,,Minimum probability to call a canonical base identity,,float
-m6A_threshold,,Minimum probability to flag m6A as True,,float
-m5C_threshold,,Minimum probability to flag m5C as True,,float
-hm5C_threshold,,Minimum probability to flag hm5C as True,,float
-mod_list,,Modified base names for Dorado,"""6mA"", ""5mC_5hmC""",list
-batch_size,,number of samples to analyze at a time,,int
-conversion_types,,Types of modification types to use in conversion SMF,"unconverted', '5mC', '6mA'",list
-strands,,Converted strands to analyze for conversion SMF,"top','bottom'",list
-split_dir,,Path to split BAMS into relative to output_directory,,str 
+model,None,The dorado basecalling model to use,,str 
+barcode_kit,SQK-NBD114-24,The barcoding kit used for the experiment,,str 
+mapping_threshold,0.05,Minimum proportion of reads mapping to a reference to further use that reference (Ranges from 0-1 as a proportion of mapped reads),,float
+filter_threshold,0.8,Minimum probability to call a canonical base identity,,float
+m6A_threshold,0.8,Minimum probability to flag m6A as True,,float
+m5C_threshold,0.8,Minimum probability to flag m5C as True,,float
+hm5C_threshold,0.8,Minimum probability to flag hm5C as True,,float
+mod_list,[5mC_5hmC],Modified base names for Dorado,"""6mA"", ""5mC_5hmC""",list
+batch_size,4,number of samples to analyze at a time,,int
+conversion_types,[5mC],Types of modification types to use in conversion SMF,"5mC', '6mA'",list

@@ -48,6 +48,9 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
             if modification_dict[conversion_type][record][0] > max_reference_length:
                 max_reference_length = modification_dict[conversion_type][record][0]
 
+    # Init a dict to be keyed by FASTA record that points to the sequence string of the unconverted record
+    record_FASTA_dict = {}
+
     # Iterate over the experiment BAM files
     for bam_index, bam in enumerate(bams):
         # Give each bam a sample name
@@ -64,7 +67,6 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                 records_to_analyze.append(record)
         print(f'Records to analyze: {records_to_analyze}')
         # Iterate over records to analyze (ie all conversions detected)
-        record_FASTA_dict = {}
         for record in records_to_analyze:
             mod_type, strand = record.split('_')[-2:]
             if strand == 'top':
@@ -143,6 +145,8 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
         sequence = record_FASTA_dict[record]
         final_adata.uns[f'{record}_FASTA_sequence'] = sequence
         final_adata.var[f'{record}_FASTA_sequence'] = list(sequence)
+
+        # May need to remove the bottom for conversion SMF
         record_subset = final_adata[final_adata.obs['Reference'] == record].copy()
         layer_map, layer_counts = {}, []
         for i, layer in enumerate(record_subset.layers):
