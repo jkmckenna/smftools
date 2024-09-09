@@ -42,6 +42,7 @@ smftools GitHub link
 :maxdepth: 1
 
 installation
+basic_usage
 tutorials/index
 api/index
 release-notes/index
