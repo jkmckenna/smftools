@@ -9,7 +9,7 @@ def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_di
         output_directory (str): A file path to the directory to output all the analyses.
         mod_list (list): A list of strings of the modification types to use in the analysis.
         thresholds (list): A list of floats to pass for call thresholds.
-        pod5_dir (str): a string representing the file path to the experiment directory containing the POD5 files.
+        bam_path (str): a string representing the file path to the the BAM file.
         split_dir (str): A string representing the file path to the directory to split the BAMs into.
         mapping_threshold (float): A value in between 0 and 1 to threshold the minimal fraction of aligned reads which map to the reference region. References with values above the threshold are included in the output adata.
         experiment_name (str): A string to provide an experiment name to the output adata file.
@@ -19,7 +19,7 @@ def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_di
     Returns:
         None   
     """
-    from .helpers import align_BAM, extract_mods, make_modbed, modkit_extract_to_adata, modQC, split_and_index_BAM, make_dirs
+    from .helpers import align_and_sort_BAM, extract_mods, make_modbed, modkit_extract_to_adata, modQC, split_and_index_BAM, make_dirs
     import os
     input_bam_base = os.path.basename(bam_path)
     bam_basename = input_bam_base.split(bam_suffix)[0]
@@ -35,9 +35,11 @@ def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_di
     mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
     mods = [mod_map[mod] for mod in mod_list]
 
+    os.chdir(output_directory)
+
     # 1) Align the BAM to the reference FASTA. Also make an index and a bed file of mapped reads
     input_bam = bam_path.split(bam_suffix)[0]
-    align_BAM(fasta, input_bam, bam_suffix)
+    align_and_sort_BAM(fasta, input_bam, bam_suffix, output_directory)
     # 2) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
     # 3) Using nanopore modkit to work with modified BAM files ###

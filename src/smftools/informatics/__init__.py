@@ -1,8 +1,10 @@
 from .pod5_to_adata import pod5_to_adata
-from .bam_to_adata import bam_to_adata
+from .basecalls_to_adata import basecalls_to_adata
+from .subsample_pod5 import subsample_pod5
 
 
 __all__ = [
     "pod5_to_adata",
-    "bam_to_adata"
+    "basecalls_to_adata",
+    "subsample_pod5"
 ]

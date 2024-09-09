@@ -1,4 +1,4 @@
-from .align_BAM import align_BAM
+from .align_and_sort_BAM import align_and_sort_BAM
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .canoncall import canoncall
 from .converted_BAM_to_adata import converted_BAM_to_adata
@@ -8,7 +8,7 @@ from .extract_mods import extract_mods
 from .find_conversion_sites import find_conversion_sites
 from .generate_converted_FASTA import convert_FASTA_record, generate_converted_FASTA
 from .get_native_references import get_native_references
-from .load_experiment_config import load_experiment_config
+from .LoadExperimentConfig import LoadExperimentConfig
 from .make_dirs import make_dirs
 from .make_modbed import make_modbed
 from .modcall import modcall
@@ -19,7 +19,7 @@ from .separate_bam_by_bc import separate_bam_by_bc
 from .split_and_index_BAM import split_and_index_BAM
 
 __all__ = [
-    "align_BAM",
+    "align_and_sort_BAM",
     "binarize_converted_base_identities",
     "canoncall",
     "converted_BAM_to_adata",
@@ -30,7 +30,7 @@ __all__ = [
     "convert_FASTA_record",
     "generate_converted_FASTA",
     "get_native_references",
-    "load_experiment_config",
+    "LoadExperimentConfig",
     "make_dirs",
     "make_modbed",
     "modcall",

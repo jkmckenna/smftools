@@ -1,6 +1,6 @@
 ## generate_converted_FASTA
 
-def convert_FASTA_record(record, modification_type, strand):
+def convert_FASTA_record(record, modification_type, strand, unconverted):
     """
     Takes a FASTA record and converts every instance of a base to the converted state.
 
@@ -30,10 +30,10 @@ def convert_FASTA_record(record, modification_type, strand):
             new_seq = record.seq.upper().replace('T', 'C')
         else:
             print('need to provide a valid strand string: top or bottom')
-    elif modification_type == 'unconverted':
+    elif modification_type == unconverted:
         new_seq = record.seq.upper()
     else:
-        print('need to provide a valid modification_type string: 5mC, 6mA, or unconverted')   
+        print(f'need to provide a valid modification_type string: 5mC, 6mA, or {unconverted}')   
     new_id = '{0}_{1}_{2}'.format(record.id, modification_type, strand)      
     return new_seq, new_id
 
@@ -55,19 +55,21 @@ def generate_converted_FASTA(input_fasta, modification_types, strands, output_fa
     from Bio.SeqRecord import SeqRecord
     from Bio.Seq import Seq
     modified_records = []
+    unconverted = modification_types[0]
     # Iterate over each record in the input FASTA
     for record in SeqIO.parse(input_fasta, 'fasta'):
+        record_description = record.description
         # Iterate over each modification type of interest
         for modification_type in modification_types:
             # Iterate over the strands of interest
             for i, strand in enumerate(strands):
-                if i > 0 and modification_type == 'unconverted': # This ensures that the unconverted only is added once and takes on the strand that is provided at the 0 index on strands.
+                if i > 0 and modification_type == unconverted: # This ensures that the unconverted only is added once and takes on the strand that is provided at the 0 index on strands.
                     pass
                 else:
                     # Add the modified record to the list of modified records
                     print(f'converting {modification_type} on the {strand} strand of record {record}')
-                    new_seq, new_id = convert_FASTA_record(record, modification_type, strand)
-                    new_record = SeqRecord(Seq(new_seq), id=new_id)
+                    new_seq, new_id = convert_FASTA_record(record, modification_type, strand, unconverted)
+                    new_record = SeqRecord(Seq(new_seq), id=new_id, description=record_description)
                     modified_records.append(new_record)
     with open(output_fasta, 'w') as output_handle:
         # write out the concatenated FASTA file of modified sequences
