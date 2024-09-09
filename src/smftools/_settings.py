@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Union
 
 class SMFConfig:
     """\
@@ -8,9 +9,9 @@ class SMFConfig:
     def __init__(
         self,
         *,
-        datasetdir: Path | str = "./datasets/"
+        datasetdir: Union[Path, str] = "./datasets/"
     ):
-         self._datasetdir = Path(datasetdir) if isinstance(datasetdir, str) else datasetdir
+        self._datasetdir = Path(datasetdir) if isinstance(datasetdir, str) else datasetdir
 
     @property
     def datasetdir(self) -> Path:
