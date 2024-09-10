@@ -146,16 +146,16 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
         final_adata.uns[f'{record}_FASTA_sequence'] = sequence
         final_adata.var[f'{record}_FASTA_sequence'] = list(sequence)
 
-        # May need to remove the bottom for conversion SMF
-        record_subset = final_adata[final_adata.obs['Reference'] == record].copy()
-        layer_map, layer_counts = {}, []
-        for i, layer in enumerate(record_subset.layers):
-            layer_map[i] = layer.split('_')[0]
-            layer_counts.append(np.sum(record_subset.layers[layer], axis=0))
-        count_array = np.array(layer_counts)
-        nucleotide_indexes = np.argmax(count_array, axis=0)
-        consensus_sequence_list = [layer_map[i] for i in nucleotide_indexes]
-        final_adata.var[f'{record}_consensus_across_samples'] = consensus_sequence_list
+        # # May need to remove the bottom for conversion SMF
+        # record_subset = final_adata[final_adata.obs['Reference'] == record].copy()
+        # layer_map, layer_counts = {}, []
+        # for i, layer in enumerate(record_subset.layers):
+        #     layer_map[i] = layer.split('_')[0]
+        #     layer_counts.append(np.sum(record_subset.layers[layer], axis=0))
+        # count_array = np.array(layer_counts)
+        # nucleotide_indexes = np.argmax(count_array, axis=0)
+        # consensus_sequence_list = [layer_map[i] for i in nucleotide_indexes]
+        # final_adata.var[f'{record}_consensus_across_samples'] = consensus_sequence_list
 
     ######################################################################################################
 

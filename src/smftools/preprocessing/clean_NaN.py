@@ -1,7 +1,5 @@
 ## clean_NaN
-from ..readwrite import adata_to_df
 
-# NaN handling
 def clean_NaN(adata, layer=None):
     """
     Append layers to adata that contain NaN cleaning strategies.
@@ -16,6 +14,8 @@ def clean_NaN(adata, layer=None):
     import numpy as np
     import anndata as ad
     import pandas as pd
+    from ..readwrite import adata_to_df
+
     # Fill NaN with closest SMF value
     df = adata_to_df(adata, layer=layer)
     df = df.ffill(axis=1).bfill(axis=1)

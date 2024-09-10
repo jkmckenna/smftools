@@ -13,6 +13,7 @@ def invert_adata(adata):
     """
     import numpy as np
     import anndata as ad
+    print('Inverting adata')
     # Reassign var_names with new names
     old_var_names = adata.var_names.astype(int).to_numpy()
     new_var_names = np.sort(old_var_names)[::-1].astype(str)

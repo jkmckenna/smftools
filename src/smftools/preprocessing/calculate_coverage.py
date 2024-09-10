@@ -7,7 +7,7 @@ def calculate_coverage(adata, obs_column='Reference', position_nan_threshold=0.0
     Parameters:
         adata (AnnData): An AnnData object
         obs_column (str): Observation column value to subset on prior to calculating position statistics for that category.
-        position_nan_threshold (float): A minimal threshold of coverage to call the position as valid.
+        position_nan_threshold (float): A minimal fractional threshold of coverage within the obs_column category to call the position as valid.
 
     Returns:
         None
@@ -21,7 +21,7 @@ def calculate_coverage(adata, obs_column='Reference', position_nan_threshold=0.0
     # Loop over categories
     for cat in categories:
         # Look at positional information for each reference
-        temp_cat_adata = adata[adata.obs[obs_column] == cat]
+        temp_cat_adata = adata[adata.obs[obs_column] == cat].copy()
         # Look at read coverage on the given category strand
         cat_valid_coverage = np.sum(~np.isnan(temp_cat_adata.X), axis=0)
         cat_invalid_coverage = np.sum(np.isnan(temp_cat_adata.X), axis=0)

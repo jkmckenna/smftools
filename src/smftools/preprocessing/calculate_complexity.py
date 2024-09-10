@@ -1,16 +1,16 @@
 ## calculate_complexity
 
-def calculate_complexity(adata, obs_column='Reference', sample_col='Sample_names', plot=True, save_plot=False, output_directory=''):
+def calculate_complexity(adata, output_directory='', obs_column='Reference', sample_col='Sample_names', plot=True, save_plot=False):
     """
     A complexity analysis of the library.
 
     Parameters:
         adata (AnnData): An adata object with mark_duplicates already run.
+        output_directory (str): String representing the path to the output directory.
         obs_column (str): String of the obs column to iterate over.
         sample_col (str): String of the sample column to iterate over.
         plot (bool): Whether to plot the complexity model.
         save_plot (bool): Whether to save the complexity model.
-        output_directory (str): String representing the path to the output directory.
 
     Returns:
         None
