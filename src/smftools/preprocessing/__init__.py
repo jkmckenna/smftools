@@ -9,8 +9,10 @@ from .clean_NaN import clean_NaN
 from .filter_converted_reads_on_methylation import filter_converted_reads_on_methylation
 from .filter_reads_on_length import filter_reads_on_length
 from .invert_adata import invert_adata
+from .load_sample_sheet import load_sample_sheet
 from .mark_duplicates import mark_duplicates
 from .remove_duplicates import remove_duplicates
+from .recipes import recipe_1_Kissiov_and_McKenna_2025, recipe_2_Kissiov_and_McKenna_2025
 
 __all__ = [
     "append_C_context",
@@ -24,6 +26,9 @@ __all__ = [
     "filter_converted_reads_on_methylation",
     "filter_reads_on_length",
     "invert_adata",
+    "load_sample_sheet",
     "mark_duplicates",
-    "remove_duplicates"
+    "remove_duplicates",
+    "recipe_1_Kissiov_and_McKenna_2025",
+    "recipe_2_Kissiov_and_McKenna_2025"
 ]
