@@ -20,8 +20,21 @@ def basecalls_to_adata(config_path):
     # Load experiment config parameters into global variables
     experiment_config = LoadExperimentConfig(config_path)
     var_dict = experiment_config.var_dict
-    for key, value in var_dict.items():
-        globals()[key] = value
+
+    conversion_types = var_dict.get('conversion_types')
+    output_directory = var_dict.get('output_directory')
+    smf_modality = var_dict.get('smf_modality')
+    fasta = var_dict.get('fasta')
+    basecalled_path = var_dict.get('basecalled_path')
+    mapping_threshold = var_dict.get('mapping_threshold')
+    experiment_name = var_dict.get('experiment_name')
+    filter_threshold = var_dict.get('filter_threshold')
+    m6A_threshold = var_dict.get('m6A_threshold')
+    m5C_threshold = var_dict.get('m5C_threshold')
+    hm5C_threshold = var_dict.get('hm5C_threshold')
+    mod_list = var_dict.get('mod_list')
+    batch_size = var_dict.get('batch_size')
+    thresholds = [filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold]
 
     split_path = os.path.join(output_directory, split_dir)
     make_dirs([output_directory, split_path])
