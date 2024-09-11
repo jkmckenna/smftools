@@ -21,8 +21,23 @@ def pod5_to_adata(config_path):
     # Load experiment config parameters into global variables
     experiment_config = LoadExperimentConfig(config_path)
     var_dict = experiment_config.var_dict
-    for key, value in var_dict.items():
-        globals()[key] = value
+
+    conversion_types = var_dict.get('conversion_types')
+    pod5_dir = var_dict.get('pod5_dir')
+    output_directory = var_dict.get('output_directory')
+    output_pod5 = var_dict.get('output_pod5')
+    smf_modality = var_dict.get('smf_modality')
+    fasta = var_dict.get('fasta')
+    model = var_dict.get('model')
+    barcode_kit = var_dict.get('barcode_kit') 
+    mapping_threshold = var_dict.get('mapping_threshold')
+    experiment_name = var_dict.get('experiment_name')
+    filter_threshold = var_dict.get('filter_threshold')
+    m6A_threshold = var_dict.get('m6A_threshold')
+    m5C_threshold = var_dict.get('m5C_threshold')
+    hm5C_threshold = var_dict.get('hm5C_threshold')
+    mod_list = var_dict.get('mod_list')
+    batch_size = var_dict.get('batch_size')
 
     conversions += conversion_types
 
