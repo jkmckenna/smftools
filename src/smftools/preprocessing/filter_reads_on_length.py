@@ -10,7 +10,7 @@ def filter_reads_on_length(adata, filter_on_coordinates=False, min_read_length=2
         min_read_length (int): The minimum read length to keep in the filtered dataset. Default is 2700.
 
     Returns:
-        None
+        adata (AnnData): The filtered adata object
     Input: Adata object. a list of lower and upper bound (set to False or None if not wanted), and a minimum read length integer.
  
     """
@@ -37,3 +37,5 @@ def filter_reads_on_length(adata, filter_on_coordinates=False, min_read_length=2
     if min_read_length:
         print(f'Subsetting adata to keep reads longer than {min_read_length}')
         adata = adata[adata.obs['read_length'] > min_read_length].copy()
+
+    return adata

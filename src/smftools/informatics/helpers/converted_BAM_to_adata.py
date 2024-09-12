@@ -81,7 +81,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
             delta_max_length = max_reference_length - current_reference_length
             sequence = modification_dict[mod_type][unconverted_chromosome_name][3] + 'N'*delta_max_length
             record_FASTA_dict[f'{record}'] = sequence
-            print(f'Chromosome: {chromosome}\nUnconverted Sequence: {sequence}')
+            #print(f'Chromosome: {chromosome}\nUnconverted Sequence: {sequence}')
 
             # Get a dictionary of positional identities keyed by read id
             print(f'Extracting base identities of target positions')
@@ -136,9 +136,15 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                 adata.layers[f'{base}_binary_encoding'] = ohe_df_map[j].values 
 
             if final_adata:
-                final_adata = ad.concat([final_adata, adata], join='outer', index_unique=None)
+                if adata.shape[0] > 0:
+                    final_adata = ad.concat([final_adata, adata], join='outer', index_unique=None)
+                else:
+                    print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
             else:
-                final_adata = adata
+                if adata.shape[0] > 0:
+                    final_adata = adata
+                else:
+                    print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
 
     for record in record_FASTA_dict.keys():
         chromosome = record.split('_')[0]

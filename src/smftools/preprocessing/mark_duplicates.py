@@ -48,22 +48,29 @@ def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_na
             distance_df = pd.DataFrame(distance_matrix, index=read_names, columns=read_names)
             # Save the distance dataframe into an unstructured component of the adata object
             adata.uns[f'Pairwise_Hamming_distance_within_{cat}_{sample}'] = distance_df
-            # Calculate the minimum non-self distance for every read in the reference and sample
-            min_distance_values = min_non_diagonal(distance_matrix)
-            min_distance_df = pd.DataFrame({'Nearest_neighbor_Hamming_distance': min_distance_values}, index=read_names)
-            adata.obs.update(min_distance_df)
-            # Generate a histogram of minimum non-self distances for each read
-            min_distance_bins = plt.hist(min_distance_values, bins=n_reads//4)
-            # Normalize the max value in any histogram bin to 1
-            normalized_min_distance_counts = min_distance_bins[0] / np.max(min_distance_bins[0])
-            # Extract the bin index of peak centers in the histogram
-            peak_centers, _ = find_peaks(normalized_min_distance_counts, prominence=0.2, distance=5)
-            first_peak_index = peak_centers[0]
-            offset_index = first_peak_index-1
-            # Use the distance corresponding to the first peak as the threshold distance in graph construction
-            first_peak_distance = min_distance_bins[1][first_peak_index]
-            offset_distance = min_distance_bins[1][offset_index]
-            adata.uns[f'Hamming_distance_threshold_for_{cat}_{sample}'] = offset_distance
+            if n_reads > 1:
+                # Calculate the minimum non-self distance for every read in the reference and sample
+                min_distance_values = min_non_diagonal(distance_matrix)
+                min_distance_df = pd.DataFrame({'Nearest_neighbor_Hamming_distance': min_distance_values}, index=read_names)
+                adata.obs.update(min_distance_df)
+                # Generate a histogram of minimum non-self distances for each read
+                if n_reads > 3:
+                    n_bins = n_reads // 4
+                else:
+                    n_bins = 1
+                min_distance_bins = plt.hist(min_distance_values, bins=n_bins)
+                # Normalize the max value in any histogram bin to 1
+                normalized_min_distance_counts = min_distance_bins[0] / np.max(min_distance_bins[0])
+                # Extract the bin index of peak centers in the histogram
+                peak_centers, _ = find_peaks(normalized_min_distance_counts, prominence=0.2, distance=5)
+                first_peak_index = peak_centers[0]
+                offset_index = first_peak_index-1
+                # Use the distance corresponding to the first peak as the threshold distance in graph construction
+                first_peak_distance = min_distance_bins[1][first_peak_index]
+                offset_distance = min_distance_bins[1][offset_index]
+                adata.uns[f'Hamming_distance_threshold_for_{cat}_{sample}'] = offset_distance
+            else:
+                adata.uns[f'Hamming_distance_threshold_for_{cat}_{sample}'] = 0
 
     ## Detect likely duplicate reads and mark them in the adata object.
     adata.obs['Marked_duplicate'] = pd.Series(False, index=adata.obs_names, dtype=bool)
@@ -91,7 +98,11 @@ def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_na
             clusters = [list(cluster) for cluster in clusters]
             # Get the number of clusters
             cluster_count = len(clusters)
-            adata.uns[f'Hamming_distance_clusters_within_{cat}_{sample}'] = [cluster_count, n_reads, cluster_count / n_reads, clusters]
+            if n_reads > 0:
+                fraction_unique = cluster_count / n_reads
+            else:
+                fraction_unique = 0
+            adata.uns[f'Hamming_distance_clusters_within_{cat}_{sample}'] = [cluster_count, n_reads, fraction_unique, clusters]
             # Update the adata object
             read_cluster_map = {}
             read_duplicate_map = {}
@@ -116,4 +127,4 @@ def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_na
             adata.obs.update(df_combined)
             adata.obs['Marked_duplicate'] = adata.obs['Marked_duplicate'].astype(bool)
             adata.obs['Unique_in_final_read_set'] = adata.obs['Unique_in_final_read_set'].astype(bool)
-            print(f'Hamming clusters for {sample} on {cat}\nThreshold: {first_peak_distance}\nNumber clusters: {cluster_count}\nNumber reads: {n_reads}\nFraction unique: {cluster_count / n_reads}')   
+            print(f'Hamming clusters for {sample} on {cat}\nThreshold: {first_peak_distance}\nNumber clusters: {cluster_count}\nNumber reads: {n_reads}\nFraction unique: {fraction_unique}')   

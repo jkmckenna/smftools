@@ -65,7 +65,10 @@ def calculate_converted_read_methylation_stats(adata, reference_column, sample_n
             for site_type in site_types_to_analyze:
                 methylation_data = sample_adata.obs[f'{site_type}_row_methylation_means']
                 max_meth = np.max(sample_adata.obs[f'{site_type}_row_methylation_sums'])
-                n_bins = int(max_meth // 2)
+                if not np.isnan(max_meth):
+                    n_bins = int(max_meth // 2)
+                else:
+                    n_bins = 1
                 mean = np.mean(methylation_data)
                 median = np.median(methylation_data)
                 stdev = np.std(methylation_data)

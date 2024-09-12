@@ -27,7 +27,8 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
     from .calculate_read_length_stats import calculate_read_length_stats
 
     # Clean up some of the Reference metadata and save variable names that point to sets of values in the column.
-    references = set(adata.obs[reference_column])
+    adata.obs[reference_column] = adata.obs[reference_column].astype('category')
+    references = adata.obs[reference_column].cat.categories
     split_references = [(reference, reference.split('_')[0][1:]) for reference in references]
     reference_mapping = {k: v for k, v in split_references}
     adata.obs[f'{reference_column}_short'] = adata.obs[reference_column].map(reference_mapping)
@@ -39,7 +40,7 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
 
     # hold sample names set
     adata.obs[sample_names_col] = adata.obs[sample_names_col].astype('category')
-    sample_names = set(adata.obs[sample_names_col])
+    sample_names = adata.obs[sample_names_col].cat.categories
 
     # Add position level metadata
     calculate_coverage(adata, obs_column=reference_column)
@@ -49,7 +50,7 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
     append_C_context(adata, obs_column=reference_column, use_consensus=False)
 
     # Calculate read level methylation statistics. Assess if GpC methylation level is above other_C methylation level as a QC.
-    calculate_converted_read_methylation_stats(adata, obs_column=reference_column)
+    calculate_converted_read_methylation_stats(adata, reference_column, sample_names_col, output_directory, show_methylation_histogram=False, save_methylation_histogram=False)
 
     # Invert the adata object (ie flip the strand orientation for visualization)
     if invert:
@@ -60,15 +61,13 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
     # Calculate read length statistics, with options to display or save the read length histograms
     upper_bound, lower_bound = calculate_read_length_stats(adata, reference_column, sample_names_col, output_directory, show_read_length_histogram=False, save_read_length_histogram=False)
 
-    # Calculate read level methylation statistics
-    calculate_converted_read_methylation_stats(adata, reference_column, sample_names_col, output_directory, show_methylation_histogram=False, save_methylation_histogram=False)
-
     variables = {
         "short_references": short_references,
         "binary_layers": binary_layers,
         "sample_names": sample_names,
         "upper_bound": upper_bound,
-        "lower_bound": lower_bound
+        "lower_bound": lower_bound,
+        "references": references
     }
     return variables
 
@@ -84,6 +83,7 @@ def recipe_2_Kissiov_and_McKenna_2025(adata, output_directory, binary_layers, re
         sample_names_col (str): The name of the sample name column to use.
 
     Returns:
+        filtered_adata (AnnData): An AnnData object containing the filtered reads
         duplicates (AnnData): An AnnData object containing the duplicate reads
     """
     import anndata as ad
@@ -104,5 +104,5 @@ def recipe_2_Kissiov_and_McKenna_2025(adata, output_directory, binary_layers, re
     calculate_complexity(adata, output_directory, obs_column=reference_column, sample_col=sample_names_col, plot=True, save_plot=False)
 
     # Remove duplicate reads and store the duplicate reads in a new AnnData object named duplicates.
-    duplicates = remove_duplicates(adata)
-    return duplicates
+    filtered_adata, duplicates = remove_duplicates(adata)
+    return filtered_adata, duplicates

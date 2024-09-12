@@ -11,7 +11,7 @@ def filter_converted_reads_on_methylation(adata, valid_SMF_site_threshold=0.8, m
         valid_SMF_site_threshold (float): A minimum proportion of valid SMF sites that must be present in the read. Default is 0.8
         min_SMF_threshold (float): A minimum read methylation level. Default is 0.025
     Returns:
-        None
+        adata (AnnData): The filtered adata object.
     """
     import numpy as np
     import anndata as ad
@@ -25,3 +25,5 @@ def filter_converted_reads_on_methylation(adata, valid_SMF_site_threshold=0.8, m
         adata = adata[adata.obs['GpC_above_other_C'] == True].copy()
         # Keep reads over a defined methylation threshold
         adata = adata[adata.obs['GpC_site_row_methylation_means'] > min_SMF_threshold].copy()
+        
+    return adata

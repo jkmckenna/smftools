@@ -13,7 +13,7 @@ def calculate_pairwise_hamming_distances(arrays):
 
     """
     import numpy as np
-    import tqdm
+    from tqdm import tqdm
     from scipy.spatial.distance import hamming
     num_arrays = len(arrays)
     # Initialize an empty distance matrix

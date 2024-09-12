@@ -302,11 +302,17 @@ def modkit_extract_to_adata(fasta, bam, mapping_threshold, experiment_name, mods
 
                         # If final adata object already has a sample loaded, concatenate the current sample into the existing adata object 
                         if adata:
-                            print('{0}: Concatenating {1} anndata object for sample {2}'.format(readwrite.time_string(), sample_types[i], final_sample_index))
-                            adata = ad.concat([adata, temp_adata], join='outer', index_unique=None)
+                            if temp_adata.shape[0] > 0:
+                                print('{0}: Concatenating {1} anndata object for sample {2}'.format(readwrite.time_string(), sample_types[i], final_sample_index))
+                                adata = ad.concat([adata, temp_adata], join='outer', index_unique=None)
+                            else:
+                                print(f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata")
                         else:
-                            print('{0}: Initializing {1} anndata object for sample {2}'.format(readwrite.time_string(), sample_types[i], final_sample_index))
-                            adata = temp_adata
+                            if temp_adata.shape[0] > 0:
+                                print('{0}: Initializing {1} anndata object for sample {2}'.format(readwrite.time_string(), sample_types[i], final_sample_index))
+                                adata = temp_adata
+                            else:
+                                print(f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata")
 
                 print('{0}: Writing {1} anndata out as a gzipped hdf5 file'.format(readwrite.time_string(), sample_types[i]))
                 adata.write_h5ad('{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz'.format(readwrite.date_string(), batch, sample_types[i]), compression='gzip')

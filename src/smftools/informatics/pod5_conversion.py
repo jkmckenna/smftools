@@ -20,7 +20,7 @@ def pod5_conversion(fasta, output_directory, conversion_types, strands, model, p
     Returns:
         None
     """
-    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM
+    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM, make_dirs
     import os
     model_basename = os.path.basename(model)
     model_basename = model_basename.replace('.', '_')
@@ -40,14 +40,26 @@ def pod5_conversion(fasta, output_directory, conversion_types, strands, model, p
         generate_converted_FASTA(fasta, conversion_types, strands, converted_FASTA)
 
     # 2) Basecall from the input POD5 to generate a singular output BAM
-    canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix)
+    canoncall_output = bam + bam_suffix
+    if os.path.exists(canoncall_output):
+        print(canoncall_output + ' already exists. Using existing basecalled BAM.')
+    else:
+        canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix)
 
     # 3) Align the BAM to the converted reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
-    input_BAM = bam + bam_suffix
-    align_and_sort_BAM(converted_FASTA, input_BAM, bam_suffix, output_directory)
+    aligned_output = aligned_BAM + bam_suffix
+    sorted_output = aligned_sorted_BAM + bam_suffix
+    if os.path.exists(aligned_output) and os.path.exists(sorted_output):
+        print(sorted_output + ' already exists. Using existing aligned/sorted BAM.')
+    else:
+        align_and_sort_BAM(converted_FASTA, canoncall_output, bam_suffix, output_directory)
 
     ### 4) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory###
-    split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
+    if os.path.isdir(split_dir):
+        print(split_dir + ' already exists. Using existing aligned/sorted/split BAMs.')
+    else:
+        make_dirs([split_dir])
+        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
 
     # 5) Take the converted BAM and load it into an adata object. 
     converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix)
