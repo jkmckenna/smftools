@@ -12,7 +12,9 @@ def pod5_to_adata(config_path):
     """
     from .helpers import LoadExperimentConfig, make_dirs
     from .fast5_to_pod5 import fast5_to_pod5
+    from .subsample_fasta_from_bed import subsample_fasta_from_bed
     import os
+    import numpy as np
     bam_suffix = '.bam' # If different, change from here.
     split_dir = 'split_BAMs' # If different, change from here.
     strands = ['bottom', 'top'] # If different, change from here. Having both listed generally doesn't slow things down too much.
@@ -28,6 +30,7 @@ def pod5_to_adata(config_path):
     output_pod5 = var_dict.get('output_pod5')
     smf_modality = var_dict.get('smf_modality')
     fasta = var_dict.get('fasta')
+    fasta_regions_of_interest = var_dict.get("fasta_regions_of_interest")
     model = var_dict.get('model')
     barcode_kit = var_dict.get('barcode_kit') 
     mapping_threshold = var_dict.get('mapping_threshold')
@@ -57,6 +60,14 @@ def pod5_to_adata(config_path):
         fast5_to_pod5(pod5_dir, output_dir=output_directory, output_pod5='FAST5s_to_POD5.pod5')
         # Reassign the pod5_dir variable to point to the new pod5 file.
         pod5_dir = os.path.join(output_directory, output_pod5)
+
+    # If a bed file is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
+    if not np.isnan(fasta_regions_of_interest) and '.bed' in fasta_regions_of_interest:
+        fasta_basename = os.path.basename(fasta)
+        bed_basename_minus_suffix = os.path.basename(fasta_regions_of_interest).split('.bed')[0]
+        output_FASTA = bed_basename_minus_suffix + '_' + fasta_basename
+        subsample_fasta_from_bed(fasta, fasta_regions_of_interest, output_directory, output_FASTA)
+        fasta = output_FASTA
 
     if smf_modality == 'conversion':
         from .pod5_conversion import pod5_conversion

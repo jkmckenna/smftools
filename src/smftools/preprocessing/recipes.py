@@ -4,6 +4,15 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
     """
     The first part of the preprocessing workflow applied to the smf.inform.pod_to_adata() output derived from Kissiov_and_McKenna_2025.
 
+    Performs the following tasks:
+    1) Loads a sample CSV to append metadata mappings to the adata object.
+    2) Appends a boolean indicating whether each position in var_names is within a given reference.
+    3) Appends the cytosine context to each position from each reference.
+    4) Calculate read level methylation statistics.
+    5) Optionally inverts the adata to flip the position coordinate orientation.
+    6) Calculates read length statistics (start position, end position, read length)
+    7) Returns a dictionary to pass the variable namespace to the parent scope.
+
     Parameters:
         adata (AnnData): The AnnData object to use as input.
         sample_sheet_path (str): String representing the path to the sample sheet csv containing the sample metadata.
@@ -71,14 +80,22 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
     }
     return variables
 
-def recipe_2_Kissiov_and_McKenna_2025(adata, output_directory, binary_layers, reference_column = 'Reference', sample_names_col='Sample_names'):
+def recipe_2_Kissiov_and_McKenna_2025(adata, output_directory, binary_layers, hamming_distance_thresholds={}, reference_column = 'Reference', sample_names_col='Sample_names'):
     """
     The second part of the preprocessing workflow applied to the adata that has already been preprocessed by recipe_1_Kissiov_and_McKenna_2025.
+
+    Performs the following tasks:
+    1) Adds new layers containing NaN replaced variants of adata.X (fill_closest, nan0_0minus1, nan1_12).
+    2) Marks putative PCR duplicates using pairwise hamming distance metrics.
+    3) Performs a complexity analysis of the library based on the PCR duplicate detection rate.
+    4) Removes PCR duplicates from the adata.
+    5) Returns two adata object: one for the filtered adata and one for the duplicate adata.
 
     Parameters:
         adata (AnnData): The AnnData object to use as input.
         output_directory (str): String representing the path to the output directory for plots.
-        binary_layers (list): A list of layers to used for the binary encoding of read sequences. Used for duplicate detection
+        binary_layers (list): A list of layers to used for the binary encoding of read sequences. Used for duplicate detection.
+        hamming_distance_thresholds (dict): A dictionary keyed by obs_column categories that points to a float corresponding to the distance threshold to apply. Default is an empty dict.
         reference_column (str): The name of the reference column to use.
         sample_names_col (str): The name of the sample name column to use.
 
@@ -98,7 +115,7 @@ def recipe_2_Kissiov_and_McKenna_2025(adata, output_directory, binary_layers, re
     clean_NaN(adata, layer=None)
 
     # Duplicate detection using pairwise hamming distance across reads
-    mark_duplicates(adata, binary_layers, obs_column=reference_column, sample_col=sample_names_col)
+    mark_duplicates(adata, binary_layers, obs_column=reference_column, sample_col=sample_names_col, hamming_distance_thresholds=hamming_distance_thresholds)
 
     # Complexity analysis using the marked duplicates and the lander-watermann algorithm
     calculate_complexity(adata, output_directory, obs_column=reference_column, sample_col=sample_names_col, plot=True, save_plot=False)

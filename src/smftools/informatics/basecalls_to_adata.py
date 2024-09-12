@@ -11,7 +11,9 @@ def basecalls_to_adata(config_path):
         None
     """
     from .helpers import LoadExperimentConfig, make_dirs
+    from .subsample_fasta_from_bed import subsample_fasta_from_bed
     import os
+    import numpy as np
     bam_suffix = '.bam' # If different, change from here.
     split_dir = 'split_BAMs' # If different, change from here.
     strands = ['bottom', 'top'] # If different, change from here. Having both listed generally doesn't slow things down too much.
@@ -25,6 +27,7 @@ def basecalls_to_adata(config_path):
     output_directory = var_dict.get('output_directory')
     smf_modality = var_dict.get('smf_modality')
     fasta = var_dict.get('fasta')
+    fasta_regions_of_interest = var_dict.get("fasta_regions_of_interest")
     basecalled_path = var_dict.get('basecalled_path')
     mapping_threshold = var_dict.get('mapping_threshold')
     experiment_name = var_dict.get('experiment_name')
@@ -37,10 +40,19 @@ def basecalls_to_adata(config_path):
     thresholds = [filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold]
 
     split_path = os.path.join(output_directory, split_dir)
-    make_dirs([output_directory, split_path])
+
+    make_dirs([output_directory])
     os.chdir(output_directory)
 
     conversions += conversion_types
+
+    # If a bed file is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
+    if not np.isnan(fasta_regions_of_interest) and '.bed' in fasta_regions_of_interest:
+        fasta_basename = os.path.basename(fasta)
+        bed_basename_minus_suffix = os.path.basename(fasta_regions_of_interest).split('.bed')[0]
+        output_FASTA = bed_basename_minus_suffix + '_' + fasta_basename
+        subsample_fasta_from_bed(fasta, fasta_regions_of_interest, output_directory, output_FASTA)
+        fasta = output_FASTA
 
     if smf_modality == 'conversion':
         from .bam_conversion import bam_conversion

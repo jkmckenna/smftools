@@ -29,8 +29,7 @@ def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_di
     mod_bed_dir=f"{output_directory}/split_mod_beds"
     mod_tsv_dir=f"{output_directory}/split_mod_tsvs"
 
-    make_dirs([mod_bed_dir, mod_tsv_dir])
-
+    aligned_output = aligned_BAM + bam_suffix
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
     mods = [mod_map[mod] for mod in mod_list]
@@ -38,12 +37,27 @@ def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_di
     os.chdir(output_directory)
 
     # 1) Align the BAM to the reference FASTA. Also make an index and a bed file of mapped reads
-    align_and_sort_BAM(fasta, bam_path, bam_suffix, output_directory)
+    if os.path.exists(aligned_output) and os.path.exists(aligned_sorted_output):
+        print(aligned_sorted_output + ' already exists. Using existing aligned/sorted BAM.')
+    else:
+        align_and_sort_BAM(fasta, bam_path, bam_suffix, output_directory)
     # 2) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
-    split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
+    if os.path.isdir(split_dir):
+        print(split_dir + ' already exists. Using existing aligned/sorted/split BAMs.')
+    else:
+        make_dirs([split_dir])
+        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
     # 3) Using nanopore modkit to work with modified BAM files ###
     modQC(aligned_sorted_output, thresholds) # get QC metrics for mod calls
-    make_modbed(aligned_sorted_output, thresholds, mod_bed_dir) # Generate bed files of position methylation summaries for every sample
-    extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix) # Extract methylations calls for split BAM files into split TSV files
+    if os.path.isdir(mod_bed_dir):
+        print(mod_bed_dir + ' already exists')
+    else:
+        make_dirs([mod_bed_dir])  
+        make_modbed(aligned_sorted_output, thresholds, mod_bed_dir) # Generate bed files of position methylation summaries for every sample
+    if os.path.isdir(mod_tsv_dir):
+        print(mod_tsv_dir + ' already exists')
+    else:
+        make_dirs([mod_tsv_dir])  
+        extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix) # Extract methylations calls for split BAM files into split TSV files
     #4 Load the modification data from TSVs into an adata object
     modkit_extract_to_adata(fasta, aligned_sorted_output, mapping_threshold, experiment_name, mods, batch_size)
