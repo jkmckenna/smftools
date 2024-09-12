@@ -19,5 +19,7 @@ def canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix):
     import subprocess
     output = bam + bam_suffix
     command = ["dorado", "basecaller", model, pod5_dir, "--kit-name", barcode_kit, "-Y"]
+    command_string = " ".join(command)
+    print(f"Running {command_string}\n to generate {output}")
     with open(output, "w") as outfile:
         subprocess.run(command, stdout=outfile)

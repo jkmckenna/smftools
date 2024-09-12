@@ -60,7 +60,10 @@ def calculate_read_length_stats(adata, reference_column, sample_names_col, outpu
             median = np.median(temp_data)
             stdev = np.std(temp_data)
             adata.uns['read_length_dict'][f'{reference}_{sample}'] = [mean, median, stdev]
-            n_bins = int(max_length // 100)
+            if not np.isnan(max_length):
+                n_bins = int(max_length // 100)
+            else:
+                n_bins = 1
             if show_read_length_histogram or save_read_length_histogram:
                 plt.figure(figsize=(10, 6))
                 plt.text(median + 0.5, max(plt.hist(temp_data, bins=n_bins)[0]) / 2, f'Median: {median:.2f}', color='red')

@@ -42,7 +42,7 @@ def pod5_to_adata(config_path):
     conversions += conversion_types
 
     split_path = os.path.join(output_directory, split_dir)
-    make_dirs([output_directory, split_path])
+    make_dirs([output_directory])
     os.chdir(output_directory)
 
     # Get the file names in the input pod5_dir
