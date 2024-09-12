@@ -12,7 +12,7 @@ Many use cases for smftools begin here. For most users, the call below will be s
 
 ```
 config_path = "/Path_to_experiment_config.csv"
-smf.inform(config_path)
+smf.inform.pod5_to_adata(config_path)
 ```
 
 ## Loading AnnData objects created by the informatics module

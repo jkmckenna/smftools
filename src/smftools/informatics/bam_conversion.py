@@ -18,7 +18,7 @@ def bam_conversion(fasta, output_directory, conversion_types, strands, basecalle
     Returns:
         None
     """
-    from .helpers import align_and_sort_BAM, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM
+    from .helpers import align_and_sort_BAM, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM, make_dirs
     import os
     input_basecalled_basename = os.path.basename(basecalled_path)
     bam_basename = input_basecalled_basename.split(".")[0]
@@ -38,10 +38,19 @@ def bam_conversion(fasta, output_directory, conversion_types, strands, basecalle
         generate_converted_FASTA(fasta, conversion_types, strands, converted_FASTA)
 
     # 2) Align the basecalled file to the converted reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
-    align_and_sort_BAM(converted_FASTA, basecalled_path, bam_suffix, output_directory)
+    aligned_output = aligned_BAM + bam_suffix
+    sorted_output = aligned_sorted_BAM + bam_suffix
+    if os.path.exists(aligned_output) and os.path.exists(sorted_output):
+        print(sorted_output + ' already exists. Using existing aligned/sorted BAM.')
+    else:
+        align_and_sort_BAM(converted_FASTA, basecalled_path, bam_suffix, output_directory)
 
     ### 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory###
-    split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
+    if os.path.isdir(split_dir):
+        print(split_dir + ' already exists. Using existing aligned/sorted/split BAMs.')
+    else:
+        make_dirs([split_dir])
+        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
 
     # 4) Take the converted BAM and load it into an adata object. 
     converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix)

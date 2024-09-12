@@ -1,6 +1,6 @@
 ## mark_duplicates
 
-def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_names'):
+def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_names', hamming_distance_thresholds={}):
     """
     Marks duplicates in the adata object.
 
@@ -9,6 +9,7 @@ def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_na
         layers (list): A list of strings representing the layers to use.
         obs_column (str): A string representing the obs column name to first subset on. Default is 'Reference'.
         sample_col (str):L A string representing the obs column name to second subset on. Default is 'Sample_names'.
+        hamming_distance_thresholds (dict): A dictionary keyed by obs_column categories that points to a float corresponding to the distance threshold to apply. Default is an empty dict.
     
     Returns:
         None
@@ -59,16 +60,19 @@ def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_na
                 else:
                     n_bins = 1
                 min_distance_bins = plt.hist(min_distance_values, bins=n_bins)
-                # Normalize the max value in any histogram bin to 1
-                normalized_min_distance_counts = min_distance_bins[0] / np.max(min_distance_bins[0])
-                # Extract the bin index of peak centers in the histogram
-                peak_centers, _ = find_peaks(normalized_min_distance_counts, prominence=0.2, distance=5)
-                first_peak_index = peak_centers[0]
-                offset_index = first_peak_index-1
-                # Use the distance corresponding to the first peak as the threshold distance in graph construction
-                first_peak_distance = min_distance_bins[1][first_peak_index]
-                offset_distance = min_distance_bins[1][offset_index]
-                adata.uns[f'Hamming_distance_threshold_for_{cat}_{sample}'] = offset_distance
+                if cat in hamming_distance_thresholds: 
+                    adata.uns[f'Hamming_distance_threshold_for_{cat}_{sample}'] = hamming_distance_thresholds[cat]
+                else: # eventually this should be written to use known PCR duplicate controls for thresholding.
+                    # Normalize the max value in any histogram bin to 1
+                    normalized_min_distance_counts = min_distance_bins[0] / np.max(min_distance_bins[0])
+                    # Extract the bin index of peak centers in the histogram
+                    peak_centers, _ = find_peaks(normalized_min_distance_counts, prominence=0.2, distance=5)
+                    first_peak_index = peak_centers[0]
+                    offset_index = first_peak_index-1
+                    # Use the distance corresponding to the first peak as the threshold distance in graph construction
+                    first_peak_distance = min_distance_bins[1][first_peak_index]
+                    offset_distance = min_distance_bins[1][offset_index]
+                    adata.uns[f'Hamming_distance_threshold_for_{cat}_{sample}'] = offset_distance
             else:
                 adata.uns[f'Hamming_distance_threshold_for_{cat}_{sample}'] = 0
 
@@ -127,4 +131,4 @@ def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_na
             adata.obs.update(df_combined)
             adata.obs['Marked_duplicate'] = adata.obs['Marked_duplicate'].astype(bool)
             adata.obs['Unique_in_final_read_set'] = adata.obs['Unique_in_final_read_set'].astype(bool)
-            print(f'Hamming clusters for {sample} on {cat}\nThreshold: {first_peak_distance}\nNumber clusters: {cluster_count}\nNumber reads: {n_reads}\nFraction unique: {fraction_unique}')   
+            print(f'Hamming clusters for {sample} on {cat}\nThreshold: {distance_threshold}\nNumber clusters: {cluster_count}\nNumber reads: {n_reads}\nFraction unique: {fraction_unique}')   

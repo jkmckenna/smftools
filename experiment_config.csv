@@ -3,6 +3,7 @@ smf_modality,conversion,Modality of SMF. Can either be conversion or direct.,"co
 pod5_dir,/path_to_POD5_directory,Path to directory containing input POD5 files (If doing Nanopore SMF),,str 
 basecalled_path,/path_to_basecalled_HTS_file.bam,Path to directory containing input BAM file (if doing SMF from an already basecalled experiment). Can also be a path to a FASTQ for conversion SMF.,,str 
 fasta,/path_to_fasta.fasta,Path to initial FASTA file,,str 
+fasta_regions_of_interest,/path_to_bed.bed,Path to a bed file to subsample the fasta on.,,str 
 output_directory,/outputs,Directory to act as root for all analysis outputs,,str 
 experiment_name,,An experiment name for the final h5ad file,,str 
 model,None,The dorado basecalling model to use,,str 
