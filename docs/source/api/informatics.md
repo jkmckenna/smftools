@@ -2,7 +2,7 @@
 
 ## Informatics module diagram
 ```{image} ../_static/smftools_informatics_diagram.png
-:width: 300px
+:width: 600px
 ```
 
 ```{eval-rst}
