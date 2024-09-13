@@ -1,5 +1,8 @@
 ## Informatics: `inform`
 
+### Informatics module diagram
+![](https://github.com/jkmckenna/smftools/docs/source/_static/smftools_informatics_diagram.pdf)
+
 ```{eval-rst}
 .. module:: smftools.inform
 ```

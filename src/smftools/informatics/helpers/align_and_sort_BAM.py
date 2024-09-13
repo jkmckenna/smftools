@@ -27,7 +27,7 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     
     # Run dorado aligner
-    subprocess.run(["dorado", "aligner", "--secondary=no", fasta, input], stdout=open(aligned_output, "w"))
+    subprocess.run(["dorado", "aligner", "--secondary", "no", "-N", "0", fasta, input], stdout=open(aligned_output, "w")) # test this to see if it works
 
     # Sort the BAM on positional coordinates
     subprocess.run(["samtools", "sort", "-o", aligned_sorted_output, aligned_output])
