@@ -1,7 +1,7 @@
 ## Informatics: `inform`
 
-### Informatics module diagram
-```{image} https://github.com/jkmckenna/smftools/blob/main/docs/source/_static/smftools_informatics_diagram.png
+## Informatics module diagram
+```{image} ../_static/smftools_informatics_diagram.png
 :width: 300px
 ```
 
