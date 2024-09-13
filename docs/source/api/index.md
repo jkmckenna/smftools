@@ -16,4 +16,4 @@ datasets
 ```
 
 ## Informatics module diagram
-![](https://github.com/jkmckenna/smftools/docs/source/_static/smftools_informatics_diagram.pdf)
+![](https://github.com/jkmckenna/smftools/docs/source/_static/smftools_informatics_diagram.png)
