@@ -16,6 +16,11 @@ datasets
 ```
 
 ## Informatics module diagram
-```{image} https://github.com/jkmckenna/smftools/blob/main/docs/source/_static/smftools_informatics_diagram.png
+```{image} ../_static/smftools_informatics_diagram.png
+:width: 300px
+```
+
+## Preprocessing module diagram
+```{image} ../_static/smftools_preprocessing_diagram.png
 :width: 300px
 ```
