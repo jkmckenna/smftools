@@ -16,6 +16,8 @@ The following CLI tools need to be installed and configured before using the inf
 
 ## Modules
 - Informatics: Processes raw SMF data coming from Nanopore POD5 files, BAM files, or FASTQ files and organizes it into an AnnData object.
+![](https://github.com/jkmckenna/smftools/docs/source/_static/smftools_informatics_diagram.pdf)
+
 - Preprocessing: Filters the AnnData object on read length, total methylation, and a variety of QC metrics.
 - Tools: Appends various analyses to the AnnData object.
 - Plotting: Visualization of analyses stored within the AnnData object.
