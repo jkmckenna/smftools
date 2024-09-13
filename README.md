@@ -15,10 +15,10 @@ The following CLI tools need to be installed and configured before using the inf
 4) [Modkit](https://github.com/nanoporetech/modkit) -> Extracting summary statistics and read level methylation calls from modified BAM files
 
 ## Modules
-- Informatics: Processes raw SMF data coming from Nanopore POD5 files, BAM files, or FASTQ files and organizes it into an AnnData object.
+### Informatics: Processes raw Nanopore/Illumina data from SMF experiments into an AnnData object.
 ![](docs/source/_static/smftools_informatics_diagram.png)
-
-- Preprocessing: Filters the AnnData object on read length, total methylation, and a variety of QC metrics.
+### Preprocessing: Appends QC metrics to the AnnData object and perfroms filtering.
+![](docs/source/_static/smftools_preprocessing_diagram.png)
 - Tools: Appends various analyses to the AnnData object.
 - Plotting: Visualization of analyses stored within the AnnData object.
 
