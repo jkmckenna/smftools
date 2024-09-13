@@ -2,7 +2,7 @@
 
 ## Preprocessing module diagram
 ```{image} ../_static/smftools_preprocessing_diagram.png
-:width: 300px
+:width: 600px
 ```
 
 ```{eval-rst}
