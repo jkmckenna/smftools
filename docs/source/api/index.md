@@ -17,10 +17,10 @@ datasets
 
 ## Informatics module diagram
 ```{image} ../_static/smftools_informatics_diagram.png
-:width: 300px
+:width: 800px
 ```
 
 ## Preprocessing module diagram
 ```{image} ../_static/smftools_preprocessing_diagram.png
-:width: 600px
+:width: 800px
 ```
