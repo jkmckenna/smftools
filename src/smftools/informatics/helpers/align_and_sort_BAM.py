@@ -18,6 +18,7 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
     import os
     from .aligned_BAM_to_bed import aligned_BAM_to_bed
     from .extract_readnames_from_BAM import extract_readnames_from_BAM
+    from .make_dirs import make_dirs
     input_basename = os.path.basename(input)
     input_suffix = '.' + input_basename.split('.')[1]
 
@@ -38,7 +39,9 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
     subprocess.run(["samtools", "index", aligned_sorted_output])
 
     # Make a bed file of coordinates for the BAM
-    aligned_BAM_to_bed(aligned_sorted_output)
+    plotting_dir = os.path.join(output_directory, 'bed_histograms')
+    make_dirs([plotting_dir])
+    aligned_BAM_to_bed(aligned_sorted_output, plotting_dir)
 
     # Make a text file of reads for the BAM
     extract_readnames_from_BAM(aligned_sorted_output)

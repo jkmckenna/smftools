@@ -46,7 +46,7 @@ def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_di
         print(split_dir + ' already exists. Using existing aligned/sorted/split BAMs.')
     else:
         make_dirs([split_dir])
-        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix)
+        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory)
     # 3) Using nanopore modkit to work with modified BAM files ###
     modQC(aligned_sorted_output, thresholds) # get QC metrics for mod calls
     if os.path.isdir(mod_bed_dir):

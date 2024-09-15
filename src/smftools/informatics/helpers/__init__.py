@@ -17,6 +17,7 @@ from .modcall import modcall
 from .modkit_extract_to_adata import modkit_extract_to_adata
 from .modQC import modQC
 from .one_hot_encode import one_hot_encode
+from .plot_read_length_and_coverage_histograms import plot_read_length_and_coverage_histograms
 from .separate_bam_by_bc import separate_bam_by_bc
 from .split_and_index_BAM import split_and_index_BAM
 
@@ -41,6 +42,7 @@ __all__ = [
     "modkit_extract_to_adata",
     "modQC",
     "one_hot_encode",
+    "plot_read_length_and_coverage_histograms",
     "separate_bam_by_bc",
     "split_and_index_BAM"
 ]
