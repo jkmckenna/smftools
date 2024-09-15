@@ -1,12 +1,13 @@
 ## split_and_index_BAM
 
-def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
+def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory):
     """
     A wrapper function for splitting BAMS and indexing them.
     Parameters:
         aligned_sorted_BAM (str): A string representing the file path of the aligned_sorted BAM file.
         split_dir (str): A string representing the file path to the directory to split the BAMs into.
         bam_suffix (str): A suffix to add to the bam file.
+        output_directory (str): A file path to the directory to output all the analyses.
     
     Returns:
         None
@@ -19,8 +20,11 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     from .separate_bam_by_bc import separate_bam_by_bc
     from .aligned_BAM_to_bed import aligned_BAM_to_bed
     from .extract_readnames_from_BAM import extract_readnames_from_BAM
+    from .make_dirs import make_dirs
 
     os.chdir(split_dir)
+    plotting_dir = os.path.join(output_directory, 'bed_histograms')
+    make_dirs([plotting_dir])
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     file_prefix = readwrite.date_string()
     separate_bam_by_bc(aligned_sorted_output, file_prefix, bam_suffix)
@@ -29,9 +33,7 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     bam_files = glob.glob(os.path.join(split_dir, bam_pattern))
     for input_file in bam_files:
         subprocess.run(["samtools", "index", input_file])
-
         # Make a bed file of coordinates for the BAM
-        aligned_BAM_to_bed(input_file)
-
+        aligned_BAM_to_bed(input_file, plotting_dir)
         # Make a text file of reads for the BAM
         extract_readnames_from_BAM(input_file)

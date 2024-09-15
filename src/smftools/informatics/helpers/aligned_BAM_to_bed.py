@@ -1,6 +1,6 @@
 # aligned_BAM_to_bed
 
-def aligned_BAM_to_bed(aligned_BAM):
+def aligned_BAM_to_bed(aligned_BAM, plotting_dir):
     """
     Takes an aligned BAM as input and writes a bed file of reads as output.
     Bed columns are: Record name, start position, end position, read length, read name
@@ -13,6 +13,7 @@ def aligned_BAM_to_bed(aligned_BAM):
 
     """
     import subprocess
+    from .plot_read_length_and_coverage_histograms import plot_read_length_and_coverage_histograms
     bed_output = aligned_BAM.split('.bam')[0] + '_bed.bed'
     samtools_view = subprocess.Popen(["samtools", "view", aligned_BAM], stdout=subprocess.PIPE) 
     with open(bed_output, "w") as output_file:
@@ -29,7 +30,7 @@ def aligned_BAM_to_bed(aligned_BAM):
             bed (str): Path to the input BED file.
 
         Returns:
-            None
+            aligned (str): Path to the aligned bed file
         """
         unaligned = bed.split('.bed')[0] + '_unaligned.bed'
         aligned = bed.split('.bed')[0] + '_aligned.bed'
@@ -45,5 +46,8 @@ def aligned_BAM_to_bed(aligned_BAM):
                     unaligned_outfile.write(line)
                 else:
                     aligned_outfile.write(line)
+        
+        return aligned
     
-    split_bed(bed_output)
+    aligned_bed = split_bed(bed_output)
+    plot_read_length_and_coverage_histograms(aligned_bed, plotting_dir)
