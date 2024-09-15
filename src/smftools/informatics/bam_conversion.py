@@ -32,7 +32,10 @@ def bam_conversion(fasta, output_directory, conversion_types, strands, basecalle
     fasta_basename = os.path.basename(fasta)
     converted_FASTA_basename = fasta_basename.split('.fa')[0]+'_converted.fasta'
     converted_FASTA = os.path.join(output_directory, converted_FASTA_basename)
-    if os.path.exists(converted_FASTA):
+    if 'converted.fa' in fasta:
+        print(fasta + ' is already converted. Using existing converted FASTA.')
+        converted_FASTA = fasta
+    elif os.path.exists(converted_FASTA):
         print(converted_FASTA + ' already exists. Using existing converted FASTA.')
     else:
         generate_converted_FASTA(fasta, conversion_types, strands, converted_FASTA)
