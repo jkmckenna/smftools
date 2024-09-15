@@ -1,10 +1,12 @@
 from .align_and_sort_BAM import align_and_sort_BAM
+from .aligned_BAM_to_bed import aligned_BAM_to_bed
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .canoncall import canoncall
 from .converted_BAM_to_adata import converted_BAM_to_adata
 from .count_aligned_reads import count_aligned_reads
 from .extract_base_identities import extract_base_identities
 from .extract_mods import extract_mods
+from .extract_readnames_from_BAM import extract_readnames_from_BAM
 from .find_conversion_sites import find_conversion_sites
 from .generate_converted_FASTA import convert_FASTA_record, generate_converted_FASTA
 from .get_native_references import get_native_references
@@ -20,12 +22,14 @@ from .split_and_index_BAM import split_and_index_BAM
 
 __all__ = [
     "align_and_sort_BAM",
+    "aligned_BAM_to_bed",
     "binarize_converted_base_identities",
     "canoncall",
     "converted_BAM_to_adata",
     "count_aligned_reads",
     "extract_base_identities",
     "extract_mods",
+    "extract_readnames_from_BAM",
     "find_conversion_sites",
     "convert_FASTA_record",
     "generate_converted_FASTA",

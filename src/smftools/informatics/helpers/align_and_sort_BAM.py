@@ -16,6 +16,8 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
     """
     import subprocess
     import os
+    from .aligned_BAM_to_bed import aligned_BAM_to_bed
+    from .extract_readnames_from_BAM import extract_readnames_from_BAM
     input_basename = os.path.basename(input)
     input_suffix = '.' + input_basename.split('.')[1]
 
@@ -27,7 +29,7 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     
     # Run dorado aligner
-    subprocess.run(["dorado", "aligner", "--secondary", "no", "-N", "0", fasta, input], stdout=open(aligned_output, "w")) # test this to see if it works
+    subprocess.run(["dorado", "aligner", "--secondary", "no", fasta, input], stdout=open(aligned_output, "w")) # test this to see if it works
 
     # Sort the BAM on positional coordinates
     subprocess.run(["samtools", "sort", "-o", aligned_sorted_output, aligned_output])
@@ -36,17 +38,7 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
     subprocess.run(["samtools", "index", aligned_sorted_output])
 
     # Make a bed file of coordinates for the BAM
-    samtools_view = subprocess.Popen(["samtools", "view", aligned_sorted_output], stdout=subprocess.PIPE) 
-    with open(f"{aligned_sorted_BAM}_bed.bed", "w") as output_file:
-        awk_process = subprocess.Popen(["awk", '{print $3, $4, $4+length($10)-1}'], stdin=samtools_view.stdout, stdout=output_file)    
-    samtools_view.stdout.close()
-    awk_process.wait()
-    samtools_view.wait()
+    aligned_BAM_to_bed(aligned_sorted_output)
 
     # Make a text file of reads for the BAM
-    samtools_view = subprocess.Popen(["samtools", "view", aligned_sorted_output], stdout=subprocess.PIPE)
-    with open(f"{aligned_sorted_BAM}_read_names.txt", "w") as output_file:
-        cut_process = subprocess.Popen(["cut", "-f1"], stdin=samtools_view.stdout, stdout=output_file)   
-    samtools_view.stdout.close()
-    cut_process.wait()
-    samtools_view.wait()
+    extract_readnames_from_BAM(aligned_sorted_output)

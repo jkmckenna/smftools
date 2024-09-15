@@ -17,6 +17,8 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     import subprocess
     import glob
     from .separate_bam_by_bc import separate_bam_by_bc
+    from .aligned_BAM_to_bed import aligned_BAM_to_bed
+    from .extract_readnames_from_BAM import extract_readnames_from_BAM
 
     os.chdir(split_dir)
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
@@ -27,3 +29,9 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     bam_files = glob.glob(os.path.join(split_dir, bam_pattern))
     for input_file in bam_files:
         subprocess.run(["samtools", "index", input_file])
+
+        # Make a bed file of coordinates for the BAM
+        aligned_BAM_to_bed(input_file)
+
+        # Make a text file of reads for the BAM
+        extract_readnames_from_BAM(input_file)
