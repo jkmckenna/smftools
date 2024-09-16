@@ -12,7 +12,7 @@ Many use cases for smftools begin here. For most users, the call below will be s
 
 ```
 config_path = "/Path_to_experiment_config.csv"
-smf.inform.pod5_to_adata(config_path)
+smf.inform.load_adata(config_path)
 ```
 
 ## Loading AnnData objects created by the informatics module
@@ -68,7 +68,7 @@ smf.inform.__all__
 This lists the functions within any given module. If you want to see the associated docstring for a given function, here is an example:
 
 ```
-print(smf.inform.pod5_to_adata.__doc__)
+print(smf.inform.load_adata.__doc__)
 ```
 
 These docstrings will provide a brief description of the function and also tell you the input parameters and what the function returns.

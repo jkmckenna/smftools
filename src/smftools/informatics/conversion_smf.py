@@ -1,8 +1,8 @@
-## pod5_conversion
+## conversion_smf
 
-def pod5_conversion(fasta, output_directory, conversion_types, strands, model, pod5_dir, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix):
+def conversion_smf(fasta, output_directory, conversion_types, strands, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall):
     """
-    Converts a POD5 file from a nanopore conversion SMF experiment to an adata object.
+    Processes sequencing data from a conversion SMF experiment to an adata object.
 
     Parameters:
         fasta (str): File path to the reference genome to align to.
@@ -10,12 +10,13 @@ def pod5_conversion(fasta, output_directory, conversion_types, strands, model, p
         conversion_type (list): A list of strings of the conversion types to use in the analysis.
         strands (list): A list of converstion strands to use in the experiment.
         model (str): a string representing the file path to the dorado basecalling model.
-        pod5_dir (str): a string representing the file path to the experiment directory containing the POD5 files.
+        input_data_path (str): a string representing the file path to the experiment directory/file containing sequencing data
         split_dir (str): A string representing the file path to the directory to split the BAMs into.
         barcode_kit (str): A string representing the barcoding kit used in the experiment.
         mapping_threshold (float): A value in between 0 and 1 to threshold the minimal fraction of aligned reads which map to the reference region. References with values above the threshold are included in the output adata.
         experiment_name (str): A string to provide an experiment name to the output adata file.
         bam_suffix (str): A suffix to add to the bam file.
+        basecall (bool): Whether to go through basecalling or not.
 
     Returns:
         None
@@ -24,7 +25,11 @@ def pod5_conversion(fasta, output_directory, conversion_types, strands, model, p
     import os
     model_basename = os.path.basename(model)
     model_basename = model_basename.replace('.', '_')
-    bam=f"{output_directory}/{model_basename}_canonical_basecalls"
+    if basecall:
+        bam=f"{output_directory}/{model_basename}_canonical_basecalls"
+    else:
+        bam_base=os.path.basename(input_data_path).split('.bam')[0]
+        bam=os.path.join(output_directory, bam_base)
     aligned_BAM=f"{bam}_aligned"
     aligned_sorted_BAM=f"{aligned_BAM}_sorted"
 
@@ -43,11 +48,14 @@ def pod5_conversion(fasta, output_directory, conversion_types, strands, model, p
         generate_converted_FASTA(fasta, conversion_types, strands, converted_FASTA)
 
     # 2) Basecall from the input POD5 to generate a singular output BAM
-    canoncall_output = bam + bam_suffix
-    if os.path.exists(canoncall_output):
-        print(canoncall_output + ' already exists. Using existing basecalled BAM.')
+    if basecall:
+        canoncall_output = bam + bam_suffix
+        if os.path.exists(canoncall_output):
+            print(canoncall_output + ' already exists. Using existing basecalled BAM.')
+        else:
+            canoncall(model, input_data_path, barcode_kit, bam, bam_suffix)
     else:
-        canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix)
+        canoncall_output = input_data_path
 
     # 3) Align the BAM to the converted reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
     aligned_output = aligned_BAM + bam_suffix
