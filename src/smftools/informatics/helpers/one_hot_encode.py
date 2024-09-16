@@ -3,17 +3,19 @@
 # String encodings
 def one_hot_encode(sequence):
     """
-    One hot encodes a sequence string.
+    One hot encodes a sequence list.
     Parameters:
-        sequence (str): A DNA sequence string.
+        sequence (list): A list of DNA base sequences.
 
     Returns:
-        one_hot_matrix (ndarray): A numpy ndarray holding a vstacked one hot encoding of the input sequence string.
+        flattened (ndarray): A numpy ndarray holding a flattened one hot encoding of the input sequence string.
     """
     import numpy as np
 
-    mapping = {'A': 0, 'C': 1, 'G': 2, 'T': 3, 'N': 4}
-    one_hot_matrix = np.zeros((len(sequence), 5), dtype=int)
-    for i, nucleotide in enumerate(sequence):
-        one_hot_matrix[i, mapping[nucleotide]] = 1
-    return one_hot_matrix
+    seq_array = np.array(sequence)
+    mapping = np.array(['A', 'C', 'G', 'T', 'N'])
+    seq_array[~np.isin(seq_array, mapping)] = 'N'
+    one_hot_matrix = (seq_array[:, None] == mapping).astype(int)
+    flattened = one_hot_matrix.flatten()
+
+    return flattened

@@ -21,14 +21,22 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     from .find_conversion_sites import find_conversion_sites
     from .count_aligned_reads import count_aligned_reads
     from .extract_base_identities import extract_base_identities
+    from .make_dirs import make_dirs
     from .one_hot_encode import one_hot_encode
+    from .ohe_batching import ohe_batching
     import pandas as pd
     import numpy as np
     import anndata as ad
     import os
-
+    from tqdm import tqdm
+    
     # Get all of the input BAM files
     files = os.listdir(split_dir)
+    # Make output dir
+    parent_dir = os.path.dirname(split_dir)
+    h5_dir = os.path.join(parent_dir, 'h5ads')
+    tmp_dir = os.path.join(parent_dir, 'tmp')
+    make_dirs([h5_dir, tmp_dir])
     # Change directory to the BAM directory
     os.chdir(split_dir)
     # Filter file names that contain the search string in their filename and keep them in a list
@@ -43,7 +51,9 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     # While populating the dictionary, also extract the longest sequence record in the input references
     max_reference_length = 0
     for conversion_type in conversion_types:
+        # Points to a list containing: 1) sequence length of the record, 2) top strand coordinate list, 3) bottom strand coorinate list, 4) sequence string unconverted , 5) Complement sequence unconverted
         modification_dict[conversion_type] = find_conversion_sites(converted_FASTA, conversion_type, conversion_types)
+        # Get the max reference length
         for record in modification_dict[conversion_type].keys():
             if modification_dict[conversion_type][record][0] > max_reference_length:
                 max_reference_length = modification_dict[conversion_type][record][0]
@@ -80,7 +90,8 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
             current_reference_length = modification_dict[mod_type][unconverted_chromosome_name][0]
             delta_max_length = max_reference_length - current_reference_length
             sequence = modification_dict[mod_type][unconverted_chromosome_name][3] + 'N'*delta_max_length
-            record_FASTA_dict[f'{record}'] = sequence
+            complement = modification_dict[mod_type][unconverted_chromosome_name][4] + 'N'*delta_max_length
+            record_FASTA_dict[f'{record}'] = [sequence, complement]
             #print(f'Chromosome: {chromosome}\nUnconverted Sequence: {sequence}')
 
             # Get a dictionary of positional identities keyed by read id
@@ -98,11 +109,17 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
             all_base_identities = extract_base_identities(bam, record, range(current_reference_length), max_reference_length)
             # One hot encode the sequence string of the reads
             print(f'One hot encoding base identities of all positions in each read')
-            one_hot_reads = {read_name: one_hot_encode(seq) for read_name, seq in all_base_identities.items()}
+            # One hot encode the sequence string of the reads
+            ohe_files = ohe_batching(all_base_identities, tmp_dir, record, batch_size=1000)
+            del all_base_identities
+            one_hot_reads = {}
+            n_rows_OHE = 5
+            for ohe_file in tqdm(ohe_files, desc="Reading in OHE reads"):
+                one_hot_reads.update(np.load(ohe_file))
 
             # Initialize empty DataFrames for each base
             read_names = list(one_hot_reads.keys())
-            sequence_length = one_hot_reads[read_names[0]].shape[0]
+            sequence_length = one_hot_reads[read_names[0]].reshape(n_rows_OHE, -1).shape[0]
             df_A = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
             df_C = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
             df_G = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
@@ -111,6 +128,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
 
             # Iterate through the dictionary and populate the DataFrames
             for read_name, one_hot_array in one_hot_reads.items():
+                one_hot_array = one_hot_array.reshape(n_rows_OHE, -1)
                 df_A.loc[read_name] = one_hot_array[:, 0]
                 df_C.loc[read_name] = one_hot_array[:, 1]
                 df_G.loc[read_name] = one_hot_array[:, 2]
@@ -146,22 +164,16 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                 else:
                     print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
 
+    # Set obs columns to type 'category'
+    for col in final_adata.obs.columns:
+        final_adata.obs[col] = final_adata.obs[col].astype('category')
+
     for record in record_FASTA_dict.keys():
         chromosome = record.split('_')[0]
-        sequence = record_FASTA_dict[record]
-        final_adata.uns[f'{record}_FASTA_sequence'] = sequence
-        final_adata.var[f'{record}_FASTA_sequence'] = list(sequence)
-
-        # # May need to remove the bottom for conversion SMF
-        # record_subset = final_adata[final_adata.obs['Reference'] == record].copy()
-        # layer_map, layer_counts = {}, []
-        # for i, layer in enumerate(record_subset.layers):
-        #     layer_map[i] = layer.split('_')[0]
-        #     layer_counts.append(np.sum(record_subset.layers[layer], axis=0))
-        # count_array = np.array(layer_counts)
-        # nucleotide_indexes = np.argmax(count_array, axis=0)
-        # consensus_sequence_list = [layer_map[i] for i in nucleotide_indexes]
-        # final_adata.var[f'{record}_consensus_across_samples'] = consensus_sequence_list
+        sequence = record_FASTA_dict[record][0]
+        complement = record_FASTA_dict[record][1]
+        final_adata.var[f'{chromosome}_unconverted_top_strand_FASTA_sequence'] = list(sequence)
+        final_adata.var[f'{chromosome}_unconverted_bottom_strand_FASTA_sequence'] = list(complement)
 
     ######################################################################################################
 

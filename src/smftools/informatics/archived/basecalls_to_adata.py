@@ -24,20 +24,22 @@ def basecalls_to_adata(config_path):
     var_dict = experiment_config.var_dict
 
     # These below variables will point to the value np.nan if they are either empty in the experiment_config.csv or if the variable is fully omitted from the csv.
-    conversion_types = var_dict.get('conversion_types', np.nan)
-    output_directory = var_dict.get('output_directory', np.nan)
-    smf_modality = var_dict.get('smf_modality', np.nan)
-    fasta = var_dict.get('fasta', np.nan)
-    fasta_regions_of_interest = var_dict.get("fasta_regions_of_interest", np.nan)
-    basecalled_path = var_dict.get('basecalled_path', np.nan)
-    mapping_threshold = var_dict.get('mapping_threshold', np.nan)
-    experiment_name = var_dict.get('experiment_name', np.nan)
-    filter_threshold = var_dict.get('filter_threshold', np.nan)
-    m6A_threshold = var_dict.get('m6A_threshold', np.nan)
-    m5C_threshold = var_dict.get('m5C_threshold', np.nan)
-    hm5C_threshold = var_dict.get('hm5C_threshold', np.nan)
-    mod_list = var_dict.get('mod_list', np.nan)
-    batch_size = var_dict.get('batch_size', np.nan)
+    default_value = None
+    
+    conversion_types = var_dict.get('conversion_types', default_value)
+    output_directory = var_dict.get('output_directory', default_value)
+    smf_modality = var_dict.get('smf_modality', default_value)
+    fasta = var_dict.get('fasta', default_value)
+    fasta_regions_of_interest = var_dict.get("fasta_regions_of_interest", default_value)
+    basecalled_path = var_dict.get('basecalled_path', default_value)
+    mapping_threshold = var_dict.get('mapping_threshold', default_value)
+    experiment_name = var_dict.get('experiment_name', default_value)
+    filter_threshold = var_dict.get('filter_threshold', default_value)
+    m6A_threshold = var_dict.get('m6A_threshold', default_value)
+    m5C_threshold = var_dict.get('m5C_threshold', default_value)
+    hm5C_threshold = var_dict.get('hm5C_threshold', default_value)
+    mod_list = var_dict.get('mod_list', default_value)
+    batch_size = var_dict.get('batch_size', default_value)
     thresholds = [filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold]
 
     split_path = os.path.join(output_directory, split_dir)
@@ -48,12 +50,13 @@ def basecalls_to_adata(config_path):
     conversions += conversion_types
 
     # If a bed file is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
-    if not np.isnan(fasta_regions_of_interest) and '.bed' in fasta_regions_of_interest:
-        fasta_basename = os.path.basename(fasta)
-        bed_basename_minus_suffix = os.path.basename(fasta_regions_of_interest).split('.bed')[0]
-        output_FASTA = bed_basename_minus_suffix + '_' + fasta_basename
-        subsample_fasta_from_bed(fasta, fasta_regions_of_interest, output_directory, output_FASTA)
-        fasta = output_FASTA
+    if fasta_regions_of_interest != None:
+        if '.bed' in fasta_regions_of_interest:
+            fasta_basename = os.path.basename(fasta)
+            bed_basename_minus_suffix = os.path.basename(fasta_regions_of_interest).split('.bed')[0]
+            output_FASTA = bed_basename_minus_suffix + '_' + fasta_basename
+            subsample_fasta_from_bed(fasta, fasta_regions_of_interest, output_directory, output_FASTA)
+            fasta = output_FASTA
 
     if smf_modality == 'conversion':
         from .bam_conversion import bam_conversion

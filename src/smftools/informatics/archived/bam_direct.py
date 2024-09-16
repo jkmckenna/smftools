@@ -48,11 +48,11 @@ def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_di
         make_dirs([split_dir])
         split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory)
     # 3) Using nanopore modkit to work with modified BAM files ###
-    modQC(aligned_sorted_output, thresholds) # get QC metrics for mod calls
     if os.path.isdir(mod_bed_dir):
         print(mod_bed_dir + ' already exists')
     else:
         make_dirs([mod_bed_dir])  
+        modQC(aligned_sorted_output, thresholds) # get QC metrics for mod calls
         make_modbed(aligned_sorted_output, thresholds, mod_bed_dir) # Generate bed files of position methylation summaries for every sample
     if os.path.isdir(mod_tsv_dir):
         print(mod_tsv_dir + ' already exists')
@@ -60,4 +60,4 @@ def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_di
         make_dirs([mod_tsv_dir])  
         extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix) # Extract methylations calls for split BAM files into split TSV files
     #4 Load the modification data from TSVs into an adata object
-    modkit_extract_to_adata(fasta, aligned_sorted_output, mapping_threshold, experiment_name, mods, batch_size)
+    modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir)
