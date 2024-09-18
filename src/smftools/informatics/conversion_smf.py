@@ -23,9 +23,9 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
     """
     from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM, make_dirs
     import os
-    model_basename = os.path.basename(model)
-    model_basename = model_basename.replace('.', '_')
     if basecall:
+        model_basename = os.path.basename(model)
+        model_basename = model_basename.replace('.', '_')
         bam=f"{output_directory}/{model_basename}_canonical_basecalls"
     else:
         bam_base=os.path.basename(input_data_path).split('.bam')[0]

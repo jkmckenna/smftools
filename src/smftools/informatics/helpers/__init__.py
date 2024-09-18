@@ -2,6 +2,7 @@ from .align_and_sort_BAM import align_and_sort_BAM
 from .aligned_BAM_to_bed import aligned_BAM_to_bed
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .canoncall import canoncall
+from .complement_base_list import complement_base_list
 from .converted_BAM_to_adata import converted_BAM_to_adata
 from .concatenate_fastqs_to_bam import concatenate_fastqs_to_bam
 from .count_aligned_reads import count_aligned_reads
@@ -28,6 +29,7 @@ __all__ = [
     "aligned_BAM_to_bed",
     "binarize_converted_base_identities",
     "canoncall",
+    "complement_base_list",
     "converted_BAM_to_adata",
     "concatenate_fastqs_to_bam",
     "count_aligned_reads",

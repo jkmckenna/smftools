@@ -5,7 +5,7 @@ def binarize_converted_base_identities(base_identities, strand, modification_typ
     Binarizes conversion SMF data within a sequence string
 
     Parameters:
-        base_identities (dict): A dictionary returned by extract_base_identity_at_coordinates.
+        base_identities (dict): A dictionary returned by extract_base_identities. Keyed by read name. Points to a list of base identities.
         strand (str): A string indicating which strand was converted in the experiment (options are 'top' and 'bottom').
         modification_type (str): A string indicating the modification type of interest (options are '5mC' and '6mA').
     
