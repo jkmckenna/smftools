@@ -19,6 +19,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     from .. import readwrite
     from .binarize_converted_base_identities import binarize_converted_base_identities
     from .find_conversion_sites import find_conversion_sites
+    from .complement_base_list import complement_base_list
     from .count_aligned_reads import count_aligned_reads
     from .extract_base_identities import extract_base_identities
     from .make_dirs import make_dirs
@@ -29,6 +30,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     import anndata as ad
     import os
     from tqdm import tqdm
+    import gc
     
     # Get all of the input BAM files
     files = os.listdir(split_dir)
@@ -43,6 +45,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     bams = [bam for bam in files if bam_suffix in bam and '.bai' not in bam]
     # Sort file list by names and print the list of file names
     bams.sort()
+    bam_path_list = [os.path.join(split_dir, bam) for bam in bams]
     print(f'Found the following BAMS: {bams}')
     final_adata = None
 
@@ -62,13 +65,15 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     record_FASTA_dict = {}
 
     # Iterate over the experiment BAM files
-    for bam_index, bam in enumerate(bams):
+    for bam_index, bam in enumerate(bam_path_list):
+        fwd_mapped_reads = set()
+        rev_mapped_reads = set()
         # Give each bam a sample name
-        sample = bam.split(sep=bam_suffix)[0]
+        sample = bams[bam_index].split(sep=bam_suffix)[0]
         # look at aligned read proportions in the bam
         aligned_reads_count, unaligned_reads_count, record_counts = count_aligned_reads(bam)
         percent_aligned = aligned_reads_count*100 / (aligned_reads_count+unaligned_reads_count)
-        print(f'{percent_aligned} percent of total reads in {bam} aligned successfully')
+        print(f'{percent_aligned} percent of total reads in {bams[bam_index]} aligned successfully')
         records_to_analyze = []
         # Iterate over converted reference strands and decide which to use in the analysis based on the mapping_threshold
         for record in record_counts:
@@ -78,6 +83,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
         print(f'Records to analyze: {records_to_analyze}')
         # Iterate over records to analyze (ie all conversions detected)
         for record in records_to_analyze:
+            bam_record_save = os.path.join(tmp_dir, f'tmp_file_OHE_dict_{bam_index}_{record}.h5ad.gz')
             mod_type, strand = record.split('_')[-2:]
             if strand == 'top':
                 strand_index = 1
@@ -91,78 +97,126 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
             delta_max_length = max_reference_length - current_reference_length
             sequence = modification_dict[mod_type][unconverted_chromosome_name][3] + 'N'*delta_max_length
             complement = modification_dict[mod_type][unconverted_chromosome_name][4] + 'N'*delta_max_length
-            record_FASTA_dict[f'{record}'] = [sequence, complement]
+            record_FASTA_dict[f'{record}'] = [sequence, complement, chromosome]
             #print(f'Chromosome: {chromosome}\nUnconverted Sequence: {sequence}')
 
             # Get a dictionary of positional identities keyed by read id
-            print(f'Extracting base identities of target positions')
-            target_base_identities = extract_base_identities(bam, record, positions, max_reference_length) 
+            print(f'Extracting base identities from reads')
+            fwd_mapped_base_identities, rev_mapped_base_identities = extract_base_identities(bam, record, range(current_reference_length), max_reference_length)
+            # Store read names of fwd and rev mapped reads
+            fwd_mapped_reads.update(fwd_mapped_base_identities.keys())
+            rev_mapped_reads.update(rev_mapped_base_identities.keys())
+            # Complement the rev mapped reads to get the proper string for binarizing the methylation states
+            complemented_rev_mapped_base_identities = {read: complement_base_list(base_identities) for read, base_identities in rev_mapped_base_identities.items()}
             # binarize the dictionary of positional identities
-            print(f'Binarizing base identities of target positions')
-            binarized_base_identities = binarize_converted_base_identities(target_base_identities, strand, mod_type) 
+            print(f'Binarizing base identities')
+            fwd_binarized_base_identities = binarize_converted_base_identities(fwd_mapped_base_identities, strand, mod_type) 
+            rev_binarized_base_identities = binarize_converted_base_identities(complemented_rev_mapped_base_identities, strand, mod_type)
+            merged_binarized_base_identities = {**fwd_binarized_base_identities, **rev_binarized_base_identities}
             # converts the base identity dictionary to a dataframe.
-            binarized_base_identities_df = pd.DataFrame.from_dict(binarized_base_identities, orient='index') 
+            binarized_base_identities_df = pd.DataFrame.from_dict(merged_binarized_base_identities, orient='index') 
             sorted_index = sorted(binarized_base_identities_df.index)
             binarized_base_identities_df = binarized_base_identities_df.reindex(sorted_index)
-            # Get the sequence string of every read
-            print(f'Extracting base identities of all positions in each read')
-            all_base_identities = extract_base_identities(bam, record, range(current_reference_length), max_reference_length)
-            # One hot encode the sequence string of the reads
-            print(f'One hot encoding base identities of all positions in each read')
-            # One hot encode the sequence string of the reads
-            ohe_files = ohe_batching(all_base_identities, tmp_dir, record, batch_size=1000)
-            del all_base_identities
-            one_hot_reads = {}
-            n_rows_OHE = 5
-            for ohe_file in tqdm(ohe_files, desc="Reading in OHE reads"):
-                one_hot_reads.update(np.load(ohe_file))
-
-            # Initialize empty DataFrames for each base
-            read_names = list(one_hot_reads.keys())
-            sequence_length = one_hot_reads[read_names[0]].reshape(n_rows_OHE, -1).shape[0]
-            df_A = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-            df_C = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-            df_G = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-            df_T = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-            df_N = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-
-            # Iterate through the dictionary and populate the DataFrames
-            for read_name, one_hot_array in one_hot_reads.items():
-                one_hot_array = one_hot_array.reshape(n_rows_OHE, -1)
-                df_A.loc[read_name] = one_hot_array[:, 0]
-                df_C.loc[read_name] = one_hot_array[:, 1]
-                df_G.loc[read_name] = one_hot_array[:, 2]
-                df_T.loc[read_name] = one_hot_array[:, 3]
-                df_N.loc[read_name] = one_hot_array[:, 4]
-
-            ohe_df_map = {0: df_A, 1: df_C, 2: df_G, 3: df_T, 4: df_N}   
 
             # Load an anndata object with the sample data
             X = binarized_base_identities_df.values
             adata = ad.AnnData(X, dtype=X.dtype)
-            adata.obs_names = binarized_base_identities_df.index
-            adata.obs_names = adata.obs_names.astype(str)
-            adata.var_names = binarized_base_identities_df.columns
-            adata.var_names = adata.var_names.astype(str)
-            adata.obs['Sample'] = [sample] * len(adata)
-            adata.obs['Strand'] = [strand] * len(adata)
-            adata.obs['Dataset'] = [mod_type] * len(adata)
-            adata.obs['Reference'] = [record] * len(adata)
-            adata.obs['Reference_chromosome'] = [chromosome] * len(adata)
-            
-            for j, base in enumerate(['A', 'C', 'G', 'T', 'N']):
-                adata.layers[f'{base}_binary_encoding'] = ohe_df_map[j].values 
+            if adata.shape[0] > 0:
+                adata.obs_names = binarized_base_identities_df.index
+                adata.obs_names = adata.obs_names.astype(str)
+                adata.var_names = binarized_base_identities_df.columns
+                adata.var_names = adata.var_names.astype(str)
+                adata.obs['Sample'] = [sample] * len(adata)
+                adata.obs['Strand'] = [strand] * len(adata)
+                adata.obs['Dataset'] = [mod_type] * len(adata)
+                adata.obs['Reference'] = [record] * len(adata)
+                adata.obs['Reference_chromosome'] = [chromosome] * len(adata)
 
-            if final_adata:
-                if adata.shape[0] > 0:
-                    final_adata = ad.concat([final_adata, adata], join='outer', index_unique=None)
+                read_mapping_direction = []
+                for read_id in adata.obs_names:
+                    if read_id in fwd_mapped_reads:
+                        read_mapping_direction.append('fwd')
+                    elif read_id in rev_mapped_reads:
+                        read_mapping_direction.append('rev')
+                    else:
+                        read_mapping_direction.append('unk')
+
+                adata.obs['Read_mapping_direction'] = read_mapping_direction
+
+                # One hot encode the sequence string of the reads
+                if os.path.exists(bam_record_save):
+                    bam_record_ohe_files = ad.read_h5ad(bam_record_save).uns
+                    print('Found existing OHE reads, using these')
                 else:
-                    print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
+                    print(f'One hot encoding base identities of all positions in each read')
+                    # One hot encode the sequence string of the reads
+                    fwd_ohe_files = ohe_batching(fwd_mapped_base_identities, tmp_dir, record, f"{bam_index}_fwd",batch_size=100000)
+                    rev_ohe_files = ohe_batching(rev_binarized_base_identities, tmp_dir, record, f"{bam_index}_rev",batch_size=100000)
+                    ohe_files = fwd_ohe_files + rev_ohe_files
+                    del fwd_mapped_base_identities, rev_mapped_base_identities
+                    # Save out the ohe file paths
+                    X = np.random.rand(1, 1)
+                    tmp_ad = ad.AnnData(X=X, uns=ohe_files) 
+                    tmp_ad.write_h5ad(bam_record_save, compression='gzip')
+
+                # Load in the OHE reads for the BAM
+                one_hot_reads = {}
+                n_rows_OHE = 5
+                for ohe_file in tqdm(bam_record_ohe_files, desc="Reading in OHE reads"):
+                    tmp_ohe_dict = ad.read_h5ad(ohe_file).uns
+                    one_hot_reads.update(tmp_ohe_dict)
+                    del tmp_ohe_dict
+
+                read_names = list(one_hot_reads.keys())
+                dict_A, dict_C, dict_G, dict_T, dict_N = {}, {}, {}, {}, {}
+
+                sequence_length = one_hot_reads[read_names[0]].reshape(n_rows_OHE, -1).shape[1]
+                df_A = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
+                df_C = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
+                df_G = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
+                df_T = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
+                df_N = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
+
+                for read_name, one_hot_array in one_hot_reads.items():
+                    one_hot_array = one_hot_array.reshape(n_rows_OHE, -1)
+                    dict_A[read_name] = one_hot_array[0, :]
+                    dict_C[read_name] = one_hot_array[1, :]
+                    dict_G[read_name] = one_hot_array[2, :]
+                    dict_T[read_name] = one_hot_array[3, :]
+                    dict_N[read_name] = one_hot_array[4, :]
+
+                del one_hot_reads
+                gc.collect()
+
+                for j, read_name in tqdm(enumerate(sorted_index), desc='Loading dataframes of OHE reads', total=len(sorted_index)):
+                    df_A.iloc[j] = dict_A[read_name]
+                    df_C.iloc[j] = dict_C[read_name]
+                    df_G.iloc[j] = dict_G[read_name]
+                    df_T.iloc[j] = dict_T[read_name]
+                    df_N.iloc[j] = dict_N[read_name]
+
+                del dict_A, dict_C, dict_G, dict_T, dict_N
+                gc.collect()
+
+                ohe_df_map = {0: df_A, 1: df_C, 2: df_G, 3: df_T, 4: df_N}
+                
+                for j, base in enumerate(['A', 'C', 'G', 'T', 'N']):
+                    adata.layers[f'{base}_binary_encoding'] = ohe_df_map[j].values 
+                    ohe_df_map[j] = None # Reassign pointer for memory usage purposes
+
+                if final_adata:
+                    if adata.shape[0] > 0:
+                        final_adata = ad.concat([final_adata, adata], join='outer', index_unique=None)
+                    else:
+                        print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
+                else:
+                    if adata.shape[0] > 0:
+                        final_adata = adata
+                    else:
+                        print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
+
             else:
-                if adata.shape[0] > 0:
-                    final_adata = adata
-                else:
-                    print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
+                print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
 
     # Set obs columns to type 'category'
     for col in final_adata.obs.columns:

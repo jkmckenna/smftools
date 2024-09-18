@@ -1,19 +1,21 @@
 # ohe_batching
 
-def ohe_batching(base_identities, tmp_dir, record, batch_size=10000):
+def ohe_batching(base_identities, tmp_dir, record, prefix='', batch_size=100000):
     """
-    Processes base identities to one-hot encoded matrices and writes to a pickle file in batches.
+    Processes base identities to one-hot encoded matrices and writes to a h5ad file in batches.
 
     Parameters:
         base_identities (dict): A dictionary of read names and sequences.
         tmp_dir (str): Path to directory where the files will be saved.
         record (str): Name of the record.
+        prefix (str): Prefix to add to the output file name
         batch_size (int): Number of reads to process in each batch.
 
     Returns:
         ohe_file (list): list of output file names
     """
     import os
+    import anndata as ad
     import numpy as np
     from tqdm import tqdm
     from .one_hot_encode import one_hot_encode
@@ -30,8 +32,10 @@ def ohe_batching(base_identities, tmp_dir, record, batch_size=10000):
         count += 1
         # If the batch size is reached, write out the batch and reset
         if count >= batch_size:
-            save_name = os.path.join(tmp_dir, f'tmp_{record}_{batch_number}.npz')
-            np.savez(save_name, **batch)
+            save_name = os.path.join(tmp_dir, f'tmp_{prefix}_{record}_{batch_number}.h5ad.gz')
+            X = np.random.rand(1, 1)
+            tmp_ad = ad.AnnData(X=X, uns=batch) 
+            tmp_ad.write_h5ad(save_name, compression='gzip')
             file_names.append(save_name)
             batch.clear()
             count = 0
@@ -39,8 +43,10 @@ def ohe_batching(base_identities, tmp_dir, record, batch_size=10000):
 
     # Write out any remaining reads in the final batch
     if batch:
-        save_name = os.path.join(tmp_dir, f'tmp_{record}_{batch_number}.npz')
-        np.savez(save_name, **batch)
+        save_name = os.path.join(tmp_dir, f'tmp_{prefix}_{record}_{batch_number}.h5ad.gz')
+        X = np.random.rand(1, 1)
+        tmp_ad = ad.AnnData(X=X, uns=batch) 
+        tmp_ad.write_h5ad(save_name, compression='gzip')
         file_names.append(save_name)
 
     return file_names

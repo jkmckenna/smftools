@@ -24,10 +24,11 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
     """
     from .helpers import align_and_sort_BAM, extract_mods, make_modbed, modcall, modkit_extract_to_adata, modQC, split_and_index_BAM, make_dirs
     import os
-    model_basename = os.path.basename(model)
-    model_basename = model_basename.replace('.', '_')
-    mod_string = "_".join(mod_list)
+
     if basecall:
+        model_basename = os.path.basename(model)
+        model_basename = model_basename.replace('.', '_')
+        mod_string = "_".join(mod_list)
         bam=f"{output_directory}/{model_basename}_{mod_string}_calls"
     else:
         bam_base=os.path.basename(input_data_path).split('.bam')[0]
@@ -82,4 +83,4 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix) # Extract methylations calls for split BAM files into split TSV files
 
     #5 Load the modification data from TSVs into an adata object
-    modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size)
+    modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir)

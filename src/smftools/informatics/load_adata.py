@@ -14,10 +14,9 @@ def load_adata(config_path):
         None
     """
     # Lazy importing of packages
-    from .helpers import LoadExperimentConfig, make_dirs
+    from .helpers import LoadExperimentConfig, make_dirs, concatenate_fastqs_to_bam
     from .fast5_to_pod5 import fast5_to_pod5
     from .subsample_fasta_from_bed import subsample_fasta_from_bed
-    from .concatenate_fastqs_to_bam import concatenate_fastqs_to_bam
     import os
     import numpy as np
     from pathlib import Path
