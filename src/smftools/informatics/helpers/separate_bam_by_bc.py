@@ -1,7 +1,7 @@
 ## separate_bam_by_bc
 
 # General
-def separate_bam_by_bc(input_bam, output_prefix, bam_suffix):
+def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
     """
     Separates an input BAM file on the BC SAM tag values.
 
@@ -9,6 +9,7 @@ def separate_bam_by_bc(input_bam, output_prefix, bam_suffix):
         input_bam (str): File path to the BAM file to split.
         output_prefix (str): A prefix to append to the output BAM.
         bam_suffix (str): A suffix to add to the bam file.
+        split_dir (str): String indicating path to directory to split BAMs into
     
     Returns:
         None
@@ -31,7 +32,8 @@ def separate_bam_by_bc(input_bam, output_prefix, bam_suffix):
                 bc_tag = read.get_tag("BC", with_value_type=True)[0].split('barcode')[1]
                 # Open the output BAM file corresponding to the barcode
                 if bc_tag not in output_files:
-                    output_files[bc_tag] = pysam.AlignmentFile(f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}", "wb", header=bam.header)
+                    output_path = os.path.join(split_dir, f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}")
+                    output_files[bc_tag] = pysam.AlignmentFile(output_path, "wb", header=bam.header)
                 # Write the read to the corresponding output BAM file
                 output_files[bc_tag].write(read)
             except KeyError:

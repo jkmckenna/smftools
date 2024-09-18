@@ -22,7 +22,7 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
     Returns:
         None   
     """
-    from .helpers import align_and_sort_BAM, extract_mods, make_modbed, modcall, modkit_extract_to_adata, modQC, split_and_index_BAM, make_dirs
+    from .helpers import align_and_sort_BAM, extract_mods, get_chromosome_lengths, make_modbed, modcall, modkit_extract_to_adata, modQC, split_and_index_BAM, make_dirs
     import os
 
     if basecall:
@@ -41,6 +41,9 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
     mods = [mod_map[mod] for mod in mod_list]
+
+    # Make a FAI and .chrom.names file for the fasta
+    get_chromosome_lengths(fasta)
 
     os.chdir(output_directory)
 
@@ -67,7 +70,7 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         print(split_dir + ' already exists. Using existing aligned/sorted/split BAMs.')
     else:
         make_dirs([split_dir])
-        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory)
+        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, fasta)
 
     # 4) Using nanopore modkit to work with modified BAM files ###
     if os.path.isdir(mod_bed_dir):
