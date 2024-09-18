@@ -16,12 +16,21 @@ conda activate smftools
 pip install smftools
 ```
 
-Ensure that you can access dorado, samtools, and modkit executables from the terminal in this environment. These are all necessary for the functionality within the Informatics module.
+Ensure that you can access dorado, samtools, modkit, bedtools, and BedGraphtoBigWig executables from the terminal in this environment. These are all necessary for the functionality within the Informatics module.
 You may need to add them to $PATH if they are not globally configured.
 For example, if you want to check if dorado is executable, simply run this in the terminal:
 
 ```shell
 dorado
+```
+
+On Mac OSX, the following can be used to congigure bedtools (with brew) and BedGraphToBigWig (with wget). Change the BedGraphToBigWig link to include the correct architecture for your OS.
+
+```shell
+brew install bedtools
+wget http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.x86_64/bedGraphToBigWig
+chmod +x bedGraphToBigWig
+sudo mv bedGraphToBigWig /usr/local/bin/
 ```
 
 ## Development Version
