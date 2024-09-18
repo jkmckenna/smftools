@@ -1,6 +1,6 @@
 ## split_and_index_BAM
 
-def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory):
+def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, fasta):
     """
     A wrapper function for splitting BAMS and indexing them.
     Parameters:
@@ -8,6 +8,7 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_direct
         split_dir (str): A string representing the file path to the directory to split the BAMs into.
         bam_suffix (str): A suffix to add to the bam file.
         output_directory (str): A file path to the directory to output all the analyses.
+        fasta (str): File path to the reference genome to align to.
     
     Returns:
         None
@@ -22,18 +23,19 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_direct
     from .extract_readnames_from_BAM import extract_readnames_from_BAM
     from .make_dirs import make_dirs
 
-    os.chdir(split_dir)
-    plotting_dir = os.path.join(output_directory, 'bed_histograms')
-    make_dirs([plotting_dir])
+    plotting_dir = os.path.join(output_directory, 'demultiplexed_bed_histograms')
+    bed_dir = os.path.join(output_directory, 'demultiplexed_read_alignment_coordinates')
+    make_dirs([plotting_dir, bed_dir])
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     file_prefix = readwrite.date_string()
-    separate_bam_by_bc(aligned_sorted_output, file_prefix, bam_suffix)
+    separate_bam_by_bc(aligned_sorted_output, file_prefix, bam_suffix, split_dir)
     # Make a BAM index file for the BAMs in that directory
     bam_pattern = '*' + bam_suffix
     bam_files = glob.glob(os.path.join(split_dir, bam_pattern))
+    bam_files = [bam for bam in bam_files if '.bai' not in bam]
     for input_file in bam_files:
         subprocess.run(["samtools", "index", input_file])
         # Make a bed file of coordinates for the BAM
-        aligned_BAM_to_bed(input_file, plotting_dir)
+        aligned_BAM_to_bed(input_file, plotting_dir, bed_dir, fasta)
         # Make a text file of reads for the BAM
         extract_readnames_from_BAM(input_file)

@@ -30,7 +30,7 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     
     # Run dorado aligner
-    subprocess.run(["dorado", "aligner", "--secondary", "no", fasta, input], stdout=open(aligned_output, "w")) # test this to see if it works
+    subprocess.run(["dorado", "aligner", "--secondary", "no", fasta, input], stdout=open(aligned_output, "w"))
 
     # Sort the BAM on positional coordinates
     subprocess.run(["samtools", "sort", "-o", aligned_sorted_output, aligned_output])
@@ -40,8 +40,9 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
 
     # Make a bed file of coordinates for the BAM
     plotting_dir = os.path.join(output_directory, 'bed_histograms')
-    make_dirs([plotting_dir])
-    aligned_BAM_to_bed(aligned_sorted_output, plotting_dir)
+    bed_dir = os.path.join(output_directory, 'read_alignment_coordinates')
+    make_dirs([plotting_dir, bed_dir])
+    aligned_BAM_to_bed(aligned_sorted_output, plotting_dir, bed_dir, fasta)
 
     # Make a text file of reads for the BAM
     extract_readnames_from_BAM(aligned_sorted_output)

@@ -21,7 +21,7 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
     Returns:
         None
     """
-    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, split_and_index_BAM, make_dirs
+    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, get_chromosome_lengths, split_and_index_BAM, make_dirs
     import os
     if basecall:
         model_basename = os.path.basename(model)
@@ -47,6 +47,9 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
     else:
         generate_converted_FASTA(fasta, conversion_types, strands, converted_FASTA)
 
+    # Make a FAI and .chrom.names file for the converted fasta
+    get_chromosome_lengths(converted_FASTA)
+
     # 2) Basecall from the input POD5 to generate a singular output BAM
     if basecall:
         canoncall_output = bam + bam_suffix
@@ -70,7 +73,7 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
         print(split_dir + ' already exists. Using existing aligned/sorted/split BAMs.')
     else:
         make_dirs([split_dir])
-        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory)
+        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, fasta)
 
     # 5) Take the converted BAM and load it into an adata object. 
     converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix)
