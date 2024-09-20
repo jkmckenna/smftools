@@ -106,12 +106,12 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
             # Store read names of fwd and rev mapped reads
             fwd_mapped_reads.update(fwd_mapped_base_identities.keys())
             rev_mapped_reads.update(rev_mapped_base_identities.keys())
-            # Complement the rev mapped reads to get the proper string for binarizing the methylation states
-            complemented_rev_mapped_base_identities = {read: complement_base_list(base_identities) for read, base_identities in rev_mapped_base_identities.items()}
+            # # Complement the rev mapped reads to get the proper string for binarizing the methylation states
+            # complemented_rev_mapped_base_identities = {read: complement_base_list(base_identities) for read, base_identities in rev_mapped_base_identities.items()}
             # binarize the dictionary of positional identities
             print(f'Binarizing base identities')
             fwd_binarized_base_identities = binarize_converted_base_identities(fwd_mapped_base_identities, strand, mod_type) 
-            rev_binarized_base_identities = binarize_converted_base_identities(complemented_rev_mapped_base_identities, strand, mod_type)
+            rev_binarized_base_identities = binarize_converted_base_identities(rev_mapped_base_identities, strand, mod_type)
             merged_binarized_base_identities = {**fwd_binarized_base_identities, **rev_binarized_base_identities}
             # converts the base identity dictionary to a dataframe.
             binarized_base_identities_df = pd.DataFrame.from_dict(merged_binarized_base_identities, orient='index') 

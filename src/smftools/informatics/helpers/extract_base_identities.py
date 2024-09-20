@@ -31,14 +31,14 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
         total_reads = bam.mapped
         for read in tqdm(bam.fetch(chromosome), desc='Extracting base identities from reads in BAM', total=total_reads):  
             # Only iterate over mapped reads
-            if not read.is_unmapped:
-                # Get sequence of read
+            if read.is_mapped:
+                # Get sequence of read. PySam reports fwd mapped reads as the true read sequence. Pysam reports rev mapped reads as the reverse complement of the read.
                 query_sequence = read.query_sequence
                 # If the read aligned as a reverse complement, mark that the read is reversed
                 if read.is_reverse:
                     # Initialize the read key in a temp base_identities dictionary by pointing to a N filled list of length reference_length.
                     rev_base_identities[read.query_name] = ['N'] * max_reference_length
-                    # Iterate over a list of tuples for the given read. The tuples contain the 0-indexed position relative to the read start, as well the 0-based index relative to the reference.
+                    # Iterate over a list of tuples for the given read. The tuples contain the 0-indexed position relative to the read.query_sequence start, as well the 0-based index relative to the reference.
                     for read_position, reference_position in read.get_aligned_pairs(matches_only=True):
                         # If the aligned read's reference coordinate is in the positions set and if the read position was successfully mapped
                         if reference_position in positions and read_position:
@@ -47,7 +47,7 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
                 else:
                     # Initialize the read key in a temp base_identities dictionary by pointing to a N filled list of length reference_length.
                     fwd_base_identities[read.query_name] = ['N'] * max_reference_length
-                    # Iterate over a list of tuples for the given read. The tuples contain the 0-indexed position relative to the read start, as well the 0-based index relative to the reference.
+                    # Iterate over a list of tuples for the given read. The tuples contain the 0-indexed position relative to the read.query_sequence start, as well the 0-based index relative to the reference.
                     for read_position, reference_position in read.get_aligned_pairs(matches_only=True):
                         # If the aligned read's reference coordinate is in the positions set and if the read position was successfully mapped
                         if reference_position in positions and read_position:
