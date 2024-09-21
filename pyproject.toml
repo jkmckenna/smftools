@@ -61,9 +61,10 @@ dynamic = ["version"]
 
 [project.urls]
 Source = "https://github.com/jkmckenna/smftools"
+Documentation = "https://smftools.readthedocs.io/"
 
 [project.optional-dependencies]
-base_tests = [
+tests = [
     "pytest",
     "pytest-cov"
 ]
