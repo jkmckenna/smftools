@@ -18,6 +18,9 @@ build/
 venv/
 /environment.yml
 
+# Tests
+/tests/_test_inputs/
+
 # OS
 .DS_Store
 .LSOverride

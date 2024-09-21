@@ -19,11 +19,9 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     from .. import readwrite
     from .binarize_converted_base_identities import binarize_converted_base_identities
     from .find_conversion_sites import find_conversion_sites
-    from .complement_base_list import complement_base_list
     from .count_aligned_reads import count_aligned_reads
     from .extract_base_identities import extract_base_identities
     from .make_dirs import make_dirs
-    from .one_hot_encode import one_hot_encode
     from .ohe_batching import ohe_batching
     import pandas as pd
     import numpy as np
