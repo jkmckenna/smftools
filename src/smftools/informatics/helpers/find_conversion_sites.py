@@ -34,7 +34,7 @@ def find_conversion_sites(fasta_file, modification_type, conversion_types):
                 #print('{0}: Iterating over record {1} in FASTA file {2}'.format(readwrite.time_string(), record, fasta_file))
                 # Extract the sequence string of the record
                 sequence = str(record.seq).upper()
-                complement = str(record.seq).complement().upper()
+                complement = str(record.seq.complement()).upper()
                 sequence_length = len(sequence)
                 if modification_type == '5mC':
                     # Iterate over the sequence string from the record

@@ -20,6 +20,7 @@ venv/
 
 # Tests
 /tests/_test_inputs/
+/tests/_test_outputs/
 
 # OS
 .DS_Store

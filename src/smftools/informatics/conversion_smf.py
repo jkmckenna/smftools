@@ -73,7 +73,7 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
         print(split_dir + ' already exists. Using existing aligned/sorted/split BAMs.')
     else:
         make_dirs([split_dir])
-        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, fasta)
+        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA)
 
     # 5) Take the converted BAM and load it into an adata object. 
     converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix)

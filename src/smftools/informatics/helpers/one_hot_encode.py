@@ -12,7 +12,7 @@ def one_hot_encode(sequence):
     """
     import numpy as np
 
-    seq_array = np.array(sequence)
+    seq_array = np.array(sequence, dtype='<U1')  # String dtype
     mapping = np.array(['A', 'C', 'G', 'T', 'N'])
     seq_array[~np.isin(seq_array, mapping)] = 'N'
     one_hot_matrix = (seq_array[:, None] == mapping).astype(int)

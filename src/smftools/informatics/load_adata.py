@@ -23,7 +23,7 @@ def load_adata(config_path):
 
     # Default params
     bam_suffix = '.bam' # If different, change from here.
-    split_dir = 'split_BAMs' # If different, change from here.
+    split_dir = 'demultiplexed_BAMs' # If different, change from here.
     strands = ['bottom', 'top'] # If different, change from here. Having both listed generally doesn't slow things down too much.
     conversions = ['unconverted'] # The name to use for the unconverted files. If different, change from here.
 
@@ -63,11 +63,11 @@ def load_adata(config_path):
 
     # If fasta_regions_of_interest is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
     if fasta_regions_of_interest and '.bed' in fasta_regions_of_interest:
-        fasta_basename = os.path.basename(fasta)
+        fasta_basename = os.path.basename(fasta).split('.fa')[0]
         bed_basename_minus_suffix = os.path.basename(fasta_regions_of_interest).split('.bed')[0]
-        output_FASTA = bed_basename_minus_suffix + '_' + fasta_basename
+        output_FASTA = fasta_basename + '_subsampled_by_' + bed_basename_minus_suffix + '.fasta'
         subsample_fasta_from_bed(fasta, fasta_regions_of_interest, output_directory, output_FASTA)
-        fasta = output_FASTA
+        fasta = os.path.join(output_directory, output_FASTA)
 
     # If conversion_types is passed:
     if conversion_types:

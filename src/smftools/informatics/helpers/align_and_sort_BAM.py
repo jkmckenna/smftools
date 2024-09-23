@@ -39,7 +39,7 @@ def align_and_sort_BAM(fasta, input, bam_suffix, output_directory):
     subprocess.run(["samtools", "index", aligned_sorted_output])
 
     # Make a bed file of coordinates for the BAM
-    plotting_dir = os.path.join(output_directory, 'bed_histograms')
+    plotting_dir = os.path.join(output_directory, 'coverage_and_readlength_histograms')
     bed_dir = os.path.join(output_directory, 'read_alignment_coordinates')
     make_dirs([plotting_dir, bed_dir])
     aligned_BAM_to_bed(aligned_sorted_output, plotting_dir, bed_dir, fasta)
