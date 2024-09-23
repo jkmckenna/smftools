@@ -93,16 +93,16 @@ packages = ["src/smftools"]
 path = "src/smftools/_version.py"
 
 [tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+    "--strict-markers",
+    "--doctest-modules",
+    "--pyargs",
+]
 testpaths = ["tests"]
 pythonpath = ["src"]
 xfail_strict = true
-markers = [
-    "internet: mark tests that requires internet access",
-    "optional: mark optional tests",
-    "private: mark tests that are private",
-]
 
 [tool.coverage.run]
-branch = true
 source = ["smftools"]
 omit = ["tests/*"]

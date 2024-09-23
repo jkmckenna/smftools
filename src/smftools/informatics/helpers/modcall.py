@@ -21,6 +21,8 @@ def modcall(model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix):
     output = bam + bam_suffix
     command = [
     "dorado", "basecaller", model, pod5_dir, "--kit-name", barcode_kit, "-Y",
-    "--modified-bases", ",".join(mod_list)]  # Join MOD_LIST elements with commas
+    "--modified-bases"]
+    command += mod_list
+    print(f'Running: {" ".join(command)}')
     with open(output, "w") as outfile:
         subprocess.run(command, stdout=outfile)

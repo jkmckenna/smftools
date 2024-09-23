@@ -92,7 +92,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
     # One hot encode read sequences and write them out into the tmp_dir as h5ad files. 
     # Save the file paths in the bam_record_ohe_files dict.
     bam_record_ohe_files = {}
-    bam_record_save = os.path.join(tmp_dir, f'tmp_file_dict.h5ad.gz')
+    bam_record_save = os.path.join(tmp_dir, 'tmp_file_dict.h5ad.gz')
     fwd_mapped_reads = set()
     rev_mapped_reads = set()
     # If this step has already been performed, read in the tmp_dile_dict
@@ -363,6 +363,24 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                     temp_adata.obs['Reference'] = [f'{record}_{dataset}_{strand}'] * len(temp_adata)
                                     temp_adata.obs['Reference_chromosome'] = [f'{record}'] * len(temp_adata)
 
+                                    # Load in the one hot encoded reads from the current sample and record
+                                    one_hot_reads = {}
+                                    n_rows_OHE = 5
+                                    ohe_files = bam_record_ohe_files[f'{final_sample_index}_{record}']
+                                    print(f'Loading OHEs from {ohe_files}')
+                                    fwd_mapped_reads = set()
+                                    rev_mapped_reads = set()
+                                    for ohe_file in ohe_files:
+                                        tmp_ohe_dict = ad.read_h5ad(ohe_file).uns
+                                        one_hot_reads.update(tmp_ohe_dict)
+                                        if '_fwd_' in ohe_file:
+                                            fwd_mapped_reads.update(tmp_ohe_dict.keys())
+                                        elif '_rev_' in ohe_file:
+                                            rev_mapped_reads.update(tmp_ohe_dict.keys())
+                                        del tmp_ohe_dict
+
+                                    read_names = list(one_hot_reads.keys())
+
                                     read_mapping_direction = []
                                     for read_id in temp_adata.obs_names:
                                         if read_id in fwd_mapped_reads:
@@ -375,21 +393,8 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                     temp_adata.obs['Read_mapping_direction'] = read_mapping_direction
 
                                     del temp_df
-
-                                    # Load in the one hot encoded reads from the current sample and record
-                                    one_hot_reads = {}
-                                    n_rows_OHE = 5
-                                    ohe_files = bam_record_ohe_files[f'{final_sample_index}_{record}']
-                                    print(f'Loading OHEs from {ohe_files}')
-
-                                    for ohe_file in ohe_files:
-                                        tmp_ohe_dict = ad.read_h5ad(ohe_file).uns
-                                        one_hot_reads.update(tmp_ohe_dict)
-                                        del tmp_ohe_dict
-
-                                    read_names = list(one_hot_reads.keys())
+                                    
                                     dict_A, dict_C, dict_G, dict_T, dict_N = {}, {}, {}, {}, {}
-
                                     sequence_length = one_hot_reads[read_names[0]].reshape(n_rows_OHE, -1).shape[1]
                                     df_A = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
                                     df_C = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))

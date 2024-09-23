@@ -30,6 +30,8 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     from tqdm import tqdm
     import gc
     
+    ##########################################################################################
+    ## Get file paths and make necessary directories. ##
     # Get all of the input BAM files
     files = os.listdir(split_dir)
     # Make output dir
@@ -37,8 +39,6 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     h5_dir = os.path.join(parent_dir, 'h5ads')
     tmp_dir = os.path.join(parent_dir, 'tmp')
     make_dirs([h5_dir, tmp_dir])
-    # Change directory to the BAM directory
-    os.chdir(split_dir)
     # Filter file names that contain the search string in their filename and keep them in a list
     bams = [bam for bam in files if bam_suffix in bam and '.bai' not in bam]
     # Sort file list by names and print the list of file names
@@ -46,9 +46,15 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     bam_path_list = [os.path.join(split_dir, bam) for bam in bams]
     print(f'Found the following BAMS: {bams}')
     final_adata = None
+    ##########################################################################################
 
-    # Make a dictionary, keyed by modification type, that points to another dictionary of unconverted_record_ids. This points to a list of: 1) record length, 2) top strand conversion coordinates, 3) bottom strand conversion coordinates, 4) record sequence
+    ##########################################################################################
+
+    ## need to fix this section
+    # Make a dictionary, keyed by modification type, that points to another dictionary of unconverted_record_ids. This points to a list of: 1) record length, 2) top strand conversion coordinates, 3) bottom strand conversion coordinates, 4) sequence string unconverted , 5) Complement sequence unconverted
     modification_dict = {}
+    # Init a dict to be keyed by FASTA record that points to the sequence string of the unconverted record
+    record_FASTA_dict = {}
     # While populating the dictionary, also extract the longest sequence record in the input references
     max_reference_length = 0
     for conversion_type in conversion_types:
@@ -59,57 +65,59 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
             if modification_dict[conversion_type][record][0] > max_reference_length:
                 max_reference_length = modification_dict[conversion_type][record][0]
 
-    # Init a dict to be keyed by FASTA record that points to the sequence string of the unconverted record
-    record_FASTA_dict = {}
+            mod_type, strand = record.split('_')[-2:]
 
-    # Iterate over the experiment BAM files
+            chromosome = record.split('_{0}_{1}'.format(mod_type, strand))[0]
+            unconverted_chromosome_name = f'{chromosome}_{conversion_types[0]}_top'
+            current_reference_length = modification_dict[mod_type][unconverted_chromosome_name][0]
+            delta_max_length = max_reference_length - current_reference_length
+            sequence = modification_dict[mod_type][unconverted_chromosome_name][3] + 'N'*delta_max_length
+            complement = modification_dict[mod_type][unconverted_chromosome_name][4] + 'N'*delta_max_length
+            record_FASTA_dict[record] = [sequence, complement, chromosome, unconverted_chromosome_name, current_reference_length, delta_max_length, mod_type, strand]
+    ##########################################################################################
+
+    ##########################################################################################
+    bam_alignment_stats_dict = {}
+    records_to_analyze = []
     for bam_index, bam in enumerate(bam_path_list):
-        fwd_mapped_reads = set()
-        rev_mapped_reads = set()
-        # Give each bam a sample name
-        sample = bams[bam_index].split(sep=bam_suffix)[0]
+        bam_alignment_stats_dict[bam_index] = {}
         # look at aligned read proportions in the bam
         aligned_reads_count, unaligned_reads_count, record_counts = count_aligned_reads(bam)
         percent_aligned = aligned_reads_count*100 / (aligned_reads_count+unaligned_reads_count)
         print(f'{percent_aligned} percent of total reads in {bams[bam_index]} aligned successfully')
-        records_to_analyze = []
+        bam_alignment_stats_dict[bam_index]['Total'] = (aligned_reads_count, percent_aligned)
         # Iterate over converted reference strands and decide which to use in the analysis based on the mapping_threshold
         for record in record_counts:
             print(f'{record_counts[record][0]} reads mapped to reference record {record}. This is {record_counts[record][1]*100} percent of all mapped reads in the sample.')
             if record_counts[record][1] >= mapping_threshold:
                 records_to_analyze.append(record)
-        print(f'Records to analyze: {records_to_analyze}')
-        # Iterate over records to analyze (ie all conversions detected)
+                bam_alignment_stats_dict[bam_index]
+                bam_alignment_stats_dict[bam_index][record] = (record_counts[record][0], record_counts[record][1]*100)
+    records_to_analyze = set(records_to_analyze)
+    ##########################################################################################
+
+    ##########################################################################################
+    # One hot encode read sequences and write them out into the tmp_dir as h5ad files. 
+    # Save the file paths in the bam_record_ohe_files dict.
+    bam_record_ohe_files = {}
+
+    # Iterate over split bams
+    for bam_index, bam in enumerate(bam_path_list):
+        # Iterate over references to process
         for record in records_to_analyze:
-            bam_record_save = os.path.join(tmp_dir, f'tmp_file_OHE_dict_{bam_index}_{record}.h5ad.gz')
-            mod_type, strand = record.split('_')[-2:]
-            if strand == 'top':
-                strand_index = 1
-            elif strand == 'bottom':
-                strand_index = 2
+            sample = bams[bam_index].split(sep=bam_suffix)[0]
+            chromosome = record_FASTA_dict[record][2]
+            current_reference_length = record_FASTA_dict[record][4]
+            mod_type = record_FASTA_dict[record][6]
+            strand = record_FASTA_dict[record][7]
+            
+            # Extract the base identities of reads aligned to the record
+            fwd_base_identities, rev_base_identities = extract_base_identities(bam, record, range(current_reference_length), max_reference_length)
 
-            chromosome = record.split('_{0}_{1}'.format(mod_type, strand))[0]
-            unconverted_chromosome_name = f'{chromosome}_{conversion_types[0]}_top'
-            positions = modification_dict[mod_type][unconverted_chromosome_name][strand_index]
-            current_reference_length = modification_dict[mod_type][unconverted_chromosome_name][0]
-            delta_max_length = max_reference_length - current_reference_length
-            sequence = modification_dict[mod_type][unconverted_chromosome_name][3] + 'N'*delta_max_length
-            complement = modification_dict[mod_type][unconverted_chromosome_name][4] + 'N'*delta_max_length
-            record_FASTA_dict[f'{record}'] = [sequence, complement, chromosome]
-            #print(f'Chromosome: {chromosome}\nUnconverted Sequence: {sequence}')
-
-            # Get a dictionary of positional identities keyed by read id
-            print(f'Extracting base identities from reads')
-            fwd_mapped_base_identities, rev_mapped_base_identities = extract_base_identities(bam, record, range(current_reference_length), max_reference_length)
-            # Store read names of fwd and rev mapped reads
-            fwd_mapped_reads.update(fwd_mapped_base_identities.keys())
-            rev_mapped_reads.update(rev_mapped_base_identities.keys())
-            # # Complement the rev mapped reads to get the proper string for binarizing the methylation states
-            # complemented_rev_mapped_base_identities = {read: complement_base_list(base_identities) for read, base_identities in rev_mapped_base_identities.items()}
             # binarize the dictionary of positional identities
             print(f'Binarizing base identities')
-            fwd_binarized_base_identities = binarize_converted_base_identities(fwd_mapped_base_identities, strand, mod_type) 
-            rev_binarized_base_identities = binarize_converted_base_identities(rev_mapped_base_identities, strand, mod_type)
+            fwd_binarized_base_identities = binarize_converted_base_identities(fwd_base_identities, strand, mod_type) 
+            rev_binarized_base_identities = binarize_converted_base_identities(rev_base_identities, strand, mod_type)
             merged_binarized_base_identities = {**fwd_binarized_base_identities, **rev_binarized_base_identities}
             # converts the base identity dictionary to a dataframe.
             binarized_base_identities_df = pd.DataFrame.from_dict(merged_binarized_base_identities, orient='index') 
@@ -120,10 +128,8 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
             X = binarized_base_identities_df.values
             adata = ad.AnnData(X, dtype=X.dtype)
             if adata.shape[0] > 0:
-                adata.obs_names = binarized_base_identities_df.index
-                adata.obs_names = adata.obs_names.astype(str)
-                adata.var_names = binarized_base_identities_df.columns
-                adata.var_names = adata.var_names.astype(str)
+                adata.obs_names = binarized_base_identities_df.index.astype(str)
+                adata.var_names = binarized_base_identities_df.columns.astype(str)
                 adata.obs['Sample'] = [sample] * len(adata)
                 adata.obs['Strand'] = [strand] * len(adata)
                 adata.obs['Dataset'] = [mod_type] * len(adata)
@@ -132,9 +138,9 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
 
                 read_mapping_direction = []
                 for read_id in adata.obs_names:
-                    if read_id in fwd_mapped_reads:
+                    if read_id in fwd_base_identities.keys():
                         read_mapping_direction.append('fwd')
-                    elif read_id in rev_mapped_reads:
+                    elif read_id in rev_base_identities.keys():
                         read_mapping_direction.append('rev')
                     else:
                         read_mapping_direction.append('unk')
@@ -142,25 +148,14 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                 adata.obs['Read_mapping_direction'] = read_mapping_direction
 
                 # One hot encode the sequence string of the reads
-                if os.path.exists(bam_record_save):
-                    bam_record_ohe_files = ad.read_h5ad(bam_record_save).uns
-                    print('Found existing OHE reads, using these')
-                else:
-                    print(f'One hot encoding base identities of all positions in each read')
-                    # One hot encode the sequence string of the reads
-                    fwd_ohe_files = ohe_batching(fwd_mapped_base_identities, tmp_dir, record, f"{bam_index}_fwd",batch_size=100000)
-                    rev_ohe_files = ohe_batching(rev_binarized_base_identities, tmp_dir, record, f"{bam_index}_rev",batch_size=100000)
-                    ohe_files = fwd_ohe_files + rev_ohe_files
-                    del fwd_mapped_base_identities, rev_mapped_base_identities
-                    # Save out the ohe file paths
-                    X = np.random.rand(1, 1)
-                    tmp_ad = ad.AnnData(X=X, uns=ohe_files) 
-                    tmp_ad.write_h5ad(bam_record_save, compression='gzip')
+                fwd_ohe_files = ohe_batching(fwd_base_identities, tmp_dir, record, f"{bam_index}_fwd",batch_size=100000)
+                rev_ohe_files = ohe_batching(rev_base_identities, tmp_dir, record, f"{bam_index}_rev",batch_size=100000)
+                bam_record_ohe_files[f'{bam_index}_{record}'] = fwd_ohe_files + rev_ohe_files
+                del fwd_base_identities, rev_base_identities
 
-                # Load in the OHE reads for the BAM
                 one_hot_reads = {}
                 n_rows_OHE = 5
-                for ohe_file in tqdm(bam_record_ohe_files, desc="Reading in OHE reads"):
+                for ohe_file in tqdm(bam_record_ohe_files[f'{bam_index}_{record}'], desc="Reading in OHE reads"):
                     tmp_ohe_dict = ad.read_h5ad(ohe_file).uns
                     one_hot_reads.update(tmp_ohe_dict)
                     del tmp_ohe_dict
@@ -213,19 +208,17 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                     else:
                         print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
 
-            else:
-                print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
 
     # Set obs columns to type 'category'
     for col in final_adata.obs.columns:
         final_adata.obs[col] = final_adata.obs[col].astype('category')
 
-    for record in record_FASTA_dict.keys():
-        chromosome = record.split('_')[0]
+    for record in records_to_analyze:
         sequence = record_FASTA_dict[record][0]
         complement = record_FASTA_dict[record][1]
-        final_adata.var[f'{chromosome}_unconverted_top_strand_FASTA_sequence'] = list(sequence)
-        final_adata.var[f'{chromosome}_unconverted_bottom_strand_FASTA_sequence'] = list(complement)
+        chromosome = record_FASTA_dict[record][2]
+        final_adata.var[f'{chromosome}_unconverted_top_strand_FASTA_base'] = list(sequence)
+        final_adata.var[f'{chromosome}_unconverted_bottom_strand_FASTA_base'] = list(complement)
 
     ######################################################################################################
 

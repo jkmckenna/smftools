@@ -9,7 +9,7 @@ def get_chromosome_lengths(fasta):
     """
     import os
     import subprocess
-    from .index_FASTA import index_FASTA
+    from .index_fasta import index_fasta
 
     # Make a fasta index file if one isn't already available
     index_path = f'{fasta}.fai'

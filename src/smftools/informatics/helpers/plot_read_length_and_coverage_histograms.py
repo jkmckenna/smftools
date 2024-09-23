@@ -16,7 +16,6 @@ def plot_read_length_and_coverage_histograms(bed_file, plotting_directory):
     import numpy as np
     import os
 
-    os.chdir(plotting_directory)
     bed_basename = os.path.basename(bed_file).split('.bed')[0]
     # Load the BED file into a DataFrame
     df = pd.read_csv(bed_file, sep='\t', header=None, names=['chromosome', 'start', 'end', 'length', 'read_name'])
@@ -32,7 +31,8 @@ def plot_read_length_and_coverage_histograms(bed_file, plotting_directory):
         plt.xlabel('Read Length')
         plt.ylabel('Count')
         plt.grid(True)
-        plt.savefig(f'{bed_basename}_{chrom}_read_length_histogram.png')
+        save_name = os.path.join(plotting_directory, f'{bed_basename}_{chrom}_read_length_histogram.png')
+        plt.savefig(save_name)
         plt.close()
 
         # Compute coverage
@@ -47,5 +47,6 @@ def plot_read_length_and_coverage_histograms(bed_file, plotting_directory):
         plt.xlabel('Position')
         plt.ylabel('Coverage')
         plt.grid(True)
-        plt.savefig(f'{bed_basename}_{chrom}_coverage_histogram.png')
+        save_name = os.path.join(plotting_directory, f'{bed_basename}_{chrom}_coverage_histogram.png')
+        plt.savefig(save_name)
         plt.close()

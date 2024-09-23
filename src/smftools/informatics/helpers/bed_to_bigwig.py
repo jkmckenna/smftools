@@ -14,7 +14,7 @@ def bed_to_bigwig(fasta, bed):
     import subprocess
 
     bed_basename = os.path.basename(bed)
-    parent_dir = os.path.dirname(bed_basename)
+    parent_dir = os.path.dirname(bed)
     bed_basename_minus_suffix = bed_basename.split('.bed')[0]
     fasta_basename = os.path.basename(fasta)
     fasta_dir = os.path.dirname(fasta)
@@ -36,4 +36,4 @@ def bed_to_bigwig(fasta, bed):
     # Make the bigwig
     command = ["bedGraphToBigWig", bedgraph_output, chrom_path, bigwig_output]
     print(f'Making bigwig from {bedgraph_basename}')
-    subprocess.run(command, stdout=outfile)
+    subprocess.run(command)
