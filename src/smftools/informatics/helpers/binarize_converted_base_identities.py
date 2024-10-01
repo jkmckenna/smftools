@@ -27,5 +27,5 @@ def binarize_converted_base_identities(base_identities, strand, modification_typ
             elif modification_type == '6mA':
                 binarized_base_identities[key] = [1 if x == 'T' else 0 if x == 'C' else np.nan for x in base_identities[key]]
         else:
-            pass
+            print(f"{strand} not recognized")
     return binarized_base_identities
