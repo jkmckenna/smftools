@@ -73,7 +73,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
             delta_max_length = max_reference_length - current_reference_length
             sequence = modification_dict[mod_type][unconverted_chromosome_name][3] + 'N'*delta_max_length
             complement = modification_dict[mod_type][unconverted_chromosome_name][4] + 'N'*delta_max_length
-            record_FASTA_dict[record] = [sequence, complement, chromosome, unconverted_chromosome_name, current_reference_length, delta_max_length, mod_type, strand]
+            record_FASTA_dict[record] = [sequence, complement, chromosome, unconverted_chromosome_name, current_reference_length, delta_max_length, conversion_type, strand]
     ##########################################################################################
 
     ##########################################################################################
@@ -105,11 +105,12 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     for bam_index, bam in enumerate(bam_path_list):
         # Iterate over references to process
         for record in records_to_analyze:
+            unconverted_record_name = "_".join(record.split('_')[:-2]) + '_unconverted_top'
             sample = bams[bam_index].split(sep=bam_suffix)[0]
-            chromosome = record_FASTA_dict[record][2]
-            current_reference_length = record_FASTA_dict[record][4]
-            mod_type = record_FASTA_dict[record][6]
-            strand = record_FASTA_dict[record][7]
+            chromosome = record_FASTA_dict[unconverted_record_name][2]
+            current_reference_length = record_FASTA_dict[unconverted_record_name][4]
+            mod_type = record_FASTA_dict[unconverted_record_name][6]
+            strand = record_FASTA_dict[unconverted_record_name][7]
             
             # Extract the base identities of reads aligned to the record
             fwd_base_identities, rev_base_identities = extract_base_identities(bam, record, range(current_reference_length), max_reference_length)
@@ -208,15 +209,18 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                     else:
                         print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
 
+            else:
+                print(f"{sample} did not have any mapped reads on {record}, omiting from final adata")
 
     # Set obs columns to type 'category'
     for col in final_adata.obs.columns:
         final_adata.obs[col] = final_adata.obs[col].astype('category')
 
     for record in records_to_analyze:
-        sequence = record_FASTA_dict[record][0]
-        complement = record_FASTA_dict[record][1]
-        chromosome = record_FASTA_dict[record][2]
+        unconverted_record_name = "_".join(record.split('_')[:-2]) + '_unconverted_top'
+        sequence = record_FASTA_dict[unconverted_record_name][0]
+        complement = record_FASTA_dict[unconverted_record_name][1]
+        chromosome = record_FASTA_dict[unconverted_record_name][2]
         final_adata.var[f'{chromosome}_unconverted_top_strand_FASTA_base'] = list(sequence)
         final_adata.var[f'{chromosome}_unconverted_bottom_strand_FASTA_base'] = list(complement)
 
@@ -224,4 +228,5 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
 
     ######################################################################################################
     ## Export the final adata object
-    final_adata.write_h5ad('{0}_{1}.h5ad.gz'.format(readwrite.date_string(), experiment_name), compression='gzip')
+    final_output = os.path.join(h5_dir, f'{readwrite.date_string()}_{experiment_name}.h5ad.gz')
+    final_adata.write_h5ad(final_output, compression='gzip')
