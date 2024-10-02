@@ -486,6 +486,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
             complement = record_seq_dict[record][1]
             final_adata.var[f'{record}_top_strand_FASTA_base_at_coordinate'] = list(sequence)
             final_adata.var[f'{record}_bottom_strand_FASTA_base_at_coordinate'] = list(complement)
+            final_adata.uns[f'{record}_FASTA_sequence'] = sequence
             # Add consensus sequence of samples mapped to the record to the object
             record_subset = final_adata[final_adata.obs['Reference_chromosome'] == record].copy()
             for strand in record_subset.obs['Strand'].cat.categories:
