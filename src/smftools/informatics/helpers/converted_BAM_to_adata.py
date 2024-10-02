@@ -223,6 +223,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
         chromosome = record_FASTA_dict[unconverted_record_name][2]
         final_adata.var[f'{chromosome}_unconverted_top_strand_FASTA_base'] = list(sequence)
         final_adata.var[f'{chromosome}_unconverted_bottom_strand_FASTA_base'] = list(complement)
+        final_adata.uns[f'{record}_FASTA_sequence'] = sequence
 
     ######################################################################################################
 
