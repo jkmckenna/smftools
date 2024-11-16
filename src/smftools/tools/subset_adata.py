@@ -1,32 +1,28 @@
 # subset_adata
 
-def subset_adata(adata, obs_columns):
+def subset_adata(adata, columns, cat_type='obs'):
     """
-    Subsets an AnnData object based on categorical values in specified `.obs` columns.
+    Adds subset metadata to an AnnData object based on categorical values in specified .obs or .var columns.
     
     Parameters:
-        adata (AnnData): The AnnData object to subset.
-        obs_columns (list of str): List of `.obs` column names to subset by. The order matters.
+        adata (AnnData): The AnnData object to add subset metadata to.
+        columns (list of str): List of .obs or .var column names to subset by. The order matters.
+        cat_type (str): obs or var. Default is obs
 
     Returns:
-        dict: A dictionary where keys are tuples of category values and values are corresponding AnnData subsets.
+        None
     """
+    import pandas as pd
+    import anndata as ad
 
-    def subset_recursive(adata_subset, columns):
-        if not columns:
-            return {(): adata_subset}
-        
-        current_column = columns[0]
-        categories = adata_subset.obs[current_column].cat.categories
-        
-        subsets = {}
-        for cat in categories:
-            subset = adata_subset[adata_subset.obs[current_column] == cat]
-            subsets.update(subset_recursive(subset, columns[1:]))
-        
-        return subsets
-    
-    # Start the recursive subset process
-    subsets_dict = subset_recursive(adata, obs_columns)
-    
-    return subsets_dict
+    subgroup_name = '_'.join(columns)
+    if 'obs' in cat_type:
+        df = adata.obs[columns]
+        adata.obs[subgroup_name] = df.apply(lambda row: '_'.join(row.astype(str)), axis=1)
+        adata.obs[subgroup_name] = adata.obs[subgroup_name].astype('category')
+    elif 'var' in cat_type:    
+        df = adata.var[columns]
+        adata.var[subgroup_name] = df.apply(lambda row: '_'.join(row.astype(str)), axis=1)
+        adata.var[subgroup_name] = adata.var[subgroup_name].astype('category')
+
+    return None

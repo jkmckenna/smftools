@@ -17,11 +17,13 @@ def clean_NaN(adata, layer=None):
     from ..readwrite import adata_to_df
 
     # Fill NaN with closest SMF value
+    print('Making layer: fill_nans_closest')
     df = adata_to_df(adata, layer=layer)
     df = df.ffill(axis=1).bfill(axis=1)
     adata.layers['fill_nans_closest'] = df.values
 
     # Replace NaN values with 0, and 0 with minus 1
+    print('Making layer: nan0_0minus1')
     old_value, new_value = [0, -1]
     df = adata_to_df(adata, layer=layer)
     df = df.replace(old_value, new_value)
@@ -30,6 +32,7 @@ def clean_NaN(adata, layer=None):
     adata.layers['nan0_0minus1'] = df.values
 
     # Replace NaN values with 1, and 1 with 2
+    print('Making layer: nan1_12')
     old_value, new_value = [1, 2]
     df = adata_to_df(adata, layer=layer)
     df = df.replace(old_value, new_value)

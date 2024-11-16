@@ -5,7 +5,7 @@ Cython>=0.29.28
 networkx>=3.2
 numpy>=1.22.0,<2
 pandas>=1.4.2
-pomegranate>1.0.0
+pomegranate==0.14.8
 pod5>=0.1.21
 pyfaidx>=0.8.0
 pysam>=0.19.1

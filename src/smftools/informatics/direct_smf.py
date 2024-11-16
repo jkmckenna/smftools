@@ -20,7 +20,8 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         basecall (bool): Whether to basecall
 
     Returns:
-        None   
+        final_adata_path (str): Path to the final adata object   
+        sorted_output (str): Path to the aligned, sorted BAM
     """
     from .helpers import align_and_sort_BAM, extract_mods, get_chromosome_lengths, make_modbed, modcall, modkit_extract_to_adata, modQC, split_and_index_BAM, make_dirs
     import os
@@ -86,4 +87,6 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix) # Extract methylations calls for split BAM files into split TSV files
 
     #5 Load the modification data from TSVs into an adata object
-    modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir)
+    final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir)
+
+    return final_adata_path, sorted_output

@@ -17,6 +17,9 @@ def append_C_context(adata, obs_column='Reference', use_consensus=False):
     """
     import numpy as np
     import anndata as ad
+
+    print('Adding Cytosine context based on reference FASTA sequence for sample')
+    
     site_types = ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C']
     categories = adata.obs[obs_column].cat.categories
     for cat in categories:

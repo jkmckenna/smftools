@@ -32,7 +32,8 @@ def calculate_complexity(adata, output_directory='', obs_column='Reference', sam
 
     for cat in categories:
         for sample in sample_names:
-            unique_reads, total_reads = adata.uns[f'Hamming_distance_clusters_within_{cat}_{sample}'][0:2]
+            unique_reads = adata.uns[f'Hamming_distance_cluster_count_within_{cat}_{sample}']
+            total_reads = adata.uns[f'total_reads_within_{cat}_{sample}']
             reads = np.concatenate((np.arange(unique_reads), np.random.choice(unique_reads, total_reads - unique_reads, replace=True)))
             # Subsampling depths
             subsampling_depths = [total_reads // (i+1) for i in range(10)]
@@ -49,7 +50,7 @@ def calculate_complexity(adata, output_directory='', obs_column='Reference', sam
             # Generate data for the complexity curve
             x_data = np.linspace(0, 5000, 100)
             y_data = lander_waterman(x_data, *popt)
-            adata.uns[f'Library_complexity_{sample}_on_{cat}'] = popt[0]
+            adata.uns[f'Library_complexity_of_{sample}_on_{cat}'] = popt[0]
             if plot:
                 import matplotlib.pyplot as plt
                 # Plot the complexity curve
