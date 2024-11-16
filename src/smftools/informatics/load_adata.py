@@ -14,11 +14,12 @@ def load_adata(config_path):
         None
     """
     # Lazy importing of packages
-    from .helpers import LoadExperimentConfig, make_dirs, concatenate_fastqs_to_bam
+    from .helpers import LoadExperimentConfig, make_dirs, concatenate_fastqs_to_bam, extract_read_lengths_from_bam
     from .fast5_to_pod5 import fast5_to_pod5
     from .subsample_fasta_from_bed import subsample_fasta_from_bed
     import os
     import numpy as np
+    import anndata as ad
     from pathlib import Path
 
     # Default params
@@ -119,9 +120,26 @@ def load_adata(config_path):
 
     if smf_modality == 'conversion':
         from .conversion_smf import conversion_smf
-        conversion_smf(fasta, output_directory, conversions, strands, model, input_data_path, split_path, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall)
+        final_adata_path, sorted_output = conversion_smf(fasta, output_directory, conversions, strands, model, input_data_path, split_path, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall)
     elif smf_modality == 'direct':
         from .direct_smf import direct_smf
-        direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_path, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall)
+        final_adata_path, sorted_output = direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_path, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall)
     else:
             print("Error")
+            
+    # Read in the final adata object and append final metadata
+    final_adata = ad.read_h5ad(final_adata_path)
+    final_adata.obs_names_make_unique()
+    # Adding read query length metadata to adata object.
+    read_dict = extract_read_lengths_from_bam(sorted_output)
+    query_read_length_values = []
+    # Iterate over each row of the AnnData object
+    for obs_name in final_adata.obs_names:
+        # Fetch the value from the dictionary using the obs_name as the key
+        value = read_dict.get(obs_name, np.nan)  # Use np.nan if the key is not found
+        query_read_length_values.append(value)
+    # Add the new column to adata.obs
+    final_adata.obs['query_read_length'] = query_read_length_values
+    print('Saving final adata')
+    final_adata.write_h5ad(final_adata_path, compression='gzip')
+    print('Final adata saved')

@@ -1,6 +1,6 @@
 ## filter_reads_on_length
 
-def filter_reads_on_length(adata, filter_on_coordinates=False, min_read_length=2700):
+def filter_reads_on_length(adata, filter_on_coordinates=False, min_read_length=2700, max_read_length=3200):
     """
     Filters the adata object to keep a defined coordinate window, as well as reads that are over a minimum threshold in length.
 
@@ -8,11 +8,10 @@ def filter_reads_on_length(adata, filter_on_coordinates=False, min_read_length=2
         adata (AnnData): An adata object.
         filter_on_coordinates (bool | list): If False, skips filtering. Otherwise, provide a list containing integers representing the lower and upper bound coordinates to filter on. Default is False.
         min_read_length (int): The minimum read length to keep in the filtered dataset. Default is 2700.
+        max_read_length (int): The maximum query read length to keep in the filtered dataset. Default is 3200.
 
     Returns:
-        adata (AnnData): The filtered adata object
-    Input: Adata object. a list of lower and upper bound (set to False or None if not wanted), and a minimum read length integer.
- 
+        adata
     """
     import numpy as np
     import anndata as ad
@@ -36,6 +35,16 @@ def filter_reads_on_length(adata, filter_on_coordinates=False, min_read_length=2
 
     if min_read_length:
         print(f'Subsetting adata to keep reads longer than {min_read_length}')
+        s0 = adata.shape[0]
         adata = adata[adata.obs['read_length'] > min_read_length].copy()
+        s1 = adata.shape[0]
+        print(f'Removed {s0-s1} reads less than {min_read_length} basepairs in length')
+
+    if max_read_length:
+        print(f'Subsetting adata to keep reads shorter than {max_read_length}')
+        s0 = adata.shape[0]
+        adata = adata[adata.obs['query_read_length'] < max_read_length].copy()
+        s1 = adata.shape[0]
+        print(f'Removed {s0-s1} reads greater than {max_read_length} basepairs in length')
 
     return adata

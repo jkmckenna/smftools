@@ -13,7 +13,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
         bam_suffix (str): The suffix to use for the BAM file.
     
     Returns:
-        None
+        final_adata_path (str): File path to the final adata object
         Outputs a single gzipped adata object for the experiment.
     """
     from .. import readwrite
@@ -37,6 +37,12 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     # Make output dir
     parent_dir = os.path.dirname(split_dir)
     h5_dir = os.path.join(parent_dir, 'h5ads')
+    final_adata_path = os.path.join(h5_dir, f'{experiment_name}.h5ad.gz')
+
+    if os.path.exists(final_adata_path):
+        print(f'{final_adata_path} already exists, using existing adata object') # Stops here if the final_adata file already exists
+        return final_adata_path
+    
     tmp_dir = os.path.join(parent_dir, 'tmp')
     make_dirs([h5_dir, tmp_dir])
     # Filter file names that contain the search string in their filename and keep them in a list
@@ -229,5 +235,6 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
 
     ######################################################################################################
     ## Export the final adata object
-    final_output = os.path.join(h5_dir, f'{readwrite.date_string()}_{experiment_name}.h5ad.gz')
-    final_adata.write_h5ad(final_output, compression='gzip')
+    print('Saving initial draft of final adata')
+    final_adata.write_h5ad(final_adata_path, compression='gzip')
+    return final_adata_path

@@ -19,7 +19,8 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
         basecall (bool): Whether to go through basecalling or not.
 
     Returns:
-        None
+        final_adata_path (str): Path to the final adata object
+        sorted_output (str): Path to the aligned, sorted BAM
     """
     from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, get_chromosome_lengths, split_and_index_BAM, make_dirs
     import os
@@ -75,5 +76,7 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
         make_dirs([split_dir])
         split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA)
 
-    # 5) Take the converted BAM and load it into an adata object. 
-    converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix)
+    # 5) Take the converted BAM and load it into an adata object.
+    final_adata_path = converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix)
+
+    return final_adata_path, sorted_output
