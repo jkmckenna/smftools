@@ -20,7 +20,7 @@ def calculate_coverage(adata, obs_column='Reference', position_nan_threshold=0.0
     n_categories_with_position = np.zeros(adata.shape[1])
     # Loop over categories
     for cat in categories:
-        print('Assessing positional coverage across samples for {cat} reference')
+        print(f'Assessing positional coverage across samples for {cat} reference')
         # Look at positional information for each reference
         temp_cat_adata = adata[adata.obs[obs_column] == cat].copy()
         # Look at read coverage on the given category strand

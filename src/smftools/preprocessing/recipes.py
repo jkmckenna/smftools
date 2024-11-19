@@ -44,7 +44,7 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
     reference_mapping = {k: v for k, v in split_references}
     adata.obs[f'{reference_column}_short'] = adata.obs[reference_column].map(reference_mapping)
     short_references = set(adata.obs[f'{reference_column}_short'])
-    binary_layers = adata.layers.keys()
+    binary_layers = list(adata.layers.keys())
 
     # load sample sheet metadata
     load_sample_sheet(adata, sample_sheet_path, mapping_key_column)
@@ -113,6 +113,8 @@ def recipe_2_Kissiov_and_McKenna_2025(adata, output_directory, binary_layers, di
     from .mark_duplicates import mark_duplicates
     from .calculate_complexity import calculate_complexity
     from .remove_duplicates import remove_duplicates
+
+    # Add here a way to remove reads below a given read quality (based on nan content). Need to also add a way to pull from BAM files the read quality from each read
 
     # Duplicate detection using pairwise hamming distance across reads
     mark_duplicates(adata, binary_layers, obs_column=reference_column, sample_col=sample_names_col, distance_thresholds=distance_thresholds, method='N_masked_distances')
