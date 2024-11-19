@@ -20,7 +20,7 @@ def append_C_context(adata, obs_column='Reference', use_consensus=False):
 
     print('Adding Cytosine context based on reference FASTA sequence for sample')
     
-    site_types = ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C']
+    site_types = ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C', 'any_C_site']
     categories = adata.obs[obs_column].cat.categories
     for cat in categories:
         # Assess if the strand is the top or bottom strand converted
@@ -43,6 +43,7 @@ def append_C_context(adata, obs_column='Reference', use_consensus=False):
             # Iterate through the sequence and apply the criteria
             for i in range(1, len(sequence) - 1):
                 if sequence[i] == 'C':
+                    boolean_dict[f'{cat}_any_C_site'][i] = True
                     if sequence[i - 1] == 'G' and sequence[i + 1] != 'G':
                         boolean_dict[f'{cat}_GpC_site'][i] = True
                     elif sequence[i - 1] == 'G' and sequence[i + 1] == 'G':
@@ -55,6 +56,7 @@ def append_C_context(adata, obs_column='Reference', use_consensus=False):
             # Iterate through the sequence and apply the criteria
             for i in range(1, len(sequence) - 1):
                 if sequence[i] == 'G':
+                    boolean_dict[f'{cat}_any_C_site'][i] = True
                     if sequence[i + 1] == 'C' and sequence[i - 1] != 'C':
                         boolean_dict[f'{cat}_GpC_site'][i] = True
                     elif sequence[i - 1] == 'C' and sequence[i + 1] == 'C':

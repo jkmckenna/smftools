@@ -35,7 +35,9 @@ def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_na
         cat_subset = adata[adata.obs[obs_column] == cat].copy()
         for sample in sample_names:
             sample_subset = cat_subset[cat_subset.obs[sample_col] == sample].copy()
+            sample_subset = sample_subset[:, sample_subset.var[f'{cat}_any_C_site'] == True].copy() # only uses C sites from the converted strand
             # Encode sequencing reads as a one-hot-encodings
+            print(f'One-hot encoding reads from {sample} on {cat}')
             cat_sample_dict[f'{cat}_{sample}_read_OHE_dict'] = binary_layers_to_ohe(sample_subset, layers, stack='hstack')
             # Unpack the read names and one hot encodings into lists
             read_names = []

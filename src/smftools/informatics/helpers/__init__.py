@@ -9,7 +9,7 @@ from .concatenate_fastqs_to_bam import concatenate_fastqs_to_bam
 from .count_aligned_reads import count_aligned_reads
 from .extract_base_identities import extract_base_identities
 from .extract_mods import extract_mods
-from .extract_read_lengths_from_bam import extract_read_lengths_from_bam
+from .extract_read_features_from_bam import extract_read_features_from_bam
 from .extract_read_lengths_from_bed import extract_read_lengths_from_bed
 from .extract_readnames_from_BAM import extract_readnames_from_BAM
 from .find_conversion_sites import find_conversion_sites
@@ -41,7 +41,7 @@ __all__ = [
     "count_aligned_reads",
     "extract_base_identities",
     "extract_mods",
-    "extract_read_lengths_from_bam",
+    "extract_read_features_from_bam",
     "extract_read_lengths_from_bed",
     "extract_readnames_from_BAM",
     "find_conversion_sites",
