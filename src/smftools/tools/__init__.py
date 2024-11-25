@@ -1,4 +1,3 @@
-from .apply_HMM import apply_HMM
 from .cluster_adata_on_methylation import cluster_adata_on_methylation
 from .read_HMM import read_HMM
 from .subset_adata import subset_adata
