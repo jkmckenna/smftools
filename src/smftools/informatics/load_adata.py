@@ -45,6 +45,8 @@ def load_adata(config_path):
     experiment_name = var_dict.get('experiment_name', default_value) # A key term to add to the AnnData file name.
     model = var_dict.get('model', default_value) # needed for dorado basecaller
     barcode_kit = var_dict.get('barcode_kit', default_value) # needed for dorado basecaller
+    barcode_both_ends = var_dict.get('barcode_both_ends', default_value) # dorado demultiplexing
+    trim = var_dict.get('trim', default_value) # dorado adapter and barcode removal
     # Conversion specific variable init
     conversion_types = var_dict.get('conversion_types', default_value)
     # Direct methylation specific variable init
@@ -120,10 +122,12 @@ def load_adata(config_path):
 
     if smf_modality == 'conversion':
         from .conversion_smf import conversion_smf
-        final_adata_path, sorted_output = conversion_smf(fasta, output_directory, conversions, strands, model, input_data_path, split_path, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall)
+        final_adata_path, sorted_output = conversion_smf(fasta, output_directory, conversions, strands, model, input_data_path, split_path
+                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim)
     elif smf_modality == 'direct':
         from .direct_smf import direct_smf
-        final_adata_path, sorted_output = direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_path, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall)
+        final_adata_path, sorted_output = direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_path
+                                                     , barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim)
     else:
             print("Error")
             

@@ -1,6 +1,6 @@
 ## direct_smf
 
-def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall):
+def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim):
     """
     Processes sequencing data from a direct methylation detection Nanopore SMF experiment to an AnnData object.
 
@@ -18,12 +18,14 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         bam_suffix (str): A suffix to add to the bam file.
         batch_size (int): An integer number of TSV files to analyze in memory at once while loading the final adata object.
         basecall (bool): Whether to basecall
+        barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
+        trim (bool): Whether to trim barcodes, adapters, and primers from read ends
 
     Returns:
         final_adata_path (str): Path to the final adata object   
         sorted_output (str): Path to the aligned, sorted BAM
     """
-    from .helpers import align_and_sort_BAM, extract_mods, get_chromosome_lengths, make_modbed, modcall, modkit_extract_to_adata, modQC, split_and_index_BAM, make_dirs
+    from .helpers import align_and_sort_BAM, extract_mods, get_chromosome_lengths, make_modbed, modcall, modkit_extract_to_adata, modQC, demux_and_index_BAM, make_dirs
     import os
 
     if basecall:
@@ -36,8 +38,14 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         bam=os.path.join(output_directory, bam_base)
     aligned_BAM=f"{bam}_aligned"
     aligned_sorted_BAM=f"{aligned_BAM}_sorted"
-    mod_bed_dir=f"{output_directory}/split_mod_beds"
-    mod_tsv_dir=f"{output_directory}/split_mod_tsvs"
+
+    if barcode_both_ends:
+        split_dir = split_dir + '_both_ends_barcoded'
+    else:
+        split_dir = split_dir + '_at_least_one_end_barcoded'
+
+    mod_bed_dir=f"{split_dir}/split_mod_beds"
+    mod_tsv_dir=f"{split_dir}/split_mod_tsvs"
 
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
@@ -54,7 +62,7 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         if os.path.exists(modcall_output):
             print(modcall_output + ' already exists. Using existing basecalled BAM.')
         else:
-            modcall(model, input_data_path, barcode_kit, mod_list, bam, bam_suffix)
+            modcall(model, input_data_path, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends, trim)
     else:
         modcall_output = input_data_path
 
@@ -68,20 +76,22 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
 
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     if os.path.isdir(split_dir):
-        print(split_dir + ' already exists. Using existing aligned/sorted/split BAMs.')
+        print(split_dir + ' already exists. Using existing demultiplexed BAMs.')
     else:
         make_dirs([split_dir])
-        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, fasta)
+        demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta)
+        # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
 
     # 4) Using nanopore modkit to work with modified BAM files ###
     if os.path.isdir(mod_bed_dir):
-        print(mod_bed_dir + ' already exists')
+        print(mod_bed_dir + ' already exists, skipping making modbeds')
     else:
         make_dirs([mod_bed_dir])  
         modQC(aligned_sorted_output, thresholds) # get QC metrics for mod calls
         make_modbed(aligned_sorted_output, thresholds, mod_bed_dir) # Generate bed files of position methylation summaries for every sample
+
     if os.path.isdir(mod_tsv_dir):
-        print(mod_tsv_dir + ' already exists')
+        print(mod_tsv_dir + ' already exists, skipping modkit extract')
     else:
         make_dirs([mod_tsv_dir])  
         extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix) # Extract methylations calls for split BAM files into split TSV files

@@ -1,7 +1,7 @@
 ## canoncall
 
 # Conversion SMF specific
-def canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix):
+def canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix, barcode_both_ends=True, trim=False):
     """
     Wrapper function for dorado canonical base calling.
 
@@ -11,6 +11,8 @@ def canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix):
         barcode_kit (str): A string reppresenting the barcoding kit used in the experiment.
         bam (str): File path to the BAM file to output.
         bam_suffix (str): The suffix to use for the BAM file.
+        barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
+        trim (bool): Whether to trim barcodes, adapters, and primers from read ends
     
     Returns:
         None
@@ -19,6 +21,10 @@ def canoncall(model, pod5_dir, barcode_kit, bam, bam_suffix):
     import subprocess
     output = bam + bam_suffix
     command = ["dorado", "basecaller", model, pod5_dir, "--kit-name", barcode_kit, "-Y"]
+    if barcode_both_ends:
+        command.append("--barcode-both-ends")
+    if not trim:
+        command.append("--no-trim")
     command_string = " ".join(command)
     print(f"Running {command_string}\n to generate {output}")
     with open(output, "w") as outfile:
