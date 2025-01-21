@@ -46,6 +46,8 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
 
     # Make output dirs
     h5_dir = os.path.join(parent_dir, 'h5ads')
+    tmp_dir = os.path.join(parent_dir, 'tmp')
+    make_dirs([h5_dir, tmp_dir])
     existing_h5s =  os.listdir(h5_dir)
     existing_h5s = [h5 for h5 in existing_h5s if '.h5ad.gz' in h5]
     final_hdf = f'{experiment_name}_final_experiment_hdf5.h5ad.gz'    
@@ -54,8 +56,6 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
         print(f'{final_adata_path} already exists. Using existing adata')
         return final_adata_path
     
-    tmp_dir = os.path.join(parent_dir, 'tmp')
-    make_dirs([h5_dir, tmp_dir])
     # Filter file names that contain the search string in their filename and keep them in a list
     tsvs = [tsv for tsv in tsv_files if 'extract.tsv' in tsv]
     bams = [bam for bam in bam_files if '.bam' in bam and '.bai' not in bam]

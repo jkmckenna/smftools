@@ -1,6 +1,6 @@
 ## conversion_smf
 
-def conversion_smf(fasta, output_directory, conversion_types, strands, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall):
+def conversion_smf(fasta, output_directory, conversion_types, strands, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim):
     """
     Processes sequencing data from a conversion SMF experiment to an adata object.
 
@@ -17,12 +17,14 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
         experiment_name (str): A string to provide an experiment name to the output adata file.
         bam_suffix (str): A suffix to add to the bam file.
         basecall (bool): Whether to go through basecalling or not.
+        barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
+        trim (bool): Whether to trim barcodes, adapters, and primers from read ends
 
     Returns:
         final_adata_path (str): Path to the final adata object
         sorted_output (str): Path to the aligned, sorted BAM
     """
-    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, get_chromosome_lengths, split_and_index_BAM, make_dirs
+    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs
     import os
     if basecall:
         model_basename = os.path.basename(model)
@@ -57,7 +59,7 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
         if os.path.exists(canoncall_output):
             print(canoncall_output + ' already exists. Using existing basecalled BAM.')
         else:
-            canoncall(model, input_data_path, barcode_kit, bam, bam_suffix)
+            canoncall(model, input_data_path, barcode_kit, bam, bam_suffix, barcode_both_ends, trim)
     else:
         canoncall_output = input_data_path
 
@@ -70,11 +72,17 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
         align_and_sort_BAM(converted_FASTA, canoncall_output, bam_suffix, output_directory)
 
     ### 4) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory###
+    if barcode_both_ends:
+        split_dir = split_dir + '_both_ends_barcoded'
+    else:
+        split_dir = split_dir + '_at_least_one_end_barcoded'
+    
     if os.path.isdir(split_dir):
-        print(split_dir + ' already exists. Using existing aligned/sorted/split BAMs.')
+        print(split_dir + ' already exists. Using existing demultiplexed BAMs.')
     else:
         make_dirs([split_dir])
-        split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA)
+        demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta)
+        # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
 
     # 5) Take the converted BAM and load it into an adata object.
     final_adata_path = converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix)

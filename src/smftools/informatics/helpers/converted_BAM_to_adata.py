@@ -36,8 +36,9 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     files = os.listdir(split_dir)
     # Make output dir
     parent_dir = os.path.dirname(split_dir)
+    split_dir_base = os.path.basename(split_dir)
     h5_dir = os.path.join(parent_dir, 'h5ads')
-    final_adata_path = os.path.join(h5_dir, f'{experiment_name}.h5ad.gz')
+    final_adata_path = os.path.join(h5_dir, f'{experiment_name}_{split_dir_base}.h5ad.gz')
 
     if os.path.exists(final_adata_path):
         print(f'{final_adata_path} already exists, using existing adata object') # Stops here if the final_adata file already exists
