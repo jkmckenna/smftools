@@ -1,6 +1,6 @@
 ## conversion_smf
 
-def conversion_smf(fasta, output_directory, conversion_types, strands, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim):
+def conversion_smf(fasta, output_directory, conversion_types, strands, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device):
     """
     Processes sequencing data from a conversion SMF experiment to an adata object.
 
@@ -18,7 +18,8 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
         bam_suffix (str): A suffix to add to the bam file.
         basecall (bool): Whether to go through basecalling or not.
         barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
-        trim (bool): Whether to trim barcodes, adapters, and primers from read ends
+        trim (bool): Whether to trim barcodes, adapters, and primers from read ends.
+        device (str): Device to use for basecalling. auto, metal, cpu, cuda
 
     Returns:
         final_adata_path (str): Path to the final adata object
@@ -59,7 +60,7 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model, in
         if os.path.exists(canoncall_output):
             print(canoncall_output + ' already exists. Using existing basecalled BAM.')
         else:
-            canoncall(model, input_data_path, barcode_kit, bam, bam_suffix, barcode_both_ends, trim)
+            canoncall(model, input_data_path, barcode_kit, bam, bam_suffix, barcode_both_ends, trim, device)
     else:
         canoncall_output = input_data_path
 

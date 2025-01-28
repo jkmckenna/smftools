@@ -26,6 +26,8 @@ from .modkit_extract_to_adata import modkit_extract_to_adata
 from .modQC import modQC
 from .one_hot_encode import one_hot_encode
 from .ohe_batching import ohe_batching
+from .one_hot_decode import one_hot_decode
+from .ohe_layers_decode import ohe_layers_decode
 from .plot_read_length_and_coverage_histograms import plot_read_length_and_coverage_histograms
 
 __all__ = [
@@ -58,5 +60,7 @@ __all__ = [
     "modQC",
     "one_hot_encode",
     "ohe_batching",
+    "one_hot_decode",
+    "ohe_layers_decode",
     "plot_read_length_and_coverage_histograms"
 ]

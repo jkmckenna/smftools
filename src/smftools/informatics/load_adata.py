@@ -57,6 +57,7 @@ def load_adata(config_path):
     thresholds = [filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold]
     mod_list = var_dict.get('mod_list', default_value)
     batch_size = var_dict.get('batch_size', default_value)
+    device = var_dict.get('device', 'auto')
 
     # Make initial output directory
     make_dirs([output_directory])
@@ -123,22 +124,22 @@ def load_adata(config_path):
     if smf_modality == 'conversion':
         from .conversion_smf import conversion_smf
         final_adata_path, sorted_output = conversion_smf(fasta, output_directory, conversions, strands, model, input_data_path, split_path
-                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim)
+                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device)
     elif smf_modality == 'direct':
         from .direct_smf import direct_smf
         final_adata_path, sorted_output = direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_path
-                                                     , barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim)
+                                                     , barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device)
     else:
             print("Error")
             
     # Read in the final adata object and append final metadata
     print(f'Reading in adata from {final_adata_path} to add final metadata')
     final_adata = ad.read_h5ad(final_adata_path)
-    final_adata.obs_names_make_unique()
     # Adding read query length metadata to adata object.
     read_metrics = extract_read_features_from_bam(sorted_output)
     query_read_length_values = []
     query_read_quality_values = []
+    reference_lengths = []
     # Iterate over each row of the AnnData object
     for obs_name in final_adata.obs_names:
         # Fetch the value from the dictionary using the obs_name as the key
@@ -146,12 +147,16 @@ def load_adata(config_path):
         if type(value) is list:
             query_read_length_values.append(value[0])
             query_read_quality_values.append(value[1])
+            reference_lengths.append(value[2])
         else:
             query_read_length_values.append(value)
-            query_read_quality_values.append(value)            
+            query_read_quality_values.append(value)
+            reference_lengths.append(value)            
     # Add the new column to adata.obs
     final_adata.obs['query_read_length'] = query_read_length_values
     final_adata.obs['query_read_quality'] = query_read_quality_values
+    final_adata.obs['query_length_to_reference_length_ratio'] = np.array(query_read_length_values) / np.array(reference_lengths)
+
     print('Saving final adata')
     final_adata.write_h5ad(final_adata_path, compression='gzip')
     print('Final adata saved')

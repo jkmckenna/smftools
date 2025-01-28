@@ -139,10 +139,11 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                 adata.obs_names = binarized_base_identities_df.index.astype(str)
                 adata.var_names = binarized_base_identities_df.columns.astype(str)
                 adata.obs['Sample'] = [sample] * len(adata)
+                adata.obs['Reference'] = [chromosome] * len(adata)
                 adata.obs['Strand'] = [strand] * len(adata)
                 adata.obs['Dataset'] = [mod_type] * len(adata)
-                adata.obs['Reference'] = [record] * len(adata)
-                adata.obs['Reference_chromosome'] = [chromosome] * len(adata)
+                adata.obs['Reference_dataset_strand'] = [f'{chromosome}_{mod_type}_{strand}'] * len(adata)
+                adata.obs['Reference_strand'] = [f'{record}'] * len(adata)                
 
                 read_mapping_direction = []
                 for read_id in adata.obs_names:
@@ -230,7 +231,7 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
         chromosome = record_FASTA_dict[unconverted_record_name][2]
         final_adata.var[f'{chromosome}_unconverted_top_strand_FASTA_base'] = list(sequence)
         final_adata.var[f'{chromosome}_unconverted_bottom_strand_FASTA_base'] = list(complement)
-        final_adata.uns[f'{record}_FASTA_sequence'] = sequence
+        final_adata.uns[f'{chromosome}_FASTA_sequence'] = sequence
 
     ######################################################################################################
 

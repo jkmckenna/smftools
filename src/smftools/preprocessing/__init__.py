@@ -14,6 +14,7 @@ from .load_sample_sheet import load_sample_sheet
 from .mark_duplicates import mark_duplicates
 from .remove_duplicates import remove_duplicates
 from .recipes import recipe_1_Kissiov_and_McKenna_2025, recipe_2_Kissiov_and_McKenna_2025
+from .subsample_adata import subsample_adata
 
 __all__ = [
     "append_C_context",
@@ -32,5 +33,6 @@ __all__ = [
     "mark_duplicates",
     "remove_duplicates",
     "recipe_1_Kissiov_and_McKenna_2025",
-    "recipe_2_Kissiov_and_McKenna_2025"
+    "recipe_2_Kissiov_and_McKenna_2025",
+    "subsample_adata"
 ]

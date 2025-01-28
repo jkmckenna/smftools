@@ -1,6 +1,6 @@
 ## direct_smf
 
-def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim):
+def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device):
     """
     Processes sequencing data from a direct methylation detection Nanopore SMF experiment to an AnnData object.
 
@@ -20,6 +20,7 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         basecall (bool): Whether to basecall
         barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
         trim (bool): Whether to trim barcodes, adapters, and primers from read ends
+        device (str): Device to use for basecalling. auto, metal, cpu, cuda
 
     Returns:
         final_adata_path (str): Path to the final adata object   
@@ -62,7 +63,7 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         if os.path.exists(modcall_output):
             print(modcall_output + ' already exists. Using existing basecalled BAM.')
         else:
-            modcall(model, input_data_path, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends, trim)
+            modcall(model, input_data_path, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends, trim, device)
     else:
         modcall_output = input_data_path
 
@@ -94,7 +95,7 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         print(mod_tsv_dir + ' already exists, skipping modkit extract')
     else:
         make_dirs([mod_tsv_dir])  
-        extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix) # Extract methylations calls for split BAM files into split TSV files
+        extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified=True) # Extract methylations calls for split BAM files into split TSV files
 
     #5 Load the modification data from TSVs into an adata object
     final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir)
