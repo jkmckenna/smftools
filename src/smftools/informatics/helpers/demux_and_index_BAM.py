@@ -33,7 +33,7 @@ def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, 
         command.append("--barcode-both-ends")
     if not trim:
         command.append("--no-trim")
-    command += ["--sort-bam", "--output-dir", split_dir]
+    command += ["--emit-summary", "--sort-bam", "--output-dir", split_dir]
     command.append(input_bam)
     command_string = ' '.join(command)
     print(f"Running: {command_string}")

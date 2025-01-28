@@ -1,7 +1,7 @@
 ## modcall
 
 # Direct methylation specific
-def modcall(model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends=True, trim=False):
+def modcall(model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends=True, trim=False, device='auto'):
     """
     Wrapper function for dorado modified base calling.
 
@@ -14,6 +14,7 @@ def modcall(model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix, barcode_bot
         bam_suffix (str): The suffix to use for the BAM file.
         barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
         trim (bool): Whether to trim barcodes, adapters, and primers from read ends
+        device (str): Device to use for basecalling. auto, metal, cpu, cuda.
     
     Returns:
         None
@@ -21,7 +22,7 @@ def modcall(model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix, barcode_bot
     """
     import subprocess
     output = bam + bam_suffix
-    command = ["dorado", "basecaller", model, pod5_dir, "--kit-name", barcode_kit, "-Y", "--modified-bases"]
+    command = ["dorado", "basecaller", model, pod5_dir, "--kit-name", barcode_kit, "-Y", "--modified-bases", "--device", device]
     command += mod_list
     if barcode_both_ends:
         command.append("--barcode-both-ends")

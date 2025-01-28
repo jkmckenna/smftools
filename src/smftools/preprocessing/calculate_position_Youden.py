@@ -1,7 +1,7 @@
 ## calculate_position_Youden
 
 ## Calculating and applying position level thresholds for methylation calls to binarize the SMF data
-def calculate_position_Youden(adata, positive_control_sample, negative_control_sample, J_threshold=0.4, obs_column='Reference', save=False, output_directory=''):
+def calculate_position_Youden(adata, positive_control_sample='positive', negative_control_sample='negative', J_threshold=0.5, obs_column='Reference', infer_on_percentile=False, inference_variable='', save=False, output_directory=''):
     """
     Adds new variable metadata to each position indicating whether the position provides reliable SMF methylation calls. Also outputs plots of the positional ROC curves.
 
@@ -11,6 +11,8 @@ def calculate_position_Youden(adata, positive_control_sample, negative_control_s
         negative_control_sample (str): string representing the sample name corresponding to the Minus MTase control sample.
         J_threshold (float): A float indicating the J-statistic used to indicate whether a position passes QC for methylation calls.
         obs_column (str): The category to iterate over.
+        infer_on_perdentile (bool | int): If False, use defined postive and negative control samples. If an int (0 < int < 100) is passed, this uses the top and bottom int percentile of methylated reads based on metric in inference_variable column.
+        inference_variable (str): If infer_on_percentile has an integer value passed, use the AnnData observation column name passed by this string as the metric.
         save (bool): Whether to save the ROC plots.
         output_directory (str): String representing the path to the output directory to output the ROC curves.
     
@@ -33,9 +35,18 @@ def calculate_position_Youden(adata, positive_control_sample, negative_control_s
         for control in control_samples:
             # Initialize a dictionary for the given control sample. This will be keyed by dataset and position to point to a tuple of coordinate position and an array of methylation probabilities
             adata.uns[f'{cat}_position_methylation_dict_{control}'] = {}
-            # get the current control subset on the given category
-            filtered_obs = cat_subset.obs[cat_subset.obs['Sample_names'].str.contains(control, na=False, regex=True)]
-            control_subset = cat_subset[filtered_obs.index].copy()
+            if infer_on_percentile:
+                sorted_column = cat_subset.obs[inference_variable].sort_values(ascending=False)
+                if control == "positive":
+                    threshold = np.percentile(sorted_column, 100 - infer_on_percentile)
+                    control_subset = cat_subset[cat_subset.obs[inference_variable] >= threshold, :]
+                else:
+                    threshold = np.percentile(sorted_column, infer_on_percentile)
+                    control_subset = cat_subset[cat_subset.obs[inference_variable] <= threshold, :]   
+            else:
+                # get the current control subset on the given category
+                filtered_obs = cat_subset.obs[cat_subset.obs['Sample_names'].str.contains(control, na=False, regex=True)]
+                control_subset = cat_subset[filtered_obs.index].copy()
             # Iterate through every position in the control subset
             for position in range(control_subset.shape[1]):
                 # Get the coordinate name associated with that position
@@ -91,8 +102,7 @@ def calculate_position_Youden(adata, positive_control_sample, negative_control_s
                     probability_thresholding_list[position] = (0.8, np.nan)
         title = f'ROC Curve for {n_passed_positions} positions with J-stat greater than {J_threshold}\n out of {n_total_positions} total positions on {cat}'
         plt.title(title)
-        date_string = date_string()
-        save_name = output_directory + f'/{date_string} {title}'
+        save_name = output_directory + f'/{title}'
         if save:
             plt.savefig(save_name)
             plt.close()

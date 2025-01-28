@@ -191,7 +191,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                     # Only keep the read positions that fall within the region of interest
                     #print('{0}: Filtering sample dataframe to keep positions falling within region of interest'.format(readwrite.time_string()))
                     current_reference_length = reference_dict[record][0]
-                    dict_total[record][sample_index] = dict_total[record][sample_index][(current_reference_length > dict_total[record][sample_index]['ref_position']) & (dict_total[record][sample_index]['ref_position']>= 0)]
+                    #dict_total[record][sample_index] = dict_total[record][sample_index][(current_reference_length > dict_total[record][sample_index]['ref_position']) & (dict_total[record][sample_index]['ref_position']>= 0)]
 
             # Iterate over dict_total of all the tsv files and extract the modification specific and strand specific dataframes into dictionaries
             for record in dict_total.keys():
@@ -231,8 +231,6 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                         print('{}: Successfully loaded a minus strand methyl-cytosine dictionary for '.format(readwrite.time_string()) + str(sample_index))
                         dict_c_top[record][sample_index] = dict_c[record][sample_index][dict_c[record][sample_index]['ref_strand'] == '+']
                         print('{}: Successfully loaded a plus strand methyl-cytosine dictionary for '.format(readwrite.time_string()) + str(sample_index))
-                        # In the strand specific dictionaries, only keep positions that are informative for GpC SMF
-
                         # Reassign pointer for dict_c to None and delete the original value that it pointed to in order to decrease memory usage.
                         dict_c[record][sample_index] = None
                         gc.collect()
@@ -276,7 +274,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                 for read in set(temp_a_dict) | set(temp_c_dict):
                                     # Add the arrays element-wise if the read is present in both dictionaries
                                     if read in temp_a_dict and read in temp_c_dict:
-                                        mod_strand_record_sample_dict[sample][read] = np.nansum([temp_a_dict[read], temp_c_dict[read]], axis=0)
+                                        mod_strand_record_sample_dict[sample][read] = np.where(np.isnan(temp_a_dict[read]) & np.isnan(temp_c_dict[read]), np.nan, np.nan_to_num(temp_a_dict[read]) + np.nan_to_num(temp_c_dict[read]))
                                     # If the read is present in only one dictionary, copy its value
                                     elif read in temp_a_dict:
                                         mod_strand_record_sample_dict[sample][read] = temp_a_dict[read]
@@ -293,7 +291,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                 for read in set(temp_a_dict) | set(temp_c_dict):
                                     # Add the arrays element-wise if the read is present in both dictionaries
                                     if read in temp_a_dict and read in temp_c_dict:
-                                        mod_strand_record_sample_dict[sample][read] = np.nansum([temp_a_dict[read], temp_c_dict[read]], axis=0)
+                                        mod_strand_record_sample_dict[sample][read] = np.where(np.isnan(temp_a_dict[read]) & np.isnan(temp_c_dict[read]), np.nan, np.nan_to_num(temp_a_dict[read]) + np.nan_to_num(temp_c_dict[read]))
                                     # If the read is present in only one dictionary, copy its value
                                     elif read in temp_a_dict:
                                         mod_strand_record_sample_dict[sample][read] = temp_a_dict[read]
@@ -309,7 +307,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                 # # Iterate through rows in the temp DataFrame
                                 for index, row in temp_df.iterrows():
                                     read = row['read_id'] # read name
-                                    position = row['ref_position']  # 1-indexed positional coordinate
+                                    position = row['ref_position']  # 0-indexed positional coordinate
                                     probability = row['call_prob'] # Get the probability of the given call
                                     # if the call_code is modified change methylated value to the probability of methylation
                                     if (row['call_code'] in ['a', 'h', 'm']): 
@@ -323,7 +321,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                         mod_strand_record_sample_dict[sample][read] = np.full(max_reference_length, np.nan) 
 
                                     # add the positional methylation state to the numpy array
-                                    mod_strand_record_sample_dict[sample][read][position-1] = methylated
+                                    mod_strand_record_sample_dict[sample][read][position] = methylated
 
             # Save the sample files in the batch as gzipped hdf5 files
             os.chdir(h5_dir)
@@ -347,6 +345,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                             sorted_index = sorted(temp_df.index)
                             temp_df = temp_df.reindex(sorted_index)
                             X = temp_df.values
+                            dataset, strand = sample_types[dict_index].split('_')[:2]
 
                             print('{0}: Loading {1} dataframe for sample {2} into a temp anndata object'.format(readwrite.time_string(), sample_types[dict_index], final_sample_index))
                             temp_adata = ad.AnnData(X, dtype=X.dtype)
@@ -358,12 +357,12 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                 temp_adata.var_names = temp_adata.var_names.astype(str)
                                 print('{0}: Adding {1} anndata for sample {2}'.format(readwrite.time_string(), sample_types[dict_index], final_sample_index))
                                 temp_adata.obs['Sample'] = [str(final_sample_index)] * len(temp_adata)
-                                dataset, strand = sample_types[dict_index].split('_')[:2]
+                                temp_adata.obs['Reference'] = [f'{record}'] * len(temp_adata)
                                 temp_adata.obs['Strand'] = [strand] * len(temp_adata)
                                 temp_adata.obs['Dataset'] = [dataset] * len(temp_adata)
-                                temp_adata.obs['Reference'] = [f'{record}_{dataset}_{strand}'] * len(temp_adata)
-                                temp_adata.obs['Reference_chromosome'] = [f'{record}'] * len(temp_adata)
-
+                                temp_adata.obs['Reference_dataset_strand'] = [f'{record}_{dataset}_{strand}'] * len(temp_adata)
+                                temp_adata.obs['Reference_strand'] = [f'{record}_{strand}'] * len(temp_adata)
+                                
                                 # Load in the one hot encoded reads from the current sample and record
                                 one_hot_reads = {}
                                 n_rows_OHE = 5
@@ -461,6 +460,11 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
     files = os.listdir(h5_dir)        
     # Filter file names that contain the search string in their filename and keep them in a list
     hdfs = [hdf for hdf in files if 'hdf5.h5ad' in hdf and hdf != final_hdf]
+    combined_hdfs = [hdf for hdf in hdfs if "combined" in hdf]
+    if len(combined_hdfs) > 0:
+        hdfs = combined_hdfs
+    else:
+        pass
     # Sort file list by names and print the list of file names
     hdfs.sort()
     print('{0} sample files found: {1}'.format(len(hdfs), hdfs))
@@ -470,10 +474,10 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
         print('{0}: Reading in {1} hdf5 file'.format(readwrite.time_string(), hdfs[hdf_index]))
         temp_adata = ad.read_h5ad(hdf)
         if final_adata:
-            print('{0}: Concatenating final adata object with {1} hdf5 file'.format(readwrite.time_string(), hdf[hdf_index]))
+            print('{0}: Concatenating final adata object with {1} hdf5 file'.format(readwrite.time_string(), hdfs[hdf_index]))
             final_adata = ad.concat([final_adata, temp_adata], join='outer', index_unique=None)
         else:
-            print('{0}: Initializing final adata object with {1} hdf5 file'.format(readwrite.time_string(), hdf[hdf_index]))
+            print('{0}: Initializing final adata object with {1} hdf5 file'.format(readwrite.time_string(), hdfs[hdf_index]))
             final_adata = temp_adata
         del temp_adata
 
@@ -481,27 +485,29 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
     for col in final_adata.obs.columns:
         final_adata.obs[col] = final_adata.obs[col].astype('category')
 
+    ohe_bases = ['A', 'C', 'G', 'T'] # ignore N bases for consensus
+    ohe_layers = [f"{ohe_base}_binary_encoding" for ohe_base in ohe_bases]
     for record in records_to_analyze:
         # Add FASTA sequence to the object
         sequence = record_seq_dict[record][0]
         complement = record_seq_dict[record][1]
-        final_adata.var[f'{record}_top_strand_FASTA_base_at_coordinate'] = list(sequence)
-        final_adata.var[f'{record}_bottom_strand_FASTA_base_at_coordinate'] = list(complement)
+        final_adata.var[f'{record}_top_strand_FASTA_base'] = list(sequence)
+        final_adata.var[f'{record}_bottom_strand_FASTA_base'] = list(complement)
         final_adata.uns[f'{record}_FASTA_sequence'] = sequence
         # Add consensus sequence of samples mapped to the record to the object
-        record_subset = final_adata[final_adata.obs['Reference_chromosome'] == record].copy()
+        record_subset = final_adata[final_adata.obs['Reference'] == record]
         for strand in record_subset.obs['Strand'].cat.categories:
-            strand_subset = record_subset[record_subset.obs['Strand'] == strand].copy()
+            strand_subset = record_subset[record_subset.obs['Strand'] == strand]
             for mapping_dir in strand_subset.obs['Read_mapping_direction'].cat.categories:
-                mapping_dir_subset = strand_subset[strand_subset.obs['Read_mapping_direction'] == mapping_dir].copy()
+                mapping_dir_subset = strand_subset[strand_subset.obs['Read_mapping_direction'] == mapping_dir]
                 layer_map, layer_counts = {}, []
-                for i, layer in enumerate(mapping_dir_subset.layers):
+                for i, layer in enumerate(ohe_layers):
                     layer_map[i] = layer.split('_')[0]
                     layer_counts.append(np.sum(mapping_dir_subset.layers[layer], axis=0))
                 count_array = np.array(layer_counts)
                 nucleotide_indexes = np.argmax(count_array, axis=0)
                 consensus_sequence_list = [layer_map[i] for i in nucleotide_indexes]
-                final_adata.var[f'{record}_{strand}_strand_{mapping_dir}_mapping_dir_consensus_from_all_samples'] = consensus_sequence_list
+                final_adata.var[f'{record}_{strand}_{mapping_dir}_consensus_sequence_from_all_samples'] = consensus_sequence_list
 
     final_adata.write_h5ad(final_adata_path, compression='gzip')
 

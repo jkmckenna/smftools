@@ -5,7 +5,7 @@
 A Python tool for processing raw sequencing data derived from single molecule footprinting experiments into [anndata](https://anndata.readthedocs.io/en/latest/) objects. Additional functionality for preprocessing, analysis, and visualization.
 
 ## Philosophy
-While most genomic data structures handle low-coverage data (<100X) along large references, smftools prioritizes high-coverage data (scalable to at least 1 million X coverage) of a few genomic loci at a time. This enables efficient data storage, rapid data operations, hierarchical metadata handling, seamless integration with various machine-learning packages, and ease of visualization. Furthermore, functionality is modularized, enabling analysis sessions to be saved, reloaded, and easily shared with collaborators. Analyses are centered around the [anndata](https://anndata.readthedocs.io/en/latest/) object, and are heavily inspired by the work conducted within the single-cell genomics community.
+While most genomic data structures handle low-coverage data (<100X) along large references, smftools prioritizes high-coverage data (scalable to >1,000,000X coverage) of a few genomic loci at a time. This enables efficient data storage, rapid data operations, hierarchical metadata handling, seamless integration with various machine-learning packages, and ease of visualization. Furthermore, functionality is modularized, enabling analysis sessions to be saved, reloaded, and easily shared with collaborators. Analyses are centered around the [anndata](https://anndata.readthedocs.io/en/latest/) object, and are heavily inspired by the work conducted within the single-cell genomics community.
 
 ## Dependencies
 The following CLI tools need to be installed and configured before using the informatics (smftools.inform) module of smftools:
@@ -19,14 +19,14 @@ The following CLI tools need to be installed and configured before using the inf
 ## Modules
 ### Informatics: Processes raw Nanopore/Illumina data from SMF experiments into an AnnData object.
 ![](docs/source/_static/smftools_informatics_diagram.png)
-### Preprocessing: Appends QC metrics to the AnnData object and perfroms filtering.
+### Preprocessing: Appends QC metrics to the AnnData object and performs filtering.
 ![](docs/source/_static/smftools_preprocessing_diagram.png)
 - Tools: Appends various analyses to the AnnData object.
 - Plotting: Visualization of analyses stored within the AnnData object.
 
 ## Announcements
-### 09/09/24 - The pre-alpha phase package ([smftools-0.1.1](https://pypi.org/project/smftools/))
+### 09/09/24 - The alpha phase package ([smftools-0.1.1](https://pypi.org/project/smftools/)) is installable through pypi!
 The informatics module has been bumped to alpha-phase status. This module can deal with POD5s and unaligned BAMS from nanopore conversion and direct SMF experiments, as well as FASTQs from Illumina conversion SMF experiments. Primary output from this module is an AnnData object containing all relevant SMF data, which is compatible with all downstream smftools modules. The other modules are still in pre-alpha phase. Preprocessing, Tools, and Plotting modules should be promoted to alpha-phase within the next month or so.
 
 ### 08/30/24 - The pre-alpha phase package ([smftools-0.1.0](https://pypi.org/project/smftools/)) is installable through pypi!
-Currently, this package (smftools-0.1.0) is going through rapid improvement (dependency handling accross Linux and Mac OS, testing, documentation, debugging) and is still too early in development for standard use. The underlying functionality was originally developed as a collection of scripts for single molecule footprinting (SMF) experiments in our lab, but is being packaged/developed to facilitate the expansion of SMF to any lab that is interested in performing these styles of experiments/analyses. The alpha-phase package is expected to be available within a couple months, so stay tuned!
+Currently, this package (smftools-0.1.0) is going through rapid improvement (dependency handling accross Linux and Mac OS, testing, documentation, debugging) and is still too early in development for widespread use. The underlying functionality was originally developed as a collection of scripts for single molecule footprinting (SMF) experiments in our lab, but is being packaged/developed to facilitate the expansion of SMF to any lab that is interested in performing these styles of experiments/analyses. The alpha-phase package is expected to be available within a couple months, so stay tuned!
