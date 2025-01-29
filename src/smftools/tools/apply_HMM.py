@@ -17,7 +17,8 @@ def apply_HMM(adata, model, obs_column, layer=None, footprints=True, accessible_
     from tqdm import tqdm
 
     footprint_features =  {
-        "small_bound_stretch": [0, 80],
+        "small_bound_stretch": [0, 30],
+        "medium_bound_stretch": [30, 80],
         "putative_nucleosome": [80, 200],
         "large_bound_stretch": [200, np.inf]
 
@@ -62,9 +63,9 @@ def apply_HMM(adata, model, obs_column, layer=None, footprints=True, accessible_
             site_subset = reference_subset[:, reference_subset.var[f'{reference}_position_passed_QC'] == True]
             for methbase in methbases:
                 if methbase.lower() == 'combined':
-                    subset_condition = (site_subset.var[f"{reference}_strand_FASTA_base_at_coordinate"] == "A") | (site_subset.var[f"{reference}_GpC_site"] == True)
+                    subset_condition = (site_subset.var[f"{reference}_strand_FASTA_base"] == "A") | (site_subset.var[f"{reference}_GpC_site"] == True)
                 elif methbase.lower() == 'a':
-                    subset_condition = (site_subset.var[f"{reference}_strand_FASTA_base_at_coordinate"] == "A")
+                    subset_condition = (site_subset.var[f"{reference}_strand_FASTA_base"] == "A")
                 elif methbase.lower() == 'c':
                     subset_condition = (site_subset.var[f"{reference}_GpC_site"] == True)
                 methbase_subset = site_subset[:, subset_condition]
@@ -89,9 +90,9 @@ def apply_HMM(adata, model, obs_column, layer=None, footprints=True, accessible_
             site_subset = reference_subset[:, reference_subset.var[f'{reference}_position_passed_QC'] == True]
             for methbase in methbases:
                 if methbase.lower() == 'combined':
-                    subset_condition = (site_subset.var[f"{reference}_strand_FASTA_base_at_coordinate"] == "A") | (site_subset.var[f"{reference}_GpC_site"] == True)
+                    subset_condition = (site_subset.var[f"{reference}_strand_FASTA_base"] == "A") | (site_subset.var[f"{reference}_GpC_site"] == True)
                 elif methbase.lower() == 'a':
-                    subset_condition = (site_subset.var[f"{reference}_strand_FASTA_base_at_coordinate"] == "A")
+                    subset_condition = (site_subset.var[f"{reference}_strand_FASTA_base"] == "A")
                 elif methbase.lower() == 'c':
                     subset_condition = (site_subset.var[f"{reference}_GpC_site"] == True)            
                 methbase_subset = site_subset[:, subset_condition]
