@@ -1,6 +1,6 @@
 # aligned_BAM_to_bed
 
-def aligned_BAM_to_bed(aligned_BAM, plotting_dir, bed_dir, fasta):
+def aligned_BAM_to_bed(aligned_BAM, plotting_dir, bed_dir, fasta, make_bigwigs):
     """
     Takes an aligned BAM as input and writes a bed file of reads as output.
     Bed columns are: Record name, start position, end position, read length, read name
@@ -10,6 +10,7 @@ def aligned_BAM_to_bed(aligned_BAM, plotting_dir, bed_dir, fasta):
         plotting_dir (str): Path to write out read alignment length and coverage histograms
         bed_dir (str): Path to write out read alignment coordinates
         fasta (str): File path to the reference genome to align to.
+        make_bigwigs (bool): Whether to make bigwigs
 
     Returns:
         None
@@ -23,6 +24,7 @@ def aligned_BAM_to_bed(aligned_BAM, plotting_dir, bed_dir, fasta):
     bed_output_basename = os.path.basename(aligned_BAM).split('.bam')[0] + '_bed.bed'
     bed_output = os.path.join(bed_dir, bed_output_basename)
 
+    print(f"Making BED from BAM: {aligned_BAM}")
     samtools_view = subprocess.Popen(["samtools", "view", aligned_BAM], stdout=subprocess.PIPE) 
     with open(bed_output, "w") as output_file:
         awk_process = subprocess.Popen(["awk", '{print $3 "\t" $4 "\t" $4+length($10)-1 "\t" length($10)-1 "\t" $1}'], stdin=samtools_view.stdout, stdout=output_file)    
@@ -61,13 +63,15 @@ def aligned_BAM_to_bed(aligned_BAM, plotting_dir, bed_dir, fasta):
         
         return aligned
     
+    print(f"Subsetting BED into aligned and unaligned subsets: {bed_output}")
     aligned_bed = split_bed(bed_output)
 
     # Write out basic plots of reference coverage and read lengths
     plot_read_length_and_coverage_histograms(aligned_bed, plotting_dir)
 
-    # Make a bedgraph and bigwig for the aligned reads
-    bed_to_bigwig(fasta, aligned_bed)
+    if make_bigwigs:
+        # Make a bedgraph and bigwig for the aligned reads
+        bed_to_bigwig(fasta, aligned_bed)
 
 
 

@@ -43,6 +43,7 @@ def load_adata(config_path):
     fasta_regions_of_interest = var_dict.get("fasta_regions_of_interest", default_value) # Path to a bed file listing coordinate regions of interest within the FASTA to include. Optional.
     mapping_threshold = var_dict.get('mapping_threshold', default_value) # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
     experiment_name = var_dict.get('experiment_name', default_value) # A key term to add to the AnnData file name.
+    model_dir = var_dict.get('model_dir', default_value) # needed for dorado basecaller
     model = var_dict.get('model', default_value) # needed for dorado basecaller
     barcode_kit = var_dict.get('barcode_kit', default_value) # needed for dorado basecaller
     barcode_both_ends = var_dict.get('barcode_both_ends', default_value) # dorado demultiplexing
@@ -58,6 +59,9 @@ def load_adata(config_path):
     mod_list = var_dict.get('mod_list', default_value)
     batch_size = var_dict.get('batch_size', default_value)
     device = var_dict.get('device', 'auto')
+    make_bigwigs = var_dict.get('make_bigwigs', default_value)
+    skip_unclassified = var_dict.get('skip_unclassified', True)
+    delete_batch_hdfs = var_dict.get('delete_batch_hdfs', True)
 
     # Make initial output directory
     make_dirs([output_directory])
@@ -123,20 +127,25 @@ def load_adata(config_path):
 
     if smf_modality == 'conversion':
         from .conversion_smf import conversion_smf
-        final_adata_path, sorted_output = conversion_smf(fasta, output_directory, conversions, strands, model, input_data_path, split_path
-                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device)
+        final_adata_path, sorted_output, bam_files = conversion_smf(fasta, output_directory, conversions, strands, model_dir, model, input_data_path, split_path
+                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs)
     elif smf_modality == 'direct':
         from .direct_smf import direct_smf
-        final_adata_path, sorted_output = direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_path
-                                                     , barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device)
+        final_adata_path, sorted_output, bam_files = direct_smf(fasta, output_directory, mod_list,model_dir, model, thresholds, input_data_path, split_path
+                                                     , barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device, make_bigwigs, skip_unclassified, delete_batch_hdfs)
     else:
             print("Error")
             
     # Read in the final adata object and append final metadata
     print(f'Reading in adata from {final_adata_path} to add final metadata')
     final_adata = ad.read_h5ad(final_adata_path)
+    
     # Adding read query length metadata to adata object.
-    read_metrics = extract_read_features_from_bam(sorted_output)
+    read_metrics = {}
+    for bam_file in bam_files:
+        bam_read_metrics = extract_read_features_from_bam(bam_file)
+        read_metrics.update(bam_read_metrics)
+
     query_read_length_values = []
     query_read_quality_values = []
     reference_lengths = []
@@ -151,12 +160,21 @@ def load_adata(config_path):
         else:
             query_read_length_values.append(value)
             query_read_quality_values.append(value)
-            reference_lengths.append(value)            
+            reference_lengths.append(value) 
+                       
     # Add the new column to adata.obs
     final_adata.obs['query_read_length'] = query_read_length_values
     final_adata.obs['query_read_quality'] = query_read_quality_values
     final_adata.obs['query_length_to_reference_length_ratio'] = np.array(query_read_length_values) / np.array(reference_lengths)
 
+    final_adata.obs['Raw_methylation_signal'] = np.nansum(final_adata.X, axis=1)
+    final_adata.obs['Raw_per_base_methylation_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['query_read_length']
+
     print('Saving final adata')
-    final_adata.write_h5ad(final_adata_path, compression='gzip')
+    if ".gz" in final_adata_path:
+        final_adata.write_h5ad(f"{final_adata_path}", compression='gzip')
+    else:
+        final_adata.write_h5ad(f"{final_adata_path}.gz", compression='gzip')
     print('Final adata saved')
+    # Delete non gzipped version
+    os.remove(final_adata_path)

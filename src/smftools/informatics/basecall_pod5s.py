@@ -14,15 +14,10 @@ def basecall_pod5s(config_path):
     from .helpers import LoadExperimentConfig, make_dirs, canoncall, modcall
     from .fast5_to_pod5 import fast5_to_pod5
     import os
-    import numpy as np
-    import anndata as ad
     from pathlib import Path
 
     # Default params
     bam_suffix = '.bam' # If different, change from here.
-    split_dir = 'demultiplexed_BAMs' # If different, change from here.
-    strands = ['bottom', 'top'] # If different, change from here. Having both listed generally doesn't slow things down too much.
-    conversions = ['unconverted'] # The name to use for the unconverted files. If different, change from here.
 
     # Load experiment config parameters into global variables
     experiment_config = LoadExperimentConfig(config_path)
@@ -32,7 +27,6 @@ def basecall_pod5s(config_path):
     default_value = None
 
     # General config variable init
-    smf_modality = var_dict.get('smf_modality', default_value) # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Necessary.
     input_data_path = var_dict.get('input_data_path', default_value) # Path to a directory of POD5s/FAST5s or to a BAM/FASTQ file. Necessary.
     output_directory = var_dict.get('output_directory', default_value) # Path to the output directory to make for the analysis. Necessary.
     model = var_dict.get('model', default_value) # needed for dorado basecaller
@@ -52,28 +46,18 @@ def basecall_pod5s(config_path):
     # Make initial output directory
     make_dirs([output_directory])
     os.chdir(output_directory)
-    # Define the pathname to split BAMs into later during demultiplexing.
-    split_path = os.path.join(output_directory, split_dir)
-
 
     # Get the input filetype
     if Path(input_data_path).is_file():
         input_data_filetype = '.' + os.path.basename(input_data_path).split('.')[1].lower()
         input_is_pod5 = input_data_filetype in ['.pod5','.p5']
         input_is_fast5 = input_data_filetype in ['.fast5','.f5']
-        input_is_fastq = input_data_filetype in ['.fastq', '.fq']
-        input_is_bam = input_data_filetype == bam_suffix
-        if input_is_fastq:
-            fastq_paths = [input_data_path]
+
     elif Path(input_data_path).is_dir():
         # Get the file names in the input data dir
         input_files = os.listdir(input_data_path)
         input_is_pod5 = sum([True for file in input_files if '.pod5' in file or '.p5' in file])
         input_is_fast5 = sum([True for file in input_files if '.fast5' in file or '.f5' in file])
-        input_is_fastq = sum([True for file in input_files if '.fastq' in file or '.fq' in file])
-        input_is_bam = sum([True for file in input_files if bam_suffix in file])
-        if input_is_fastq:
-            fastq_paths = [os.path.join(input_data_path, file) for file in input_files if '.fastq' in file or '.fq' in file]
 
     # If the input files are not pod5 files, and they are fast5 files, convert the files to a pod5 file before proceeding.
     if input_is_fast5 and not input_is_pod5:
@@ -83,15 +67,6 @@ def basecall_pod5s(config_path):
         fast5_to_pod5(input_data_path, output_pod5)
         # Reassign the pod5_dir variable to point to the new pod5 file.
         input_data_path = output_pod5
-        input_is_pod5 = True
-        input_is_fast5 = False
-
-    if input_is_pod5:
-        basecall = True
-    elif input_is_bam:
-        basecall = False
-    else:
-        print('Error, can not find input bam or pod5')
 
     model_basename = os.path.basename(model)
     model_basename = model_basename.replace('.', '_')

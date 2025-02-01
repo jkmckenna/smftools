@@ -38,10 +38,10 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     parent_dir = os.path.dirname(split_dir)
     split_dir_base = os.path.basename(split_dir)
     h5_dir = os.path.join(parent_dir, 'h5ads')
-    final_adata_path = os.path.join(h5_dir, f'{experiment_name}_{split_dir_base}.h5ad.gz')
+    final_adata_path = os.path.join(h5_dir, f'{experiment_name}_{split_dir_base}.h5ad')
 
-    if os.path.exists(final_adata_path):
-        print(f'{final_adata_path} already exists, using existing adata object') # Stops here if the final_adata file already exists
+    if os.path.exists(f"{final_adata_path}.gz"):
+        print(f'{final_adata_path}.gz already exists, using existing adata object') # Stops here if the final_adata file already exists
         return final_adata_path
     
     tmp_dir = os.path.join(parent_dir, 'tmp')
@@ -170,15 +170,16 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                     del tmp_ohe_dict
 
                 read_names = list(one_hot_reads.keys())
-                dict_A, dict_C, dict_G, dict_T, dict_N = {}, {}, {}, {}, {}
 
                 sequence_length = one_hot_reads[read_names[0]].reshape(n_rows_OHE, -1).shape[1]
-                df_A = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-                df_C = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-                df_G = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-                df_T = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-                df_N = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
+                df_A = np.zeros((len(sorted_index), sequence_length), dtype=int)
+                df_C = np.zeros((len(sorted_index), sequence_length), dtype=int)
+                df_G = np.zeros((len(sorted_index), sequence_length), dtype=int)
+                df_T = np.zeros((len(sorted_index), sequence_length), dtype=int)
+                df_N = np.zeros((len(sorted_index), sequence_length), dtype=int)
 
+                # Process one-hot data into dictionaries
+                dict_A, dict_C, dict_G, dict_T, dict_N = {}, {}, {}, {}, {}
                 for read_name, one_hot_array in one_hot_reads.items():
                     one_hot_array = one_hot_array.reshape(n_rows_OHE, -1)
                     dict_A[read_name] = one_hot_array[0, :]
@@ -190,21 +191,22 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
                 del one_hot_reads
                 gc.collect()
 
-                for j, read_name in tqdm(enumerate(sorted_index), desc='Loading dataframes of OHE reads', total=len(sorted_index)):
-                    df_A.iloc[j] = dict_A[read_name]
-                    df_C.iloc[j] = dict_C[read_name]
-                    df_G.iloc[j] = dict_G[read_name]
-                    df_T.iloc[j] = dict_T[read_name]
-                    df_N.iloc[j] = dict_N[read_name]
+                # Fill the arrays 
+                for j, read_name in tqdm(enumerate(sorted_index), desc='Loading arrays of OHE reads', total=len(sorted_index)):
+                    df_A[j, :] = dict_A[read_name]
+                    df_C[j, :] = dict_C[read_name]
+                    df_G[j, :] = dict_G[read_name]
+                    df_T[j, :] = dict_T[read_name]
+                    df_N[j, :] = dict_N[read_name]
 
                 del dict_A, dict_C, dict_G, dict_T, dict_N
                 gc.collect()
 
+                # Store the results in AnnData layers
                 ohe_df_map = {0: df_A, 1: df_C, 2: df_G, 3: df_T, 4: df_N}
-                
                 for j, base in enumerate(['A', 'C', 'G', 'T', 'N']):
-                    adata.layers[f'{base}_binary_encoding'] = ohe_df_map[j].values 
-                    ohe_df_map[j] = None # Reassign pointer for memory usage purposes
+                    adata.layers[f'{base}_binary_encoding'] = ohe_df_map[j]
+                    ohe_df_map[j] = None  # Reassign pointer for memory usage purposes
 
                 if final_adata:
                     if adata.shape[0] > 0:
@@ -238,5 +240,5 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     ######################################################################################################
     ## Export the final adata object
     print('Saving initial draft of final adata')
-    final_adata.write_h5ad(final_adata_path, compression='gzip')
+    final_adata.write_h5ad(final_adata_path)
     return final_adata_path

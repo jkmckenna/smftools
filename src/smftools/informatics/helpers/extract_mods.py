@@ -1,6 +1,6 @@
 ## extract_mods
 
-def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified=True):
+def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified=True, modkit_summary=False):
     """
     Takes all of the aligned, sorted, split modified BAM files and runs Nanopore Modkit Extract to load the modification data into zipped TSV files
 
@@ -10,6 +10,7 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassifi
         split_dit (str): A string representing the file path to the directory containing the converted aligned_sorted_split BAM files.
         bam_suffix (str): The suffix to use for the BAM file.
         skip_unclassified (bool): Whether to skip unclassified bam file for modkit extract command
+        modkit_summary (bool): Whether to run and display modkit summary
 
     Returns:
         None
@@ -37,12 +38,16 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassifi
             if os.path.exists(f"{output_tsv}.zip"):
                 print(f"{output_tsv}.zip already exists, skipping modkit extract")
             else:
-                # Run modkit summary
-                subprocess.run(["modkit", "summary", input_file])
+                print(f"Extracting modification data from {input_file}")
+                if modkit_summary:
+                    # Run modkit summary
+                    subprocess.run(["modkit", "summary", input_file])
+                else:
+                    pass
                 # Run modkit extract
                 subprocess.run([
                     "modkit", "extract",
-                    "calls", "--mapped-only"
+                    "calls", "--mapped-only",
                     "--filter-threshold", f'{filter_threshold}',
                     "--mod-thresholds", f"m:{m5C_threshold}",
                     "--mod-thresholds", f"a:{m6A_threshold}",

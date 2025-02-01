@@ -16,6 +16,7 @@ def filter_reads_on_length(adata, filter_on_coordinates=False, min_read_length=2
     import numpy as np
     import anndata as ad
     import pandas as pd
+
     if filter_on_coordinates:
         lower_bound, upper_bound = filter_on_coordinates
         # Extract the position information from the adata object as an np array
@@ -43,7 +44,7 @@ def filter_reads_on_length(adata, filter_on_coordinates=False, min_read_length=2
     if max_read_length:
         print(f'Subsetting adata to keep reads shorter than {max_read_length}')
         s0 = adata.shape[0]
-        adata = adata[adata.obs['query_read_length'] < max_read_length].copy()
+        adata = adata[adata.obs['read_length'] < max_read_length].copy()
         s1 = adata.shape[0]
         print(f'Removed {s0-s1} reads greater than {max_read_length} basepairs in length')
 

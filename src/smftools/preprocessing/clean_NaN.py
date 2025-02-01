@@ -39,3 +39,10 @@ def clean_NaN(adata, layer=None):
     old_value, new_value = [np.nan, 1]
     df = df.replace(old_value, new_value)
     adata.layers['nan1_12'] = df.values
+
+    # Replace NaN values with -1
+    print('Making layer: nan_minus_1')
+    old_value, new_value = [np.nan, -1]
+    df = adata_to_df(adata, layer=layer)
+    df = df.replace(old_value, new_value)
+    adata.layers['nan_minus_1'] = df.values

@@ -32,10 +32,10 @@ def ohe_batching(base_identities, tmp_dir, record, prefix='', batch_size=100000)
         count += 1
         # If the batch size is reached, write out the batch and reset
         if count >= batch_size:
-            save_name = os.path.join(tmp_dir, f'tmp_{prefix}_{record}_{batch_number}.h5ad.gz')
+            save_name = os.path.join(tmp_dir, f'tmp_{prefix}_{record}_{batch_number}.h5ad')
             X = np.random.rand(1, 1)
             tmp_ad = ad.AnnData(X=X, uns=batch) 
-            tmp_ad.write_h5ad(save_name, compression='gzip')
+            tmp_ad.write_h5ad(save_name)
             file_names.append(save_name)
             batch.clear()
             count = 0
@@ -43,10 +43,10 @@ def ohe_batching(base_identities, tmp_dir, record, prefix='', batch_size=100000)
 
     # Write out any remaining reads in the final batch
     if batch:
-        save_name = os.path.join(tmp_dir, f'tmp_{prefix}_{record}_{batch_number}.h5ad.gz')
+        save_name = os.path.join(tmp_dir, f'tmp_{prefix}_{record}_{batch_number}.h5ad')
         X = np.random.rand(1, 1)
         tmp_ad = ad.AnnData(X=X, uns=batch) 
-        tmp_ad.write_h5ad(save_name, compression='gzip')
+        tmp_ad.write_h5ad(save_name)
         file_names.append(save_name)
 
     return file_names

@@ -50,15 +50,20 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
     make_dirs([h5_dir, tmp_dir])
     existing_h5s =  os.listdir(h5_dir)
     existing_h5s = [h5 for h5 in existing_h5s if '.h5ad.gz' in h5]
-    final_hdf = f'{experiment_name}_final_experiment_hdf5.h5ad.gz'    
+    final_hdf = f'{experiment_name}_final_experiment_hdf5.h5ad'    
     final_adata_path = os.path.join(h5_dir, final_hdf)
-    if os.path.exists(final_adata_path):
+
+    if os.path.exists(f"{final_adata_path}.gz"):
+        print(f'{final_adata_path}.gz already exists. Using existing adata')
+        return f"{final_adata_path}.gz"
+    
+    elif os.path.exists(f"{final_adata_path}"):
         print(f'{final_adata_path} already exists. Using existing adata')
         return final_adata_path
     
     # Filter file names that contain the search string in their filename and keep them in a list
     tsvs = [tsv for tsv in tsv_files if 'extract.tsv' in tsv]
-    bams = [bam for bam in bam_files if '.bam' in bam and '.bai' not in bam]
+    bams = [bam for bam in bam_files if '.bam' in bam and '.bai' not in bam and 'unclassified' not in bam]
     # Sort file list by names and print the list of file names
     tsvs.sort()
     tsv_path_list = [os.path.join(mod_tsv_dir, tsv) for tsv in tsvs]
@@ -300,28 +305,42 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                 del temp_a_dict, temp_c_dict
                             # For all other dictionaries
                             else:
+
                                 # use temp_df to point to the dataframe held in mod_strand_record_sample_dict[sample]
                                 temp_df = mod_strand_record_sample_dict[sample]
                                 # reassign the dictionary pointer to a nested dictionary.
                                 mod_strand_record_sample_dict[sample] = {}
-                                # # Iterate through rows in the temp DataFrame
-                                for index, row in temp_df.iterrows():
-                                    read = row['read_id'] # read name
-                                    position = row['ref_position']  # 0-indexed positional coordinate
-                                    probability = row['call_prob'] # Get the probability of the given call
-                                    # if the call_code is modified change methylated value to the probability of methylation
-                                    if (row['call_code'] in ['a', 'h', 'm']): 
-                                        methylated = probability
-                                    # If the call code is canonical, change the methylated value to 1 - the probability of canonical
-                                    elif (row['call_code'] in ['-']):
-                                        methylated = 1 - probability
 
-                                    # If the current read is not in the dictionary yet, initalize the dictionary with a nan filled numpy array of proper size.
-                                    if read not in mod_strand_record_sample_dict[sample]:
-                                        mod_strand_record_sample_dict[sample][read] = np.full(max_reference_length, np.nan) 
+                                # Get relevant columns as NumPy arrays
+                                read_ids = temp_df['read_id'].values
+                                positions = temp_df['ref_position'].values
+                                call_codes = temp_df['call_code'].values
+                                probabilities = temp_df['call_prob'].values
 
-                                    # add the positional methylation state to the numpy array
-                                    mod_strand_record_sample_dict[sample][read][position] = methylated
+                                # Define valid call code categories
+                                modified_codes = {'a', 'h', 'm'}
+                                canonical_codes = {'-'}
+
+                                # Vectorized methylation calculation with NaN for other codes
+                                methylation_prob = np.full_like(probabilities, np.nan)  # Default all to NaN
+                                methylation_prob[np.isin(call_codes, list(modified_codes))] = probabilities[np.isin(call_codes, list(modified_codes))]
+                                methylation_prob[np.isin(call_codes, list(canonical_codes))] = 1 - probabilities[np.isin(call_codes, list(canonical_codes))]
+
+                                # Find unique reads
+                                unique_reads = np.unique(read_ids)
+                                # Preallocate storage for each read
+                                for read in unique_reads:
+                                    mod_strand_record_sample_dict[sample][read] = np.full(max_reference_length, np.nan)
+
+                                # Efficient NumPy indexing to assign values
+                                for i in range(len(read_ids)):
+                                    read = read_ids[i]
+                                    pos = positions[i]
+                                    prob = methylation_prob[i]
+                                    
+                                    # Assign methylation probability
+                                    mod_strand_record_sample_dict[sample][read][pos] = prob
+
 
             # Save the sample files in the batch as gzipped hdf5 files
             os.chdir(h5_dir)
@@ -348,7 +367,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                             dataset, strand = sample_types[dict_index].split('_')[:2]
 
                             print('{0}: Loading {1} dataframe for sample {2} into a temp anndata object'.format(readwrite.time_string(), sample_types[dict_index], final_sample_index))
-                            temp_adata = ad.AnnData(X, dtype=X.dtype)
+                            temp_adata = ad.AnnData(X)
                             if temp_adata.shape[0] > 0:
                                 print('{0}: Adding read names and position ids to {1} anndata for sample {2}'.format(readwrite.time_string(), sample_types[dict_index], final_sample_index))
                                 temp_adata.obs_names = temp_df.index
@@ -394,14 +413,16 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
 
                                 del temp_df
                                 
-                                dict_A, dict_C, dict_G, dict_T, dict_N = {}, {}, {}, {}, {}
+                                # Initialize NumPy arrays
                                 sequence_length = one_hot_reads[read_names[0]].reshape(n_rows_OHE, -1).shape[1]
-                                df_A = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-                                df_C = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-                                df_G = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-                                df_T = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
-                                df_N = pd.DataFrame(0, index=sorted_index, columns=range(sequence_length))
+                                df_A = np.zeros((len(sorted_index), sequence_length), dtype=int)
+                                df_C = np.zeros((len(sorted_index), sequence_length), dtype=int)
+                                df_G = np.zeros((len(sorted_index), sequence_length), dtype=int)
+                                df_T = np.zeros((len(sorted_index), sequence_length), dtype=int)
+                                df_N = np.zeros((len(sorted_index), sequence_length), dtype=int)
 
+                                # Process one-hot data into dictionaries
+                                dict_A, dict_C, dict_G, dict_T, dict_N = {}, {}, {}, {}, {}
                                 for read_name, one_hot_array in one_hot_reads.items():
                                     one_hot_array = one_hot_array.reshape(n_rows_OHE, -1)
                                     dict_A[read_name] = one_hot_array[0, :]
@@ -413,21 +434,22 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                 del one_hot_reads
                                 gc.collect()
 
+                                # Fill the arrays
                                 for j, read_name in tqdm(enumerate(sorted_index), desc='Loading dataframes of OHE reads', total=len(sorted_index)):
-                                    df_A.iloc[j] = dict_A[read_name]
-                                    df_C.iloc[j] = dict_C[read_name]
-                                    df_G.iloc[j] = dict_G[read_name]
-                                    df_T.iloc[j] = dict_T[read_name]
-                                    df_N.iloc[j] = dict_N[read_name]
+                                    df_A[j, :] = dict_A[read_name]
+                                    df_C[j, :] = dict_C[read_name]
+                                    df_G[j, :] = dict_G[read_name]
+                                    df_T[j, :] = dict_T[read_name]
+                                    df_N[j, :] = dict_N[read_name]
 
                                 del dict_A, dict_C, dict_G, dict_T, dict_N
                                 gc.collect()
 
+                                # Store the results in AnnData layers
                                 ohe_df_map = {0: df_A, 1: df_C, 2: df_G, 3: df_T, 4: df_N}
-
                                 for j, base in enumerate(['A', 'C', 'G', 'T', 'N']):
-                                    temp_adata.layers[f'{base}_binary_encoding'] = ohe_df_map[j].values
-                                    ohe_df_map[j] = None # Reassign pointer for memory usage purposes
+                                    temp_adata.layers[f'{base}_binary_encoding'] = ohe_df_map[j]
+                                    ohe_df_map[j] = None  # Reassign pointer for memory usage purposes
 
                                 # If final adata object already has a sample loaded, concatenate the current sample into the existing adata object 
                                 if adata:
@@ -448,7 +470,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                             else:
                                 print(f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata. Skipping sample.")
 
-                    print('{0}: Writing {1} anndata out as a gzipped hdf5 file'.format(readwrite.time_string(), sample_types[dict_index]))
+                    print('{0}: Writing {1} anndata out as a hdf5 file'.format(readwrite.time_string(), sample_types[dict_index]))
                     adata.write_h5ad('{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz'.format(readwrite.date_string(), batch, sample_types[dict_index]), compression='gzip')
 
             # Delete the batch dictionaries from memory
@@ -509,7 +531,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                 consensus_sequence_list = [layer_map[i] for i in nucleotide_indexes]
                 final_adata.var[f'{record}_{strand}_{mapping_dir}_consensus_sequence_from_all_samples'] = consensus_sequence_list
 
-    final_adata.write_h5ad(final_adata_path, compression='gzip')
+    final_adata.write_h5ad(final_adata_path)
 
     # Delete the individual h5ad files and only keep the final concatenated file
     if delete_batch_hdfs:
