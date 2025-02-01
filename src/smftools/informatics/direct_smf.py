@@ -1,6 +1,6 @@
 ## direct_smf
 
-def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device):
+def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device, make_bigwigs, skip_unclassified, delete_batch_hdfs):
     """
     Processes sequencing data from a direct methylation detection Nanopore SMF experiment to an AnnData object.
 
@@ -8,7 +8,8 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         fasta (str): File path to the reference genome to align to.
         output_directory (str): A file path to the directory to output all the analyses.
         mod_list (list): A list of strings of the modification types to use in the analysis.
-        model (str): a string representing the file path to the dorado basecalling model.
+        model_dir (str): a string representing the file path to the dorado basecalling model directory.
+        model (str): a string representing the dorado basecalling model.
         thresholds (list): A list of floats to pass for call thresholds.
         input_data_path (str): a string representing the file path to the experiment directory containing the input sequencing files.
         split_dir (str): A string representing the file path to the directory to split the BAMs into.
@@ -21,6 +22,9 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
         trim (bool): Whether to trim barcodes, adapters, and primers from read ends
         device (str): Device to use for basecalling. auto, metal, cpu, cuda
+        make_bigwigs (bool): Whether to make bigwigs
+        skip_unclassified (bool): Whether to skip unclassified reads when extracting mods and loading anndata
+        delete_batch_hdfs (bool): Whether to delete intermediate hdf5 files.
 
     Returns:
         final_adata_path (str): Path to the final adata object   
@@ -63,7 +67,7 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         if os.path.exists(modcall_output):
             print(modcall_output + ' already exists. Using existing basecalled BAM.')
         else:
-            modcall(model, input_data_path, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends, trim, device)
+            modcall(model_dir, model, input_data_path, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends, trim, device)
     else:
         modcall_output = input_data_path
 
@@ -73,14 +77,16 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
     if os.path.exists(aligned_output) and os.path.exists(sorted_output):
         print(sorted_output + ' already exists. Using existing aligned/sorted BAM.')
     else:
-        align_and_sort_BAM(fasta, modcall_output, bam_suffix, output_directory)
+        align_and_sort_BAM(fasta, modcall_output, bam_suffix, output_directory, make_bigwigs)
 
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     if os.path.isdir(split_dir):
         print(split_dir + ' already exists. Using existing demultiplexed BAMs.')
+        bam_files = os.listdir(split_dir)
+        bam_files = [os.path.join(split_dir, file) for file in bam_files if 'bam' in file and '.bai' not in file and 'unclassified' not in file]
     else:
         make_dirs([split_dir])
-        demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta)
+        bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs)
         # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
 
     # 4) Using nanopore modkit to work with modified BAM files ###
@@ -91,13 +97,10 @@ def direct_smf(fasta, output_directory, mod_list, model, thresholds, input_data_
         modQC(aligned_sorted_output, thresholds) # get QC metrics for mod calls
         make_modbed(aligned_sorted_output, thresholds, mod_bed_dir) # Generate bed files of position methylation summaries for every sample
 
-    if os.path.isdir(mod_tsv_dir):
-        print(mod_tsv_dir + ' already exists, skipping modkit extract')
-    else:
-        make_dirs([mod_tsv_dir])  
-        extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified=True) # Extract methylations calls for split BAM files into split TSV files
+    make_dirs([mod_tsv_dir])  
+    extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified) # Extract methylations calls for split BAM files into split TSV files
 
     #5 Load the modification data from TSVs into an adata object
-    final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir)
+    final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs)
 
-    return final_adata_path, sorted_output
+    return final_adata_path, sorted_output, bam_files

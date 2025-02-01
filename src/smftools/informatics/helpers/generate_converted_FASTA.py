@@ -1,98 +1,105 @@
-## generate_converted_FASTA
+import numpy as np
+import gzip
+from Bio import SeqIO
+from Bio.SeqRecord import SeqRecord
+from Bio.Seq import Seq
+from concurrent.futures import ProcessPoolExecutor
 
 def convert_FASTA_record(record, modification_type, strand, unconverted):
     """
-    Takes a FASTA record and converts every instance of a base to the converted state.
+    Converts a FASTA record by replacing specific bases based on modification type and strand.
 
     Parameters:
-        record (str): The name of the record instance within the FASTA.
-        modification_type (str): The modification type to convert for (options are '5mC' and '6mA').
-        strand (str): The strand that is being converted in the experiment (options are 'top' and 'bottom').
+        record (SeqRecord): The FASTA sequence record.
+        modification_type (str): Modification type ('5mC', '6mA', or unconverted).
+        strand (str): Strand being converted ('top' or 'bottom').
+        unconverted (str): The unconverted modification type.
+
     Returns:
-        new_seq (str): Converted sequence string.
-        new_id (str): Record id for the converted sequence string.
+        tuple: Converted sequence and modified record ID.
     """
-    if modification_type == '5mC':
-        if strand == 'top':
-            # Replace every 'C' with 'T' in the sequence
-            new_seq = record.seq.upper().replace('C', 'T')
-        elif strand == 'bottom':
-            # Replace every 'G' with 'A' in the sequence
-            new_seq = record.seq.upper().replace('G', 'A')
-        else:
-            print('need to provide a valid strand string: top or bottom')
-        new_id = '{0}_{1}_{2}'.format(record.id, modification_type, strand)        
-    elif modification_type == '6mA':
-        if strand == 'top':
-            # Replace every 'A' with 'G' in the sequence
-            new_seq = record.seq.upper().replace('A', 'G')
-        elif strand == 'bottom':
-            # Replace every 'T' with 'C' in the sequence
-            new_seq = record.seq.upper().replace('T', 'C')
-        else:
-            print('need to provide a valid strand string: top or bottom')
-        new_id = '{0}_{1}_{2}'.format(record.id, modification_type, strand)
-    elif modification_type == unconverted:
-        new_seq = record.seq.upper()
-        new_id = '{0}_{1}_top'.format(record.id, modification_type)
-    else:
-        print(f'need to provide a valid modification_type string: 5mC, 6mA, or {unconverted}')   
-          
+    # Define conversion mappings
+    conversion_maps = {
+        ('5mC', 'top'): ('C', 'T'),
+        ('5mC', 'bottom'): ('G', 'A'),
+        ('6mA', 'top'): ('A', 'G'),
+        ('6mA', 'bottom'): ('T', 'C')
+    }
+
+    sequence = str(record.seq).upper()  # Convert sequence to uppercase once
+
+    if modification_type == unconverted:
+        return sequence, f"{record.id}_{modification_type}_top"
+
+    if (modification_type, strand) not in conversion_maps:
+        raise ValueError("Invalid combination of modification_type and strand")
+
+    original_base, converted_base = conversion_maps[(modification_type, strand)]
+    new_seq = sequence.replace(original_base, converted_base)  # Perform replacement
+
+    new_id = f"{record.id}_{modification_type}_{strand}"
     return new_seq, new_id
 
-def generate_converted_FASTA(input_fasta, modification_types, strands, output_fasta):
+
+def process_fasta_record(record, modification_types, strands, unconverted):
     """
-    Uses modify_sequence_and_id function on every record within the FASTA to write out a converted FASTA.
+    Processes a single FASTA record, generating converted sequences for all modification types and strands.
 
     Parameters:
-        input_FASTA (str): A string representing the path to the unconverted FASTA file.
-        modification_types (list): A list of modification types to use in the experiment.
-        strands (list): A list of converstion strands to use in the experiment.
-        output_FASTA (str): A string representing the path to the converted FASTA output file.
+        record (SeqRecord): A FASTA sequence record.
+        modification_types (list): List of modification types ('5mC', '6mA', or unconverted).
+        strands (list): List of strands ('top', 'bottom').
+        unconverted (str): The unconverted modification type.
+
     Returns:
-        None
-        Writes out a converted FASTA reference for the experiment.
+        list: List of modified SeqRecord objects.
     """
-    from .. import readwrite
-    from Bio import SeqIO
-    from Bio.SeqRecord import SeqRecord
-    from Bio.Seq import Seq
-    import gzip
+    modified_records = []
+    record_description = record.description
+
+    for modification_type in modification_types:
+        for i, strand in enumerate(strands):
+            if i > 0 and modification_type == unconverted:
+                continue  # Ensure unconverted is added only once
+
+            new_seq, new_id = convert_FASTA_record(record, modification_type, strand, unconverted)
+            new_record = SeqRecord(Seq(new_seq), id=new_id, description=record_description)
+            modified_records.append(new_record)
+
+    return modified_records
+
+
+def generate_converted_FASTA(input_fasta, modification_types, strands, output_fasta, num_threads=4):
+    """
+    Converts an input FASTA file and writes a new converted FASTA file.
+
+    Parameters:
+        input_fasta (str): Path to the unconverted FASTA file.
+        modification_types (list): List of modification types ('5mC', '6mA', or unconverted).
+        strands (list): List of strands ('top', 'bottom').
+        output_fasta (str): Path to the converted FASTA output file.
+        num_threads (int): Number of parallel threads to use.
+
+    Returns:
+        None (Writes the converted FASTA file).
+    """
     modified_records = []
     unconverted = modification_types[0]
-    # Iterate over each record in the input FASTA
-    if '.gz' in input_fasta:
-        with gzip.open(input_fasta, 'rt') as handle:    
-            for record in SeqIO.parse(handle, 'fasta'):
-                record_description = record.description
-                # Iterate over each modification type of interest
-                for modification_type in modification_types:
-                    # Iterate over the strands of interest
-                    for i, strand in enumerate(strands):
-                        if i > 0 and modification_type == unconverted: # This ensures that the unconverted is only added once.
-                            pass
-                        else:
-                            # Add the modified record to the list of modified records
-                            print(f'converting {modification_type} on the {strand} strand of record {record}')
-                            new_seq, new_id = convert_FASTA_record(record, modification_type, strand, unconverted)
-                            new_record = SeqRecord(Seq(new_seq), id=new_id, description=record_description)
-                            modified_records.append(new_record)
-    else:
-        for record in SeqIO.parse(input_fasta, 'fasta'):
-            record_description = record.description
-            # Iterate over each modification type of interest
-            for modification_type in modification_types:
-                # Iterate over the strands of interest
-                for i, strand in enumerate(strands):
-                    if i > 0 and modification_type == unconverted: # This ensures that the unconverted is only added once.
-                        pass
-                    else:
-                        # Add the modified record to the list of modified records
-                        print(f'converting {modification_type} on the {strand} strand of record {record}')
-                        new_seq, new_id = convert_FASTA_record(record, modification_type, strand, unconverted)
-                        new_record = SeqRecord(Seq(new_seq), id=new_id, description=record_description)
-                        modified_records.append(new_record)
-                        
+
+    # Determine whether the file is gzipped
+    open_func = gzip.open if input_fasta.endswith('.gz') else open
+    file_mode = 'rt' if input_fasta.endswith('.gz') else 'r'
+
+    # Read the FASTA file and process records in parallel
+    with open_func(input_fasta, file_mode) as handle:
+        records = list(SeqIO.parse(handle, 'fasta'))
+
+    with ProcessPoolExecutor(max_workers=num_threads) as executor:
+        results = executor.map(lambda r: process_fasta_record(r, modification_types, strands, unconverted), records)
+
+    # Flatten the list of lists
+    modified_records = [record for sublist in results for record in sublist]
+
+    # Write to output FASTA
     with open(output_fasta, 'w') as output_handle:
-        # write out the concatenated FASTA file of modified sequences
         SeqIO.write(modified_records, output_handle, 'fasta')

@@ -11,7 +11,7 @@ def extract_read_features_from_bam(bam_file_path):
     import pysam
     import numpy as np
     # Open the BAM file
-    print('Extracting read features from BAM')
+    print(f'Extracting read features from BAM: {bam_file_path}')
     with pysam.AlignmentFile(bam_file_path, "rb") as bam_file:
         read_metrics = {}
         reference_lengths = bam_file.lengths  # List of lengths for each reference (chromosome)

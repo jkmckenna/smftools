@@ -18,6 +18,7 @@ def plot_read_length_and_coverage_histograms(bed_file, plotting_directory):
 
     bed_basename = os.path.basename(bed_file).split('.bed')[0]
     # Load the BED file into a DataFrame
+    print(f"Loading BED to plot read length and coverage histograms: {bed_file}")
     df = pd.read_csv(bed_file, sep='\t', header=None, names=['chromosome', 'start', 'end', 'length', 'read_name'])
     
     # Group by chromosome

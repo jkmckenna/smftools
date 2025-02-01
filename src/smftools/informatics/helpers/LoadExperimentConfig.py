@@ -42,6 +42,7 @@ class LoadExperimentConfig:
     """
     def __init__(self, experiment_config):
         import pandas as pd
+        print(f"Loading experiment config from {experiment_config}")
         # Read the CSV into a pandas DataFrame
         df = pd.read_csv(experiment_config)
         # Initialize an empty dictionary to store variables
