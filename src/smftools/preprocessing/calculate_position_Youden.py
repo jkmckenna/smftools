@@ -29,8 +29,9 @@ def calculate_position_Youden(adata, positive_control_sample='positive', negativ
     categories = adata.obs[obs_column].cat.categories 
     # Iterate over each category in the specified obs_column
     for cat in categories:
+        print(f"Calculating position Youden statistics for {cat}")
         # Subset to keep only reads associated with the category
-        cat_subset = adata[adata.obs[obs_column] == cat].copy()
+        cat_subset = adata[adata.obs[obs_column] == cat]
         # Iterate over positive and negative control samples
         for control in control_samples:
             # Initialize a dictionary for the given control sample. This will be keyed by dataset and position to point to a tuple of coordinate position and an array of methylation probabilities
@@ -46,7 +47,7 @@ def calculate_position_Youden(adata, positive_control_sample='positive', negativ
             else:
                 # get the current control subset on the given category
                 filtered_obs = cat_subset.obs[cat_subset.obs['Sample_names'].str.contains(control, na=False, regex=True)]
-                control_subset = cat_subset[filtered_obs.index].copy()
+                control_subset = cat_subset[filtered_obs.index]
             # Iterate through every position in the control subset
             for position in range(control_subset.shape[1]):
                 # Get the coordinate name associated with that position

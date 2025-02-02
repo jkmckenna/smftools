@@ -62,7 +62,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
         return final_adata_path
     
     # Filter file names that contain the search string in their filename and keep them in a list
-    tsvs = [tsv for tsv in tsv_files if 'extract.tsv' in tsv]
+    tsvs = [tsv for tsv in tsv_files if 'extract.tsv' in tsv and 'unclassified' not in tsv]
     bams = [bam for bam in bam_files if '.bam' in bam and '.bai' not in bam and 'unclassified' not in bam]
     # Sort file list by names and print the list of file names
     tsvs.sort()

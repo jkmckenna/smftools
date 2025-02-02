@@ -23,26 +23,45 @@ def time_string():
 
 ######################################################################################################
 ## Numpy, Pandas, Anndata functionality
+
 def adata_to_df(adata, layer=None):
     """
-    Input: An adata object with a specified layer.
-    Output: A dataframe for the specific layer.
+    Convert an AnnData object into a Pandas DataFrame.
+
+    Parameters:
+        adata (AnnData): The input AnnData object.
+        layer (str, optional): The layer to extract. If None, uses adata.X.
+
+    Returns:
+        pd.DataFrame: A DataFrame where rows are observations and columns are positions.
     """
     import pandas as pd
     import anndata as ad
+    import numpy as np
 
-    # Extract the data matrix from the given layer
-    if layer:
-        data_matrix = adata.layers[layer]
-    else:
-        data_matrix = adata.X
-    # Extract observation (read) annotations
-    obs_df = adata.obs
-    # Extract variable (position) annotations
-    var_df = adata.var
-    # Convert data matrix and annotations to pandas DataFrames
-    df = pd.DataFrame(data_matrix, index=obs_df.index, columns=var_df.index)
+    # Validate that the requested layer exists
+    if layer and layer not in adata.layers:
+        raise ValueError(f"Layer '{layer}' not found in adata.layers.")
+
+    # Extract the data matrix
+    data_matrix = adata.layers.get(layer, adata.X)
+
+    # Ensure matrix is dense (handle sparse formats)
+    if hasattr(data_matrix, "toarray"):  
+        data_matrix = data_matrix.toarray()
+
+    # Ensure obs and var have unique indices
+    if adata.obs.index.duplicated().any():
+        raise ValueError("Duplicate values found in `adata.obs.index`. Ensure unique observation indices.")
+    
+    if adata.var.index.duplicated().any():
+        raise ValueError("Duplicate values found in `adata.var.index`. Ensure unique variable indices.")
+
+    # Convert to DataFrame
+    df = pd.DataFrame(data_matrix, index=adata.obs.index, columns=adata.var.index)
+
     return df
+
 
 def save_matrix(matrix, save_name):
     """

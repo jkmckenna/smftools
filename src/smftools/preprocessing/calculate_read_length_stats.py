@@ -1,7 +1,7 @@
 ## calculate_read_length_stats
 
 # Read length QC
-def calculate_read_length_stats(adata, reference_column, sample_names_col):
+def calculate_read_length_stats(adata, reference_column='', sample_names_col=''):
     """
     Append first valid position in a read and last valid position in the read. From this determine and append the read length. 
 
