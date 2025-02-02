@@ -1,42 +1,45 @@
-## binarize_on_Youden
-
 def binarize_on_Youden(adata, obs_column='Reference'):
     """
-    Add a new layer to the adata object that has binarized SMF values based on the position thresholds determined by calculate_position_Youden
+    Binarize SMF values based on position thresholds determined by calculate_position_Youden.
 
     Parameters:
-        adata (AnnData): The anndata object to binarize. pp.calculate_position_Youden function has to be run first.
-        obs_column (str): The obs_column to stratify on. Needs to be the same as passed in pp.calculate_position_Youden.
-    Input: adata object that has had calculate_position_Youden called on it.
-    Output: 
+        adata (AnnData): The anndata object to binarize. `calculate_position_Youden` must have been run first.
+        obs_column (str): The obs column to stratify on. Needs to match what was passed in `calculate_position_Youden`.
+
+    Modifies:
+        Adds a new layer to `adata.layers['binarized_methylation']` containing the binarized methylation matrix.
     """
     import numpy as np
-    import anndata as ad
-    temp_adata = None
-    categories = adata.obs[obs_column].cat.categories 
-    for cat in categories:
-        # Get the category subset
-        cat_subset = adata[adata.obs[obs_column] == cat].copy()
-        # extract the probability matrix for the category subset
-        original_matrix = cat_subset.X
-        # extract the learned methylation call thresholds for each position in the category.
-        thresholds = [cat_subset.var[f'{cat}_position_methylation_thresholding_Youden_stats'][i][0] for i in range(cat_subset.shape[1])]
-        # In the original matrix, get all positions that are nan values
-        nan_mask = np.isnan(original_matrix)
-        # Binarize the matrix on the new thresholds
-        binarized_matrix = (original_matrix > thresholds).astype(float)
-        # At the original positions that had nan values, replace the values with nans again
-        binarized_matrix[nan_mask] = np.nan
-        # Make a new layer for the reference that contains the binarized methylation calls
-        cat_subset.layers['binarized_methylation'] = binarized_matrix
-        if temp_adata:
-            # If temp_data already exists, concatenate
-            temp_adata = ad.concat([temp_adata, cat_subset], join='outer', index_unique=None).copy()
-        else:
-            # If temp_adata is still None, initialize temp_adata with reference_subset
-            temp_adata = cat_subset.copy()
+    import anndata as ad    
 
-    # Sort the temp adata on the index names of the primary adata
-    temp_adata = temp_adata[adata.obs_names].copy()
-    # Pull back the new binarized layers into the original adata object
-    adata.layers['binarized_methylation'] = temp_adata.layers['binarized_methylation']
+    # Initialize an empty matrix to store the binarized methylation values
+    binarized_methylation = np.full_like(adata.X, np.nan, dtype=float)  # Keeps same shape as adata.X
+
+    # Get unique categories
+    categories = adata.obs[obs_column].cat.categories
+
+    for cat in categories:
+        # Select subset for this category
+        cat_mask = adata.obs[obs_column] == cat
+        cat_subset = adata[cat_mask]
+
+        # Extract the probability matrix
+        original_matrix = cat_subset.X.copy()
+
+        # Extract the thresholds for each position efficiently
+        thresholds = np.array(cat_subset.var[f'{cat}_position_methylation_thresholding_Youden_stats'].apply(lambda x: x[0]))
+
+        # Identify NaN values
+        nan_mask = np.isnan(original_matrix)
+
+        # Binarize based on threshold
+        binarized_matrix = (original_matrix > thresholds).astype(float)
+
+        # Restore NaN values
+        binarized_matrix[nan_mask] = np.nan
+
+        # Assign the binarized values back into the preallocated storage
+        binarized_methylation[cat_mask, :] = binarized_matrix
+
+    # Store the binarized matrix in a new layer
+    adata.layers['binarized_methylation'] = binarized_methylation

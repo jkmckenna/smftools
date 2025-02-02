@@ -145,6 +145,7 @@ def load_adata(config_path):
     for bam_file in bam_files:
         bam_read_metrics = extract_read_features_from_bam(bam_file)
         read_metrics.update(bam_read_metrics)
+    #read_metrics = extract_read_features_from_bam(sorted_output)
 
     query_read_length_values = []
     query_read_quality_values = []
