@@ -4,7 +4,7 @@ from .bed_to_bigwig import bed_to_bigwig
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .canoncall import canoncall
 from .complement_base_list import complement_base_list
-from .converted_BAM_to_adata import converted_BAM_to_adata
+from .converted_BAM_to_adata_II import converted_BAM_to_adata_II
 from .concatenate_fastqs_to_bam import concatenate_fastqs_to_bam
 from .count_aligned_reads import count_aligned_reads
 from .demux_and_index_BAM import demux_and_index_BAM

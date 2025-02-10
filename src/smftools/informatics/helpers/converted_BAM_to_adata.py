@@ -64,7 +64,8 @@ def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experi
     record_FASTA_dict = {}
     # While populating the dictionary, also extract the longest sequence record in the input references
     max_reference_length = 0
-    for conversion_type in conversion_types:
+    conversions = conversion_types[1:]
+    for conversion_type in conversions:
         # Points to a list containing: 1) sequence length of the record, 2) top strand coordinate list, 3) bottom strand coorinate list, 4) sequence string unconverted , 5) Complement sequence unconverted
         modification_dict[conversion_type] = find_conversion_sites(converted_FASTA, conversion_type, conversion_types)
         # Get the max reference length
