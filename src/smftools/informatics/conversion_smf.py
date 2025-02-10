@@ -27,7 +27,7 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
         final_adata_path (str): Path to the final adata object
         sorted_output (str): Path to the aligned, sorted BAM
     """
-    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs
+    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata_II, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs
     import os
     
     if basecall:
@@ -89,6 +89,6 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
         # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
 
     # 5) Take the converted BAM and load it into an adata object.
-    final_adata_path = converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix)
+    final_adata_path = converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix)
 
     return final_adata_path, sorted_output, bam_files
