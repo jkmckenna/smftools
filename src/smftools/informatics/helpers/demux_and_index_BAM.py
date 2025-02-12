@@ -41,6 +41,7 @@ def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, 
     bam_pattern = '*' + bam_suffix
     bam_files = glob.glob(os.path.join(split_dir, bam_pattern))
     bam_files = [bam for bam in bam_files if '.bai' not in bam and 'unclassified' not in bam]
+    bam_files.sort()
 
     plotting_dir = os.path.join(split_dir, 'demultiplexed_bed_histograms')
     bed_dir = os.path.join(split_dir, 'demultiplexed_read_alignment_coordinates')

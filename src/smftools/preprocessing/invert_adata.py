@@ -19,3 +19,5 @@ def invert_adata(adata):
     new_var_names = np.sort(old_var_names)[::-1].astype(str)
     adata.var['Original_positional_coordinate'] = old_var_names.astype(str)
     adata.var_names = new_var_names
+    # Reorder AnnData
+    adata = adata[:, new_var_names.astype(int)].copy()

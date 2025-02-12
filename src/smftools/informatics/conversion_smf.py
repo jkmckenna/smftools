@@ -29,6 +29,7 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
     """
     from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata_II, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs
     import os
+    import glob
     
     if basecall:
         model_basename = os.path.basename(model)
@@ -83,12 +84,16 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
     
     if os.path.isdir(split_dir):
         print(split_dir + ' already exists. Using existing demultiplexed BAMs.')
+        bam_pattern = '*' + bam_suffix
+        bam_files = glob.glob(os.path.join(split_dir, bam_pattern))
+        bam_files = [bam for bam in bam_files if '.bai' not in bam and 'unclassified' not in bam]
+        bam_files.sort()
     else:
         make_dirs([split_dir])
         bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs)
         # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
 
     # 5) Take the converted BAM and load it into an adata object.
-    final_adata_path = converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device)
+    final_adata, final_adata_path = converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device)
 
-    return final_adata_path, sorted_output, bam_files
+    return final_adata, final_adata_path, sorted_output, bam_files

@@ -531,7 +531,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                 consensus_sequence_list = [layer_map[i] for i in nucleotide_indexes]
                 final_adata.var[f'{record}_{strand}_{mapping_dir}_consensus_sequence_from_all_samples'] = consensus_sequence_list
 
-    final_adata.write_h5ad(final_adata_path)
+    #final_adata.write_h5ad(final_adata_path)
 
     # Delete the individual h5ad files and only keep the final concatenated file
     if delete_batch_hdfs:
@@ -546,4 +546,4 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
             except OSError as e:
                 print(f"Error deleting file {hdf}: {e}")
 
-    return final_adata_path
+    return final_adata, final_adata_path
