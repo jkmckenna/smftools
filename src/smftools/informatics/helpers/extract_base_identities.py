@@ -13,18 +13,20 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
         dict: Base identities from reverse mapped reads.
     """
     import pysam
-    from tqdm import tqdm
     import numpy as np
     from collections import defaultdict
+    import time
+
+    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
 
     positions = set(positions)
     fwd_base_identities = defaultdict(lambda: np.full(max_reference_length, 'N', dtype='<U1'))
     rev_base_identities = defaultdict(lambda: np.full(max_reference_length, 'N', dtype='<U1'))
 
-    print(f"Reading BAM file: {bam_file}")
+    #print(f"{timestamp} Reading reads from {chromosome} BAM file: {bam_file}")
     with pysam.AlignmentFile(bam_file, "rb") as bam:
         total_reads = bam.mapped
-        for read in tqdm(bam.fetch(chromosome), desc='Extracting base identities', total=total_reads):
+        for read in bam.fetch(chromosome):
             if not read.is_mapped:
                 continue  # Skip unmapped reads
 

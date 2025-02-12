@@ -37,7 +37,7 @@ __all__ = [
     "binarize_converted_base_identities",
     "canoncall",
     "complement_base_list",
-    "converted_BAM_to_adata",
+    "converted_BAM_to_adata_II",
     "concatenate_fastqs_to_bam",
     "count_aligned_reads",
     "demux_and_index_BAM",
