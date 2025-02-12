@@ -37,11 +37,12 @@ def append_C_context(adata, obs_column='Reference', use_consensus=False, native=
                 # This sequence is the unconverted FASTA sequence of the original input FASTA for the locus
                 sequence = adata.uns[f'{basename}_FASTA_sequence']
         else:
+            basename = cat.split(f"_{strand}")[0]
             if use_consensus:
-                sequence = adata.uns[f'{cat}_consensus_sequence']
+                sequence = adata.uns[f'{basename}_consensus_sequence']
             else:
                 # This sequence is the unconverted FASTA sequence of the original input FASTA for the locus
-                sequence = adata.uns[f'{cat}_FASTA_sequence']
+                sequence = adata.uns[f'{basename}_FASTA_sequence']
         # Init a dict keyed by reference site type that points to a bool of whether the position is that site type.    
         boolean_dict = {}
         for site_type in site_types:

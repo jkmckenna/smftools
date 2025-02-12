@@ -127,18 +127,18 @@ def load_adata(config_path):
 
     if smf_modality == 'conversion':
         from .conversion_smf import conversion_smf
-        final_adata_path, sorted_output, bam_files = conversion_smf(fasta, output_directory, conversions, strands, model_dir, model, input_data_path, split_path
+        final_adata, final_adata_path, sorted_output, bam_files = conversion_smf(fasta, output_directory, conversions, strands, model_dir, model, input_data_path, split_path
                                                          , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs)
     elif smf_modality == 'direct':
         from .direct_smf import direct_smf
-        final_adata_path, sorted_output, bam_files = direct_smf(fasta, output_directory, mod_list,model_dir, model, thresholds, input_data_path, split_path
+        final_adata, final_adata_path, sorted_output, bam_files = direct_smf(fasta, output_directory, mod_list,model_dir, model, thresholds, input_data_path, split_path
                                                      , barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device, make_bigwigs, skip_unclassified, delete_batch_hdfs)
     else:
             print("Error")
             
     # Read in the final adata object and append final metadata
-    print(f'Reading in adata from {final_adata_path} to add final metadata')
-    final_adata = ad.read_h5ad(final_adata_path)
+    #print(f'Reading in adata from {final_adata_path} to add final metadata')
+    # final_adata = ad.read_h5ad(final_adata_path)
     
     # Adding read query length metadata to adata object.
     read_metrics = {}
@@ -177,5 +177,3 @@ def load_adata(config_path):
     else:
         final_adata.write_h5ad(f"{final_adata_path}.gz", compression='gzip')
     print('Final adata saved')
-    # Delete non gzipped version
-    os.remove(final_adata_path)

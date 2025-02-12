@@ -101,6 +101,6 @@ def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, 
     extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified) # Extract methylations calls for split BAM files into split TSV files
 
     #5 Load the modification data from TSVs into an adata object
-    final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs)
+    final_adata, final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs)
 
-    return final_adata_path, sorted_output, bam_files
+    return final_adata, final_adata_path, sorted_output, bam_files

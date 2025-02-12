@@ -66,7 +66,7 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
     print(f"Found {len(bam_files)} BAM files: {bam_files}")
 
     ## Process Conversion Sites
-    max_reference_length, record_FASTA_dict = process_conversion_sites(converted_FASTA, conversion_types)
+    max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(converted_FASTA, conversion_types)
 
     ## Filter BAM Files by Mapping Threshold
     records_to_analyze = filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold)
@@ -74,10 +74,15 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
     ## Process BAMs in Parallel
     final_adata = process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, tmp_dir, h5_dir, num_threads, max_reference_length, device)
 
+    for chromosome, [seq, comp] in chromosome_FASTA_dict.items():
+        final_adata.var[f'{chromosome}_top_strand_FASTA_base'] = list(seq)
+        final_adata.var[f'{chromosome}_bottom_strand_FASTA_base'] = list(comp)
+        final_adata.uns[f'{chromosome}_FASTA_sequence'] = seq
+
     ## Save Final AnnData
-    print(f"Saving AnnData to {final_adata_path}")
-    final_adata.write_h5ad(final_adata_path, compression='gzip')
-    return final_adata_path
+    # print(f"Saving AnnData to {final_adata_path}")
+    # final_adata.write_h5ad(final_adata_path, compression='gzip')
+    return final_adata, final_adata_path
 
 
 def process_conversion_sites(converted_FASTA, conversion_types):
@@ -94,6 +99,7 @@ def process_conversion_sites(converted_FASTA, conversion_types):
     """
     modification_dict = {}
     record_FASTA_dict = {}
+    chromosome_FASTA_dict = {}
     max_reference_length = 0
     unconverted = conversion_types[0]
     conversions = conversion_types[1:]
@@ -117,6 +123,9 @@ def process_conversion_sites(converted_FASTA, conversion_types):
             chromosome, record, sequence_length, max_reference_length - sequence_length, unconverted, "top"
         ]
 
+        if chromosome not in chromosome_FASTA_dict:
+            chromosome_FASTA_dict[chromosome] = [sequence + "N" * (max_reference_length - sequence_length), complement + "N" * (max_reference_length - sequence_length)]
+
     # Process converted records
     for conversion in conversions:
         modification_dict[conversion] = find_conversion_sites(converted_FASTA, conversion, conversion_types)
@@ -139,7 +148,7 @@ def process_conversion_sites(converted_FASTA, conversion_types):
                 ]
 
     print("Updated record_FASTA_dict Keys:", list(record_FASTA_dict.keys()))
-    return max_reference_length, record_FASTA_dict
+    return max_reference_length, record_FASTA_dict, chromosome_FASTA_dict
 
 
 def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold):
@@ -252,7 +261,7 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, tm
         adata.obs["Strand"] = [strand] * len(adata)
         adata.obs["Dataset"] = [mod_type] * len(adata)
         adata.obs["Reference_dataset_strand"] = [f"{chromosome}_{mod_type}_{strand}"] * len(adata)
-        adata.obs["Reference_strand"] = [record] * len(adata)
+        adata.obs["Reference_strand"] = [f"{chromosome}_{strand}"] * len(adata)
 
         # Attach One-Hot Encodings to Layers
         adata.layers["A_binary_encoding"] = df_A
@@ -338,7 +347,7 @@ def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, 
             completed_bams = set()
             while len(completed_bams) < len(bam_path_list):
                 try:
-                    processed_bam = progress_queue.get(timeout=1200)  # Wait for a finished BAM
+                    processed_bam = progress_queue.get(timeout=2400)  # Wait for a finished BAM
                     completed_bams.add(processed_bam)
                 except Exception as e:
                     print(f"{timestamp()} [ERROR] Timeout waiting for worker process. Possible crash? {e}")
