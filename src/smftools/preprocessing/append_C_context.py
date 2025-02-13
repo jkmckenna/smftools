@@ -79,5 +79,5 @@ def append_C_context(adata, obs_column='Reference', use_consensus=False, native=
 
         for site_type in site_types:
             adata.var[f'{cat}_{site_type}'] = boolean_dict[f'{cat}_{site_type}'].astype(bool)
-            #adata.obsm[f'{cat}_{site_type}'] = adata[:, adata.var[f'{cat}_{site_type}'] == True].copy().X
+            adata.obsm[f'{cat}_{site_type}'] = adata[:, adata.var[f'{cat}_{site_type}'] == True].X
 
