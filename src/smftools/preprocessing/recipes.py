@@ -68,7 +68,7 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
 
     # Invert the adata object (ie flip the strand orientation for visualization)
     if invert:
-        invert_adata(adata)
+        adata = invert_adata(adata)
     else:
         pass
 

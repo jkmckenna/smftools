@@ -1,23 +1,30 @@
 ## invert_adata
 
 # Optional inversion of the adata
+
 def invert_adata(adata):
     """
-    Inverts the adata object along the variable axis
+    Inverts the AnnData object along the column (variable) axis.
 
     Parameters:
-        adata (AnnData): An adata object.
+        adata (AnnData): An AnnData object.
 
     Returns:
-        None
+        AnnData: A new AnnData object with inverted column ordering.
     """
     import numpy as np
     import anndata as ad
-    print('Inverting adata')
-    # Reassign var_names with new names
-    old_var_names = adata.var_names.astype(int).to_numpy()
-    new_var_names = np.sort(old_var_names)[::-1].astype(str)
-    adata.var['Original_positional_coordinate'] = old_var_names.astype(str)
-    adata.var_names = new_var_names
-    # Reorder AnnData
-    adata = adata[:, new_var_names.astype(int)].copy()
+
+    print("🔄 Inverting AnnData along the column axis...")
+
+    # Reverse the order of columns (variables)
+    inverted_adata = adata[:, ::-1].copy()
+
+    # Reassign var_names with new order
+    inverted_adata.var_names = adata.var_names[::-1]
+
+    # Optional: Store original coordinates for reference
+    inverted_adata.var["Original_var_names"] = adata.var_names
+
+    print("✅ Inversion complete!")
+    return inverted_adata
