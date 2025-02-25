@@ -1,6 +1,6 @@
 ## direct_smf
 
-def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device, make_bigwigs, skip_unclassified, delete_batch_hdfs):
+def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device, make_bigwigs, skip_unclassified, delete_batch_hdfs, threads):
     """
     Processes sequencing data from a direct methylation detection Nanopore SMF experiment to an AnnData object.
 
@@ -25,12 +25,13 @@ def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, 
         make_bigwigs (bool): Whether to make bigwigs
         skip_unclassified (bool): Whether to skip unclassified reads when extracting mods and loading anndata
         delete_batch_hdfs (bool): Whether to delete intermediate hdf5 files.
+        threads (int): cpu threads available for processing.
 
     Returns:
         final_adata_path (str): Path to the final adata object   
         sorted_output (str): Path to the aligned, sorted BAM
     """
-    from .helpers import align_and_sort_BAM, extract_mods, get_chromosome_lengths, make_modbed, modcall, modkit_extract_to_adata, modQC, demux_and_index_BAM, make_dirs
+    from .helpers import align_and_sort_BAM, extract_mods, get_chromosome_lengths, make_modbed, modcall, modkit_extract_to_adata, modQC, demux_and_index_BAM, make_dirs, bam_qc, run_multiqc
     import os
 
     if basecall:
@@ -51,6 +52,7 @@ def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, 
 
     mod_bed_dir=f"{split_dir}/split_mod_beds"
     mod_tsv_dir=f"{split_dir}/split_mod_tsvs"
+    bam_qc_dir = f"{split_dir}/bam_qc"
 
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
@@ -84,12 +86,20 @@ def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, 
         print(split_dir + ' already exists. Using existing demultiplexed BAMs.')
         bam_files = os.listdir(split_dir)
         bam_files = [os.path.join(split_dir, file) for file in bam_files if 'bam' in file and '.bai' not in file and 'unclassified' not in file]
+        bam_files.sort()
     else:
         make_dirs([split_dir])
-        bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs)
+        bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads)
         # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
 
-    # 4) Using nanopore modkit to work with modified BAM files ###
+    # 4) Samtools QC metrics on split BAM files
+    if os.path.isdir(bam_qc_dir):
+        print(bam_qc_dir + ' already exists. Using existing BAM QC calculations.')
+    else:
+        make_dirs([bam_qc_dir])
+        bam_qc(bam_files, bam_qc_dir, threads, modality='direct')
+
+    # 5) Using nanopore modkit to work with modified BAM files ###
     if os.path.isdir(mod_bed_dir):
         print(mod_bed_dir + ' already exists, skipping making modbeds')
     else:
@@ -97,10 +107,16 @@ def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, 
         modQC(aligned_sorted_output, thresholds) # get QC metrics for mod calls
         make_modbed(aligned_sorted_output, thresholds, mod_bed_dir) # Generate bed files of position methylation summaries for every sample
 
-    make_dirs([mod_tsv_dir])  
-    extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified) # Extract methylations calls for split BAM files into split TSV files
+    # multiqc ###
+    if os.path.isdir(f"{split_dir}/multiqc"):
+        print(f"{split_dir}/multiqc" + ' already exists, skipping multiqc')
+    else:
+        run_multiqc(split_dir, f"{split_dir}/multiqc")
 
-    #5 Load the modification data from TSVs into an adata object
-    final_adata, final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs)
+    make_dirs([mod_tsv_dir])  
+    extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified, threads) # Extract methylations calls for split BAM files into split TSV files
+
+    #6 Load the modification data from TSVs into an adata object
+    final_adata, final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs, threads)
 
     return final_adata, final_adata_path, sorted_output, bam_files

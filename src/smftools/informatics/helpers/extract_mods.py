@@ -1,6 +1,6 @@
 ## extract_mods
 
-def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified=True, modkit_summary=False):
+def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified=True, modkit_summary=False, threads=None):
     """
     Takes all of the aligned, sorted, split modified BAM files and runs Nanopore Modkit Extract to load the modification data into zipped TSV files
 
@@ -11,6 +11,7 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassifi
         bam_suffix (str): The suffix to use for the BAM file.
         skip_unclassified (bool): Whether to skip unclassified bam file for modkit extract command
         modkit_summary (bool): Whether to run and display modkit summary
+        threads (int): Number of threads to use
 
     Returns:
         None
@@ -25,6 +26,12 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassifi
     os.chdir(mod_tsv_dir)
     filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold = thresholds
     bam_files = glob.glob(os.path.join(split_dir, f"*{bam_suffix}"))
+
+    if threads:
+        threads = str(threads)
+    else:
+        pass
+
     for input_file in bam_files:
         print(input_file)
         # Extract the file basename
@@ -35,8 +42,8 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassifi
             # Construct the output TSV file path
             output_tsv_temp = os.path.join(mod_tsv_dir, file_name)
             output_tsv = output_tsv_temp.replace(bam_suffix, "") + "_extract.tsv"
-            if os.path.exists(f"{output_tsv}.zip"):
-                print(f"{output_tsv}.zip already exists, skipping modkit extract")
+            if os.path.exists(f"{output_tsv}.gz"):
+                print(f"{output_tsv}.gz already exists, skipping modkit extract")
             else:
                 print(f"Extracting modification data from {input_file}")
                 if modkit_summary:
@@ -45,19 +52,29 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassifi
                 else:
                     pass
                 # Run modkit extract
-                subprocess.run([
-                    "modkit", "extract",
-                    "calls", "--mapped-only",
-                    "--filter-threshold", f'{filter_threshold}',
-                    "--mod-thresholds", f"m:{m5C_threshold}",
-                    "--mod-thresholds", f"a:{m6A_threshold}",
-                    "--mod-thresholds", f"h:{hm5C_threshold}",
-                    input_file, output_tsv
-                ])
+                if threads:
+                    extract_command = [
+                        "modkit", "extract",
+                        "calls", "--mapped-only",
+                        "--filter-threshold", f'{filter_threshold}',
+                        "--mod-thresholds", f"m:{m5C_threshold}",
+                        "--mod-thresholds", f"a:{m6A_threshold}",
+                        "--mod-thresholds", f"h:{hm5C_threshold}",
+                        "-t", threads,
+                        input_file, output_tsv
+                        ]
+                else:
+                    extract_command = [
+                        "modkit", "extract",
+                        "calls", "--mapped-only",
+                        "--filter-threshold", f'{filter_threshold}',
+                        "--mod-thresholds", f"m:{m5C_threshold}",
+                        "--mod-thresholds", f"a:{m6A_threshold}",
+                        "--mod-thresholds", f"h:{hm5C_threshold}",
+                        input_file, output_tsv
+                        ]                    
+                subprocess.run(extract_command)
                 # Zip the output TSV
                 print(f'zipping {output_tsv}')
-                with zipfile.ZipFile(f"{output_tsv}.zip", 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    zipf.write(output_tsv, os.path.basename(output_tsv))
-                # Remove the non-zipped TSV
-                print(f'removing {output_tsv}')
-                os.remove(output_tsv)
+                zip_command = ["pigz", "-f", "-p", threads, output_tsv]
+                subprocess.run(zip_command, check=True)

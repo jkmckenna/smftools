@@ -1,6 +1,6 @@
 ## modkit_extract_to_adata
 
-def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs=False):
+def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs=False, threads=None):
     """
     Takes modkit extract outputs and organizes it into an adata object
 

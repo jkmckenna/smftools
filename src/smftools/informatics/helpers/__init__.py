@@ -1,5 +1,6 @@
 from .align_and_sort_BAM import align_and_sort_BAM
 from .aligned_BAM_to_bed import aligned_BAM_to_bed
+from .bam_qc import bam_qc
 from .bed_to_bigwig import bed_to_bigwig
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .canoncall import canoncall
@@ -29,10 +30,12 @@ from .ohe_batching import ohe_batching
 from .one_hot_decode import one_hot_decode
 from .ohe_layers_decode import ohe_layers_decode
 from .plot_read_length_and_coverage_histograms import plot_read_length_and_coverage_histograms
+from .run_multiqc import run_multiqc
 
 __all__ = [
     "align_and_sort_BAM",
     "aligned_BAM_to_bed",
+    "bam_qc",
     "bed_to_bigwig",
     "binarize_converted_base_identities",
     "canoncall",
@@ -62,5 +65,6 @@ __all__ = [
     "ohe_batching",
     "one_hot_decode",
     "ohe_layers_decode",
-    "plot_read_length_and_coverage_histograms"
+    "plot_read_length_and_coverage_histograms",
+    "run_multiqc"
 ]
