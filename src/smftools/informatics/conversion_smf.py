@@ -1,6 +1,6 @@
 ## conversion_smf
 
-def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs):
+def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs, threads):
     """
     Processes sequencing data from a conversion SMF experiment to an adata object.
 
@@ -22,12 +22,13 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
         trim (bool): Whether to trim barcodes, adapters, and primers from read ends.
         device (str): Device to use for basecalling. auto, metal, cpu, cuda
         make_bigwigs (bool): Whether to make bigwigs
+        threads (int): cpu threads available for processing.
 
     Returns:
         final_adata_path (str): Path to the final adata object
         sorted_output (str): Path to the aligned, sorted BAM
     """
-    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata_II, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs
+    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata_II, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs, bam_qc, run_multiqc
     import os
     import glob
     
@@ -90,10 +91,24 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
         bam_files.sort()
     else:
         make_dirs([split_dir])
-        bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs)
+        bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads)
         # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
 
-    # 5) Take the converted BAM and load it into an adata object.
+    # 5) Samtools QC metrics on split BAM files
+    bam_qc_dir = f"{split_dir}/bam_qc"
+    if os.path.isdir(bam_qc_dir):
+        print(bam_qc_dir + ' already exists. Using existing BAM QC calculations.')
+    else:
+        make_dirs([bam_qc_dir])
+        bam_qc(bam_files, bam_qc_dir, threads, modality='conversion')
+
+    # multiqc ###
+    if os.path.isdir(f"{split_dir}/multiqc"):
+        print(f"{split_dir}/multiqc" + ' already exists, skipping multiqc')
+    else:
+        run_multiqc(split_dir, f"{split_dir}/multiqc")
+
+    # 6) Take the converted BAM and load it into an adata object.
     final_adata, final_adata_path = converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device)
 
     return final_adata, final_adata_path, sorted_output, bam_files

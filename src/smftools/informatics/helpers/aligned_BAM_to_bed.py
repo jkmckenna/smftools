@@ -1,6 +1,6 @@
 # aligned_BAM_to_bed
 
-def aligned_BAM_to_bed(aligned_BAM, plotting_dir, bed_dir, fasta, make_bigwigs):
+def aligned_BAM_to_bed(aligned_BAM, plotting_dir, bed_dir, fasta, make_bigwigs, threads):
     """
     Takes an aligned BAM as input and writes a bed file of reads as output.
     Bed columns are: Record name, start position, end position, read length, read name
@@ -11,6 +11,7 @@ def aligned_BAM_to_bed(aligned_BAM, plotting_dir, bed_dir, fasta, make_bigwigs):
         bed_dir (str): Path to write out read alignment coordinates
         fasta (str): File path to the reference genome to align to.
         make_bigwigs (bool): Whether to make bigwigs
+        threads (str): Number of threads to use.
 
     Returns:
         None
@@ -25,7 +26,12 @@ def aligned_BAM_to_bed(aligned_BAM, plotting_dir, bed_dir, fasta, make_bigwigs):
     bed_output = os.path.join(bed_dir, bed_output_basename)
 
     print(f"Making BED from BAM: {aligned_BAM}")
-    samtools_view = subprocess.Popen(["samtools", "view", aligned_BAM], stdout=subprocess.PIPE) 
+    if threads:
+        samtools_view_command = ["samtools", "view", aligned_BAM]
+    else:
+        samtools_view_command = ["samtools", "view", "-@", threads, aligned_BAM]
+    samtools_view = subprocess.Popen(samtools_view_command, stdout=subprocess.PIPE) 
+    
     with open(bed_output, "w") as output_file:
         awk_process = subprocess.Popen(["awk", '{print $3 "\t" $4 "\t" $4+length($10)-1 "\t" length($10)-1 "\t" $1}'], stdin=samtools_view.stdout, stdout=output_file)    
     samtools_view.stdout.close()

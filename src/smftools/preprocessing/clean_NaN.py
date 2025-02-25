@@ -39,3 +39,8 @@ def clean_NaN(adata, layer=None):
     print('Making layer: nan_minus_1')
     df_nan_minus_1 = df.fillna(-1)
     adata.layers['nan_minus_1'] = df_nan_minus_1.values
+
+    # Replace NaN with -1
+    print('Making layer: nan_half')
+    df_nan_half = df.fillna(0.5)
+    adata.layers['nan_half'] = df_nan_half.values

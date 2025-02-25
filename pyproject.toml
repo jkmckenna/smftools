@@ -45,6 +45,7 @@ dependencies = [
     "fastcluster",
     "igraph",
     "leidenalg",
+    "multiqc",
     "networkx>=3.2",
     "numpy>=1.22.0,<2",
     "pandas>=1.4.2",
