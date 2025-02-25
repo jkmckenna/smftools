@@ -1,14 +1,4 @@
 ## demux_and_index_BAM
-from concurrent.futures import ProcessPoolExecutor
-
-
-def process_bam(input_file, plotting_dir, bed_dir, fasta, make_bigwigs):
-    """Helper function to process a BAM file in parallel."""
-    from .aligned_BAM_to_bed import aligned_BAM_to_bed
-    from .extract_readnames_from_BAM import extract_readnames_from_BAM
-
-    aligned_BAM_to_bed(input_file, plotting_dir, bed_dir, fasta, make_bigwigs)
-    extract_readnames_from_BAM(input_file)
 
 def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads):
     """
@@ -58,18 +48,5 @@ def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, 
 
     if not bam_files:
         raise FileNotFoundError(f"No BAM files found in {split_dir} with suffix {bam_suffix}")
-
-    # Create required directories
-    plotting_dir = os.path.join(split_dir, 'demultiplexed_bed_histograms')
-    bed_dir = os.path.join(split_dir, 'demultiplexed_read_alignment_coordinates')
-    make_dirs([plotting_dir, bed_dir])
-
-    # Process BAM files in parallel
-    with ProcessPoolExecutor(max_workers=threads) as executor:
-        futures = [executor.submit(process_bam, bam, plotting_dir, bed_dir, fasta, make_bigwigs) for bam in bam_files]
-
-        # Wait for all tasks to complete
-        for future in futures:
-            future.result()
-
+    
     return bam_files
