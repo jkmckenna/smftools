@@ -28,7 +28,7 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
         final_adata_path (str): Path to the final adata object
         sorted_output (str): Path to the aligned, sorted BAM
     """
-    from .helpers import align_and_sort_BAM, canoncall, converted_BAM_to_adata_II, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs, bam_qc, run_multiqc
+    from .helpers import align_and_sort_BAM, aligned_BAM_to_bed, canoncall, converted_BAM_to_adata_II, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs, bam_qc, run_multiqc
     import os
     import glob
     
@@ -75,7 +75,14 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
     if os.path.exists(aligned_output) and os.path.exists(sorted_output):
         print(sorted_output + ' already exists. Using existing aligned/sorted BAM.')
     else:
-        align_and_sort_BAM(converted_FASTA, canoncall_output, bam_suffix, output_directory, make_bigwigs)
+        align_and_sort_BAM(converted_FASTA, canoncall_output, bam_suffix, output_directory, make_bigwigs, threads)
+
+    # Make beds and provide basic histograms
+    bed_dir = os.path.join(output_directory, 'beds')
+    if os.path.isdir(bed_dir):
+        print(bed_dir + ' already exists. Skipping BAM -> BED conversion for ' + sorted_output)
+    else:
+        aligned_BAM_to_bed(aligned_output, output_directory, converted_FASTA, make_bigwigs, threads)
 
     ### 4) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory###
     if barcode_both_ends:
@@ -93,6 +100,14 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
         make_dirs([split_dir])
         bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads)
         # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
+        
+    # Make beds and provide basic histograms
+    bed_dir = os.path.join(split_dir, 'beds')
+    if os.path.isdir(bed_dir):
+        print(bed_dir + ' already exists. Skipping BAM -> BED conversion for demultiplexed bams')
+    else:
+        for bam in bam_files:
+            aligned_BAM_to_bed(bam, split_dir, converted_FASTA, make_bigwigs, threads)
 
     # 5) Samtools QC metrics on split BAM files
     bam_qc_dir = f"{split_dir}/bam_qc"

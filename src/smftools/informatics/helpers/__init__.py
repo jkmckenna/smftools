@@ -13,7 +13,6 @@ from .extract_base_identities import extract_base_identities
 from .extract_mods import extract_mods
 from .extract_read_features_from_bam import extract_read_features_from_bam
 from .extract_read_lengths_from_bed import extract_read_lengths_from_bed
-from .extract_readnames_from_BAM import extract_readnames_from_BAM
 from .find_conversion_sites import find_conversion_sites
 from .generate_converted_FASTA import convert_FASTA_record, generate_converted_FASTA
 from .get_chromosome_lengths import get_chromosome_lengths
@@ -48,7 +47,6 @@ __all__ = [
     "extract_mods",
     "extract_read_features_from_bam",
     "extract_read_lengths_from_bed",
-    "extract_readnames_from_BAM",
     "find_conversion_sites",
     "convert_FASTA_record",
     "generate_converted_FASTA",

@@ -18,9 +18,6 @@ def align_and_sort_BAM(fasta, input, bam_suffix='.bam', output_directory='aligne
     """
     import subprocess
     import os
-    from .aligned_BAM_to_bed import aligned_BAM_to_bed
-    from .extract_readnames_from_BAM import extract_readnames_from_BAM
-    from .make_dirs import make_dirs
 
     input_basename = os.path.basename(input)
     input_suffix = '.' + input_basename.split('.')[1]
@@ -40,7 +37,7 @@ def align_and_sort_BAM(fasta, input, bam_suffix='.bam', output_directory='aligne
     # Run dorado aligner
     print(f"Aligning BAM to Reference: {input}")
     if threads:
-        alignment_command = ["dorado", "aligner", '--mm2-opts', f"-N 1 -t {threads}", fasta, input]
+        alignment_command = ["dorado", "aligner", "-t", threads, '--mm2-opts', "-N 1", fasta, input]
     else:
         alignment_command = ["dorado", "aligner", '--mm2-opts', "-N 1", fasta, input]
     subprocess.run(alignment_command, stdout=open(aligned_output, "w"))
@@ -60,12 +57,3 @@ def align_and_sort_BAM(fasta, input, bam_suffix='.bam', output_directory='aligne
     else:
         index_command = ["samtools", "index", aligned_sorted_output]
     subprocess.run(index_command)
-
-    # Make a bed file of coordinates for the BAM
-    plotting_dir = os.path.join(output_directory, 'coverage_and_readlength_histograms')
-    bed_dir = os.path.join(output_directory, 'read_alignment_coordinates')
-    make_dirs([plotting_dir, bed_dir])
-    aligned_BAM_to_bed(aligned_sorted_output, plotting_dir, bed_dir, fasta, make_bigwigs, threads)
-
-    # Make a text file of reads for the BAM
-    extract_readnames_from_BAM(aligned_sorted_output)

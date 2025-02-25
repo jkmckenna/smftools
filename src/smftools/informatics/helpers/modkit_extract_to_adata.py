@@ -470,8 +470,11 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                             else:
                                 print(f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata. Skipping sample.")
 
-                    print('{0}: Writing {1} anndata out as a hdf5 file'.format(readwrite.time_string(), sample_types[dict_index]))
-                    adata.write_h5ad('{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz'.format(readwrite.date_string(), batch, sample_types[dict_index]), compression='gzip')
+                    try:
+                        print('{0}: Writing {1} anndata out as a hdf5 file'.format(readwrite.time_string(), sample_types[dict_index]))
+                        adata.write_h5ad('{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz'.format(readwrite.date_string(), batch, sample_types[dict_index]), compression='gzip')
+                    except:
+                        print(f"Skipping writing anndata for sample")
 
             # Delete the batch dictionaries from memory
             del dict_list, adata

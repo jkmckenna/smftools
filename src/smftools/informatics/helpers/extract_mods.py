@@ -76,5 +76,8 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassifi
                 subprocess.run(extract_command)
                 # Zip the output TSV
                 print(f'zipping {output_tsv}')
-                zip_command = ["pigz", "-f", "-p", threads, output_tsv]
+                if threads:
+                    zip_command = ["pigz", "-f", "-p", threads, output_tsv]
+                else:
+                    zip_command = ["pigz", "-f", output_tsv]
                 subprocess.run(zip_command, check=True)
