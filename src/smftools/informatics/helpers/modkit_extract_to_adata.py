@@ -1,5 +1,341 @@
 ## modkit_extract_to_adata
 
+import concurrent.futures
+import gc
+from .count_aligned_reads import count_aligned_reads
+import pandas as pd
+from tqdm import tqdm
+import numpy as np
+
+def filter_bam_records(bam, mapping_threshold):
+    """Processes a single BAM file, counts reads, and determines records to analyze."""
+    aligned_reads_count, unaligned_reads_count, record_counts_dict = count_aligned_reads(bam)
+    
+    total_reads = aligned_reads_count + unaligned_reads_count
+    percent_aligned = (aligned_reads_count * 100 / total_reads) if total_reads > 0 else 0
+    print(f'{percent_aligned:.2f}% of reads in {bam} aligned successfully')
+
+    records = []
+    for record, (count, percentage) in record_counts_dict.items():
+        print(f'{count} reads mapped to reference {record}. This is {percentage*100:.2f}% of all mapped reads in {bam}')
+        if percentage >= mapping_threshold:
+            records.append(record)
+    
+    return set(records)
+
+def parallel_filter_bams(bam_path_list, mapping_threshold):
+    """Parallel processing for multiple BAM files."""
+    records_to_analyze = set()
+
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        results = executor.map(filter_bam_records, bam_path_list, [mapping_threshold] * len(bam_path_list))
+
+    # Aggregate results
+    for result in results:
+        records_to_analyze.update(result)
+
+    print(f'Records to analyze: {records_to_analyze}')
+    return records_to_analyze
+
+def process_tsv(tsv, records_to_analyze, reference_dict, sample_index):
+    """
+    Loads and filters a single TSV file based on chromosome and position criteria.
+    """
+    temp_df = pd.read_csv(tsv, sep='\t', header=0)
+    filtered_records = {}
+
+    for record in records_to_analyze:
+        if record not in reference_dict:
+            continue
+        
+        ref_length = reference_dict[record][0]
+        filtered_df = temp_df[(temp_df['chrom'] == record) & 
+                              (temp_df['ref_position'] >= 0) & 
+                              (temp_df['ref_position'] < ref_length)]
+
+        if not filtered_df.empty:
+            filtered_records[record] = {sample_index: filtered_df}
+
+    return filtered_records
+
+def parallel_load_tsvs(tsv_batch, records_to_analyze, reference_dict, batch, batch_size, threads=4):
+    """
+    Loads and filters TSV files in parallel.
+
+    Parameters:
+        tsv_batch (list): List of TSV file paths.
+        records_to_analyze (list): Chromosome records to analyze.
+        reference_dict (dict): Dictionary containing reference lengths.
+        batch (int): Current batch number.
+        batch_size (int): Total files in the batch.
+        threads (int): Number of parallel workers.
+
+    Returns:
+        dict: Processed `dict_total` dictionary.
+    """
+    dict_total = {record: {} for record in records_to_analyze}
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
+        futures = {
+            executor.submit(process_tsv, tsv, records_to_analyze, reference_dict, sample_index): sample_index
+            for sample_index, tsv in enumerate(tsv_batch)
+        }
+
+        for future in tqdm(concurrent.futures.as_completed(futures), desc=f'Processing batch {batch}', total=batch_size):
+            result = future.result()
+            for record, sample_data in result.items():
+                dict_total[record].update(sample_data)
+
+    return dict_total
+
+def update_dict_to_skip(dict_to_skip, detected_modifications):
+    """
+    Updates the dict_to_skip set based on the detected modifications.
+    
+    Parameters:
+        dict_to_skip (set): The initial set of dictionary indices to skip.
+        detected_modifications (list or set): The modifications (e.g. ['6mA', '5mC']) present.
+    
+    Returns:
+        set: The updated dict_to_skip set.
+    """
+    # Define which indices correspond to modification-specific or strand-specific dictionaries
+    A_stranded_dicts = {2, 3}       # m6A bottom and top strand dictionaries
+    C_stranded_dicts = {5, 6}       # 5mC bottom and top strand dictionaries
+    combined_dicts   = {7, 8}       # Combined strand dictionaries
+
+    # If '6mA' is present, remove the A_stranded indices from the skip set
+    if '6mA' in detected_modifications:
+        dict_to_skip -= A_stranded_dicts
+    # If '5mC' is present, remove the C_stranded indices from the skip set
+    if '5mC' in detected_modifications:
+        dict_to_skip -= C_stranded_dicts
+    # If both modifications are present, remove the combined indices from the skip set
+    if '6mA' in detected_modifications and '5mC' in detected_modifications:
+        dict_to_skip -= combined_dicts
+
+    return dict_to_skip
+
+def process_modifications_for_sample(args):
+    """
+    Processes a single (record, sample) pair to extract modification-specific data.
+    
+    Parameters:
+        args: (record, sample_index, sample_df, mods, max_reference_length)
+    
+    Returns:
+        (record, sample_index, result) where result is a dict with keys:
+          'm6A', 'm6A_minus', 'm6A_plus', '5mC', '5mC_minus', '5mC_plus', and
+          optionally 'combined_minus' and 'combined_plus' (initialized as empty lists).
+    """
+    record, sample_index, sample_df, mods, max_reference_length = args
+    result = {}
+    if '6mA' in mods:
+        m6a_df = sample_df[sample_df['modified_primary_base'] == 'A']
+        result['m6A'] = m6a_df
+        result['m6A_minus'] = m6a_df[m6a_df['ref_strand'] == '-']
+        result['m6A_plus'] = m6a_df[m6a_df['ref_strand'] == '+']
+        m6a_df = None
+        gc.collect()
+    if '5mC' in mods:
+        m5c_df = sample_df[sample_df['modified_primary_base'] == 'C']
+        result['5mC'] = m5c_df
+        result['5mC_minus'] = m5c_df[m5c_df['ref_strand'] == '-']
+        result['5mC_plus'] = m5c_df[m5c_df['ref_strand'] == '+']
+        m5c_df = None
+        gc.collect()
+    if '6mA' in mods and '5mC' in mods:
+        result['combined_minus'] = []
+        result['combined_plus'] = []
+    return record, sample_index, result
+
+def parallel_process_modifications(dict_total, mods, max_reference_length, threads=4):
+    """
+    Processes each (record, sample) pair in dict_total in parallel to extract modification-specific data.
+    
+    Returns:
+        processed_results: Dict keyed by record, with sub-dict keyed by sample index and the processed results.
+    """
+    tasks = []
+    for record, sample_dict in dict_total.items():
+        for sample_index, sample_df in sample_dict.items():
+            tasks.append((record, sample_index, sample_df, mods, max_reference_length))
+    processed_results = {}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
+        for record, sample_index, result in tqdm(
+                executor.map(process_modifications_for_sample, tasks),
+                total=len(tasks),
+                desc="Processing modifications"):
+            if record not in processed_results:
+                processed_results[record] = {}
+            processed_results[record][sample_index] = result
+    return processed_results
+
+def merge_modification_results(processed_results, mods):
+    """
+    Merges individual sample results into global dictionaries.
+    
+    Returns:
+        A tuple: (m6A_dict, m6A_minus, m6A_plus, c5m_dict, c5m_minus, c5m_plus, combined_minus, combined_plus)
+    """
+    m6A_dict = {}
+    m6A_minus = {}
+    m6A_plus = {}
+    c5m_dict = {}
+    c5m_minus = {}
+    c5m_plus = {}
+    combined_minus = {}
+    combined_plus = {}
+    for record, sample_results in processed_results.items():
+        for sample_index, res in sample_results.items():
+            if '6mA' in mods:
+                if record not in m6A_dict:
+                    m6A_dict[record], m6A_minus[record], m6A_plus[record] = {}, {}, {}
+                m6A_dict[record][sample_index] = res.get('m6A', pd.DataFrame())
+                m6A_minus[record][sample_index] = res.get('m6A_minus', pd.DataFrame())
+                m6A_plus[record][sample_index] = res.get('m6A_plus', pd.DataFrame())
+            if '5mC' in mods:
+                if record not in c5m_dict:
+                    c5m_dict[record], c5m_minus[record], c5m_plus[record] = {}, {}, {}
+                c5m_dict[record][sample_index] = res.get('5mC', pd.DataFrame())
+                c5m_minus[record][sample_index] = res.get('5mC_minus', pd.DataFrame())
+                c5m_plus[record][sample_index] = res.get('5mC_plus', pd.DataFrame())
+            if '6mA' in mods and '5mC' in mods:
+                if record not in combined_minus:
+                    combined_minus[record], combined_plus[record] = {}, {}
+                combined_minus[record][sample_index] = res.get('combined_minus', [])
+                combined_plus[record][sample_index] = res.get('combined_plus', [])
+    return (m6A_dict, m6A_minus, m6A_plus,
+            c5m_dict, c5m_minus, c5m_plus,
+            combined_minus, combined_plus)
+
+def process_stranded_methylation(args):
+    """
+    Processes a single (dict_index, record, sample) task.
+    
+    For combined dictionaries (indices 7 or 8), it merges the corresponding A-stranded and C-stranded data.
+    For other dictionaries, it converts the DataFrame into a nested dictionary mapping read names to a 
+    NumPy methylation array (of float type). Non-numeric values (e.g. '-') are coerced to NaN.
+    
+    Parameters:
+        args: (dict_index, record, sample, dict_list, max_reference_length)
+    
+    Returns:
+        (dict_index, record, sample, processed_data)
+    """
+    dict_index, record, sample, dict_list, max_reference_length = args
+    processed_data = {}
+    
+    # For combined bottom strand (index 7)
+    if dict_index == 7:
+        temp_a = dict_list[2][record].get(sample, {}).copy()
+        temp_c = dict_list[5][record].get(sample, {}).copy()
+        processed_data = {}
+        for read in set(temp_a.keys()) | set(temp_c.keys()):
+            if read in temp_a:
+                # Convert using pd.to_numeric with errors='coerce'
+                value_a = pd.to_numeric(np.array(temp_a[read]), errors='coerce')
+            else:
+                value_a = None
+            if read in temp_c:
+                value_c = pd.to_numeric(np.array(temp_c[read]), errors='coerce')
+            else:
+                value_c = None
+            if value_a is not None and value_c is not None:
+                processed_data[read] = np.where(
+                    np.isnan(value_a) & np.isnan(value_c),
+                    np.nan,
+                    np.nan_to_num(value_a) + np.nan_to_num(value_c)
+                )
+            elif value_a is not None:
+                processed_data[read] = value_a
+            elif value_c is not None:
+                processed_data[read] = value_c
+        del temp_a, temp_c
+
+    # For combined top strand (index 8)
+    elif dict_index == 8:
+        temp_a = dict_list[3][record].get(sample, {}).copy()
+        temp_c = dict_list[6][record].get(sample, {}).copy()
+        processed_data = {}
+        for read in set(temp_a.keys()) | set(temp_c.keys()):
+            if read in temp_a:
+                value_a = pd.to_numeric(np.array(temp_a[read]), errors='coerce')
+            else:
+                value_a = None
+            if read in temp_c:
+                value_c = pd.to_numeric(np.array(temp_c[read]), errors='coerce')
+            else:
+                value_c = None
+            if value_a is not None and value_c is not None:
+                processed_data[read] = np.where(
+                    np.isnan(value_a) & np.isnan(value_c),
+                    np.nan,
+                    np.nan_to_num(value_a) + np.nan_to_num(value_c)
+                )
+            elif value_a is not None:
+                processed_data[read] = value_a
+            elif value_c is not None:
+                processed_data[read] = value_c
+        del temp_a, temp_c
+
+    # For all other dictionaries
+    else:
+        # current_data is a DataFrame
+        temp_df = dict_list[dict_index][record][sample]
+        processed_data = {}
+        # Extract columns and convert probabilities to float (coercing errors)
+        read_ids = temp_df['read_id'].values
+        positions = temp_df['ref_position'].values
+        call_codes = temp_df['call_code'].values
+        probabilities = pd.to_numeric(temp_df['call_prob'].values, errors='coerce')
+        
+        modified_codes = {'a', 'h', 'm'}
+        canonical_codes = {'-'}
+        
+        # Compute methylation probabilities (vectorized)
+        methylation_prob = np.full(probabilities.shape, np.nan, dtype=float)
+        methylation_prob[np.isin(call_codes, list(modified_codes))] = probabilities[np.isin(call_codes, list(modified_codes))]
+        methylation_prob[np.isin(call_codes, list(canonical_codes))] = 1 - probabilities[np.isin(call_codes, list(canonical_codes))]
+        
+        # Preallocate storage for each unique read
+        unique_reads = np.unique(read_ids)
+        for read in unique_reads:
+            processed_data[read] = np.full(max_reference_length, np.nan, dtype=float)
+        
+        # Assign values efficiently
+        for i in range(len(read_ids)):
+            read = read_ids[i]
+            pos = positions[i]
+            prob = methylation_prob[i]
+            processed_data[read][pos] = prob
+
+    gc.collect()
+    return dict_index, record, sample, processed_data
+
+def parallel_extract_stranded_methylation(dict_list, dict_to_skip, max_reference_length, threads=4):
+    """
+    Processes all (dict_index, record, sample) tasks in dict_list (excluding indices in dict_to_skip) in parallel.
+    
+    Returns:
+        Updated dict_list with processed (nested) dictionaries.
+    """
+    tasks = []
+    for dict_index, current_dict in enumerate(dict_list):
+        if dict_index not in dict_to_skip:
+            for record in current_dict.keys():
+                for sample in current_dict[record].keys():
+                    tasks.append((dict_index, record, sample, dict_list, max_reference_length))
+    
+    with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
+        for dict_index, record, sample, processed_data in tqdm(
+            executor.map(process_stranded_methylation, tasks),
+            total=len(tasks),
+            desc="Extracting stranded methylation states"
+        ):
+            dict_list[dict_index][record][sample] = processed_data
+    return dict_list
+
 def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs=False, threads=None):
     """
     Takes modkit extract outputs and organizes it into an adata object
@@ -21,9 +357,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
     # Package imports
     from .. import readwrite
     from .get_native_references import get_native_references
-    from .count_aligned_reads import count_aligned_reads
     from .extract_base_identities import extract_base_identities
-    from .one_hot_encode import one_hot_encode
     from .ohe_batching import ohe_batching
     import pandas as pd
     import anndata as ad
@@ -75,18 +409,8 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
 
     ######### Get Record names that have over a passed threshold of mapped reads #############
     # get all records that are above a certain mapping threshold in at least one sample bam
-    records_to_analyze = []
-    for bami, bam in enumerate(bam_path_list):
-        aligned_reads_count, unaligned_reads_count, record_counts_dict = count_aligned_reads(bam)
-        percent_aligned = aligned_reads_count*100 / (aligned_reads_count+unaligned_reads_count)
-        print(f'{percent_aligned} percent of reads in {bams[bami]} aligned successfully')
-        # Iterate over references and decide which to use in the analysis based on the mapping_threshold
-        for record in record_counts_dict:
-            print('{0} reads mapped to reference record {1}. This is {2} percent of all mapped reads in {3}'.format(record_counts_dict[record][0], record, record_counts_dict[record][1]*100, bams[bami]))
-            if record_counts_dict[record][1] >= mapping_threshold:
-                records_to_analyze.append(record)
-    records_to_analyze = set(records_to_analyze)
-    print(f'Records to analyze: {records_to_analyze}')
+    records_to_analyze = parallel_filter_bams(bam_path_list, mapping_threshold)
+
     ##########################################################################################
 
     ########### Determine the maximum record length to analyze in the dataset ################
@@ -106,7 +430,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
     # One hot encode read sequences and write them out into the tmp_dir as h5ad files. 
     # Save the file paths in the bam_record_ohe_files dict.
     bam_record_ohe_files = {}
-    bam_record_save = os.path.join(tmp_dir, 'tmp_file_dict.h5ad.gz')
+    bam_record_save = os.path.join(tmp_dir, 'tmp_file_dict.h5ad')
     fwd_mapped_reads = set()
     rev_mapped_reads = set()
     # If this step has already been performed, read in the tmp_dile_dict
@@ -126,14 +450,14 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                 fwd_mapped_reads.update(fwd_base_identities.keys())
                 rev_mapped_reads.update(rev_base_identities.keys())
                 # One hot encode the sequence string of the reads
-                fwd_ohe_files = ohe_batching(fwd_base_identities, tmp_dir, record, f"{bami}_fwd",batch_size=100000)
-                rev_ohe_files = ohe_batching(rev_base_identities, tmp_dir, record, f"{bami}_rev",batch_size=100000)
+                fwd_ohe_files = ohe_batching(fwd_base_identities, tmp_dir, record, f"{bami}_fwd",batch_size=100000, threads=threads)
+                rev_ohe_files = ohe_batching(rev_base_identities, tmp_dir, record, f"{bami}_rev",batch_size=100000, threads=threads)
                 bam_record_ohe_files[f'{bami}_{record}'] = fwd_ohe_files + rev_ohe_files
                 del fwd_base_identities, rev_base_identities
         # Save out the ohe file paths
         X = np.random.rand(1, 1)
         tmp_ad = ad.AnnData(X=X, uns=bam_record_ohe_files) 
-        tmp_ad.write_h5ad(bam_record_save, compression='gzip')
+        tmp_ad.write_h5ad(bam_record_save)
     ##########################################################################################
 
     ##########################################################################################
@@ -170,7 +494,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
         else:
             ###################################################
             ### Add the tsvs as dataframes to a dictionary (dict_total) keyed by integer index. Also make modification specific dictionaries and strand specific dictionaries.
-            # Initialize dictionaries and place them in a list
+            # # Initialize dictionaries and place them in a list
             dict_total, dict_a, dict_a_bottom, dict_a_top, dict_c, dict_c_bottom, dict_c_top, dict_combined_bottom, dict_combined_top = {},{},{},{},{},{},{},{},{}
             dict_list = [dict_total, dict_a, dict_a_bottom, dict_a_top, dict_c, dict_c_bottom, dict_c_top, dict_combined_bottom, dict_combined_top]
             # Give names to represent each dictionary in the list
@@ -183,20 +507,28 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
             dict_to_skip = dict_to_skip + combined_dicts + A_stranded_dicts + C_stranded_dicts
             dict_to_skip = set(dict_to_skip)
 
-            # Load the dict_total dictionary with all of the tsv files as dataframes.
-            for sample_index, tsv in tqdm(enumerate(tsv_batch), desc=f'Loading TSVs into dataframes and filtering on chromosome/position for batch {batch}', total=batch_size):
-                #print('{0}: Loading sample tsv {1} into dataframe'.format(readwrite.time_string(), tsv))
-                temp_df = pd.read_csv(tsv, sep='\t', header=0)
-                for record in records_to_analyze:
-                    if record not in dict_total.keys():
-                        dict_total[record] = {}
-                    # Only keep the reads aligned to the chromosomes of interest
-                    #print('{0}: Filtering sample dataframe to keep chromosome of interest'.format(readwrite.time_string()))
-                    dict_total[record][sample_index] = temp_df[temp_df['chrom'] == record]
-                    # Only keep the read positions that fall within the region of interest
-                    #print('{0}: Filtering sample dataframe to keep positions falling within region of interest'.format(readwrite.time_string()))
-                    current_reference_length = reference_dict[record][0]
-                    #dict_total[record][sample_index] = dict_total[record][sample_index][(current_reference_length > dict_total[record][sample_index]['ref_position']) & (dict_total[record][sample_index]['ref_position']>= 0)]
+            # # Step 1):Load the dict_total dictionary with all of the batch tsv files as dataframes.
+            dict_total = parallel_load_tsvs(tsv_batch, records_to_analyze, reference_dict, batch, batch_size=len(tsv_batch), threads=threads)
+
+            # # Step 2: Extract modification-specific data (per (record,sample)) in parallel
+            # processed_mod_results = parallel_process_modifications(dict_total, mods, max_reference_length, threads=threads or 4)
+            # (m6A_dict, m6A_minus_strand, m6A_plus_strand,
+            # c5m_dict, c5m_minus_strand, c5m_plus_strand,
+            # combined_minus_strand, combined_plus_strand) = merge_modification_results(processed_mod_results, mods)
+
+            # # Create dict_list with the desired ordering:
+            # # 0: dict_total, 1: m6A, 2: m6A_minus, 3: m6A_plus, 4: 5mC, 5: 5mC_minus, 6: 5mC_plus, 7: combined_minus, 8: combined_plus
+            # dict_list = [dict_total, m6A_dict, m6A_minus_strand, m6A_plus_strand,
+            #             c5m_dict, c5m_minus_strand, c5m_plus_strand,
+            #             combined_minus_strand, combined_plus_strand]
+
+            # # Initialize dict_to_skip (default skip all mod-specific indices)
+            # dict_to_skip = set([0, 1, 4, 7, 8, 2, 3, 5, 6])
+            # # Update dict_to_skip based on modifications present in mods
+            # dict_to_skip = update_dict_to_skip(dict_to_skip, mods)
+
+            # # Step 3: Process stranded methylation data in parallel
+            # dict_list = parallel_extract_stranded_methylation(dict_list, dict_to_skip, max_reference_length, threads=threads or 4)
 
             # Iterate over dict_total of all the tsv files and extract the modification specific and strand specific dataframes into dictionaries
             for record in dict_total.keys():

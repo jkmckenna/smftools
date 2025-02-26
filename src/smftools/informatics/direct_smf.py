@@ -92,7 +92,7 @@ def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, 
     if os.path.isdir(split_dir):
         print(split_dir + ' already exists. Using existing demultiplexed BAMs.')
         bam_files = os.listdir(split_dir)
-        bam_files = [os.path.join(split_dir, file) for file in bam_files if 'bam' in file and '.bai' not in file and 'unclassified' not in file]
+        bam_files = [os.path.join(split_dir, file) for file in bam_files if '.bam' in file and '.bai' not in file and 'unclassified' not in file]
         bam_files.sort()
     else:
         make_dirs([split_dir])
