@@ -49,8 +49,8 @@ def ohe_batching(base_identities, tmp_dir, record, prefix='', batch_size=100000,
     # Step 1: Prepare Data for Parallel Encoding
     encoding_args = [(read_name, seq, device) for read_name, seq in base_identities.items() if seq is not None]
 
-    # Step 2: Parallel One-Hot Encoding
-    with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
+    # Step 2: Parallel One-Hot Encoding using threads (to avoid nested processes)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
         for result in executor.map(encode_sequence, encoding_args):
             if result:
                 batch_data.append(result)
