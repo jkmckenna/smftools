@@ -122,4 +122,52 @@ def concatenate_h5ads(output_file, file_suffix='h5ad.gz', delete_inputs=True):
                     print(f"Error deleting file {hdf}: {e}")
     else:
         print('Keeping input files')
+
+def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir="./"):
+    """
+    Saves an AnnData object safely by omitting problematic columns from .obs and .var.
+
+    Parameters:
+        adata (AnnData): The AnnData object to save.
+        path (str): Output .h5ad file path.
+        compression (str): Compression method for h5ad file.
+        backup (bool): If True, saves problematic columns to CSV files.
+        backup_dir (str): Directory to store backups if backup=True.
+    """
+    import anndata as ad
+    import pandas as pd
+    import os
+
+    os.makedirs(backup_dir, exist_ok=True)
+
+    def filter_df(df, df_name):
+        bad_cols = []
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                if not df[col].apply(lambda x: isinstance(x, (str, type(None)))).all():
+                    bad_cols.append(col)
+        if bad_cols:
+            print(f"⚠️ Skipping columns from {df_name}: {bad_cols}")
+            if backup:
+                df[bad_cols].to_csv(os.path.join(backup_dir, f"{df_name}_skipped_columns.csv"))
+                print(f"📝 Backed up skipped columns to {backup_dir}/{df_name}_skipped_columns.csv")
+        return df.drop(columns=bad_cols)
+
+    # Clean obs and var
+    obs_clean = filter_df(adata.obs, "obs")
+    var_clean = filter_df(adata.var, "var")
+
+    # Save clean version
+    adata_copy = ad.AnnData(
+        X=adata.X,
+        obs=obs_clean,
+        var=var_clean,
+        layers=adata.layers,
+        uns=adata.uns,
+        obsm=adata.obsm,
+        varm=adata.varm
+    )
+    adata_copy.write_h5ad(path, compression=compression)
+    print(f"✅ Saved safely to {path}")
+    
 ######################################################################################################

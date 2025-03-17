@@ -1,19 +1,22 @@
-from .apply_HMM import apply_HMM
+from .apply_hmm import apply_hmm
+from .apply_hmm_batched import apply_hmm_batched
 from .calculate_distances import calculate_distances
-from .classify_non_methylated_features import classify_non_methylated_features
-from .classify_methylated_features import classify_methylated_features
+from .call_hmm_peaks import call_hmm_peaks
 from .cluster_adata_on_methylation import cluster_adata_on_methylation
-from .read_HMM import read_HMM
+from .display_hmm import display_hmm
+from .hmm_readwrite import load_hmm, save_hmm
 from .subset_adata import subset_adata
-from .train_HMM import train_HMM
+from .train_hmm import train_hmm
 
 __all__ = [
-    "apply_HMM",
+    "apply_hmm",
+    "apply_hmm_batched",
     "calculate_distances",
-    "classify_non_methylated_features",
-    "classify_methylated_features",
+    "call_hmm_peaks",
     "cluster_adata_on_methylation",
-    "read_HMM",
+    "display_hmm",
+    "load_hmm",
+    "save_hmm",
     "subset_adata",
-    "train_HMM"
+    "train_hmm"
 ]
