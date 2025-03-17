@@ -8,7 +8,7 @@ from . import preprocessing as pp
 from . import tools as tl
 from . import plotting as pl
 from . import readwrite, datasets
-from .readwrite import adata_to_df
+from .readwrite import adata_to_df, safe_write_h5ad
 
 
 from importlib.metadata import version
@@ -23,5 +23,6 @@ __all__ = [
     "tl",
     "pl",
     "readwrite",
-    "datasets"
+    "datasets",
+    "safe_write_h5ad"
 ]

@@ -21,10 +21,10 @@ def invert_adata(adata):
     inverted_adata = adata[:, ::-1].copy()
 
     # Reassign var_names with new order
-    inverted_adata.var_names = adata.var_names[::-1]
+    inverted_adata.var_names = adata.var_names
 
     # Optional: Store original coordinates for reference
-    inverted_adata.var["Original_var_names"] = adata.var_names
+    inverted_adata.var["Original_var_names"] = adata.var_names[::-1]
 
     print("✅ Inversion complete!")
     return inverted_adata
