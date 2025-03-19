@@ -11,7 +11,7 @@ from .filter_converted_reads_on_methylation import filter_converted_reads_on_met
 from .filter_reads_on_length import filter_reads_on_length
 from .invert_adata import invert_adata
 from .load_sample_sheet import load_sample_sheet
-from .mark_hamming_duplicates import mark_hamming_duplicates
+from .flag_duplicate_reads import flag_duplicate_reads
 from .subsample_adata import subsample_adata
 
 __all__ = [
@@ -28,6 +28,6 @@ __all__ = [
     "filter_reads_on_length",
     "invert_adata",
     "load_sample_sheet",
-    "mark_hamming_duplicates",
+    "flag_duplicate_reads",
     "subsample_adata"
 ]
