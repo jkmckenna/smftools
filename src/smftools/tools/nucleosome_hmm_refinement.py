@@ -1,4 +1,4 @@
-def refine_nucleosome_calls(adata, layer_name, nan_mask_layer, hexamer_size=100, octamer_size=147, max_wiggle=40, device="cpu"):
+def refine_nucleosome_calls(adata, layer_name, nan_mask_layer, hexamer_size=120, octamer_size=147, max_wiggle=40, device="cpu"):
     import numpy as np
 
     nucleosome_layer = adata.layers[layer_name]
@@ -59,7 +59,7 @@ def refine_nucleosome_calls(adata, layer_name, nan_mask_layer, hexamer_size=100,
     print(f"✅ Added layers: {layer_name}_hexamers and {layer_name}_octamers")
     return adata
 
-def infer_nucleosomes_in_large_bound(adata, large_bound_layer, combined_nuc_layer, nan_mask_layer, nuc_size=147, linker_size=40, exclusion_buffer=40, device="cpu"):
+def infer_nucleosomes_in_large_bound(adata, large_bound_layer, combined_nuc_layer, nan_mask_layer, nuc_size=147, linker_size=50, exclusion_buffer=30, device="cpu"):
     import numpy as np
 
     large_bound = adata.layers[large_bound_layer]
