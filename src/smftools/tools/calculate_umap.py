@@ -45,6 +45,18 @@ def calculate_umap(adata, layer='nan_half', var_filters=None, n_pcs=15, knn_neig
     adata.obsp["connectivities"] = adata_subset.obsp["connectivities"]
     adata.uns["neighbors"] = adata_subset.uns["neighbors"]
 
+
+    # Fix varm["PCs"] shape mismatch
+    pc_matrix = np.zeros((adata.shape[1], adata_subset.varm["PCs"].shape[1]))
+    if var_filters:
+        subset_mask = np.logical_or.reduce([adata.var[f].values for f in var_filters])
+        pc_matrix[subset_mask, :] = adata_subset.varm["PCs"]
+    else:
+        pc_matrix = adata_subset.varm["PCs"]  # No subsetting case
+
+    adata.varm["PCs"] = pc_matrix
+
+
     print(f"✅ Stored: adata.obsm['X_pca'] and adata.obsm['X_umap']")
 
     return adata

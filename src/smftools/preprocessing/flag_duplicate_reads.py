@@ -16,7 +16,7 @@ class UnionFind:
         if root_x != root_y:
             self.parent[root_y] = root_x
 
-def flag_duplicate_reads(adata, var_filters, distance_threshold=0.025):
+def flag_duplicate_reads(adata, var_filters, distance_threshold=0.05):
     import numpy as np
     import pandas as pd
     import matplotlib.pyplot as plt

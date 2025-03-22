@@ -19,9 +19,9 @@ def apply_hmm_batched(adata, model, obs_column, layer=None, footprints=True, acc
     if footprints:
         feature_sets["footprint"] = {
             "features": {
-                "small_bound_stretch": [0, 30],
-                "medium_bound_stretch": [30, 80],
-                "putative_nucleosome": [80, 200],
+                "small_bound_stretch": [0, 20],
+                "medium_bound_stretch": [20, 50],
+                "putative_nucleosome": [50, 200],
                 "large_bound_stretch": [200, np.inf]
             },
             "state": "Non-Methylated"
@@ -29,8 +29,8 @@ def apply_hmm_batched(adata, model, obs_column, layer=None, footprints=True, acc
     if accessible_patches:
         feature_sets["accessible"] = {
             "features": {
-                "small_accessible_patch": [0, 30],
-                "mid_accessible_patch": [30, 80],
+                "small_accessible_patch": [0, 20],
+                "mid_accessible_patch": [20, 80],
                 "large_accessible_patch": [80, np.inf]
             },
             "state": "Methylated"

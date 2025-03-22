@@ -1,4 +1,4 @@
-def combined_hmm_raw_clustermap(adata, hmm_feature_layer="hmm_combined", layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_large_patch="tab10", cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=20, min_length=2700, sample_mapping=None):
+def combined_hmm_raw_clustermap(adata, hmm_feature_layer="hmm_combined", layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_hmm="tab10", cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=20, min_length=2700, sample_mapping=None):
 
     import numpy as np
     import seaborn as sns
@@ -78,7 +78,7 @@ def combined_hmm_raw_clustermap(adata, hmm_feature_layer="hmm_combined", layer_g
                     fig, axes = plt.subplots(1, 3, figsize=(18, 10), gridspec_kw={'width_ratios': [8, 8, 8]})
 
                     # HMM Heatmap
-                    sns.heatmap(hmm_matrix, cmap=cmap_large_patch, ax=axes[0], xticklabels=150, yticklabels=False)
+                    sns.heatmap(hmm_matrix, cmap=cmap_hmm, ax=axes[0], xticklabels=150, yticklabels=False)
                     axes[0].set_title(f"{sample} - {ref} HMM Features")
 
                     # Draw horizontal black lines for bin boundaries

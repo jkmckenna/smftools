@@ -169,5 +169,27 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=".
     )
     adata_copy.write_h5ad(path, compression=compression)
     print(f"✅ Saved safely to {path}")
+
+def merge_barcoded_anndatas(adata_single, adata_double):
+    import numpy as np
+    import anndata as ad
+
+    # Step 1: Identify overlap
+    overlap = np.intersect1d(adata_single.obs_names, adata_double.obs_names)
+
+    # Step 2: Filter out overlaps from adata_single
+    adata_single_filtered = adata_single[~adata_single.obs_names.isin(overlap)].copy()
+
+    # Step 3: Add source tag
+    adata_single_filtered.obs['source'] = 'single_barcode'
+    adata_double.obs['source'] = 'double_barcode'
+
+    # Step 4: Concatenate all components
+    adata_merged = ad.concat([
+        adata_single_filtered,
+        adata_double
+    ], join='outer', merge='same')  # merge='same' preserves matching layers, obsm, etc.
+
+    return adata_merged
     
 ######################################################################################################

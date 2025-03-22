@@ -8,7 +8,7 @@ from . import preprocessing as pp
 from . import tools as tl
 from . import plotting as pl
 from . import readwrite, datasets
-from .readwrite import adata_to_df, safe_write_h5ad
+from .readwrite import adata_to_df, safe_write_h5ad, merge_barcoded_anndatas
 
 
 from importlib.metadata import version
@@ -24,5 +24,6 @@ __all__ = [
     "pl",
     "readwrite",
     "datasets",
-    "safe_write_h5ad"
+    "safe_write_h5ad",
+    "merge_barcoded_anndatas"
 ]
