@@ -190,6 +190,9 @@ def merge_barcoded_anndatas(adata_single, adata_double):
         adata_double
     ], join='outer', merge='same')  # merge='same' preserves matching layers, obsm, etc.
 
+    # Step 5: Merge `.uns`
+    adata_merged.uns = {**adata_single.uns, **adata_double.uns}
+
     return adata_merged
     
 ######################################################################################################
