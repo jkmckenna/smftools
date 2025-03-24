@@ -1,27 +1,38 @@
-# load_sample_sheet
-
-def load_sample_sheet(adata, sample_sheet_path, mapping_key_column):
+def load_sample_sheet(adata, sample_sheet_path, mapping_key_column='obs_names', as_category=True):
     """
-    Loads a sample sheet csv and uses one of the columns to map sample information into the AnnData object.
+    Loads a sample sheet CSV and maps metadata into the AnnData object as categorical columns.
 
     Parameters:
-        adata (AnnData): The Anndata object to append sample information to.
-        sample_sheet_path (str):
-        mapping_key_column (str):
+        adata (AnnData): The AnnData object to append sample information to.
+        sample_sheet_path (str): Path to the CSV file.
+        mapping_key_column (str): Column name in the CSV to map against adata.obs_names or an existing obs column.
+        as_category (bool): If True, added columns will be cast as pandas Categorical.
 
     Returns:
-        None
+        AnnData: Updated AnnData object.
     """
     import pandas as pd
-    import anndata as ad
 
-    print('Loading sample sheet')
+    print('🔹 Loading sample sheet...')
     df = pd.read_csv(sample_sheet_path)
-    key_column = mapping_key_column
-    df[key_column] = df[key_column].astype(str)
-    value_columns = [column for column in df.columns if column != key_column]
-    mapping_dict = df.set_index(key_column)[value_columns].to_dict(orient='index')
-    print('Appending sample sheet metadata to AnnData object')
-    for column in value_columns:
-        column_map = {key: value[column] for key, value in mapping_dict.items()}
-        adata.obs[column] = adata.obs[key_column].map(column_map)
+    df[mapping_key_column] = df[mapping_key_column].astype(str)
+    
+    # If matching against obs_names directly
+    if mapping_key_column == 'obs_names':
+        key_series = adata.obs_names.astype(str)
+    else:
+        key_series = adata.obs[mapping_key_column].astype(str)
+
+    value_columns = [col for col in df.columns if col != mapping_key_column]
+    
+    print(f'🔹 Appending metadata columns: {value_columns}')
+    df = df.set_index(mapping_key_column)
+
+    for col in value_columns:
+        mapped = key_series.map(df[col])
+        if as_category:
+            mapped = mapped.astype('category')
+        adata.obs[col] = mapped
+
+    print('✅ Sample sheet metadata successfully added as categories.' if as_category else '✅ Metadata added.')
+    return adata

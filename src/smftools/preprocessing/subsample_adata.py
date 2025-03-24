@@ -46,5 +46,13 @@ def subsample_adata(adata, obs_columns=None, max_samples=2000, random_seed=42):
 
         sampled_indices.extend(sampled)
 
+    # ⚠ Handle backed mode detection
+    if adata.isbacked:
+        print("⚠ Detected backed mode. Subset will be loaded fully into memory.")
+        subset = adata[sampled_indices]
+        subset = subset.to_memory()
+    else:
+        subset = adata[sampled_indices]
+
     # Create a new AnnData object with only the selected indices
-    return adata[sampled_indices].copy()
+    return subset[sampled_indices].copy()
