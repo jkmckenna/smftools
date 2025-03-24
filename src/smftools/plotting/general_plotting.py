@@ -1,4 +1,4 @@
-def combined_hmm_raw_clustermap(adata, hmm_feature_layer="hmm_combined", layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_hmm="tab10", cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=20, min_length=2700, sample_mapping=None):
+def combined_hmm_raw_clustermap(adata, sample_col='Sample_Names', hmm_feature_layer="hmm_combined", layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_hmm="tab10", cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=20, min_length=2700, sample_mapping=None):
 
     import numpy as np
     import seaborn as sns
@@ -9,11 +9,11 @@ def combined_hmm_raw_clustermap(adata, hmm_feature_layer="hmm_combined", layer_g
 
     # Loop through samples and references
     for ref in adata.obs["Reference_strand"].cat.categories:
-        for sample in adata.obs["Sample_Names"].cat.categories:
+        for sample in adata.obs[sample_col].cat.categories:
             try:
                 # Filter the data for the current combination of enzyme, reference, time, quality, and length
                 subset = adata[(adata.obs['Reference_strand'] == ref) & 
-                            (adata.obs['Sample_Names'] == sample) &
+                            (adata.obs[sample_col] == sample) &
                             (adata.obs['query_read_quality'] >= min_quality) &
                             (adata.obs['read_length'] >= min_length) &
                             (adata.obs['Raw_methylation_signal'] >= 20) 
