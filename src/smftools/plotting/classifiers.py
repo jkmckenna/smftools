@@ -1,5 +1,12 @@
-def plot_model_performance(metrics):
+
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import os
+
+def plot_model_performance(metrics, save_path=None):
     import matplotlib.pyplot as plt
+    import os
     for ref in metrics.keys():
         plt.figure(figsize=(12, 5))
 
@@ -26,6 +33,14 @@ def plot_model_performance(metrics):
         plt.legend()
 
         plt.tight_layout()
+
+        if save_path:
+            save_name = f"{ref}"
+            os.makedirs(save_path, exist_ok=True)
+            safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+            out_file = os.path.join(save_path, f"{safe_name}.png")
+            plt.savefig(out_file, dpi=300)
+            print(f"📁 Saved: {out_file}")
         plt.show()
         
         # Confusion Matrices
@@ -34,12 +49,7 @@ def plot_model_performance(metrics):
             print(vals['confusion_matrix'])
             print()
 
-
-import numpy as np
-import matplotlib.pyplot as plt
-import torch
-
-def plot_feature_importances_or_saliency(models, positions, tensors, site_config, layer_name=None):
+def plot_feature_importances_or_saliency(models, positions, tensors, site_config, layer_name=None, save_path=None):
     """
     For each reference in the models dictionary, plot:
       - For Random Forest (rf) models: feature importances.
@@ -127,4 +137,13 @@ def plot_feature_importances_or_saliency(models, positions, tensors, site_config
             plt.title(plot_title)
             plt.grid(True)
             plt.tight_layout()
+
+            if save_path:
+                save_name = f"{plot_title}"
+                os.makedirs(save_path, exist_ok=True)
+                safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+                out_file = os.path.join(save_path, f"{safe_name}.png")
+                plt.savefig(out_file, dpi=300)
+                print(f"📁 Saved: {out_file}")
+
             plt.show()

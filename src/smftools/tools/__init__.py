@@ -1,6 +1,6 @@
 from .apply_hmm import apply_hmm
 from .apply_hmm_batched import apply_hmm_batched
-from .bayesian_stats import calculate_relative_risk_on_activity
+from .position_stats import calculate_relative_risk_on_activity, compute_positionwise_statistic
 from .calculate_distances import calculate_distances
 from .calculate_umap import calculate_umap
 from .call_hmm_peaks import call_hmm_peaks
@@ -17,6 +17,7 @@ __all__ = [
     "apply_hmm",
     "apply_hmm_batched",
     "calculate_distances",
+    "compute_positionwise_statistic",
     "calculate_umap",
     "calculate_relative_risk_on_activity",
     "call_hmm_peaks",

@@ -116,3 +116,124 @@ def calculate_relative_risk_on_activity(adata, sites, alpha=0.05, groupby=None):
             results_dict[ref][group] = (results_df, sig_df)
 
     return results_dict
+
+def compute_positionwise_statistic(
+    adata,
+    layer,
+    method="pearson",
+    groupby=["Reference_strand"],
+    output_key="positionwise_result",
+    site_config=None,
+    encoding="signed",
+    max_threads=None
+):
+    """
+    Computes a position-by-position matrix (correlation, RR, or Chi-squared) from an adata layer.
+
+    Parameters:
+        adata (AnnData): Annotated data matrix.
+        layer (str): Name of the adata layer to use.
+        method (str): 'pearson', 'binary_covariance', 'relative_risk', or 'chi_squared'.
+        groupby (str or list): Column(s) in adata.obs to group by.
+        output_key (str): Key in adata.uns to store results.
+        site_config (dict): Optional {ref: [site_types]} to restrict sites per reference.
+        encoding (str): 'signed' (1/-1/0) or 'binary' (1/0/NaN).
+        max_threads (int): Number of parallel threads to use (joblib).
+    """
+    import numpy as np
+    import pandas as pd
+    from scipy.stats import chi2_contingency
+    from joblib import Parallel, delayed
+    from tqdm import tqdm
+
+    if isinstance(groupby, str):
+        groupby = [groupby]
+
+    adata.uns[output_key] = {}
+    adata.uns[output_key + "_n"] = {}
+
+    label_col = "__".join(groupby)
+    adata.obs[label_col] = adata.obs[groupby].astype(str).agg("_".join, axis=1)
+
+    for group in adata.obs[label_col].unique():
+        subset = adata[adata.obs[label_col] == group].copy()
+        if subset.shape[0] == 0:
+            continue
+
+        ref = subset.obs["Reference_strand"].unique()[0] if "Reference_strand" in groupby else None
+
+        if site_config and ref in site_config:
+            site_mask = np.zeros(subset.shape[1], dtype=bool)
+            for site in site_config[ref]:
+                site_mask |= subset.var[f"{ref}_{site}"]
+            subset = subset[:, site_mask].copy()
+
+        X = subset.layers[layer].copy()
+
+        if encoding == "signed":
+            X_bin = np.where(X == 1, 1, np.where(X == -1, 0, np.nan))
+        else:
+            X_bin = np.where(X == 1, 1, np.where(X == 0, 0, np.nan))
+
+        n_pos = subset.shape[1]
+        mat = np.zeros((n_pos, n_pos))
+
+        if method == "pearson":
+            with np.errstate(invalid='ignore'):
+                mat = np.corrcoef(np.nan_to_num(X_bin).T)
+
+        elif method == "binary_covariance":
+            binary = (X_bin == 1).astype(float)
+            valid = (X_bin == 1) | (X_bin == 0)  # Only consider true binary (ignore NaN)
+            valid = valid.astype(float)
+
+            numerator = np.dot(binary.T, binary)
+            denominator = np.dot(valid.T, valid)
+
+            with np.errstate(divide='ignore', invalid='ignore'):
+                mat = np.true_divide(numerator, denominator)
+                mat[~np.isfinite(mat)] = 0
+
+        elif method in ["relative_risk", "chi_squared"]:
+            def compute_row(i):
+                row = np.zeros(n_pos)
+                xi = X_bin[:, i]
+                for j in range(n_pos):
+                    xj = X_bin[:, j]
+                    mask = ~np.isnan(xi) & ~np.isnan(xj)
+                    if np.sum(mask) < 10:
+                        row[j] = np.nan
+                        continue
+                    if method == "relative_risk":
+                        a = np.sum((xi[mask] == 1) & (xj[mask] == 1))
+                        b = np.sum((xi[mask] == 1) & (xj[mask] == 0))
+                        c = np.sum((xi[mask] == 0) & (xj[mask] == 1))
+                        d = np.sum((xi[mask] == 0) & (xj[mask] == 0))
+                        if (a + b) > 0 and (c + d) > 0 and c > 0:
+                            p1 = a / (a + b)
+                            p2 = c / (c + d)
+                            row[j] = p1 / p2 if p2 > 0 else np.nan
+                        else:
+                            row[j] = np.nan
+                    elif method == "chi_squared":
+                        table = pd.crosstab(xi[mask], xj[mask])
+                        if table.shape != (2, 2):
+                            row[j] = np.nan
+                        else:
+                            chi2, _, _, _ = chi2_contingency(table, correction=False)
+                            row[j] = chi2
+                return row
+
+            mat = np.array(
+                Parallel(n_jobs=max_threads)(
+                    delayed(compute_row)(i) for i in tqdm(range(n_pos), desc=f"{method}: {group}")
+                )
+            )
+
+        else:
+            raise ValueError(f"Unsupported method: {method}")
+
+        var_names = subset.var_names.astype(int)
+        mat_df = pd.DataFrame(mat, index=var_names, columns=var_names)
+        adata.uns[output_key][group] = mat_df
+        adata.uns[output_key + "_n"][group] = subset.shape[0]
