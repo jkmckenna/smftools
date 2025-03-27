@@ -52,7 +52,7 @@ def combined_hmm_raw_clustermap(adata, sample_col='Sample_Names', hmm_feature_la
                     percentages[bin_label] = percent_reads
 
                     if num_reads > 0:
-                        # Cluster within each bin for large patch
+                        # Cluster within each bin specified layer
                         linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
                         order = sch.leaves_list(linkage)
 
