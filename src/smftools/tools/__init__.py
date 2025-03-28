@@ -4,7 +4,7 @@ from .position_stats import calculate_relative_risk_on_activity, compute_positio
 from .calculate_distances import calculate_distances
 from .calculate_umap import calculate_umap
 from .call_hmm_peaks import call_hmm_peaks
-from .classifiers import run_training_loop, run_inference, evaluate_models_by_subgroup
+from .classifiers import run_training_loop, run_inference, evaluate_models_by_subgroup, prepare_melted_model_data
 from .cluster_adata_on_methylation import cluster_adata_on_methylation
 from .display_hmm import display_hmm
 from .general_tools import create_nan_mask_from_X, combine_layers, create_nan_or_non_gpc_mask
@@ -28,6 +28,7 @@ __all__ = [
     "display_hmm",
     "evaluate_models_by_subgroup",
     "load_hmm",
+    "prepare_melted_model_data",
     "refine_nucleosome_calls",
     "infer_nucleosomes_in_large_bound",
     "run_training_loop",

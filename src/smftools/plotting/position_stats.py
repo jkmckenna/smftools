@@ -1,13 +1,24 @@
-def plot_volcano_relative_risk(results_dict, save_path=None):
+def plot_volcano_relative_risk(
+    results_dict,
+    save_path=None,
+    highlight_regions=None,  # List of (start, end) tuples
+    highlight_color="lightgray",
+    highlight_alpha=0.3,
+    xlim=None,
+    ylim=None,
+):
     """
     Plot volcano-style log2(Relative Risk) vs Genomic Position for each group within each reference.
 
     Parameters:
         results_dict (dict): Output from calculate_relative_risk_by_group.
                              Format: dict[ref][group_label] = (results_df, sig_df)
-
-    Returns:
-        None. Displays plots.
+        save_path (str): Directory to save plots.
+        highlight_regions (list): List of (start, end) tuples for shaded regions.
+        highlight_color (str): Color for highlighted regions.
+        highlight_alpha (float): Alpha for highlighted region.
+        xlim (tuple): Optional x-axis limit.
+        ylim (tuple): Optional y-axis limit.
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -19,65 +30,91 @@ def plot_volcano_relative_risk(results_dict, save_path=None):
                 print(f"Skipping empty results for {ref} / {group_label}")
                 continue
 
-            # Prepare data
-            log_rr = results_df['log2_Relative_Risk']
-            log_pval = results_df['-log10_Adj_P']
-            positions = results_df['Genomic_Position']
-
             # Split by site type
             gpc_df = results_df[results_df['GpC_Site']]
             cpg_df = results_df[results_df['CpG_Site']]
 
-            plt.figure(figsize=(12, 6))
+            fig, ax = plt.subplots(figsize=(12, 6))
+
+            # Highlight regions
+            if highlight_regions:
+                for start, end in highlight_regions:
+                    ax.axvspan(start, end, color=highlight_color, alpha=highlight_alpha)
 
             # GpC as circles
-            plt.scatter(
+            sc1 = ax.scatter(
                 gpc_df['Genomic_Position'],
                 gpc_df['log2_Relative_Risk'],
                 c=gpc_df['-log10_Adj_P'],
-                cmap='coolwarm', edgecolor='k', s=40, marker='o', label='GpC'
+                cmap='coolwarm',
+                edgecolor='k',
+                s=40,
+                marker='o',
+                label='GpC'
             )
 
             # CpG as stars
-            plt.scatter(
+            sc2 = ax.scatter(
                 cpg_df['Genomic_Position'],
                 cpg_df['log2_Relative_Risk'],
                 c=cpg_df['-log10_Adj_P'],
-                cmap='coolwarm', edgecolor='k', s=60, marker='*', label='CpG'
+                cmap='coolwarm',
+                edgecolor='k',
+                s=60,
+                marker='*',
+                label='CpG'
             )
 
-            plt.axhline(y=0, color='gray', linestyle='--')
-            plt.xlabel("Genomic Position")
-            plt.ylabel("log2(Relative Risk)")
-            plt.title(f"{ref} / {group_label} — Relative Risk vs Genomic Position")
-            cbar = plt.colorbar()
+            ax.axhline(y=0, color='gray', linestyle='--')
+            ax.set_xlabel("Genomic Position")
+            ax.set_ylabel("log2(Relative Risk)")
+            ax.set_title(f"{ref} / {group_label} — Relative Risk vs Genomic Position")
+
+            if xlim:
+                ax.set_xlim(xlim)
+            if ylim:
+                ax.set_ylim(ylim)
+
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+            cbar = plt.colorbar(sc1, ax=ax)
             cbar.set_label("-log10(Adjusted P-Value)")
-            plt.legend()
+
+            ax.legend()
             plt.tight_layout()
 
             # Save if requested
             if save_path:
-                save_name = f"{ref} — {group_label}"
                 os.makedirs(save_path, exist_ok=True)
-                safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+                safe_name = f"{ref}_{group_label}".replace("=", "").replace("__", "_").replace(",", "_").replace(" ", "_")
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
                 print(f"📁 Saved: {out_file}")
 
             plt.show()
 
-
-def plot_bar_relative_risk(results_dict, sort_by_position=True, xlim=None, ylim=None, save_path=None):
+def plot_bar_relative_risk(
+    results_dict,
+    sort_by_position=True,
+    xlim=None,
+    ylim=None,
+    save_path=None,
+    highlight_regions=None,  # List of (start, end) tuples
+    highlight_color="lightgray",
+    highlight_alpha=0.3
+):
     """
     Plot log2(Relative Risk) as a bar plot across genomic positions for each group within each reference.
 
     Parameters:
         results_dict (dict): Output from calculate_relative_risk_by_group.
-                             Format: dict[ref][group_label] = (results_df, sig_df)
         sort_by_position (bool): Whether to sort bars left-to-right by genomic coordinate.
-
-    Returns:
-        None. Displays one plot per (ref, group).
+        xlim, ylim (tuple): Axis limits.
+        save_path (str or None): Directory to save plots.
+        highlight_regions (list of tuple): List of (start, end) genomic regions to shade.
+        highlight_color (str): Color of shaded region.
+        highlight_alpha (float): Transparency of shaded region.
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -90,75 +127,70 @@ def plot_bar_relative_risk(results_dict, sort_by_position=True, xlim=None, ylim=
                 continue
 
             df = df.copy()
-
-            # Ensure Genomic_Position is numeric
             df['Genomic_Position'] = df['Genomic_Position'].astype(int)
 
             if sort_by_position:
                 df = df.sort_values('Genomic_Position')
 
-            # Setup
-            x = df['Genomic_Position']
-            heights = df['log2_Relative_Risk']
-
-            # Coloring by site type (or use different plots if preferred)
             gpc_mask = df['GpC_Site'] & ~df['CpG_Site']
             cpg_mask = df['CpG_Site'] & ~df['GpC_Site']
             both_mask = df['GpC_Site'] & df['CpG_Site']
 
-            plt.figure(figsize=(14, 6))
+            fig, ax = plt.subplots(figsize=(14, 6))
 
-            # GpC bars
-            plt.bar(
+            # Optional shaded regions
+            if highlight_regions:
+                for start, end in highlight_regions:
+                    ax.axvspan(start, end, color=highlight_color, alpha=highlight_alpha)
+
+            # Bar plots
+            ax.bar(
                 df['Genomic_Position'][gpc_mask],
-                heights[gpc_mask],
+                df['log2_Relative_Risk'][gpc_mask],
                 width=10,
                 color='steelblue',
                 label='GpC Site',
                 edgecolor='black'
             )
 
-            # CpG bars
-            plt.bar(
+            ax.bar(
                 df['Genomic_Position'][cpg_mask],
-                heights[cpg_mask],
+                df['log2_Relative_Risk'][cpg_mask],
                 width=10,
                 color='darkorange',
                 label='CpG Site',
                 edgecolor='black'
             )
 
-            # Both
             if both_mask.any():
-                plt.bar(
+                ax.bar(
                     df['Genomic_Position'][both_mask],
-                    heights[both_mask],
+                    df['log2_Relative_Risk'][both_mask],
                     width=10,
                     color='purple',
                     label='GpC + CpG',
                     edgecolor='black'
                 )
 
-            # Aesthetic setup
-            plt.axhline(y=0, color='gray', linestyle='--')
-            plt.xlabel('Genomic Position')
-            plt.ylabel('log2(Relative Risk)')
-            plt.title(f"{ref} — {group_label}")
-            plt.legend()
-            
-            # Apply axis limits if provided
+            ax.axhline(y=0, color='gray', linestyle='--')
+            ax.set_xlabel('Genomic Position')
+            ax.set_ylabel('log2(Relative Risk)')
+            ax.set_title(f"{ref} — {group_label}")
+            ax.legend()
+
             if xlim:
-                plt.xlim(xlim)
+                ax.set_xlim(xlim)
             if ylim:
-                plt.ylim(ylim)
+                ax.set_ylim(ylim)
+
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
 
             plt.tight_layout()
 
-            # Save if requested
             if save_path:
-                save_name = f"{ref} — {group_label}"
                 os.makedirs(save_path, exist_ok=True)
-                safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+                safe_name = f"{ref}_{group_label}".replace("=", "").replace("__", "_").replace(",", "_")
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
                 print(f"📁 Saved: {out_file}")
