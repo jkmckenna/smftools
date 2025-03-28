@@ -147,3 +147,56 @@ def plot_feature_importances_or_saliency(models, positions, tensors, site_config
                 print(f"📁 Saved: {out_file}")
 
             plt.show()
+
+
+def plot_model_curves_from_adata(adata, label_col='activity_status', model_names = ["cnn", "mlp", "rf"], suffix='GpC_site_CpG_site', omit_training=True, save_path=None):
+    from sklearn.metrics import precision_recall_curve, roc_curve, auc
+    import matplotlib.pyplot as plt
+    import seaborn as sns    
+
+    if omit_training:
+        subset = adata[adata.obs['used_for_training'].astype(bool) == False]
+    label = subset.obs[label_col].astype('category').cat.codes.values  # Convert to 0/1
+
+    plt.figure(figsize=(12, 5))
+
+    # ROC curve
+    plt.subplot(1, 2, 1)
+    for model in model_names:
+        prob_col = f"{model}_active_prob_{suffix}"
+        if prob_col in subset.obs.columns:
+            probs = subset.obs[prob_col].astype(float).values
+            fpr, tpr, _ = roc_curve(label, probs)
+            roc_auc = auc(fpr, tpr)
+            plt.plot(fpr, tpr, label=f"{model.upper()} (AUC={roc_auc:.4f})")
+
+    plt.plot([0, 1], [0, 1], 'k--', alpha=0.5)
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("ROC Curve")
+    plt.legend()
+
+    # PR curve
+    plt.subplot(1, 2, 2)
+    for model in model_names:
+        prob_col = f"{model}_active_prob_{suffix}"
+        if prob_col in subset.obs.columns:
+            probs = subset.obs[prob_col].astype(float).values
+            precision, recall, _ = precision_recall_curve(label, probs)
+            pr_auc = auc(recall, precision)
+            plt.plot(recall, precision, label=f"{model.upper()} (AUC={pr_auc:.4f})")
+
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title("Precision-Recall Curve")
+    plt.legend()
+
+    plt.tight_layout()
+    if save_path:
+        save_name = f"ROC_PR_curves"
+        os.makedirs(save_path, exist_ok=True)
+        safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+        out_file = os.path.join(save_path, f"{safe_name}.png")
+        plt.savefig(out_file, dpi=300)
+        print(f"📁 Saved: {out_file}")
+    plt.show()

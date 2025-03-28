@@ -180,6 +180,7 @@ def run_training_loop(adata, site_config, layer_name=None, mlp=False, cnn=False,
     torch.device('mps') if torch.backends.mps.is_available() else
     torch.device('cpu'))
     metrics, models, positions, tensors = {}, {}, {}, {}
+    adata.obs["used_for_training"] = False  # Initialize column to False
 
     for ref in adata.obs['Reference_strand'].cat.categories:
         ref_subset = adata[adata.obs['Reference_strand'] == ref].copy()
@@ -221,6 +222,8 @@ def run_training_loop(adata, site_config, layer_name=None, mlp=False, cnn=False,
             dataset, [train_size, len(dataset) - train_size]
         )
         train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        train_indices = adata.obs[adata.obs['Reference_strand'] == ref].index[train_dataset.indices]
+        adata.obs.loc[train_indices, "used_for_training"] = True
         
         test_X = X_tensor[test_dataset.indices]
         test_y = y_encoded.iloc[test_dataset.indices] if hasattr(y_encoded, 'iloc') else y_encoded[test_dataset.indices]
@@ -401,12 +404,19 @@ def evaluate_model_by_subgroups(
     suffix="GpC_site_CpG_site",
     groupby_cols=["Sample_Names_Full", "Enhancer_Open", "Promoter_Open"],
     label_col="activity_status",
-    min_samples=10):
+    min_samples=10,
+    exclude_training_data=True):
     import pandas as pd
     from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+
     results = []
 
-    df = adata.obs.copy()
+    if exclude_training_data:
+        test_subset = adata[adata.obs['used_for_training'] == False]
+    else:
+        test_subset = adata
+
+    df = test_subset.obs.copy()
     df[label_col] = df[label_col].astype('category').cat.codes
 
     pred_col = f"{model_prefix}_activity_prediction_{suffix}"
@@ -439,15 +449,46 @@ def evaluate_model_by_subgroups(
 
     return pd.DataFrame(results)
 
-def evaluate_models_by_subgroup(adata, model_prefixes, groupby_cols, label_col):
+def evaluate_models_by_subgroup(adata, model_prefixes, groupby_cols, label_col, exclude_training_data=True):
     import pandas as pd
     all_metrics = []
     for model_prefix in model_prefixes:
         try:
-            df = evaluate_model_by_subgroups(adata, model_prefix=model_prefix, suffix="GpC_site_CpG_site", groupby_cols=groupby_cols, label_col=label_col)
+            df = evaluate_model_by_subgroups(adata, model_prefix=model_prefix, suffix="GpC_site_CpG_site", groupby_cols=groupby_cols, label_col=label_col, exclude_training_data=exclude_training_data)
             all_metrics.append(df)
         except Exception as e:
             print(f"Skipping {model_prefix} due to error: {e}")
 
     final_df = pd.concat(all_metrics, ignore_index=True)
     return final_df
+
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import precision_recall_curve, roc_curve, auc
+
+
+def prepare_melted_model_data(adata, outkey='melted_model_df', groupby=['Enhancer_Open', 'Promoter_Open'], label_col='activity_status', model_names = ['cnn', 'mlp', 'rf'], suffix='GpC_site_CpG_site', omit_training=True):
+    cols = groupby.append(label_col)
+    if omit_training:
+        subset = adata[adata.obs['used_for_training'] == False]
+    else:
+        subset = adata
+    df = subset.obs[cols].copy()
+    df[label_col] = df[label_col].astype('category').cat.codes
+
+    for model in model_names:
+        col = f"{model}_active_prob_{suffix}"
+        if col in subset.obs.columns:
+            df[f"{model}_prob"] = subset.obs[col].astype(float)
+
+    # Melt into long format
+    melted = df.melt(
+        id_vars=cols,
+        value_vars=[f"{m}_prob" for m in model_names if f"{m}_active_prob_{suffix}" in subset.obs.columns],
+        var_name='model',
+        value_name='prob'
+    )
+    melted['model'] = melted['model'].str.replace('_prob', '', regex=False)
+    
+    adata.uns[outkey] = melted
