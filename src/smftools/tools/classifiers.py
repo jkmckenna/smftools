@@ -174,7 +174,9 @@ def train_rf(X_tensor, y_tensor, train_indices, test_indices, n_estimators=500):
     return model, preds, probs
 
 # ------------------------- Main Training Loop -------------------------
-def run_training_loop(adata, site_config, layer_name=None, mlp=False, cnn=False, rnn=False, arnn=False, transformer=False, rf=False, max_epochs=10, max_patience=5, n_estimators=500, training_split=0.7):
+def run_training_loop(adata, site_config, layer_name=None,
+                       mlp=False, cnn=False, rnn=False, arnn=False, transformer=False, rf=False, 
+                       max_epochs=10, max_patience=5, n_estimators=500, training_split=0.7):
     device = (
     torch.device('cuda') if torch.cuda.is_available() else
     torch.device('mps') if torch.backends.mps.is_available() else
@@ -210,7 +212,7 @@ def run_training_loop(adata, site_config, layer_name=None, mlp=False, cnn=False,
         # Fill and encode
         X = random_fill_nans(matrix)
         y = ref_subset.obs["activity_status"]
-        y_encoded = y.astype('category').cat.codes
+        y_encoded = y.map({'Active': 1, 'Silent': 0}) 
         X_tensor = torch.tensor(X, dtype=torch.float32)
         y_tensor = torch.tensor(y_encoded.values, dtype=torch.long)
         tensors.setdefault(ref, {})[suffix] = X_tensor
@@ -300,6 +302,112 @@ def run_training_loop(adata, site_config, layer_name=None, mlp=False, cnn=False,
 
     return metrics, models, positions, tensors
 
+
+def sliding_window_train_test(X, y, window_size, step_size, training_split=0.7,
+                              epochs=10, patience=5, batch_size=64):
+    """
+    Slides a window of fixed width along the features in X.
+    At each window position, the function splits the data into training and testing sets,
+    trains an MLPClassifier on the training data, evaluates on the test data,
+    and saves the ROC-AUC and AUPRC (area under the precision-recall curve) values.
+    
+    Parameters:
+        X (np.ndarray): Feature matrix of shape (n_samples, n_features).
+        y (array-like): Labels (binary or categorical) of length n_samples.
+        window_size (int): Number of contiguous features to use in each window.
+        step_size (int): Step size to slide the window along the features.
+        training_split (float): Fraction of samples to use for training.
+        epochs (int): Maximum number of epochs for training.
+        patience (int): Patience for early stopping.
+        batch_size (int): Batch size for the DataLoader.
+        
+    Returns:
+        dict: A dictionary containing:
+            - "windows": List of (start, end) tuples for each window.
+            - "auc_roc": List of ROC-AUC scores for each window.
+            - "auc_prc": List of AUPRC scores for each window.
+    """
+    import numpy as np
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    from torch.utils.data import TensorDataset, DataLoader
+    from sklearn.metrics import auc
+    from sklearn.utils.class_weight import compute_class_weight
+
+    # Determine device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    n_samples, n_features = X.shape
+
+    # Prepare lists to store results
+    window_positions = []
+    auc_roc_list = []
+    auc_prc_list = []
+    
+    # Loop over sliding windows
+    for start in range(0, n_features - window_size + 1, step_size):
+        end = start + window_size
+        window_positions.append((start, end))
+        print(f"Processing window: features {start} to {end}")
+
+        # Subset the features for the current window
+        X_window = X[:, start:end]
+
+        # Convert to torch tensors
+        X_tensor = torch.tensor(X_window, dtype=torch.float32)
+        # Assuming y is a 1D array-like structure; convert to tensor of type long
+        y_tensor = torch.tensor(y, dtype=torch.long)
+        
+        # Create a TensorDataset and then a random train-test split
+        dataset = TensorDataset(X_tensor, y_tensor)
+        total_samples = len(dataset)
+        train_size = int(training_split * total_samples)
+        test_size = total_samples - train_size
+        train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
+        
+        # DataLoaders for training and testing
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        # For evaluation, we can simply extract all test samples
+        test_indices = test_dataset.indices  # random_split Subset provides the indices
+        test_X = X_tensor[test_indices]
+        test_y = y_tensor[test_indices]
+        
+        # Compute class weights (assuming binary or multi-class classification)
+        classes = np.unique(y)
+        weights = compute_class_weight(class_weight='balanced', classes=classes, y=y)
+        class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
+        
+        # Initialize your model (here we use an MLP that takes input of size = window_size)
+        # Assume MLPClassifier is defined similar to: MLPClassifier(input_dim, num_classes)
+        model = MLPClassifier(window_size, len(classes)).to(device)
+        
+        # Set up optimizer and loss criterion
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        
+        # Train the model using your existing training function.
+        # ref_name and model_name are set to indicate the window range.
+        train_model(model, train_loader, optimizer, criterion, device,
+                    ref_name="Window", model_name=f"{start}-{end}",
+                    epochs=epochs, patience=patience)
+        
+        # Evaluate the model on the test set using your evaluate_model function.
+        metrics_dict, _, _ = evaluate_model(model, test_X, test_y, device)
+        
+        # Retrieve ROC-AUC from evaluation metrics
+        roc_auc = metrics_dict.get('auc', np.nan)
+        # Compute AUPRC using precision and recall arrays from evaluate_model
+        precision = metrics_dict.get('precision')
+        recall = metrics_dict.get('recall')
+        if precision is not None and recall is not None:
+            auprc = auc(recall, precision)
+        else:
+            auprc = np.nan
+        
+        auc_roc_list.append(roc_auc)
+        auc_prc_list.append(auprc)
+        
+    return {"windows": window_positions, "auc_roc": auc_roc_list, "auc_prc": auc_prc_list}
 
 # ------------------------- Apply models to input adata -------------------------
 def run_inference(adata, models, site_config, layer_name=None, model_names=["cnn", "mlp", "rf"]):

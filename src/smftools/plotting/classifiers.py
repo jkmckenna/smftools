@@ -49,7 +49,7 @@ def plot_model_performance(metrics, save_path=None):
             print(vals['confusion_matrix'])
             print()
 
-def plot_feature_importances_or_saliency(models, positions, tensors, site_config, layer_name=None, save_path=None):
+def plot_feature_importances_or_saliency(models, positions, tensors, site_config, layer_name=None, save_path=None, shaded_regions=None):
     """
     For each reference in the models dictionary, plot:
       - For Random Forest (rf) models: feature importances.
@@ -128,6 +128,10 @@ def plot_feature_importances_or_saliency(models, positions, tensors, site_config
             sorted_idx = np.argsort(coords)
             positions_sorted = coords[sorted_idx]
             importances_sorted = np.array(importances)[sorted_idx]
+
+            if shaded_regions:
+                for (start, end) in shaded_regions:
+                    plt.axvspan(start, end, color='gray', alpha=0.3)
             
             # Plot the result.
             plt.figure(figsize=(12, 4))
@@ -149,14 +153,19 @@ def plot_feature_importances_or_saliency(models, positions, tensors, site_config
             plt.show()
 
 
-def plot_model_curves_from_adata(adata, label_col='activity_status', model_names = ["cnn", "mlp", "rf"], suffix='GpC_site_CpG_site', omit_training=True, save_path=None):
+def plot_model_curves_from_adata(adata, label_col='activity_status', model_names=["cnn", "mlp", "rf"]
+                                 , suffix='GpC_site_CpG_site', omit_training=True, save_path=None, 
+                                 ylim_roc=(0.0, 1.05), ylim_pr=(0.0, 1.05)):
     from sklearn.metrics import precision_recall_curve, roc_curve, auc
     import matplotlib.pyplot as plt
     import seaborn as sns    
 
     if omit_training:
         subset = adata[adata.obs['used_for_training'].astype(bool) == False]
-    label = subset.obs[label_col].astype('category').cat.codes.values  # Convert to 0/1
+
+    label = subset.obs[label_col].map({'Active': 1, 'Silent': 0}).values  
+
+    positive_ratio = np.sum(label.astype(int)) / len(label)
 
     plt.figure(figsize=(12, 5))
 
@@ -174,6 +183,7 @@ def plot_model_curves_from_adata(adata, label_col='activity_status', model_names
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
     plt.title("ROC Curve")
+    plt.ylim(*ylim_roc)
     plt.legend()
 
     # PR curve
@@ -188,6 +198,8 @@ def plot_model_curves_from_adata(adata, label_col='activity_status', model_names
 
     plt.xlabel("Recall")
     plt.ylabel("Precision")
+    plt.ylim(*ylim_pr)
+    plt.axhline(y=positive_ratio, linestyle='--', color='gray', label='Random Baseline')
     plt.title("Precision-Recall Curve")
     plt.legend()
 

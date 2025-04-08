@@ -10,6 +10,7 @@ from .display_hmm import display_hmm
 from .general_tools import create_nan_mask_from_X, combine_layers, create_nan_or_non_gpc_mask
 from .hmm_readwrite import load_hmm, save_hmm
 from .nucleosome_hmm_refinement import refine_nucleosome_calls, infer_nucleosomes_in_large_bound
+from .read_stats import calculate_row_entropy
 from .subset_adata import subset_adata
 from .train_hmm import train_hmm
 
@@ -18,6 +19,7 @@ __all__ = [
     "apply_hmm_batched",
     "calculate_distances",
     "compute_positionwise_statistic",
+    "calculate_row_entropy",
     "calculate_umap",
     "calculate_relative_risk_on_activity",
     "call_hmm_peaks",
