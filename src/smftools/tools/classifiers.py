@@ -302,7 +302,6 @@ def run_training_loop(adata, site_config, layer_name=None,
 
     return metrics, models, positions, tensors
 
-
 def sliding_window_train_test(X, y, window_size, step_size, training_split=0.7,
                               epochs=10, patience=5, batch_size=64):
     """
@@ -503,7 +502,6 @@ def run_inference(adata, models, site_config, layer_name=None, model_names=["cnn
     
     print("✅ Inference complete: stored predicted class, predicted probability, and active probability for each model.")
 
-
 # ------------------------- Evaluate model activity predictions within categorical subgroups -------------------------
 
 def evaluate_model_by_subgroups(
@@ -570,13 +568,11 @@ def evaluate_models_by_subgroup(adata, model_prefixes, groupby_cols, label_col, 
     final_df = pd.concat(all_metrics, ignore_index=True)
     return final_df
 
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.metrics import precision_recall_curve, roc_curve, auc
-
-
 def prepare_melted_model_data(adata, outkey='melted_model_df', groupby=['Enhancer_Open', 'Promoter_Open'], label_col='activity_status', model_names = ['cnn', 'mlp', 'rf'], suffix='GpC_site_CpG_site', omit_training=True):
+    import pandas as pd
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import precision_recall_curve, roc_curve, auc
     cols = groupby.append(label_col)
     if omit_training:
         subset = adata[adata.obs['used_for_training'] == False]

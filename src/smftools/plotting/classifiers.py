@@ -49,46 +49,47 @@ def plot_model_performance(metrics, save_path=None):
             print(vals['confusion_matrix'])
             print()
 
-def plot_feature_importances_or_saliency(models, positions, tensors, site_config, layer_name=None, save_path=None, shaded_regions=None):
-    """
-    For each reference in the models dictionary, plot:
-      - For Random Forest (rf) models: feature importances.
-      - For neural network (e.g. mlp, cnn) models: feature saliency computed via input gradients.
-    """
+def plot_feature_importances_or_saliency(
+    models,
+    positions,
+    tensors,
+    site_config,
+    layer_name=None,
+    save_path=None,
+    shaded_regions=None
+):
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import os
+
     # Select device for NN models
     device = (
         torch.device('cuda') if torch.cuda.is_available() else
         torch.device('mps') if torch.backends.mps.is_available() else
         torch.device('cpu')
     )
-    
-    # Loop over references in models
+
     for ref, model_dict in models.items():
-        # Determine the suffix used for this reference.
         if layer_name:
             suffix = layer_name
         else:
-            # If site_config exists for this ref, join the list to form the suffix; else, use "full"
-            if ref in site_config:
-                suffix = "_".join(site_config[ref])
-            else:
-                suffix = "full"
-                
-        # Get genomic positions from positions dictionary.
+            suffix = "_".join(site_config[ref]) if ref in site_config else "full"
+
         if ref not in positions or suffix not in positions[ref]:
             print(f"Positions not found for {ref} with suffix {suffix}. Skipping {ref}.")
             continue
         coords = positions[ref][suffix].astype(int)
-        
-        # Loop over each model in the sub-dictionary that matches the suffix.
+
+        # Gather CpG and GpC site positions for symbol annotation
+        cpg_sites = set(map(int, positions.get(ref, {}).get("CpG_site", [])))
+        gpc_sites = set(map(int, positions.get(ref, {}).get("GpC_site", [])))
+
         for model_key, model in model_dict.items():
-            # Only consider models with keys ending in the same suffix.
             if not model_key.endswith(suffix):
                 continue
-            
-            # Decide whether we're dealing with a Random Forest or a neural network.
+
             if model_key.startswith("rf"):
-                # Random Forest: use built-in feature importances.
                 if hasattr(model, "feature_importances_"):
                     importances = model.feature_importances_
                 else:
@@ -97,65 +98,71 @@ def plot_feature_importances_or_saliency(models, positions, tensors, site_config
                 plot_title = f"RF Feature Importances for {ref} ({model_key})"
                 y_label = "Feature Importance"
             else:
-                # Neural network: compute saliency.
-                # Check if input data has been provided.
-                if tensors is None:
+                if tensors is None or ref not in tensors or suffix not in tensors[ref]:
                     print(f"No input data provided for NN saliency for {model_key}. Skipping.")
                     continue
-                if ref not in tensors or suffix not in tensors[ref]:
-                    print(f"Input data not found for {ref} with suffix {suffix}. Skipping {model_key}.")
-                    continue
                 input_tensor = tensors[ref][suffix]
-                
-                # Move model and input to device, and set input to require gradients.
                 model.eval()
                 input_tensor = input_tensor.to(device)
                 input_tensor.requires_grad_()
-                
-                # Forward pass and compute gradient-based saliency.
-                # Here we choose class index 1 (Active) as target and sum over samples.
+
                 with torch.enable_grad():
                     logits = model(input_tensor)
                     score = logits[:, 1].sum()
                     score.backward()
-                    # Average gradient magnitude over the batch gives a saliency per feature.
                     saliency = input_tensor.grad.abs().mean(dim=0).cpu().numpy()
                 importances = saliency
                 plot_title = f"Feature Saliency for {ref} ({model_key})"
                 y_label = "Feature Saliency"
-            
-            # Sort positions and associated importances.
+
             sorted_idx = np.argsort(coords)
             positions_sorted = coords[sorted_idx]
             importances_sorted = np.array(importances)[sorted_idx]
 
+            # Start plotting
+            plt.figure(figsize=(12, 4))
+
+            for pos, imp in zip(positions_sorted, importances_sorted):
+                if pos in cpg_sites:
+                    plt.plot(pos, imp, marker='*', color='black', markersize=10, linestyle='None', label='CpG site' if 'CpG site' not in plt.gca().get_legend_handles_labels()[1] else "")
+                elif pos in gpc_sites:
+                    plt.plot(pos, imp, marker='o', color='blue', markersize=6, linestyle='None', label='GpC site' if 'GpC site' not in plt.gca().get_legend_handles_labels()[1] else "")
+                else:
+                    plt.plot(pos, imp, marker='.', color='gray', linestyle='None')
+
+            plt.plot(positions_sorted, importances_sorted, linestyle='-', alpha=0.5, color='black')
+
+            # Shading
             if shaded_regions:
                 for (start, end) in shaded_regions:
                     plt.axvspan(start, end, color='gray', alpha=0.3)
-            
-            # Plot the result.
-            plt.figure(figsize=(12, 4))
-            plt.plot(positions_sorted, importances_sorted, marker='o', linestyle='-', alpha=0.7)
+
             plt.xlabel("Genomic Position")
             plt.ylabel(y_label)
             plt.title(plot_title)
             plt.grid(True)
+            plt.legend()
             plt.tight_layout()
 
             if save_path:
-                save_name = f"{plot_title}"
                 os.makedirs(save_path, exist_ok=True)
-                safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+                safe_name = plot_title.replace("=", "").replace("__", "_").replace(",", "_").replace(" ", "_")
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
                 print(f"📁 Saved: {out_file}")
 
             plt.show()
 
+def plot_model_curves_from_adata(
+    adata, 
+    label_col='activity_status', 
+    model_names = ["cnn", "mlp", "rf"], 
+    suffix='GpC_site_CpG_site',
+    omit_training=True, 
+    save_path=None, 
+    ylim_roc=(0.0, 1.05), 
+    ylim_pr=(0.0, 1.05)):
 
-def plot_model_curves_from_adata(adata, label_col='activity_status', model_names=["cnn", "mlp", "rf"]
-                                 , suffix='GpC_site_CpG_site', omit_training=True, save_path=None, 
-                                 ylim_roc=(0.0, 1.05), ylim_pr=(0.0, 1.05)):
     from sklearn.metrics import precision_recall_curve, roc_curve, auc
     import matplotlib.pyplot as plt
     import seaborn as sns    
@@ -209,6 +216,116 @@ def plot_model_curves_from_adata(adata, label_col='activity_status', model_names
         os.makedirs(save_path, exist_ok=True)
         safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
         out_file = os.path.join(save_path, f"{safe_name}.png")
+        plt.savefig(out_file, dpi=300)
+        print(f"📁 Saved: {out_file}")
+    plt.show()
+
+def plot_model_curves_from_adata_with_frequency_grid(
+    adata,
+    label_col='activity_status',
+    model_names=["cnn", "mlp", "rf"],
+    suffix='GpC_site_CpG_site',
+    omit_training=True,
+    save_path=None,
+    ylim_roc=(0.0, 1.05),
+    ylim_pr=(0.0, 1.05),
+    pos_sample_count=500,
+    pos_freq_list=[0.01, 0.05, 0.1],
+    show_f1_iso_curves=False,
+    f1_levels=None):
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import os
+    from sklearn.metrics import precision_recall_curve, roc_curve, auc
+    
+    if f1_levels is None:
+        f1_levels = np.linspace(0.2, 0.9, 8)
+        
+    if omit_training:
+        subset = adata[adata.obs['used_for_training'].astype(bool) == False]
+    else:
+        subset = adata
+
+    label = subset.obs[label_col].map({'Active': 1, 'Silent': 0}).values
+    subset = subset.copy()
+    subset.obs["__label__"] = label
+
+    pos_indices = np.where(label == 1)[0]
+    neg_indices = np.where(label == 0)[0]
+
+    n_rows = len(pos_freq_list)
+    fig, axes = plt.subplots(n_rows, 2, figsize=(12, 5 * n_rows))
+    fig.suptitle(f'{suffix} Performance metrics')
+
+    for row_idx, pos_freq in enumerate(pos_freq_list):
+        desired_total = int(pos_sample_count / pos_freq)
+        neg_sample_count = desired_total - pos_sample_count
+
+        if pos_sample_count > len(pos_indices) or neg_sample_count > len(neg_indices):
+            print(f"⚠️ Skipping frequency {pos_freq:.3f}: not enough samples.")
+            continue
+
+        sampled_pos = np.random.choice(pos_indices, size=pos_sample_count, replace=False)
+        sampled_neg = np.random.choice(neg_indices, size=neg_sample_count, replace=False)
+        sampled_indices = np.concatenate([sampled_pos, sampled_neg])
+
+        data_sampled = subset[sampled_indices]
+        y_true = data_sampled.obs["__label__"].values
+
+        ax_roc = axes[row_idx, 0] if n_rows > 1 else axes[0]
+        ax_pr = axes[row_idx, 1] if n_rows > 1 else axes[1]
+
+        # ROC Curve
+        for model in model_names:
+            prob_col = f"{model}_active_prob_{suffix}"
+            if prob_col in data_sampled.obs.columns:
+                probs = data_sampled.obs[prob_col].astype(float).values
+                fpr, tpr, _ = roc_curve(y_true, probs)
+                roc_auc = auc(fpr, tpr)
+                ax_roc.plot(fpr, tpr, label=f"{model.upper()} (AUC={roc_auc:.4f})")
+        ax_roc.plot([0, 1], [0, 1], 'k--', alpha=0.5)
+        ax_roc.set_xlabel("False Positive Rate")
+        ax_roc.set_ylabel("True Positive Rate")
+        ax_roc.set_ylim(*ylim_roc)
+        ax_roc.set_title(f"ROC Curve (Pos Freq: {pos_freq:.2%})")
+        ax_roc.legend()
+        ax_roc.spines['top'].set_visible(False)
+        ax_roc.spines['right'].set_visible(False)
+
+        # PR Curve
+        for model in model_names:
+            prob_col = f"{model}_active_prob_{suffix}"
+            if prob_col in data_sampled.obs.columns:
+                probs = data_sampled.obs[prob_col].astype(float).values
+                precision, recall, _ = precision_recall_curve(y_true, probs)
+                pr_auc = auc(recall, precision)
+                ax_pr.plot(recall, precision, label=f"{model.upper()} (AUC={pr_auc:.4f})")
+        ax_pr.axhline(y=pos_freq, linestyle='--', color='gray', label='Random Baseline')
+
+        if show_f1_iso_curves:
+            recall_vals = np.linspace(0.01, 1, 500)
+            for f1 in f1_levels:
+                precision_vals = (f1 * recall_vals) / (2 * recall_vals - f1)
+                precision_vals[precision_vals < 0] = np.nan  # Avoid plotting invalid values
+                ax_pr.plot(recall_vals, precision_vals, color='gray', linestyle=':', linewidth=1, alpha=0.6)
+                x_val = 0.9
+                y_val = (f1 * x_val) / (2 * x_val - f1)
+                if 0 < y_val < 1:
+                    ax_pr.text(x_val, y_val, f"F1={f1:.1f}", fontsize=8, color='gray')
+
+        ax_pr.set_xlabel("Recall")
+        ax_pr.set_ylabel("Precision")
+        ax_pr.set_ylim(*ylim_pr)
+        ax_pr.set_title(f"PR Curve (Pos Freq: {pos_freq:.2%})")
+        ax_pr.legend()
+        ax_pr.spines['top'].set_visible(False)
+        ax_pr.spines['right'].set_visible(False)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    if save_path:
+        os.makedirs(save_path, exist_ok=True)
+        out_file = os.path.join(save_path, "ROC_PR_grid.png")
         plt.savefig(out_file, dpi=300)
         print(f"📁 Saved: {out_file}")
     plt.show()
