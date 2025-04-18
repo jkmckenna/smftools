@@ -1,4 +1,4 @@
-from .applyhmm import apply_hmm
+from .apply_hmm import apply_hmm
 from .apply_hmm_batched import apply_hmm_batched
 from .position_stats import calculate_relative_risk_on_activity, compute_positionwise_statistic
 from .calculate_distances import calculate_distances
@@ -12,7 +12,7 @@ from .hmm_readwrite import load_hmm, save_hmm
 from .nucleosome_hmm_refinement import refine_nucleosome_calls, infer_nucleosomes_in_large_bound
 from .read_stats import calculate_row_entropy
 from .subset_adata import subset_adata
-from .trainhmm import train_hmm
+from .train_hmm import train_hmm
 
 __all__ = [
     "apply_hmm",
