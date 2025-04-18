@@ -54,6 +54,7 @@ def plot_feature_importances_or_saliency(
     positions,
     tensors,
     site_config,
+    adata=None,
     layer_name=None,
     save_path=None,
     shaded_regions=None
@@ -79,11 +80,34 @@ def plot_feature_importances_or_saliency(
         if ref not in positions or suffix not in positions[ref]:
             print(f"Positions not found for {ref} with suffix {suffix}. Skipping {ref}.")
             continue
-        coords = positions[ref][suffix].astype(int)
 
-        # Gather CpG and GpC site positions for symbol annotation
-        cpg_sites = set(map(int, positions.get(ref, {}).get("CpG_site", [])))
-        gpc_sites = set(map(int, positions.get(ref, {}).get("GpC_site", [])))
+        coords_index = positions[ref][suffix]
+        coords = coords_index.astype(int)
+
+        # Classify positions using adata.var columns
+        cpg_sites = set()
+        gpc_sites = set()
+        other_sites = set()
+
+        if adata is None:
+            print("⚠️ AnnData object is required to classify site types. Skipping site type markers.")
+        else:
+            gpc_col = f"{ref}_GpC_site"
+            cpg_col = f"{ref}_CpG_site"
+            for idx_str in coords_index:
+                try:
+                    gpc = adata.var.at[idx_str, gpc_col] if gpc_col in adata.var.columns else False
+                    cpg = adata.var.at[idx_str, cpg_col] if cpg_col in adata.var.columns else False
+                    coord_int = int(idx_str)
+                    if gpc and not cpg:
+                        gpc_sites.add(coord_int)
+                    elif cpg and not gpc:
+                        cpg_sites.add(coord_int)
+                    else:
+                        other_sites.add(coord_int)
+                except KeyError:
+                    print(f"⚠️ Index '{idx_str}' not found in adata.var. Skipping.")
+                    continue
 
         for model_key, model in model_dict.items():
             if not model_key.endswith(suffix):
@@ -119,20 +143,20 @@ def plot_feature_importances_or_saliency(
             positions_sorted = coords[sorted_idx]
             importances_sorted = np.array(importances)[sorted_idx]
 
-            # Start plotting
             plt.figure(figsize=(12, 4))
-
             for pos, imp in zip(positions_sorted, importances_sorted):
                 if pos in cpg_sites:
-                    plt.plot(pos, imp, marker='*', color='black', markersize=10, linestyle='None', label='CpG site' if 'CpG site' not in plt.gca().get_legend_handles_labels()[1] else "")
+                    plt.plot(pos, imp, marker='*', color='black', markersize=10, linestyle='None',
+                             label='CpG site' if 'CpG site' not in plt.gca().get_legend_handles_labels()[1] else "")
                 elif pos in gpc_sites:
-                    plt.plot(pos, imp, marker='o', color='blue', markersize=6, linestyle='None', label='GpC site' if 'GpC site' not in plt.gca().get_legend_handles_labels()[1] else "")
+                    plt.plot(pos, imp, marker='o', color='blue', markersize=6, linestyle='None',
+                             label='GpC site' if 'GpC site' not in plt.gca().get_legend_handles_labels()[1] else "")
                 else:
-                    plt.plot(pos, imp, marker='.', color='gray', linestyle='None')
+                    plt.plot(pos, imp, marker='.', color='gray', linestyle='None',
+                             label='Other' if 'Other' not in plt.gca().get_legend_handles_labels()[1] else "")
 
             plt.plot(positions_sorted, importances_sorted, linestyle='-', alpha=0.5, color='black')
 
-            # Shading
             if shaded_regions:
                 for (start, end) in shaded_regions:
                     plt.axvspan(start, end, color='gray', alpha=0.3)
