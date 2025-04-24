@@ -204,31 +204,35 @@ def plot_positionwise_matrix(
     log_base="log1p",  # or 'log2', or None
     triangle="full",
     cmap="vlag",
-    figsize=(10, 8),
+    figsize=(12, 10),  # Taller to accommodate line plot below
     vmin=None,
     vmax=None,
     xtick_step=10,
     ytick_step=10,
-    save_path=None
+    save_path=None,
+    highlight_position=None,         # Can be a single int/float or list of them
+    highlight_axis="row",            # "row" or "column"
+    annotate_points=False             # ✅ New option
 ):
     """
-    Plots positionwise matrices stored in adata.uns[key].
-
-    Parameters:
-        adata (AnnData): Input AnnData with computed matrix in .uns[key].
-        key (str): Key in .uns containing the matrix dict.
-        log_transform (bool): Whether to apply log transformation.
-        log_base (str): 'log1p', 'log2', or None.
-        triangle (str): 'full', 'lower', or 'upper'.
-        cmap (str): Colormap.
-        figsize (tuple): Figure size.
-        vmin, vmax (float): Value range for color scaling.
-        xtick_step, ytick_step (int): Tick step for axis labeling.
+    Plots positionwise matrices stored in adata.uns[key], with an optional line plot
+    for specified row(s) or column(s), and highlights them on the heatmap.
     """
     import matplotlib.pyplot as plt
     import seaborn as sns
     import numpy as np
+    import pandas as pd
     import os
+
+    def find_closest_index(index, target):
+        index_vals = pd.to_numeric(index, errors="coerce")
+        target_val = pd.to_numeric([target], errors="coerce")[0]
+        diffs = pd.Series(np.abs(index_vals - target_val), index=index)
+        return diffs.idxmin()
+
+    # Ensure highlight_position is a list
+    if highlight_position is not None and not isinstance(highlight_position, (list, tuple, np.ndarray)):
+        highlight_position = [highlight_position]
 
     for group, mat_df in adata.uns[key].items():
         mat = mat_df.copy()
@@ -257,7 +261,11 @@ def plot_positionwise_matrix(
         xticks = mat.columns.astype(int)
         yticks = mat.index.astype(int)
 
-        fig, ax = plt.subplots(figsize=figsize)
+        # 👉 Make taller figure: heatmap on top, line plot below
+        fig, axs = plt.subplots(2, 1, figsize=figsize, height_ratios=[3, 1.5])
+        heat_ax, line_ax = axs
+
+        # Heatmap
         sns.heatmap(
             mat,
             mask=mask,
@@ -268,15 +276,59 @@ def plot_positionwise_matrix(
             vmin=vmin,
             vmax=vmax,
             cbar_kws={"label": f"{key} ({log_base})" if log_transform else key},
-            ax=ax
+            ax=heat_ax
         )
 
-        ax.set_title(f"{key} — {group}", pad=30)
+        heat_ax.set_title(f"{key} — {group}", pad=20)
+        heat_ax.set_xticks(np.arange(0, len(xticks), xtick_step))
+        heat_ax.set_xticklabels(xticks[::xtick_step], rotation=90)
+        heat_ax.set_yticks(np.arange(0, len(yticks), ytick_step))
+        heat_ax.set_yticklabels(yticks[::ytick_step])
 
-        ax.set_xticks(np.arange(0, len(xticks), xtick_step))
-        ax.set_xticklabels(xticks[::xtick_step], rotation=90)
-        ax.set_yticks(np.arange(0, len(yticks), ytick_step))
-        ax.set_yticklabels(yticks[::ytick_step])
+        # Line plot
+        if highlight_position is not None:
+            colors = plt.cm.tab10.colors
+            for i, pos in enumerate(highlight_position):
+                try:
+                    if highlight_axis == "row":
+                        closest = find_closest_index(mat.index, pos)
+                        series = mat.loc[closest]
+                        x_vals = pd.to_numeric(series.index, errors="coerce")
+                        idx = mat.index.get_loc(closest)
+                        heat_ax.axhline(idx, color=colors[i % len(colors)], linestyle="--", linewidth=1)
+                        label = f"Row {pos} → {closest}"
+                    else:
+                        closest = find_closest_index(mat.columns, pos)
+                        series = mat[closest]
+                        x_vals = pd.to_numeric(series.index, errors="coerce")
+                        idx = mat.columns.get_loc(closest)
+                        heat_ax.axvline(idx, color=colors[i % len(colors)], linestyle="--", linewidth=1)
+                        label = f"Col {pos} → {closest}"
+
+                    line = line_ax.plot(x_vals, series.values, marker='o', label=label, color=colors[i % len(colors)])
+
+                    # Annotate each point
+                    if annotate_points:
+                        for x, y in zip(x_vals, series.values):
+                            if not np.isnan(y):
+                                line_ax.annotate(
+                                    f"{y:.2f}",
+                                    xy=(x, y),
+                                    textcoords="offset points",
+                                    xytext=(0, 5),
+                                    ha='center',
+                                    fontsize=8
+                                )
+                except Exception as e:
+                    line_ax.text(0.5, 0.5, f"⚠️ Error plotting {highlight_axis} @ {pos}",
+                                 ha='center', va='center', fontsize=10)
+                    print(f"Error plotting line for {highlight_axis}={pos}: {e}")
+
+            line_ax.set_title(f"{highlight_axis.capitalize()} Profile(s)")
+            line_ax.set_xlabel(f"{'Column' if highlight_axis == 'row' else 'Row'} position")
+            line_ax.set_ylabel("Value")
+            line_ax.grid(True)
+            line_ax.legend(fontsize=8)
 
         plt.tight_layout()
 
