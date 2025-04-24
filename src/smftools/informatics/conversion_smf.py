@@ -1,6 +1,6 @@
 ## conversion_smf
 
-def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs, threads):
+def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs, threads, input_already_demuxed):
     """
     Processes sequencing data from a conversion SMF experiment to an adata object.
 
@@ -23,12 +23,13 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
         device (str): Device to use for basecalling. auto, metal, cpu, cuda
         make_bigwigs (bool): Whether to make bigwigs
         threads (int): cpu threads available for processing.
+        input_already_demuxed (bool): Whether the input files were already demultiplexed
 
     Returns:
         final_adata_path (str): Path to the final adata object
         sorted_output (str): Path to the aligned, sorted BAM
     """
-    from .helpers import align_and_sort_BAM, aligned_BAM_to_bed, canoncall, converted_BAM_to_adata_II, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs, bam_qc, run_multiqc
+    from .helpers import align_and_sort_BAM, aligned_BAM_to_bed, canoncall, converted_BAM_to_adata_II, generate_converted_FASTA, get_chromosome_lengths, demux_and_index_BAM, make_dirs, bam_qc, run_multiqc, split_and_index_BAM
     import os
     import glob
     
@@ -98,8 +99,10 @@ def conversion_smf(fasta, output_directory, conversion_types, strands, model_dir
         bam_files.sort()
     else:
         make_dirs([split_dir])
-        bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads)
-        # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
+        if input_already_demuxed:
+            bam_files = split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory) # custom for non-nanopore
+        else:
+            bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads)
         
     # Make beds and provide basic histograms
     bed_dir = os.path.join(split_dir, 'beds')

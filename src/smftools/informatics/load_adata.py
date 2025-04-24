@@ -48,6 +48,7 @@ def load_adata(config_path):
     barcode_kit = var_dict.get('barcode_kit', default_value) # needed for dorado basecaller
     barcode_both_ends = var_dict.get('barcode_both_ends', default_value) # dorado demultiplexing
     trim = var_dict.get('trim', default_value) # dorado adapter and barcode removal
+    input_already_demuxed = var_dict.get('input_already_demuxed', default_value) # If the input files are already demultiplexed.
     threads = var_dict.get('threads', default_value) # number of cpu threads available for multiprocessing
     # Conversion specific variable init
     conversion_types = var_dict.get('conversion_types', default_value)
@@ -129,9 +130,10 @@ def load_adata(config_path):
     if smf_modality == 'conversion':
         from .conversion_smf import conversion_smf
         final_adata, final_adata_path, sorted_output, bam_files = conversion_smf(fasta, output_directory, conversions, strands, model_dir, model, input_data_path, split_path
-                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs, threads)
+                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs, threads, input_already_demuxed)
     elif smf_modality == 'direct':
         from .direct_smf import direct_smf
+        # need to add input_already_demuxed workflow here.
         final_adata, final_adata_path, sorted_output, bam_files = direct_smf(fasta, output_directory, mod_list,model_dir, model, thresholds, input_data_path, split_path
                                                      , barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device, make_bigwigs, skip_unclassified, delete_batch_hdfs, threads)
     else:

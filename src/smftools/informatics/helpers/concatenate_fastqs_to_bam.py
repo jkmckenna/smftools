@@ -36,7 +36,9 @@ def concatenate_fastqs_to_bam(fastq_files, output_bam, barcode_tag='BC', gzip_su
                     barcode = base_name.split('_')[-1].replace('.fq', '')
                 else:
                     raise ValueError(f"Unexpected file extension for {fastq_file}. Only .fq, .fastq, .fq{gzip_suffix}, and .fastq{gzip_suffix} are supported.")
-            
+            else:
+                barcode = '0'
+
             # Read the FASTQ file (handle gzipped and non-gzipped files)
             open_func = gzip.open if fastq_file.endswith(gzip_suffix) else open
             with open_func(fastq_file, 'rt') as fq_in:
@@ -47,8 +49,7 @@ def concatenate_fastqs_to_bam(fastq_files, output_bam, barcode_tag='BC', gzip_su
                     aln.query_sequence = str(record.seq)
                     aln.flag = 4  # Unmapped
                     aln.query_qualities = pysam.qualitystring_to_array(record.letter_annotations["phred_quality"])
-                    if n_fastqs > 1:
-                        # Add the barcode to the BC tag
-                        aln.set_tag(barcode_tag, barcode)
+                    # Add the barcode to the BC tag
+                    aln.set_tag(barcode_tag, barcode)
                     # Write to BAM file
                     bam_out.write(aln)

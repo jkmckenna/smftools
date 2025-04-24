@@ -1,6 +1,6 @@
 ## split_and_index_BAM
 
-def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, fasta):
+def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory):
     """
     A wrapper function for splitting BAMS and indexing them.
     Parameters:
@@ -8,7 +8,6 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_direct
         split_dir (str): A string representing the file path to the directory to split the BAMs into.
         bam_suffix (str): A suffix to add to the bam file.
         output_directory (str): A file path to the directory to output all the analyses.
-        fasta (str): File path to the reference genome to align to.
     
     Returns:
         None
@@ -19,8 +18,6 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_direct
     import subprocess
     import glob
     from .separate_bam_by_bc import separate_bam_by_bc
-    from .aligned_BAM_to_bed import aligned_BAM_to_bed
-    from .extract_readnames_from_BAM import extract_readnames_from_BAM
     from .make_dirs import make_dirs
 
     plotting_dir = os.path.join(output_directory, 'demultiplexed_bed_histograms')
@@ -35,7 +32,5 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_direct
     bam_files = [bam for bam in bam_files if '.bai' not in bam]
     for input_file in bam_files:
         subprocess.run(["samtools", "index", input_file])
-        # Make a bed file of coordinates for the BAM
-        aligned_BAM_to_bed(input_file, plotting_dir, bed_dir, fasta)
-        # Make a text file of reads for the BAM
-        extract_readnames_from_BAM(input_file)
+
+    return bam_files
