@@ -37,7 +37,7 @@ def concatenate_fastqs_to_bam(fastq_files, output_bam, barcode_tag='BC', gzip_su
                 else:
                     raise ValueError(f"Unexpected file extension for {fastq_file}. Only .fq, .fastq, .fq{gzip_suffix}, and .fastq{gzip_suffix} are supported.")
             else:
-                barcode = '0'
+                barcode = 'barcode0'
 
             # Read the FASTQ file (handle gzipped and non-gzipped files)
             open_func = gzip.open if fastq_file.endswith(gzip_suffix) else open
