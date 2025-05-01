@@ -16,7 +16,8 @@ def clean_barplot(ax, mean_values, title):
         spine.set_visible(spine_name == 'left')
 
     ax.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
-    
+
+
 def combined_hmm_raw_clustermap(
     adata,
     sample_col='Sample_Names',
@@ -32,6 +33,7 @@ def combined_hmm_raw_clustermap(
     save_path=None,
     normalize_hmm=False,
     sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
+    bins=None
 ):
     import scipy.cluster.hierarchy as sch
     import pandas as pd
@@ -60,12 +62,10 @@ def combined_hmm_raw_clustermap(
                     print(f"  ❌ No reads left after filtering for {sample} - {ref}")
                     continue
 
-                bins = {
-                    "Both Closed": (subset.obs["Enhancer_Open"] == False) & (subset.obs["Promoter_Open"] == False),
-                    "Enhancer Only": (subset.obs["Enhancer_Open"] == True) & (subset.obs["Promoter_Open"] == False),
-                    "Promoter Only": (subset.obs["Enhancer_Open"] == False) & (subset.obs["Promoter_Open"] == True),
-                    "Both Open": (subset.obs["Enhancer_Open"] == True) & (subset.obs["Promoter_Open"] == True),
-                }
+                if bins:
+                    pass
+                else:
+                    bins = {"All": (subset.obs['Reference_strand'] != None)}
 
                 # Get column positions (not var_names!) of site masks
                 gpc_sites = np.where(subset.var[f"{ref}_GpC_site"].values)[0]

@@ -4,10 +4,13 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, auc, precision_recall_curve, f1_score, confusion_matrix
 from sklearn.utils.class_weight import compute_class_weight
 import matplotlib.pyplot as plt
 import numpy as np
+import warnings
 
 # Device detection
 device = (
@@ -159,11 +162,15 @@ def evaluate_model(model, X_tensor, y_encoded, device):
     f1 = f1_score(y_encoded, preds)
     cm = confusion_matrix(y_encoded, preds)
     roc_auc = auc(fpr, tpr)
+    pr_auc = auc(recall,precision)
+    # positive-class frequency
+    pos_freq = np.mean(y_encoded == 1)
+    pr_auc_norm = pr_auc / pos_freq
     return {
         'fpr': fpr, 'tpr': tpr,
         'precision': precision, 'recall': recall,
-        'f1': f1, 'auc': roc_auc,
-        'confusion_matrix': cm
+        'f1': f1, 'auc': roc_auc, 'pr_auc': pr_auc,
+        'confusion_matrix': cm, 'pos_freq': pos_freq, 'pr_auc_norm': pr_auc_norm
     }, preds, probs
 
 def train_rf(X_tensor, y_tensor, train_indices, test_indices, n_estimators=500):
@@ -175,8 +182,8 @@ def train_rf(X_tensor, y_tensor, train_indices, test_indices, n_estimators=500):
 
 # ------------------------- Main Training Loop -------------------------
 def run_training_loop(adata, site_config, layer_name=None,
-                       mlp=False, cnn=False, rnn=False, arnn=False, transformer=False, rf=False, 
-                       max_epochs=10, max_patience=5, n_estimators=500, training_split=0.7):
+                       mlp=False, cnn=False, rnn=False, arnn=False, transformer=False, rf=False, nb=False, rr_bayes=False,
+                       max_epochs=10, max_patience=5, n_estimators=500, training_split=0.5):
     device = (
     torch.device('cuda') if torch.cuda.is_available() else
     torch.device('mps') if torch.backends.mps.is_available() else
@@ -293,123 +300,292 @@ def run_training_loop(adata, site_config, layer_name=None,
             f1 = f1_score(test_y, rf_preds)
             cm = confusion_matrix(test_y, rf_preds)
             roc_auc = auc(fpr, tpr)
+            pr_auc = auc(recall, precision)
             metrics[ref][f'rf_{suffix}'] = {
                 'fpr': fpr, 'tpr': tpr,
                 'precision': precision, 'recall': recall,
-                'f1': f1, 'auc': roc_auc, 'confusion_matrix': cm
+                'f1': f1, 'auc': roc_auc, 'confusion_matrix': cm, 'pr_auc': pr_auc
             }
             models[ref][f'rf_{suffix}'] = rf_model
 
+        # Naive Bayes
+        if nb:
+            nb_model = GaussianNB()
+            nb_model.fit(X_tensor[train_dataset.indices].numpy(), y_tensor[train_dataset.indices].numpy())
+            nb_probs = nb_model.predict_proba(test_X.numpy())[:, 1]
+            nb_preds = nb_model.predict(test_X.numpy())
+            fpr_nb, tpr_nb, _ = roc_curve(test_y, nb_probs)
+            prec_nb, rec_nb, _ = precision_recall_curve(test_y, nb_probs)
+            f1_nb = f1_score(test_y, nb_preds)
+            cm_nb = confusion_matrix(test_y, nb_preds)
+            auc_nb = auc(fpr_nb, tpr_nb)
+            pr_auc_nb = auc(rec_nb, prec_nb)
+            metrics[ref][f'nb_{suffix}'] = {
+                'fpr': fpr_nb, 'tpr': tpr_nb,
+                'precision': prec_nb, 'recall': rec_nb,
+                'f1': f1_nb, 'auc': auc_nb, 'confusion_matrix': cm_nb, 'pr_auc': pr_auc_nb
+            }
+            models[ref][f'nb_{suffix}'] = nb_model
+
+        # Relative-Risk Bayesian
+        if rr_bayes:
+            # compute relative risks from training
+            X_train = X_tensor[train_dataset.indices].numpy()
+            y_train_arr = y_tensor[train_dataset.indices].numpy()
+            n_a = (y_train_arr==1).sum(); n_s = (y_train_arr==0).sum()
+            p_a = (X_train[y_train_arr==1]==1).sum(axis=0)/(n_a+1e-6)
+            p_s = (X_train[y_train_arr==0]==1).sum(axis=0)/(n_s+1e-6)
+            rr = (p_a+1e-6)/(p_s+1e-6)
+            log_rr = np.log(rr)
+            # score test
+            scores = test_X.numpy().dot(log_rr)
+            probs = 1/(1+np.exp(-scores))
+            preds = (probs>=0.5).astype(int)
+            fpr, tpr, _ = roc_curve(test_y, probs)
+            pr, rc, _ = precision_recall_curve(test_y, probs)
+            roc_auc = auc(fpr, tpr)
+            pr_auc = auc(rc, pr)
+            pos_freq = np.mean(test_y==1)
+            pr_norm = pr_auc/pos_freq if pos_freq>0 else np.nan
+            metrics[ref][f'rr_bayes_{suffix}'] = {
+                'fpr': fpr, 'tpr': tpr,
+                'precision': pr, 'recall': rc,
+                'auc': roc_auc, 'pr_auc': pr_auc, 'pr_auc_norm': pr_norm
+            }
+            # save rr_bayes parameters as a pseudo-model
+            models[ref][f'rr_bayes_{suffix}'] = {
+                'log_rr': log_rr,
+                'p_active': p_a,
+                'p_silent': p_s
+            }
+
     return metrics, models, positions, tensors
 
-def sliding_window_train_test(X, y, window_size, step_size, training_split=0.7,
-                              epochs=10, patience=5, batch_size=64):
+def sliding_window_train_test(
+    adata,
+    site_config,
+    layer_name,
+    window_sizes,
+    step_size,
+    training_split=0.7,
+    mlp=False,
+    cnn=False,
+    rnn=False,
+    arnn=False,
+    transformer=False,
+    rf=False,
+    nb=False,
+    rr_bayes=False,
+    epochs=10,
+    patience=5,
+    batch_size=64,
+    n_estimators=500,
+    positive_amount=None,
+    positive_freq=None,
+    bins=None
+):
     """
-    Slides a window of fixed width along the features in X.
-    At each window position, the function splits the data into training and testing sets,
-    trains an MLPClassifier on the training data, evaluates on the test data,
-    and saves the ROC-AUC and AUPRC (area under the precision-recall curve) values.
-    
-    Parameters:
-        X (np.ndarray): Feature matrix of shape (n_samples, n_features).
-        y (array-like): Labels (binary or categorical) of length n_samples.
-        window_size (int): Number of contiguous features to use in each window.
-        step_size (int): Step size to slide the window along the features.
-        training_split (float): Fraction of samples to use for training.
-        epochs (int): Maximum number of epochs for training.
-        patience (int): Patience for early stopping.
-        batch_size (int): Batch size for the DataLoader.
-        
-    Returns:
-        dict: A dictionary containing:
-            - "windows": List of (start, end) tuples for each window.
-            - "auc_roc": List of ROC-AUC scores for each window.
-            - "auc_prc": List of AUPRC scores for each window.
+    Slide a window along features, train/test selected models at each position,
+    and append ROC-AUC and AUPRC values to the window center in adata.var in a single pass.
+
+    Torch models use GPU (CUDA > MPS > CPU).
+
+    bins: dict mapping bin_name -> boolean mask over adata.obs
     """
-    import numpy as np
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.utils.data import TensorDataset, DataLoader
-    from sklearn.metrics import auc
-    from sklearn.utils.class_weight import compute_class_weight
+    # device detection
+    device = (
+        torch.device('cuda') if torch.cuda.is_available() else
+        torch.device('mps') if torch.backends.mps.is_available() else
+        torch.device('cpu')
+    )
 
-    # Determine device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    n_samples, n_features = X.shape
+    # define bins: default single bin 'all'
+    bin_dict = bins if bins is not None else {'all': np.ones(adata.n_obs, dtype=bool)}
 
-    # Prepare lists to store results
-    window_positions = []
-    auc_roc_list = []
-    auc_prc_list = []
-    
-    # Loop over sliding windows
-    for start in range(0, n_features - window_size + 1, step_size):
-        end = start + window_size
-        window_positions.append((start, end))
-        print(f"Processing window: features {start} to {end}")
+    for bin_name, mask_obs in bin_dict.items():
+        mask_array = np.asarray(mask_obs)
+        if mask_array.shape[0] != adata.n_obs:
+            raise ValueError(f"Mask for bin '{bin_name}' length {mask_array.shape[0]} != n_obs {adata.n_obs}")
+        adata_bin = adata[mask_array]
+        if adata_bin.n_obs == 0:
+            continue
 
-        # Subset the features for the current window
-        X_window = X[:, start:end]
+        for ref in adata_bin.obs['Reference_strand'].cat.categories:
+            subset = adata_bin[adata_bin.obs['Reference_strand'] == ref]
+            if subset.n_obs == 0:
+                continue
 
-        # Convert to torch tensors
-        X_tensor = torch.tensor(X_window, dtype=torch.float32)
-        # Assuming y is a 1D array-like structure; convert to tensor of type long
-        y_tensor = torch.tensor(y, dtype=torch.long)
-        
-        # Create a TensorDataset and then a random train-test split
-        dataset = TensorDataset(X_tensor, y_tensor)
-        total_samples = len(dataset)
-        train_size = int(training_split * total_samples)
-        test_size = total_samples - train_size
-        train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
-        
-        # DataLoaders for training and testing
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        # For evaluation, we can simply extract all test samples
-        test_indices = test_dataset.indices  # random_split Subset provides the indices
-        test_X = X_tensor[test_indices]
-        test_y = y_tensor[test_indices]
-        
-        # Compute class weights (assuming binary or multi-class classification)
-        classes = np.unique(y)
-        weights = compute_class_weight(class_weight='balanced', classes=classes, y=y)
-        class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
-        
-        # Initialize your model (here we use an MLP that takes input of size = window_size)
-        # Assume MLPClassifier is defined similar to: MLPClassifier(input_dim, num_classes)
-        model = MLPClassifier(window_size, len(classes)).to(device)
-        
-        # Set up optimizer and loss criterion
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-        criterion = nn.CrossEntropyLoss(weight=class_weights)
-        
-        # Train the model using your existing training function.
-        # ref_name and model_name are set to indicate the window range.
-        train_model(model, train_loader, optimizer, criterion, device,
-                    ref_name="Window", model_name=f"{start}-{end}",
-                    epochs=epochs, patience=patience)
-        
-        # Evaluate the model on the test set using your evaluate_model function.
-        metrics_dict, _, _ = evaluate_model(model, test_X, test_y, device)
-        
-        # Retrieve ROC-AUC from evaluation metrics
-        roc_auc = metrics_dict.get('auc', np.nan)
-        # Compute AUPRC using precision and recall arrays from evaluate_model
-        precision = metrics_dict.get('precision')
-        recall = metrics_dict.get('recall')
-        if precision is not None and recall is not None:
-            auprc = auc(recall, precision)
-        else:
-            auprc = np.nan
-        
-        auc_roc_list.append(roc_auc)
-        auc_prc_list.append(auprc)
-        
-    return {"windows": window_positions, "auc_roc": auc_roc_list, "auc_prc": auc_prc_list}
+            # build full feature matrix and var names
+            if layer_name:
+                suffix = layer_name
+                X_full = subset.layers[layer_name].copy()
+                var_names = subset.var_names
+            else:
+                mask_vars = np.zeros(subset.n_vars, dtype=bool)
+                if ref in site_config:
+                    for site in site_config[ref]:
+                        mask_vars |= subset.var[f'{ref}_{site}']
+                    suffix = "_".join(site_config[ref])
+                else:
+                    mask_vars[:] = True
+                    suffix = "full"
+                X_full = subset[:, mask_vars].X.copy()
+                var_names = subset.var_names[mask_vars]
+
+            for window_size in window_sizes:
+                # prepare global arrays for each model/metric
+                n_vars_global = adata.n_vars
+                arrays = {}
+
+                for mname in ['mlp','cnn','rnn','arnn','transformer','rf','nb', 'rr_bayes']:
+                    if locals()[mname]:  # if model enabled
+                        col_roc = f"{bin_name}_{mname}_{suffix}_w{window_size}_roc"
+                        col_pr = f"{bin_name}_{mname}_{suffix}_w{window_size}_pr"
+                        col_pr_norm = f"{bin_name}_{mname}_{suffix}_w{window_size}_pr_norm"
+                        arrays[(mname,'roc')] = np.full(n_vars_global, np.nan)
+                        arrays[(mname,'pr')] = np.full(n_vars_global, np.nan)
+                        arrays[(mname,'pr_norm')] = np.full(n_vars_global, np.nan)
+
+                # fill missing and labels
+                X_full = random_fill_nans(X_full)
+                y_full = subset.obs['activity_status'].map({'Active':1,'Silent':0}).values
+                n_feats = X_full.shape[1]
+
+                # sliding windows
+                for start in range(0, n_feats - window_size + 1, step_size):
+                    end = start + window_size
+                    X_win = X_full[:, start:end]
+                    center_idx = start + window_size // 2
+                    center_var = var_names[center_idx]
+                    var_idx_global = adata.var_names.get_loc(center_var)
+
+                    # train/test split
+                    X_train, X_pool, y_train, y_pool = train_test_split(
+                        X_win, y_full, train_size=training_split,
+                        stratify=y_full, random_state=42
+                    )
+
+                    # Optional test sampling with fallback
+                    try:
+                        if positive_amount is not None and positive_freq is not None:
+                            pos_idx = np.where(y_pool == 1)[0]
+                            if positive_amount > len(pos_idx):
+                                raise ValueError("positive_amount exceeds available positives")
+                            chosen_pos = np.random.choice(pos_idx, positive_amount, replace=False)
+
+                            neg_amount = int(round(positive_amount * (1 - positive_freq) / positive_freq))
+                            neg_idx = np.where(y_pool == 0)[0]
+                            if neg_amount > len(neg_idx):
+                                raise ValueError("negative_amount exceeds available negatives")
+                            chosen_neg = np.random.choice(neg_idx, neg_amount, replace=False)
+
+                            sel = np.concatenate([chosen_pos, chosen_neg])
+                            X_test, y_test = X_pool[sel], y_pool[sel]
+                        else:
+                            X_test, y_test = X_pool, y_pool
+                    except ValueError as e:
+                        warnings.warn(
+                            f"Falling back to full pool for window {start}:{end} ({e})"
+                        )
+                        X_test, y_test = X_pool, y_pool
+
+                    # prepare DataLoader
+                    train_ds = TensorDataset(
+                        torch.tensor(X_train, dtype=torch.float32).to(device),
+                        torch.tensor(y_train, dtype=torch.long).to(device)
+                    )
+                    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+                    class_w = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+                    class_w = torch.tensor(class_w, dtype=torch.float32).to(device)
+
+                    # container for this window's metrics
+                    results = {}
+                    # train and evaluate models
+                    if mlp:
+                        model = MLPClassifier(window_size,2).to(device)
+                        train_model(model, loader, torch.optim.Adam(model.parameters()), nn.CrossEntropyLoss(weight=class_w), device, ref, f"{bin_name}_MLP", epochs, patience)
+                        mets,_,_ = evaluate_model(model, torch.tensor(X_test,dtype=torch.float32).to(device), y_test, device)
+                        results['mlp'] = mets
+                    if cnn:
+                        model = CNNClassifier(window_size,2).to(device)
+                        train_model(model, loader, torch.optim.Adam(model.parameters()), nn.CrossEntropyLoss(weight=class_w), device, ref, f"{bin_name}_CNN", epochs, patience)
+                        mets,_,_ = evaluate_model(model, torch.tensor(X_test,dtype=torch.float32).to(device), y_test, device)
+                        results['cnn'] = mets
+                    if rnn:
+                        model = RNNClassifier(window_size,64,2).to(device)
+                        train_model(model, loader, torch.optim.Adam(model.parameters()), nn.CrossEntropyLoss(weight=class_w), device, ref, f"{bin_name}_RNN", epochs, patience)
+                        mets,_,_ = evaluate_model(model, torch.tensor(X_test,dtype=torch.float32).to(device), y_test, device)
+                        results['rnn'] = mets
+                    if arnn:
+                        model = AttentionRNNClassifier(window_size,64,2).to(device)
+                        train_model(model, loader, torch.optim.Adam(model.parameters()), nn.CrossEntropyLoss(weight=class_w), device, ref, f"{bin_name}_aRNN", epochs, patience)
+                        mets,_,_ = evaluate_model(model, torch.tensor(X_test,dtype=torch.float32).to(device), y_test, device)
+                        results['arnn'] = mets
+                    if transformer:
+                        model = TransformerClassifier(window_size,64,2).to(device)
+                        train_model(model, loader, torch.optim.Adam(model.parameters()), nn.CrossEntropyLoss(weight=class_w), device, ref, f"{bin_name}_Transformer", epochs, patience)
+                        mets,_,_ = evaluate_model(model, torch.tensor(X_test,dtype=torch.float32).to(device), y_test, device)
+                        results['transformer'] = mets
+                    if rf:
+                        rf_mod = RandomForestClassifier(n_estimators=n_estimators, random_state=42, class_weight='balanced')
+                        rf_mod.fit(X_train,y_train)
+                        probs = rf_mod.predict_proba(X_test)[:,1]
+                        fpr,tpr,_ = roc_curve(y_test, probs)
+                        pr,rc,_ = precision_recall_curve(y_test, probs)
+                        pr_auc = auc(rc,pr)
+                        # positive-class frequency
+                        pos_freq = np.mean(y_test == 1)
+                        pr_auc_norm = pr_auc / pos_freq
+                        results['rf'] = {'auc':auc(fpr,tpr),'pr_auc':pr_auc, 'pr_auc_norm': pr_auc_norm}
+                    if nb:
+                        nb_mod = GaussianNB()
+                        nb_mod.fit(X_train,y_train)
+                        probs = nb_mod.predict_proba(X_test)[:,1]
+                        fpr,tpr,_ = roc_curve(y_test, probs)
+                        pr,rc,_ = precision_recall_curve(y_test, probs)
+                        pr_auc = auc(rc,pr)
+                        # positive-class frequency
+                        pos_freq = np.mean(y_test == 1)
+                        pr_auc_norm = pr_auc / pos_freq
+                        results['nb'] = {'auc':auc(fpr,tpr),'pr_auc':pr_auc, 'pr_auc_norm': pr_auc_norm}
+                    if rr_bayes:
+                        # Relative-risk Bayesian classifier
+                        n_active = np.sum(y_train == 1)
+                        n_silent = np.sum(y_train == 0)
+                        # compute feature-wise rates
+                        p_a = (X_train[y_train == 1] == 1).sum(axis=0) / (n_active + 1e-6)
+                        p_s = (X_train[y_train == 0] == 1).sum(axis=0) / (n_silent + 1e-6)
+                        rr = (p_a + 1e-6) / (p_s + 1e-6)
+                        log_rr = np.log(rr)
+                        # score samples
+                        scores = X_test.dot(log_rr)
+                        probs = 1 / (1 + np.exp(-scores))
+                        preds = (probs >= 0.5).astype(int)
+                        # metrics
+                        fpr, tpr, _ = roc_curve(y_test, probs)
+                        pr, rc, _ = precision_recall_curve(y_test, probs)
+                        roc_auc = auc(fpr, tpr)
+                        pr_auc = auc(rc, pr)
+                        pos_freq = np.mean(y_test == 1)
+                        pr_norm = pr_auc / pos_freq if pos_freq > 0 else np.nan
+                        results['rr_bayes'] = {'auc': roc_auc, 'pr_auc': pr_auc, 'pr_auc_norm': pr_norm}
+
+                    # assign metrics into arrays
+                    for mname, mets in results.items():
+                        arrays[(mname,'roc')][var_idx_global] = mets['auc']
+                        arrays[(mname,'pr')][var_idx_global] = mets['pr_auc']
+                        arrays[(mname,'pr_norm')][var_idx_global] = mets['pr_auc_norm']
+
+                # after all windows, write arrays to adata.var
+                for (mname,metric), arr in arrays.items():
+                    suffix_col = metric
+                    col = f"{bin_name}_{mname}_{suffix}_w{window_size}_{suffix_col}"
+                    adata.var[col] = arr
+
+    print("✅ Sliding-window training/testing complete. Metrics stored at window centers in adata.var.")
 
 # ------------------------- Apply models to input adata -------------------------
-def run_inference(adata, models, site_config, layer_name=None, model_names=["cnn", "mlp", "rf"]):
+def run_inference(adata, models, site_config, layer_name=None, model_names=["cnn", "mlp", "rf", "nb", "rr_bayes"]):
     """
     Perform inference on the full AnnData object using pre-trained models.
     
@@ -419,7 +595,7 @@ def run_inference(adata, models, site_config, layer_name=None, model_names=["cnn
         site_config (dict): Configuration dictionary for subsetting features by site.
         layer_name (str, optional): Name of the layer to use if applicable.
         model_names (list, optional): List of model names to run inference on.
-                                      Defaults to ["cnn", "mlp", "rf"].
+                                      Defaults to ["cnn", "mlp", "rf", "nb"].
                                       
     Returns:
         None. The function updates adata.obs with predicted class labels, predicted probabilities,
@@ -471,11 +647,18 @@ def run_inference(adata, models, site_config, layer_name=None, model_names=["cnn
 
             if model_key in models[ref]:
                 model = models[ref][model_key]
-                if model_name == "rf":
-                    # For scikit-learn RandomForest, work on CPU using NumPy arrays
+                if model_name in ["rf", "nb"]:
+                    # For scikit-learn based models, work on CPU using NumPy arrays
                     X_input = full_tensor.cpu().numpy()
                     preds = model.predict(X_input)
                     probs = model.predict_proba(X_input)
+                elif model_name=='rr_bayes':
+                    # model is dict of params
+                    log_rr = model['log_rr']
+                    scores = full_tensor.cpu().numpy().dot(log_rr)
+                    probs1 = 1/(1+np.exp(-scores))
+                    preds = (probs1>=0.5).astype(int)
+                    probs = np.vstack([1-probs1, probs1]).T
                 else:
                     # For torch models, perform inference on the specified device
                     model.eval()
