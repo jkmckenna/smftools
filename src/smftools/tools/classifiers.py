@@ -380,6 +380,7 @@ def sliding_window_train_test(
     patience=5,
     batch_size=64,
     n_estimators=500,
+    balance_rf_class_weights=True,
     positive_amount=None,
     positive_freq=None,
     bins=None
@@ -527,7 +528,10 @@ def sliding_window_train_test(
                         mets,_,_ = evaluate_model(model, torch.tensor(X_test,dtype=torch.float32).to(device), y_test, device)
                         results['transformer'] = mets
                     if rf:
-                        rf_mod = RandomForestClassifier(n_estimators=n_estimators, random_state=42, class_weight='balanced')
+                        if balance_rf_class_weights:
+                            rf_mod = RandomForestClassifier(n_estimators=n_estimators, random_state=42, class_weight='balanced')
+                        else:
+                            rf_mod = RandomForestClassifier(n_estimators=n_estimators, random_state=42)
                         rf_mod.fit(X_train,y_train)
                         probs = rf_mod.predict_proba(X_test)[:,1]
                         fpr,tpr,_ = roc_curve(y_test, probs)
