@@ -46,11 +46,11 @@ dependencies = [
     "hydra-core",
     "igraph",
     "leidenalg",
-    "lightning"
+    "lightning",
     "multiqc",
     "networkx>=3.2",
     "numpy>=1.22.0,<2",
-    "omegaconf"
+    "omegaconf",
     "pandas>=1.4.2",
     "pod5>=0.1.21",
     "pomegranate>=1.0.0",
