@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from models.base import BaseTorchModel
+from .base import BaseTorchModel
 
 class MLPClassifier(BaseTorchModel):
     def __init__(self, input_dim, num_classes, hidden_sizes=(128, 64), **kwargs):

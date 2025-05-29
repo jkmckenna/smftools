@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from models.base import BaseTorchModel
+from .base import BaseTorchModel
 
 class RNNClassifier(BaseTorchModel):
     def __init__(self, input_size, hidden_dim, num_classes, **kwargs):
