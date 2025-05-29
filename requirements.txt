@@ -6,6 +6,8 @@ hydra-core
 leidenalg
 lightning
 igraph
+leidenalg
+lightning
 multiqc
 networkx>=3.2
 numpy>=1.22.0,<2
