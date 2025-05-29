@@ -69,7 +69,9 @@ class MLPClassifier(nn.Module):
 class RNNClassifier(nn.Module):
     def __init__(self, input_size, hidden_dim, num_classes):
         super().__init__()
+        # Define LSTM layer
         self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_dim, batch_first=True)
+        # Define fully connected output layer
         self.fc = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, x):
