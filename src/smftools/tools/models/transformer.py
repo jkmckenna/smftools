@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from base import BaseTorchModel
-from positional import PositionalEncoding 
-from utils.grl import grad_reverse
+from .base import BaseTorchModel
+from .positional import PositionalEncoding 
+from ..utils.grl import grad_reverse
 
     
 class BaseTransformer(BaseTorchModel):

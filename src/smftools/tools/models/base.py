@@ -1,5 +1,5 @@
 import torch.nn as nn
-from utils.device import detect_device
+from ..utils.device import detect_device
 
 class BaseTorchModel(nn.Module):
     """

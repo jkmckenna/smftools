@@ -14,12 +14,12 @@ from .read_stats import calculate_row_entropy
 from .subset_adata import subset_adata
 from .train_hmm import train_hmm
 
-from .models import *
-from .data import *
-from .utils import *
-from .evaluation import *
-from .inference import *
-from .training import *
+from . import models
+from . import data
+from . import utils
+from . import evaluation
+from . import inference
+from . import training
 
 __all__ = [
     "apply_hmm",
