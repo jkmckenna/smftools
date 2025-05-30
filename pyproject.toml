@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "smftools"
 description = "Single Molecule Footprinting Analysis in Python."
 requires-python = ">=3.9"
-license = "MIT"
+license = { file = "LICENSE" }
 authors = [
     {name = "Joseph McKenna"}
 ]
@@ -93,8 +93,11 @@ docs = [
     "setuptools"
 ]
 
+[tool.hatch.build]
+sources = ["src"]
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/smftools"]
+packages = ["smftools"]
 
 [tool.hatch.version]
 path = "src/smftools/_version.py"
