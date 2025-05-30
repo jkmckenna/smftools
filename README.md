@@ -29,7 +29,10 @@ The following CLI tools need to be installed and configured before using the inf
 
 ## Announcements
 
-### 10/01/24 - More recent versions are being updated through github and are not currently on pypi, please install from source. Thank you!
+### 05/29/25 - Version 0.1.6 is available through PyPI.
+Informatics, preprocessing, tools, plotting modules have core functionality that is approaching stability on MacOS(Intel/Silicon) and Linux(Ubuntu). I will work on improving documentation/tutorials shortly. The base PyTorch/Scikit-Learn ML-infrastructure is going through some organizational changes to work with PyTorch Lightning, Hydra, and WanDB to facilitate organizational scaling, multi-device usage, and logging.
+
+### 10/01/24 - More recent versions are being updated frequently. Installation from source over PyPI is recommended!
 
 ### 09/09/24 - The version 0.1.1 package ([smftools-0.1.1](https://pypi.org/project/smftools/)) is installable through pypi!
 The informatics module has been bumped to alpha-phase status. This module can deal with POD5s and unaligned BAMS from nanopore conversion and direct SMF experiments, as well as FASTQs from Illumina conversion SMF experiments. Primary output from this module is an AnnData object containing all relevant SMF data, which is compatible with all downstream smftools modules. The other modules are still in pre-alpha phase. Preprocessing, Tools, and Plotting modules should be promoted to alpha-phase within the next month or so.
