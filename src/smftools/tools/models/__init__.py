@@ -6,3 +6,4 @@ from .transformer import BaseTransformer, TransformerClassifier, DANNTransformer
 from .positional import PositionalEncoding
 from .wrappers import ScaledModel
 from .lightning_base import TorchClassifierWrapper
+from .sklearn_models import SklearnModelWrapper
