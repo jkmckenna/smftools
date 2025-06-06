@@ -1,8 +1,8 @@
 # Installation
 
-## PyPi version
+## PyPi version - Easiest starting point
 
-Pull smftools from [PyPI](https://pypi.org/project/smftools):
+Install smftools from [PyPI](https://pypi.org/project/smftools):
 
 ```shell
 pip install smftools
@@ -33,7 +33,7 @@ chmod +x bedGraphToBigWig
 sudo mv bedGraphToBigWig /usr/local/bin/
 ```
 
-## Development Version
+## Development Version - recommended to use this method for most up to date versions
 
 Clone smftools from source and change into the smftools directory:
 
@@ -42,7 +42,7 @@ git clone https://github.com/jkmckenna/smftools.git
 cd smftools
 ```
 
-A virtual environment can be created for the current version within the smftools directory:
+A python virtual environment can be created as an alternative to conda. I like to do venv-smftools-X.X.X to keep a seperate venv for each version:
 
 ```shell
 python -m venv venv-smftools
