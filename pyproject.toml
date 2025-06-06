@@ -97,7 +97,7 @@ docs = [
 sources = ["src"]
 
 [tool.hatch.build.targets.wheel]
-includes = ["smftools"]
+include = ["smftools"]
 
 [tool.hatch.version]
 path = "src/smftools/_version.py"
