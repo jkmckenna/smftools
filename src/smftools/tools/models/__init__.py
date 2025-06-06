@@ -5,3 +5,4 @@ from .rnn import RNNClassifier
 from .transformer import BaseTransformer, TransformerClassifier, DANNTransformerClassifier, MaskedTransformerPretrainer
 from .positional import PositionalEncoding
 from .wrappers import ScaledModel
+from .lightning_base import TorchClassifierWrapper
