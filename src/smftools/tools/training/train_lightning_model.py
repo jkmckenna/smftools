@@ -9,6 +9,7 @@ def train_lightning_model(
     patience=5,
     monitor_metric="val_loss",
     checkpoint_path=None,
+    evaluate_test=True,
 ):
     # Device logic
     if torch.cuda.is_available():
@@ -42,6 +43,19 @@ def train_lightning_model(
         devices=devices,
         log_every_n_steps=10,
     )
+
+    # Fit model with trainer
     trainer.fit(model, datamodule=datamodule)
+
+
+    # Test model (if applicable)
+    if evaluate_test and hasattr(datamodule, "test_dataloader"):
+        trainer.test(model, datamodule=datamodule)
     
-    return trainer
+    # Return best checkpoint path
+    best_ckpt = None
+    for cb in callbacks:
+        if isinstance(cb, ModelCheckpoint):
+            best_ckpt = cb.best_model_path
+            
+    return trainer, best_ckpt
