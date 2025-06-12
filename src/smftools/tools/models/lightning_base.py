@@ -26,7 +26,10 @@ class TorchClassifierWrapper(pl.LightningModule):
         criterion_kwargs=None,
         lr: float = 1e-3,
         focus_class: int = 1,  # used for binary or multiclass precision-recall
-        class_weights=None
+        class_weights=None,
+        enforce_eval_balance: bool=False,
+        target_eval_freq: float=0.3,
+        max_eval_positive: int=None
     ):
         super().__init__()
         self.model = model
@@ -38,6 +41,9 @@ class TorchClassifierWrapper(pl.LightningModule):
         self.num_classes = num_classes
         self.class_names = class_names
         self.focus_class = self._resolve_focus_class(focus_class)
+        self.enforce_eval_balance = enforce_eval_balance
+        self.target_eval_freq = target_eval_freq
+        self.max_eval_positive = max_eval_positive
 
         # Handle class weights
         self.criterion_kwargs = criterion_kwargs or {}
@@ -102,7 +108,7 @@ class TorchClassifierWrapper(pl.LightningModule):
             self._init_criterion()
         logits = self(x)
         loss = self._compute_loss(logits, y)
-        self.log("train_loss", loss, prog_bar=True)
+        self.log("train_loss", loss, prog_bar=False)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -185,6 +191,34 @@ class TorchClassifierWrapper(pl.LightningModule):
         else:
             return logits.argmax(dim=1)
         
+    def _subsample_for_fixed_positive_frequency(self, y_true, probs, target_freq=0.3, max_positive=None):
+        pos_idx = np.where(y_true == self.focus_class)[0]
+        neg_idx = np.where(y_true != self.focus_class)[0]
+
+        max_negatives_possible = len(neg_idx)
+        max_positives_possible = len(pos_idx)
+
+        # maximum achievable positive class frequency
+        max_possible_freq = max_positives_possible / (max_positives_possible + max_negatives_possible)
+
+        if target_freq > max_possible_freq:
+            target_freq = max_possible_freq  # clip if you ask for impossible freq
+
+        # now calculate positive count
+        num_pos_target = min(int(target_freq * max_negatives_possible / (1 - target_freq)), max_positives_possible)
+        num_neg_target = int(num_pos_target * (1 - target_freq) / target_freq)
+        num_neg_target = min(num_neg_target, max_negatives_possible)
+        
+        pos_sampled = np.random.choice(pos_idx, size=num_pos_target, replace=False)
+        neg_sampled = np.random.choice(neg_idx, size=num_neg_target, replace=False)
+
+        sampled_idx = np.concatenate([pos_sampled, neg_sampled])
+        np.random.shuffle(sampled_idx)
+
+        actual_freq = len(pos_sampled) / len(sampled_idx)
+
+        return sampled_idx
+        
     def _log_classification_metrics(self, logits, targets, prefix="val"):
         """
         A helper function for logging validation and testing split model evaluations.
@@ -195,20 +229,37 @@ class TorchClassifierWrapper(pl.LightningModule):
         probs = self._get_probs(logits).numpy()
         preds = self._get_preds(logits).cpu().numpy()
 
+        # remap binary focus class correctly:
+        binary_focus = (y_true == self.focus_class).astype(int)
+
+        num_pos = binary_focus.sum()
+
+        # Subsample if you want to enforce a fixed proportion of the positive class
+        if prefix == 'test' and self.enforce_eval_balance:
+            sampled_idx = self._subsample_for_fixed_positive_frequency(
+                y_true, probs, target_freq=self.target_eval_freq, max_positive=self.max_eval_positive
+            )
+            y_true = y_true[sampled_idx]
+            probs = probs[sampled_idx]
+            preds = preds[sampled_idx]
+            binary_focus = (y_true == self.focus_class).astype(int)
+            num_pos = binary_focus.sum()
+
         # Accuracy
         acc = np.mean(preds == y_true)
 
         # F1 & ROC-AUC
         if self.num_classes == 2:
+            if self.focus_class == 1:
+                focus_probs = probs
+            else:
+                focus_probs = 1 - probs
             f1 = f1_score(y_true, preds)
-            roc_auc = roc_auc_score(y_true, probs)
-            # remap binary focus class correctly:
-            binary_focus = (y_true == self.focus_class).astype(int)
-            focus_probs = probs if self.focus_class == 1 else (1 - probs)
+            fpr, tpr, _ = roc_curve((y_true == self.focus_class).astype(int), focus_probs)
+            roc_auc = roc_auc_score((y_true == self.focus_class).astype(int), focus_probs)
         else:
             f1 = f1_score(y_true, preds, average="macro")
             roc_auc = roc_auc_score(y_true, probs, multi_class="ovr", average="macro")
-            binary_focus = (y_true == self.focus_class).astype(int)
             focus_probs = probs[:, self.focus_class]
 
         # PR AUC for focus class
@@ -219,6 +270,17 @@ class TorchClassifierWrapper(pl.LightningModule):
 
         cm = confusion_matrix(y_true, preds)
 
+        # Save attributes for later plotting
+        if prefix == 'test':
+            self.test_roc_curve = (fpr, tpr)
+            self.test_pr_curve = (rc, pr)
+            self.test_roc_auc = roc_auc
+            self.test_pr_auc = pr_auc
+            self.test_pos_freq = pos_freq
+            self.test_num_pos = num_pos
+        elif prefix == 'val':
+            pass
+
         # Logging
         self.log_dict({
             f"{prefix}_acc": acc,
@@ -226,42 +288,38 @@ class TorchClassifierWrapper(pl.LightningModule):
             f"{prefix}_auc": roc_auc,
             f"{prefix}_pr_auc": pr_auc,
             f"{prefix}_pr_auc_norm": pr_auc_norm,
-            f"{prefix}_pos_freq": pos_freq
+            f"{prefix}_pos_freq": pos_freq,
+            f"{prefix}_num_pos": num_pos
         })
         setattr(self, f"{prefix}_confusion_matrix", cm)
 
-
     def _plot_roc_pr_curves(self, logits, targets):
-        logits = torch.cat(logits).cpu()
-        y_true = torch.cat(targets).cpu().numpy()
-        probs = self._get_probs(logits).numpy()
+        plt.figure(figsize=(12, 5))
 
-        if self.num_classes == 2:
-            focus_probs = probs if self.focus_class == 1 else (1 - probs)
-        else:
-            focus_probs = probs[:, self.focus_class]
-
-        # ROC curve
-        fpr, tpr, _ = roc_curve((y_true == self.focus_class).astype(int), focus_probs)
-        roc_auc = roc_auc_score((y_true == self.focus_class).astype(int), focus_probs)
-
-        plt.figure(figsize=(5, 5))
+        # ROC Curve
+        fpr, tpr = self.test_roc_curve
+        roc_auc = self.test_roc_auc
+        plt.subplot(1, 2, 1)
         plt.plot(fpr, tpr, label=f"ROC AUC={roc_auc:.3f}")
         plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
         plt.xlabel("False Positive Rate")
         plt.ylabel("True Positive Rate")
-        plt.title("Test ROC Curve")
+        plt.ylim(0, 1.05)
+        plt.title(f"Test ROC Curve - {self.test_num_pos} positive class instances")
         plt.legend()
-        plt.show()
 
-        # PR curve
-        pr, rc, _ = precision_recall_curve((y_true == self.focus_class).astype(int), focus_probs)
-        pr_auc = auc(rc, pr)
-
-        plt.figure(figsize=(5, 5))
+        # PR Curve
+        rc, pr = self.test_pr_curve
+        pr_auc = self.test_pr_auc
+        pos_freq = self.test_pos_freq
+        plt.subplot(1, 2, 2)
         plt.plot(rc, pr, label=f"PR AUC={pr_auc:.3f}")
+        plt.axhline(pos_freq, linestyle='--', color="gray")
         plt.xlabel("Recall")
         plt.ylabel("Precision")
-        plt.title("Test Precision-Recall Curve")
+        plt.ylim(0, 1.05)
+        plt.title(f"Test Precision-Recall Curve - {self.test_num_pos} positive class instances")
         plt.legend()
+
+        plt.tight_layout()
         plt.show()

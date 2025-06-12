@@ -40,6 +40,9 @@ class AnnDataDataset(Dataset):
         else:
             self.y_tensor = None
 
+    def numpy(self, indices):
+        return self.X_tensor[indices].numpy(), self.y_tensor[indices].numpy()
+    
     def __len__(self):
         return len(self.X_tensor)
 
@@ -60,12 +63,14 @@ def split_dataset(adata, dataset, train_frac=0.6, val_frac=0.1, test_frac=0.3,
     """
     total_len = len(dataset)
 
-    if load_existing_split and split_save_path:
-        split_df = pd.read_csv(split_save_path, index_col=0)
-        adata.obs[split_col] = split_df.loc[adata.obs_names][split_col].values
-    elif split_col in adata.obs:
-        # use existing
-        pass
+    if load_existing_split:
+        if split_col in adata.obs:
+            pass  # use existing
+        elif split_save_path:
+            split_df = pd.read_csv(split_save_path, index_col=0)
+            adata.obs[split_col] = split_df.loc[adata.obs_names][split_col].values
+        else:
+            raise ValueError("No existing split column found and no file provided.")
     else:
         indices = np.arange(total_len)
         np.random.seed(random_seed)
@@ -159,15 +164,10 @@ class AnnDataModule(pl.LightningDataModule):
         """
         Move the AnnDataModule tensors into numpy arrays
         """
-        def subset_to_numpy(subset):
-            X_tensor, y_tensor = [subset.dataset.X_tensor, subset.dataset.y_tensor]
-            indices = subset.indices
-            return X_tensor[indices].numpy(), y_tensor[indices].numpy()
-
         if not self.inference_mode:
-            train_X, train_y = subset_to_numpy(self.train_set)
-            val_X, val_y = subset_to_numpy(self.val_set)
-            test_X, test_Y = subset_to_numpy(self.test_set)
+            train_X, train_y = self.train_set.dataset.numpy(self.train_set.indices)
+            val_X, val_y = self.val_set.dataset.numpy(self.val_set.indices)
+            test_X, test_Y = self.test_set.dataset.numpy(self.test_set.indices)
             return train_X, train_y, val_X, val_y, test_X, test_Y
         else:
             X_np = self.infer_dataset.dataset.X_tensor.numpy()

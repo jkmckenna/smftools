@@ -1,1 +1,2 @@
 from .train_lightning_model import train_lightning_model
+from .train_sklearn_model import train_sklearn_model
