@@ -31,7 +31,7 @@ class BaseTransformer(BaseTorchModel):
         """
         x = self.input_fc(x)  # (B, S, D_model)
         if self.pos_embed is not None:
-            x = x + self.pos_embed.unsqueeze(0).to(x.device)  # (B, S, D_model)
+            x = x + self.pos_embed.unsqueeze(0)  # (B, S, D_model)
         elif self.pos_encoder is not None:
             x = self.pos_encoder(x)  # (B, S, D_model)
         if mask is not None:
@@ -44,7 +44,8 @@ class TransformerClassifier(BaseTransformer):
     def __init__(self, input_dim, model_dim, num_classes, num_heads=4, num_layers=2, **kwargs):
         super().__init__(input_dim, model_dim, num_heads, num_layers, **kwargs)
         # Classification head
-        self.cls_head = nn.Linear(model_dim, num_classes)
+        output_size = 1 if num_classes == 2 else num_classes
+        self.cls_head = nn.Linear(model_dim, output_size)
 
     def forward(self, x):
         """

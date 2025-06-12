@@ -7,6 +7,15 @@ from sklearn.metrics import (
 import numpy as np
 
 class TorchClassifierWrapper(pl.LightningModule):
+    """
+    A Pytorch Lightning wrapper for PyTorch classifiers.
+    - Takes a PyTorch model as input.
+    - Number of classes should be passed.
+    - Optimizer is set as default to AdamW without any keyword arguments.
+    - Loss criterion is automatically detected based on if it's a binary of multi-class classifier.
+    - Can pass the index of the class label to use as the focus class when calculating precision/recall.
+    - Contains a prediction step to run inference with.
+    """
     def __init__(
         self,
         model: torch.nn.Module,
@@ -16,6 +25,7 @@ class TorchClassifierWrapper(pl.LightningModule):
         criterion_kwargs=None,
         lr: float = 1e-3,
         focus_class: int = 1,  # used for binary or multiclass precision-recall
+        class_weights=None
     ):
         super().__init__()
         self.model = model
@@ -23,28 +33,54 @@ class TorchClassifierWrapper(pl.LightningModule):
         self.optimizer_cls = optimizer_cls
         self.optimizer_kwargs = optimizer_kwargs or {}
         self.criterion = None
-        self.criterion_kwargs = criterion_kwargs or {}
         self.lr = lr
         self.focus_class = focus_class
         self.num_classes = num_classes
+
+        # Handle class weights
+        self.criterion_kwargs = criterion_kwargs or {}
+
+        if class_weights is not None:
+            if num_classes == 2:
+                # BCEWithLogits uses pos_weight, expects a scalar or tensor
+                self.criterion_kwargs["pos_weight"] = torch.tensor(class_weights[focus_class], dtype=torch.float32)
+            else:
+                # CrossEntropyLoss expects weight tensor of size C
+                self.criterion_kwargs["weight"] = torch.tensor(class_weights, dtype=torch.float32)
 
         self._val_outputs = []
         self._test_outputs = []
 
     def setup(self, stage=None):
+        """
+        Sets the loss criterion.
+        """
         if self.criterion is None and self.num_classes is not None:
             self._init_criterion()
 
     def _init_criterion(self):
         if self.num_classes == 2:
+            if "pos_weight" in self.criterion_kwargs and not torch.is_tensor(self.criterion_kwargs["pos_weight"]):
+                self.criterion_kwargs["pos_weight"] = torch.tensor(self.criterion_kwargs["pos_weight"], dtype=torch.float32, device=self.device)
             self.criterion = torch.nn.BCEWithLogitsLoss(**self.criterion_kwargs)
         else:
+            if "weight" in self.criterion_kwargs and not torch.is_tensor(self.criterion_kwargs["weight"]):
+                self.criterion_kwargs["weight"] = torch.tensor(self.criterion_kwargs["weight"], dtype=torch.float32, device=self.device)
             self.criterion = torch.nn.CrossEntropyLoss(**self.criterion_kwargs)
 
+    def configure_optimizers(self):
+        return self.optimizer_cls(self.parameters(), lr=self.lr, **self.optimizer_kwargs)
+
     def forward(self, x):
+        """
+        Forward pass through the model.
+        """
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
+        """
+        Training step for a batch through the Lightning Trainer.
+        """
         x, y = batch
         if self.num_classes is None:
             self.num_classes = int(torch.max(y).item()) + 1
@@ -55,6 +91,9 @@ class TorchClassifierWrapper(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        """
+        Validation step for a batch through the Lightning Trainer.
+        """
         x, y = batch
         logits = self(x)
         loss = self._compute_loss(logits, y)
@@ -65,11 +104,27 @@ class TorchClassifierWrapper(pl.LightningModule):
         return loss
     
     def test_step(self, batch, batch_idx):
+        """
+        Test step for a batch through the Lightning Trainer.
+        """
         x, y = batch
         logits = self(x)
         self._test_outputs.append((logits.detach(), y.detach()))
 
+    def predict_step(self, batch, batch_idx):
+        """
+        Gets predictions and prediction probabilities for the batch using the trained Lightning model.
+        """
+        x = batch[0]
+        logits = self(x)
+        probs = self._get_probs(logits)
+        preds = self._get_preds(logits)
+        return preds, probs
+
     def on_validation_epoch_end(self):
+        """
+        Final logging of all validation steps
+        """
         if not self._val_outputs:
             return
         logits, targets = zip(*self._val_outputs)
@@ -77,6 +132,9 @@ class TorchClassifierWrapper(pl.LightningModule):
         self._log_classification_metrics(logits, targets, prefix="val")
 
     def on_test_epoch_end(self):
+        """
+        Final logging of all testing steps
+        """
         if not self._test_outputs:
             return
         logits, targets = zip(*self._test_outputs)
@@ -84,6 +142,9 @@ class TorchClassifierWrapper(pl.LightningModule):
         self._log_classification_metrics(logits, targets, prefix="test")
 
     def _compute_loss(self, logits, y):
+        """
+        A helper function for computing loss for binary vs multiclass classifications.
+        """
         if self.num_classes == 2:
             y = y.float().view(-1, 1)  # shape [B, 1]
             return self.criterion(logits.view(-1, 1), y)
@@ -91,18 +152,27 @@ class TorchClassifierWrapper(pl.LightningModule):
             return self.criterion(logits, y)
         
     def _get_probs(self, logits):
+        """
+        A helper function for getting class probabilities for binary vs multiclass classifications.
+        """
         if self.num_classes == 2:
             return torch.sigmoid(logits.view(-1))
         else:
             return torch.softmax(logits, dim=1)
 
     def _get_preds(self, logits):
+        """
+        A helper function for getting class predictions for binary vs multiclass classifications.
+        """
         if self.num_classes == 2:
             return (torch.sigmoid(logits.view(-1)) >= 0.5).long()
         else:
             return logits.argmax(dim=1)
         
     def _log_classification_metrics(self, logits, targets, prefix="val"):
+        """
+        A helper function for logging validation and testing split model evaluations.
+        """
         logits = torch.cat(logits).cpu()
         y_true = torch.cat(targets).cpu().numpy()
 
@@ -140,6 +210,3 @@ class TorchClassifierWrapper(pl.LightningModule):
             f"{prefix}_pr_auc_norm": pr_auc_norm,
         })
         setattr(self, f"{prefix}_confusion_matrix", cm)
-
-    def configure_optimizers(self):
-        return self.optimizer_cls(self.parameters(), lr=self.lr, **self.optimizer_kwargs)

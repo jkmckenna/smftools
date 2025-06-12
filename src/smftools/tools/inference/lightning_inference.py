@@ -8,8 +8,22 @@ def run_lightning_inference(
     model,
     datamodule,
     label_col="labels",
-    prefix="model"
+    prefix="model",
+    devices=1
 ):
+    """
+    Run inference on AnnData using TorchClassifierWrapper + AnnDataModule (in inference mode).
+    """
+
+    # Device logic
+    if torch.cuda.is_available():
+        accelerator = "gpu"
+    elif torch.backends.mps.is_available():
+        accelerator = "mps"
+        devices = 1
+    else:
+        accelerator = "cpu"
+        devices = 1
 
     # Get class labels
     if label_col in adata.obs and pd.api.types.is_categorical_dtype(adata.obs[label_col]):
@@ -18,14 +32,20 @@ def run_lightning_inference(
         raise ValueError("label_col must be a categorical column in adata.obs")
 
     # Run predictions
-    trainer = Trainer(accelerator="auto", devices=1, logger=False, enable_checkpointing=False)
-    preds = trainer.predict(model, datamodule=datamodule)
-    probs = torch.cat(preds, dim=0).cpu().numpy()  # (N, C)
+    trainer = Trainer(accelerator=accelerator, devices=devices, logger=False, enable_checkpointing=False)
+    outputs = trainer.predict(model, datamodule=datamodule)
+
+    # Unpack preds and probs
+    preds_list, probs_list = zip(*outputs)
+    preds = torch.cat(preds_list, dim=0).cpu().numpy()  # (N,)
+    probs = torch.cat(probs_list, dim=0).cpu().numpy()  # (N, C)
+
+    # Prediction index and label
     pred_class_idx = probs.argmax(axis=1)
     pred_class_labels = [class_labels[i] for i in pred_class_idx]
     pred_class_probs = probs[np.arange(len(probs)), pred_class_idx]
 
-    # Construct full prefix with label_col
+    # Construct prefix
     full_prefix = f"{prefix}_{label_col}"
 
     # Store predictions in obs
@@ -33,9 +53,11 @@ def run_lightning_inference(
     adata.obs[f"{full_prefix}_pred_label"] = pd.Categorical(pred_class_labels, categories=class_labels)
     adata.obs[f"{full_prefix}_pred_prob"] = pred_class_probs
 
-    # Per-class probabilities
+    # Store full per-class probabilities
     for i, class_name in enumerate(class_labels):
         adata.obs[f"{full_prefix}_prob_{class_name}"] = probs[:, i]
 
-    # Full probability matrix in obsm
+    # Store entire matrix in obsm
     adata.obsm[f"{full_prefix}_pred_prob_all"] = probs
+
+    print(f"Inference complete: stored under prefix '{full_prefix}'")

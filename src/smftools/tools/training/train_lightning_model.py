@@ -10,11 +10,18 @@ def train_lightning_model(
     monitor_metric="val_loss",
     checkpoint_path=None,
     evaluate_test=True,
+    devices=1
 ):
+    """
+    Takes a PyTorch Lightning Model and a Lightning DataLoader module to define a Lightning Trainer.
+    - The Lightning trainer fits the model to the training split of the datamodule.
+    - The Lightning trainer uses the validation split of the datamodule for monitoring training loss.
+    - Option of evaluating the trained model on a test set when evaluate_test is True.
+    - When using cuda, devices parameter can be: 1, [0,1], "all", "auto". Depending on what devices you want to use.
+    """
     # Device logic
     if torch.cuda.is_available():
         accelerator = "gpu"
-        devices = 1
     elif torch.backends.mps.is_available():
         accelerator = "mps"
         devices = 1
@@ -57,5 +64,5 @@ def train_lightning_model(
     for cb in callbacks:
         if isinstance(cb, ModelCheckpoint):
             best_ckpt = cb.best_model_path
-            
+
     return trainer, best_ckpt

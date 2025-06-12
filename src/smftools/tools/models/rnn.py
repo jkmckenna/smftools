@@ -8,7 +8,8 @@ class RNNClassifier(BaseTorchModel):
         # Define LSTM layer
         self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_dim, batch_first=True)
         # Define fully connected output layer
-        self.fc = nn.Linear(hidden_dim, num_classes)
+        output_size = 1 if num_classes == 2 else num_classes
+        self.fc = nn.Linear(hidden_dim, output_size)
 
     def forward(self, x):
         x = x.unsqueeze(1)  # [B, 1, L] → for LSTM expecting batch_first
