@@ -148,12 +148,30 @@ class AnnDataModule(pl.LightningDataModule):
         return DataLoader(self.infer_dataset, batch_size=self.batch_size)
     
     def compute_class_weights(self):
-        train_indices = self.train_set.indices
-        y_all = self.train_set.dataset.y_tensor
-        y_train = y_all[train_indices].cpu().numpy()
+        train_indices = self.train_set.indices # get the indices of the training set
+        y_all = self.train_set.dataset.y_tensor # get labels for the entire dataset (We are pulling from a Subset object, so this syntax can be confusing)
+        y_train = y_all[train_indices].cpu().numpy() # get the labels for the training set and move to a numpy array
         
         class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         return torch.tensor(class_weights, dtype=torch.float32)
+    
+    def to_numpy(self):
+        """
+        Move the AnnDataModule tensors into numpy arrays
+        """
+        def subset_to_numpy(subset):
+            X_tensor, y_tensor = [subset.dataset.X_tensor, subset.dataset.y_tensor]
+            indices = subset.indices
+            return X_tensor[indices].numpy(), y_tensor[indices].numpy()
+
+        if not self.inference_mode:
+            train_X, train_y = subset_to_numpy(self.train_set)
+            val_X, val_y = subset_to_numpy(self.val_set)
+            test_X, test_Y = subset_to_numpy(self.test_set)
+            return train_X, train_y, val_X, val_y, test_X, test_Y
+        else:
+            X_np = self.infer_dataset.dataset.X_tensor.numpy()
+            return X_np
 
 
 def build_anndata_loader(

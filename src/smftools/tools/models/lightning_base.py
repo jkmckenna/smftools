@@ -1,8 +1,8 @@
 import torch
 import pytorch_lightning as pl
-
+import matplotlib.pyplot as plt
 from sklearn.metrics import (
-    roc_auc_score, precision_recall_curve, auc, f1_score, confusion_matrix
+    roc_auc_score, precision_recall_curve, auc, f1_score, confusion_matrix, roc_curve
 )
 import numpy as np
 
@@ -20,6 +20,7 @@ class TorchClassifierWrapper(pl.LightningModule):
         self,
         model: torch.nn.Module,
         num_classes: int,
+        class_names: list=None,
         optimizer_cls=torch.optim.AdamW,
         optimizer_kwargs=None,
         criterion_kwargs=None,
@@ -34,8 +35,9 @@ class TorchClassifierWrapper(pl.LightningModule):
         self.optimizer_kwargs = optimizer_kwargs or {}
         self.criterion = None
         self.lr = lr
-        self.focus_class = focus_class
         self.num_classes = num_classes
+        self.class_names = class_names
+        self.focus_class = self._resolve_focus_class(focus_class)
 
         # Handle class weights
         self.criterion_kwargs = criterion_kwargs or {}
@@ -43,10 +45,11 @@ class TorchClassifierWrapper(pl.LightningModule):
         if class_weights is not None:
             if num_classes == 2:
                 # BCEWithLogits uses pos_weight, expects a scalar or tensor
-                self.criterion_kwargs["pos_weight"] = torch.tensor(class_weights[focus_class], dtype=torch.float32)
+                self.criterion_kwargs["pos_weight"] = torch.tensor(class_weights[self.focus_class], dtype=torch.float32)
             else:
                 # CrossEntropyLoss expects weight tensor of size C
                 self.criterion_kwargs["weight"] = torch.tensor(class_weights, dtype=torch.float32)
+
 
         self._val_outputs = []
         self._test_outputs = []
@@ -67,6 +70,18 @@ class TorchClassifierWrapper(pl.LightningModule):
             if "weight" in self.criterion_kwargs and not torch.is_tensor(self.criterion_kwargs["weight"]):
                 self.criterion_kwargs["weight"] = torch.tensor(self.criterion_kwargs["weight"], dtype=torch.float32, device=self.device)
             self.criterion = torch.nn.CrossEntropyLoss(**self.criterion_kwargs)
+
+    def _resolve_focus_class(self, focus_class):
+        if isinstance(focus_class, int):
+            return focus_class
+        elif isinstance(focus_class, str):
+            if self.class_names is None:
+                raise ValueError("class_names must be provided if focus_class is a string.")
+            if focus_class not in self.class_names:
+                raise ValueError(f"focus_class '{focus_class}' not found in class_names {self.class_names}.")
+            return self.class_names.index(focus_class)
+        else:
+            raise ValueError(f"focus_class must be int or str, got {type(focus_class)}")
 
     def configure_optimizers(self):
         return self.optimizer_cls(self.parameters(), lr=self.lr, **self.optimizer_kwargs)
@@ -99,7 +114,7 @@ class TorchClassifierWrapper(pl.LightningModule):
         loss = self._compute_loss(logits, y)
         preds = self._get_preds(logits)
         acc = (preds == y).float().mean()
-        self.log_dict({"val_loss": loss, "val_acc": acc}, prog_bar=True)
+        self.log_dict({"val_loss": loss, "val_acc": acc}, prog_bar=False)
         self._val_outputs.append((logits.detach(), y.detach()))
         return loss
     
@@ -140,6 +155,7 @@ class TorchClassifierWrapper(pl.LightningModule):
         logits, targets = zip(*self._test_outputs)
         self._test_outputs.clear()
         self._log_classification_metrics(logits, targets, prefix="test")
+        self._plot_roc_pr_curves(logits, targets)
 
     def _compute_loss(self, logits, y):
         """
@@ -186,14 +202,16 @@ class TorchClassifierWrapper(pl.LightningModule):
         if self.num_classes == 2:
             f1 = f1_score(y_true, preds)
             roc_auc = roc_auc_score(y_true, probs)
-            focus_probs = probs
+            # remap binary focus class correctly:
+            binary_focus = (y_true == self.focus_class).astype(int)
+            focus_probs = probs if self.focus_class == 1 else (1 - probs)
         else:
             f1 = f1_score(y_true, preds, average="macro")
             roc_auc = roc_auc_score(y_true, probs, multi_class="ovr", average="macro")
+            binary_focus = (y_true == self.focus_class).astype(int)
             focus_probs = probs[:, self.focus_class]
 
         # PR AUC for focus class
-        binary_focus = (y_true == self.focus_class).astype(int)
         pr, rc, _ = precision_recall_curve(binary_focus, focus_probs)
         pr_auc = auc(rc, pr)
         pos_freq = binary_focus.mean()
@@ -208,5 +226,42 @@ class TorchClassifierWrapper(pl.LightningModule):
             f"{prefix}_auc": roc_auc,
             f"{prefix}_pr_auc": pr_auc,
             f"{prefix}_pr_auc_norm": pr_auc_norm,
+            f"{prefix}_pos_freq": pos_freq
         })
         setattr(self, f"{prefix}_confusion_matrix", cm)
+
+
+    def _plot_roc_pr_curves(self, logits, targets):
+        logits = torch.cat(logits).cpu()
+        y_true = torch.cat(targets).cpu().numpy()
+        probs = self._get_probs(logits).numpy()
+
+        if self.num_classes == 2:
+            focus_probs = probs if self.focus_class == 1 else (1 - probs)
+        else:
+            focus_probs = probs[:, self.focus_class]
+
+        # ROC curve
+        fpr, tpr, _ = roc_curve((y_true == self.focus_class).astype(int), focus_probs)
+        roc_auc = roc_auc_score((y_true == self.focus_class).astype(int), focus_probs)
+
+        plt.figure(figsize=(5, 5))
+        plt.plot(fpr, tpr, label=f"ROC AUC={roc_auc:.3f}")
+        plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title("Test ROC Curve")
+        plt.legend()
+        plt.show()
+
+        # PR curve
+        pr, rc, _ = precision_recall_curve((y_true == self.focus_class).astype(int), focus_probs)
+        pr_auc = auc(rc, pr)
+
+        plt.figure(figsize=(5, 5))
+        plt.plot(rc, pr, label=f"PR AUC={pr_auc:.3f}")
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.title("Test Precision-Recall Curve")
+        plt.legend()
+        plt.show()
