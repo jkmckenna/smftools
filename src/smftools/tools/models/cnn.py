@@ -12,14 +12,15 @@ class CNNClassifier(BaseTorchModel):
         self.relu = nn.ReLU()
 
         # Determine the flattened size dynamically
-        dummy_input = torch.zeros(1, 1, input_size).to(self.device)
+        dummy_input = torch.zeros(1, 1, input_size)
         with torch.no_grad():
             dummy_output = self._forward_conv(dummy_input)
         flattened_size = dummy_output.view(1, -1).shape[1]
 
         # Define fully connected layers
         self.fc1 = nn.Linear(flattened_size, 64)
-        self.fc2 = nn.Linear(64, num_classes)
+        output_size = 1 if num_classes == 2 else num_classes
+        self.fc2 = nn.Linear(64, output_size)
 
     def _forward_conv(self, x):
         x = self.relu(self.conv1(x))

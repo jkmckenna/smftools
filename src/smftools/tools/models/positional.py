@@ -13,5 +13,5 @@ class PositionalEncoding(nn.Module):
         self.pe = pe.unsqueeze(0)  # (1, max_len, d_model)
 
     def forward(self, x):
-        x = x + self.pe[:, :x.size(1)].to(x.device)
+        x = x + self.pe[:, :x.size(1)]
         return x
