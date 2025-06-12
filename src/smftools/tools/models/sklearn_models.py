@@ -1,18 +1,43 @@
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import (
-    roc_auc_score, average_precision_score,
-    f1_score, precision_recall_curve,
-    confusion_matrix, classification_report
-)
-from sklearn.utils.class_weight import compute_class_weight
-
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import (
+    roc_auc_score, precision_recall_curve, auc, f1_score, confusion_matrix, roc_curve
+)
 
 class SklearnModelWrapper:
-    def __init__(self, model, name=None):
+    """
+    Unified sklearn wrapper matching TorchClassifierWrapper interface.
+    """
+    def __init__(
+        self, 
+        model, 
+        num_classes, 
+        class_names=None, 
+        focus_class=1,
+        enforce_eval_balance=False,
+        target_eval_freq=0.3,
+        max_eval_positive=None
+    ):
         self.model = model
-        self.name = name or model.__class__.__name__
+        self.num_classes = num_classes
+        self.class_names = class_names
+        self.focus_class = self._resolve_focus_class(focus_class)
+        self.enforce_eval_balance = enforce_eval_balance
+        self.target_eval_freq = target_eval_freq
+        self.max_eval_positive = max_eval_positive
+        self.metrics = {}
+
+    def _resolve_focus_class(self, focus_class):
+        if isinstance(focus_class, int):
+            return focus_class
+        elif isinstance(focus_class, str):
+            if self.class_names is None:
+                raise ValueError("class_names must be provided if focus_class is a string.")
+            if focus_class not in self.class_names:
+                raise ValueError(f"focus_class '{focus_class}' not found in class_names {self.class_names}.")
+            return self.class_names.index(focus_class)
+        else:
+            raise ValueError(f"focus_class must be int or str, got {type(focus_class)}")
 
     def fit(self, X, y):
         self.model.fit(X, y)
@@ -21,109 +46,137 @@ class SklearnModelWrapper:
         return self.model.predict(X)
 
     def predict_proba(self, X):
-        if hasattr(self.model, "predict_proba"):
-            return self.model.predict_proba(X)
-        else:
-            raise NotImplementedError(f"{self.name} does not support predict_proba.")
-        
-    def evaluate(self, X, y, focus_class=None):
-        probs = self.predict_proba(X)
-        preds = self.predict(X)
+        return self.model.predict_proba(X)
 
+    def _subsample_for_fixed_positive_frequency(self, y_true):
+        pos_idx = np.where(y_true == self.focus_class)[0]
+        neg_idx = np.where(y_true != self.focus_class)[0]
+
+        max_neg = len(neg_idx)
+        max_pos = len(pos_idx)
+        max_possible_freq = max_pos / (max_pos + max_neg)
+
+        target_freq = min(self.target_eval_freq, max_possible_freq)
+        num_pos_target = min(int(target_freq * max_neg / (1 - target_freq)), max_pos)
+        num_neg_target = int(num_pos_target * (1 - target_freq) / target_freq)
+        num_neg_target = min(num_neg_target, max_neg)
+
+        if self.max_eval_positive is not None:
+            num_pos_target = min(num_pos_target, self.max_eval_positive)
+
+        pos_sampled = np.random.choice(pos_idx, size=num_pos_target, replace=False)
+        neg_sampled = np.random.choice(neg_idx, size=num_neg_target, replace=False)
+
+        sampled_idx = np.concatenate([pos_sampled, neg_sampled])
+        np.random.shuffle(sampled_idx)
+
+        return sampled_idx
+
+    def evaluate(self, X, y, prefix="test"):
         y_true = y
-        y_pred = preds
-        y_prob = probs
+        y_prob = self.predict_proba(X)
+        y_pred = self.predict(X)
 
-        unique_classes = np.unique(y_true)
-        n_classes = len(unique_classes)
-        is_binary = n_classes == 2
+        if self.enforce_eval_balance:
+            sampled_idx = self._subsample_for_fixed_positive_frequency(y_true)
+            y_true = y_true[sampled_idx]
+            y_prob = y_prob[sampled_idx]
+            y_pred = y_pred[sampled_idx]
 
-        # Handle focus_class (str or int)
-        class_labels = unique_classes.tolist()
-        if focus_class is not None:
-            if isinstance(focus_class, str):
-                if hasattr(focus_class, "cat"):
-                    focus_class_idx = focus_class.cat.categories.get_loc(focus_class)
-                else:
-                    raise ValueError("String focus_class requires categorical-encoded labels.")
-            else:
-                focus_class_idx = int(focus_class)
-        else:
-            focus_class_idx = 1 if is_binary else None
+        binary_focus = (y_true == self.focus_class).astype(int)
+        num_pos = binary_focus.sum()
 
-        metrics = {}
+        is_binary = self.num_classes == 2
 
         if is_binary:
-            y_score = y_prob[:, focus_class_idx]
-            y_binary = (y_true == focus_class_idx).astype(int)
-            y_pred_bin = (y_pred == focus_class_idx).astype(int)
-
-            precision, recall, _ = precision_recall_curve(y_binary, y_score)
-            pr_auc = average_precision_score(y_binary, y_score)
-            f1 = f1_score(y_binary, y_pred_bin)
-            roc_auc = roc_auc_score(y_binary, y_score)
-            pos_freq = np.mean(y_binary)
-            pr_auc_norm = pr_auc / pos_freq if pos_freq > 0 else np.nan
-            cm = confusion_matrix(y_true, y_pred)
-
-            metrics.update({
-                "focus_class": focus_class_idx,
-                "f1": f1,
-                "auc": roc_auc,
-                "pr_auc": pr_auc,
-                "pr_auc_norm": pr_auc_norm,
-                "confusion_matrix": cm,
-            })
-
+            if self.focus_class == 1:
+                focus_probs = y_prob[:, 1]
+            else:
+                focus_probs = y_prob[:, 0]
+            preds_focus = (y_pred == self.focus_class).astype(int)
         else:
-            f1 = f1_score(y_true, y_pred, average="macro")
-            roc_auc = roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro")
-            pr_auc = average_precision_score(y_true, y_prob, average="macro")
-            pr_auc_norm = pr_auc / np.mean(np.bincount(y_true) / len(y_true))
-            cm = confusion_matrix(y_true, y_pred)
+            focus_probs = y_prob[:, self.focus_class]
+            preds_focus = (y_pred == self.focus_class).astype(int)
 
-            metrics.update({
-                "f1_macro": f1,
-                "auc_macro": roc_auc,
-                "pr_auc_macro": pr_auc,
-                "pr_auc_norm_macro": pr_auc_norm,
-                "confusion_matrix": cm,
-            })
+        f1 = f1_score(binary_focus, preds_focus)
+        roc_auc = roc_auc_score(binary_focus, focus_probs)
+        pr, rc, _ = precision_recall_curve(binary_focus, focus_probs)
+        pr_auc = auc(rc, pr)
+        pos_freq = binary_focus.mean()
+        pr_auc_norm = pr_auc / pos_freq if pos_freq > 0 else np.nan
+        fpr, tpr, _ = roc_curve(binary_focus, focus_probs)
+        cm = confusion_matrix(y_true, y_pred)
+        acc = np.mean(y_pred == y_true)
 
-            if focus_class_idx is not None:
-                y_binary = (y_true == focus_class_idx).astype(int)
-                y_score = y_prob[:, focus_class_idx]
-                y_pred_bin = (y_pred == focus_class_idx).astype(int)
+        # store metrics as attributes for plotting later
+        setattr(self, f"{prefix}_roc_curve", (fpr, tpr))
+        setattr(self, f"{prefix}_pr_curve", (rc, pr))
+        setattr(self, f"{prefix}_roc_auc", roc_auc)
+        setattr(self, f"{prefix}_pr_auc", pr_auc)
+        setattr(self, f"{prefix}_pos_freq", pos_freq)
+        setattr(self, f"{prefix}_num_pos", num_pos)
+        setattr(self, f"{prefix}_confusion_matrix", cm)
 
-                precision, recall, _ = precision_recall_curve(y_binary, y_score)
-                pr_auc = average_precision_score(y_binary, y_score)
-                f1 = f1_score(y_binary, y_pred_bin)
-                roc_auc = roc_auc_score(y_binary, y_score)
-                pos_freq = np.mean(y_binary)
-                pr_auc_norm = pr_auc / pos_freq if pos_freq > 0 else np.nan
+        # also store a metrics dict
+        self.metrics = {
+            f"{prefix}_acc": acc,
+            f"{prefix}_f1": f1,
+            f"{prefix}_auc": roc_auc,
+            f"{prefix}_pr_auc": pr_auc,
+            f"{prefix}_pr_auc_norm": pr_auc_norm,
+            f"{prefix}_pos_freq": pos_freq,
+            f"{prefix}_num_pos": num_pos
+        }
 
-                metrics.update({
-                    f"class_{focus_class_idx}_f1": f1,
-                    f"class_{focus_class_idx}_auc": roc_auc,
-                    f"class_{focus_class_idx}_pr_auc": pr_auc,
-                    f"class_{focus_class_idx}_pr_auc_norm": pr_auc_norm,
-                })
+        return self.metrics
 
-        return metrics
+    def plot_roc_pr_curves(self, prefix="test"):
+        plt.figure(figsize=(12, 5))
+
+        fpr, tpr = getattr(self, f"{prefix}_roc_curve")
+        roc_auc = getattr(self, f"{prefix}_roc_auc")
+        plt.subplot(1, 2, 1)
+        plt.plot(fpr, tpr, label=f"ROC AUC={roc_auc:.3f}")
+        plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.ylim(0, 1.05)
+        plt.title(f"ROC Curve - {getattr(self, f'{prefix}_num_pos')} positives")
+        plt.legend()
+
+        rc, pr = getattr(self, f"{prefix}_pr_curve")
+        pr_auc = getattr(self, f"{prefix}_pr_auc")
+        pos_freq = getattr(self, f"{prefix}_pos_freq")
+        plt.subplot(1, 2, 2)
+        plt.plot(rc, pr, label=f"PR AUC={pr_auc:.3f}")
+        plt.axhline(pos_freq, linestyle="--", color="gray")
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.ylim(0, 1.05)
+        plt.title(f"PR Curve - {getattr(self, f'{prefix}_num_pos')} positives")
+        plt.legend()
+
+        plt.tight_layout()
+        plt.show()
 
     def fit_from_datamodule(self, datamodule):
-        datamodule.setup()
-        X_train, y_train = datamodule.train_set.tensors
-        self.fit(X_train.cpu().numpy(), y_train.cpu().numpy())
+        X_tensor, y_tensor = datamodule.train_set.dataset.X_tensor, datamodule.train_set.dataset.y_tensor
+        indices = datamodule.train_set.indices
+        X_train = X_tensor[indices].numpy()
+        y_train = y_tensor[indices].numpy()
+        self.fit(X_train, y_train)
 
     def evaluate_from_datamodule(self, datamodule, split="test"):
-        datamodule.setup()
-
         if split == "val":
-            X, y = datamodule.val_set.tensors
+            subset = datamodule.val_set
         elif split == "test":
-            X, y = datamodule.test_set.tensors
+            subset = datamodule.test_set
         else:
-            raise ValueError(f"Invalid split '{split}'; must be 'val' or 'test'")
+            raise ValueError(f"Invalid split '{split}'")
 
-        return self.evaluate(X.cpu().numpy(), y.cpu().numpy())
+        X_tensor, y_tensor = subset.dataset.X_tensor, subset.dataset.y_tensor
+        indices = subset.indices
+        X_eval = X_tensor[indices].numpy()
+        y_eval = y_tensor[indices].numpy()
+
+        return self.evaluate(X_eval, y_eval, prefix=split)

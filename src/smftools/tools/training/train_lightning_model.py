@@ -5,7 +5,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 def train_lightning_model(
     model,
     datamodule,
-    max_epochs=20,
+    max_epochs=30,
     patience=5,
     monitor_metric="val_loss",
     checkpoint_path=None,
@@ -49,11 +49,11 @@ def train_lightning_model(
         accelerator=accelerator,
         devices=devices,
         log_every_n_steps=10,
+        enable_progress_bar=False
     )
 
     # Fit model with trainer
     trainer.fit(model, datamodule=datamodule)
-
 
     # Test model (if applicable)
     if evaluate_test and hasattr(datamodule, "test_dataloader"):
