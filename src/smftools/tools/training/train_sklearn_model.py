@@ -17,18 +17,8 @@ def train_sklearn_model(
     Returns:
         metrics: dictionary containing evaluation metrics
     """
-    # Prepare data
-    datamodule.setup()
-    
-    # Extract train data
-    train_set = datamodule.train_set
-    X_tensor, y_tensor = train_set.dataset.X_tensor, train_set.dataset.y_tensor
-    indices = train_set.indices
-    X_train = X_tensor[indices].numpy()
-    y_train = y_tensor[indices].numpy()
-
     # Fit model
-    model_wrapper.fit(X_train, y_train)
+    model_wrapper.fit_from_datamodule(datamodule)
 
     # Evaluate
     metrics = {}

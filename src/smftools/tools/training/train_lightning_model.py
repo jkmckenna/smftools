@@ -29,6 +29,8 @@ def train_lightning_model(
         accelerator = "cpu"
         devices = 1
 
+    model.set_training_indices(datamodule)
+
     # Callbacks
     callbacks = [
         EarlyStopping(monitor=monitor_metric, patience=patience, mode="min"),

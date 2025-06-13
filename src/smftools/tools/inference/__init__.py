@@ -1,1 +1,2 @@
 from .lightning_inference import run_lightning_inference
+from .sklearn_inference import run_sklearn_inference
