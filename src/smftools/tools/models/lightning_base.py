@@ -19,6 +19,7 @@ class TorchClassifierWrapper(pl.LightningModule):
     def __init__(
         self,
         model: torch.nn.Module,
+        label_col: str,
         num_classes: int,
         class_names: list=None,
         optimizer_cls=torch.optim.AdamW,
@@ -38,9 +39,11 @@ class TorchClassifierWrapper(pl.LightningModule):
         self.optimizer_kwargs = optimizer_kwargs or {}
         self.criterion = None
         self.lr = lr
+        self.label_col = label_col
         self.num_classes = num_classes
         self.class_names = class_names
         self.focus_class = self._resolve_focus_class(focus_class)
+        self.focus_class_name = focus_class
         self.enforce_eval_balance = enforce_eval_balance
         self.target_eval_freq = target_eval_freq
         self.max_eval_positive = max_eval_positive
@@ -88,6 +91,14 @@ class TorchClassifierWrapper(pl.LightningModule):
             return self.class_names.index(focus_class)
         else:
             raise ValueError(f"focus_class must be int or str, got {type(focus_class)}")
+        
+    def set_training_indices(self, datamodule):
+        """
+        Store obs_names for train/val/test subsets used during training.
+        """
+        self.train_obs_names = datamodule.adata.obs_names[datamodule.train_set.indices].tolist()
+        self.val_obs_names = datamodule.adata.obs_names[datamodule.val_set.indices].tolist()
+        self.test_obs_names = datamodule.adata.obs_names[datamodule.test_set.indices].tolist()
 
     def configure_optimizers(self):
         return self.optimizer_cls(self.parameters(), lr=self.lr, **self.optimizer_kwargs)
@@ -278,6 +289,8 @@ class TorchClassifierWrapper(pl.LightningModule):
             self.test_pr_auc = pr_auc
             self.test_pos_freq = pos_freq
             self.test_num_pos = num_pos
+            self.test_acc = acc
+            self.test_f1 = f1
         elif prefix == 'val':
             pass
 

@@ -11,17 +11,20 @@ class SklearnModelWrapper:
     def __init__(
         self, 
         model, 
-        num_classes, 
+        label_col: str,
+        num_classes: int, 
         class_names=None, 
-        focus_class=1,
-        enforce_eval_balance=False,
-        target_eval_freq=0.3,
+        focus_class: int=1,
+        enforce_eval_balance: bool=False,
+        target_eval_freq: float=0.3,
         max_eval_positive=None
     ):
         self.model = model
+        self.label_col = label_col
         self.num_classes = num_classes
         self.class_names = class_names
         self.focus_class = self._resolve_focus_class(focus_class)
+        self.focus_class_name = focus_class
         self.enforce_eval_balance = enforce_eval_balance
         self.target_eval_freq = target_eval_freq
         self.max_eval_positive = max_eval_positive
@@ -109,6 +112,7 @@ class SklearnModelWrapper:
         acc = np.mean(y_pred == y_true)
 
         # store metrics as attributes for plotting later
+        setattr(self, f"{prefix}_f1", f1)
         setattr(self, f"{prefix}_roc_curve", (fpr, tpr))
         setattr(self, f"{prefix}_pr_curve", (rc, pr))
         setattr(self, f"{prefix}_roc_auc", roc_auc)
@@ -116,6 +120,7 @@ class SklearnModelWrapper:
         setattr(self, f"{prefix}_pos_freq", pos_freq)
         setattr(self, f"{prefix}_num_pos", num_pos)
         setattr(self, f"{prefix}_confusion_matrix", cm)
+        setattr(self, f"{prefix}_acc", acc)
 
         # also store a metrics dict
         self.metrics = {
@@ -160,13 +165,18 @@ class SklearnModelWrapper:
         plt.show()
 
     def fit_from_datamodule(self, datamodule):
+        datamodule.setup()
         X_tensor, y_tensor = datamodule.train_set.dataset.X_tensor, datamodule.train_set.dataset.y_tensor
         indices = datamodule.train_set.indices
         X_train = X_tensor[indices].numpy()
         y_train = y_tensor[indices].numpy()
         self.fit(X_train, y_train)
+        self.train_obs_names = datamodule.adata.obs_names[datamodule.train_set.indices].tolist()
+        self.val_obs_names = datamodule.adata.obs_names[datamodule.val_set.indices].tolist()
+        self.test_obs_names = datamodule.adata.obs_names[datamodule.test_set.indices].tolist()
 
     def evaluate_from_datamodule(self, datamodule, split="test"):
+        datamodule.setup()
         if split == "val":
             subset = datamodule.val_set
         elif split == "test":

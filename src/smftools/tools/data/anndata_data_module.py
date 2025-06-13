@@ -160,6 +160,15 @@ class AnnDataModule(pl.LightningDataModule):
         class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         return torch.tensor(class_weights, dtype=torch.float32)
     
+    def inference_numpy(self):
+        """
+        Return inference data as numpy for use in sklearn inference.
+        """
+        if not self.inference_mode:
+            raise RuntimeError("Must be in inference_mode=True to use inference_numpy()")
+        X_np = self.infer_dataset.X_tensor.numpy()
+        return X_np
+    
     def to_numpy(self):
         """
         Move the AnnDataModule tensors into numpy arrays
@@ -170,8 +179,7 @@ class AnnDataModule(pl.LightningDataModule):
             test_X, test_Y = self.test_set.dataset.numpy(self.test_set.indices)
             return train_X, train_y, val_X, val_y, test_X, test_Y
         else:
-            X_np = self.infer_dataset.dataset.X_tensor.numpy()
-            return X_np
+            return self.inference_numpy()
 
 
 def build_anndata_loader(
