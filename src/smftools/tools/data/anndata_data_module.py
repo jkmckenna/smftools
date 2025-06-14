@@ -11,11 +11,13 @@ class AnnDataDataset(Dataset):
     """
     Generic PyTorch Dataset from AnnData.
     """
-    def __init__(self, adata, tensor_source="X", tensor_key=None, label_col=None):
+    def __init__(self, adata, tensor_source="X", tensor_key=None, label_col=None, window_start=None, window_size=None):
         self.adata = adata
         self.tensor_source = tensor_source
         self.tensor_key = tensor_key
         self.label_col = label_col
+        self.window_start = window_start
+        self.window_size = window_size
         
         if tensor_source == "X":
             X = adata.X
@@ -27,6 +29,9 @@ class AnnDataDataset(Dataset):
             X = adata.obsm[tensor_key]
         else:
             raise ValueError(f"Invalid tensor_source: {tensor_source}")
+        
+        if self.window_start is not None and self.window_size is not None:
+            X = X[:, self.window_start : self.window_start + self.window_size]
         
         X = random_fill_nans(X)
 
@@ -106,7 +111,7 @@ class AnnDataModule(pl.LightningDataModule):
     def __init__(self, adata, tensor_source="X", tensor_key=None, label_col="labels",
                  batch_size=64, train_frac=0.6, val_frac=0.1, test_frac=0.3, random_seed=42,
                  inference_mode=False, split_col="train_val_test_split", split_save_path=None,
-                 load_existing_split=False):
+                 load_existing_split=False, window_start=None, window_size=None, num_workers=None, persistent_workers=False):
         super().__init__()
         self.adata = adata
         self.tensor_source = tensor_source
@@ -122,10 +127,15 @@ class AnnDataModule(pl.LightningDataModule):
         self.split_save_path = split_save_path
         self.load_existing_split = load_existing_split
         self.var_names = adata.var_names.copy()
+        self.window_start = window_start
+        self.window_size = window_size
+        self.num_workers = num_workers
+        self.persistent_workers = persistent_workers
 
     def setup(self, stage=None):
         dataset = AnnDataDataset(self.adata, self.tensor_source, self.tensor_key, 
-                                  None if self.inference_mode else self.label_col)
+                                  None if self.inference_mode else self.label_col,
+                                    window_start=self.window_start, window_size=self.window_size)
 
         if self.inference_mode:
             self.infer_dataset = dataset
@@ -139,14 +149,23 @@ class AnnDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self):
-        return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True)
+        if self.num_workers:
+            return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, persistent_workers=self.persistent_workers)
+        else:
+            return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val_set, batch_size=self.batch_size)
-
+        if self.num_workers:
+            return DataLoader(self.val_set, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=self.persistent_workers)
+        else:
+            return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True)
+        
     def test_dataloader(self):
-        return DataLoader(self.test_set, batch_size=self.batch_size)
-
+        if self.num_workers:
+            return DataLoader(self.test_set, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=self.persistent_workers)
+        else:
+            return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True)
+        
     def predict_dataloader(self):
         if not self.inference_mode:
             raise RuntimeError("Only valid in inference mode")
@@ -189,6 +208,8 @@ def build_anndata_loader(
 ):
     """
     Unified pipeline for both Lightning and raw PyTorch.
+    The lightning loader works for both Lightning and the Sklearn wrapper.
+    Set lightning to False if you want to make data loaders for base PyTorch or base sklearn models
     """
     if lightning:
         return AnnDataModule(
