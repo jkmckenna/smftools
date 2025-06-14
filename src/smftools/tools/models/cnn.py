@@ -33,3 +33,36 @@ class CNNClassifier(BaseTorchModel):
         x = x.view(x.size(0), -1)  # flatten
         x = self.relu(self.fc1(x))
         return self.fc2(x)
+    
+class DeeperCNNClassifier(nn.Module):
+    def __init__(self, input_size, num_classes):
+        super().__init__()
+
+        self.conv_block = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=7, padding=3),  # RF = 7
+            nn.ReLU(),
+
+            nn.Conv1d(32, 64, kernel_size=3, dilation=2, padding=2),
+            nn.ReLU(),
+
+            nn.Conv1d(64, 128, kernel_size=3, dilation=4, padding=4),
+            nn.ReLU(),
+
+            nn.Conv1d(128, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1),  # output shape [B, 128, 1]
+        )
+
+        self.flatten = nn.Flatten()
+        self.fc = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, num_classes if num_classes > 2 else 1)
+        )
+
+    def forward(self, x):
+        x = x.unsqueeze(1)  # (B, 1, L)
+        x = self.conv_block(x)
+        x = self.flatten(x)
+        x = self.fc(x)
+        return x

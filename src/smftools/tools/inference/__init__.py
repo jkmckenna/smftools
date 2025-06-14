@@ -1,2 +1,3 @@
 from .lightning_inference import run_lightning_inference
+from .sliding_window_inference import sliding_window_inference
 from .sklearn_inference import run_sklearn_inference
