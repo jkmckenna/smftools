@@ -3,7 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import (
-    roc_auc_score, precision_recall_curve, auc, f1_score, confusion_matrix
+    roc_auc_score, precision_recall_curve, auc, f1_score, confusion_matrix, roc_curve
 )
 
 class ModelEvaluator:
@@ -154,6 +154,7 @@ class PostInferenceModelEvaluator:
             f1 = f1_score(binary_focus, (y_pred == focus_class).astype(int))
             roc_auc = roc_auc_score(binary_focus, focus_probs)
             pr, rc, _ = precision_recall_curve(binary_focus, focus_probs)
+            fpr, tpr, _ = roc_curve(binary_focus, focus_probs)
             pr_auc = auc(rc, pr)
             pos_freq = binary_focus.mean()
             pr_auc_norm = pr_auc / pos_freq if pos_freq > 0 else np.nan
@@ -162,6 +163,7 @@ class PostInferenceModelEvaluator:
             roc_auc = roc_auc_score(y_true, probs_all, multi_class="ovr", average="macro")
             focus_probs = probs_all[:, focus_class]
             pr, rc, _ = precision_recall_curve(binary_focus, focus_probs)
+            fpr, tpr, _ = roc_curve(binary_focus, focus_probs)
             pr_auc = auc(rc, pr)
             pos_freq = binary_focus.mean()
             pr_auc_norm = pr_auc / pos_freq if pos_freq > 0 else np.nan
@@ -176,6 +178,8 @@ class PostInferenceModelEvaluator:
             "pr_auc_norm": pr_auc_norm,
             "pos_freq": pos_freq,
             "confusion_matrix": cm,
+            "pr_rc_curve": (pr, rc),
+            "roc_curve": (tpr, fpr)
         }
 
         return metrics
@@ -213,7 +217,7 @@ class PostInferenceModelEvaluator:
         for model_name, metrics in self.results.items():
             row = {"model": model_name}
             for k, v in metrics.items():
-                if k != "confusion_matrix":
+                if k not in ["confusion_matrix", "pr_rc_curve", "roc_curve"]:
                     row[k] = v
             records.append(row)
         return pd.DataFrame(records)
