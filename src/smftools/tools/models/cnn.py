@@ -11,8 +11,8 @@ class CNNClassifier(BaseTorchModel):
         kernel_sizes=[3, 3],
         fc_dims=[64],
         use_batchnorm=False,
-        use_pooling=True,
-        dropout=0.0,
+        use_pooling=False,
+        dropout=0.2,
         **kwargs
     ):
         super().__init__(**kwargs)

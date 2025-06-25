@@ -158,13 +158,13 @@ class AnnDataModule(pl.LightningDataModule):
         if self.num_workers:
             return DataLoader(self.val_set, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=self.persistent_workers)
         else:
-            return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True)
+            return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=False)
         
     def test_dataloader(self):
         if self.num_workers:
             return DataLoader(self.test_set, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=self.persistent_workers)
         else:
-            return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True)
+            return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=False)
         
     def predict_dataloader(self):
         if not self.inference_mode:
