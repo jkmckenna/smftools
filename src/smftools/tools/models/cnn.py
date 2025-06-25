@@ -13,6 +13,7 @@ class CNNClassifier(BaseTorchModel):
         use_batchnorm=False,
         use_pooling=False,
         dropout=0.2,
+        gradcam_layer_idx=-1,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -61,8 +62,63 @@ class CNNClassifier(BaseTorchModel):
 
         self.fc = nn.Sequential(*fc_layers)
 
+        # Build gradcam hooks
+        self.gradcam_layer_idx = gradcam_layer_idx
+        self.gradcam_activations = None
+        self.gradcam_gradients = None
+        if not hasattr(self, "_hooks_registered"):
+            self._register_gradcam_hooks()
+            self._hooks_registered = True
+
     def forward(self, x):
         x = x.unsqueeze(1)  # [B, 1, L]
         x = self.conv(x)
         x = x.view(x.size(0), -1)
         return self.fc(x)
+    
+    def _register_gradcam_hooks(self):
+        def forward_hook(module, input, output):
+            self.gradcam_activations = output.detach()
+
+        def backward_hook(module, grad_input, grad_output):
+            self.gradcam_gradients = grad_output[0].detach()
+
+        target_layer = list(self.conv.children())[self.gradcam_layer_idx]
+        target_layer.register_forward_hook(forward_hook)
+        target_layer.register_full_backward_hook(backward_hook)
+
+    def compute_gradcam(self, x, class_idx=None):
+        self.zero_grad()
+
+        x = x.detach().clone().requires_grad_().to(self.device)
+
+        was_training = self.training
+        self.eval()  # disable dropout etc.
+
+        output = self.forward(x)  # shape (B, C) or (B, 1)
+        
+        if class_idx is None:
+            class_idx = output.argmax(dim=1)
+        
+        if output.shape[1] == 1:
+            target = output.view(-1)  # shape (B,)
+        else:
+            target = output[torch.arange(output.shape[0]), class_idx]
+        
+        target.sum().backward(retain_graph=True)
+
+        # restore training mode
+        if was_training:
+            self.train()
+
+        # get activations and gradients (set these via forward hook!)
+        activations = self.gradcam_activations  # (B, C, L)
+        gradients = self.gradcam_gradients      # (B, C, L)
+
+        weights = gradients.mean(dim=2, keepdim=True)  # (B, C, 1)
+        cam = (weights * activations).sum(dim=1)       # (B, L)
+
+        cam = torch.relu(cam)
+        cam = cam / (cam.max(dim=1, keepdim=True).values + 1e-6)
+
+        return cam
