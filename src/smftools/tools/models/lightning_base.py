@@ -36,7 +36,7 @@ class TorchClassifierWrapper(pl.LightningModule):
         self.model = model
         self.save_hyperparameters(ignore=['model'])  # logs all except actual model instance
         self.optimizer_cls = optimizer_cls
-        self.optimizer_kwargs = optimizer_kwargs or {}
+        self.optimizer_kwargs = optimizer_kwargs or {"weight_decay": 1e-4}
         self.criterion = None
         self.lr = lr
         self.label_col = label_col
@@ -54,10 +54,16 @@ class TorchClassifierWrapper(pl.LightningModule):
         if class_weights is not None:
             if num_classes == 2:
                 # BCEWithLogits uses pos_weight, expects a scalar or tensor
-                self.criterion_kwargs["pos_weight"] = torch.tensor(class_weights[self.focus_class], dtype=torch.float32)
+                if torch.is_tensor(class_weights[self.focus_class]):
+                    self.criterion_kwargs["pos_weight"] = class_weights[self.focus_class]
+                else:
+                    self.criterion_kwargs["pos_weight"] = torch.tensor(class_weights[self.focus_class], dtype=torch.float32, device=self.device)
             else:
                 # CrossEntropyLoss expects weight tensor of size C
-                self.criterion_kwargs["weight"] = torch.tensor(class_weights, dtype=torch.float32)
+                if torch.is_tensor(class_weights):
+                    self.criterion_kwargs["weight"] = class_weights
+                else:
+                    self.criterion_kwargs["weight"] = torch.tensor(class_weights, dtype=torch.float32)
 
 
         self._val_outputs = []
@@ -272,6 +278,7 @@ class TorchClassifierWrapper(pl.LightningModule):
             f1 = f1_score(y_true, preds, average="macro")
             roc_auc = roc_auc_score(y_true, probs, multi_class="ovr", average="macro")
             focus_probs = probs[:, self.focus_class]
+            fpr, tpr, _ = roc_curve((y_true == self.focus_class).astype(int), focus_probs)
 
         # PR AUC for focus class
         pr, rc, _ = precision_recall_curve(binary_focus, focus_probs)

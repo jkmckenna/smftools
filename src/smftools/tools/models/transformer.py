@@ -6,10 +6,21 @@ from ..utils.grl import grad_reverse
 
     
 class BaseTransformer(BaseTorchModel):
-    def __init__(self, input_dim, model_dim, num_heads=4, num_layers=2, seq_len=None, use_learnable_pos=False, **kwargs):
+    def __init__(self, 
+                 input_dim, 
+                 model_dim=64, 
+                 num_heads=4, 
+                 num_layers=2, 
+                 dropout=0.2,
+                 seq_len=None, 
+                 use_learnable_pos=False, 
+                 **kwargs):
         super().__init__(**kwargs)
         # Input FC layer to map D_input to D_model
+        self.model_dim = model_dim
         self.input_fc = nn.Linear(input_dim, model_dim)
+        self.ff_dim = model_dim * 4
+        self.dropout = dropout
 
         if use_learnable_pos:
             assert seq_len is not None, "Must provide seq_len if use_learnable_pos=True"
@@ -20,7 +31,7 @@ class BaseTransformer(BaseTorchModel):
             self.pos_embed = None
 
         # Specify the transformer encoder structure
-        encoder_layer = nn.TransformerEncoderLayer(d_model=model_dim, nhead=num_heads, batch_first=False)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=model_dim, nhead=num_heads, batch_first=True, dim_feedforward=self.ff_dim, dropout=self.dropout)
         # Stack the transformer encoder layers
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
@@ -29,6 +40,13 @@ class BaseTransformer(BaseTorchModel):
         x: (B, S, D_input)
         mask: (B, S) optional
         """
+        if x.dim() == 2:  # (S, D) or (B, D)
+            x = x.unsqueeze(0)  # assume B=1
+        if x.dim() == 1:  # (D,)
+            x = x.unsqueeze(0).unsqueeze(0)  # B=1, S=1
+        if x.shape[-1] == 1 and x.shape[1] == self.input_fc.in_features:
+            x = x.transpose(1, 2)  # (B, D, 1) → (B, 1, D)
+
         x = self.input_fc(x)  # (B, S, D_model)
         if self.pos_embed is not None:
             x = x + self.pos_embed.unsqueeze(0)  # (B, S, D_model)
@@ -36,24 +54,33 @@ class BaseTransformer(BaseTorchModel):
             x = self.pos_encoder(x)  # (B, S, D_model)
         if mask is not None:
             x = x * mask.unsqueeze(-1)  # (B, S, D_model)
-        x = x.permute(1, 0, 2)  # (S, B, D_model)
-        encoded = self.transformer(x)  # (S, B, D_model)
-        return encoded.permute(1, 0, 2)  # (B, S, D_model)
+        encoded = self.transformer(x)  # (B, S, D_model)
+        return encoded  # (B, S, D_model)
     
 class TransformerClassifier(BaseTransformer):
-    def __init__(self, input_dim, model_dim, num_classes, num_heads=4, num_layers=2, **kwargs):
-        super().__init__(input_dim, model_dim, num_heads, num_layers, **kwargs)
+    def __init__(self, 
+                 input_dim, 
+                 num_classes, 
+                 **kwargs):
+        super().__init__(input_dim, **kwargs)
         # Classification head
         output_size = 1 if num_classes == 2 else num_classes
-        self.cls_head = nn.Linear(model_dim, output_size)
+        self.cls_head = nn.Linear(self.model_dim, output_size)
 
     def forward(self, x):
         """
         x: (batch, seq_len, input_dim)
         """
+        if x.dim() == 2:  # shape (B, S)
+            x = x.unsqueeze(-1)  # → (B, S, 1)
+        elif x.dim() == 1:
+            x = x.unsqueeze(0).unsqueeze(-1)  # just in case (S,) → (1, S, 1)
+        else:
+            pass
         encoded = self.encode(x) # -> (B, S, D_model)
         pooled = encoded.mean(dim=1) # -> (B, D_model)
-        return self.cls_head(pooled) # -> (B, C)
+        out = self.cls_head(pooled) # -> (B, C)
+        return out
     
 class DANNTransformerClassifier(TransformerClassifier):
     def __init__(self, input_dim, model_dim, num_classes, n_domains, **kwargs):
