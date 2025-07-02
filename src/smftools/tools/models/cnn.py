@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from .base import BaseTorchModel
+import numpy as np
 
 class CNNClassifier(BaseTorchModel):
     def __init__(
@@ -122,3 +123,16 @@ class CNNClassifier(BaseTorchModel):
         cam = cam / (cam.max(dim=1, keepdim=True).values + 1e-6)
 
         return cam
+    
+    def apply_gradcam_to_adata(self, dataloader, adata, obsm_key="gradcam", device="cpu"):
+        self.to(device)
+        self.eval()
+        cams = []
+
+        for batch in dataloader:
+            x = batch[0].to(device)
+            cam_batch = self.compute_gradcam(x)
+            cams.append(cam_batch.cpu().numpy())
+
+        cams = np.concatenate(cams, axis=0)  # shape: [n_obs, input_len]
+        adata.obsm[obsm_key] = cams
