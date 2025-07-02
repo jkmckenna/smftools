@@ -190,3 +190,70 @@ class SklearnModelWrapper:
         y_eval = y_tensor[indices].numpy()
 
         return self.evaluate(X_eval, y_eval, prefix=split)
+    
+    def compute_shap(self, X, background=None, nsamples=100, target_class=None):
+        """
+        Compute SHAP values on input X, optionally for a specified target class.
+        
+        Parameters
+        ----------
+        X : array-like
+            Input features
+        background : array-like
+            SHAP background
+        nsamples : int
+            Number of samples for kernel approximation
+        target_class : int, optional
+            If None, uses model predicted class
+        """
+        import shap
+
+        # choose explainer
+        if hasattr(self.model, "tree_") or hasattr(self.model, "estimators_"):
+            explainer = shap.TreeExplainer(self.model, data=background)
+        else:
+            if background is None:
+                background = shap.kmeans(X, 10)
+            explainer = shap.KernelExplainer(self.model.predict_proba, background)
+
+        # determine class
+        if target_class is None:
+            preds = self.model.predict(X)
+            target_class = preds
+
+        # get shap values
+        shap_values = explainer.shap_values(X, nsamples=nsamples)
+        
+        # pick relevant class
+        if isinstance(shap_values, list):
+            # multiclass returns a list of arrays
+            if isinstance(target_class, int):
+                return shap_values[target_class]
+            elif isinstance(target_class, np.ndarray):
+                # per-sample target
+                selected = np.array([
+                    shap_values[c][i]
+                    for i, c in enumerate(target_class)
+                ])
+                return selected
+        else:
+            return shap_values  # binary
+
+    def apply_shap_to_adata(self, dataloader, adata, background=None, adata_key="shap_values", target_class=None):
+        """
+        Compute SHAP from a DataLoader and store in AnnData if provided.
+        """
+        X_batches = []
+
+        for batch in dataloader:
+            X = batch[0].detach().cpu().numpy()
+            X_batches.append(X)
+
+        X_full = np.concatenate(X_batches, axis=0)
+
+        shap_values = self.compute_shap(X_full, background=background, target_class=target_class)
+
+        if adata is not None:
+            adata.obsm[adata_key] = shap_values.values
+
+        return shap_values
