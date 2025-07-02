@@ -3,6 +3,7 @@ import torch.nn as nn
 from .base import BaseTorchModel
 from .positional import PositionalEncoding 
 from ..utils.grl import grad_reverse
+import numpy as np
 
 class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
@@ -26,7 +27,6 @@ class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):
         # Save attention weights to module
         self.attn_weights = attn_weights  # Save to layer
         return src
-
     
 class BaseTransformer(BaseTorchModel):
     def __init__(self, 
@@ -158,6 +158,41 @@ class BaseTransformer(BaseTorchModel):
         if head_idx is not None:
             attn = attn[:, head_idx]  # [B, S, S]
         return attn
+    
+    def apply_attn_interpretations_to_adata(self, dataloader, adata, 
+                                            obsm_key_grad="attn_grad", 
+                                            obsm_key_rollout="attn_rollout",
+                                            device="cpu"):
+        self.to(device)
+        self.eval()
+        grad_maps = []
+        rollout_maps = []
+
+        for batch in dataloader:
+            x = batch[0].to(device)
+            x.requires_grad_()
+
+            self.reset_attn_buffers()
+            logits = self(x)
+
+            if logits.shape[1] == 1:
+                target_score = logits.squeeze()
+            else:
+                target_score = logits.max(dim=1).values
+
+            target_score.sum().backward()
+
+            grad = self.compute_attn_grad()  # [B, S+1]
+            if self.use_cls_token:
+                grad = grad[:, 1:]  # ignore CLS token
+            grad_maps.append(grad.detach().cpu().numpy())
+
+        grad_concat = np.concatenate(grad_maps, axis=0)
+        adata.obsm[obsm_key_grad] = grad_concat
+
+        # add per-row normalized version
+        grad_normed = grad_concat / (np.max(grad_concat, axis=1, keepdims=True) + 1e-8)
+        adata.obsm[f"{obsm_key_grad}_normalized"] = grad_normed
     
 class TransformerClassifier(BaseTransformer):
     def __init__(self, 
