@@ -221,25 +221,32 @@ class SklearnModelWrapper:
             preds = self.model.predict(X)
             target_class = preds
 
-        # get shap values
-        shap_values = explainer.shap_values(X, nsamples=nsamples)
-        
-        # pick relevant class
-        if isinstance(shap_values, list):
-            # multiclass returns a list of arrays
-            if isinstance(target_class, int):
-                return shap_values[target_class]
-            elif isinstance(target_class, np.ndarray):
-                # per-sample target
-                selected = np.array([
-                    shap_values[c][i]
-                    for i, c in enumerate(target_class)
-                ])
-                return selected
+        if isinstance(explainer, shap.TreeExplainer):
+            shap_values = explainer.shap_values(X)
         else:
-            return shap_values  # binary
+            shap_values = explainer.shap_values(X, nsamples=nsamples)
+        
+        if isinstance(shap_values, np.ndarray):
+            if shap_values.ndim == 3:
+                if isinstance(target_class, int):
+                    return shap_values[:, :, target_class]
+                elif isinstance(target_class, np.ndarray):
+                    # target_class is per-sample
+                    if np.any(target_class >= shap_values.shape[2]):
+                        raise ValueError(f"target_class values exceed {shap_values.shape[2]}")
+                    selected = np.array([
+                        shap_values[i, :, c]
+                        for i, c in enumerate(target_class)
+                    ])
+                    return selected
+                else:
+                    # fallback to class 0
+                    return shap_values[:, :, 0]
+            else:
+                # 2D shape (samples, features), no class dimension
+                return shap_values
 
-    def apply_shap_to_adata(self, dataloader, adata, background=None, adata_key="shap_values", target_class=None):
+    def apply_shap_to_adata(self, dataloader, adata, background=None, adata_key="shap_values", target_class=None, normalize=True):
         """
         Compute SHAP from a DataLoader and store in AnnData if provided.
         """
@@ -254,6 +261,13 @@ class SklearnModelWrapper:
         shap_values = self.compute_shap(X_full, background=background, target_class=target_class)
 
         if adata is not None:
-            adata.obsm[adata_key] = shap_values.values
+            adata.obsm[adata_key] = shap_values
 
-        return shap_values
+        if normalize:
+            arr = shap_values
+            # row-wise normalization
+            row_max = np.max(np.abs(arr), axis=1, keepdims=True)
+            row_max[row_max == 0] = 1  # avoid divide by zero
+            normalized = arr / row_max
+
+            adata.obsm[f"{adata_key}_normalized"] = normalized
