@@ -5,7 +5,7 @@ def create_nan_mask_from_X(adata, new_layer_name="nan_mask"):
     import numpy as np
     nan_mask = np.isnan(adata.X).astype(int)
     adata.layers[new_layer_name] = nan_mask
-    print(f"✅ Created '{new_layer_name}' layer based on NaNs in adata.X")
+    print(f"Created '{new_layer_name}' layer based on NaNs in adata.X")
     return adata
 
 def create_nan_or_non_gpc_mask(adata, obs_column, new_layer_name="nan_or_non_gpc_mask"):
@@ -22,7 +22,7 @@ def create_nan_or_non_gpc_mask(adata, obs_column, new_layer_name="nan_or_non_gpc
     mask = np.maximum(nan_mask, combined_mask)
     adata.layers[new_layer_name] = mask
 
-    print(f"✅ Created '{new_layer_name}' layer based on NaNs in adata.X and non-GpC regions using {obs_column}")
+    print(f"Created '{new_layer_name}' layer based on NaNs in adata.X and non-GpC regions using {obs_column}")
     return adata
 
 def combine_layers(adata, input_layers, output_layer, negative_mask=None, values=None, binary_mode=False):
@@ -64,6 +64,6 @@ def combine_layers(adata, input_layers, output_layer, negative_mask=None, values
         combined[mask == 0] = 0
 
     adata.layers[output_layer] = combined
-    print(f"✅ Combined layers into {output_layer} {'(binary)' if binary_mode else f'with values {values}'}")
+    print(f"Combined layers into {output_layer} {'(binary)' if binary_mode else f'with values {values}'}")
 
     return adata
