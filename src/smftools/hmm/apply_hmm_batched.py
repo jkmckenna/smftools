@@ -8,9 +8,6 @@ def apply_hmm_batched(adata, model, obs_column, layer=None, footprints=True, acc
     Applies an HMM model to an AnnData object using tensor-based sequence inputs.
     If multiple methbases are passed, generates a combined feature set.
     """
-    import numpy as np
-    import torch
-    from tqdm import tqdm
 
     model.to(device)
 
@@ -150,6 +147,8 @@ def apply_hmm_batched(adata, model, obs_column, layer=None, footprints=True, acc
                     adata.obs.at[idx, f"CpG_all_cpg_features"].append([start, length, prob])
 
     # --- Binarization + Distance ---
+    coordinates = adata.var_names.astype(int).values
+    
     for feature in tqdm(all_features, desc="Finalizing Layers"):
         bin_matrix = np.zeros((adata.shape[0], adata.shape[1]), dtype=int)
         counts = np.zeros(adata.shape[0], dtype=int)
@@ -158,9 +157,11 @@ def apply_hmm_batched(adata, model, obs_column, layer=None, footprints=True, acc
                 intervals = []
             for start, length, prob in intervals:
                 if prob > threshold:
-                    bin_matrix[row_idx, start:start+length] = 1
+                    start_idx = np.searchsorted(coordinates, start, side="left")
+                    end_idx = np.searchsorted(coordinates, start + length - 1, side="right")
+                    bin_matrix[row_idx, start_idx:end_idx] = 1
                     counts[row_idx] += 1
-        adata.layers[f"{feature}"] = bin_matrix
+        adata.layers[feature] = bin_matrix
         adata.obs[f"n_{feature}"] = counts
         adata.obs[f"{feature}_distances"] = calculate_batch_distances(adata.obs[feature].tolist(), threshold)
 
@@ -202,7 +203,6 @@ def classify_batch(predicted_states_batch, probabilities_batch, coordinates, cla
     Returns:
         List of classifications for each sequence.
     """
-    import numpy as np
 
     state_labels = ["Non-Methylated", "Methylated"]
     target_idx = state_labels.index(target_state)

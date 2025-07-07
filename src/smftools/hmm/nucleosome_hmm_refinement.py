@@ -56,7 +56,7 @@ def refine_nucleosome_calls(adata, layer_name, nan_mask_layer, hexamer_size=120,
     adata.layers[f"{layer_name}_hexamers"] = hexamer_layer
     adata.layers[f"{layer_name}_octamers"] = octamer_layer
 
-    print(f"✅ Added layers: {layer_name}_hexamers and {layer_name}_octamers")
+    print(f"Added layers: {layer_name}_hexamers and {layer_name}_octamers")
     return adata
 
 def infer_nucleosomes_in_large_bound(adata, large_bound_layer, combined_nuc_layer, nan_mask_layer, nuc_size=147, linker_size=50, exclusion_buffer=30, device="cpu"):
@@ -100,5 +100,5 @@ def infer_nucleosomes_in_large_bound(adata, large_bound_layer, combined_nuc_laye
                         pos_cursor += 1
 
     adata.layers[f"{large_bound_layer}_phased_nucleosomes"] = inferred_layer
-    print(f"✅ Added layer: {large_bound_layer}_phased_nucleosomes")
+    print(f"Added layer: {large_bound_layer}_phased_nucleosomes")
     return adata
