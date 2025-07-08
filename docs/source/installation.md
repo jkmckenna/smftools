@@ -47,7 +47,10 @@ A python virtual environment can be created as an alternative to conda. I like t
 ```shell
 python -m venv venv-smftools
 source venv-smftools/bin/activate
-pip install .
+pip install --upgrade pip
+pip install -e .
+pip install ipykernel jupyter
+python -m ipykernel install --user --name=venv-smftools --display-name "Python (smftools)"
 ```
 
 Subsequent use of the installed version of smftools can be run by changing to the smftools directory and activating the venv:

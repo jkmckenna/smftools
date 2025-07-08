@@ -1,18 +1,11 @@
 # Basic Usage
 
-Import SmfTools:
-
-```
-import smftools as smf
-```
-
 ## Informatics Module Usage
 
 Many use cases for smftools begin here. For most users, the call below will be sufficient to convert any raw SMF dataset to an AnnData object:
 
 ```
-config_path = "/Path_to_experiment_config.csv"
-smf.inform.load_adata(config_path)
+smftools load "/Path_to_experiment_config.csv"
 ```
 
 ## Loading AnnData objects created by the informatics module
@@ -20,6 +13,7 @@ smf.inform.load_adata(config_path)
 After creating an AnnData object holding your experiment's SMF data, you can load the AnnData object as so:
 
 ```
+import smftools as smf
 import anndata as ad
 input_adata = "/Path_to_experiment_AnnData.h5ad.gz"
 adata = ad.read_h5ad(input_file)

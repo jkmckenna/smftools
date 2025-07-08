@@ -43,6 +43,7 @@ dependencies = [
     "anndata>=0.10.0",
     "biopython>=1.79",
     "captum",
+    "click",
     "fastcluster",
     "hydra-core",
     "igraph",
@@ -72,6 +73,9 @@ dynamic = ["version"]
 [project.urls]
 Source = "https://github.com/jkmckenna/smftools"
 Documentation = "https://smftools.readthedocs.io/"
+
+[project.scripts]
+smftools = "smftools.cli:cli"
 
 [project.optional-dependencies]
 tests = [
