@@ -260,6 +260,11 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
         adata.obs_names = bin_df.index.astype(str)
         adata.var_names = bin_df.columns.astype(str)
         adata.obs["Sample"] = [sample] * len(adata)
+        try:
+            barcode = sample.split('barcode')[1]
+        except:
+            barcode = np.nan
+        adata.obs["Barcode"] = [int(barcode)] * len(adata)
         adata.obs["Reference"] = [chromosome] * len(adata)
         adata.obs["Strand"] = [strand] * len(adata)
         adata.obs["Dataset"] = [mod_type] * len(adata)

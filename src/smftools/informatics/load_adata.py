@@ -20,6 +20,7 @@ def load_adata(config_path):
     import os
     import numpy as np
     import anndata as ad
+    import scanpy as sc
     from pathlib import Path
 
     ################################### General params and input organization ###################################
@@ -268,7 +269,7 @@ def load_adata(config_path):
             deaminase_footprinting = True
         else:
             deaminase_footprinting = False
-        final_adata, final_adata_path = converted_BAM_to_adata_II(fasta, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device, deaminase_footprinting) 
+        final_adata, final_adata_path = converted_BAM_to_adata_II(fasta, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device, threads, deaminase_footprinting) 
     else:
         if os.path.isdir(mod_bed_dir):
             print(mod_bed_dir + ' already exists, skipping making modbeds')
@@ -290,6 +291,11 @@ def load_adata(config_path):
         pass
     else:
         final_adata = ad.read_h5ad(final_adata_path)
+
+    cols = final_adata.obs.columns
+    for col in cols:
+        final_adata.obs[col] = final_adata.obs[col].astype('category')
+
     # Adding read length, read quality, and reference length metadata to adata object.
     read_metrics = {}
     for bam_file in bam_files:
@@ -314,17 +320,134 @@ def load_adata(config_path):
             reference_lengths.append(value) 
                        
     # Add the new column to adata.obs
-    final_adata.obs['query_read_length'] = query_read_length_values
-    final_adata.obs['query_read_quality'] = query_read_quality_values
-    final_adata.obs['query_length_to_reference_length_ratio'] = np.array(query_read_length_values) / np.array(reference_lengths)
+    final_adata.obs['read_length'] = query_read_length_values
+    final_adata.obs['read_quality'] = query_read_quality_values
+    final_adata.obs['read_length_to_reference_length_ratio'] = np.array(query_read_length_values) / np.array(reference_lengths)
 
     if smf_modality == 'deaminase':
         final_adata.obs['Raw_deamination_signal'] = np.nansum(final_adata.X, axis=1)
-        final_adata.obs['Raw_per_base_deamination_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['query_read_length']
+        final_adata.obs['Raw_per_base_deamination_average'] = final_adata.obs['Raw_deamination_signal'] / final_adata.obs['read_length']
     else:
         final_adata.obs['Raw_methylation_signal'] = np.nansum(final_adata.X, axis=1)
-        final_adata.obs['Raw_per_base_methylation_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['query_read_length']
+        final_adata.obs['Raw_per_base_methylation_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['read_length']
+
     ###############################
+
+    ########## Basic Preprocessing #############
+    from ..preprocessing import append_C_context, calculate_coverage, clean_NaN
+    if smf_modality == 'direct':
+        native = True
+    else:
+        native = False
+
+    ## Add cytosine context to each position for each Reference_strand
+    append_C_context(final_adata, obs_column='Reference_strand', use_consensus=False, native=native)
+
+    ## Calculate read methlation statistics
+    if smf_modality == 'conversion':
+        from ..preprocessing import calculate_converted_read_methylation_stats, filter_converted_reads_on_methylation
+        calculate_converted_read_methylation_stats(final_adata, "Reference_strand", "Sample")
+        ## Filter reads on methylation statistics
+        final_adata = filter_converted_reads_on_methylation(final_adata, valid_SMF_site_threshold=0.8, min_SMF_threshold=0.05, max_SMF_threshold=1)
+
+    calculate_coverage(final_adata, obs_column='Reference_strand', position_nan_threshold=0.9)
+
+    ## Add layers with various NaN replacement strategies from the primary data layer
+    clean_NaN(final_adata)
+
+    ## Add layers to adata that are the binary GpC, CpG, any C methylation/deamination patterns
+    if smf_modality != 'direct':
+        if smf_modality == 'conversion':
+            deaminase = False
+        else:
+            deaminase = True
+        references = final_adata.obs['Reference_strand'].cat.categories
+        # Step 1: Define reference → GpC and CpG site annotation columns
+        reference_to_gpc_column = {reference: f"{reference}_GpC_site" for reference in references}
+        reference_to_cpg_column = {reference: f"{reference}_CpG_site" for reference in references}
+        reference_to_c_column = {reference: f"{reference}_any_C_site" for reference in references}
+
+        # Step 2: Precompute per-reference var masks
+        gpc_var_masks = {
+            ref: final_adata.var[col].values.astype(bool)
+            for ref, col in reference_to_gpc_column.items()
+        }
+        cpg_var_masks = {
+            ref: final_adata.var[col].values.astype(bool)
+            for ref, col in reference_to_cpg_column.items()
+        }
+
+        c_var_masks = {
+            ref: final_adata.var[col].values.astype(bool)
+            for ref, col in reference_to_c_column.items()
+        }
+
+        # Step 3: Build row-level masks
+        n_obs, n_vars = final_adata.shape
+        gpc_row_mask = np.zeros((n_obs, n_vars), dtype=bool)
+        cpg_row_mask = np.zeros((n_obs, n_vars), dtype=bool)
+        c_row_mask = np.zeros((n_obs, n_vars), dtype=bool)
+
+        for ref in reference_to_gpc_column:
+            row_indices = final_adata.obs["Reference_strand"] == ref
+            gpc_row_mask[row_indices.values, :] = gpc_var_masks[ref]
+            cpg_row_mask[row_indices.values, :] = cpg_var_masks[ref]
+            c_row_mask[row_indices.values, :] = c_var_masks[ref]
+
+        # Step 4: Mask adata.X
+        X = final_adata.X.toarray() if not isinstance(final_adata.X, np.ndarray) else final_adata.X
+        masked_gpc_X = np.where(gpc_row_mask, X, np.nan)
+        masked_cpg_X = np.where(cpg_row_mask, X, np.nan)
+        masked_c_X = np.where(c_row_mask, X, np.nan)
+
+        # Step 5: Store in layers
+        final_adata.layers['GpC_site_binary'] = masked_gpc_X
+        final_adata.layers['CpG_site_binary'] = masked_cpg_X
+        final_adata.layers['GpC_CpG_combined_site_binary'] = masked_gpc_X + masked_cpg_X
+        final_adata.layers['C_site_binary'] = masked_c_X
+
+        # ## Basic clustermap plotting
+        from ..plotting import combined_hmm_raw_clustermap
+        clustermap_results = combined_hmm_raw_clustermap(final_adata, sample_col='Sample', hmm_feature_layer='C_site_binary', 
+                                        layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_hmm="coolwarm", 
+                                        cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=20, min_length=400, 
+                                        sample_mapping=None, save_path=None, sort_by='gpc', deaminase=deaminase)
+        
+        ## Basic PCA/UMAP
+        from ..tools import calculate_umap
+        var_filters = []
+        for ref in references:
+            var_filters += [f'{ref}_any_C_site']
+        final_adata = calculate_umap(final_adata, layer='nan_half', var_filters=var_filters, n_pcs=10, knn_neighbors=15)
+
+        ## Clustering
+        sc.tl.leiden(final_adata, resolution=0.1, flavor="igraph", n_iterations=2)
+
+        # Plotting UMAP
+        sc.pl.umap(final_adata, color=['leiden', 'Sample'], palette='Set1')
+
+    ###############################
+
+    ########## Positional analyses ############
+    from ..tools.read_stats import binary_autocorrelation_with_spacing
+    if smf_modality != 'direct':
+        positions = final_adata.var_names.astype(int).values
+        site_types = ['GpC', 'CpG', 'C']
+        for site_type in site_types:
+            X = final_adata.layers[f"{site_type}_site_binary"]
+            max_lag = 500
+
+            autocorr_matrix = np.array([
+                binary_autocorrelation_with_spacing(row, positions, max_lag=max_lag)
+                for row in X
+            ])
+
+            final_adata.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
+            final_adata.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
+    else:
+        pass
+    ###############################
+
 
     ############ Save final adata ##############
     print('Saving final adata')

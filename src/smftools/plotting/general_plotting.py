@@ -33,7 +33,9 @@ def combined_hmm_raw_clustermap(
     save_path=None,
     normalize_hmm=False,
     sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
-    bins=None
+    bins=None,
+    deaminase=False,
+    min_signal=0
 ):
     import scipy.cluster.hierarchy as sch
     import pandas as pd
@@ -44,6 +46,10 @@ def combined_hmm_raw_clustermap(
     import os
 
     results = []
+    if deaminase:
+        signal_type = 'deamination'
+    else:
+        signal_type = 'methylation'
 
     for ref in adata.obs["Reference_strand"].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
@@ -51,15 +57,15 @@ def combined_hmm_raw_clustermap(
                 subset = adata[
                     (adata.obs['Reference_strand'] == ref) &
                     (adata.obs[sample_col] == sample) &
-                    (adata.obs['query_read_quality'] >= min_quality) &
+                    (adata.obs['read_quality'] >= min_quality) &
                     (adata.obs['read_length'] >= min_length) &
-                    (adata.obs['Raw_methylation_signal'] >= 20)
+                    (adata.obs[f'Raw_{signal_type}_signal'] >= min_signal)
                 ]
                 
                 subset = subset[:, subset.var[f'position_in_{ref}'] == True]
 
                 if subset.shape[0] == 0:
-                    print(f"  ❌ No reads left after filtering for {sample} - {ref}")
+                    print(f"  No reads left after filtering for {sample} - {ref}")
                     continue
 
                 if bins:

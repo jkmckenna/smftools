@@ -68,3 +68,46 @@ def calculate_row_entropy(
 
     entropy_key = f"{output_key}_entropy"
     adata.obs.loc[row_indices, entropy_key] = entropy_values
+
+def binary_autocorrelation_with_spacing(row, positions, max_lag=1000):
+    """
+    Compute autocorrelation within a read using real genomic spacing from `positions`.
+    Only valid (non-NaN) positions are considered.
+    Output is indexed by genomic lag (up to max_lag).
+    """
+    from collections import defaultdict
+    import numpy as np
+    # Get valid positions and values
+    valid_mask = ~np.isnan(row)
+    x = row[valid_mask]
+    pos = positions[valid_mask]
+    n = len(x)
+
+    if n < 2:
+        return np.full(max_lag + 1, np.nan)
+
+    x_mean = x.mean()
+    var = np.sum((x - x_mean)**2)
+    if var == 0:
+        return np.full(max_lag + 1, np.nan)
+
+    # Collect values by lag
+    lag_sums = defaultdict(float)
+    lag_counts = defaultdict(int)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            lag = abs(pos[j] - pos[i])
+            if lag > max_lag:
+                continue
+            product = (x[i] - x_mean) * (x[j] - x_mean)
+            lag_sums[lag] += product
+            lag_counts[lag] += 1
+
+    # Normalize to get autocorrelation
+    autocorr = np.full(max_lag + 1, np.nan)
+    for lag in range(max_lag + 1):
+        if lag_counts[lag] > 0:
+            autocorr[lag] = lag_sums[lag] / var
+
+    return autocorr
