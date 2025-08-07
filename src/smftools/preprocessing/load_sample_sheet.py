@@ -13,7 +13,7 @@ def load_sample_sheet(adata, sample_sheet_path, mapping_key_column='obs_names', 
     """
     import pandas as pd
 
-    print('🔹 Loading sample sheet...')
+    print('Loading sample sheet...')
     df = pd.read_csv(sample_sheet_path)
     df[mapping_key_column] = df[mapping_key_column].astype(str)
     
@@ -25,7 +25,7 @@ def load_sample_sheet(adata, sample_sheet_path, mapping_key_column='obs_names', 
 
     value_columns = [col for col in df.columns if col != mapping_key_column]
     
-    print(f'🔹 Appending metadata columns: {value_columns}')
+    print(f'Appending metadata columns: {value_columns}')
     df = df.set_index(mapping_key_column)
 
     for col in value_columns:
@@ -34,5 +34,5 @@ def load_sample_sheet(adata, sample_sheet_path, mapping_key_column='obs_names', 
             mapped = mapped.astype('category')
         adata.obs[col] = mapped
 
-    print('✅ Sample sheet metadata successfully added as categories.' if as_category else '✅ Metadata added.')
+    print('Sample sheet metadata successfully added as categories.' if as_category else 'Metadata added.')
     return adata
