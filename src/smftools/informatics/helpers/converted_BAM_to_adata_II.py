@@ -22,7 +22,7 @@ from .ohe_batching import ohe_batching
 if __name__ == "__main__":
     multiprocessing.set_start_method("forkserver", force=True)
 
-def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device='cpu', num_threads=8):
+def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device='cpu', num_threads=8, deaminase_footprinting=False):
     """
     Converts BAM files into an AnnData object by binarizing modified base identities.
 
@@ -34,6 +34,7 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
         conversion_types (list): List of modification types (e.g., ['unconverted', '5mC', '6mA']).
         bam_suffix (str): File suffix for BAM files.
         num_threads (int): Number of parallel processing threads.
+        deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
 
     Returns:
         str: Path to the final AnnData object.
@@ -72,7 +73,7 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
     records_to_analyze = filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold)
 
     ## Process BAMs in Parallel
-    final_adata = process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, tmp_dir, h5_dir, num_threads, max_reference_length, device)
+    final_adata = process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, h5_dir, num_threads, max_reference_length, device, deaminase_footprinting)
 
     for chromosome, [seq, comp] in chromosome_FASTA_dict.items():
         final_adata.var[f'{chromosome}_top_strand_FASTA_base'] = list(seq)
@@ -168,7 +169,7 @@ def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold
     return records_to_analyze
 
 
-def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, tmp_dir, max_reference_length, device):
+def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, max_reference_length, device, deaminase_footprinting):
     """Worker function to process a single BAM file (must be at top-level for multiprocessing)."""
     adata_list = []
 
@@ -177,9 +178,10 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, tm
         chromosome = record_FASTA_dict[record][2]
         current_length = record_FASTA_dict[record][4]
         mod_type, strand = record_FASTA_dict[record][6], record_FASTA_dict[record][7]
+        sequence = chromosome_FASTA_dict[chromosome][0]
 
         # Extract Base Identities
-        fwd_bases, rev_bases = extract_base_identities(bam, record, range(current_length), max_reference_length)
+        fwd_bases, rev_bases, mismatch_counts_per_read, mismatch_trend_per_read = extract_base_identities(bam, record, range(current_length), max_reference_length, sequence)
 
         # Skip processing if both forward and reverse base identities are empty
         if not fwd_bases and not rev_bases:
@@ -190,11 +192,11 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, tm
 
         # Binarize the Base Identities if they exist
         if fwd_bases:
-            fwd_bin = binarize_converted_base_identities(fwd_bases, strand, mod_type, bam, device)
+            fwd_bin = binarize_converted_base_identities(fwd_bases, strand, mod_type, bam, device,deaminase_footprinting, mismatch_trend_per_read)
             merged_bin.update(fwd_bin)
 
         if rev_bases:
-            rev_bin = binarize_converted_base_identities(rev_bases, strand, mod_type, bam, device)
+            rev_bin = binarize_converted_base_identities(rev_bases, strand, mod_type, bam, device, deaminase_footprinting, mismatch_trend_per_read)
             merged_bin.update(rev_bin)
 
         # Skip if merged_bin is empty (no valid binarized data)
@@ -279,7 +281,7 @@ def timestamp():
     return time.strftime("[%Y-%m-%d %H:%M:%S]")
 
 
-def worker_function(bam_index, bam, records_to_analyze, shared_record_FASTA_dict, tmp_dir, h5_dir, max_reference_length, device, progress_queue):
+def worker_function(bam_index, bam, records_to_analyze, shared_record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, h5_dir, max_reference_length, device, deaminase_footprinting, progress_queue):
     """Worker function that processes a single BAM and writes the output to an H5AD file."""
     worker_id = current_process().pid  # Get worker process ID
     sample = os.path.basename(bam).split(sep=".bam")[0]
@@ -302,7 +304,7 @@ def worker_function(bam_index, bam, records_to_analyze, shared_record_FASTA_dict
             return
 
         # Process BAM
-        adata = process_single_bam(bam_index, bam, bam_records_to_analyze, shared_record_FASTA_dict, tmp_dir, max_reference_length, device)
+        adata = process_single_bam(bam_index, bam, bam_records_to_analyze, shared_record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, max_reference_length, device, deaminase_footprinting)
 
         if adata is not None:
             adata.write_h5ad(h5ad_path)
@@ -318,7 +320,7 @@ def worker_function(bam_index, bam, records_to_analyze, shared_record_FASTA_dict
         print(f"{timestamp()} [Worker {worker_id}] ERROR while processing {sample}:\n{traceback.format_exc()}")
         progress_queue.put(sample)  # Still signal completion to prevent deadlock
 
-def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, tmp_dir, h5_dir, num_threads, max_reference_length, device):
+def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, h5_dir, num_threads, max_reference_length, device, deaminase_footprinting):
     """Processes BAM files in parallel, writes each H5AD to disk, and concatenates them at the end."""
     os.makedirs(h5_dir, exist_ok=True)  # Ensure h5_dir exists
 
@@ -337,7 +339,7 @@ def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, 
 
         with Pool(processes=num_threads) as pool:
             results = [
-                pool.apply_async(worker_function, (i, bam, records_to_analyze, shared_record_FASTA_dict, tmp_dir, h5_dir, max_reference_length, device, progress_queue))
+                pool.apply_async(worker_function, (i, bam, records_to_analyze, shared_record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, h5_dir, max_reference_length, device, deaminase_footprinting, progress_queue))
                 for i, bam in enumerate(bam_path_list)
             ]
 

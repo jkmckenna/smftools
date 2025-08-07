@@ -444,8 +444,9 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
             for record in records_to_analyze:
                 current_reference_length = reference_dict[record][0]
                 positions = range(current_reference_length)
+                ref_seq = reference_dict[record][1]
                 # Extract the base identities of reads aligned to the record
-                fwd_base_identities, rev_base_identities = extract_base_identities(bam, record, positions, max_reference_length)
+                fwd_base_identities, rev_base_identities, mismatch_counts_per_read, mismatch_trend_per_read = extract_base_identities(bam, record, positions, max_reference_length, ref_seq)
                 # Store read names of fwd and rev mapped reads
                 fwd_mapped_reads.update(fwd_base_identities.keys())
                 rev_mapped_reads.update(rev_base_identities.keys())

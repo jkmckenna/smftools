@@ -36,7 +36,7 @@ def load_adata(config_path):
     default_value = None
 
     # General config variable init
-    smf_modality = var_dict.get('smf_modality', default_value) # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Necessary.
+    smf_modality = var_dict.get('smf_modality', default_value) # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
     input_data_path = var_dict.get('input_data_path', default_value) # Path to a directory of POD5s/FAST5s or to a BAM/FASTQ file. Necessary.
     output_directory = var_dict.get('output_directory', default_value) # Path to the output directory to make for the analysis. Necessary.
     fasta = var_dict.get('fasta', default_value) # Path to reference FASTA.
@@ -136,6 +136,11 @@ def load_adata(config_path):
         # need to add input_already_demuxed workflow here.
         final_adata, final_adata_path, sorted_output, bam_files = direct_smf(fasta, output_directory, mod_list,model_dir, model, thresholds, input_data_path, split_path
                                                      , barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device, make_bigwigs, skip_unclassified, delete_batch_hdfs, threads)
+    elif smf_modality == 'deaminase':
+        from .deaminase_smf import deaminase_smf
+        # need to add input_already_demuxed workflow here.
+        final_adata, final_adata_path, sorted_output, bam_files = deaminase_smf(fasta, output_directory, conversions, strands, model_dir, model, input_data_path, split_path
+                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs, threads, input_already_demuxed)
     else:
             print("Error")
             
@@ -143,7 +148,7 @@ def load_adata(config_path):
     #print(f'Reading in adata from {final_adata_path} to add final metadata')
     # final_adata = ad.read_h5ad(final_adata_path)
     
-    # Adding read query length metadata to adata object.
+    # Adding read length, read quality, and reference length metadata to adata object.
     read_metrics = {}
     for bam_file in bam_files:
         bam_read_metrics = extract_read_features_from_bam(bam_file)
@@ -171,8 +176,12 @@ def load_adata(config_path):
     final_adata.obs['query_read_quality'] = query_read_quality_values
     final_adata.obs['query_length_to_reference_length_ratio'] = np.array(query_read_length_values) / np.array(reference_lengths)
 
-    final_adata.obs['Raw_methylation_signal'] = np.nansum(final_adata.X, axis=1)
-    final_adata.obs['Raw_per_base_methylation_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['query_read_length']
+    if smf_modality == 'deaminase':
+        final_adata.obs['Raw_deamination_signal'] = np.nansum(final_adata.X, axis=1)
+        final_adata.obs['Raw_per_base_deamination_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['query_read_length']
+    else:
+        final_adata.obs['Raw_methylation_signal'] = np.nansum(final_adata.X, axis=1)
+        final_adata.obs['Raw_per_base_methylation_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['query_read_length']
 
     print('Saving final adata')
     if ".gz" in final_adata_path:
