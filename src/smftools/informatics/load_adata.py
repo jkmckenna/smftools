@@ -22,6 +22,8 @@ def load_adata(config_path):
     import anndata as ad
     from pathlib import Path
 
+    ################################### General params and input organization ###################################
+
     # Default params
     bam_suffix = '.bam' # If different, change from here.
     split_dir = 'demultiplexed_BAMs' # If different, change from here.
@@ -50,8 +52,11 @@ def load_adata(config_path):
     trim = var_dict.get('trim', default_value) # dorado adapter and barcode removal
     input_already_demuxed = var_dict.get('input_already_demuxed', default_value) # If the input files are already demultiplexed.
     threads = var_dict.get('threads', default_value) # number of cpu threads available for multiprocessing
+    sample_sheet_path = var_dict.get('sample_sheet_path', default_value) # Optional path to a sample sheet with barcode metadata
+
     # Conversion specific variable init
     conversion_types = var_dict.get('conversion_types', default_value)
+
     # Direct methylation specific variable init
     filter_threshold = var_dict.get('filter_threshold', default_value)
     m6A_threshold = var_dict.get('m6A_threshold', default_value)
@@ -68,22 +73,15 @@ def load_adata(config_path):
     # Make initial output directory
     make_dirs([output_directory])
     os.chdir(output_directory)
+
     # Define the pathname to split BAMs into later during demultiplexing.
     split_path = os.path.join(output_directory, split_dir)
-
-    # If fasta_regions_of_interest is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
-    if fasta_regions_of_interest and '.bed' in fasta_regions_of_interest:
-        fasta_basename = os.path.basename(fasta).split('.fa')[0]
-        bed_basename_minus_suffix = os.path.basename(fasta_regions_of_interest).split('.bed')[0]
-        output_FASTA = fasta_basename + '_subsampled_by_' + bed_basename_minus_suffix + '.fasta'
-        subsample_fasta_from_bed(fasta, fasta_regions_of_interest, output_directory, output_FASTA)
-        fasta = os.path.join(output_directory, output_FASTA)
 
     # If conversion_types is passed:
     if conversion_types:
         conversions += conversion_types
 
-    # Get the input filetype
+    # Detect the input filetype
     if Path(input_data_path).is_file():
         input_data_filetype = '.' + os.path.basename(input_data_path).split('.')[1].lower()
         input_is_pod5 = input_data_filetype in ['.pod5','.p5']
@@ -113,6 +111,7 @@ def load_adata(config_path):
         input_is_pod5 = True
         input_is_fast5 = False
     
+    # If the input is a fastq or a directory of fastqs, concatenate them into an unaligned BAM and save the barcode
     elif input_is_fastq:
         output_bam = os.path.join(output_directory, 'FASTQs_concatenated_into_BAM.bam')
         concatenate_fastqs_to_bam(fastq_paths, output_bam, barcode_tag='BC', gzip_suffix='.gz')
@@ -120,6 +119,7 @@ def load_adata(config_path):
         input_is_bam = True
         input_is_fastq = False
 
+    # Determine if the input data needs to be basecalled
     if input_is_pod5:
         basecall = True
     elif input_is_bam:
@@ -127,27 +127,169 @@ def load_adata(config_path):
     else:
         print('Error, can not find input bam or pod5')
 
-    if smf_modality == 'conversion':
-        from .conversion_smf import conversion_smf
-        final_adata, final_adata_path, sorted_output, bam_files = conversion_smf(fasta, output_directory, conversions, strands, model_dir, model, input_data_path, split_path
-                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs, threads, input_already_demuxed)
-    elif smf_modality == 'direct':
-        from .direct_smf import direct_smf
-        # need to add input_already_demuxed workflow here.
-        final_adata, final_adata_path, sorted_output, bam_files = direct_smf(fasta, output_directory, mod_list,model_dir, model, thresholds, input_data_path, split_path
-                                                     , barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device, make_bigwigs, skip_unclassified, delete_batch_hdfs, threads)
-    elif smf_modality == 'deaminase':
-        from .deaminase_smf import deaminase_smf
-        # need to add input_already_demuxed workflow here.
-        final_adata, final_adata_path, sorted_output, bam_files = deaminase_smf(fasta, output_directory, conversions, strands, model_dir, model, input_data_path, split_path
-                                                         , barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs, threads, input_already_demuxed)
+    # Generate the base name of the unaligned bam without the .bam suffix
+    if basecall:
+        model_basename = os.path.basename(model)
+        model_basename = model_basename.replace('.', '_')
+        if smf_modality == 'direct':
+            mod_string = "_".join(mod_list)
+            bam=f"{output_directory}/{model_basename}_{mod_string}_calls"
+        else:
+            bam=f"{output_directory}/{model_basename}_canonical_basecalls"
     else:
-            print("Error")
-            
-    # Read in the final adata object and append final metadata
-    #print(f'Reading in adata from {final_adata_path} to add final metadata')
-    # final_adata = ad.read_h5ad(final_adata_path)
-    
+        bam_base=os.path.basename(input_data_path).split('.bam')[0]
+        bam=os.path.join(output_directory, bam_base)
+
+    # Generate path names for the unaligned, aligned, as well as the aligned/sorted bam.
+    unaligned_output = bam + bam_suffix
+    aligned_BAM=f"{bam}_aligned"
+    aligned_output = aligned_BAM + bam_suffix
+    aligned_sorted_BAM=f"{aligned_BAM}_sorted"
+    aligned_sorted_output = aligned_sorted_BAM + bam_suffix
+
+    # Naming of the demultiplexed output directory
+    if barcode_both_ends:
+        split_dir = split_dir + '_both_ends_barcoded'
+    else:
+        split_dir = split_dir + '_at_least_one_end_barcoded'
+
+    # Direct methylation detection SMF specific parameters
+    if smf_modality == 'direct':
+        mod_bed_dir=f"{split_dir}/split_mod_beds"
+        mod_tsv_dir=f"{split_dir}/split_mod_tsvs"
+        bam_qc_dir = f"{split_dir}/bam_qc"
+        mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
+        mods = [mod_map[mod] for mod in mod_list]
+
+    os.chdir(output_directory)
+    ########################################################################################################################
+
+    ####### FASTA Handling #########
+    from .helpers import generate_converted_FASTA, get_chromosome_lengths
+
+    # If fasta_regions_of_interest bed is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
+    if fasta_regions_of_interest and '.bed' in fasta_regions_of_interest:
+        fasta_basename = os.path.basename(fasta).split('.fa')[0]
+        bed_basename_minus_suffix = os.path.basename(fasta_regions_of_interest).split('.bed')[0]
+        output_FASTA = fasta_basename + '_subsampled_by_' + bed_basename_minus_suffix + '.fasta'
+        subsample_fasta_from_bed(fasta, fasta_regions_of_interest, output_directory, output_FASTA)
+        fasta = os.path.join(output_directory, output_FASTA)
+
+    # For conversion style SMF, make a converted reference FASTA
+    if smf_modality != 'direct':
+        fasta_basename = os.path.basename(fasta)
+        converted_FASTA_basename = fasta_basename.split('.fa')[0]+'_converted.fasta'
+        converted_FASTA = os.path.join(output_directory, converted_FASTA_basename)
+        if 'converted.fa' in fasta:
+            print(fasta + ' is already converted. Using existing converted FASTA.')
+            converted_FASTA = fasta
+        elif os.path.exists(converted_FASTA):
+            print(converted_FASTA + ' already exists. Using existing converted FASTA.')
+        else:
+            generate_converted_FASTA(fasta, conversion_types, strands, converted_FASTA)
+        fasta = converted_FASTA
+
+    # Make a FAI and .chrom.names file for the fasta
+    get_chromosome_lengths(fasta)
+    #######################
+
+    #### Basecalling ####
+    from .helpers import modcall, canoncall
+    # 1) Basecall using dorado
+    if basecall:
+        if os.path.exists(unaligned_output):
+            print(unaligned_output + ' already exists. Using existing basecalled BAM.')
+        elif smf_modality != 'direct':
+            canoncall(model_dir, model, input_data_path, barcode_kit, bam, bam_suffix, barcode_both_ends, trim, device)
+        else:
+            modcall(model_dir, model, input_data_path, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends, trim, device)
+    else:
+        pass
+    ######################
+
+    ########## Alignment and sorting ##########
+    from .helpers import align_and_sort_BAM, aligned_BAM_to_bed
+    # 3) Align the BAM to the reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
+    if os.path.exists(aligned_output) and os.path.exists(aligned_sorted_output):
+        print(aligned_sorted_output + ' already exists. Using existing aligned/sorted BAM.')
+    else:
+        if smf_modality == 'deaminase':
+            deaminase_footprinting = True
+        else:
+            deaminase_footprinting = False
+        align_and_sort_BAM(fasta, unaligned_output, bam_suffix, output_directory, make_bigwigs, threads, deaminase_footprinting)
+
+    # Make beds and provide basic histograms
+    bed_dir = os.path.join(output_directory, 'beds')
+    if os.path.isdir(bed_dir):
+        print(bed_dir + ' already exists. Skipping BAM -> BED conversion for ' + aligned_sorted_output)
+    else:
+        aligned_BAM_to_bed(aligned_output, output_directory, fasta, make_bigwigs, threads)
+    ###############################
+
+    ########## Demultiplexing ##########
+    from .helpers import demux_and_index_BAM
+    # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
+    if os.path.isdir(split_dir):
+        print(split_dir + ' already exists. Using existing demultiplexed BAMs.')
+        bam_files = os.listdir(split_dir)
+        bam_files = [os.path.join(split_dir, file) for file in bam_files if '.bam' in file and '.bai' not in file and 'unclassified' not in file]
+        bam_files.sort()
+    else:
+        make_dirs([split_dir])
+        bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads)
+        # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
+
+    # Make beds and provide basic histograms
+    bed_dir = os.path.join(split_dir, 'beds')
+    if os.path.isdir(bed_dir):
+        print(bed_dir + ' already exists. Skipping BAM -> BED conversion for demultiplexed bams')
+    else:
+        for bam in bam_files:
+            aligned_BAM_to_bed(bam, split_dir, fasta, make_bigwigs, threads)
+    ###############################
+
+    ############ SAMTools based BAM QC #############
+    from .helpers import bam_qc
+    # 5) Samtools QC metrics on split BAM files
+    bam_qc_dir = f"{split_dir}/bam_qc"
+    if os.path.isdir(bam_qc_dir):
+        print(bam_qc_dir + ' already exists. Using existing BAM QC calculations.')
+    else:
+        make_dirs([bam_qc_dir])
+        bam_qc(bam_files, bam_qc_dir, threads, modality=smf_modality)
+    ############################### 
+
+    ############# AnnData loading ##############
+    if smf_modality != 'direct':
+        from .helpers import converted_BAM_to_adata_II
+        # 6) Take the converted BAM and load it into an adata object.
+        if smf_modality == 'deaminase':
+            deaminase_footprinting = True
+        else:
+            deaminase_footprinting = False
+        final_adata, final_adata_path = converted_BAM_to_adata_II(fasta, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device, deaminase_footprinting) 
+    else:
+        if os.path.isdir(mod_bed_dir):
+            print(mod_bed_dir + ' already exists, skipping making modbeds')
+        else:
+            from .helpers import modQC, make_modbed, extract_mods, modkit_extract_to_adata
+            make_dirs([mod_bed_dir])  
+            modQC(aligned_sorted_output, thresholds) # get QC metrics for mod calls
+            make_modbed(aligned_sorted_output, thresholds, mod_bed_dir) # Generate bed files of position methylation summaries for every sample
+
+            make_dirs([mod_tsv_dir])  
+            extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified, threads) # Extract methylations calls for split BAM files into split TSV files
+
+            #6 Load the modification data from TSVs into an adata object
+            final_adata, final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs, threads)
+    ###############################
+
+    ############ Basic AnnData analyses ##############
+    if final_adata:
+        pass
+    else:
+        final_adata = ad.read_h5ad(final_adata_path)
     # Adding read length, read quality, and reference length metadata to adata object.
     read_metrics = {}
     for bam_file in bam_files:
@@ -182,10 +324,22 @@ def load_adata(config_path):
     else:
         final_adata.obs['Raw_methylation_signal'] = np.nansum(final_adata.X, axis=1)
         final_adata.obs['Raw_per_base_methylation_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['query_read_length']
+    ###############################
 
+    ############ Save final adata ##############
     print('Saving final adata')
     if ".gz" in final_adata_path:
         final_adata.write_h5ad(f"{final_adata_path}", compression='gzip')
     else:
         final_adata.write_h5ad(f"{final_adata_path}.gz", compression='gzip')
     print('Final adata saved')
+    ###############################
+
+    ############ MultiQC HTML Report ###############
+    from .helpers import run_multiqc
+    # multiqc ###
+    if os.path.isdir(f"{split_dir}/multiqc"):
+        print(f"{split_dir}/multiqc" + ' already exists, skipping multiqc')
+    else:
+        run_multiqc(split_dir, f"{split_dir}/multiqc")
+    ###############################

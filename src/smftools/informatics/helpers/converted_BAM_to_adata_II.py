@@ -52,11 +52,12 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
     parent_dir = os.path.dirname(split_dir)
     h5_dir = os.path.join(parent_dir, 'h5ads')
     tmp_dir = os.path.join(parent_dir, 'tmp')
+    final_adata = None
     final_adata_path = os.path.join(h5_dir, f'{experiment_name}_{os.path.basename(split_dir)}.h5ad.gz')
 
     if os.path.exists(final_adata_path):
         print(f"{final_adata_path} already exists. Using existing AnnData object.")
-        return final_adata_path
+        return final_adata, final_adata_path
 
     make_dirs([h5_dir, tmp_dir])
 
