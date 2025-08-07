@@ -10,10 +10,10 @@ def calculate_umap(adata, layer='nan_half', var_filters=None, n_pcs=15, knn_neig
     if var_filters:
         subset_mask = np.logical_or.reduce([adata.var[f].values for f in var_filters])
         adata_subset = adata[:, subset_mask].copy()
-        print(f"🔹 Subsetting adata: Retained {adata_subset.shape[1]} features based on filters {var_filters}")
+        print(f"Subsetting adata: Retained {adata_subset.shape[1]} features based on filters {var_filters}")
     else:
         adata_subset = adata.copy()
-        print("🔹 No var filters provided. Using all features.")
+        print("No var filters provided. Using all features.")
 
     # Step 2: NaN handling inside layer
     if layer:
@@ -24,9 +24,9 @@ def calculate_umap(adata, layer='nan_half', var_filters=None, n_pcs=15, knn_neig
                 data = np.nan_to_num(data, nan=0.5)
                 adata_subset.layers[layer] = data
             else:
-                print("✅ No NaNs detected.")
+                print("No NaNs detected.")
         else:
-            print("✅ Sparse matrix detected; skipping NaN check (sparse formats typically do not store NaNs).")
+            print("Sparse matrix detected; skipping NaN check (sparse formats typically do not store NaNs).")
 
     # Step 3: PCA + neighbors + UMAP on subset
     if "X_umap" not in adata_subset.obsm or overwrite:
@@ -57,6 +57,6 @@ def calculate_umap(adata, layer='nan_half', var_filters=None, n_pcs=15, knn_neig
     adata.varm["PCs"] = pc_matrix
 
 
-    print(f"✅ Stored: adata.obsm['X_pca'] and adata.obsm['X_umap']")
+    print(f"Stored: adata.obsm['X_pca'] and adata.obsm['X_umap']")
 
     return adata

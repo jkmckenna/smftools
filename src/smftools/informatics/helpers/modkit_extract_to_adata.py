@@ -710,6 +710,7 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                                 temp_adata.var_names = temp_adata.var_names.astype(str)
                                 print('{0}: Adding {1} anndata for sample {2}'.format(readwrite.time_string(), sample_types[dict_index], final_sample_index))
                                 temp_adata.obs['Sample'] = [str(final_sample_index)] * len(temp_adata)
+                                temp_adata.obs['Barcode'] = [str(final_sample_index)] * len(temp_adata)
                                 temp_adata.obs['Reference'] = [f'{record}'] * len(temp_adata)
                                 temp_adata.obs['Strand'] = [strand] * len(temp_adata)
                                 temp_adata.obs['Dataset'] = [dataset] * len(temp_adata)
