@@ -29,7 +29,7 @@ def flag_duplicate_reads(adata, var_filters_sets, distance_threshold=0.05, obs_r
     references = adata.obs[obs_reference_col].cat.categories
 
     for ref in references:
-        print(f'🔹 Processing reference: {ref}')
+        print(f'Processing reference: {ref}')
 
         ref_mask = adata.obs[obs_reference_col] == ref
         adata_subset = adata[ref_mask].copy()

@@ -23,7 +23,7 @@ def load_adata(config_path):
     import scanpy as sc
     from pathlib import Path
 
-    ################################### General params and input organization ###################################
+    ################################### 1) General params and input organization ###################################
 
     # Default params
     bam_suffix = '.bam' # If different, change from here.
@@ -165,7 +165,7 @@ def load_adata(config_path):
     os.chdir(output_directory)
     ########################################################################################################################
 
-    ####### FASTA Handling #########
+    ################################### 2) FASTA Handling ###################################
     from .helpers import generate_converted_FASTA, get_chromosome_lengths
 
     # If fasta_regions_of_interest bed is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
@@ -192,9 +192,9 @@ def load_adata(config_path):
 
     # Make a FAI and .chrom.names file for the fasta
     get_chromosome_lengths(fasta)
-    #######################
+    ########################################################################################################################
 
-    #### Basecalling ####
+    ################################### 3) Basecalling ###################################
     from .helpers import modcall, canoncall
     # 1) Basecall using dorado
     if basecall:
@@ -206,9 +206,9 @@ def load_adata(config_path):
             modcall(model_dir, model, input_data_path, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends, trim, device)
     else:
         pass
-    ######################
+    ########################################################################################################################
 
-    ########## Alignment and sorting ##########
+    ################################### 4) Alignment and sorting #############################################
     from .helpers import align_and_sort_BAM, aligned_BAM_to_bed
     # 3) Align the BAM to the reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
     if os.path.exists(aligned_output) and os.path.exists(aligned_sorted_output):
@@ -226,9 +226,9 @@ def load_adata(config_path):
         print(bed_dir + ' already exists. Skipping BAM -> BED conversion for ' + aligned_sorted_output)
     else:
         aligned_BAM_to_bed(aligned_output, output_directory, fasta, make_bigwigs, threads)
-    ###############################
+    ########################################################################################################################
 
-    ########## Demultiplexing ##########
+    ################################### 5) Demultiplexing ######################################################################
     from .helpers import demux_and_index_BAM
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     if os.path.isdir(split_dir):
@@ -248,9 +248,9 @@ def load_adata(config_path):
     else:
         for bam in bam_files:
             aligned_BAM_to_bed(bam, split_dir, fasta, make_bigwigs, threads)
-    ###############################
+    ########################################################################################################################
 
-    ############ SAMTools based BAM QC #############
+    ################################### 6) SAMTools based BAM QC ######################################################################
     from .helpers import bam_qc
     # 5) Samtools QC metrics on split BAM files
     bam_qc_dir = f"{split_dir}/bam_qc"
@@ -259,9 +259,9 @@ def load_adata(config_path):
     else:
         make_dirs([bam_qc_dir])
         bam_qc(bam_files, bam_qc_dir, threads, modality=smf_modality)
-    ############################### 
+    ######################################################################################################################## 
 
-    ############# AnnData loading ##############
+    ################################### 7) AnnData loading ######################################################################
     if smf_modality != 'direct':
         from .helpers import converted_BAM_to_adata_II
         # 6) Take the converted BAM and load it into an adata object.
@@ -284,9 +284,9 @@ def load_adata(config_path):
 
             #6 Load the modification data from TSVs into an adata object
             final_adata, final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs, threads)
-    ###############################
+    ########################################################################################################################
 
-    ############ Basic AnnData analyses ##############
+    ############################################### 8) Basic AnnData quality metrics #################################################
     if final_adata:
         pass
     else:
@@ -331,31 +331,45 @@ def load_adata(config_path):
         final_adata.obs['Raw_methylation_signal'] = np.nansum(final_adata.X, axis=1)
         final_adata.obs['Raw_per_base_methylation_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['read_length']
 
-    ###############################
+    ########################################################################################################################
 
-    ########## Basic Preprocessing #############
+    ############################################### 9) Basic Preprocessing ###############################################
     from ..preprocessing import append_C_context, calculate_coverage, clean_NaN
     if smf_modality == 'direct':
         native = True
     else:
         native = False
 
-    ## Add cytosine context to each position for each Reference_strand
+    ############### Add cytosine context to each position for each Reference_strand ###############
     append_C_context(final_adata, obs_column='Reference_strand', use_consensus=False, native=native)
 
-    ## Calculate read methlation statistics
+    ############### Calculate read methylation/deamination statistics ###############
     if smf_modality == 'conversion':
         from ..preprocessing import calculate_converted_read_methylation_stats, filter_converted_reads_on_methylation
         calculate_converted_read_methylation_stats(final_adata, "Reference_strand", "Sample")
         ## Filter reads on methylation statistics
         final_adata = filter_converted_reads_on_methylation(final_adata, valid_SMF_site_threshold=0.8, min_SMF_threshold=0.05, max_SMF_threshold=1)
+        ## Add layers with various NaN replacement strategies from the primary data layer
+        clean_NaN(final_adata)
+    elif smf_modality == 'deaminase':
+        # Need to add equivalent as above for deamination stats and filtering
+        ## Add layers with various NaN replacement strategies from the primary data layer
+        clean_NaN(final_adata)
+    elif smf_modality == 'direct':
+        from ..preprocessing import calculate_position_Youden, binarize_on_Youden
+        # Need to add equivalent as above for methylation stats and filtering
+        # Calculate positional methylation thresholds for mod calls
+        calculate_position_Youden(final_adata, positive_control_sample=None, negative_control_sample=None, J_threshold=0.5, 
+                                  obs_column='Reference_strand', infer_on_percentile=10, inference_variable='Raw_methylation_signal', save=False, output_directory='')
+        # binarize the modcalls based on the determined thresholds
+        binarize_on_Youden(final_adata, obs_column='Reference_strand')
+        ## Add layers with various NaN replacement strategies from the primary data layer
+        clean_NaN(final_adata, layer='binarized_methylation')
 
+    ############### Calculate positional coverage in dataset ###############
     calculate_coverage(final_adata, obs_column='Reference_strand', position_nan_threshold=0.9)
 
-    ## Add layers with various NaN replacement strategies from the primary data layer
-    clean_NaN(final_adata)
-
-    ## Add layers to adata that are the binary GpC, CpG, any C methylation/deamination patterns
+    ############### Add layers to adata that are the binary GpC, CpG, any C methylation/deamination patterns ###############
     if smf_modality != 'direct':
         if smf_modality == 'conversion':
             deaminase = False
@@ -406,6 +420,31 @@ def load_adata(config_path):
         final_adata.layers['GpC_CpG_combined_site_binary'] = masked_gpc_X + masked_cpg_X
         final_adata.layers['C_site_binary'] = masked_c_X
 
+    ############### Duplicate detection for conversion/deamination SMF ###############
+    if smf_modality != 'direct':
+        from ..preprocessing import flag_duplicate_reads
+        references = final_adata.obs['Reference_strand'].cat.categories
+        if smf_modality == 'conversion':
+            site_types = ['GpC', 'CpG', 'ambiguous_GpC_CpG']
+        elif smf_modality == 'deaminase':
+            site_types = ['any_C']
+
+        var_filters_sets =[]
+        for ref in references:
+            for site_type in site_types:
+                var_filters_sets += [[f"{ref}_{site_type}_site", f"positions_in_{ref}"]]
+
+        final_adata_unique, final_adata = flag_duplicate_reads(final_adata, var_filters_sets, distance_threshold=0.13, obs_reference_col='Reference_strand')
+
+    ########################################################################################################################
+
+    ############################################### Basic Analyses ###############################################
+    if smf_modality != 'direct':
+        if smf_modality == 'conversion':
+            deaminase = False
+        else:
+            deaminase = True
+        references = final_adata.obs['Reference_strand'].cat.categories
         # ## Basic clustermap plotting
         from ..plotting import combined_hmm_raw_clustermap
         clustermap_results = combined_hmm_raw_clustermap(final_adata, sample_col='Sample', hmm_feature_layer='C_site_binary', 
@@ -426,9 +465,9 @@ def load_adata(config_path):
         # Plotting UMAP
         sc.pl.umap(final_adata, color=['leiden', 'Sample'], palette='Set1')
 
-    ###############################
+    ########################################################################################################################
 
-    ########## Positional analyses ############
+    ############################################### Positional analyses ###############################################
     from ..tools.read_stats import binary_autocorrelation_with_spacing
     if smf_modality != 'direct':
         positions = final_adata.var_names.astype(int).values
@@ -446,23 +485,28 @@ def load_adata(config_path):
             final_adata.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
     else:
         pass
-    ###############################
+    ########################################################################################################################
+
+    ############################################### HMM based feature annotations ###############################################
+    # need to add the option here to do a per sample HMM fit/inference
 
 
-    ############ Save final adata ##############
+    ########################################################################################################################
+
+    ############################################### Save final adata ###############################################
     print('Saving final adata')
     if ".gz" in final_adata_path:
         final_adata.write_h5ad(f"{final_adata_path}", compression='gzip')
     else:
         final_adata.write_h5ad(f"{final_adata_path}.gz", compression='gzip')
     print('Final adata saved')
-    ###############################
+    ########################################################################################################################
 
-    ############ MultiQC HTML Report ###############
+    ############################################### MultiQC HTML Report ###############################################
     from .helpers import run_multiqc
     # multiqc ###
     if os.path.isdir(f"{split_dir}/multiqc"):
         print(f"{split_dir}/multiqc" + ' already exists, skipping multiqc')
     else:
         run_multiqc(split_dir, f"{split_dir}/multiqc")
-    ###############################
+    ########################################################################################################################
