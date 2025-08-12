@@ -2,13 +2,13 @@
 
 ## Conversion SMF Specific 
 # Read methylation QC
-def append_C_context(adata, obs_column='Reference', use_consensus=False, native=False):
+def append_C_context(adata, obs_column='Reference_strand', use_consensus=False, native=False):
     """
     Adds Cytosine context to the position within the given category. When use_consensus is True, it uses the consensus sequence, otherwise it defaults to the FASTA sequence.
 
     Parameters:
         adata (AnnData): The input adata object.
-        obs_column (str): The observation column in which to stratify on. Default is 'Reference', which should not be changed for most purposes.
+        obs_column (str): The observation column in which to stratify on. Default is 'Reference_strand', which should not be changed for most purposes.
         use_consensus (bool): A truth statement indicating whether to use the consensus sequence from the reads mapped to the reference. If False, the reference FASTA is used instead.
         native (bool): If False, perform conversion SMF assumptions. If True, perform native SMF assumptions
     

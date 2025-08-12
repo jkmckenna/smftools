@@ -69,45 +69,116 @@ def calculate_row_entropy(
     entropy_key = f"{output_key}_entropy"
     adata.obs.loc[row_indices, entropy_key] = entropy_values
 
-def binary_autocorrelation_with_spacing(row, positions, max_lag=1000):
+def binary_autocorrelation_with_spacing(row, positions, max_lag=1000, assume_sorted=True):
     """
-    Compute autocorrelation within a read using real genomic spacing from `positions`.
-    Only valid (non-NaN) positions are considered.
-    Output is indexed by genomic lag (up to max_lag).
+    Fast autocorrelation over real genomic spacing.
+    Uses a sliding window + bincount to aggregate per-lag products.
+
+    Parameters
+    ----------
+    row : 1D array (float)
+        Values per position (NaN = missing). Works for binary or real-valued.
+    positions : 1D array (int)
+        Genomic coordinates for each column of `row`.
+    max_lag : int
+        Max genomic lag (inclusive).
+    assume_sorted : bool
+        If True, assumes `positions` are strictly non-decreasing.
+
+    Returns
+    -------
+    autocorr : 1D array, shape (max_lag+1,)
+        Normalized autocorrelation; autocorr[0] = 1.0.
+        Lags with no valid pairs are NaN.
     """
-    from collections import defaultdict
     import numpy as np
-    # Get valid positions and values
-    valid_mask = ~np.isnan(row)
-    x = row[valid_mask]
-    pos = positions[valid_mask]
-    n = len(x)
 
-    if n < 2:
-        return np.full(max_lag + 1, np.nan)
+    # mask valid entries
+    valid = ~np.isnan(row)
+    if valid.sum() < 2:
+        return np.full(max_lag + 1, np.nan, dtype=np.float32)
 
+    x = row[valid].astype(np.float64, copy=False)
+    pos = positions[valid].astype(np.int64, copy=False)
+
+    # sort by position if needed
+    if not assume_sorted:
+        order = np.argsort(pos, kind="mergesort")
+        pos = pos[order]
+        x = x[order]
+
+    n = x.size
     x_mean = x.mean()
-    var = np.sum((x - x_mean)**2)
-    if var == 0:
-        return np.full(max_lag + 1, np.nan)
+    xc = x - x_mean
+    var = np.sum(xc * xc)
+    if var == 0.0:
+        return np.full(max_lag + 1, np.nan, dtype=np.float32)
 
-    # Collect values by lag
-    lag_sums = defaultdict(float)
-    lag_counts = defaultdict(int)
+    lag_sums = np.zeros(max_lag + 1, dtype=np.float64)
+    lag_counts = np.zeros(max_lag + 1, dtype=np.int64)
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            lag = abs(pos[j] - pos[i])
-            if lag > max_lag:
-                continue
-            product = (x[i] - x_mean) * (x[j] - x_mean)
-            lag_sums[lag] += product
-            lag_counts[lag] += 1
+    # sliding window upper pointer
+    j = 1
+    for i in range(n - 1):
+        # advance j to include all positions within max_lag
+        while j < n and pos[j] - pos[i] <= max_lag:
+            j += 1
+        # consider pairs (i, i+1...j-1)
+        if j - i > 1:
+            diffs = pos[i+1:j] - pos[i]                 # 1..max_lag
+            contrib = xc[i] * xc[i+1:j]                 # contributions for each pair
+            # accumulate weighted sums and counts per lag
+            lag_sums[:max_lag+1] += np.bincount(diffs, weights=contrib,
+                                                minlength=max_lag+1)[:max_lag+1]
+            lag_counts[:max_lag+1] += np.bincount(diffs,
+                                                  minlength=max_lag+1)[:max_lag+1]
 
-    # Normalize to get autocorrelation
-    autocorr = np.full(max_lag + 1, np.nan)
-    for lag in range(max_lag + 1):
-        if lag_counts[lag] > 0:
-            autocorr[lag] = lag_sums[lag] / var
+    autocorr = np.full(max_lag + 1, np.nan, dtype=np.float64)
+    nz = lag_counts > 0
+    autocorr[nz] = lag_sums[nz] / var
+    autocorr[0] = 1.0  # by definition
 
-    return autocorr
+    return autocorr.astype(np.float32, copy=False)
+
+# def binary_autocorrelation_with_spacing(row, positions, max_lag=1000):
+#     """
+#     Compute autocorrelation within a read using real genomic spacing from `positions`.
+#     Only valid (non-NaN) positions are considered.
+#     Output is indexed by genomic lag (up to max_lag).
+#     """
+#     from collections import defaultdict
+#     import numpy as np
+#     # Get valid positions and values
+#     valid_mask = ~np.isnan(row)
+#     x = row[valid_mask]
+#     pos = positions[valid_mask]
+#     n = len(x)
+
+#     if n < 2:
+#         return np.full(max_lag + 1, np.nan)
+
+#     x_mean = x.mean()
+#     var = np.sum((x - x_mean)**2)
+#     if var == 0:
+#         return np.full(max_lag + 1, np.nan)
+
+#     # Collect values by lag
+#     lag_sums = defaultdict(float)
+#     lag_counts = defaultdict(int)
+
+#     for i in range(n):
+#         for j in range(i + 1, n):
+#             lag = abs(pos[j] - pos[i])
+#             if lag > max_lag:
+#                 continue
+#             product = (x[i] - x_mean) * (x[j] - x_mean)
+#             lag_sums[lag] += product
+#             lag_counts[lag] += 1
+
+#     # Normalize to get autocorrelation
+#     autocorr = np.full(max_lag + 1, np.nan)
+#     for lag in range(max_lag + 1):
+#         if lag_counts[lag] > 0:
+#             autocorr[lag] = lag_sums[lag] / var
+
+#     return autocorr

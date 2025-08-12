@@ -17,7 +17,6 @@ def clean_barplot(ax, mean_values, title):
 
     ax.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
 
-
 def combined_hmm_raw_clustermap(
     adata,
     sample_col='Sample_Names',
@@ -36,7 +35,7 @@ def combined_hmm_raw_clustermap(
     bins=None,
     deaminase=False,
     min_signal=0
-):
+    ):
     import scipy.cluster.hierarchy as sch
     import pandas as pd
     import numpy as np
@@ -69,13 +68,18 @@ def combined_hmm_raw_clustermap(
                     continue
 
                 if bins:
-                    pass
+                    print(f"Using defined bins to subset clustermap for {sample} - {ref}")
+                    bins_temp = bins
                 else:
-                    bins = {"All": (subset.obs['Reference_strand'] != None)}
+                    print(f"Using all reads for clustermap for {sample} - {ref}")
+                    bins_temp = {"All": (subset.obs['Reference_strand'] == ref)}
 
                 # Get column positions (not var_names!) of site masks
                 gpc_sites = np.where(subset.var[f"{ref}_GpC_site"].values)[0]
                 cpg_sites = np.where(subset.var[f"{ref}_CpG_site"].values)[0]
+                num_gpc = len(gpc_sites)
+                num_cpg = len(cpg_sites)
+                print(f"Found {num_gpc} GpC sites at {gpc_sites} \nand {num_cpg} CpG sites at {cpg_sites} for {sample} - {ref}")
 
                 # Use var_names for x-axis tick labels
                 gpc_labels = subset.var_names[gpc_sites].astype(int)
@@ -89,13 +93,14 @@ def combined_hmm_raw_clustermap(
                 percentages = {}
                 last_idx = 0
 
-                for bin_label, bin_filter in bins.items():
+                for bin_label, bin_filter in bins_temp.items():
                     subset_bin = subset[bin_filter].copy()
                     num_reads = subset_bin.shape[0]
+                    print(f"analyzing {num_reads} reads for {bin_label} bin in {sample} - {ref}")
                     percent_reads = (num_reads / total_reads) * 100 if total_reads > 0 else 0
                     percentages[bin_label] = percent_reads
 
-                    if num_reads > 0:
+                    if num_reads > 0 and num_cpg > 0 and num_gpc > 0:
                         # Determine sorting order
                         if sort_by.startswith("obs:"):
                             colname = sort_by.split("obs:")[1]
@@ -128,82 +133,286 @@ def combined_hmm_raw_clustermap(
                     gpc_matrix = np.vstack(stacked_gpc)
                     cpg_matrix = np.vstack(stacked_cpg)
 
-                    def normalized_mean(matrix):
-                        mean = np.nanmean(matrix, axis=0)
-                        normalized = (mean - mean.min()) / (mean.max() - mean.min() + 1e-9)
-                        return normalized
+                    if hmm_matrix.size > 0:
+                        def normalized_mean(matrix):
+                            mean = np.nanmean(matrix, axis=0)
+                            normalized = (mean - mean.min()) / (mean.max() - mean.min() + 1e-9)
+                            return normalized
 
-                    def methylation_fraction(matrix):
-                        methylated = (matrix == 1).sum(axis=0)
-                        valid = (matrix != 0).sum(axis=0)
-                        return np.divide(methylated, valid, out=np.zeros_like(methylated, dtype=float), where=valid != 0)
+                        def methylation_fraction(matrix):
+                            methylated = (matrix == 1).sum(axis=0)
+                            valid = (matrix != 0).sum(axis=0)
+                            return np.divide(methylated, valid, out=np.zeros_like(methylated, dtype=float), where=valid != 0)
 
-                    if normalize_hmm:
-                        mean_hmm = normalized_mean(hmm_matrix)
-                    else:
-                        mean_hmm = np.nanmean(hmm_matrix, axis=0)
-                    mean_gpc = methylation_fraction(gpc_matrix)
-                    mean_cpg = methylation_fraction(cpg_matrix)
+                        if normalize_hmm:
+                            mean_hmm = normalized_mean(hmm_matrix)
+                        else:
+                            mean_hmm = np.nanmean(hmm_matrix, axis=0)
+                        mean_gpc = methylation_fraction(gpc_matrix)
+                        mean_cpg = methylation_fraction(cpg_matrix)
 
-                    fig = plt.figure(figsize=(18, 12))
-                    gs = gridspec.GridSpec(2, 3, height_ratios=[1, 6], hspace=0.01)
-                    fig.suptitle(f"{sample} - {ref}", fontsize=14, y=0.95)
+                        fig = plt.figure(figsize=(18, 12))
+                        gs = gridspec.GridSpec(2, 3, height_ratios=[1, 6], hspace=0.01)
+                        fig.suptitle(f"{sample} - {ref}", fontsize=14, y=0.95)
 
-                    axes_heat = [fig.add_subplot(gs[1, i]) for i in range(3)]
-                    axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(3)]
+                        axes_heat = [fig.add_subplot(gs[1, i]) for i in range(3)]
+                        axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(3)]
 
-                    clean_barplot(axes_bar[0], mean_hmm, f"{hmm_feature_layer} HMM Features")
-                    clean_barplot(axes_bar[1], mean_gpc, f"GpC Methylation")
-                    clean_barplot(axes_bar[2], mean_cpg, f"CpG Methylation")
-                    
-                    hmm_labels = subset.var_names.astype(int)
-                    hmm_label_spacing = 150
-                    sns.heatmap(hmm_matrix, cmap=cmap_hmm, ax=axes_heat[0], xticklabels=hmm_labels[::hmm_label_spacing], yticklabels=False, cbar=False)
-                    axes_heat[0].set_xticks(range(0, len(hmm_labels), hmm_label_spacing))
-                    axes_heat[0].set_xticklabels(hmm_labels[::hmm_label_spacing], rotation=90, fontsize=10)
-                    for boundary in bin_boundaries[:-1]:
-                        axes_heat[0].axhline(y=boundary, color="black", linewidth=2)
+                        clean_barplot(axes_bar[0], mean_hmm, f"{hmm_feature_layer} HMM Features")
+                        clean_barplot(axes_bar[1], mean_gpc, f"GpC Accessibility Signal")
+                        clean_barplot(axes_bar[2], mean_cpg, f"CpG Accessibility Signal")
+                        
+                        hmm_labels = subset.var_names.astype(int)
+                        hmm_label_spacing = 150
+                        sns.heatmap(hmm_matrix, cmap=cmap_hmm, ax=axes_heat[0], xticklabels=hmm_labels[::hmm_label_spacing], yticklabels=False, cbar=False)
+                        axes_heat[0].set_xticks(range(0, len(hmm_labels), hmm_label_spacing))
+                        axes_heat[0].set_xticklabels(hmm_labels[::hmm_label_spacing], rotation=90, fontsize=10)
+                        for boundary in bin_boundaries[:-1]:
+                            axes_heat[0].axhline(y=boundary, color="black", linewidth=2)
 
-                    sns.heatmap(gpc_matrix, cmap=cmap_gpc, ax=axes_heat[1], xticklabels=gpc_labels[::5], yticklabels=False, cbar=False)
-                    axes_heat[1].set_xticks(range(0, len(gpc_labels), 5))
-                    axes_heat[1].set_xticklabels(gpc_labels[::5], rotation=90, fontsize=10)
-                    for boundary in bin_boundaries[:-1]:
-                        axes_heat[1].axhline(y=boundary, color="black", linewidth=2)
+                        sns.heatmap(gpc_matrix, cmap=cmap_gpc, ax=axes_heat[1], xticklabels=gpc_labels[::5], yticklabels=False, cbar=False)
+                        axes_heat[1].set_xticks(range(0, len(gpc_labels), 5))
+                        axes_heat[1].set_xticklabels(gpc_labels[::5], rotation=90, fontsize=10)
+                        for boundary in bin_boundaries[:-1]:
+                            axes_heat[1].axhline(y=boundary, color="black", linewidth=2)
 
-                    sns.heatmap(cpg_matrix, cmap=cmap_cpg, ax=axes_heat[2], xticklabels=cpg_labels, yticklabels=False, cbar=False)
-                    axes_heat[2].set_xticklabels(cpg_labels, rotation=90, fontsize=10)
-                    for boundary in bin_boundaries[:-1]:
-                        axes_heat[2].axhline(y=boundary, color="black", linewidth=2)
+                        sns.heatmap(cpg_matrix, cmap=cmap_cpg, ax=axes_heat[2], xticklabels=cpg_labels, yticklabels=False, cbar=False)
+                        axes_heat[2].set_xticklabels(cpg_labels, rotation=90, fontsize=10)
+                        for boundary in bin_boundaries[:-1]:
+                            axes_heat[2].axhline(y=boundary, color="black", linewidth=2)
 
-                    plt.tight_layout()
+                        plt.tight_layout()
 
-                    if save_path:
-                        save_name = f"{ref} — {sample}"
-                        os.makedirs(save_path, exist_ok=True)
-                        safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
-                        out_file = os.path.join(save_path, f"{safe_name}.png")
-                        plt.savefig(out_file, dpi=300)
-                        print(f"📁 Saved: {out_file}")
+                        if save_path:
+                            save_name = f"{ref} — {sample}"
+                            os.makedirs(save_path, exist_ok=True)
+                            safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+                            out_file = os.path.join(save_path, f"{safe_name}.png")
+                            plt.savefig(out_file, dpi=300)
+                            print(f"Saved: {out_file}")
+                            plt.close()
+                        else:
+                            plt.show()
 
-                    plt.show()
+                        print(f"Summary for {sample} - {ref}:")
+                        for bin_label, percent in percentages.items():
+                            print(f"  - {bin_label}: {percent:.1f}%")
 
-                    print(f"📊 Summary for {sample} - {ref}:")
-                    for bin_label, percent in percentages.items():
-                        print(f"  - {bin_label}: {percent:.1f}%")
+                        results.append({
+                            "sample": sample,
+                            "ref": ref,
+                            "hmm_matrix": hmm_matrix,
+                            "gpc_matrix": gpc_matrix,
+                            "cpg_matrix": cpg_matrix,
+                            "row_labels": row_labels,
+                            "bin_labels": bin_labels,
+                            "bin_boundaries": bin_boundaries,
+                            "percentages": percentages
+                        })
+                        
+                        adata.uns['clustermap_results'] = results
 
-                    results.append({
-                        "sample": sample,
-                        "ref": ref,
-                        "hmm_matrix": hmm_matrix,
-                        "gpc_matrix": gpc_matrix,
-                        "cpg_matrix": cpg_matrix,
-                        "row_labels": row_labels,
-                        "bin_labels": bin_labels,
-                        "bin_boundaries": bin_boundaries,
-                        "percentages": percentages
-                    })
-                    
-                    adata.uns['clustermap_results'] = results
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                continue
+
+
+def combined_raw_clustermap(
+    adata,
+    sample_col='Sample_Names',
+    layer_any_c="nan0_0minus1",
+    layer_gpc="nan0_0minus1",
+    layer_cpg="nan0_0minus1",
+    cmap_any_c="coolwarm",
+    cmap_gpc="coolwarm",
+    cmap_cpg="viridis",
+    min_quality=20,
+    min_length=2700,
+    sample_mapping=None,
+    save_path=None,
+    sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
+    bins=None,
+    deaminase=False,
+    min_signal=0
+    ):
+    import scipy.cluster.hierarchy as sch
+    import pandas as pd
+    import numpy as np
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    import os
+
+    results = []
+    if deaminase:
+        signal_type = 'deamination'
+    else:
+        signal_type = 'methylation'
+
+    for ref in adata.obs["Reference_strand"].cat.categories:
+        for sample in adata.obs[sample_col].cat.categories:
+            try:
+                subset = adata[
+                    (adata.obs['Reference_strand'] == ref) &
+                    (adata.obs[sample_col] == sample) &
+                    (adata.obs['read_quality'] >= min_quality) &
+                    (adata.obs['mapped_length'] >= min_length) &
+                    (adata.obs[f'Raw_{signal_type}_signal'] >= min_signal)
+                ]
+                
+                subset = subset[:, subset.var[f'position_in_{ref}'] == True]
+
+                if subset.shape[0] == 0:
+                    print(f"  No reads left after filtering for {sample} - {ref}")
+                    continue
+
+                if bins:
+                    print(f"Using defined bins to subset clustermap for {sample} - {ref}")
+                    bins_temp = bins
+                else:
+                    print(f"Using all reads for clustermap for {sample} - {ref}")
+                    bins_temp = {"All": (subset.obs['Reference_strand'] == ref)}
+
+                # Get column positions (not var_names!) of site masks
+                any_c_sites = np.where(subset.var[f"{ref}_any_C_site"].values)[0]
+                gpc_sites = np.where(subset.var[f"{ref}_GpC_site"].values)[0]
+                cpg_sites = np.where(subset.var[f"{ref}_CpG_site"].values)[0]
+                num_any_c = len(any_c_sites)
+                num_gpc = len(gpc_sites)
+                num_cpg = len(cpg_sites)
+                print(f"Found {num_gpc} GpC sites at {gpc_sites} \nand {num_cpg} CpG sites at {cpg_sites}\n and {num_any_c} any_C sites at {any_c_sites} for {sample} - {ref}")
+
+                # Use var_names for x-axis tick labels
+                gpc_labels = subset.var_names[gpc_sites].astype(int)
+                cpg_labels = subset.var_names[cpg_sites].astype(int)
+                any_c_labels = subset.var_names[any_c_sites].astype(int)
+
+                stacked_any_c, stacked_gpc, stacked_cpg = [], [], []
+                row_labels, bin_labels = [], []
+                bin_boundaries = []
+
+                total_reads = subset.shape[0]
+                percentages = {}
+                last_idx = 0
+
+                for bin_label, bin_filter in bins_temp.items():
+                    subset_bin = subset[bin_filter].copy()
+                    num_reads = subset_bin.shape[0]
+                    print(f"analyzing {num_reads} reads for {bin_label} bin in {sample} - {ref}")
+                    percent_reads = (num_reads / total_reads) * 100 if total_reads > 0 else 0
+                    percentages[bin_label] = percent_reads
+
+                    if num_reads > 0 and num_cpg > 0 and num_gpc > 0:
+                        # Determine sorting order
+                        if sort_by.startswith("obs:"):
+                            colname = sort_by.split("obs:")[1]
+                            order = np.argsort(subset_bin.obs[colname].values)
+                        elif sort_by == "gpc":
+                            linkage = sch.linkage(subset_bin[:, gpc_sites].layers[layer_gpc], method="ward")
+                            order = sch.leaves_list(linkage)
+                        elif sort_by == "cpg":
+                            linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
+                            order = sch.leaves_list(linkage)
+                        elif sort_by == "any_c":
+                            linkage = sch.linkage(subset_bin[:, any_c_sites].layers[layer_any_c], method="ward")
+                            order = sch.leaves_list(linkage)
+                        elif sort_by == "gpc_cpg":
+                            linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
+                            order = sch.leaves_list(linkage)
+                        elif sort_by == "none":
+                            order = np.arange(num_reads)
+                        else:
+                            raise ValueError(f"Unsupported sort_by option: {sort_by}")
+
+                        stacked_any_c.append(subset_bin[order][:, any_c_sites].layers[layer_any_c])
+                        stacked_gpc.append(subset_bin[order][:, gpc_sites].layers[layer_gpc])
+                        stacked_cpg.append(subset_bin[order][:, cpg_sites].layers[layer_cpg])
+
+                        row_labels.extend([bin_label] * num_reads)
+                        bin_labels.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
+                        last_idx += num_reads
+                        bin_boundaries.append(last_idx)
+
+                if stacked_any_c:
+                    any_c_matrix = np.vstack(stacked_any_c)
+                    gpc_matrix = np.vstack(stacked_gpc)
+                    cpg_matrix = np.vstack(stacked_cpg)
+
+                    if any_c_matrix.size > 0:
+                        def normalized_mean(matrix):
+                            mean = np.nanmean(matrix, axis=0)
+                            normalized = (mean - mean.min()) / (mean.max() - mean.min() + 1e-9)
+                            return normalized
+
+                        def methylation_fraction(matrix):
+                            methylated = (matrix == 1).sum(axis=0)
+                            valid = (matrix != 0).sum(axis=0)
+                            return np.divide(methylated, valid, out=np.zeros_like(methylated, dtype=float), where=valid != 0)
+
+                        mean_gpc = methylation_fraction(gpc_matrix)
+                        mean_cpg = methylation_fraction(cpg_matrix)
+                        mean_any_c = methylation_fraction(any_c_matrix)
+
+                        fig = plt.figure(figsize=(18, 12))
+                        gs = gridspec.GridSpec(2, 3, height_ratios=[1, 6], hspace=0.01)
+                        fig.suptitle(f"{sample} - {ref}", fontsize=14, y=0.95)
+
+                        axes_heat = [fig.add_subplot(gs[1, i]) for i in range(3)]
+                        axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(3)]
+
+                        clean_barplot(axes_bar[0], mean_any_c, f"any C site Accessibility Signal")
+                        clean_barplot(axes_bar[1], mean_gpc, f"GpC Accessibility Signal")
+                        clean_barplot(axes_bar[2], mean_cpg, f"CpG Accessibility Signal")
+                        
+
+                        sns.heatmap(any_c_matrix, cmap=cmap_any_c, ax=axes_heat[0], xticklabels=any_c_labels[::20], yticklabels=False, cbar=False)
+                        axes_heat[0].set_xticks(range(0, len(any_c_labels), 20))
+                        axes_heat[0].set_xticklabels(any_c_labels[::20], rotation=90, fontsize=10)
+                        for boundary in bin_boundaries[:-1]:
+                            axes_heat[0].axhline(y=boundary, color="black", linewidth=2)
+
+                        sns.heatmap(gpc_matrix, cmap=cmap_gpc, ax=axes_heat[1], xticklabels=gpc_labels[::5], yticklabels=False, cbar=False)
+                        axes_heat[1].set_xticks(range(0, len(gpc_labels), 5))
+                        axes_heat[1].set_xticklabels(gpc_labels[::5], rotation=90, fontsize=10)
+                        for boundary in bin_boundaries[:-1]:
+                            axes_heat[1].axhline(y=boundary, color="black", linewidth=2)
+
+                        sns.heatmap(cpg_matrix, cmap=cmap_cpg, ax=axes_heat[2], xticklabels=cpg_labels, yticklabels=False, cbar=False)
+                        axes_heat[2].set_xticklabels(cpg_labels, rotation=90, fontsize=10)
+                        for boundary in bin_boundaries[:-1]:
+                            axes_heat[2].axhline(y=boundary, color="black", linewidth=2)
+
+                        plt.tight_layout()
+
+                        if save_path:
+                            save_name = f"{ref} — {sample}"
+                            os.makedirs(save_path, exist_ok=True)
+                            safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+                            out_file = os.path.join(save_path, f"{safe_name}.png")
+                            plt.savefig(out_file, dpi=300)
+                            print(f"Saved: {out_file}")
+                            plt.close()
+                        else:
+                            plt.show()
+
+                        print(f"Summary for {sample} - {ref}:")
+                        for bin_label, percent in percentages.items():
+                            print(f"  - {bin_label}: {percent:.1f}%")
+
+                        results.append({
+                            "sample": sample,
+                            "ref": ref,
+                            "any_c_matrix": any_c_matrix,
+                            "gpc_matrix": gpc_matrix,
+                            "cpg_matrix": cpg_matrix,
+                            "row_labels": row_labels,
+                            "bin_labels": bin_labels,
+                            "bin_boundaries": bin_boundaries,
+                            "percentages": percentages
+                        })
+                        
+                        adata.uns['clustermap_results'] = results
 
             except Exception as e:
                 import traceback

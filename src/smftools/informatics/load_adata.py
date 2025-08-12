@@ -177,7 +177,7 @@ def load_adata(config_path):
         fasta = os.path.join(output_directory, output_FASTA)
 
     # For conversion style SMF, make a converted reference FASTA
-    if smf_modality != 'direct':
+    if smf_modality == 'conversion':
         fasta_basename = os.path.basename(fasta)
         converted_FASTA_basename = fasta_basename.split('.fa')[0]+'_converted.fasta'
         converted_FASTA = os.path.join(output_directory, converted_FASTA_basename)
@@ -306,6 +306,7 @@ def load_adata(config_path):
     query_read_length_values = []
     query_read_quality_values = []
     reference_lengths = []
+    mapped_lengths = []
     # Iterate over each row of the AnnData object
     for obs_name in final_adata.obs_names:
         # Fetch the value from the dictionary using the obs_name as the key
@@ -314,13 +315,16 @@ def load_adata(config_path):
             query_read_length_values.append(value[0])
             query_read_quality_values.append(value[1])
             reference_lengths.append(value[2])
+            mapped_lengths.append(value[3])
         else:
             query_read_length_values.append(value)
             query_read_quality_values.append(value)
             reference_lengths.append(value) 
+            mapped_lengths.append(value)
                        
     # Add the new column to adata.obs
     final_adata.obs['read_length'] = query_read_length_values
+    final_adata.obs['mapped_length'] = mapped_lengths
     final_adata.obs['read_quality'] = query_read_quality_values
     final_adata.obs['read_length_to_reference_length_ratio'] = np.array(query_read_length_values) / np.array(reference_lengths)
 
@@ -338,7 +342,7 @@ def load_adata(config_path):
     else:
         from ..plotting import plot_read_qc_histograms
         make_dirs([initial_qc_dir])
-        obs_to_plot = ['read_length', 'read_quality', 'read_length_to_reference_length_ratio']
+        obs_to_plot = ['read_length', 'mapped_length','read_quality', 'read_length_to_reference_length_ratio']
         if smf_modality == 'deaminase':
             obs_to_plot += ['Raw_deamination_signal', 'Raw_per_base_deamination_average']
         else:
@@ -362,7 +366,7 @@ def load_adata(config_path):
         from ..preprocessing import calculate_converted_read_methylation_stats, filter_converted_reads_on_methylation
         calculate_converted_read_methylation_stats(final_adata, "Reference_strand", "Sample")
         ## Filter reads on methylation statistics
-        final_adata = filter_converted_reads_on_methylation(final_adata, valid_SMF_site_threshold=0.8, min_SMF_threshold=0.05, max_SMF_threshold=1)
+        final_adata = filter_converted_reads_on_methylation(final_adata, valid_SMF_site_threshold=0.8, min_SMF_threshold=0.00, max_SMF_threshold=1)
         ## Add layers with various NaN replacement strategies from the primary data layer
         clean_NaN(final_adata)
     elif smf_modality == 'deaminase':
@@ -381,7 +385,7 @@ def load_adata(config_path):
         clean_NaN(final_adata, layer='binarized_methylation')
 
     ############### Calculate positional coverage in dataset ###############
-    calculate_coverage(final_adata, obs_column='Reference_strand', position_nan_threshold=0.9)
+    calculate_coverage(final_adata, obs_column='Reference_strand', position_nan_threshold=0.1)
 
     ############### Add layers to adata that are the binary GpC, CpG, any C methylation/deamination patterns ###############
     if smf_modality != 'direct':
@@ -468,7 +472,7 @@ def load_adata(config_path):
             plot_read_qc_histograms(final_adata, pp_qc_dir, obs_to_plot, sample_key='Barcode')
 
     ############### Duplicate detection for conversion/deamination SMF ###############
-    if smf_modality != 'direct':
+    if smf_modality != 'direct' and 'is_duplicate' not in final_adata.obs.columns:
         from ..preprocessing import flag_duplicate_reads, calculate_complexity_II
         references = final_adata.obs['Reference_strand'].cat.categories
         if smf_modality == 'conversion':
@@ -482,7 +486,7 @@ def load_adata(config_path):
                 var_filters_sets += [[f"{ref}_{site_type}_site", f"position_in_{ref}"]]
 
         ## Will need to improve here. Should do this for each barcode and then concatenate. rather than all at once ###
-        final_adata_unique, final_adata = flag_duplicate_reads(final_adata, var_filters_sets, distance_threshold=0.13, obs_reference_col='Reference_strand')
+        final_adata_unique, final_adata = flag_duplicate_reads(final_adata, var_filters_sets, distance_threshold=0.1, obs_reference_col='Reference_strand')
 
         pp_dir = f"{split_dir}/preprocessed"
         pp_qc_dir = f"{pp_dir}/QC_metrics"
@@ -518,11 +522,11 @@ def load_adata(config_path):
         if os.path.isdir(pp_clustermap_dir):
             print(pp_clustermap_dir + ' already exists. Skipping clustermap plotting.')
         else:
-            from ..plotting import combined_hmm_raw_clustermap
+            from ..plotting import combined_raw_clustermap
             make_dirs([pp_dir, pp_clustermap_dir])
-            clustermap_results = combined_hmm_raw_clustermap(final_adata, sample_col='Sample', hmm_feature_layer='any_C_site_binary', 
-                                        layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_hmm="coolwarm", 
-                                        cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=20, min_length=400, 
+            clustermap_results = combined_raw_clustermap(final_adata, sample_col='Barcode', layer_any_c='nan0_0minus1', 
+                                        layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_any_c="coolwarm", 
+                                        cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=25, min_length=500, bins=None,
                                         sample_mapping=None, save_path=pp_clustermap_dir, sort_by='gpc', deaminase=deaminase)
         
         ## Basic PCA/UMAP
@@ -541,11 +545,11 @@ def load_adata(config_path):
 
             # Plotting UMAP
             save = 'umap_plot.png'
-            sc.pl.umap(final_adata, color=['leiden', 'Sample'], palette='Set1', save=save)
+            sc.pl.umap(final_adata, color=['leiden', 'Sample'], palette='Set1', show=False, save=save)
 
     ########################################################################################################################
 
-    ############################################### Positional analyses ###############################################
+    ############################################### Spatial analyses ###############################################
     from ..tools.read_stats import binary_autocorrelation_with_spacing
     if smf_modality != 'direct':
         pp_dir = f"{split_dir}/preprocessed"
@@ -571,7 +575,7 @@ def load_adata(config_path):
             from ..plotting import plot_spatial_autocorr_grid
             make_dirs([pp_autocorr_dir, pp_autocorr_dir])
 
-            plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=45, rows_per_fig=6)
+            plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
 
     else:
         pass
