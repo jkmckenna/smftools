@@ -24,7 +24,7 @@ def calculate_converted_read_methylation_stats(adata, reference_column, sample_n
     references = set(adata.obs[reference_column])
     sample_names = set(adata.obs[sample_names_col])
 
-    site_types = ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C']
+    site_types = ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C_site', 'any_C_site']
 
     for site_type in site_types:
         adata.obs[f'{site_type}_row_methylation_sums'] = pd.Series(0, index=adata.obs_names, dtype=int)
@@ -47,7 +47,7 @@ def calculate_converted_read_methylation_stats(adata, reference_column, sample_n
                                         f'{site_type}_row_methylation_means': row_methylation_means}, index=cat_subset.obs.index)
             adata.obs.update(temp_obs_data)
     # Indicate whether the read-level GpC methylation rate exceeds the false methylation rate of the read
-    pass_array = np.array(adata.obs[f'GpC_site_row_methylation_means'] > adata.obs[f'other_C_row_methylation_means'])
+    pass_array = np.array(adata.obs[f'GpC_site_row_methylation_means'] > adata.obs[f'other_C_site_row_methylation_means'])
     adata.obs['GpC_above_other_C'] = pd.Series(pass_array, index=adata.obs.index, dtype=bool)
 
 # Below should be a plotting function

@@ -292,6 +292,7 @@ def load_adata(config_path):
     else:
         final_adata = ad.read_h5ad(final_adata_path)
 
+    final_adata.obs_names_make_unique()
     cols = final_adata.obs.columns
     for col in cols:
         final_adata.obs[col] = final_adata.obs[col].astype('category')
@@ -302,7 +303,6 @@ def load_adata(config_path):
         bam_read_metrics = extract_read_features_from_bam(bam_file)
         read_metrics.update(bam_read_metrics)
     #read_metrics = extract_read_features_from_bam(sorted_output)
-
     query_read_length_values = []
     query_read_quality_values = []
     reference_lengths = []
@@ -330,6 +330,20 @@ def load_adata(config_path):
     else:
         final_adata.obs['Raw_methylation_signal'] = np.nansum(final_adata.X, axis=1)
         final_adata.obs['Raw_per_base_methylation_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['read_length']
+
+    ### Make a dir for outputting sample level QC metrics before preprocessing ###
+    initial_qc_dir = f"{split_dir}/initial_QC_metrics"
+    if os.path.isdir(initial_qc_dir):
+        print(initial_qc_dir + ' already exists. Skipping read level QC plotting.')
+    else:
+        from ..plotting import plot_read_qc_histograms
+        make_dirs([initial_qc_dir])
+        obs_to_plot = ['read_length', 'read_quality', 'read_length_to_reference_length_ratio']
+        if smf_modality == 'deaminase':
+            obs_to_plot += ['Raw_deamination_signal', 'Raw_per_base_deamination_average']
+        else:
+            obs_to_plot += ['Raw_methylation_signal', 'Raw_per_base_methylation_average']
+        plot_read_qc_histograms(final_adata, initial_qc_dir, obs_to_plot, sample_key='Barcode')
 
     ########################################################################################################################
 
@@ -380,6 +394,7 @@ def load_adata(config_path):
         reference_to_gpc_column = {reference: f"{reference}_GpC_site" for reference in references}
         reference_to_cpg_column = {reference: f"{reference}_CpG_site" for reference in references}
         reference_to_c_column = {reference: f"{reference}_any_C_site" for reference in references}
+        reference_to_other_c_column = {reference: f"{reference}_other_C_site" for reference in references}
 
         # Step 2: Precompute per-reference var masks
         gpc_var_masks = {
@@ -396,33 +411,65 @@ def load_adata(config_path):
             for ref, col in reference_to_c_column.items()
         }
 
+        other_c_var_masks = {
+            ref: final_adata.var[col].values.astype(bool)
+            for ref, col in reference_to_other_c_column.items()
+        }
+
         # Step 3: Build row-level masks
         n_obs, n_vars = final_adata.shape
         gpc_row_mask = np.zeros((n_obs, n_vars), dtype=bool)
         cpg_row_mask = np.zeros((n_obs, n_vars), dtype=bool)
         c_row_mask = np.zeros((n_obs, n_vars), dtype=bool)
+        other_c_row_mask = np.zeros((n_obs, n_vars), dtype=bool)
 
         for ref in reference_to_gpc_column:
             row_indices = final_adata.obs["Reference_strand"] == ref
             gpc_row_mask[row_indices.values, :] = gpc_var_masks[ref]
             cpg_row_mask[row_indices.values, :] = cpg_var_masks[ref]
             c_row_mask[row_indices.values, :] = c_var_masks[ref]
+            other_c_row_mask[row_indices.values, :] = other_c_var_masks[ref]
 
         # Step 4: Mask adata.X
         X = final_adata.X.toarray() if not isinstance(final_adata.X, np.ndarray) else final_adata.X
         masked_gpc_X = np.where(gpc_row_mask, X, np.nan)
         masked_cpg_X = np.where(cpg_row_mask, X, np.nan)
         masked_c_X = np.where(c_row_mask, X, np.nan)
+        masked_other_c_X = np.where(other_c_row_mask, X, np.nan)
 
         # Step 5: Store in layers
         final_adata.layers['GpC_site_binary'] = masked_gpc_X
         final_adata.layers['CpG_site_binary'] = masked_cpg_X
         final_adata.layers['GpC_CpG_combined_site_binary'] = masked_gpc_X + masked_cpg_X
-        final_adata.layers['C_site_binary'] = masked_c_X
+        final_adata.layers['any_C_site_binary'] = masked_c_X
+        final_adata.layers['other_C_site_binary'] = masked_other_c_X
+
+        # Calculate per read metrics:
+        final_adata.obs['Raw_GpC_site_signal'] = np.nansum(final_adata.layers['GpC_site_binary'], axis=1)
+        final_adata.obs['mean_GpC_site_signal_density'] = final_adata.obs['Raw_GpC_site_signal'] / final_adata.obs['read_length']
+        final_adata.obs['Raw_CpG_site_signal'] = np.nansum(final_adata.layers['CpG_site_binary'], axis=1)
+        final_adata.obs['mean_CpG_site_signal_density'] = final_adata.obs['Raw_CpG_site_signal'] / final_adata.obs['read_length']
+        final_adata.obs['Raw_any_C_site_signal'] = np.nansum(final_adata.layers['any_C_site_binary'], axis=1)
+        final_adata.obs['mean_any_C_site_signal_density'] = final_adata.obs['Raw_any_C_site_signal'] / final_adata.obs['read_length']
+        final_adata.obs['Raw_other_C_site_signal'] = np.nansum(final_adata.layers['other_C_site_binary'], axis=1)
+        final_adata.obs['mean_other_C_site_signal_density'] = final_adata.obs['Raw_other_C_site_signal'] / final_adata.obs['read_length']
+
+        ### Make a dir for outputting sample level QC metrics before preprocessing ###
+        pp_dir = f"{split_dir}/preprocessed"
+        pp_qc_dir = f"{pp_dir}/QC_metrics"
+        if os.path.isdir(pp_qc_dir):
+            print(pp_qc_dir + ' already exists. Skipping read level QC plotting.')
+        else:
+            from ..plotting import plot_read_qc_histograms
+            make_dirs([pp_dir, pp_qc_dir])
+            obs_to_plot = ['Raw_GpC_site_signal', 'mean_GpC_site_signal_density', 'Raw_CpG_site_signal', 
+                           'mean_CpG_site_signal_density', 'Raw_any_C_site_signal', 'mean_any_C_site_signal_density', 
+                           'Raw_other_C_site_signal', 'mean_other_C_site_signal_density']
+            plot_read_qc_histograms(final_adata, pp_qc_dir, obs_to_plot, sample_key='Barcode')
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != 'direct':
-        from ..preprocessing import flag_duplicate_reads
+        from ..preprocessing import flag_duplicate_reads, calculate_complexity_II
         references = final_adata.obs['Reference_strand'].cat.categories
         if smf_modality == 'conversion':
             site_types = ['GpC', 'CpG', 'ambiguous_GpC_CpG']
@@ -432,9 +479,26 @@ def load_adata(config_path):
         var_filters_sets =[]
         for ref in references:
             for site_type in site_types:
-                var_filters_sets += [[f"{ref}_{site_type}_site", f"positions_in_{ref}"]]
+                var_filters_sets += [[f"{ref}_{site_type}_site", f"position_in_{ref}"]]
 
+        ## Will need to improve here. Should do this for each barcode and then concatenate. rather than all at once ###
         final_adata_unique, final_adata = flag_duplicate_reads(final_adata, var_filters_sets, distance_threshold=0.13, obs_reference_col='Reference_strand')
+
+        pp_dir = f"{split_dir}/preprocessed"
+        pp_qc_dir = f"{pp_dir}/QC_metrics"
+
+        calculate_complexity_II(
+            adata=final_adata,
+            output_directory=pp_qc_dir,
+            sample_col='Barcode',
+            cluster_col='merged_cluster_id',
+            plot=True,
+            save_plot=True,   # set False to display instead
+            n_boot=30,
+            n_depths=12,
+            random_state=42,
+            csv_summary=True,
+        )
 
     ########################################################################################################################
 
@@ -445,33 +509,50 @@ def load_adata(config_path):
         else:
             deaminase = True
         references = final_adata.obs['Reference_strand'].cat.categories
+
+        pp_dir = f"{split_dir}/preprocessed"
+        pp_clustermap_dir = f"{pp_dir}/clustermaps"
+        pp_umap_dir = f"{pp_dir}/umaps"
+
         # ## Basic clustermap plotting
-        from ..plotting import combined_hmm_raw_clustermap
-        clustermap_results = combined_hmm_raw_clustermap(final_adata, sample_col='Sample', hmm_feature_layer='C_site_binary', 
+        if os.path.isdir(pp_clustermap_dir):
+            print(pp_clustermap_dir + ' already exists. Skipping clustermap plotting.')
+        else:
+            from ..plotting import combined_hmm_raw_clustermap
+            make_dirs([pp_dir, pp_clustermap_dir])
+            clustermap_results = combined_hmm_raw_clustermap(final_adata, sample_col='Sample', hmm_feature_layer='any_C_site_binary', 
                                         layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_hmm="coolwarm", 
                                         cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=20, min_length=400, 
-                                        sample_mapping=None, save_path=None, sort_by='gpc', deaminase=deaminase)
+                                        sample_mapping=None, save_path=pp_clustermap_dir, sort_by='gpc', deaminase=deaminase)
         
         ## Basic PCA/UMAP
-        from ..tools import calculate_umap
-        var_filters = []
-        for ref in references:
-            var_filters += [f'{ref}_any_C_site']
-        final_adata = calculate_umap(final_adata, layer='nan_half', var_filters=var_filters, n_pcs=10, knn_neighbors=15)
+        if os.path.isdir(pp_umap_dir):
+            print(pp_umap_dir + ' already exists. Skipping UMAP plotting.')
+        else:
+            from ..tools import calculate_umap
+            make_dirs([pp_dir, pp_umap_dir])
+            var_filters = []
+            for ref in references:
+                var_filters += [f'{ref}_any_C_site']
+            final_adata = calculate_umap(final_adata, layer='nan_half', var_filters=var_filters, n_pcs=10, knn_neighbors=15)
 
-        ## Clustering
-        sc.tl.leiden(final_adata, resolution=0.1, flavor="igraph", n_iterations=2)
+            ## Clustering
+            sc.tl.leiden(final_adata, resolution=0.1, flavor="igraph", n_iterations=2)
 
-        # Plotting UMAP
-        sc.pl.umap(final_adata, color=['leiden', 'Sample'], palette='Set1')
+            # Plotting UMAP
+            save = 'umap_plot.png'
+            sc.pl.umap(final_adata, color=['leiden', 'Sample'], palette='Set1', save=save)
 
     ########################################################################################################################
 
     ############################################### Positional analyses ###############################################
     from ..tools.read_stats import binary_autocorrelation_with_spacing
     if smf_modality != 'direct':
+        pp_dir = f"{split_dir}/preprocessed"
+        pp_autocorr_dir = f"{pp_dir}/autocorrelations"
+
         positions = final_adata.var_names.astype(int).values
-        site_types = ['GpC', 'CpG', 'C']
+        site_types = ['GpC', 'CpG', 'any_C']
         for site_type in site_types:
             X = final_adata.layers[f"{site_type}_site_binary"]
             max_lag = 500
@@ -483,6 +564,15 @@ def load_adata(config_path):
 
             final_adata.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
             final_adata.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
+
+        if os.path.isdir(pp_autocorr_dir):
+            print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
+        else:
+            from ..plotting import plot_spatial_autocorr_grid
+            make_dirs([pp_autocorr_dir, pp_autocorr_dir])
+
+            plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=45, rows_per_fig=6)
+
     else:
         pass
     ########################################################################################################################

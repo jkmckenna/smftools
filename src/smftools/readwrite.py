@@ -194,5 +194,25 @@ def merge_barcoded_anndatas(adata_single, adata_double):
     adata_merged.uns = {**adata_single.uns, **adata_double.uns}
 
     return adata_merged
-    
 ######################################################################################################
+
+### File conversion misc ###
+import argparse
+from Bio import SeqIO
+def genbank_to_gff(genbank_file, output_file, record_id):
+    with open(output_file, "w") as out:
+        for record in SeqIO.parse(genbank_file, "genbank"):
+            for feature in record.features:
+                # Skip features without location information
+                if feature.location is None:
+                    continue
+                # Extract feature information
+                start = feature.location.start + 1  # Convert to 1-based index
+                end = feature.location.end
+                strand = "+" if feature.location.strand == 1 else "-"
+                feature_type = feature.type
+                # Format attributes
+                attributes = ";".join(f"{k}={v}" for k, v in feature.qualifiers.items())
+                # Write GFF3 line
+                gff3_line = "\t".join(str(x) for x in [record_id, feature.type, feature_type, start, end, ".", strand, ".", attributes])
+                out.write(gff3_line + "\n")

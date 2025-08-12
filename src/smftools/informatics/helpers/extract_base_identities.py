@@ -58,12 +58,12 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
         c_to_t = ref_dict.get("C", {}).get("T", 0)
         g_to_a = ref_dict.get("G", {}).get("A", 0)
 
-        if c_to_t > g_to_a:
+        if abs(c_to_t - g_to_a) < 0.01 and c_to_t > 0:
+            mismatch_trend_per_read[read_name] = "equal"
+        elif c_to_t > g_to_a:
             mismatch_trend_per_read[read_name] = "C->T"
         elif g_to_a > c_to_t:
             mismatch_trend_per_read[read_name] = "G->A"
-        elif abs(c_to_t - g_to_a) < 0.01 and c_to_t > 0:
-            mismatch_trend_per_read[read_name] = "equal"
         else:
             mismatch_trend_per_read[read_name] = "none"
 

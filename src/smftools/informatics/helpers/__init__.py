@@ -29,7 +29,7 @@ from .one_hot_encode import one_hot_encode
 from .ohe_batching import ohe_batching
 from .one_hot_decode import one_hot_decode
 from .ohe_layers_decode import ohe_layers_decode
-from .plot_read_length_and_coverage_histograms import plot_read_length_and_coverage_histograms
+from .plot_bed_histograms import plot_bed_histograms
 from .run_multiqc import run_multiqc
 from .separate_bam_by_bc import separate_bam_by_bc
 from .split_and_index_BAM import split_and_index_BAM
@@ -67,7 +67,7 @@ __all__ = [
     "ohe_batching",
     "one_hot_decode",
     "ohe_layers_decode",
-    "plot_read_length_and_coverage_histograms",
+    "plot_bed_histograms",
     "run_multiqc",
     "separate_bam_by_bc",
     "split_and_index_BAM"
