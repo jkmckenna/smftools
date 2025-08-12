@@ -1,4 +1,4 @@
-def calculate_coverage(adata, obs_column='Reference_strand', position_nan_threshold=0.05):
+def calculate_coverage(adata, obs_column='Reference_strand', position_nan_threshold=0.00001):
     """
     Append position-level metadata regarding whether the position is informative within the given observation category.
 

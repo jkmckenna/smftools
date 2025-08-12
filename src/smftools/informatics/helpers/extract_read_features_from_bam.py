@@ -26,6 +26,7 @@ def extract_read_features_from_bam(bam_file_path):
             reference_name = read.reference_name
             reference_index = bam_file.references.index(reference_name)
             reference_length = reference_lengths[reference_index]
-            read_metrics[read.query_name] = [read.query_length, median_read_quality, reference_length]
+            mapped_length = sum(end - start for start, end in read.get_blocks())
+            read_metrics[read.query_name] = [read.query_length, median_read_quality, reference_length, mapped_length]
 
     return read_metrics

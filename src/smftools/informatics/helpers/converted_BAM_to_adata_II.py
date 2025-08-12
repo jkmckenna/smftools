@@ -68,7 +68,7 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
     print(f"Found {len(bam_files)} BAM files: {bam_files}")
 
     ## Process Conversion Sites
-    max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(converted_FASTA, conversion_types)
+    max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(converted_FASTA, conversion_types, deaminase_footprinting)
 
     ## Filter BAM Files by Mapping Threshold
     records_to_analyze = filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold)
@@ -87,13 +87,14 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
     return final_adata, final_adata_path
 
 
-def process_conversion_sites(converted_FASTA, conversion_types):
+def process_conversion_sites(converted_FASTA, conversion_types=['unconverted', '5mC'], deaminase_footprinting=False):
     """
     Extracts conversion sites and determines the max reference length.
 
     Parameters:
         converted_FASTA (str): Path to the converted reference FASTA.
         conversion_types (list): List of modification types (e.g., ['unconverted', '5mC', '6mA']).
+        deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
 
     Returns:
         max_reference_length (int): The length of the longest sequence.
@@ -107,7 +108,7 @@ def process_conversion_sites(converted_FASTA, conversion_types):
     conversions = conversion_types[1:]
 
     # Process the unconverted sequence once
-    modification_dict[unconverted] = find_conversion_sites(converted_FASTA, unconverted, conversion_types)
+    modification_dict[unconverted] = find_conversion_sites(converted_FASTA, unconverted, conversion_types, deaminase_footprinting)
     # Above points to record_dict[record.id] = [sequence_length, [], [], sequence, complement] with only unconverted record.id keys
 
     # Get **max sequence length** from unconverted records
@@ -116,7 +117,11 @@ def process_conversion_sites(converted_FASTA, conversion_types):
     # Add **unconverted records** to `record_FASTA_dict`
     for record, values in modification_dict[unconverted].items():
         sequence_length, top_coords, bottom_coords, sequence, complement = values
-        chromosome = record.replace(f"_{unconverted}_top", "")
+
+        if not deaminase_footprinting:
+            chromosome = record.replace(f"_{unconverted}_top", "")
+        else:
+            chromosome = record
 
         # Store **original sequence**
         record_FASTA_dict[record] = [
@@ -130,12 +135,16 @@ def process_conversion_sites(converted_FASTA, conversion_types):
 
     # Process converted records
     for conversion in conversions:
-        modification_dict[conversion] = find_conversion_sites(converted_FASTA, conversion, conversion_types)
+        modification_dict[conversion] = find_conversion_sites(converted_FASTA, conversion, conversion_types, deaminase_footprinting)
         # Above points to record_dict[record.id] = [sequence_length, top_strand_coordinates, bottom_strand_coordinates, sequence, complement] with only unconverted record.id keys
 
         for record, values in modification_dict[conversion].items():
             sequence_length, top_coords, bottom_coords, sequence, complement = values
-            chromosome = record.split(f"_{unconverted}_")[0]  # Extract chromosome name
+
+            if not deaminase_footprinting:
+                chromosome = record.split(f"_{unconverted}_")[0]  # Extract chromosome name
+            else:
+                chromosome = record
 
             # Add **both strands** for converted records
             for strand in ["top", "bottom"]:
@@ -183,6 +192,7 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
 
         # Extract Base Identities
         fwd_bases, rev_bases, mismatch_counts_per_read, mismatch_trend_per_read = extract_base_identities(bam, record, range(current_length), max_reference_length, sequence)
+        mismatch_trend_series = pd.Series(mismatch_trend_per_read)
 
         # Skip processing if both forward and reverse base identities are empty
         if not fwd_bases and not rev_bases:
@@ -270,6 +280,7 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
         adata.obs["Dataset"] = [mod_type] * len(adata)
         adata.obs["Reference_dataset_strand"] = [f"{chromosome}_{mod_type}_{strand}"] * len(adata)
         adata.obs["Reference_strand"] = [f"{chromosome}_{strand}"] * len(adata)
+        adata.obs["Read_mismatch_trend"] = adata.obs_names.map(mismatch_trend_series)
 
         # Attach One-Hot Encodings to Layers
         adata.layers["A_binary_encoding"] = df_A
