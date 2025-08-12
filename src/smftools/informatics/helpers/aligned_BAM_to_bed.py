@@ -15,11 +15,13 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
     """
     import subprocess
     import os
+    import pysam
+    import numpy as np
     import concurrent.futures
     from concurrent.futures import ProcessPoolExecutor
     from .bed_to_bigwig import bed_to_bigwig
     from . import make_dirs
-    from .plot_read_length_and_coverage_histograms import plot_read_length_and_coverage_histograms
+    from .plot_bed_histograms import plot_bed_histograms
 
     threads = threads or os.cpu_count()  # Use max available cores if not specified
 
@@ -30,45 +32,100 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
 
     bed_output = os.path.join(bed_dir, os.path.basename(aligned_BAM).replace(".bam", "_bed.bed"))
 
-    print(f"Creating BED from BAM: {aligned_BAM} using {threads} threads...")
+    print(f"Creating BED-like file from BAM (with MAPQ and avg base quality): {aligned_BAM}")
 
-    # Convert BAM to BED format
-    with open(bed_output, "w") as output_file:
-        samtools_view = subprocess.Popen(["samtools", "view", "-@", str(threads), aligned_BAM], stdout=subprocess.PIPE)
-        awk_process = subprocess.Popen(
-            ["awk", '{print $3 "\t" $4 "\t" $4+length($10)-1 "\t" length($10)-1 "\t" $1}'],
-            stdin=samtools_view.stdout,
-            stdout=output_file
-        )
+    with pysam.AlignmentFile(aligned_BAM, "rb") as bam, open(bed_output, "w") as out:
+        for read in bam.fetch(until_eof=True):
+            if read.is_unmapped:
+                chrom = "*"
+                start1 = 1
+                rl = read.query_length or 0
+                mapq = 0
+            else:
+                chrom = bam.get_reference_name(read.reference_id)
+                # pysam reference_start is 0-based → +1 for 1-based SAM-like start
+                start1 = int(read.reference_start) + 1
+                rl = read.query_length or 0
+                mapq = int(read.mapping_quality)
 
-    samtools_view.stdout.close()
-    awk_process.wait()
-    samtools_view.wait()
+            # End position in 1-based inclusive coords
+            end1 = start1 + (rl or 0) - 1
 
-    print(f"BED file created: {bed_output}")
+            qname = read.query_name
+            quals = read.query_qualities
+            if quals is None or rl == 0:
+                avg_q = float("nan")
+            else:
+                avg_q = float(np.mean(quals))
+
+            out.write(f"{chrom}\t{start1}\t{end1}\t{rl}\t{qname}\t{mapq}\t{avg_q:.3f}\n")
+
+    print(f"BED-like file created: {bed_output}")
 
     def split_bed(bed):
-        """Splits BED into aligned and unaligned reads."""
+        """Splits into aligned and unaligned reads (chrom == '*')."""
         aligned = bed.replace(".bed", "_aligned.bed")
         unaligned = bed.replace(".bed", "_unaligned.bed")
-
         with open(bed, "r") as infile, open(aligned, "w") as aligned_out, open(unaligned, "w") as unaligned_out:
             for line in infile:
-                (unaligned_out if line.startswith("*") else aligned_out).write(line)
-
+                (unaligned_out if line.startswith("*\t") else aligned_out).write(line)
         os.remove(bed)
         return aligned
 
-    print(f"Splitting BED: {bed_output}")
+    print(f"Splitting: {bed_output}")
     aligned_bed = split_bed(bed_output)
 
-    with ProcessPoolExecutor() as executor:  # Use processes instead of threads
+
+    with ProcessPoolExecutor() as executor:
         futures = []
-        futures.append(executor.submit(plot_read_length_and_coverage_histograms, aligned_bed, plotting_dir))
+        futures.append(executor.submit(plot_bed_histograms, aligned_bed, plotting_dir, fasta))
         if make_bigwigs:
             futures.append(executor.submit(bed_to_bigwig, fasta, aligned_bed))
-
-        # Wait for all tasks to complete
         concurrent.futures.wait(futures)
 
     print("Processing completed successfully.")
+
+    # bed_output = os.path.join(bed_dir, os.path.basename(aligned_BAM).replace(".bam", "_bed.bed"))
+
+    # print(f"Creating BED from BAM: {aligned_BAM} using {threads} threads...")
+
+    # # Convert BAM to BED format
+    # with open(bed_output, "w") as output_file:
+    #     samtools_view = subprocess.Popen(["samtools", "view", "-@", str(threads), aligned_BAM], stdout=subprocess.PIPE)
+    #     awk_process = subprocess.Popen(
+    #         ["awk", '{print $3 "\t" $4 "\t" $4+length($10)-1 "\t" length($10)-1 "\t" $1}'],
+    #         stdin=samtools_view.stdout,
+    #         stdout=output_file
+    #     )
+
+    # samtools_view.stdout.close()
+    # awk_process.wait()
+    # samtools_view.wait()
+
+    # print(f"BED file created: {bed_output}")
+
+    # def split_bed(bed):
+    #     """Splits BED into aligned and unaligned reads."""
+    #     aligned = bed.replace(".bed", "_aligned.bed")
+    #     unaligned = bed.replace(".bed", "_unaligned.bed")
+
+    #     with open(bed, "r") as infile, open(aligned, "w") as aligned_out, open(unaligned, "w") as unaligned_out:
+    #         for line in infile:
+    #             (unaligned_out if line.startswith("*") else aligned_out).write(line)
+
+    #     os.remove(bed)
+    #     return aligned
+
+    # print(f"Splitting BED: {bed_output}")
+    # aligned_bed = split_bed(bed_output)
+
+    # with ProcessPoolExecutor() as executor:  # Use processes instead of threads
+    #     futures = []
+    #     futures.append(executor.submit(plot_read_length_and_coverage_histograms, aligned_bed, plotting_dir, fasta))
+    #     if make_bigwigs:
+    #         futures.append(executor.submit(bed_to_bigwig, fasta, aligned_bed))
+
+    #     # Wait for all tasks to complete
+    #     concurrent.futures.wait(futures)
+
+    # print("Processing completed successfully.")

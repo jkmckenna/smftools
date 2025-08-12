@@ -1,6 +1,7 @@
 from .append_C_context import append_C_context
 from .binarize_on_Youden import binarize_on_Youden
 from .calculate_complexity import calculate_complexity
+from .calculate_complexity_II import calculate_complexity_II
 from .calculate_converted_read_methylation_stats import calculate_converted_read_methylation_stats
 from .calculate_coverage import calculate_coverage
 from .calculate_position_Youden import calculate_position_Youden

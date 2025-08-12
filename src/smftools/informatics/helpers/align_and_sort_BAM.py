@@ -44,9 +44,9 @@ def align_and_sort_BAM(fasta, input, bam_suffix='.bam', output_directory='aligne
         subprocess.run(bam_to_fastq_command, stdout=open(input_as_fastq, "w"))
         print(f"Aligning FASTQ to Reference: {input_as_fastq}")
         if threads:
-            minimap_command = ['minimap2', '-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N 0', '-t', threads, fasta, input_as_fastq]
+            minimap_command = ['minimap2', '-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N 5', '--secondary=no', '-t', threads, fasta, input_as_fastq]
         else:
-            minimap_command = ['minimap2', '-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N 0', fasta, input_as_fastq]
+            minimap_command = ['minimap2', '-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N 5','--secondary=no', fasta, input_as_fastq]
         subprocess.run(minimap_command, stdout=open(aligned_output, "w"))
         os.remove(input_as_fastq)
 

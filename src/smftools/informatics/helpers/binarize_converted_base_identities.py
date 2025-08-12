@@ -33,7 +33,7 @@ def binarize_converted_base_identities(base_identities, strand, modification_typ
             arr = np.array(bases, dtype='<U1')
             # Fetch the appropriate mapping
             conversion_type = mismatch_trend_per_read[key]
-            base_map = binarization_maps[conversion_type]
+            base_map = binarization_maps.get(conversion_type, None)
             binarized = np.vectorize(lambda x: base_map.get(x, np.nan))(arr)  # Apply mapping with fallback to NaN
             binarized_base_identities[key] = binarized
 
