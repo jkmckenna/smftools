@@ -123,7 +123,7 @@ def concatenate_h5ads(output_file, file_suffix='h5ad.gz', delete_inputs=True):
     else:
         print('Keeping input files')
 
-def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir="./"):
+def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir="./", verbose=True):
     """
     Saves an AnnData object safely by omitting problematic columns from .obs and .var.
 
@@ -137,6 +137,8 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=".
     import anndata as ad
     import pandas as pd
     import os
+    import numpy as np
+    import json
 
     os.makedirs(backup_dir, exist_ok=True)
 
@@ -146,16 +148,48 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=".
             if df[col].dtype == 'object':
                 if not df[col].apply(lambda x: isinstance(x, (str, type(None)))).all():
                     bad_cols.append(col)
-        if bad_cols:
-            print(f"⚠️ Skipping columns from {df_name}: {bad_cols}")
-            if backup:
-                df[bad_cols].to_csv(os.path.join(backup_dir, f"{df_name}_skipped_columns.csv"))
-                print(f"📝 Backed up skipped columns to {backup_dir}/{df_name}_skipped_columns.csv")
+            elif pd.api.types.is_categorical_dtype(df[col]):
+                if not all(isinstance(x, (str, type(None))) for x in df[col].cat.categories):
+                    bad_cols.append(col)
+        if bad_cols and verbose:
+            print(f"Skipping columns from {df_name}: {bad_cols}")
+        if backup and bad_cols:
+            df[bad_cols].to_csv(os.path.join(backup_dir, f"{df_name}_skipped_columns.csv"))
+            if verbose:
+                print(f"Backed up skipped columns to {backup_dir}/{df_name}_skipped_columns.csv")
         return df.drop(columns=bad_cols)
+    
+    def is_serializable(val):
+        try:
+            json.dumps(val)
+            return True
+        except (TypeError, OverflowError):
+            return False
 
-    # Clean obs and var
+    def clean_uns(uns_dict):
+        clean_uns = {}
+        bad_keys = []
+        for k, v in uns_dict.items():
+            if isinstance(v, (str, int, float, type(None), list, dict, np.ndarray, pd.DataFrame)):
+                clean_uns[k] = v
+            elif is_serializable(v):
+                clean_uns[k] = v
+            else:
+                bad_keys.append(k)
+                if backup:
+                    try:
+                        with open(os.path.join(backup_dir, f"uns_{k}_backup.txt"), "w") as f:
+                            f.write(str(v))
+                    except Exception:
+                        pass
+        if bad_keys and verbose:
+            print(f"Skipping entries from .uns: {bad_keys}")
+        return clean_uns
+
+    # Clean obs and var and uns
     obs_clean = filter_df(adata.obs, "obs")
     var_clean = filter_df(adata.var, "var")
+    uns_clean = clean_uns(adata.uns)
 
     # Save clean version
     adata_copy = ad.AnnData(
@@ -163,12 +197,17 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=".
         obs=obs_clean,
         var=var_clean,
         layers=adata.layers,
-        uns=adata.uns,
+        uns=uns_clean,
         obsm=adata.obsm,
         varm=adata.varm
     )
+
+    adata_copy.obs_names = adata_copy.obs_names.astype(str)
+    adata_copy.var_names = adata_copy.var_names.astype(str)
+
     adata_copy.write_h5ad(path, compression=compression)
-    print(f"✅ Saved safely to {path}")
+
+    print(f"Saved safely to {path}")
 
 def merge_barcoded_anndatas(adata_single, adata_double):
     import numpy as np

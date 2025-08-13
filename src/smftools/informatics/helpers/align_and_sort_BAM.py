@@ -1,6 +1,13 @@
 ## align_and_sort_BAM
 
-def align_and_sort_BAM(fasta, input, bam_suffix='.bam', output_directory='aligned_outputs', make_bigwigs=False, threads=None, deaminase_alignment=False):
+def align_and_sort_BAM(fasta, 
+                       input, 
+                       bam_suffix='.bam', 
+                       output_directory='aligned_outputs', 
+                       make_bigwigs=False, 
+                       threads=None, 
+                       aligner='minimap2',
+                       aligner_args=['-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N', '5', '--secondary=no']):
     """
     A wrapper for running dorado aligner and samtools functions
     
@@ -11,7 +18,8 @@ def align_and_sort_BAM(fasta, input, bam_suffix='.bam', output_directory='aligne
         output_directory (str): A file path to the directory to output all the analyses.
         make_bigwigs (bool): Whether to make bigwigs
         threads (int): Number of additional threads to use
-        deaminase_smf (bool): Whether to use deaminase based footprinting method
+        aligner (str): Aligner to use. minimap2 and dorado options
+        aligner_args (list): list of optional parameters to use for the alignment
 
     Returns:
         None
@@ -36,28 +44,30 @@ def align_and_sort_BAM(fasta, input, bam_suffix='.bam', output_directory='aligne
     else:
         pass
     
-    mm2_opts = "-N 1"
-
-    if deaminase_alignment:
+    if aligner == 'minimap2':
         print(f"Converting BAM to FASTQ: {input}")
         bam_to_fastq_command = ['samtools', 'fastq', input]
         subprocess.run(bam_to_fastq_command, stdout=open(input_as_fastq, "w"))
         print(f"Aligning FASTQ to Reference: {input_as_fastq}")
         if threads:
-            minimap_command = ['minimap2', '-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N', '5', '--secondary=no', '-t', threads, fasta, input_as_fastq]
+            minimap_command = ['minimap2'] + aligner_args + ['-t', threads, fasta, input_as_fastq]
         else:
-            minimap_command = ['minimap2', '-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N', '5', '--secondary=no', fasta, input_as_fastq]
+            minimap_command = ['minimap2'] + aligner_args + [fasta, input_as_fastq]
         subprocess.run(minimap_command, stdout=open(aligned_output, "w"))
         os.remove(input_as_fastq)
 
-    else:
+    elif aligner == 'dorado':
         # Run dorado aligner
         print(f"Aligning BAM to Reference: {input}")
         if threads:
-            alignment_command = ["dorado", "aligner", "-t", threads, '--mm2-opts', mm2_opts, fasta, input]
+            alignment_command = ["dorado", "aligner", "-t", threads] + aligner_args + [fasta, input]
         else:
-            alignment_command = ["dorado", "aligner", '--mm2-opts', mm2_opts, fasta, input]
+            alignment_command = ["dorado", "aligner"] + aligner_args + [fasta, input]
         subprocess.run(alignment_command, stdout=open(aligned_output, "w"))
+
+    else:
+        print(f'Aligner not recognized: {aligner}. Choose from minimap2 and dorado')
+        return
 
     # Sort the BAM on positional coordinates
     print(f"Sorting BAM: {aligned_output}")
