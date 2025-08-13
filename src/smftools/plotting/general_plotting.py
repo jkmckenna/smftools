@@ -228,7 +228,7 @@ def combined_raw_clustermap(
     cmap_gpc="coolwarm",
     cmap_cpg="viridis",
     min_quality=20,
-    min_length=2700,
+    min_length=200,
     sample_mapping=None,
     save_path=None,
     sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
@@ -245,10 +245,6 @@ def combined_raw_clustermap(
     import os
 
     results = []
-    if deaminase:
-        signal_type = 'deamination'
-    else:
-        signal_type = 'methylation'
 
     for ref in adata.obs["Reference_strand"].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
@@ -257,11 +253,10 @@ def combined_raw_clustermap(
                     (adata.obs['Reference_strand'] == ref) &
                     (adata.obs[sample_col] == sample) &
                     (adata.obs['read_quality'] >= min_quality) &
-                    (adata.obs['mapped_length'] >= min_length) &
-                    (adata.obs[f'Raw_{signal_type}_signal'] >= min_signal)
+                    (adata.obs['mapped_length'] >= min_length)
                 ]
                 
-                subset = subset[:, subset.var[f'position_in_{ref}'] == True]
+                #subset = subset[:, subset.var[f'position_in_{ref}'] == True]
 
                 if subset.shape[0] == 0:
                     print(f"  No reads left after filtering for {sample} - {ref}")

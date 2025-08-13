@@ -1,16 +1,13 @@
-## calculate_converted_read_methylation_stats
-
-## Conversion SMF Specific 
-# Read methylation QC
-
-def calculate_converted_read_methylation_stats(adata, reference_column, sample_names_col):
+def calculate_read_modification_stats(adata, reference_column, sample_names_col, mod_target_bases):
     """
-    Adds methylation statistics for each read. Indicates whether the read GpC methylation exceeded other_C methylation (background false positives).
+    Adds methylation/deamination statistics for each read. 
+    Indicates the read GpC and CpG methylation ratio to other_C methylation (background false positive metric for Cytosine MTase SMF).
 
     Parameters:
         adata (AnnData): An adata object
         reference_column (str): String representing the name of the Reference column to use
         sample_names_col (str): String representing the name of the sample name column to use
+        mod_target_bases:
 
     Returns:
         None 
@@ -19,36 +16,64 @@ def calculate_converted_read_methylation_stats(adata, reference_column, sample_n
     import anndata as ad
     import pandas as pd
 
-    print('Calculating read level methylation statistics')
+    print('Calculating read level Modification statistics')
 
     references = set(adata.obs[reference_column])
     sample_names = set(adata.obs[sample_names_col])
+    site_types = []
 
-    site_types = ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C_site', 'any_C_site']
+    if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
+        site_types += ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C_site', 'any_C_site']
+    
+    if 'A' in mod_target_bases:
+        site_types += ['A_site']
 
     for site_type in site_types:
-        adata.obs[f'{site_type}_row_methylation_sums'] = pd.Series(0, index=adata.obs_names, dtype=int)
-        adata.obs[f'{site_type}_row_methylation_means'] = pd.Series(np.nan, index=adata.obs_names, dtype=float)
-        adata.obs[f'number_valid_{site_type}_in_read'] = pd.Series(0, index=adata.obs_names, dtype=int)
-        adata.obs[f'fraction_valid_{site_type}_in_range'] = pd.Series(np.nan, index=adata.obs_names, dtype=float)
-    for cat in references:
-        cat_subset = adata[adata.obs[reference_column] == cat].copy()
+        adata.obs[f'Modified_{site_type}_count'] = pd.Series(0, index=adata.obs_names, dtype=int)
+        adata.obs[f'Total_{site_type}_in_read'] = pd.Series(0, index=adata.obs_names, dtype=int)
+        adata.obs[f'Fraction_{site_type}_modified'] = pd.Series(np.nan, index=adata.obs_names, dtype=float)
+
+    for ref in references:
+        ref_subset = adata[adata.obs[reference_column] == ref].copy()
         for site_type in site_types:
-            print(f'Iterating over {cat}_{site_type}')
-            observation_matrix = cat_subset.obsm[f'{cat}_{site_type}']
-            number_valid_positions_in_read = np.nansum(~np.isnan(observation_matrix), axis=1)
-            row_methylation_sums = np.nansum(observation_matrix, axis=1)
-            number_valid_positions_in_read[number_valid_positions_in_read == 0] = 1
-            fraction_valid_positions_in_range = number_valid_positions_in_read / np.max(number_valid_positions_in_read)
-            row_methylation_means = np.divide(row_methylation_sums, number_valid_positions_in_read)
-            temp_obs_data = pd.DataFrame({f'number_valid_{site_type}_in_read': number_valid_positions_in_read,
-                                        f'fraction_valid_{site_type}_in_range': fraction_valid_positions_in_range,
-                                        f'{site_type}_row_methylation_sums': row_methylation_sums,
-                                        f'{site_type}_row_methylation_means': row_methylation_means}, index=cat_subset.obs.index)
+            print(f'Iterating over {ref}_{site_type}')
+            observation_matrix = ref_subset.obsm[f'{ref}_{site_type}']
+            total_positions_in_read = np.nansum(~np.isnan(observation_matrix), axis=1)
+            number_mods_in_read = np.nansum(observation_matrix, axis=1)
+            fraction_modified = number_mods_in_read / total_positions_in_read
+
+            fraction_modified = np.divide(
+                number_mods_in_read,
+                total_positions_in_read,
+                out=np.full_like(number_mods_in_read, np.nan, dtype=float),
+                where=total_positions_in_read != 0
+            )
+
+            temp_obs_data = pd.DataFrame({f'Total_{site_type}_in_read': total_positions_in_read,
+                                        f'Modified_{site_type}_count': number_mods_in_read,
+                                        f'Fraction_{site_type}_modified': fraction_modified}, index=ref_subset.obs.index)
+            
             adata.obs.update(temp_obs_data)
-    # Indicate whether the read-level GpC methylation rate exceeds the false methylation rate of the read
-    pass_array = np.array(adata.obs[f'GpC_site_row_methylation_means'] > adata.obs[f'other_C_site_row_methylation_means'])
-    adata.obs['GpC_above_other_C'] = pd.Series(pass_array, index=adata.obs.index, dtype=bool)
+
+    if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
+        with np.errstate(divide='ignore', invalid='ignore'):
+            gpc_to_c_ratio = np.divide(
+                adata.obs[f'Fraction_GpC_site_modified'],
+                adata.obs[f'Fraction_other_C_site_modified'],
+                out=np.full_like(adata.obs[f'Fraction_GpC_site_modified'], np.nan, dtype=float),
+                where=adata.obs[f'Fraction_other_C_site_modified'] != 0
+            )
+
+            cpg_to_c_ratio = np.divide(
+                adata.obs[f'Fraction_CpG_site_modified'],
+                adata.obs[f'Fraction_other_C_site_modified'],
+                out=np.full_like(adata.obs[f'Fraction_CpG_site_modified'], np.nan, dtype=float),
+                where=adata.obs[f'Fraction_other_C_site_modified'] != 0
+                )
+            
+        adata.obs['GpC_to_other_C_mod_ratio'] = gpc_to_c_ratio
+        adata.obs['CpG_to_other_C_mod_ratio'] = cpg_to_c_ratio
+
 
 # Below should be a plotting function
     # adata.uns['methylation_dict'] = {}

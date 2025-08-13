@@ -23,6 +23,10 @@ def load_adata(config_path):
     import scanpy as sc
     from pathlib import Path
 
+    from datetime import datetime
+    date_str = datetime.today().strftime("%y%m%d")
+
+
     ################################### 1) General params and input organization ###################################
 
     # Default params
@@ -38,36 +42,46 @@ def load_adata(config_path):
     # These below variables will point to default_value if they are empty in the experiment_config.csv or if the variable is fully omitted from the csv.
     default_value = None
 
-    # General config variable init
+    # General config variable init - Necessary user passed inputs
     smf_modality = var_dict.get('smf_modality', default_value) # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
     input_data_path = var_dict.get('input_data_path', default_value) # Path to a directory of POD5s/FAST5s or to a BAM/FASTQ file. Necessary.
     output_directory = var_dict.get('output_directory', default_value) # Path to the output directory to make for the analysis. Necessary.
-    fasta = var_dict.get('fasta', default_value) # Path to reference FASTA.
-    fasta_regions_of_interest = var_dict.get("fasta_regions_of_interest", default_value) # Path to a bed file listing coordinate regions of interest within the FASTA to include. Optional.
-    mapping_threshold = var_dict.get('mapping_threshold', default_value) # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
-    experiment_name = var_dict.get('experiment_name', default_value) # A key term to add to the AnnData file name.
-    model_dir = var_dict.get('model_dir', default_value) # needed for dorado basecaller
-    model = var_dict.get('model', default_value) # needed for dorado basecaller
+    fasta = var_dict.get('fasta', default_value) # Path to reference FASTA. Necessary.
+    model_dir = var_dict.get('model_dir', default_value) # needed for dorado basecaller if starting from POD5/FAST5.
     barcode_kit = var_dict.get('barcode_kit', default_value) # needed for dorado basecaller
-    barcode_both_ends = var_dict.get('barcode_both_ends', default_value) # dorado demultiplexing
-    trim = var_dict.get('trim', default_value) # dorado adapter and barcode removal
-    input_already_demuxed = var_dict.get('input_already_demuxed', default_value) # If the input files are already demultiplexed.
+
+    # General config variable init - Optional user passed inputs
+    fasta_regions_of_interest = var_dict.get("fasta_regions_of_interest", default_value) # Path to a bed file listing coordinate regions of interest within the FASTA to include. Optional.
+    mapping_threshold = var_dict.get('mapping_threshold', 0.01) # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
+    experiment_name = var_dict.get('experiment_name', f"{date_str}_SMF_experiment") # A key term to add to the AnnData file name.
+    model = var_dict.get('model', 'hac') # needed for dorado basecaller
+    barcode_both_ends = var_dict.get('barcode_both_ends', False) # dorado demultiplexing
+    trim = var_dict.get('trim', False) # dorado adapter and barcode removal
+    input_already_demuxed = var_dict.get('input_already_demuxed', False) # If the input files are already demultiplexed.
     threads = var_dict.get('threads', default_value) # number of cpu threads available for multiprocessing
     sample_sheet_path = var_dict.get('sample_sheet_path', default_value) # Optional path to a sample sheet with barcode metadata
+    aligner = var_dict.get('aligner', 'minimap2') # Aligner to use: dorado, minimap2
+    if aligner == 'minimap2':
+        aligner_args = var_dict.get('aligner_args', ['-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N', '5', '--secondary=no']) # Aligner arguments to use for minimap2
+    elif aligner == 'dorado':
+        aligner_args = var_dict.get('aligner_args', ['--mm2-opts', '-N 5']) # Aligner arguments to use for dorado
+    device = var_dict.get('device', 'auto') # What device to use for computation: 'mps', 'cpu', 'auto', etc
+    make_bigwigs = var_dict.get('make_bigwigs', False) # Whether to make coverage bigwigs
 
-    # Conversion specific variable init
-    conversion_types = var_dict.get('conversion_types', default_value)
+    # General config variable init - Optional user passed inputs for enzyme base specificity
+    mod_target_bases = var_dict.get('mod_target_bases', ['GpC', 'CpG']) # Nucleobases of interest that may be modified. ['GpC', 'CpG', 'C', 'A']
+
+    # Conversion/deamination specific variable init
+    conversion_types = var_dict.get('conversion_types', ['5mC']) # 5mC, 
 
     # Direct methylation specific variable init
-    filter_threshold = var_dict.get('filter_threshold', default_value)
-    m6A_threshold = var_dict.get('m6A_threshold', default_value)
-    m5C_threshold = var_dict.get('m5C_threshold', default_value)
-    hm5C_threshold = var_dict.get('hm5C_threshold', default_value)
+    filter_threshold = var_dict.get('filter_threshold', 0.8) # min threshold to call a canononical base
+    m6A_threshold = var_dict.get('m6A_threshold', 0.7) # min threshold to call a modified m6a base
+    m5C_threshold = var_dict.get('m5C_threshold', 0.7) # min threshold to call a modified 5mC base
+    hm5C_threshold = var_dict.get('hm5C_threshold', 0.7) # min threshold to call a modified 5hmC base
     thresholds = [filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold]
-    mod_list = var_dict.get('mod_list', default_value)
-    batch_size = var_dict.get('batch_size', default_value)
-    device = var_dict.get('device', 'auto')
-    make_bigwigs = var_dict.get('make_bigwigs', default_value)
+    mod_list = var_dict.get('mod_list', ['5mC_5hmC', '6mA']) # mods to detect
+    batch_size = var_dict.get('batch_size', 4) # How many mod TSVs to load into memory at a time when making anndata batches
     skip_unclassified = var_dict.get('skip_unclassified', True)
     delete_batch_hdfs = var_dict.get('delete_batch_hdfs', True)
 
@@ -214,11 +228,7 @@ def load_adata(config_path):
     if os.path.exists(aligned_output) and os.path.exists(aligned_sorted_output):
         print(aligned_sorted_output + ' already exists. Using existing aligned/sorted BAM.')
     else:
-        if smf_modality == 'deaminase':
-            deaminase_footprinting = True
-        else:
-            deaminase_footprinting = False
-        align_and_sort_BAM(fasta, unaligned_output, bam_suffix, output_directory, make_bigwigs, threads, deaminase_footprinting)
+        align_and_sort_BAM(fasta, unaligned_output, bam_suffix, output_directory, make_bigwigs, threads, aligner, aligner_args)
 
     # Make beds and provide basic histograms
     bed_dir = os.path.join(output_directory, 'beds')
@@ -284,9 +294,16 @@ def load_adata(config_path):
 
             #6 Load the modification data from TSVs into an adata object
             final_adata, final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs, threads)
+
+    ## Load sample sheet metadata based on barcode mapping ##
+    if sample_sheet_path:
+        from ..preprocessing import load_sample_sheet
+        load_sample_sheet(final_adata, sample_sheet_path, mapping_key_column='Barcode', as_category=True)
+    else:
+        pass
     ########################################################################################################################
 
-    ############################################### 8) Basic AnnData quality metrics #################################################
+    ############################################### 8) Basic Read quality metrics: Read length, read quuality, mapping quality, etc #################################################
     if final_adata:
         pass
     else:
@@ -297,16 +314,18 @@ def load_adata(config_path):
     for col in cols:
         final_adata.obs[col] = final_adata.obs[col].astype('category')
 
-    # Adding read length, read quality, and reference length metadata to adata object.
+    # Adding read length, read quality, reference length, mapped_length, and mapping quality metadata to adata object.
     read_metrics = {}
     for bam_file in bam_files:
         bam_read_metrics = extract_read_features_from_bam(bam_file)
         read_metrics.update(bam_read_metrics)
-    #read_metrics = extract_read_features_from_bam(sorted_output)
+
     query_read_length_values = []
     query_read_quality_values = []
     reference_lengths = []
     mapped_lengths = []
+    mapping_qualities = []
+
     # Iterate over each row of the AnnData object
     for obs_name in final_adata.obs_names:
         # Fetch the value from the dictionary using the obs_name as the key
@@ -316,75 +335,131 @@ def load_adata(config_path):
             query_read_quality_values.append(value[1])
             reference_lengths.append(value[2])
             mapped_lengths.append(value[3])
+            mapping_qualities.append(value[4])
         else:
             query_read_length_values.append(value)
             query_read_quality_values.append(value)
             reference_lengths.append(value) 
             mapped_lengths.append(value)
+            mapping_qualities.append(value)
                        
     # Add the new column to adata.obs
     final_adata.obs['read_length'] = query_read_length_values
     final_adata.obs['mapped_length'] = mapped_lengths
+    final_adata.obs['reference_length'] = reference_lengths
     final_adata.obs['read_quality'] = query_read_quality_values
+    final_adata.obs['mapping_quality'] = mapping_qualities
     final_adata.obs['read_length_to_reference_length_ratio'] = np.array(query_read_length_values) / np.array(reference_lengths)
+    final_adata.obs['mapped_length_to_reference_length_ratio'] = np.array(mapped_lengths) / np.array(reference_lengths)
+    final_adata.obs['mapped_length_to_read_length_ratio'] = np.array(mapped_lengths) / np.array(query_read_length_values)
 
-    if smf_modality == 'deaminase':
-        final_adata.obs['Raw_deamination_signal'] = np.nansum(final_adata.X, axis=1)
-        final_adata.obs['Raw_per_base_deamination_average'] = final_adata.obs['Raw_deamination_signal'] / final_adata.obs['read_length']
-    else:
-        final_adata.obs['Raw_methylation_signal'] = np.nansum(final_adata.X, axis=1)
-        final_adata.obs['Raw_per_base_methylation_average'] = final_adata.obs['Raw_methylation_signal'] / final_adata.obs['read_length']
+    ## Add read level raw modification signal
+    final_adata.obs['Raw_modification_signal'] = final_adata.X.sum(axis=1)
 
-    ### Make a dir for outputting sample level QC metrics before preprocessing ###
-    initial_qc_dir = f"{split_dir}/initial_QC_metrics"
-    if os.path.isdir(initial_qc_dir):
-        print(initial_qc_dir + ' already exists. Skipping read level QC plotting.')
+    pp_dir = f"{split_dir}/preprocessed"
+    pp_qc_dir = f"{pp_dir}/QC_metrics"
+    pp_length_qc_dir = f"{pp_qc_dir}/Read_QC_metrics"
+
+    if os.path.isdir(pp_length_qc_dir):
+        print(pp_length_qc_dir + ' already exists. Skipping read level QC plotting.')
     else:
         from ..plotting import plot_read_qc_histograms
-        make_dirs([initial_qc_dir])
-        obs_to_plot = ['read_length', 'mapped_length','read_quality', 'read_length_to_reference_length_ratio']
-        if smf_modality == 'deaminase':
-            obs_to_plot += ['Raw_deamination_signal', 'Raw_per_base_deamination_average']
-        else:
-            obs_to_plot += ['Raw_methylation_signal', 'Raw_per_base_methylation_average']
-        plot_read_qc_histograms(final_adata, initial_qc_dir, obs_to_plot, sample_key='Barcode')
+        make_dirs([pp_dir, pp_qc_dir, pp_length_qc_dir])
+        obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
+        plot_read_qc_histograms(final_adata, pp_length_qc_dir, obs_to_plot, sample_key='Barcode')
 
+    ## add optional read length based filtering here.
+    from ..preprocessing import filter_reads_on_length
+    print(final_adata.shape)
+    final_adata = filter_reads_on_length(final_adata, min_length_ratio=0.2, max_length_ratio=1.1)
+    print(final_adata.shape)
+
+    pp_length_qc_dir = f"{pp_qc_dir}/Read_QC_metrics_post_filtering"
+    if os.path.isdir(pp_length_qc_dir):
+        print(pp_length_qc_dir + ' already exists. Skipping read level QC plotting.')
+    else:
+        from ..plotting import plot_read_qc_histograms
+        make_dirs([pp_length_qc_dir])
+        obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
+        plot_read_qc_histograms(final_adata, pp_length_qc_dir, obs_to_plot, sample_key='Barcode')
     ########################################################################################################################
 
     ############################################### 9) Basic Preprocessing ###############################################
-    from ..preprocessing import append_C_context, calculate_coverage, clean_NaN
+
+    ############## Binarize direct modcall data and store in new layer. Clean nans and store as new layers with various nan replacement strategies ##########
+    from ..preprocessing import clean_NaN
     if smf_modality == 'direct':
-        native = True
-    else:
-        native = False
-
-    ############### Add cytosine context to each position for each Reference_strand ###############
-    append_C_context(final_adata, obs_column='Reference_strand', use_consensus=False, native=native)
-
-    ############### Calculate read methylation/deamination statistics ###############
-    if smf_modality == 'conversion':
-        from ..preprocessing import calculate_converted_read_methylation_stats, filter_converted_reads_on_methylation
-        calculate_converted_read_methylation_stats(final_adata, "Reference_strand", "Sample")
-        ## Filter reads on methylation statistics
-        final_adata = filter_converted_reads_on_methylation(final_adata, valid_SMF_site_threshold=0.8, min_SMF_threshold=0.00, max_SMF_threshold=1)
-        ## Add layers with various NaN replacement strategies from the primary data layer
-        clean_NaN(final_adata)
-    elif smf_modality == 'deaminase':
-        # Need to add equivalent as above for deamination stats and filtering
-        ## Add layers with various NaN replacement strategies from the primary data layer
-        clean_NaN(final_adata)
-    elif smf_modality == 'direct':
         from ..preprocessing import calculate_position_Youden, binarize_on_Youden
-        # Need to add equivalent as above for methylation stats and filtering
+        native = True
         # Calculate positional methylation thresholds for mod calls
         calculate_position_Youden(final_adata, positive_control_sample=None, negative_control_sample=None, J_threshold=0.5, 
-                                  obs_column='Reference_strand', infer_on_percentile=10, inference_variable='Raw_methylation_signal', save=False, output_directory='')
+                                  obs_column='Reference_strand', infer_on_percentile=10, inference_variable='Raw_modification_signal', save=False, output_directory='')
         # binarize the modcalls based on the determined thresholds
         binarize_on_Youden(final_adata, obs_column='Reference_strand')
-        ## Add layers with various NaN replacement strategies from the primary data layer
         clean_NaN(final_adata, layer='binarized_methylation')
+    else:
+        native = False
+        clean_NaN(final_adata)
+
+    ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats ###############
+    from ..preprocessing import append_base_context
+    # Additionally, store base_context level binary modification arrays in adata.obsm
+    append_base_context(final_adata, obs_column='Reference_strand', use_consensus=False, native=native, mod_target_bases=mod_target_bases)
+
+    ############### Calculate read methylation/deamination statistics for specific base contexts defined above ###############
+    from ..preprocessing import calculate_read_modification_stats
+    calculate_read_modification_stats(final_adata, "Reference_strand", "Sample", mod_target_bases)
+
+    ### Make a dir for outputting sample level read modification metrics before filtering ###
+    pp_dir = f"{split_dir}/preprocessed"
+    pp_qc_dir = f"{pp_dir}/QC_metrics"
+    pp_meth_qc_dir = f"{pp_qc_dir}/read_methylation_QC"
+
+    if os.path.isdir(pp_meth_qc_dir):
+        print(pp_meth_qc_dir + ' already exists. Skipping read level methylation QC plotting.')
+    else:
+        from ..plotting import plot_read_qc_histograms
+        make_dirs([pp_dir, pp_qc_dir, pp_meth_qc_dir])
+        obs_to_plot = ['Raw_modification_signal']
+        if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
+            obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
+        if 'A' in mod_target_bases:
+            obs_to_plot += ['Fraction_A_site_modified']
+        plot_read_qc_histograms(final_adata, pp_meth_qc_dir, obs_to_plot, sample_key='Barcode')
+
+    ##### Optionally filter reads on modification metrics
+    from ..preprocessing import filter_reads_on_modification_thresholds
+    if smf_modality == 'conversion':
+        if 'GpC' in mod_target_bases:
+            final_adata = filter_reads_on_modification_thresholds(final_adata, gpc_thresholds=[0.025, 0.975], use_other_c_as_background=True)
+        if 'CpG' in mod_target_bases:
+            final_adata = filter_reads_on_modification_thresholds(final_adata, gpc_thresholds=[0.00, 1])
+    elif smf_modality == 'deaminase':
+        # Need to add equivalent as above for deamination stats and filtering
+        final_adata = filter_reads_on_modification_thresholds(final_adata, any_c_thresholds=[0.025, 0.975])
+    elif smf_modality == 'direct':
+        if 'A' in mod_target_bases:
+            final_adata = filter_reads_on_modification_thresholds(final_adata, a_thresholds=[0.025, 0.975])
+        if 'GpC' in mod_target_bases:
+            final_adata = filter_reads_on_modification_thresholds(final_adata, gpc_thresholds=[0.025, 0.975])
+
+    ## Plot post filtering read methylation metrics
+    pp_meth_qc_dir = f"{pp_qc_dir}/read_methylation_QC_post_filtering"
+
+    if os.path.isdir(pp_meth_qc_dir):
+        print(pp_meth_qc_dir + ' already exists. Skipping read level methylation QC plotting.')
+    else:
+        from ..plotting import plot_read_qc_histograms
+        make_dirs([pp_dir, pp_qc_dir, pp_meth_qc_dir])
+        obs_to_plot = ['Raw_modification_signal']
+        if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
+            obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
+        if 'A' in mod_target_bases:
+            obs_to_plot += ['Fraction_A_site_modified']
+        plot_read_qc_histograms(final_adata, pp_meth_qc_dir, obs_to_plot, sample_key='Barcode')
 
     ############### Calculate positional coverage in dataset ###############
+    from ..preprocessing import calculate_coverage
     calculate_coverage(final_adata, obs_column='Reference_strand', position_nan_threshold=0.1)
 
     ############### Add layers to adata that are the binary GpC, CpG, any C methylation/deamination patterns ###############
@@ -448,28 +523,28 @@ def load_adata(config_path):
         final_adata.layers['any_C_site_binary'] = masked_c_X
         final_adata.layers['other_C_site_binary'] = masked_other_c_X
 
-        # Calculate per read metrics:
-        final_adata.obs['Raw_GpC_site_signal'] = np.nansum(final_adata.layers['GpC_site_binary'], axis=1)
-        final_adata.obs['mean_GpC_site_signal_density'] = final_adata.obs['Raw_GpC_site_signal'] / final_adata.obs['read_length']
-        final_adata.obs['Raw_CpG_site_signal'] = np.nansum(final_adata.layers['CpG_site_binary'], axis=1)
-        final_adata.obs['mean_CpG_site_signal_density'] = final_adata.obs['Raw_CpG_site_signal'] / final_adata.obs['read_length']
-        final_adata.obs['Raw_any_C_site_signal'] = np.nansum(final_adata.layers['any_C_site_binary'], axis=1)
-        final_adata.obs['mean_any_C_site_signal_density'] = final_adata.obs['Raw_any_C_site_signal'] / final_adata.obs['read_length']
-        final_adata.obs['Raw_other_C_site_signal'] = np.nansum(final_adata.layers['other_C_site_binary'], axis=1)
-        final_adata.obs['mean_other_C_site_signal_density'] = final_adata.obs['Raw_other_C_site_signal'] / final_adata.obs['read_length']
+        # # Calculate per read metrics:
+        # final_adata.obs['Raw_GpC_site_signal'] = np.nansum(final_adata.layers['GpC_site_binary'], axis=1)
+        # final_adata.obs['mean_GpC_site_signal_density'] = final_adata.obs['Raw_GpC_site_signal'] / final_adata.obs['read_length']
+        # final_adata.obs['Raw_CpG_site_signal'] = np.nansum(final_adata.layers['CpG_site_binary'], axis=1)
+        # final_adata.obs['mean_CpG_site_signal_density'] = final_adata.obs['Raw_CpG_site_signal'] / final_adata.obs['read_length']
+        # final_adata.obs['Raw_any_C_site_signal'] = np.nansum(final_adata.layers['any_C_site_binary'], axis=1)
+        # final_adata.obs['mean_any_C_site_signal_density'] = final_adata.obs['Raw_any_C_site_signal'] / final_adata.obs['read_length']
+        # final_adata.obs['Raw_other_C_site_signal'] = np.nansum(final_adata.layers['other_C_site_binary'], axis=1)
+        # final_adata.obs['mean_other_C_site_signal_density'] = final_adata.obs['Raw_other_C_site_signal'] / final_adata.obs['read_length']
 
-        ### Make a dir for outputting sample level QC metrics before preprocessing ###
-        pp_dir = f"{split_dir}/preprocessed"
-        pp_qc_dir = f"{pp_dir}/QC_metrics"
-        if os.path.isdir(pp_qc_dir):
-            print(pp_qc_dir + ' already exists. Skipping read level QC plotting.')
-        else:
-            from ..plotting import plot_read_qc_histograms
-            make_dirs([pp_dir, pp_qc_dir])
-            obs_to_plot = ['Raw_GpC_site_signal', 'mean_GpC_site_signal_density', 'Raw_CpG_site_signal', 
-                           'mean_CpG_site_signal_density', 'Raw_any_C_site_signal', 'mean_any_C_site_signal_density', 
-                           'Raw_other_C_site_signal', 'mean_other_C_site_signal_density']
-            plot_read_qc_histograms(final_adata, pp_qc_dir, obs_to_plot, sample_key='Barcode')
+        # ### Make a dir for outputting sample level QC metrics before preprocessing ###
+        # pp_dir = f"{split_dir}/preprocessed"
+        # pp_qc_dir = f"{pp_dir}/QC_metrics"
+        # if os.path.isdir(pp_qc_dir):
+        #     print(pp_qc_dir + ' already exists. Skipping read level QC plotting.')
+        # else:
+        #     from ..plotting import plot_read_qc_histograms
+        #     make_dirs([pp_dir, pp_qc_dir])
+        #     obs_to_plot = ['Raw_GpC_site_signal', 'mean_GpC_site_signal_density', 'Raw_CpG_site_signal', 
+        #                    'mean_CpG_site_signal_density', 'Raw_any_C_site_signal', 'mean_any_C_site_signal_density', 
+        #                    'Raw_other_C_site_signal', 'mean_other_C_site_signal_density']
+        #     plot_read_qc_histograms(final_adata, pp_qc_dir, obs_to_plot, sample_key='Barcode')
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != 'direct' and 'is_duplicate' not in final_adata.obs.columns:
@@ -477,23 +552,34 @@ def load_adata(config_path):
         references = final_adata.obs['Reference_strand'].cat.categories
         if smf_modality == 'conversion':
             site_types = ['GpC', 'CpG', 'ambiguous_GpC_CpG']
+            distance_threshold = 0.1
         elif smf_modality == 'deaminase':
             site_types = ['any_C']
+            distance_threshold = 0.01
 
         var_filters_sets =[]
         for ref in references:
             for site_type in site_types:
                 var_filters_sets += [[f"{ref}_{site_type}_site", f"position_in_{ref}"]]
 
-        ## Will need to improve here. Should do this for each barcode and then concatenate. rather than all at once ###
-        final_adata_unique, final_adata = flag_duplicate_reads(final_adata, var_filters_sets, distance_threshold=0.1, obs_reference_col='Reference_strand')
-
         pp_dir = f"{split_dir}/preprocessed"
         pp_qc_dir = f"{pp_dir}/QC_metrics"
+        pp_dup_qc_dir = f"{pp_qc_dir}/read_duplication_QC"
+
+        from ..plotting import plot_read_qc_histograms
+        make_dirs([pp_dir, pp_qc_dir, pp_dup_qc_dir])
+
+        ## Will need to improve here. Should do this for each barcode and then concatenate. rather than all at once ###
+        final_adata_unique, final_adata = flag_duplicate_reads(final_adata, 
+                                                            var_filters_sets, 
+                                                            distance_threshold=distance_threshold, 
+                                                            obs_reference_col='Reference_strand', 
+                                                            sample_col='Barcode',
+                                                            output_directory=pp_dup_qc_dir)
 
         calculate_complexity_II(
             adata=final_adata,
-            output_directory=pp_qc_dir,
+            output_directory=pp_dup_qc_dir,
             sample_col='Barcode',
             cluster_col='merged_cluster_id',
             plot=True,
@@ -545,7 +631,43 @@ def load_adata(config_path):
 
             # Plotting UMAP
             save = 'umap_plot.png'
-            sc.pl.umap(final_adata, color=['leiden', 'Sample'], palette='Set1', show=False, save=save)
+            sc.pl.umap(final_adata, color=['leiden', 'Sample'], show=False, save=save)
+
+        #### Repeat on duplicate scrubbed anndata ###
+
+        pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
+        pp_clustermap_dir = f"{pp_dir}/clustermaps"
+        pp_umap_dir = f"{pp_dir}/umaps"
+
+        # ## Basic clustermap plotting
+        if os.path.isdir(pp_clustermap_dir):
+            print(pp_clustermap_dir + ' already exists. Skipping clustermap plotting.')
+        else:
+            from ..plotting import combined_raw_clustermap
+            make_dirs([pp_dir, pp_clustermap_dir])
+            clustermap_results = combined_raw_clustermap(final_adata_unique, sample_col='Barcode', layer_any_c='nan0_0minus1', 
+                                        layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_any_c="coolwarm", 
+                                        cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=25, min_length=500, bins=None,
+                                        sample_mapping=None, save_path=pp_clustermap_dir, sort_by='gpc', deaminase=deaminase)
+        
+        ## Basic PCA/UMAP
+        if os.path.isdir(pp_umap_dir):
+            print(pp_umap_dir + ' already exists. Skipping UMAP plotting.')
+        else:
+            from ..tools import calculate_umap
+            make_dirs([pp_dir, pp_umap_dir])
+            var_filters = []
+            for ref in references:
+                var_filters += [f'{ref}_any_C_site']
+            final_adata = calculate_umap(final_adata_unique, layer='nan_half', var_filters=var_filters, n_pcs=10, knn_neighbors=15)
+
+            ## Clustering
+            sc.tl.leiden(final_adata_unique, resolution=0.1, flavor="igraph", n_iterations=2)
+
+            # Plotting UMAP
+            save = 'umap_plot.png'
+            sc.pl.umap(final_adata_unique, color=['leiden', 'Sample'], show=False, save=save)
+
 
     ########################################################################################################################
 
@@ -577,6 +699,33 @@ def load_adata(config_path):
 
             plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
 
+        #### Repeat on duplicate scrubbed anndata ###
+
+        pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
+        pp_autocorr_dir = f"{pp_dir}/autocorrelations"
+
+        positions = final_adata_unique.var_names.astype(int).values
+        site_types = ['GpC', 'CpG', 'any_C']
+        for site_type in site_types:
+            X = final_adata_unique.layers[f"{site_type}_site_binary"]
+            max_lag = 500
+
+            autocorr_matrix = np.array([
+                binary_autocorrelation_with_spacing(row, positions, max_lag=max_lag)
+                for row in X
+            ])
+
+            final_adata_unique.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
+            final_adata_unique.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
+
+        if os.path.isdir(pp_autocorr_dir):
+            print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
+        else:
+            from ..plotting import plot_spatial_autocorr_grid
+            make_dirs([pp_autocorr_dir, pp_autocorr_dir])
+
+            plot_spatial_autocorr_grid(final_adata_unique, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
+
     else:
         pass
     ########################################################################################################################
@@ -588,12 +737,12 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ############################################### Save final adata ###############################################
+    from ..readwrite import safe_write_h5ad
     print('Saving final adata')
     if ".gz" in final_adata_path:
-        final_adata.write_h5ad(f"{final_adata_path}", compression='gzip')
+        safe_write_h5ad(final_adata, f"{final_adata_path}", compression='gzip')
     else:
-        final_adata.write_h5ad(f"{final_adata_path}.gz", compression='gzip')
-    print('Final adata saved')
+        safe_write_h5ad(final_adata, f"{final_adata_path}.gz", compression='gzip')
     ########################################################################################################################
 
     ############################################### MultiQC HTML Report ###############################################
