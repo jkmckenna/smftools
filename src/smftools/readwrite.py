@@ -170,7 +170,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=".
         clean_uns = {}
         bad_keys = []
         for k, v in uns_dict.items():
-            if isinstance(v, (str, int, float, type(None), list, dict, np.ndarray, pd.DataFrame)):
+            if isinstance(v, (str, int, float, type(None), list, np.ndarray, pd.DataFrame)):
                 clean_uns[k] = v
             elif is_serializable(v):
                 clean_uns[k] = v

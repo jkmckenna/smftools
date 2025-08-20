@@ -19,6 +19,7 @@ def load_adata(config_path):
     from .subsample_fasta_from_bed import subsample_fasta_from_bed
     import os
     import numpy as np
+    import pandas as pd
     import anndata as ad
     import scanpy as sc
     from pathlib import Path
@@ -695,7 +696,7 @@ def load_adata(config_path):
             print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
         else:
             from ..plotting import plot_spatial_autocorr_grid
-            make_dirs([pp_autocorr_dir, pp_autocorr_dir])
+            make_dirs([pp_dir, pp_autocorr_dir])
 
             plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
 
@@ -732,6 +733,55 @@ def load_adata(config_path):
 
     ############################################### HMM based feature annotations ###############################################
     # need to add the option here to do a per sample HMM fit/inference
+    run_hmm=True
+    if run_hmm:
+        from ..hmm.HMM import HMM
+
+        samples = final_adata.obs['Barcode'].cat.categories
+        references = final_adata.obs['Reference_strand'].cat.categories
+        mod_sites = mod_target_bases
+        pp_dir = f"{split_dir}/preprocessed"
+        hmm_dir = f"{pp_dir}/hmm_models"
+
+        emission_probs=[[0.8, 0.2], [0.2, 0.8]],
+        transitions=[[0.9, 0.1], [0.1, 0.9]],
+        start_probs=[0.5, 0.5],
+        end_probs=[0.5, 0.5]
+
+        if os.path.isdir(hmm_dir):
+            print(hmm_dir + ' already exists.')
+        else:
+            make_dirs([pp_dir, hmm_dir])
+
+        for sample in samples:
+            for ref in references:
+                mask = (final_adata.obs['Barcode'] == sample) & (final_adata.obs['Reference_strand'] == ref)
+                subset = final_adata[mask].copy()
+                if subset.shape[0] > 1:
+                    for mod_site in mod_sites:
+                        mod_label = {'C': 'any_C'}.get(mod_site, mod_site)
+                        hmm_path = os.path.join(hmm_dir, f"{sample}_{ref}_{mod_label}_hmm_model.pth")
+                        if os.path.exists(hmm_path):
+                            hmm = HMM.load(hmm_path)
+                        else:
+                            print(f"Fitting HMM for {sample} {ref} {mod_label}")
+                            hmm = HMM(n_states=2, init_start=start_probs,init_trans=transitions,init_emission=emission_probs)
+                            hmm.fit(subset.obsm[f'{ref}_{mod_label}_site'])
+                            hmm.save(hmm_path)
+
+                        print(f"Apply HMM for {sample} {ref} {mod_label}")
+
+                        hmm.annotate_adata(subset, 'Reference_strand', layer=None, footprints=True, accessible_patches=True, cpg=True, methbases=[mod_label])
+
+                        # for col in subset.obs.columns:
+                        #     if col not in final_adata.obs.columns:
+                        #         final_adata.obs[col] = pd.NA
+                        #     final_adata.obs.loc[subset.obs_names, col] = subset.obs[col]
+
+                        # for layer in subset.layers:
+                        #     if layer not in final_adata.layers:
+                        #         final_adata.layers[layer] = np.full_like(final_adata.X, np.nan)
+                        #     final_adata.layers[layer][mask] = subset.layers[layer]
 
 
     ########################################################################################################################
