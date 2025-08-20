@@ -11,7 +11,7 @@ def train_hmm(
     pad_value=0,
 ):
     """
-    Trains a 2-state DenseHMM model on binary methylation data.
+    Trains a 2-state DenseHMM model on binary methylation/deamination data.
 
     Parameters:
         data (list or np.ndarray): List of sequences (lists) with 0, 1, or NaN.

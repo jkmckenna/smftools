@@ -3,7 +3,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm    
 
-def apply_hmm_batched(adata, model, obs_column, layer=None, footprints=True, accessible_patches=False, cpg=False, methbases=["GpC", "CpG", "A"], device="cpu", threshold=0.7):
+def apply_hmm_batched(adata, model, obs_column, layer=None, footprints=True, accessible_patches=False, cpg=False, methbases=["GpC", "CpG", "A", "C"], device="cpu", threshold=0.7, deaminase_footprinting=False):
     """
     Applies an HMM model to an AnnData object using tensor-based sequence inputs.
     If multiple methbases are passed, generates a combined feature set.
@@ -71,6 +71,7 @@ def apply_hmm_batched(adata, model, obs_column, layer=None, footprints=True, acc
         for methbase in methbases:
             mask = {
                 "a": ref_subset.var[f"{ref}_strand_FASTA_base"] == "A",
+                "c": ref_subset.var[f"{ref}_any_C_site"] == True,
                 "gpc": ref_subset.var[f"{ref}_GpC_site"] == True,
                 "cpg": ref_subset.var[f"{ref}_CpG_site"] == True
             }[methbase.lower()]
