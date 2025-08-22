@@ -1,4 +1,4 @@
-from . import helpers
+from . import helpers, config
 from .basecall_pod5s import basecall_pod5s
 from .load_adata import load_adata
 from .subsample_fasta_from_bed import subsample_fasta_from_bed

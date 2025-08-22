@@ -1,0 +1,19 @@
+# Deaminase footprinting defaults
+extends: default
+conversion_types: 
+  - '5mC' # 5mC
+aligner_args:
+  minimap2:
+    - '-a'
+    - '-x'
+    - 'map-ont'
+    - '--MD'
+    - '-Y' 
+    - '-y'
+    - '-N'
+    - '5'
+    - '--secondary=no' 
+  dorado:
+    - "--mm2-opts"
+    - "-N"
+    - "5"

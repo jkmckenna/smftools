@@ -275,6 +275,7 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
         except:
             barcode = np.nan
         adata.obs["Barcode"] = [int(barcode)] * len(adata)
+        adata.obs["Barcode"] = adata.obs["Barcode"].astype(str)
         adata.obs["Reference"] = [chromosome] * len(adata)
         adata.obs["Strand"] = [strand] * len(adata)
         adata.obs["Dataset"] = [mod_type] * len(adata)
