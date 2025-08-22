@@ -19,7 +19,6 @@ from .generate_converted_FASTA import convert_FASTA_record, generate_converted_F
 from .get_chromosome_lengths import get_chromosome_lengths
 from .get_native_references import get_native_references
 from .index_fasta import index_fasta
-from .LoadExperimentConfig import LoadExperimentConfig
 from .make_dirs import make_dirs
 from .make_modbed import make_modbed
 from .modcall import modcall
@@ -57,7 +56,6 @@ __all__ = [
     "get_chromosome_lengths",
     "get_native_references",
     "index_fasta",
-    "LoadExperimentConfig",
     "make_dirs",
     "make_modbed",
     "modcall",

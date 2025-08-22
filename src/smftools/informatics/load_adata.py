@@ -13,15 +13,19 @@ def load_adata(config_path):
     Returns:
         None
     """
-    # Lazy importing of packages
-    from .helpers import LoadExperimentConfig, make_dirs, concatenate_fastqs_to_bam, extract_read_features_from_bam
+    from ..readwrite import safe_read_h5ad, safe_write_h5ad
+    from .config import LoadExperimentConfig, ExperimentConfig
+    from .helpers import make_dirs, concatenate_fastqs_to_bam, extract_read_features_from_bam
     from .fast5_to_pod5 import fast5_to_pod5
     from .subsample_fasta_from_bed import subsample_fasta_from_bed
-    import os
+
     import numpy as np
     import pandas as pd
     import anndata as ad
     import scanpy as sc
+
+    import os
+    from importlib import resources
     from pathlib import Path
 
     from datetime import datetime
@@ -30,61 +34,27 @@ def load_adata(config_path):
 
     ################################### 1) General params and input organization ###################################
 
-    # Default params
-    bam_suffix = '.bam' # If different, change from here.
-    split_dir = 'demultiplexed_BAMs' # If different, change from here.
-    strands = ['bottom', 'top'] # If different, change from here. Having both listed generally doesn't slow things down too much.
-    conversions = ['unconverted'] # The name to use for the unconverted files. If different, change from here.
-
     # Load experiment config parameters into global variables
-    experiment_config = LoadExperimentConfig(config_path)
-    var_dict = experiment_config.var_dict
-
-    # These below variables will point to default_value if they are empty in the experiment_config.csv or if the variable is fully omitted from the csv.
-    default_value = None
+    loader = LoadExperimentConfig(config_path)
+    defaults_dir = resources.files("smftools").joinpath("informatics/config")
+    cfg, report = ExperimentConfig.from_var_dict(loader.var_dict, date_str=date_str, defaults_dir=defaults_dir)
 
     # General config variable init - Necessary user passed inputs
-    smf_modality = var_dict.get('smf_modality', default_value) # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
-    input_data_path = var_dict.get('input_data_path', default_value) # Path to a directory of POD5s/FAST5s or to a BAM/FASTQ file. Necessary.
-    output_directory = var_dict.get('output_directory', default_value) # Path to the output directory to make for the analysis. Necessary.
-    fasta = var_dict.get('fasta', default_value) # Path to reference FASTA. Necessary.
-    model_dir = var_dict.get('model_dir', default_value) # needed for dorado basecaller if starting from POD5/FAST5.
-    barcode_kit = var_dict.get('barcode_kit', default_value) # needed for dorado basecaller
+    smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
+    input_data_path = cfg.input_data_path  # Path to a directory of POD5s/FAST5s or to a BAM/FASTQ file. Necessary.
+    output_directory = cfg.output_directory  # Path to the output directory to make for the analysis. Necessary.
+    fasta = cfg.fasta  # Path to reference FASTA. Necessary.
 
-    # General config variable init - Optional user passed inputs
-    fasta_regions_of_interest = var_dict.get("fasta_regions_of_interest", default_value) # Path to a bed file listing coordinate regions of interest within the FASTA to include. Optional.
-    mapping_threshold = var_dict.get('mapping_threshold', 0.01) # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
-    experiment_name = var_dict.get('experiment_name', f"{date_str}_SMF_experiment") # A key term to add to the AnnData file name.
-    model = var_dict.get('model', 'hac') # needed for dorado basecaller
-    barcode_both_ends = var_dict.get('barcode_both_ends', False) # dorado demultiplexing
-    trim = var_dict.get('trim', False) # dorado adapter and barcode removal
-    input_already_demuxed = var_dict.get('input_already_demuxed', False) # If the input files are already demultiplexed.
-    threads = var_dict.get('threads', default_value) # number of cpu threads available for multiprocessing
-    sample_sheet_path = var_dict.get('sample_sheet_path', default_value) # Optional path to a sample sheet with barcode metadata
-    aligner = var_dict.get('aligner', 'minimap2') # Aligner to use: dorado, minimap2
-    if aligner == 'minimap2':
-        aligner_args = var_dict.get('aligner_args', ['-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N', '5', '--secondary=no']) # Aligner arguments to use for minimap2
-    elif aligner == 'dorado':
-        aligner_args = var_dict.get('aligner_args', ['--mm2-opts', '-N 5']) # Aligner arguments to use for dorado
-    device = var_dict.get('device', 'auto') # What device to use for computation: 'mps', 'cpu', 'auto', etc
-    make_bigwigs = var_dict.get('make_bigwigs', False) # Whether to make coverage bigwigs
+    bam_suffix = cfg.bam_suffix
+    split_dir = cfg.split_dir
+    strands = cfg.strands
 
     # General config variable init - Optional user passed inputs for enzyme base specificity
-    mod_target_bases = var_dict.get('mod_target_bases', ['GpC', 'CpG']) # Nucleobases of interest that may be modified. ['GpC', 'CpG', 'C', 'A']
+    mod_target_bases = cfg.mod_target_bases  # Nucleobases of interest that may be modified. ['GpC', 'CpG', 'C', 'A']
 
     # Conversion/deamination specific variable init
-    conversion_types = var_dict.get('conversion_types', ['5mC']) # 5mC, 
-
-    # Direct methylation specific variable init
-    filter_threshold = var_dict.get('filter_threshold', 0.8) # min threshold to call a canononical base
-    m6A_threshold = var_dict.get('m6A_threshold', 0.7) # min threshold to call a modified m6a base
-    m5C_threshold = var_dict.get('m5C_threshold', 0.7) # min threshold to call a modified 5mC base
-    hm5C_threshold = var_dict.get('hm5C_threshold', 0.7) # min threshold to call a modified 5hmC base
-    thresholds = [filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold]
-    mod_list = var_dict.get('mod_list', ['5mC_5hmC', '6mA']) # mods to detect
-    batch_size = var_dict.get('batch_size', 4) # How many mod TSVs to load into memory at a time when making anndata batches
-    skip_unclassified = var_dict.get('skip_unclassified', True)
-    delete_batch_hdfs = var_dict.get('delete_batch_hdfs', True)
+    conversion_types = cfg.conversion_types  # 5mC
+    conversions = cfg.conversions
 
     # Make initial output directory
     make_dirs([output_directory])
@@ -145,10 +115,10 @@ def load_adata(config_path):
 
     # Generate the base name of the unaligned bam without the .bam suffix
     if basecall:
-        model_basename = os.path.basename(model)
+        model_basename = os.path.basename(cfg.model)
         model_basename = model_basename.replace('.', '_')
         if smf_modality == 'direct':
-            mod_string = "_".join(mod_list)
+            mod_string = "_".join(cfg.mod_list)
             bam=f"{output_directory}/{model_basename}_{mod_string}_calls"
         else:
             bam=f"{output_directory}/{model_basename}_canonical_basecalls"
@@ -164,7 +134,7 @@ def load_adata(config_path):
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
 
     # Naming of the demultiplexed output directory
-    if barcode_both_ends:
+    if cfg.barcode_both_ends:
         split_dir = split_dir + '_both_ends_barcoded'
     else:
         split_dir = split_dir + '_at_least_one_end_barcoded'
@@ -175,7 +145,7 @@ def load_adata(config_path):
         mod_tsv_dir=f"{split_dir}/split_mod_tsvs"
         bam_qc_dir = f"{split_dir}/bam_qc"
         mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
-        mods = [mod_map[mod] for mod in mod_list]
+        mods = [mod_map[mod] for mod in cfg.mod_list]
 
     os.chdir(output_directory)
     ########################################################################################################################
@@ -184,11 +154,11 @@ def load_adata(config_path):
     from .helpers import generate_converted_FASTA, get_chromosome_lengths
 
     # If fasta_regions_of_interest bed is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
-    if fasta_regions_of_interest and '.bed' in fasta_regions_of_interest:
+    if cfg.fasta_regions_of_interest and '.bed' in cfg.fasta_regions_of_interest:
         fasta_basename = os.path.basename(fasta).split('.fa')[0]
-        bed_basename_minus_suffix = os.path.basename(fasta_regions_of_interest).split('.bed')[0]
+        bed_basename_minus_suffix = os.path.basename(cfg.fasta_regions_of_interest).split('.bed')[0]
         output_FASTA = fasta_basename + '_subsampled_by_' + bed_basename_minus_suffix + '.fasta'
-        subsample_fasta_from_bed(fasta, fasta_regions_of_interest, output_directory, output_FASTA)
+        subsample_fasta_from_bed(fasta, cfg.fasta_regions_of_interest, output_directory, output_FASTA)
         fasta = os.path.join(output_directory, output_FASTA)
 
     # For conversion style SMF, make a converted reference FASTA
@@ -216,9 +186,9 @@ def load_adata(config_path):
         if os.path.exists(unaligned_output):
             print(unaligned_output + ' already exists. Using existing basecalled BAM.')
         elif smf_modality != 'direct':
-            canoncall(model_dir, model, input_data_path, barcode_kit, bam, bam_suffix, barcode_both_ends, trim, device)
+            canoncall(cfg.model_dir, cfg.model, input_data_path, cfg.barcode_kit, bam, bam_suffix, cfg.barcode_both_ends, cfg.trim, cfg.device)
         else:
-            modcall(model_dir, model, input_data_path, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends, trim, device)
+            modcall(cfg.model_dir, cfg.model, input_data_path, cfg.barcode_kit, cfg.mod_list, bam, bam_suffix, cfg.barcode_both_ends, cfg.trim, cfg.device)
     else:
         pass
     ########################################################################################################################
@@ -229,14 +199,14 @@ def load_adata(config_path):
     if os.path.exists(aligned_output) and os.path.exists(aligned_sorted_output):
         print(aligned_sorted_output + ' already exists. Using existing aligned/sorted BAM.')
     else:
-        align_and_sort_BAM(fasta, unaligned_output, bam_suffix, output_directory, make_bigwigs, threads, aligner, aligner_args)
+        align_and_sort_BAM(fasta, unaligned_output, bam_suffix, output_directory, cfg.make_bigwigs, cfg.threads, cfg.aligner, cfg.aligner_args)
 
     # Make beds and provide basic histograms
     bed_dir = os.path.join(output_directory, 'beds')
     if os.path.isdir(bed_dir):
         print(bed_dir + ' already exists. Skipping BAM -> BED conversion for ' + aligned_sorted_output)
     else:
-        aligned_BAM_to_bed(aligned_output, output_directory, fasta, make_bigwigs, threads)
+        aligned_BAM_to_bed(aligned_output, output_directory, fasta, cfg.make_bigwigs, cfg.threads)
     ########################################################################################################################
 
     ################################### 5) Demultiplexing ######################################################################
@@ -249,7 +219,7 @@ def load_adata(config_path):
         bam_files.sort()
     else:
         make_dirs([split_dir])
-        bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads)
+        bam_files = demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, cfg.barcode_kit, cfg.barcode_both_ends, cfg.trim, fasta, cfg.make_bigwigs, cfg.threads)
         # split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory, converted_FASTA) # deprecated, just use dorado demux
 
     # Make beds and provide basic histograms
@@ -258,7 +228,7 @@ def load_adata(config_path):
         print(bed_dir + ' already exists. Skipping BAM -> BED conversion for demultiplexed bams')
     else:
         for bam in bam_files:
-            aligned_BAM_to_bed(bam, split_dir, fasta, make_bigwigs, threads)
+            aligned_BAM_to_bed(bam, split_dir, fasta, cfg.make_bigwigs, cfg.threads)
     ########################################################################################################################
 
     ################################### 6) SAMTools based BAM QC ######################################################################
@@ -269,7 +239,7 @@ def load_adata(config_path):
         print(bam_qc_dir + ' already exists. Using existing BAM QC calculations.')
     else:
         make_dirs([bam_qc_dir])
-        bam_qc(bam_files, bam_qc_dir, threads, modality=smf_modality)
+        bam_qc(bam_files, bam_qc_dir, cfg.threads, modality=smf_modality)
     ######################################################################################################################## 
 
     ################################### 7) AnnData loading ######################################################################
@@ -280,35 +250,37 @@ def load_adata(config_path):
             deaminase_footprinting = True
         else:
             deaminase_footprinting = False
-        final_adata, final_adata_path = converted_BAM_to_adata_II(fasta, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device, threads, deaminase_footprinting) 
+        final_adata, final_adata_path = converted_BAM_to_adata_II(fasta, split_dir, cfg.mapping_threshold, cfg.experiment_name, conversion_types, bam_suffix, cfg.device, cfg.threads, deaminase_footprinting) 
     else:
         if os.path.isdir(mod_bed_dir):
             print(mod_bed_dir + ' already exists, skipping making modbeds')
         else:
             from .helpers import modQC, make_modbed, extract_mods, modkit_extract_to_adata
             make_dirs([mod_bed_dir])  
-            modQC(aligned_sorted_output, thresholds) # get QC metrics for mod calls
-            make_modbed(aligned_sorted_output, thresholds, mod_bed_dir) # Generate bed files of position methylation summaries for every sample
+            modQC(aligned_sorted_output, cfg.thresholds) # get QC metrics for mod calls
+            make_modbed(aligned_sorted_output, cfg.thresholds, mod_bed_dir) # Generate bed files of position methylation summaries for every sample
 
             make_dirs([mod_tsv_dir])  
-            extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified, threads) # Extract methylations calls for split BAM files into split TSV files
+            extract_mods(cfg.thresholds, mod_tsv_dir, split_dir, bam_suffix, cfg.skip_unclassified, cfg.threads) # Extract methylations calls for split BAM files into split TSV files
 
             #6 Load the modification data from TSVs into an adata object
-            final_adata, final_adata_path = modkit_extract_to_adata(fasta, split_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs, threads)
+            final_adata, final_adata_path = modkit_extract_to_adata(fasta, split_dir, cfg.mapping_threshold, cfg.experiment_name, mods, cfg.batch_size, mod_tsv_dir, cfg.delete_batch_hdfs, cfg.threads)
 
     ## Load sample sheet metadata based on barcode mapping ##
-    if sample_sheet_path:
+    if cfg.sample_sheet_path:
         from ..preprocessing import load_sample_sheet
-        load_sample_sheet(final_adata, sample_sheet_path, mapping_key_column='Barcode', as_category=True)
+        load_sample_sheet(final_adata, cfg.sample_sheet_path, mapping_key_column='Barcode', as_category=True)
     else:
         pass
     ########################################################################################################################
 
     ############################################### 8) Basic Read quality metrics: Read length, read quuality, mapping quality, etc #################################################
+    print(final_adata, final_adata_path)
     if final_adata:
         pass
     else:
-        final_adata = ad.read_h5ad(final_adata_path)
+        backup_dir=os.path.join(os.path.dirname(final_adata_path), 'adata_accessory_data')
+        final_adata, load_report = safe_read_h5ad(final_adata_path, backup_dir=backup_dir)
 
     final_adata.obs_names_make_unique()
     cols = final_adata.obs.columns
@@ -359,7 +331,7 @@ def load_adata(config_path):
 
     pp_dir = f"{split_dir}/preprocessed"
     pp_qc_dir = f"{pp_dir}/QC_metrics"
-    pp_length_qc_dir = f"{pp_qc_dir}/Read_QC_metrics"
+    pp_length_qc_dir = f"{pp_qc_dir}/01_Read_QC_metrics"
 
     if os.path.isdir(pp_length_qc_dir):
         print(pp_length_qc_dir + ' already exists. Skipping read level QC plotting.')
@@ -375,7 +347,7 @@ def load_adata(config_path):
     final_adata = filter_reads_on_length(final_adata, min_length_ratio=0.2, max_length_ratio=1.1)
     print(final_adata.shape)
 
-    pp_length_qc_dir = f"{pp_qc_dir}/Read_QC_metrics_post_filtering"
+    pp_length_qc_dir = f"{pp_qc_dir}/02_Read_QC_metrics_post_filtering"
     if os.path.isdir(pp_length_qc_dir):
         print(pp_length_qc_dir + ' already exists. Skipping read level QC plotting.')
     else:
@@ -414,7 +386,7 @@ def load_adata(config_path):
     ### Make a dir for outputting sample level read modification metrics before filtering ###
     pp_dir = f"{split_dir}/preprocessed"
     pp_qc_dir = f"{pp_dir}/QC_metrics"
-    pp_meth_qc_dir = f"{pp_qc_dir}/read_methylation_QC"
+    pp_meth_qc_dir = f"{pp_qc_dir}/03_read_methylation_QC"
 
     if os.path.isdir(pp_meth_qc_dir):
         print(pp_meth_qc_dir + ' already exists. Skipping read level methylation QC plotting.')
@@ -445,7 +417,7 @@ def load_adata(config_path):
             final_adata = filter_reads_on_modification_thresholds(final_adata, gpc_thresholds=[0.025, 0.975])
 
     ## Plot post filtering read methylation metrics
-    pp_meth_qc_dir = f"{pp_qc_dir}/read_methylation_QC_post_filtering"
+    pp_meth_qc_dir = f"{pp_qc_dir}/04_read_methylation_QC_post_filtering"
 
     if os.path.isdir(pp_meth_qc_dir):
         print(pp_meth_qc_dir + ' already exists. Skipping read level methylation QC plotting.')
@@ -565,7 +537,7 @@ def load_adata(config_path):
 
         pp_dir = f"{split_dir}/preprocessed"
         pp_qc_dir = f"{pp_dir}/QC_metrics"
-        pp_dup_qc_dir = f"{pp_qc_dir}/read_duplication_QC"
+        pp_dup_qc_dir = f"{pp_qc_dir}/06_read_duplication_QC"
 
         from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_qc_dir, pp_dup_qc_dir])
@@ -577,7 +549,7 @@ def load_adata(config_path):
                                                             obs_reference_col='Reference_strand', 
                                                             sample_col='Barcode',
                                                             output_directory=pp_dup_qc_dir)
-
+        
         calculate_complexity_II(
             adata=final_adata,
             output_directory=pp_dup_qc_dir,
@@ -602,8 +574,8 @@ def load_adata(config_path):
         references = final_adata.obs['Reference_strand'].cat.categories
 
         pp_dir = f"{split_dir}/preprocessed"
-        pp_clustermap_dir = f"{pp_dir}/clustermaps"
-        pp_umap_dir = f"{pp_dir}/umaps"
+        pp_clustermap_dir = f"{pp_dir}/07_clustermaps"
+        pp_umap_dir = f"{pp_dir}/08_umaps"
 
         # ## Basic clustermap plotting
         if os.path.isdir(pp_clustermap_dir):
@@ -637,8 +609,8 @@ def load_adata(config_path):
         #### Repeat on duplicate scrubbed anndata ###
 
         pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
-        pp_clustermap_dir = f"{pp_dir}/clustermaps"
-        pp_umap_dir = f"{pp_dir}/umaps"
+        pp_clustermap_dir = f"{pp_dir}/07_clustermaps"
+        pp_umap_dir = f"{pp_dir}/08_umaps"
 
         # ## Basic clustermap plotting
         if os.path.isdir(pp_clustermap_dir):
@@ -676,56 +648,62 @@ def load_adata(config_path):
     from ..tools.read_stats import binary_autocorrelation_with_spacing
     if smf_modality != 'direct':
         pp_dir = f"{split_dir}/preprocessed"
-        pp_autocorr_dir = f"{pp_dir}/autocorrelations"
-
-        positions = final_adata.var_names.astype(int).values
-        site_types = ['GpC', 'CpG', 'any_C']
-        for site_type in site_types:
-            X = final_adata.layers[f"{site_type}_site_binary"]
-            max_lag = 500
-
-            autocorr_matrix = np.array([
-                binary_autocorrelation_with_spacing(row, positions, max_lag=max_lag)
-                for row in X
-            ])
-
-            final_adata.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
-            final_adata.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
+        pp_autocorr_dir = f"{pp_dir}/09_autocorrelations"
 
         if os.path.isdir(pp_autocorr_dir):
             print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
         else:
-            from ..plotting import plot_spatial_autocorr_grid
-            make_dirs([pp_dir, pp_autocorr_dir])
+            positions = final_adata.var_names.astype(int).values
+            site_types = ['GpC', 'CpG', 'any_C']
+            for site_type in site_types:
+                X = final_adata.layers[f"{site_type}_site_binary"]
+                max_lag = 500
 
-            plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
+                autocorr_matrix = np.array([
+                    binary_autocorrelation_with_spacing(row, positions, max_lag=max_lag)
+                    for row in X
+                ])
+
+                final_adata.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
+                final_adata.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
+
+            if os.path.isdir(pp_autocorr_dir):
+                print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
+            else:
+                from ..plotting import plot_spatial_autocorr_grid
+                make_dirs([pp_dir, pp_autocorr_dir])
+
+                plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
 
         #### Repeat on duplicate scrubbed anndata ###
 
         pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
-        pp_autocorr_dir = f"{pp_dir}/autocorrelations"
-
-        positions = final_adata_unique.var_names.astype(int).values
-        site_types = ['GpC', 'CpG', 'any_C']
-        for site_type in site_types:
-            X = final_adata_unique.layers[f"{site_type}_site_binary"]
-            max_lag = 500
-
-            autocorr_matrix = np.array([
-                binary_autocorrelation_with_spacing(row, positions, max_lag=max_lag)
-                for row in X
-            ])
-
-            final_adata_unique.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
-            final_adata_unique.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
+        pp_autocorr_dir = f"{pp_dir}/09_autocorrelations"
 
         if os.path.isdir(pp_autocorr_dir):
             print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
         else:
-            from ..plotting import plot_spatial_autocorr_grid
-            make_dirs([pp_autocorr_dir, pp_autocorr_dir])
+            positions = final_adata_unique.var_names.astype(int).values
+            site_types = ['GpC', 'CpG', 'any_C']
+            for site_type in site_types:
+                X = final_adata_unique.layers[f"{site_type}_site_binary"]
+                max_lag = 500
 
-            plot_spatial_autocorr_grid(final_adata_unique, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
+                autocorr_matrix = np.array([
+                    binary_autocorrelation_with_spacing(row, positions, max_lag=max_lag)
+                    for row in X
+                ])
+
+                final_adata_unique.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
+                final_adata_unique.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
+
+            if os.path.isdir(pp_autocorr_dir):
+                print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
+            else:
+                from ..plotting import plot_spatial_autocorr_grid
+                make_dirs([pp_autocorr_dir, pp_autocorr_dir])
+
+                plot_spatial_autocorr_grid(final_adata_unique, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
 
     else:
         pass
@@ -733,7 +711,7 @@ def load_adata(config_path):
 
     ############################################### HMM based feature annotations ###############################################
     # need to add the option here to do a per sample HMM fit/inference
-    run_hmm=True
+    run_hmm=False
     if run_hmm:
         from ..hmm.HMM import HMM
 
@@ -741,7 +719,7 @@ def load_adata(config_path):
         references = final_adata.obs['Reference_strand'].cat.categories
         mod_sites = mod_target_bases
         pp_dir = f"{split_dir}/preprocessed"
-        hmm_dir = f"{pp_dir}/hmm_models"
+        hmm_dir = f"{pp_dir}/10_hmm_models"
 
         emission_probs=[[0.8, 0.2], [0.2, 0.8]],
         transitions=[[0.9, 0.1], [0.1, 0.9]],
@@ -789,10 +767,11 @@ def load_adata(config_path):
     ############################################### Save final adata ###############################################
     from ..readwrite import safe_write_h5ad
     print('Saving final adata')
+    backup_dir=os.path.join(os.path.dirname(final_adata_path), 'adata_accessory_data')
     if ".gz" in final_adata_path:
-        safe_write_h5ad(final_adata, f"{final_adata_path}", compression='gzip')
+        safe_write_h5ad(final_adata, f"{final_adata_path}", compression='gzip', backup=True, backup_dir=backup_dir)
     else:
-        safe_write_h5ad(final_adata, f"{final_adata_path}.gz", compression='gzip')
+        safe_write_h5ad(final_adata, f"{final_adata_path}.gz", compression='gzip', backup=True, backup_dir=backup_dir)
     ########################################################################################################################
 
     ############################################### MultiQC HTML Report ###############################################

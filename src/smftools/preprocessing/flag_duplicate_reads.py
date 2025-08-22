@@ -1,3 +1,32 @@
+import copy
+import warnings
+
+def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
+    """
+    Merge two .uns dicts. prefer='orig' will keep orig_uns values on conflict,
+    prefer='new' will keep new_uns values on conflict. Conflicts are reported.
+    """
+    out = copy.deepcopy(new_uns) if new_uns is not None else {}
+    for k, v in (orig_uns or {}).items():
+        if k not in out:
+            out[k] = copy.deepcopy(v)
+        else:
+            # present in both: compare quickly (best-effort)
+            try:
+                equal = (out[k] == v)
+            except Exception:
+                equal = False
+            if equal:
+                continue
+            # conflict
+            warnings.warn(f".uns conflict for key '{k}'; keeping '{prefer}' value.")
+            if prefer == "orig":
+                out[k] = copy.deepcopy(v)
+            else:
+                # keep out[k] (the new one) and also stash orig under a suffix
+                out[f"orig_uns__{k}"] = copy.deepcopy(v)
+    return out
+
 def flag_duplicate_reads(
     adata, 
     var_filters_sets, 
@@ -156,7 +185,9 @@ def flag_duplicate_reads(
     plot_histogram_pages(histograms, distance_threshold=distance_threshold, output_directory=output_directory)
 
     # Merge all annotated subsets
+    _original_uns = copy.deepcopy(adata.uns)
     adata_full = ad.concat(adata_processed_list, merge="same", join="outer", index_unique=None)
+    adata_full.uns = merge_uns_preserve(_original_uns, adata_full.uns, prefer="orig")
 
     adata_unique = adata_full[~adata_full.obs['is_duplicate']].copy()
     

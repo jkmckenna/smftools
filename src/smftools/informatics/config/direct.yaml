@@ -1,0 +1,32 @@
+# Direct (Nanopore modified base calling)footprinting defaults
+extends: default
+filter_threshold: 0.8 # min threshold to call a canononical base
+m6A_threshold: 0.7 # min threshold to call a modified m6a base
+m5C_threshold: 0.7 # min threshold to call a modified 5mC base
+hm5C_threshold: 0.7 # min threshold to call a modified 5hmC base
+thresholds:
+  - filter_threshold
+  - m6A_threshold
+  - m5C_threshold
+  - hm5C_threshold
+mod_list: 
+  - '5mC_5hmC'
+  - '6mA' # mods to detect
+batch_size: 4 # How many mod TSVs to load into memory at a time when making anndata batches
+skip_unclassified: True # Whether to skip unclassified barcodes
+delete_batch_hdfs: True # Whether to delete intermediate barcode level hdfs after making final anndata
+aligner_args:
+  minimap2:
+    - '-a'
+    - '-x'
+    - 'map-ont'
+    - '--MD'
+    - '-Y' 
+    - '-y'
+    - '-N'
+    - '5'
+    - '--secondary=no' 
+  dorado:
+    - "--mm2-opts"
+    - "-N"
+    - "5"
