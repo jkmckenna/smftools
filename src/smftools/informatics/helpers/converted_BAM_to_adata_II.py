@@ -11,7 +11,7 @@ import traceback
 import gzip
 import torch
 
-from .. import readwrite
+from ... import readwrite
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .find_conversion_sites import find_conversion_sites
 from .count_aligned_reads import count_aligned_reads
@@ -49,9 +49,9 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
     print(f"Using device: {device}")
 
     ## Set Up Directories and File Paths
-    parent_dir = os.path.dirname(split_dir)
-    h5_dir = os.path.join(parent_dir, 'h5ads')
-    tmp_dir = os.path.join(parent_dir, 'tmp')
+    #parent_dir = os.path.dirname(split_dir)
+    h5_dir = os.path.join(split_dir, 'h5ads')
+    tmp_dir = os.path.join(split_dir, 'tmp')
     final_adata = None
     final_adata_path = os.path.join(h5_dir, f'{experiment_name}_{os.path.basename(split_dir)}.h5ad.gz')
 
@@ -82,8 +82,10 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
         final_adata.uns[f'{chromosome}_FASTA_sequence'] = seq
 
     ## Save Final AnnData
-    # print(f"Saving AnnData to {final_adata_path}")
-    # final_adata.write_h5ad(final_adata_path, compression='gzip')
+    print(f"Saving AnnData to {final_adata_path}")
+    backup_dir=os.path.join(os.path.dirname(final_adata_path), 'adata_accessory_data')
+    readwrite.safe_write_h5ad(final_adata, final_adata_path, compression='gzip', backup=True, backup_dir=backup_dir)
+    
     return final_adata, final_adata_path
 
 

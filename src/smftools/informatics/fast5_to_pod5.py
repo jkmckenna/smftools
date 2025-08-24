@@ -15,7 +15,10 @@ def fast5_to_pod5(fast5_dir, output_pod5='FAST5s_to_POD5.pod5'):
     import subprocess
     from pathlib import Path
 
-    if Path(fast5_dir).is_file():
+    if isinstance(fast5_dir, (list, tuple)):
+        cmd = ["pod5", "convert", "fast5"] + fast5_dir + ["--output", output_pod5]
+        subprocess.run(cmd)
+    elif Path(fast5_dir).is_file():
         subprocess.run(["pod5", "convert", "fast5", fast5_dir, "--output", output_pod5])
     elif Path(fast5_dir).is_dir():
         subprocess.run(["pod5", "convert", "fast5", f".{fast5_dir}*.fast5", "--output", output_pod5])

@@ -1,13 +1,12 @@
 ## split_and_index_BAM
 
-def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_directory):
+def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     """
     A wrapper function for splitting BAMS and indexing them.
     Parameters:
         aligned_sorted_BAM (str): A string representing the file path of the aligned_sorted BAM file.
         split_dir (str): A string representing the file path to the directory to split the BAMs into.
         bam_suffix (str): A suffix to add to the bam file.
-        output_directory (str): A file path to the directory to output all the analyses.
     
     Returns:
         None
@@ -20,9 +19,6 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, output_direct
     from .separate_bam_by_bc import separate_bam_by_bc
     from .make_dirs import make_dirs
 
-    plotting_dir = os.path.join(output_directory, 'demultiplexed_bed_histograms')
-    bed_dir = os.path.join(output_directory, 'demultiplexed_read_alignment_coordinates')
-    make_dirs([plotting_dir, bed_dir])
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     file_prefix = readwrite.date_string()
     separate_bam_by_bc(aligned_sorted_output, file_prefix, bam_suffix, split_dir)

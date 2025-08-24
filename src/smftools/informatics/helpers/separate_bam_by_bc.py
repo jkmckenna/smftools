@@ -1,6 +1,5 @@
 ## separate_bam_by_bc
 
-# General
 def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
     """
     Separates an input BAM file on the BC SAM tag values.
