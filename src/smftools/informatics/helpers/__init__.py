@@ -9,6 +9,7 @@ from .converted_BAM_to_adata_II import converted_BAM_to_adata_II
 from .concatenate_fastqs_to_bam import concatenate_fastqs_to_bam
 from .count_aligned_reads import count_aligned_reads
 from .demux_and_index_BAM import demux_and_index_BAM
+from .discover_input_files import *
 from .extract_base_identities import extract_base_identities
 from .extract_mods import extract_mods
 from .extract_read_features_from_bam import extract_read_features_from_bam

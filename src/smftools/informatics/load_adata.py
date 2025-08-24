@@ -15,7 +15,7 @@ def load_adata(config_path):
     """
     from ..readwrite import safe_read_h5ad, safe_write_h5ad
     from .config import LoadExperimentConfig, ExperimentConfig
-    from .helpers import make_dirs, concatenate_fastqs_to_bam, extract_read_features_from_bam
+    from .helpers import discover_input_files, make_dirs, concatenate_fastqs_to_bam, extract_read_features_from_bam
     from .fast5_to_pod5 import fast5_to_pod5
     from .subsample_fasta_from_bed import subsample_fasta_from_bed
 
@@ -56,6 +56,9 @@ def load_adata(config_path):
     conversion_types = cfg.conversion_types  # 5mC
     conversions = cfg.conversions
 
+    # Common Anndata accession params
+    reference_column = cfg.reference_column
+
     # Make initial output directory
     make_dirs([output_directory])
     os.chdir(output_directory)
@@ -77,14 +80,19 @@ def load_adata(config_path):
         if input_is_fastq:
             fastq_paths = [input_data_path]
     elif Path(input_data_path).is_dir():
-        # Get the file names in the input data dir
-        input_files = os.listdir(input_data_path)
-        input_is_pod5 = sum([True for file in input_files if '.pod5' in file or '.p5' in file])
-        input_is_fast5 = sum([True for file in input_files if '.fast5' in file or '.f5' in file])
-        input_is_fastq = sum([True for file in input_files if '.fastq' in file or '.fq' in file])
-        input_is_bam = sum([True for file in input_files if bam_suffix in file])
-        if input_is_fastq:
-            fastq_paths = [os.path.join(input_data_path, file) for file in input_files if '.fastq' in file or '.fq' in file]
+        found = discover_input_files(input_data_path, bam_suffix=bam_suffix, recursive=cfg.recursive_input_search)
+
+        input_is_pod5 = found["input_is_pod5"]
+        input_is_fast5 = found["input_is_fast5"]
+        input_is_fastq = found["input_is_fastq"]
+        input_is_bam = found["input_is_bam"]
+
+        pod5_paths = found["pod5_paths"]
+        fast5_paths = found["fast5_paths"]
+        fastq_paths = found["fastq_paths"]
+        bam_paths = found["bam_paths"]
+
+        print(f"Found {found['all_files_searched']} files; fastq={len(fastq_paths)}, bam={len(bam_paths)}, pod5={len(pod5_paths)}, fast5={len(fast5_paths)}")
 
     # If the input files are not pod5 files, and they are fast5 files, convert the files to a pod5 file before proceeding.
     if input_is_fast5 and not input_is_pod5:
@@ -100,7 +108,18 @@ def load_adata(config_path):
     # If the input is a fastq or a directory of fastqs, concatenate them into an unaligned BAM and save the barcode
     elif input_is_fastq:
         output_bam = os.path.join(output_directory, 'FASTQs_concatenated_into_BAM.bam')
-        concatenate_fastqs_to_bam(fastq_paths, output_bam, barcode_tag='BC', gzip_suffix='.gz')
+
+        concatenate_fastqs_to_bam(
+            fastq_paths,
+            output_bam,
+            barcode_tag='BC',
+            gzip_suffixes=('.gz','.gzip'),
+            barcode_map=cfg.fastq_barcode_map,
+            add_read_group=True,
+            rg_sample_field=None,
+            progress=False,
+            auto_pair=cfg.fastq_auto_pairing)
+
         input_data_path = output_bam
         input_is_bam = True
         input_is_fastq = False
@@ -182,13 +201,15 @@ def load_adata(config_path):
     ################################### 3) Basecalling ###################################
     from .helpers import modcall, canoncall
     # 1) Basecall using dorado
-    if basecall:
+    if basecall and cfg.sequencer == 'ont':
         if os.path.exists(unaligned_output):
             print(unaligned_output + ' already exists. Using existing basecalled BAM.')
         elif smf_modality != 'direct':
             canoncall(cfg.model_dir, cfg.model, input_data_path, cfg.barcode_kit, bam, bam_suffix, cfg.barcode_both_ends, cfg.trim, cfg.device)
         else:
             modcall(cfg.model_dir, cfg.model, input_data_path, cfg.barcode_kit, cfg.mod_list, bam, bam_suffix, cfg.barcode_both_ends, cfg.trim, cfg.device)
+    elif basecall:
+        print(f"Basecalling is currently only supported for ont sequencers and not pacbio.")
     else:
         pass
     ########################################################################################################################
@@ -266,12 +287,6 @@ def load_adata(config_path):
             #6 Load the modification data from TSVs into an adata object
             final_adata, final_adata_path = modkit_extract_to_adata(fasta, split_dir, cfg.mapping_threshold, cfg.experiment_name, mods, cfg.batch_size, mod_tsv_dir, cfg.delete_batch_hdfs, cfg.threads)
 
-    ## Load sample sheet metadata based on barcode mapping ##
-    if cfg.sample_sheet_path:
-        from ..preprocessing import load_sample_sheet
-        load_sample_sheet(final_adata, cfg.sample_sheet_path, mapping_key_column='Barcode', as_category=True)
-    else:
-        pass
     ########################################################################################################################
 
     ############################################### 8) Basic Read quality metrics: Read length, read quuality, mapping quality, etc #################################################
@@ -282,10 +297,17 @@ def load_adata(config_path):
         backup_dir=os.path.join(os.path.dirname(final_adata_path), 'adata_accessory_data')
         final_adata, load_report = safe_read_h5ad(final_adata_path, backup_dir=backup_dir)
 
-    final_adata.obs_names_make_unique()
-    cols = final_adata.obs.columns
-    for col in cols:
-        final_adata.obs[col] = final_adata.obs[col].astype('category')
+    # final_adata.obs_names_make_unique()
+    # cols = final_adata.obs.columns
+    # for col in cols:
+    #     final_adata.obs[col] = final_adata.obs[col].astype('category')
+
+    ## Load sample sheet metadata based on barcode mapping ##
+    if cfg.sample_sheet_path:
+        from ..preprocessing import load_sample_sheet
+        load_sample_sheet(final_adata, cfg.sample_sheet_path, mapping_key_column=cfg.sample_sheet_mapping_column, as_category=True)
+    else:
+        pass
 
     # Adding read length, read quality, reference length, mapped_length, and mapping quality metadata to adata object.
     read_metrics = {}
@@ -339,7 +361,7 @@ def load_adata(config_path):
         from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_qc_dir, pp_length_qc_dir])
         obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
-        plot_read_qc_histograms(final_adata, pp_length_qc_dir, obs_to_plot, sample_key='Barcode')
+        plot_read_qc_histograms(final_adata, pp_length_qc_dir, obs_to_plot, sample_key=cfg.sample_name_col_for_plotting, rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ## add optional read length based filtering here.
     from ..preprocessing import filter_reads_on_length
@@ -354,7 +376,7 @@ def load_adata(config_path):
         from ..plotting import plot_read_qc_histograms
         make_dirs([pp_length_qc_dir])
         obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
-        plot_read_qc_histograms(final_adata, pp_length_qc_dir, obs_to_plot, sample_key='Barcode')
+        plot_read_qc_histograms(final_adata, pp_length_qc_dir, obs_to_plot, sample_key=cfg.sample_name_col_for_plotting, rows_per_fig=cfg.rows_per_qc_histogram_grid)
     ########################################################################################################################
 
     ############################################### 9) Basic Preprocessing ###############################################
@@ -366,9 +388,9 @@ def load_adata(config_path):
         native = True
         # Calculate positional methylation thresholds for mod calls
         calculate_position_Youden(final_adata, positive_control_sample=None, negative_control_sample=None, J_threshold=0.5, 
-                                  obs_column='Reference_strand', infer_on_percentile=10, inference_variable='Raw_modification_signal', save=False, output_directory='')
+                                  obs_column=reference_column, infer_on_percentile=10, inference_variable='Raw_modification_signal', save=False, output_directory='')
         # binarize the modcalls based on the determined thresholds
-        binarize_on_Youden(final_adata, obs_column='Reference_strand')
+        binarize_on_Youden(final_adata, obs_column=reference_column)
         clean_NaN(final_adata, layer='binarized_methylation')
     else:
         native = False
@@ -377,11 +399,11 @@ def load_adata(config_path):
     ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats ###############
     from ..preprocessing import append_base_context
     # Additionally, store base_context level binary modification arrays in adata.obsm
-    append_base_context(final_adata, obs_column='Reference_strand', use_consensus=False, native=native, mod_target_bases=mod_target_bases)
+    append_base_context(final_adata, obs_column=reference_column, use_consensus=False, native=native, mod_target_bases=mod_target_bases)
 
     ############### Calculate read methylation/deamination statistics for specific base contexts defined above ###############
     from ..preprocessing import calculate_read_modification_stats
-    calculate_read_modification_stats(final_adata, "Reference_strand", "Sample", mod_target_bases)
+    calculate_read_modification_stats(final_adata, reference_column, "Sample", mod_target_bases)
 
     ### Make a dir for outputting sample level read modification metrics before filtering ###
     pp_dir = f"{split_dir}/preprocessed"
@@ -398,7 +420,7 @@ def load_adata(config_path):
             obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
         if 'A' in mod_target_bases:
             obs_to_plot += ['Fraction_A_site_modified']
-        plot_read_qc_histograms(final_adata, pp_meth_qc_dir, obs_to_plot, sample_key='Barcode')
+        plot_read_qc_histograms(final_adata, pp_meth_qc_dir, obs_to_plot, sample_key=cfg.sample_name_col_for_plotting, rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ##### Optionally filter reads on modification metrics
     from ..preprocessing import filter_reads_on_modification_thresholds
@@ -429,11 +451,11 @@ def load_adata(config_path):
             obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
         if 'A' in mod_target_bases:
             obs_to_plot += ['Fraction_A_site_modified']
-        plot_read_qc_histograms(final_adata, pp_meth_qc_dir, obs_to_plot, sample_key='Barcode')
+        plot_read_qc_histograms(final_adata, pp_meth_qc_dir, obs_to_plot, sample_key=cfg.sample_name_col_for_plotting, rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ############### Calculate positional coverage in dataset ###############
     from ..preprocessing import calculate_coverage
-    calculate_coverage(final_adata, obs_column='Reference_strand', position_nan_threshold=0.1)
+    calculate_coverage(final_adata, obs_column=reference_column, position_nan_threshold=0.1)
 
     ############### Add layers to adata that are the binary GpC, CpG, any C methylation/deamination patterns ###############
     if smf_modality != 'direct':
@@ -441,7 +463,7 @@ def load_adata(config_path):
             deaminase = False
         else:
             deaminase = True
-        references = final_adata.obs['Reference_strand'].cat.categories
+        references = final_adata.obs[reference_column].cat.categories
         # Step 1: Define reference → GpC and CpG site annotation columns
         reference_to_gpc_column = {reference: f"{reference}_GpC_site" for reference in references}
         reference_to_cpg_column = {reference: f"{reference}_CpG_site" for reference in references}
@@ -476,7 +498,7 @@ def load_adata(config_path):
         other_c_row_mask = np.zeros((n_obs, n_vars), dtype=bool)
 
         for ref in reference_to_gpc_column:
-            row_indices = final_adata.obs["Reference_strand"] == ref
+            row_indices = final_adata.obs[reference_column] == ref
             gpc_row_mask[row_indices.values, :] = gpc_var_masks[ref]
             cpg_row_mask[row_indices.values, :] = cpg_var_masks[ref]
             c_row_mask[row_indices.values, :] = c_var_masks[ref]
@@ -520,40 +542,33 @@ def load_adata(config_path):
         #     plot_read_qc_histograms(final_adata, pp_qc_dir, obs_to_plot, sample_key='Barcode')
 
     ############### Duplicate detection for conversion/deamination SMF ###############
-    if smf_modality != 'direct' and 'is_duplicate' not in final_adata.obs.columns:
+    if smf_modality != 'direct':# and 'is_duplicate' not in final_adata.obs.columns:
         from ..preprocessing import flag_duplicate_reads, calculate_complexity_II
-        references = final_adata.obs['Reference_strand'].cat.categories
-        if smf_modality == 'conversion':
-            site_types = ['GpC', 'CpG', 'ambiguous_GpC_CpG']
-            distance_threshold = 0.1
-        elif smf_modality == 'deaminase':
-            site_types = ['any_C']
-            distance_threshold = 0.01
+        references = final_adata.obs[reference_column].cat.categories
 
         var_filters_sets =[]
         for ref in references:
-            for site_type in site_types:
+            for site_type in cfg.duplicate_detection_site_types:
                 var_filters_sets += [[f"{ref}_{site_type}_site", f"position_in_{ref}"]]
 
         pp_dir = f"{split_dir}/preprocessed"
         pp_qc_dir = f"{pp_dir}/QC_metrics"
         pp_dup_qc_dir = f"{pp_qc_dir}/06_read_duplication_QC"
 
-        from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_qc_dir, pp_dup_qc_dir])
 
         ## Will need to improve here. Should do this for each barcode and then concatenate. rather than all at once ###
         final_adata_unique, final_adata = flag_duplicate_reads(final_adata, 
                                                             var_filters_sets, 
-                                                            distance_threshold=distance_threshold, 
-                                                            obs_reference_col='Reference_strand', 
-                                                            sample_col='Barcode',
+                                                            distance_threshold=cfg.duplicate_detection_distance_threshold, 
+                                                            obs_reference_col=reference_column, 
+                                                            sample_col=cfg.sample_name_col_for_plotting,
                                                             output_directory=pp_dup_qc_dir)
         
         calculate_complexity_II(
             adata=final_adata,
             output_directory=pp_dup_qc_dir,
-            sample_col='Barcode',
+            sample_col=cfg.sample_name_col_for_plotting,
             cluster_col='merged_cluster_id',
             plot=True,
             save_plot=True,   # set False to display instead
@@ -562,6 +577,12 @@ def load_adata(config_path):
             random_state=42,
             csv_summary=True,
         )
+    
+    elif smf_modality != 'direct':
+        final_adata_unique = final_adata[final_adata.obs['is_duplicate'] == False].copy()
+
+    else:
+        final_adata_unique = final_adata
 
     ########################################################################################################################
 
@@ -571,7 +592,7 @@ def load_adata(config_path):
             deaminase = False
         else:
             deaminase = True
-        references = final_adata.obs['Reference_strand'].cat.categories
+        references = final_adata.obs[reference_column].cat.categories
 
         pp_dir = f"{split_dir}/preprocessed"
         pp_clustermap_dir = f"{pp_dir}/07_clustermaps"
@@ -583,8 +604,8 @@ def load_adata(config_path):
         else:
             from ..plotting import combined_raw_clustermap
             make_dirs([pp_dir, pp_clustermap_dir])
-            clustermap_results = combined_raw_clustermap(final_adata, sample_col='Barcode', layer_any_c='nan0_0minus1', 
-                                        layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_any_c="coolwarm", 
+            clustermap_results = combined_raw_clustermap(final_adata, sample_col=cfg.sample_name_col_for_plotting, layer_any_c=cfg.layer_for_clustermap_plotting, 
+                                        layer_gpc=cfg.layer_for_clustermap_plotting, layer_cpg=cfg.layer_for_clustermap_plotting, cmap_any_c="coolwarm", 
                                         cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=25, min_length=500, bins=None,
                                         sample_mapping=None, save_path=pp_clustermap_dir, sort_by='gpc', deaminase=deaminase)
         
@@ -597,14 +618,14 @@ def load_adata(config_path):
             var_filters = []
             for ref in references:
                 var_filters += [f'{ref}_any_C_site']
-            final_adata = calculate_umap(final_adata, layer='nan_half', var_filters=var_filters, n_pcs=10, knn_neighbors=15)
+            final_adata = calculate_umap(final_adata, layer=cfg.layer_for_umap_plotting, var_filters=var_filters, n_pcs=10, knn_neighbors=15)
 
             ## Clustering
             sc.tl.leiden(final_adata, resolution=0.1, flavor="igraph", n_iterations=2)
 
             # Plotting UMAP
             save = 'umap_plot.png'
-            sc.pl.umap(final_adata, color=['leiden', 'Sample'], show=False, save=save)
+            sc.pl.umap(final_adata, color=['leiden', cfg.sample_name_col_for_plotting], show=False, save=save)
 
         #### Repeat on duplicate scrubbed anndata ###
 
@@ -618,8 +639,8 @@ def load_adata(config_path):
         else:
             from ..plotting import combined_raw_clustermap
             make_dirs([pp_dir, pp_clustermap_dir])
-            clustermap_results = combined_raw_clustermap(final_adata_unique, sample_col='Barcode', layer_any_c='nan0_0minus1', 
-                                        layer_gpc="nan0_0minus1", layer_cpg="nan0_0minus1", cmap_any_c="coolwarm", 
+            clustermap_results = combined_raw_clustermap(final_adata_unique, sample_col=cfg.sample_name_col_for_plotting, layer_any_c=cfg.layer_for_clustermap_plotting, 
+                                        layer_gpc=cfg.layer_for_clustermap_plotting, layer_cpg=cfg.layer_for_clustermap_plotting, cmap_any_c="coolwarm", 
                                         cmap_gpc="coolwarm", cmap_cpg="viridis", min_quality=25, min_length=500, bins=None,
                                         sample_mapping=None, save_path=pp_clustermap_dir, sort_by='gpc', deaminase=deaminase)
         
@@ -632,14 +653,14 @@ def load_adata(config_path):
             var_filters = []
             for ref in references:
                 var_filters += [f'{ref}_any_C_site']
-            final_adata = calculate_umap(final_adata_unique, layer='nan_half', var_filters=var_filters, n_pcs=10, knn_neighbors=15)
+            final_adata = calculate_umap(final_adata_unique, layer=cfg.layer_for_umap_plotting, var_filters=var_filters, n_pcs=10, knn_neighbors=15)
 
             ## Clustering
             sc.tl.leiden(final_adata_unique, resolution=0.1, flavor="igraph", n_iterations=2)
 
             # Plotting UMAP
             save = 'umap_plot.png'
-            sc.pl.umap(final_adata_unique, color=['leiden', 'Sample'], show=False, save=save)
+            sc.pl.umap(final_adata_unique, color=['leiden', cfg.sample_name_col_for_plotting], show=False, save=save)
 
 
     ########################################################################################################################
@@ -654,18 +675,16 @@ def load_adata(config_path):
             print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
         else:
             positions = final_adata.var_names.astype(int).values
-            site_types = ['GpC', 'CpG', 'any_C']
-            for site_type in site_types:
+            for site_type in cfg.autocorr_site_types:
                 X = final_adata.layers[f"{site_type}_site_binary"]
-                max_lag = 500
 
                 autocorr_matrix = np.array([
-                    binary_autocorrelation_with_spacing(row, positions, max_lag=max_lag)
+                    binary_autocorrelation_with_spacing(row, positions, max_lag=cfg.autocorr_max_lag)
                     for row in X
                 ])
 
                 final_adata.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
-                final_adata.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
+                final_adata.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(cfg.autocorr_max_lag + 1)
 
             if os.path.isdir(pp_autocorr_dir):
                 print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
@@ -673,7 +692,9 @@ def load_adata(config_path):
                 from ..plotting import plot_spatial_autocorr_grid
                 make_dirs([pp_dir, pp_autocorr_dir])
 
-                plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
+                plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=cfg.autocorr_site_types, 
+                                           sample_col=cfg.sample_name_col_for_plotting, window=cfg.autocorr_rolling_window_size, 
+                                           rows_per_fig=cfg.rows_per_qc_autocorr_grid)
 
         #### Repeat on duplicate scrubbed anndata ###
 
@@ -684,18 +705,16 @@ def load_adata(config_path):
             print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
         else:
             positions = final_adata_unique.var_names.astype(int).values
-            site_types = ['GpC', 'CpG', 'any_C']
-            for site_type in site_types:
+            for site_type in cfg.autocorr_site_types:
                 X = final_adata_unique.layers[f"{site_type}_site_binary"]
-                max_lag = 500
 
                 autocorr_matrix = np.array([
-                    binary_autocorrelation_with_spacing(row, positions, max_lag=max_lag)
+                    binary_autocorrelation_with_spacing(row, positions, max_lag=cfg.autocorr_max_lag)
                     for row in X
                 ])
 
                 final_adata_unique.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
-                final_adata_unique.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(max_lag + 1)
+                final_adata_unique.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(cfg.autocorr_max_lag + 1)
 
             if os.path.isdir(pp_autocorr_dir):
                 print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
@@ -703,7 +722,9 @@ def load_adata(config_path):
                 from ..plotting import plot_spatial_autocorr_grid
                 make_dirs([pp_autocorr_dir, pp_autocorr_dir])
 
-                plot_spatial_autocorr_grid(final_adata_unique, pp_autocorr_dir, site_types=site_types, sample_col='Barcode', window=25, rows_per_fig=6)
+                plot_spatial_autocorr_grid(final_adata_unique, pp_autocorr_dir, site_types=cfg.autocorr_site_types, 
+                                           sample_col=cfg.sample_name_col_for_plotting, window=cfg.autocorr_rolling_window_size, 
+                                           rows_per_fig=cfg.rows_per_qc_autocorr_grid)
 
     else:
         pass
@@ -715,8 +736,8 @@ def load_adata(config_path):
     if run_hmm:
         from ..hmm.HMM import HMM
 
-        samples = final_adata.obs['Barcode'].cat.categories
-        references = final_adata.obs['Reference_strand'].cat.categories
+        samples = final_adata.obs[cfg.sample_name_col_for_plotting].cat.categories
+        references = final_adata.obs[reference_column].cat.categories
         mod_sites = mod_target_bases
         pp_dir = f"{split_dir}/preprocessed"
         hmm_dir = f"{pp_dir}/10_hmm_models"
@@ -733,7 +754,7 @@ def load_adata(config_path):
 
         for sample in samples:
             for ref in references:
-                mask = (final_adata.obs['Barcode'] == sample) & (final_adata.obs['Reference_strand'] == ref)
+                mask = (final_adata.obs[cfg.sample_name_col_for_plotting] == sample) & (final_adata.obs[reference_column] == ref)
                 subset = final_adata[mask].copy()
                 if subset.shape[0] > 1:
                     for mod_site in mod_sites:
@@ -749,7 +770,7 @@ def load_adata(config_path):
 
                         print(f"Apply HMM for {sample} {ref} {mod_label}")
 
-                        hmm.annotate_adata(subset, 'Reference_strand', layer=None, footprints=True, accessible_patches=True, cpg=True, methbases=[mod_label])
+                        hmm.annotate_adata(subset, reference_column, layer=None, footprints=True, accessible_patches=True, cpg=True, methbases=[mod_label])
 
                         # for col in subset.obs.columns:
                         #     if col not in final_adata.obs.columns:

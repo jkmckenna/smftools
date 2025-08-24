@@ -103,24 +103,25 @@ def _try_json_or_literal(s: Any) -> Any:
 
 # add this helper somewhere near your other utilities (e.g. below _try_json_or_literal)
 
-def resolve_aligner_args(merged: dict,
-                         default_by_aligner: Optional[Dict[str, List[str]]] = None,
-                         aligner_synonyms: Optional[Dict[str, str]] = None) -> List[str]:
+def resolve_aligner_args(
+    merged: dict,
+    default_by_aligner: Optional[Dict[str, List[str]]] = None,
+    aligner_synonyms: Optional[Dict[str, str]] = None,
+) -> List[str]:
     """
-    Resolve merged['aligner_args'] into a concrete list for the chosen aligner.
+    Resolve merged['aligner_args'] into a concrete list for the chosen aligner and sequencer.
 
-    merged: final merged config dict (may contain 'aligner' and 'aligner_args').
-    default_by_aligner: optional fallback mapping (aligner -> default args).
-    aligner_synonyms: optional mapping of alias -> canonical aligner name.
-
-    Behavior:
-      - If merged['aligner_args'] is a dict: try to pick the key matching the active aligner
-        (case-insensitive); fall back to 'default' key if present; otherwise use builtin defaults.
-      - If merged['aligner_args'] is a list/tuple: return that list.
-      - If merged['aligner_args'] is a scalar string, try to parse as JSON/literal or return single-item list.
-      - Otherwise return the builtin default for the aligner.
+    Behavior (search order):
+      1. If aligner_args is a dict, try keys in this order (case-insensitive):
+          a) "<aligner>@<sequencer>" (top-level combined key)
+          b) aligner -> (if dict) sequencer (nested) -> 'default' fallback
+          c) aligner -> (if list) use that list
+          d) top-level 'default' key in aligner_args dict
+      2. If aligner_args is a list -> return it (applies to any aligner/sequencer).
+      3. If aligner_args is a string -> try parse JSON/literal or return single-element list.
+      4. Otherwise fall back to builtin defaults per aligner.
     """
-    # sensible built-in defaults
+    # builtin defaults (aligner -> args)
     builtin_defaults = {
         "minimap2": ['-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N', '5', '--secondary=no'],
         "dorado": ['--mm2-opts', '-N', '5'],
@@ -128,57 +129,90 @@ def resolve_aligner_args(merged: dict,
     if default_by_aligner is None:
         default_by_aligner = builtin_defaults
 
+    # synonyms mapping
     synonyms = {"mm2": "minimap2", "minimap": "minimap2", "minimap-2": "minimap2"}
     if aligner_synonyms:
         synonyms.update(aligner_synonyms)
 
-    raw_aligner = merged.get("aligner", "minimap2")
-    if raw_aligner is None:
-        raw_aligner = "minimap2"
-    # canonicalize to string & lowercase
-    raw_name = str(raw_aligner).strip()
-    key = raw_name.lower()
-
-    # map synonyms -> canonical
-    if key in synonyms:
-        key = synonyms[key]
+    # canonicalize requested aligner and sequencer
+    raw_aligner = merged.get("aligner", "minimap2") or "minimap2"
+    raw_sequencer = merged.get("sequencer", None)  # e.g. 'ont', 'pacbio', 'illumina'
+    key_align = str(raw_aligner).strip().lower()
+    key_seq = None if raw_sequencer is None else str(raw_sequencer).strip().lower()
+    if key_align in synonyms:
+        key_align = synonyms[key_align]
 
     raw = merged.get("aligner_args", None)
 
-    # If user passed a mapping, search keys case-insensitively
+    # helper to coerce a candidate to list[str]
+    def _coerce_to_list(val):
+        if isinstance(val, (list, tuple)):
+            return [str(x) for x in val]
+        if isinstance(val, str):
+            parsed = _try_json_or_literal(val)
+            if isinstance(parsed, (list, tuple)):
+                return [str(x) for x in parsed]
+            return [str(parsed)]
+        if val is None:
+            return None
+        return [str(val)]
+
+    # If dict, do layered lookups
     if isinstance(raw, dict):
-        # create lowercase-keyed view of raw for case-insensitive lookup
-        lower_map = {str(k).lower(): v for k, v in raw.items()}
-        if key in lower_map:
-            val = lower_map[key]
-            if isinstance(val, (list, tuple)):
-                return [str(x) for x in val]
-            # try parse if it's a scalar string
-            if isinstance(val, str):
-                parsed = _try_json_or_literal(val)
-                if isinstance(parsed, (list, tuple)):
-                    return [str(x) for x in parsed]
-                return [str(parsed)]
-            return [str(val)]
-        # fallback to explicit 'default' key
-        if "default" in lower_map:
-            v = lower_map["default"]
-            if isinstance(v, (list, tuple)):
-                return [str(x) for x in v]
-            parsed = _try_json_or_literal(v) if isinstance(v, str) else v
-            return [str(parsed)] if not isinstance(parsed, (list, tuple)) else [str(x) for x in parsed]
-        # nothing matched -> fall through to builtin
+        # case-insensitive dict
+        top_map = {str(k).lower(): v for k, v in raw.items()}
+
+        # 1) try combined top-level key "aligner@sequencer"
+        if key_seq:
+            combined_key = f"{key_align}@{key_seq}"
+            if combined_key in top_map:
+                res = _coerce_to_list(top_map[combined_key])
+                if res:
+                    return res
+
+        # 2) try aligner key
+        if key_align in top_map:
+            val = top_map[key_align]
+            # if nested dict: try sequencer key then 'default'
+            if isinstance(val, dict):
+                submap = {str(k).lower(): v for k, v in val.items()}
+                if key_seq and key_seq in submap:
+                    res = _coerce_to_list(submap[key_seq])
+                    if res:
+                        return res
+                if "default" in submap:
+                    res = _coerce_to_list(submap["default"])
+                    if res:
+                        return res
+                # nothing matched inside aligner->dict; fall back to top-level aligner (no sequencer)
+            else:
+                # aligner maps to list/str: use it
+                res = _coerce_to_list(val)
+                if res:
+                    return res
+
+        # 3) try top-level 'default' key inside aligner_args mapping
+        if "default" in top_map:
+            res = _coerce_to_list(top_map["default"])
+            if res:
+                return res
+
+        # 4) last top-level attempt: any key equal to aligner synonyms etc (already handled)
+        # fallthrough to builtin
     # If user provided a concrete list -> use it
     if isinstance(raw, (list, tuple)):
         return [str(x) for x in raw]
-    # If user provided a scalar string, try parsing it into list or return singleton
+
+    # If scalar string, attempt to parse
     if isinstance(raw, str):
         parsed = _try_json_or_literal(raw)
         if isinstance(parsed, (list, tuple)):
             return [str(x) for x in parsed]
         return [str(parsed)]
-    # Nothing supplied -> builtin default for canonical aligner
-    return list(default_by_aligner.get(key, []))
+
+    # Nothing found -> fallback builtin default
+    return list(default_by_aligner.get(key_align, []))
+
 
 
 # -------------------------
@@ -496,9 +530,11 @@ class ExperimentConfig:
     fasta: Optional[str] = None
     model_dir: Optional[str] = None
     barcode_kit: Optional[str] = None
+    sequencer: Optional[str] = None
 
     # Defaults / optional
     bam_suffix: str = ".bam"
+    recursive_input_search: bool = True
     split_dir: str = "demultiplexed_BAMs"
     strands: List[str] = field(default_factory=lambda: ["bottom", "top"])
     conversions: List[str] = field(default_factory=lambda: ["unconverted"])
@@ -511,10 +547,15 @@ class ExperimentConfig:
     input_already_demuxed: bool = False
     threads: Optional[int] = None
     sample_sheet_path: Optional[str] = None
+    sample_sheet_mapping_column: Optional[str] = 'Barcode'
     aligner: str = "minimap2"
     aligner_args: Optional[List[str]] = None
     device: str = "auto"
     make_bigwigs: bool = False
+
+    # FASTQ input specific
+    fastq_barcode_map: Optional[Dict[str, str]] = None
+    fastq_auto_pairing: bool = True
 
     # Enzyme / mod targets
     mod_target_bases: List[str] = field(default_factory=lambda: ["GpC", "CpG"])
@@ -533,6 +574,23 @@ class ExperimentConfig:
     batch_size: int = 4
     skip_unclassified: bool = True
     delete_batch_hdfs: bool = True
+
+    # Anndata structure
+    reference_column: Optional[str] = 'Reference_strand'
+
+    # Plotting
+    sample_name_col_for_plotting: Optional[str] = 'Barcode'
+    layer_for_clustermap_plotting: Optional[str] = 'nan0_0minus1'
+    layer_for_umap_plotting: Optional[str] = 'nan_half'
+    rows_per_qc_histogram_grid: int = 12
+    rows_per_qc_autocorr_grid: int = 12
+    autocorr_rolling_window_size: int = 25
+    autocorr_max_lag: int = 500
+    autocorr_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'any_C'])
+
+    # QC
+    duplicate_detection_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'ambiguous_GpC_CpG'])
+    duplicate_detection_distance_threshold: float = 0.12
 
     # metadata
     config_source: Optional[str] = None
@@ -682,10 +740,14 @@ class ExperimentConfig:
         instance = cls(
             smf_modality = merged.get("smf_modality"),
             input_data_path = merged.get("input_data_path"),
+            recursive_input_search = merged.get("recursive_input_search"),
             output_directory = merged.get("output_directory"),
             fasta = merged.get("fasta"),
+            sequencer = merged.get("sequencer"),
             model_dir = merged.get("model_dir"),
             barcode_kit = merged.get("barcode_kit"),
+            fastq_barcode_map = merged.get("fastq_barcode_map"),
+            fastq_auto_pairing = merged.get("fastq_auto_pairing"),
             bam_suffix = merged.get("bam_suffix", ".bam"),
             split_dir = merged.get("split_dir", "demultiplexed_BAMs"),
             strands = merged.get("strands", ["bottom","top"]),
@@ -699,6 +761,7 @@ class ExperimentConfig:
             input_already_demuxed = merged.get("input_already_demuxed", False),
             threads = merged.get("threads"),
             sample_sheet_path = merged.get("sample_sheet_path"),
+            sample_sheet_mapping_column = merged.get("sample_sheet_mapping_column"),
             aligner = merged.get("aligner", "minimap2"),
             aligner_args = merged.get("aligner_args", None),
             device = merged.get("device", "auto"),
@@ -715,6 +778,17 @@ class ExperimentConfig:
             batch_size = merged.get("batch_size", 4),
             skip_unclassified = merged.get("skip_unclassified", True),
             delete_batch_hdfs = merged.get("delete_batch_hdfs", True),
+            reference_column = merged.get("reference_column", 'Reference_strand'),
+            sample_name_col_for_plotting = merged.get("sample_name_col_for_plotting", 'Barcode'),
+            layer_for_clustermap_plotting = merged.get("layer_for_clustermap_plotting", 'nan0_0minus1'), 
+            layer_for_umap_plotting = merged.get("layer_for_umap_plotting", 'nan_half'),
+            rows_per_qc_histogram_grid = merged.get("rows_per_qc_histogram_grid", 12),
+            rows_per_qc_autocorr_grid = merged.get("rows_per_qc_autocorr_grid", 12),
+            autocorr_rolling_window_size = merged.get("autocorr_rolling_window_size", 25),
+            autocorr_max_lag = merged.get("autocorr_max_lag", 500), 
+            autocorr_site_types = merged.get("autocorr_site_types", ['GpC', 'CpG', 'any_C']),
+            duplicate_detection_site_types = merged.get("duplicate_detection_site_types", ['GpC', 'CpG', 'ambiguous_GpC_CpG']),
+            duplicate_detection_distance_threshold = merged.get("duplicate_detection_distance_threshold", 0.12),
             config_source = config_source or "<var_dict>",
         )
 

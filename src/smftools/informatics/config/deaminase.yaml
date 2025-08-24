@@ -17,3 +17,11 @@ aligner_args:
     - "--mm2-opts"
     - "-N"
     - "5"
+
+# QC Params
+duplicate_detection_site_types:
+  - "any_C"
+
+# Plotting
+autocorr_site_types:
+  - "any_C"

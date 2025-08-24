@@ -1,5 +1,6 @@
 # Generic defaults
 bam_suffix: ".bam"
+recursive_input_search: True
 split_dir: "demultiplexed_BAMs"
 strands:
   - bottom
@@ -7,24 +8,47 @@ strands:
 conversions:
   - unconverted
 mapping_threshold: 0.01 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
+sequencer: 'ont' # ont, pacbio, illumina
 model: "hac" # needed for dorado basecaller
 threads: 4
 aligner: "minimap2" # Aligner to use: dorado, minimap2
 aligner_args:
   minimap2:
-    - '-a'
-    - '-x'
-    - 'map-ont'
-    - '--MD'
-    - '-Y' 
-    - '-y'
-    - '-N'
-    - '5'
-    - '--secondary=no' 
+    ont:
+      - '-a'
+      - '-x'
+      - 'map-ont'
+      - '--MD'
+      - '-Y' 
+      - '-y'
+      - '-N'
+      - '5'
+      - '--secondary=no' 
+    pacbio:
+      - '-a'
+      - '-x'
+      - 'map-hifi'
+      - '--MD'
+      - '-Y' 
+      - '-y'
+      - '-N'
+      - '5'
+      - '--secondary=no' 
+    illumina:
+      - '-a'
+      - '-x'
+      - 'sr'
+      - '--MD'
+      - '-Y' 
+      - '-y'
+      - '-N'
+      - '5'
+      - '--secondary=no'     
   dorado:
-    - "--mm2-opts"
-    - "-N"
-    - "5"
+    ont:
+      - "--mm2-opts"
+      - "-N"
+      - "5"
 device: "auto"
 mod_target_bases:
   - "GpC"
@@ -36,4 +60,30 @@ barcode_both_ends: False # dorado demultiplexing
 trim: False # dorado adapter and barcode removal during demultiplexing
 input_already_demuxed: False # If the input files are already demultiplexed.
 make_bigwigs: False # Whether to make coverage bigwigs
-sample_sheet_path: null
+sample_sheet_path: null # path to sample_sheet to load metadata into anndata.
+sample_sheet_mapping_column: 'Barcode' # The column in the sample sheet and current anndata to use for mapping metadata.
+fastq_barcode_map: null # For FASTQ files, an optional map of file pathes to barcodes can be provided. Default is autodetecting barcodes.
+fastq_auto_pairing: True # For FASTQ files, attempt to find read pair files automatically.
+
+# Anndata structure
+reference_column: 'Reference_strand'
+
+# QC parameters
+duplicate_detection_site_types:
+  - "GpC"
+  - "CpG"
+  - "ambiguous_GpC_CpG"
+duplicate_detection_distance_threshold: 0.12
+
+# Plotting
+sample_name_col_for_plotting: 'Barcode'
+layer_for_clustermap_plotting: 'nan0_0minus1'
+layer_for_umap_plotting: 'nan_half'
+rows_per_qc_histogram_grid: 12
+rows_per_qc_autocorr_grid: 6
+autocorr_rolling_window_size: 25
+autocorr_max_lag: 500
+autocorr_site_types:
+  - "GpC"
+  - "CpG"
+  - "any_C"
