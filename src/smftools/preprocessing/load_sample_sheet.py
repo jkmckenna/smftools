@@ -1,4 +1,10 @@
-def load_sample_sheet(adata, sample_sheet_path, mapping_key_column='obs_names', as_category=True):
+def load_sample_sheet(adata, 
+                      sample_sheet_path, 
+                      mapping_key_column='obs_names',
+                      as_category=True,
+                      uns_flag='sample_sheet_loaded',
+                      force_reload=True
+                        ):
     """
     Loads a sample sheet CSV and maps metadata into the AnnData object as categorical columns.
 
@@ -12,6 +18,12 @@ def load_sample_sheet(adata, sample_sheet_path, mapping_key_column='obs_names', 
         AnnData: Updated AnnData object.
     """
     import pandas as pd
+
+    # Only run if not already performed
+    already = bool(adata.uns.get(uns_flag, False))
+    if already and not force_reload:
+        # QC already performed; nothing to do
+        return
 
     print('Loading sample sheet...')
     df = pd.read_csv(sample_sheet_path)
@@ -33,6 +45,9 @@ def load_sample_sheet(adata, sample_sheet_path, mapping_key_column='obs_names', 
         if as_category:
             mapped = mapped.astype('category')
         adata.obs[col] = mapped
+
+    # mark as done
+    adata.uns[uns_flag] = True
 
     print('Sample sheet metadata successfully added as categories.' if as_category else 'Metadata added.')
     return adata

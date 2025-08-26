@@ -5,10 +5,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-
 def _logsumexp(vec: torch.Tensor, dim: int = -1, keepdim: bool = False) -> torch.Tensor:
     return torch.logsumexp(vec, dim=dim, keepdim=keepdim)
-
 
 class HMM(nn.Module):
     """
@@ -34,6 +32,7 @@ class HMM(nn.Module):
         init_emission: Optional[List[float]] = None,
         dtype: torch.dtype = torch.float64,
         eps: float = 1e-8,
+        smf_modality: Optional[str] = None,
     ):
         super().__init__()
         if n_states < 2:
@@ -41,6 +40,7 @@ class HMM(nn.Module):
         self.n_states = n_states
         self.eps = float(eps)
         self.dtype = dtype
+        self.smf_modality = smf_modality
 
         # initialize params (probabilities)
         if init_start is None:
@@ -558,6 +558,7 @@ class HMM(nn.Module):
         use_viterbi: bool = False,
         in_place: bool = True,
         verbose: bool = True,
+        uns_key: str = "hmm_appended_layers",
     ):
         """
         Annotate an AnnData with HMM-derived features (in adata.obs and adata.layers).
@@ -631,6 +632,9 @@ class HMM(nn.Module):
             adata.obs[feature] = [[] for _ in range(n_rows)]
             adata.obs[f"{feature}_distances"] = [None] * n_rows
             adata.obs[f"n_{feature}"] = -1
+
+        # keep track of which layers we actually append (so we can write to .uns)
+        appended_layers: List[str] = []
 
         # device management
         if device is None:
@@ -880,7 +884,6 @@ class HMM(nn.Module):
                             adata.obs.at[idx, f"CpG_{label}"].append([start, length, prob])
                             adata.obs.at[idx, f"CpG_all_cpg_features"].append([start, length, prob])
 
-        # Finalization: Binarize features and compute distances
         try:
             coordinates = _np.asarray(adata.var_names, dtype=int)
         except Exception:
@@ -901,9 +904,19 @@ class HMM(nn.Module):
                         if start_idx < end_idx:
                             bin_matrix[row_idx, start_idx:end_idx] = 1
                             counts[row_idx] += 1
+            # write layer and track name
             adata.layers[feature] = bin_matrix
+            appended_layers.append(feature)
+
             adata.obs[f"n_{feature}"] = counts
             adata.obs[f"{feature}_distances"] = calculate_batch_distances(adata.obs[feature].tolist(), threshold)
 
+        # Merge appended_layers into adata.uns[uns_key] (preserve pre-existing and avoid duplicates)
+        existing = list(adata.uns.get(uns_key, [])) if adata.uns.get(uns_key) is not None else []
+        # preserve insertion order, avoid duplicates
+        new_list = existing + [l for l in appended_layers if l not in existing]
+        adata.uns[uns_key] = new_list
+
+        # return or in-place behavior (unchanged)
         return None if in_place else adata
 

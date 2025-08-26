@@ -472,6 +472,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=".
     # Print a concise interactive report
     print("\n=== safe_write_h5ad REPORT ===")
     print(f"Saved file: {path}")
+    print(f"Adata shape: {adata.shape}")
     if report["obs_converted_columns"] or report["obs_backed_up_columns"]:
         print(f"obs: converted columns -> {report['obs_converted_columns']}")
         print(f"obs: backed-up columns -> {report['obs_backed_up_columns']}")

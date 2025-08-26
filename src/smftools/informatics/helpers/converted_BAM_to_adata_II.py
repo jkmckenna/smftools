@@ -11,6 +11,10 @@ import traceback
 import gzip
 import torch
 
+import shutil
+from pathlib import Path
+from typing import Union, Iterable, Optional
+
 from ... import readwrite
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .find_conversion_sites import find_conversion_sites
@@ -22,7 +26,17 @@ from .ohe_batching import ohe_batching
 if __name__ == "__main__":
     multiprocessing.set_start_method("forkserver", force=True)
 
-def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix, device='cpu', num_threads=8, deaminase_footprinting=False):
+def converted_BAM_to_adata_II(converted_FASTA, 
+                              split_dir,
+                              mapping_threshold, 
+                              experiment_name, 
+                              conversion_types, 
+                              bam_suffix, 
+                              device='cpu', 
+                              num_threads=8, 
+                              deaminase_footprinting=False,
+                              delete_intermediates=True
+):
     """
     Converts BAM files into an AnnData object by binarizing modified base identities.
 
@@ -81,10 +95,21 @@ def converted_BAM_to_adata_II(converted_FASTA, split_dir, mapping_threshold, exp
         final_adata.var[f'{chromosome}_bottom_strand_FASTA_base'] = list(comp)
         final_adata.uns[f'{chromosome}_FASTA_sequence'] = seq
 
+    final_adata.obs_names_make_unique()
+    cols = final_adata.obs.columns
+
+    # Make obs cols categorical
+    for col in cols:
+        final_adata.obs[col] = final_adata.obs[col].astype('category')
+
     ## Save Final AnnData
     print(f"Saving AnnData to {final_adata_path}")
     backup_dir=os.path.join(os.path.dirname(final_adata_path), 'adata_accessory_data')
     readwrite.safe_write_h5ad(final_adata, final_adata_path, compression='gzip', backup=True, backup_dir=backup_dir)
+
+    ## Delete intermediate h5ad files and temp directories
+    if delete_intermediates:
+        delete_intermediate_h5ads_and_tmpdir(h5_dir, tmp_dir)
     
     return final_adata, final_adata_path
 
@@ -389,3 +414,92 @@ def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, 
 
     print(f"{timestamp()} Successfully generated final AnnData object.")
     return final_adata
+
+def delete_intermediate_h5ads_and_tmpdir(
+    h5_dir: Union[str, Path, Iterable[str], None],
+    tmp_dir: Optional[Union[str, Path]] = None,
+    *,
+    dry_run: bool = False,
+    verbose: bool = True,
+):
+    """
+    Delete intermediate .h5ad files and a temporary directory.
+
+    Parameters
+    ----------
+    h5_dir : str | Path | iterable[str] | None
+        If a directory path is given, all files directly inside it will be considered.
+        If an iterable of file paths is given, those files will be considered.
+        Only files ending with '.h5ad' (and not ending with '.gz') are removed.
+    tmp_dir : str | Path | None
+        Path to a directory to remove recursively (e.g. a temp dir created earlier).
+    dry_run : bool
+        If True, print what *would* be removed but do not actually delete.
+    verbose : bool
+        Print progress / warnings.
+    """
+    # Helper: remove a single file path (Path-like or string)
+    def _maybe_unlink(p: Path):
+        if not p.exists():
+            if verbose:
+                print(f"[skip] not found: {p}")
+            return
+        if not p.is_file():
+            if verbose:
+                print(f"[skip] not a file: {p}")
+            return
+        if dry_run:
+            print(f"[dry-run] would remove file: {p}")
+            return
+        try:
+            p.unlink()
+            if verbose:
+                print(f"Removed file: {p}")
+        except Exception as e:
+            print(f"[error] failed to remove file {p}: {e}")
+
+    # Handle h5_dir input (directory OR iterable of file paths)
+    if h5_dir is not None:
+        # If it's a path to a directory, iterate its children
+        if isinstance(h5_dir, (str, Path)) and Path(h5_dir).is_dir():
+            dpath = Path(h5_dir)
+            for p in dpath.iterdir():
+                # only target top-level files (not recursing); require '.h5ad' suffix and exclude gz
+                name = p.name.lower()
+                if name.endswith(".h5ad") and not name.endswith(".gz"):
+                    _maybe_unlink(p)
+                else:
+                    if verbose:
+                        # optional: comment this out if too noisy
+                        print(f"[skip] not matching pattern: {p.name}")
+        else:
+            # treat as iterable of file paths
+            for f in h5_dir:
+                p = Path(f)
+                name = p.name.lower()
+                if name.endswith(".h5ad") and not name.endswith(".gz"):
+                    _maybe_unlink(p)
+                else:
+                    if verbose:
+                        print(f"[skip] not matching pattern or not a file: {p}")
+
+    # Remove tmp_dir recursively (if provided)
+    if tmp_dir is not None:
+        td = Path(tmp_dir)
+        if not td.exists():
+            if verbose:
+                print(f"[skip] tmp_dir not found: {td}")
+        else:
+            if not td.is_dir():
+                if verbose:
+                    print(f"[skip] tmp_dir is not a directory: {td}")
+            else:
+                if dry_run:
+                    print(f"[dry-run] would remove directory tree: {td}")
+                else:
+                    try:
+                        shutil.rmtree(td)
+                        if verbose:
+                            print(f"Removed directory tree: {td}")
+                    except Exception as e:
+                        print(f"[error] failed to remove tmp dir {td}: {e}")

@@ -1,4 +1,12 @@
-def append_base_context(adata, obs_column='Reference_strand', use_consensus=False, native=False, mod_target_bases=['GpC', 'CpG']):
+def append_base_context(adata, 
+                        obs_column='Reference_strand', 
+                        use_consensus=False,
+                        native=False, 
+                        mod_target_bases=['GpC', 'CpG'],
+                        bypass=False,
+                        force_redo=False,
+                        uns_flag='base_context_added'
+):
     """
     Adds nucleobase context to the position within the given category. When use_consensus is True, it uses the consensus sequence, otherwise it defaults to the FASTA sequence.
 
@@ -14,6 +22,12 @@ def append_base_context(adata, obs_column='Reference_strand', use_consensus=Fals
     """
     import numpy as np
     import anndata as ad
+
+    # Only run if not already performed
+    already = bool(adata.uns.get(uns_flag, False))
+    if (already and not force_redo) or bypass:
+        # QC already performed; nothing to do
+        return
 
     print('Adding base context based on reference FASTA sequence for sample')
     categories = adata.obs[obs_column].cat.categories
@@ -101,3 +115,8 @@ def append_base_context(adata, obs_column='Reference_strand', use_consensus=Fals
                 adata.obsm[f'{cat}_{site_type}'] = adata[:, adata.var[f'{cat}_{site_type}'] == True].layers['binarized_methylation']
             else:
                 adata.obsm[f'{cat}_{site_type}'] = adata[:, adata.var[f'{cat}_{site_type}'] == True].X
+
+    # mark as done
+    adata.uns[uns_flag] = True
+
+    return None
