@@ -1,4 +1,4 @@
-def calculate_coverage(adata, obs_column='Reference_strand', position_nan_threshold=0.00001):
+def calculate_coverage(adata, obs_column='Reference_strand', position_nan_threshold=0.00001, uns_flag='positional_coverage_calculated'):
     """
     Append position-level metadata regarding whether the position is informative within the given observation category.
 
@@ -13,6 +13,12 @@ def calculate_coverage(adata, obs_column='Reference_strand', position_nan_thresh
     import numpy as np
     import pandas as pd
     import anndata as ad
+
+    # Only run if not already performed
+    already = bool(adata.uns.get(uns_flag, False))
+    if already:
+        # QC already performed; nothing to do
+        return
     
     categories = adata.obs[obs_column].cat.categories
     n_categories_with_position = np.zeros(adata.shape[1])
@@ -40,3 +46,6 @@ def calculate_coverage(adata, obs_column='Reference_strand', position_nan_thresh
 
     # Store final category count
     adata.var[f'N_{obs_column}_with_position'] = n_categories_with_position.astype(int)
+
+    # mark as done
+    adata.uns[uns_flag] = True

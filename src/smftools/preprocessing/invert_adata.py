@@ -1,8 +1,6 @@
 ## invert_adata
 
-# Optional inversion of the adata
-
-def invert_adata(adata):
+def invert_adata(adata, uns_flag='adata_positions_inverted', force_redo=False):
     """
     Inverts the AnnData object along the column (variable) axis.
 
@@ -15,7 +13,13 @@ def invert_adata(adata):
     import numpy as np
     import anndata as ad
 
-    print("🔄 Inverting AnnData along the column axis...")
+    # Only run if not already performed
+    already = bool(adata.uns.get(uns_flag, False))
+    if (already and not force_redo):
+        # QC already performed; nothing to do
+        return adata
+
+    print("Inverting AnnData along the column axis...")
 
     # Reverse the order of columns (variables)
     inverted_adata = adata[:, ::-1].copy()
@@ -26,5 +30,8 @@ def invert_adata(adata):
     # Optional: Store original coordinates for reference
     inverted_adata.var["Original_var_names"] = adata.var_names[::-1]
 
-    print("✅ Inversion complete!")
+    # mark as done
+    inverted_adata.uns[uns_flag] = True
+
+    print("Inversion complete!")
     return inverted_adata

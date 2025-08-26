@@ -1,4 +1,9 @@
-def clean_NaN(adata, layer=None):
+def clean_NaN(adata, 
+            layer=None,
+            uns_flag='clean_NaN_performed',
+            bypass=False,
+            force_redo=True
+):
     """
     Append layers to adata that contain NaN cleaning strategies.
 
@@ -13,6 +18,12 @@ def clean_NaN(adata, layer=None):
     import pandas as pd
     import anndata as ad
     from ..readwrite import adata_to_df 
+
+    # Only run if not already performed
+    already = bool(adata.uns.get(uns_flag, False))
+    if (already and not force_redo) or bypass:
+        # QC already performed; nothing to do
+        return
 
     # Ensure the specified layer exists
     if layer and layer not in adata.layers:
@@ -44,3 +55,8 @@ def clean_NaN(adata, layer=None):
     print('Making layer: nan_half')
     df_nan_half = df.fillna(0.5)
     adata.layers['nan_half'] = df_nan_half.values
+
+    # mark as done
+    adata.uns[uns_flag] = True
+
+    return None

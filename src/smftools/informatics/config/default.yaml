@@ -60,6 +60,7 @@ barcode_both_ends: False # dorado demultiplexing
 trim: False # dorado adapter and barcode removal during demultiplexing
 input_already_demuxed: False # If the input files are already demultiplexed.
 make_bigwigs: False # Whether to make coverage bigwigs
+delete_intermediate_hdfs: True
 sample_sheet_path: null # path to sample_sheet to load metadata into anndata.
 sample_sheet_mapping_column: 'Barcode' # The column in the sample sheet and current anndata to use for mapping metadata.
 fastq_barcode_map: null # For FASTQ files, an optional map of file pathes to barcodes can be provided. Default is autodetecting barcodes.
@@ -67,13 +68,57 @@ fastq_auto_pairing: True # For FASTQ files, attempt to find read pair files auto
 
 # Anndata structure
 reference_column: 'Reference_strand'
+sample_column: 'Barcode'
 
-# QC parameters
+# Preprocessing and QC parameters
+read_coord_filter:
+ - null
+ - null
+read_len_filter_thresholds:
+  - 200
+  - null
+read_len_to_ref_ratio_filter_thresholds:
+  - 0.8
+  - null
+read_quality_filter_thresholds:
+  - 20
+  - null
+read_mapping_quality_filter_thresholds:
+  - null
+  - null
+read_mod_filtering_gpc_thresholds:
+  - 0.025
+  - 0.975
+read_mod_filtering_cpg_thresholds:
+  - 0.0
+  - 1.0
+read_mod_filtering_any_c_thresholds:
+  - 0.025
+  - 0.975
+read_mod_filtering_a_thresholds:
+  - 0.025
+  - 0.975
+read_mod_filtering_use_other_c_as_background: True
+min_valid_fraction_positions_in_read_vs_ref: 0.8
 duplicate_detection_site_types:
   - "GpC"
   - "CpG"
   - "ambiguous_GpC_CpG"
 duplicate_detection_distance_threshold: 0.12
+hamming_vs_metric_keys:
+  - Fraction_any_C_site_modified
+
+# HMM params
+hmm_n_states: 2
+hmm_init_emission_probs:
+  - [0.8, 0.2]
+  - [0.2, 0.8] 
+hmm_init_transition_probs: 
+  - [0.9, 0.1]
+  - [0.1, 0.9]
+hmm_init_start_probs: 
+  - 0.5
+  - 0.5
 
 # Plotting
 sample_name_col_for_plotting: 'Barcode'
@@ -87,3 +132,36 @@ autocorr_site_types:
   - "GpC"
   - "CpG"
   - "any_C"
+
+# Pipeline control flow - Preprocessing and QC
+force_redo_preprocessing: False
+force_reload_sample_sheet: True
+bypass_add_read_length_and_mapping_qc: False
+force_redo_add_read_length_and_mapping_qc: False
+bypass_clean_nan: False
+force_redo_clean_nan: False
+bypass_append_base_context: False
+force_redo_append_base_context: False
+invert_adata: False
+bypass_append_binary_layer_by_base_context: False
+force_redo_append_binary_layer_by_base_context: False
+bypass_calculate_read_modification_stats: False
+force_redo_calculate_read_modification_stats: False
+bypass_filter_reads_on_modification_thresholds: False
+force_redo_filter_reads_on_modification_thresholds: False
+bypass_flag_duplicate_reads: False
+force_redo_flag_duplicate_reads: False
+
+# Pipeline control flow - Basic Analyses
+bypass_basic_clustermaps: False
+force_redo_basic_clustermaps: False
+bypass_basic_umap: False
+force_redo_basic_umap: False
+bypass_spatial_autocorr_calculations: False
+force_redo_spatial_autocorr_calculations: False
+bypass_spatial_autocorr_plotting: False
+force_redo_spatial_autocorr_plotting: False
+bypass_hmm_fit: False
+force_redo_hmm_fit: False
+bypass_hmm_apply: False
+force_redo_hmm_apply: False

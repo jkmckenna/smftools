@@ -18,6 +18,9 @@ aligner_args:
     - "-N"
     - "5"
 
+mod_target_bases:
+- "C"
+
 # QC Params
 duplicate_detection_site_types:
   - "any_C"
