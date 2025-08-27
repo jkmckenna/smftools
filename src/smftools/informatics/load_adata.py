@@ -330,14 +330,12 @@ def load_adata(config_path):
         preprocessed_dup_removed_version_available = os.path.exists(pp_dup_rem_adata_path)
         preprocessed_dup_removed_analyzed_I_version_available = os.path.exists(analyzed_adata_path)
 
-        if preprocessed_dup_removed_analyzed_I_version_available and not cfg.force_redo_preprocessing:
+        if preprocessed_dup_removed_analyzed_I_version_available and not cfg.force_redo_preprocessing and not cfg.force_redo_flag_duplicate_reads:
             final_adata, load_report = safe_read_h5ad(analyzed_adata_path, backup_dir=analyzed_backup_dir)
-        elif preprocessed_dup_removed_version_available and not cfg.force_redo_preprocessing:
+        elif preprocessed_dup_removed_version_available and not cfg.force_redo_preprocessing and not cfg.force_redo_flag_duplicate_reads:
             final_adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path, backup_dir=pp_dup_rem_backup_dir)
-        # Use the preprocessed version if it exists and isn't overrode.
         elif preprocessed_version_available and not cfg.force_redo_preprocessing:
             final_adata, load_report = safe_read_h5ad(pp_adata_path, backup_dir=pp_backup_dir)
-        # Load the non preprocessed anndata otherwise
         else:
             backup_dir=os.path.join(os.path.dirname(final_adata_path), 'adata_accessory_data')
             final_adata, load_report = safe_read_h5ad(final_adata_path, backup_dir=backup_dir)
@@ -362,17 +360,16 @@ def load_adata(config_path):
                                    force_redo=cfg.force_redo_add_read_length_and_mapping_qc)
 
 
-    final_adata.obs['Raw_modification_signal'] = final_adata.X.sum(axis=1)
+    final_adata.obs['Raw_modification_signal'] = np.asarray(final_adata.X.sum(axis=1)).ravel().astype(float)
 
     pp_dir = f"{split_dir}/preprocessed"
-    pp_qc_dir = f"{pp_dir}/QC_metrics"
-    pp_length_qc_dir = f"{pp_qc_dir}/01_Read_QC_metrics"
+    pp_length_qc_dir = f"{pp_dir}/01_Read_length_and_quality_QC_metrics"
 
     if os.path.isdir(pp_length_qc_dir) and not cfg.force_redo_preprocessing:
         print(pp_length_qc_dir + ' already exists. Skipping read level QC plotting.')
     else:
         from ..plotting import plot_read_qc_histograms
-        make_dirs([pp_dir, pp_qc_dir, pp_length_qc_dir])
+        make_dirs([pp_dir, pp_length_qc_dir])
         obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
         plot_read_qc_histograms(final_adata, pp_length_qc_dir, obs_to_plot, sample_key=cfg.sample_name_col_for_plotting, rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
@@ -389,7 +386,7 @@ def load_adata(config_path):
                                                          force_redo=None)
     print(final_adata.shape)
 
-    pp_length_qc_dir = f"{pp_qc_dir}/02_Read_QC_metrics_post_filtering"
+    pp_length_qc_dir = f"{pp_dir}/02_Read_length_and_quality_QC_metrics_post_filtering"
     if os.path.isdir(pp_length_qc_dir) and not cfg.force_redo_preprocessing:
         print(pp_length_qc_dir + ' already exists. Skipping read level QC plotting.')
     else:
@@ -449,14 +446,13 @@ def load_adata(config_path):
 
     ### Make a dir for outputting sample level read modification metrics before filtering ###
     pp_dir = f"{split_dir}/preprocessed"
-    pp_qc_dir = f"{pp_dir}/QC_metrics"
-    pp_meth_qc_dir = f"{pp_qc_dir}/03_read_methylation_QC"
+    pp_meth_qc_dir = f"{pp_dir}/03_read_modification_QC_metrics"
 
     if os.path.isdir(pp_meth_qc_dir) and not cfg.force_redo_preprocessing:
         print(pp_meth_qc_dir + ' already exists. Skipping read level methylation QC plotting.')
     else:
         from ..plotting import plot_read_qc_histograms
-        make_dirs([pp_dir, pp_qc_dir, pp_meth_qc_dir])
+        make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
         if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
             obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
@@ -479,13 +475,13 @@ def load_adata(config_path):
                                                           force_redo=cfg.force_redo_filter_reads_on_modification_thresholds)
 
     ## Plot post filtering read methylation metrics
-    pp_meth_qc_dir = f"{pp_qc_dir}/04_read_methylation_QC_post_filtering"
+    pp_meth_qc_dir = f"{pp_dir}/04_read_modification_QC_metrics_post_filtering"
 
     if os.path.isdir(pp_meth_qc_dir) and not cfg.force_redo_preprocessing:
         print(pp_meth_qc_dir + ' already exists. Skipping read level methylation QC plotting.')
     else:
         from ..plotting import plot_read_qc_histograms
-        make_dirs([pp_dir, pp_qc_dir, pp_meth_qc_dir])
+        make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
         if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
             obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
@@ -508,12 +504,11 @@ def load_adata(config_path):
                 var_filters_sets += [[f"{ref}_{site_type}_site", f"position_in_{ref}"]]
 
         pp_dir = f"{split_dir}/preprocessed"
-        pp_qc_dir = f"{pp_dir}/QC_metrics"
-        pp_dup_qc_dir = f"{pp_qc_dir}/06_read_duplication_QC"
+        pp_dup_qc_dir = f"{pp_dir}/05_read_duplication_QC_metrics"
 
-        make_dirs([pp_dir, pp_qc_dir, pp_dup_qc_dir])
+        make_dirs([pp_dir, pp_dup_qc_dir])
 
-        ## Will need to improve here. Should do this for each barcode and then concatenate. rather than all at once ###
+        # Flag duplicate reads and plot duplicate detection QC
         final_adata_unique, final_adata = flag_duplicate_reads(final_adata, 
                                                             var_filters_sets, 
                                                             distance_threshold=cfg.duplicate_detection_distance_threshold, 
@@ -523,11 +518,24 @@ def load_adata(config_path):
                                                             metric_keys=cfg.hamming_vs_metric_keys,
                                                             keep_best_metric='read_quality',
                                                             bypass=cfg.bypass_flag_duplicate_reads,
-                                                            force_redo=cfg.force_redo_flag_duplicate_reads)
+                                                            force_redo=cfg.force_redo_flag_duplicate_reads,
+                                                            window_size=50,
+                                                            min_overlap_positions=20,
+                                                            do_pca=False,
+                                                            pca_n_components=50,
+                                                            pca_center=True,
+                                                            do_hierarchical=True,
+                                                            hierarchical_linkage="average",
+                                                            hierarchical_metric="euclidean",
+                                                            hierarchical_window=50
+                                                            )
         
+        # Use the flagged duplicate read groups and perform complexity analysis
+        complexity_outs = os.path.join(pp_dup_qc_dir, "sample_complexity_analyses")
+        make_dirs([complexity_outs])
         calculate_complexity_II(
             adata=final_adata,
-            output_directory=pp_dup_qc_dir,
+            output_directory=complexity_outs,
             sample_col=cfg.sample_name_col_for_plotting,
             cluster_col='sequence__merged_cluster_id',
             plot=True,
@@ -569,8 +577,8 @@ def load_adata(config_path):
         references = final_adata.obs[reference_column].cat.categories
 
         pp_dir = f"{split_dir}/preprocessed"
-        pp_clustermap_dir = f"{pp_dir}/07_clustermaps"
-        pp_umap_dir = f"{pp_dir}/08_umaps"
+        pp_clustermap_dir = f"{pp_dir}/06_clustermaps"
+        pp_umap_dir = f"{pp_dir}/07_umaps"
 
         # ## Basic clustermap plotting
         if os.path.isdir(pp_clustermap_dir):
@@ -589,8 +597,8 @@ def load_adata(config_path):
                                                          cmap_cpg="viridis", 
                                                          min_quality=25, 
                                                          min_length=500, 
-                                                         min_mapped_length_to_reference_length_ratio=0.8,
-                                                         min_position_valid_fraction=0.5,
+                                                         min_mapped_length_to_reference_length_ratio=0.9,
+                                                         min_position_valid_fraction=0.8,
                                                          bins=None,
                                                          sample_mapping=None, 
                                                          save_path=pp_clustermap_dir, 
@@ -612,14 +620,14 @@ def load_adata(config_path):
             sc.tl.leiden(final_adata, resolution=0.1, flavor="igraph", n_iterations=2)
 
             # Plotting UMAP
-            save = 'umap_plot.png'
-            sc.pl.umap(final_adata, color=['leiden', cfg.sample_name_col_for_plotting], show=False, save=save)
+            sc.settings.figdir = pp_umap_dir
+            sc.pl.umap(final_adata, color=['leiden', cfg.sample_name_col_for_plotting], show=False, save=True)
 
         #### Repeat on duplicate scrubbed anndata ###
 
         pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
-        pp_clustermap_dir = f"{pp_dir}/07_clustermaps"
-        pp_umap_dir = f"{pp_dir}/08_umaps"
+        pp_clustermap_dir = f"{pp_dir}/06_clustermaps"
+        pp_umap_dir = f"{pp_dir}/07_umaps"
 
         # ## Basic clustermap plotting
         if os.path.isdir(pp_clustermap_dir):
@@ -637,6 +645,8 @@ def load_adata(config_path):
                                                          cmap_cpg="viridis", 
                                                          min_quality=25, 
                                                          min_length=500, 
+                                                         min_mapped_length_to_reference_length_ratio=0.9,
+                                                         min_position_valid_fraction=0.8,
                                                          bins=None,
                                                          sample_mapping=None, 
                                                          save_path=pp_clustermap_dir, 
@@ -658,17 +668,17 @@ def load_adata(config_path):
             sc.tl.leiden(final_adata_unique, resolution=0.1, flavor="igraph", n_iterations=2)
 
             # Plotting UMAP
-            save = 'umap_plot.png'
-            sc.pl.umap(final_adata_unique, color=['leiden', cfg.sample_name_col_for_plotting], show=False, save=save)
+            sc.settings.figdir = pp_umap_dir
+            sc.pl.umap(final_adata_unique, color=['leiden', cfg.sample_name_col_for_plotting], show=False, save=True)
 
 
     ########################################################################################################################
 
-    ############################################### Spatial autocorrelation analyses ###############################################
+    ############################################### Spatial autocorrelation analyses ########################################
     from ..tools.read_stats import binary_autocorrelation_with_spacing
     if smf_modality != 'direct':
         pp_dir = f"{split_dir}/preprocessed"
-        pp_autocorr_dir = f"{pp_dir}/09_autocorrelations"
+        pp_autocorr_dir = f"{pp_dir}/08_autocorrelations"
 
         if os.path.isdir(pp_autocorr_dir):
             print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
@@ -678,7 +688,9 @@ def load_adata(config_path):
                 X = final_adata.layers[f"{site_type}_site_binary"]
 
                 autocorr_matrix = np.array([
-                    binary_autocorrelation_with_spacing(row, positions, max_lag=cfg.autocorr_max_lag)
+                    binary_autocorrelation_with_spacing(row, 
+                                                        positions, 
+                                                        max_lag=cfg.autocorr_max_lag)
                     for row in X
                 ])
 
@@ -691,14 +703,16 @@ def load_adata(config_path):
                 from ..plotting import plot_spatial_autocorr_grid
                 make_dirs([pp_dir, pp_autocorr_dir])
 
-                plot_spatial_autocorr_grid(final_adata, pp_autocorr_dir, site_types=cfg.autocorr_site_types, 
-                                           sample_col=cfg.sample_name_col_for_plotting, window=cfg.autocorr_rolling_window_size, 
+                plot_spatial_autocorr_grid(final_adata,
+                                           pp_autocorr_dir, 
+                                           site_types=cfg.autocorr_site_types, 
+                                           sample_col=cfg.sample_name_col_for_plotting, 
+                                           window=cfg.autocorr_rolling_window_size, 
                                            rows_per_fig=cfg.rows_per_qc_autocorr_grid)
 
         #### Repeat on duplicate scrubbed anndata ###
-
         pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
-        pp_autocorr_dir = f"{pp_dir}/09_autocorrelations"
+        pp_autocorr_dir = f"{pp_dir}/08_autocorrelations"
 
         if os.path.isdir(pp_autocorr_dir):
             print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
@@ -708,7 +722,9 @@ def load_adata(config_path):
                 X = final_adata_unique.layers[f"{site_type}_site_binary"]
 
                 autocorr_matrix = np.array([
-                    binary_autocorrelation_with_spacing(row, positions, max_lag=cfg.autocorr_max_lag)
+                    binary_autocorrelation_with_spacing(row, 
+                                                        positions, 
+                                                        max_lag=cfg.autocorr_max_lag)
                     for row in X
                 ])
 
@@ -721,12 +737,90 @@ def load_adata(config_path):
                 from ..plotting import plot_spatial_autocorr_grid
                 make_dirs([pp_autocorr_dir, pp_autocorr_dir])
 
-                plot_spatial_autocorr_grid(final_adata_unique, pp_autocorr_dir, site_types=cfg.autocorr_site_types, 
-                                           sample_col=cfg.sample_name_col_for_plotting, window=cfg.autocorr_rolling_window_size, 
+                plot_spatial_autocorr_grid(final_adata_unique, 
+                                           pp_autocorr_dir, 
+                                           site_types=cfg.autocorr_site_types, 
+                                           sample_col=cfg.sample_name_col_for_plotting, 
+                                           window=cfg.autocorr_rolling_window_size, 
                                            rows_per_fig=cfg.rows_per_qc_autocorr_grid)
 
     else:
         pass
+    ########################################################################################################################
+
+    ############################################### Pearson analyses ########################################
+    if smf_modality != 'direct':
+        from ..tools.position_stats import compute_positionwise_statistics, plot_positionwise_matrices
+        pp_dir = f"{split_dir}/preprocessed"
+        pp_corr_dir = f"{pp_dir}/09_correlation_matrices"
+
+        if os.path.isdir(pp_corr_dir):
+            print(pp_corr_dir + ' already exists. Skipping correlation matrix plotting.')
+        else:
+            corr_methods = ["pearson", "binary_covariance"]
+            corr_cmaps = ["RdBu_r", "RdBu_r"]
+            compute_positionwise_statistics(
+                final_adata,
+                layer="nan0_0minus1",
+                methods=corr_methods,
+                sample_col=cfg.sample_name_col_for_plotting,
+                ref_col=reference_column,
+                output_key="positionwise_result",
+                site_types=["any_C_site"],
+                encoding="signed",
+                max_threads=cfg.threads,
+                min_pairs=10,
+            )
+        
+            plot_positionwise_matrices(
+                final_adata,
+                methods=corr_methods,
+                sample_col=cfg.sample_name_col_for_plotting,
+                ref_col=reference_column,
+                figsize_per_cell=(4.0, 3.0),
+                dpi=160,
+                cmaps=corr_cmaps,
+                vmin=None,
+                vmax=None,
+                output_dir=pp_corr_dir,
+                output_key= "positionwise_result"
+            )
+
+        pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
+        pp_corr_dir = f"{pp_dir}/09_correlation_matrices"
+
+        if os.path.isdir(pp_corr_dir):
+            print(pp_corr_dir + ' already exists. Skipping correlation matrix plotting.')
+        else:
+            corr_methods = ["pearson", "binary_covariance"]
+            corr_cmaps = ["RdBu_r", "RdBu_r"]
+            compute_positionwise_statistics(
+                final_adata,
+                layer="nan0_0minus1",
+                methods=corr_methods,
+                sample_col=cfg.sample_name_col_for_plotting,
+                ref_col=reference_column,
+                output_key="positionwise_result",
+                site_types=["any_C_site"],
+                encoding="signed",
+                max_threads=cfg.threads,
+                min_count_for_pairwise=10,
+            )
+        
+            plot_positionwise_matrices(
+                final_adata,
+                methods=corr_methods,
+                sample_col=cfg.sample_name_col_for_plotting,
+                ref_col=reference_column,
+                figsize_per_cell=(4.0, 3.0),
+                dpi=160,
+                cmaps=corr_cmaps,
+                vmin=None,
+                vmax=None,
+                output_dir=pp_corr_dir,
+                output_key= "positionwise_result"
+            )
+
     ########################################################################################################################
 
     ############################################### Save basic analysis adata ###############################################
@@ -745,6 +839,8 @@ def load_adata(config_path):
     # need to add the option here to do a per sample HMM fit/inference
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):
         from ..hmm.HMM import HMM
+        from scipy.sparse import issparse, csr_matrix
+        import warnings
 
         pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
         hmm_dir = f"{pp_dir}/10_hmm_models"
@@ -757,37 +853,100 @@ def load_adata(config_path):
         samples = final_adata.obs[cfg.sample_name_col_for_plotting].cat.categories
         references = final_adata.obs[reference_column].cat.categories
         mod_sites = mod_target_bases
+        uns_key = "hmm_appended_layers"
+
+        # ensure uns key exists (avoid KeyError later)
+        if final_adata.uns.get(uns_key) is None:
+            final_adata.uns[uns_key] = []
 
         for sample in samples:
             for ref in references:
                 mask = (final_adata.obs[cfg.sample_name_col_for_plotting] == sample) & (final_adata.obs[reference_column] == ref)
                 subset = final_adata[mask].copy()
-                if subset.shape[0] > 1:
-                    for mod_site in mod_sites:
-                        mod_label = {'C': 'any_C'}.get(mod_site, mod_site)
-                        hmm_path = os.path.join(hmm_dir, f"{sample}_{ref}_{mod_label}_hmm_model.pth")
-                        if os.path.exists(hmm_path) and not cfg.force_redo_hmm_fit:
-                            hmm = HMM.load(hmm_path)
-                        else:
-                            print(f"Fitting HMM for {sample} {ref} {mod_label}")
-                            hmm = HMM(n_states=cfg.hmm_n_states, 
-                                    init_start=cfg.hmm_init_start_probs,
-                                    init_trans=cfg.hmm_init_transition_probs,
-                                    init_emission=cfg.hmm_init_emission_probs,
-                                    smf_modality=smf_modality)
-                            
-                            hmm.fit(subset.obsm[f'{ref}_{mod_label}_site'])
-                            hmm.save(hmm_path)
+                if subset.shape[0] < 1:
+                    continue
 
-                        if not cfg.bypass_hmm_apply or cfg.force_redo_hmm_apply:
-                            print(f"Apply HMM for {sample} {ref} {mod_label}")
-                            hmm.annotate_adata(subset, 
-                                            reference_column, 
-                                            layer=None, 
-                                            footprints=True, 
-                                            accessible_patches=True, 
-                                            cpg=True, 
-                                            methbases=[mod_label])
+                for mod_site in mod_sites:
+                    mod_label = {'C': 'any_C'}.get(mod_site, mod_site)
+                    hmm_path = os.path.join(hmm_dir, f"{sample}_{ref}_{mod_label}_hmm_model.pth")
+
+                    # ensure the input obsm exists
+                    obsm_key = f'{ref}_{mod_label}_site'
+                    if obsm_key not in subset.obsm:
+                        print(f"Skipping {sample} {ref} {mod_label}: missing obsm '{obsm_key}'")
+                        continue
+
+                    # Fit or load model
+                    if os.path.exists(hmm_path) and not cfg.force_redo_hmm_fit:
+                        hmm = HMM.load(hmm_path)
+                        hmm.print_params()
+                    else:
+                        print(f"Fitting HMM for {sample} {ref} {mod_label}")
+                        hmm = HMM(
+                            n_states=cfg.hmm_n_states,
+                            init_start=cfg.hmm_init_start_probs,
+                            init_trans=cfg.hmm_init_transition_probs,
+                            init_emission=cfg.hmm_init_emission_probs,
+                            smf_modality=smf_modality,
+                        )
+                        # fit expects a list-of-seqs or 2D ndarray in the obsm
+                        seqs = subset.obsm[obsm_key]
+                        hmm.fit(seqs)
+                        hmm.print_params()
+                        hmm.save(hmm_path)
+
+                    # Apply / annotate on the subset, then copy layers back to final_adata
+                    if (not cfg.bypass_hmm_apply) or cfg.force_redo_hmm_apply:
+                        print(f"Applying HMM on subset for {sample} {ref} {mod_label}")
+                        # Use the new uns_key argument so subset will record appended layer names
+                        # (annotate_adata modifies subset.obs/layers in-place and should write subset.uns[uns_key])
+                        hmm.annotate_adata(
+                            subset,
+                            obs_column=reference_column,
+                            layer=None,
+                            footprints=True,
+                            accessible_patches=True,
+                            cpg=True,
+                            methbases=[mod_label],
+                            in_place=True,
+                            verbose=False,
+                            uns_key=uns_key,
+                        )
+
+                        # collect appended layers from subset.uns
+                        appended = list(subset.uns.get(uns_key, []))
+                        if len(appended) == 0:
+                            # nothing appended for this subset; continue
+                            continue
+
+                        # copy each appended layer into final_adata
+                        subset_mask_bool = mask.values if hasattr(mask, "values") else np.asarray(mask)
+                        for layer_name in appended:
+                            if layer_name not in subset.layers:
+                                # defensive: skip
+                                warnings.warn(f"Expected layer {layer_name} in subset but not found; skipping copy.")
+                                continue
+                            sub_layer = subset.layers[layer_name]
+                            # ensure final layer exists and assign rows
+                            try:
+                               hmm._ensure_final_layer_and_assign(final_adata, layer_name, subset_mask_bool, sub_layer)
+                            except Exception as e:
+                                warnings.warn(f"Failed to copy layer {layer_name} into final_adata: {e}", stacklevel=2)
+                                # fallback: if dense and small, try to coerce
+                                if issparse(sub_layer):
+                                    arr = sub_layer.toarray()
+                                else:
+                                    arr = np.asarray(sub_layer)
+                                final_adata.layers[layer_name] = final_adata.layers.get(layer_name, np.zeros((final_adata.shape[0], arr.shape[1]), dtype=arr.dtype))
+                                final_idx = np.nonzero(subset_mask_bool)[0]
+                                final_adata.layers[layer_name][final_idx, :] = arr
+
+                        # merge appended layer names into final_adata.uns
+                        existing = list(final_adata.uns.get(uns_key, []))
+                        for ln in appended:
+                            if ln not in existing:
+                                existing.append(ln)
+                        final_adata.uns[uns_key] = existing
 
     else:
         pass
@@ -805,7 +964,7 @@ def load_adata(config_path):
         final_adata,
         sample_col=cfg.sample_name_col_for_plotting,
         reference_col=reference_column,
-        hmm_feature_layer="any_C_large_accessible_patch",
+        hmm_feature_layer="any_C_all_accessible_features",
         layer_gpc="nan0_0minus1",
         layer_cpg="nan0_0minus1",
         layer_any_c="nan0_0minus1",
@@ -815,8 +974,8 @@ def load_adata(config_path):
         cmap_any_c='coolwarm',
         min_quality=20,
         min_length=200,
-        min_mapped_length_to_reference_length_ratio=0.8,
-        min_position_valid_fraction=0.5,
+        min_mapped_length_to_reference_length_ratio=0.9,
+        min_position_valid_fraction=0.8,
         sample_mapping=None,
         save_path=hmm_dir,
         normalize_hmm=False,
@@ -836,7 +995,7 @@ def load_adata(config_path):
         from ..plotting import plot_hmm_layers_rolling_by_sample_ref
         saved = plot_hmm_layers_rolling_by_sample_ref(
             final_adata,
-            layers=final_adata.uns['hmm_appended_layers'],   # replace with your actual layer names
+            layers=final_adata.uns['hmm_appended_layers'],
             sample_col=cfg.sample_name_col_for_plotting,
             ref_col=reference_column,
             window=101,
@@ -844,7 +1003,7 @@ def load_adata(config_path):
             figsize_per_cell=(4,2.5),
             output_dir=hmm_dir,
             save=True,
-            show_raw=True
+            show_raw=False
         )
 
     ########################################################################################################################

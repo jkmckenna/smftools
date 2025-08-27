@@ -15,18 +15,3 @@ mod_list:
 batch_size: 4 # How many mod TSVs to load into memory at a time when making anndata batches
 skip_unclassified: True # Whether to skip unclassified barcodes
 delete_batch_hdfs: True # Whether to delete intermediate barcode level hdfs after making final anndata
-aligner_args:
-  minimap2:
-    - '-a'
-    - '-x'
-    - 'map-ont'
-    - '--MD'
-    - '-Y' 
-    - '-y'
-    - '-N'
-    - '5'
-    - '--secondary=no' 
-  dorado:
-    - "--mm2-opts"
-    - "-N"
-    - "5"

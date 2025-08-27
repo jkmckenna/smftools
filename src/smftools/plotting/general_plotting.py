@@ -63,11 +63,11 @@ def combined_hmm_raw_clustermap(
                     (adata.obs[sample_col] == sample) &
                     (adata.obs['read_quality'] >= min_quality) &
                     (adata.obs['read_length'] >= min_length) &
-                    (adata.obs[f'Raw_{signal_type}_signal'] >= min_signal) &
                     (adata.obs['mapped_length_to_reference_length_ratio'] > min_mapped_length_to_reference_length_ratio)
                 ]
                 
-                subset = subset[:, subset.var[adata.var[f'{ref}_valid_fraction']] > min_position_valid_fraction]
+                mask = subset.var[f"{ref}_valid_fraction"].astype(float) > float(min_position_valid_fraction)
+                subset = subset[:, mask]
 
                 if subset.shape[0] == 0:
                     print(f"  No reads left after filtering for {sample} - {ref}")
@@ -83,7 +83,7 @@ def combined_hmm_raw_clustermap(
                 # Get column positions (not var_names!) of site masks
                 gpc_sites = np.where(subset.var[f"{ref}_GpC_site"].values)[0]
                 cpg_sites = np.where(subset.var[f"{ref}_CpG_site"].values)[0]
-                any_c_sites = np.where(subset.var[f"{ref}_CpG_site"].values)[0]
+                any_c_sites = np.where(subset.var[f"{ref}_any_C_site"].values)[0]
                 num_gpc = len(gpc_sites)
                 num_cpg = len(cpg_sites)
                 num_c = len(any_c_sites)
@@ -94,7 +94,7 @@ def combined_hmm_raw_clustermap(
                 cpg_labels = subset.var_names[cpg_sites].astype(int)
                 any_c_labels = subset.var_names[any_c_sites].astype(int)
 
-                stacked_hmm_feature, stacked_gpc, stacked_cpg, stacked_any_c = [], [], []
+                stacked_hmm_feature, stacked_gpc, stacked_cpg, stacked_any_c = [], [], [], []
                 row_labels, bin_labels = [], []
                 bin_boundaries = []
 
@@ -170,13 +170,13 @@ def combined_hmm_raw_clustermap(
                         gs = gridspec.GridSpec(2, 4, height_ratios=[1, 6], hspace=0.01)
                         fig.suptitle(f"{sample} - {ref}", fontsize=14, y=0.95)
 
-                        axes_heat = [fig.add_subplot(gs[1, i]) for i in range(3)]
-                        axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(3)]
+                        axes_heat = [fig.add_subplot(gs[1, i]) for i in range(4)]
+                        axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(4)]
 
                         clean_barplot(axes_bar[0], mean_hmm, f"{hmm_feature_layer} HMM Features")
                         clean_barplot(axes_bar[1], mean_gpc, f"GpC Accessibility Signal")
                         clean_barplot(axes_bar[2], mean_cpg, f"CpG Accessibility Signal")
-                        clean_barplot(axes_bar[3], mean_cpg, f"Any C Accessibility Signal")
+                        clean_barplot(axes_bar[3], mean_any_c, f"Any C Accessibility Signal")
                         
                         hmm_labels = subset.var_names.astype(int)
                         hmm_label_spacing = 150
@@ -197,7 +197,7 @@ def combined_hmm_raw_clustermap(
                         for boundary in bin_boundaries[:-1]:
                             axes_heat[2].axhline(y=boundary, color="black", linewidth=2)
 
-                        sns.heatmap(any_c_matrix, cmap=cmap_any_c, ax=axes_heat[1], xticklabels=any_c_labels[::20], yticklabels=False, cbar=False)
+                        sns.heatmap(any_c_matrix, cmap=cmap_any_c, ax=axes_heat[3], xticklabels=any_c_labels[::20], yticklabels=False, cbar=False)
                         axes_heat[3].set_xticks(range(0, len(any_c_labels), 20))
                         axes_heat[3].set_xticklabels(any_c_labels[::20], rotation=90, fontsize=10)
                         for boundary in bin_boundaries[:-1]:
@@ -281,8 +281,9 @@ def combined_raw_clustermap(
                     (adata.obs['mapped_length'] >= min_length) &
                     (adata.obs['mapped_length_to_reference_length_ratio'] >= min_mapped_length_to_reference_length_ratio)
                 ]
-                
-                subset = subset[:, subset.var[adata.var[f'{ref}_valid_fraction']] > min_position_valid_fraction]
+
+                mask = subset.var[f"{ref}_valid_fraction"].astype(float) > float(min_position_valid_fraction)
+                subset = subset[:, mask]
 
                 if subset.shape[0] == 0:
                     print(f"  No reads left after filtering for {sample} - {ref}")
@@ -377,14 +378,14 @@ def combined_raw_clustermap(
 
                         fig = plt.figure(figsize=(18, 12))
                         gs = gridspec.GridSpec(2, 3, height_ratios=[1, 6], hspace=0.01)
-                        fig.suptitle(f"{sample} - {ref}", fontsize=14, y=0.95)
+                        fig.suptitle(f"{sample} - {ref} - {total_reads} reads", fontsize=14, y=0.95)
 
                         axes_heat = [fig.add_subplot(gs[1, i]) for i in range(3)]
                         axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(3)]
 
-                        clean_barplot(axes_bar[0], mean_any_c, f"any C site Accessibility Signal")
-                        clean_barplot(axes_bar[1], mean_gpc, f"GpC Accessibility Signal")
-                        clean_barplot(axes_bar[2], mean_cpg, f"CpG Accessibility Signal")
+                        clean_barplot(axes_bar[0], mean_any_c, f"any C site Modification Signal")
+                        clean_barplot(axes_bar[1], mean_gpc, f"GpC Modification Signal")
+                        clean_barplot(axes_bar[2], mean_cpg, f"CpG Modification Signal")
                         
 
                         sns.heatmap(any_c_matrix, cmap=cmap_any_c, ax=axes_heat[0], xticklabels=any_c_labels[::20], yticklabels=False, cbar=False)

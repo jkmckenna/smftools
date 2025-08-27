@@ -1,3 +1,4 @@
+# duplicate_detection_with_hier_and_plots.py
 import copy
 import warnings
 import math
@@ -12,23 +13,35 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-# optional imports
+from ..informatics.helpers import make_dirs
+
+# optional imports for clustering / PCA / KDE
+try:
+    from scipy.cluster import hierarchy as sch
+    from scipy.spatial.distance import pdist, squareform
+    SCIPY_AVAILABLE = True
+except Exception:
+    sch = None
+    pdist = None
+    squareform = None
+    SCIPY_AVAILABLE = False
+
+try:
+    from sklearn.decomposition import PCA
+    from sklearn.cluster import KMeans, DBSCAN
+    from sklearn.mixture import GaussianMixture
+    from sklearn.metrics import silhouette_score
+    SKLEARN_AVAILABLE = True
+except Exception:
+    PCA = None
+    KMeans = DBSCAN = GaussianMixture = silhouette_score = None
+    SKLEARN_AVAILABLE = False
+
 try:
     from scipy.stats import gaussian_kde
 except Exception:
     gaussian_kde = None
 
-try:
-    import hdbscan
-except Exception:
-    hdbscan = None
-
-try:
-    from sklearn.cluster import KMeans, DBSCAN
-    from sklearn.mixture import GaussianMixture
-    from sklearn.metrics import silhouette_score
-except Exception:
-    KMeans = DBSCAN = GaussianMixture = silhouette_score = None
 
 def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
     """
@@ -57,44 +70,55 @@ def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
     return out
 
 def flag_duplicate_reads(
-    adata, 
-    var_filters_sets, 
-    distance_threshold=0.05, 
-    obs_reference_col='Reference_strand', 
-    sample_col='Barcode',
-    output_directory=None,
-    metric_keys=["Fraction_any_C_site_modified"],
-    uns_flag="read_duplicate_detection_performed",
-    uns_filtered_flag="read_duplicates_removed",
-    bypass=False,
-    force_redo=True,
-    keep_best_metric: Optional[str] = None,
+    adata,
+    var_filters_sets,
+    distance_threshold: float = 0.12,
+    obs_reference_col: str = "Reference_strand",
+    sample_col: str = "Barcode",
+    output_directory: Optional[str] = None,
+    metric_keys: Union[str, List[str]] = ("Fraction_any_C_site_modified",),
+    uns_flag: str = "read_duplicate_detection_performed",
+    uns_filtered_flag: str = "read_duplicates_removed",
+    bypass: bool = False,
+    force_redo: bool = False,
+    keep_best_metric: Optional[str] = 'read_quality',
     keep_best_higher: bool = True,
     window_size: int = 50,
+    min_overlap_positions: int = 20,
+    do_pca: bool = False,
+    pca_n_components: int = 50,
+    pca_center: bool = True,
+    do_hierarchical: bool = True,
+    hierarchical_linkage: str = "average",
+    hierarchical_metric: str = "euclidean",
+    hierarchical_window: int = 50,
+    random_state: int = 0,
 ):
     """
-    Duplicate-flagging pipeline.
+    Duplicate-flagging pipeline where hierarchical stage operates only on representatives
+    (one representative per lex cluster, i.e. the keeper). Final keeper assignment and
+    enforcement happens only after hierarchical merging.
 
-    Notable behavior changes / guarantees:
-      - sequence-derived columns are written with a 'sequence__' prefix (sequence__is_duplicate, sequence__merged_cluster_id, sequence__cluster_size)
-      - window_size is passed into the sorted-neighborhood `cluster_pass`.
-      - keep_best_metric selects the keeper in each union-find cluster (if present); otherwise first member kept.
-      - plotting (hamming_vs_metric) is performed on the merged adata_full so columns exist for plotting.
+    Returns (adata_unique, adata_full) as before; writes sequence__* columns into adata.obs.
     """
     # early exits
     already = bool(adata.uns.get(uns_flag, False))
     if (already and not force_redo):
-        if 'is_duplicate' in adata.obs.columns:
-            adata_unique = adata[adata.obs['is_duplicate'] == False].copy()
+        if "is_duplicate" in adata.obs.columns:
+            adata_unique = adata[adata.obs["is_duplicate"] == False].copy()
             return adata_unique, adata
         else:
             return adata.copy(), adata.copy()
     if bypass:
         return None, adata
 
+    if isinstance(metric_keys, str):
+        metric_keys = [metric_keys]
+
+    # local UnionFind
     class UnionFind:
         def __init__(self, size):
-            self.parent = torch.arange(size)
+            self.parent = list(range(size))
 
         def find(self, x):
             while self.parent[x] != x:
@@ -110,120 +134,154 @@ def flag_duplicate_reads(
     adata_processed_list = []
     histograms = []
 
-    samples = adata.obs[sample_col].astype('category').cat.categories
-    references = adata.obs[obs_reference_col].astype('category').cat.categories
+    samples = adata.obs[sample_col].astype("category").cat.categories
+    references = adata.obs[obs_reference_col].astype("category").cat.categories
 
     for sample in samples:
         for ref in references:
-            print(f'Processing {sample} on {ref}')
+            print(f"Processing sample={sample} ref={ref}")
             sample_mask = adata.obs[sample_col] == sample
             ref_mask = adata.obs[obs_reference_col] == ref
             subset_mask = sample_mask & ref_mask
             adata_subset = adata[subset_mask].copy()
 
             if adata_subset.n_obs < 2:
-                print(f'Skipping {sample}_{ref} (too few reads)')
+                print(f"  Skipping {sample}_{ref} (too few reads)")
                 continue
 
             N = adata_subset.shape[0]
-            combined_mask = torch.zeros(len(adata.var), dtype=torch.bool)
 
+            # Build mask of columns (vars) to use
+            combined_mask = np.zeros(len(adata.var), dtype=bool)
             for var_set in var_filters_sets:
-                if any(ref in v for v in var_set):
-                    set_mask = torch.ones(len(adata.var), dtype=torch.bool)
+                if any(str(ref) in str(v) for v in var_set):
+                    per_col_mask = np.ones(len(adata.var), dtype=bool)
                     for key in var_set:
-                        set_mask &= torch.from_numpy(adata.var[key].values)
-                    combined_mask |= set_mask
+                        per_col_mask &= np.asarray(adata.var[key].values, dtype=bool)
+                    combined_mask |= per_col_mask
 
-            selected_cols = adata.var.index[combined_mask.numpy()].to_list()
-            col_indices = [adata.var.index.get_loc(col) for col in selected_cols]
-            print(f"Selected {len(col_indices)} columns out of {adata.var.shape[0]} for {ref}")
+            selected_cols = adata.var.index[combined_mask.tolist()].to_list()
+            col_indices = [adata.var.index.get_loc(c) for c in selected_cols]
+            print(f"  Selected {len(col_indices)} columns out of {adata.var.shape[0]} for {ref}")
 
+            # Extract data matrix (dense numpy) for the subset
             X = adata_subset.X
             if not isinstance(X, np.ndarray):
-                X = X.toarray()
-            X_tensor = torch.from_numpy(X[:, col_indices].astype(np.float32))
+                try:
+                    X = X.toarray()
+                except Exception:
+                    X = np.asarray(X)
+            X_sub = X[:, col_indices].astype(float)  # keep NaNs
 
-            fwd_hamming_to_next = torch.full((N,), float('nan'))
-            rev_hamming_to_prev = torch.full((N,), float('nan'))
+            # convert to torch for some vector ops
+            X_tensor = torch.from_numpy(X_sub.copy())
 
+            # per-read nearest distances recorded
+            fwd_hamming_to_next = np.full((N,), np.nan, dtype=float)
+            rev_hamming_to_prev = np.full((N,), np.nan, dtype=float)
+            hierarchical_min_pair = np.full((N,), np.nan, dtype=float)
+
+            # legacy local lexographic pairwise hamming distances (for histogram)
             local_hamming_dists = []
+            # hierarchical discovered dists (for histogram)
+            hierarchical_found_dists = []
 
-            def cluster_pass(X_tensor_local, reverse=False, window_size=window_size, record_distances=False):
+            # Lexicographic windowed pass function
+            def cluster_pass(X_tensor_local, reverse=False, window=int(window_size), record_distances=False):
                 N_local = X_tensor_local.shape[0]
-                X_sortable = X_tensor_local.nan_to_num(-1)
-                sort_keys = X_sortable.tolist()
+                X_sortable = X_tensor_local.clone().nan_to_num(-1.0)
+                sort_keys = [tuple(row.numpy().tolist()) for row in X_sortable]
                 sorted_idx = sorted(range(N_local), key=lambda i: sort_keys[i], reverse=reverse)
                 sorted_X = X_tensor_local[sorted_idx]
                 cluster_pairs_local = []
 
-                for i in tqdm(range(len(sorted_X)), desc=f"Pass {'rev' if reverse else 'fwd'} ({sample}_{ref})"):
+                for i in range(len(sorted_X)):
                     row_i = sorted_X[i]
-                    j_range = range(i + 1, min(i + 1 + window_size, len(sorted_X)))
-                    if len(j_range) > 0:
-                        row_i_exp = row_i.unsqueeze(0)
-                        block_rows = sorted_X[j_range]
-                        valid_mask = (~torch.isnan(row_i_exp)) & (~torch.isnan(block_rows))
-                        valid_counts = valid_mask.sum(dim=1)
+                    j_range_local = range(i + 1, min(i + 1 + window, len(sorted_X)))
+                    if len(j_range_local) == 0:
+                        continue
+                    block_rows = sorted_X[list(j_range_local)]
+                    row_i_exp = row_i.unsqueeze(0)  # (1, D)
+                    valid_mask = (~torch.isnan(row_i_exp)) & (~torch.isnan(block_rows))  # (M, D)
+                    valid_counts = valid_mask.sum(dim=1).float()
+                    enough_overlap = valid_counts >= float(min_overlap_positions)
+                    if enough_overlap.any():
                         diffs = (row_i_exp != block_rows) & valid_mask
-                        hamming_dists = diffs.sum(dim=1) / valid_counts.clamp(min=1)
-                        local_hamming_dists.extend(hamming_dists.cpu().numpy().tolist())
-
-                        matches = (hamming_dists < distance_threshold) & (valid_counts > 0)
-                        for offset_idx, m in zip(j_range, matches):
+                        hamming_counts = diffs.sum(dim=1).float()
+                        hamming_dists = torch.where(valid_counts > 0, hamming_counts / valid_counts, torch.tensor(float("nan")))
+                        # record distances (legacy list of all local comparisons)
+                        hamming_np = hamming_dists.cpu().numpy().tolist()
+                        local_hamming_dists.extend([float(x) for x in hamming_np if (not np.isnan(x))])
+                        matches = (hamming_dists < distance_threshold) & (enough_overlap)
+                        for offset_local, m in enumerate(matches):
                             if m:
-                                cluster_pairs_local.append((sorted_idx[i], sorted_idx[offset_idx]))
-
-                        if record_distances and i + 1 < len(sorted_X):
-                            next_idx = sorted_idx[i + 1]
-                            valid_mask_pair = (~torch.isnan(row_i)) & (~torch.isnan(sorted_X[i + 1]))
-                            if valid_mask_pair.sum() > 0:
-                                d = (row_i[valid_mask_pair] != sorted_X[i + 1][valid_mask_pair]).sum()
-                                norm_d = d.item() / valid_mask_pair.sum().item()
-                                if reverse:
-                                    rev_hamming_to_prev[next_idx] = norm_d
-                                else:
-                                    fwd_hamming_to_next[sorted_idx[i]] = norm_d
+                                i_global = sorted_idx[i]
+                                j_global = sorted_idx[i + 1 + offset_local]
+                                cluster_pairs_local.append((i_global, j_global))
+                        if record_distances:
+                            # record next neighbor distance for the item (global index)
+                            next_local_idx = i + 1
+                            if next_local_idx < len(sorted_X):
+                                next_global = sorted_idx[next_local_idx]
+                                vm_pair = (~torch.isnan(row_i)) & (~torch.isnan(sorted_X[next_local_idx]))
+                                vc = vm_pair.sum().item()
+                                if vc >= min_overlap_positions:
+                                    d = float(((row_i[vm_pair] != sorted_X[next_local_idx][vm_pair]).sum().item()) / vc)
+                                    if reverse:
+                                        rev_hamming_to_prev[next_global] = d
+                                    else:
+                                        fwd_hamming_to_next[sorted_idx[i]] = d
                 return cluster_pairs_local
 
+            # run forward pass
             pairs_fwd = cluster_pass(X_tensor, reverse=False, record_distances=True)
-            involved_in_fwd = set([p[0] for p in pairs_fwd] + [p[1] for p in pairs_fwd])
-            mask_for_rev = torch.ones(N, dtype=torch.bool)
+            involved_in_fwd = set([p for pair in pairs_fwd for p in pair])
+            # build mask for reverse pass to avoid re-checking items already paired
+            mask_for_rev = np.ones(N, dtype=bool)
             if len(involved_in_fwd) > 0:
-                mask_for_rev[list(involved_in_fwd)] = False
-            pairs_rev = cluster_pass(X_tensor[mask_for_rev], reverse=True, record_distances=True)
+                for idx in involved_in_fwd:
+                    mask_for_rev[idx] = False
+            rev_idx_map = np.nonzero(mask_for_rev)[0].tolist()
+            if len(rev_idx_map) > 0:
+                reduced_tensor = X_tensor[rev_idx_map]
+                pairs_rev_local = cluster_pass(reduced_tensor, reverse=True, record_distances=True)
+                # remap local reduced indices to global
+                remapped_rev_pairs = [(int(rev_idx_map[i]), int(rev_idx_map[j])) for (i, j) in pairs_rev_local]
+            else:
+                remapped_rev_pairs = []
 
-            reverse_idx_map = mask_for_rev.nonzero(as_tuple=True)[0]
-            remapped_rev_pairs = [(int(reverse_idx_map[i].item()), int(reverse_idx_map[j].item())) for (i, j) in pairs_rev]
             all_pairs = pairs_fwd + remapped_rev_pairs
 
+            # initial union-find based on lex pairs
             uf = UnionFind(N)
             for i, j in all_pairs:
                 uf.union(i, j)
 
-            merged_cluster = torch.zeros(N, dtype=torch.long)
+            # initial merged clusters (lex-level)
+            merged_cluster = np.zeros((N,), dtype=int)
             for i in range(N):
                 merged_cluster[i] = uf.find(i)
+            unique_initial = np.unique(merged_cluster)
+            id_map = {old: new for new, old in enumerate(sorted(unique_initial.tolist()))}
+            merged_cluster_mapped = np.array([id_map[int(x)] for x in merged_cluster], dtype=int)
 
-            cluster_sizes = torch.zeros_like(merged_cluster)
+            # cluster sizes and choose lex-keeper per lex-cluster (representatives)
+            cluster_sizes = np.zeros_like(merged_cluster_mapped)
             cluster_counts = []
-            for cid in merged_cluster.unique():
-                members = (merged_cluster == cid).nonzero(as_tuple=True)[0]
+            unique_clusters = np.unique(merged_cluster_mapped)
+            keeper_for_cluster = {}
+            for cid in unique_clusters:
+                members = np.where(merged_cluster_mapped == cid)[0].tolist()
                 csize = int(len(members))
                 cluster_counts.append(csize)
                 cluster_sizes[members] = csize
-
-            # sequence-prefixed outputs so provenance is clear
-            sequence_is_duplicate = torch.zeros(N, dtype=torch.bool)
-            for cid in merged_cluster.unique():
-                members_tensor = (merged_cluster == cid).nonzero(as_tuple=True)[0]
-                members = members_tensor.tolist()
-                if len(members) > 1:
-                    # choose keeper
+                # pick lex keeper (representative)
+                if len(members) == 1:
+                    keeper_for_cluster[cid] = members[0]
+                else:
                     if keep_best_metric is None:
-                        keeper_idx = members[0]
+                        keeper_for_cluster[cid] = members[0]
                     else:
-                        # build member obs names
                         obs_index = list(adata_subset.obs.index)
                         member_names = [obs_index[m] for m in members]
                         try:
@@ -231,7 +289,7 @@ def flag_duplicate_reads(
                         except Exception:
                             vals = np.array([np.nan] * len(members), dtype=float)
                         if np.all(np.isnan(vals)):
-                            keeper_idx = members[0]
+                            keeper_for_cluster[cid] = members[0]
                         else:
                             if keep_best_higher:
                                 nan_mask = np.isnan(vals)
@@ -241,62 +299,245 @@ def flag_duplicate_reads(
                                 nan_mask = np.isnan(vals)
                                 vals[nan_mask] = np.inf
                                 rel_idx = int(np.nanargmin(vals))
-                            keeper_idx = members[rel_idx]
-                    others = [m for m in members if m != keeper_idx]
-                    if others:
-                        sequence_is_duplicate[others] = True
+                            keeper_for_cluster[cid] = members[rel_idx]
 
-            # write sequence-prefixed columns
-            adata_subset.obs['sequence__is_duplicate'] = sequence_is_duplicate.numpy()
-            adata_subset.obs['sequence__merged_cluster_id'] = merged_cluster.numpy()
-            adata_subset.obs['sequence__cluster_size'] = cluster_sizes.numpy()
-            adata_subset.obs['fwd_hamming_to_next'] = fwd_hamming_to_next.numpy()
-            adata_subset.obs['rev_hamming_to_prev'] = rev_hamming_to_prev.numpy()
+            # expose lex keeper info (record only; do not enforce deletion yet)
+            lex_is_keeper = np.zeros((N,), dtype=bool)
+            lex_is_duplicate = np.zeros((N,), dtype=bool)
+            for cid, members in zip(unique_clusters, [np.where(merged_cluster_mapped == cid)[0].tolist() for cid in unique_clusters]):
+                keeper_idx = keeper_for_cluster[cid]
+                lex_is_keeper[keeper_idx] = True
+                for m in members:
+                    if m != keeper_idx:
+                        lex_is_duplicate[m] = True
+            # note: these are just recorded for inspection / later preference
+            # and will be written to adata_subset.obs below
+            # record lex min pair (min of fwd/rev neighbor) for each read
+            min_pair = np.full((N,), np.nan, dtype=float)
+            for i in range(N):
+                a = fwd_hamming_to_next[i]
+                b = rev_hamming_to_prev[i]
+                vals = []
+                if not np.isnan(a):
+                    vals.append(a)
+                if not np.isnan(b):
+                    vals.append(b)
+                if vals:
+                    min_pair[i] = float(np.nanmin(vals))
+
+            # --- hierarchical on representatives only ---
+            hierarchical_pairs = []  # (rep_global_i, rep_global_j, d)
+            rep_global_indices = sorted(set(keeper_for_cluster.values()))
+            if do_hierarchical and len(rep_global_indices) > 1:
+                if not SKLEARN_AVAILABLE:
+                    warnings.warn("sklearn not available; skipping PCA/hierarchical pass.")
+                elif not SCIPY_AVAILABLE:
+                    warnings.warn("scipy not available; skipping hierarchical pass.")
+                else:
+                    # build reps array and impute for PCA
+                    reps_X = X_sub[rep_global_indices, :]
+                    reps_arr = np.array(reps_X, dtype=float, copy=True)
+                    col_means = np.nanmean(reps_arr, axis=0)
+                    col_means = np.where(np.isnan(col_means), 0.0, col_means)
+                    inds = np.where(np.isnan(reps_arr))
+                    if inds[0].size > 0:
+                        reps_arr[inds] = np.take(col_means, inds[1])
+
+                    # PCA if requested
+                    if do_pca and PCA is not None:
+                        n_comp = min(int(pca_n_components), reps_arr.shape[1], reps_arr.shape[0])
+                        if n_comp <= 0:
+                            reps_for_clustering = reps_arr
+                        else:
+                            pca = PCA(n_components=n_comp, random_state=int(random_state), svd_solver="auto", copy=True)
+                            reps_for_clustering = pca.fit_transform(reps_arr)
+                    else:
+                        reps_for_clustering = reps_arr
+
+                    # linkage & leaves (ordering)
+                    try:
+                        pdist_vec = pdist(reps_for_clustering, metric=hierarchical_metric)
+                        Z = sch.linkage(pdist_vec, method=hierarchical_linkage)
+                        leaves = sch.leaves_list(Z)
+                    except Exception as e:
+                        warnings.warn(f"hierarchical pass failed: {e}; skipping hierarchical stage.")
+                        leaves = np.arange(len(rep_global_indices), dtype=int)
+
+                    # apply windowed hamming comparisons across ordered reps and union via same UF (so clusters of all reads merge)
+                    order_global_reps = [rep_global_indices[i] for i in leaves]
+                    n_reps = len(order_global_reps)
+                    for pos in range(n_reps):
+                        i_global = order_global_reps[pos]
+                        for jpos in range(pos + 1, min(pos + 1 + hierarchical_window, n_reps)):
+                            j_global = order_global_reps[jpos]
+                            vi = X_sub[int(i_global), :]
+                            vj = X_sub[int(j_global), :]
+                            valid_mask = (~np.isnan(vi)) & (~np.isnan(vj))
+                            overlap = int(valid_mask.sum())
+                            if overlap < min_overlap_positions:
+                                continue
+                            diffs = (vi[valid_mask] != vj[valid_mask]).sum()
+                            d = float(diffs) / float(overlap)
+                            if d < distance_threshold:
+                                uf.union(int(i_global), int(j_global))
+                                hierarchical_pairs.append((int(i_global), int(j_global), float(d)))
+                                hierarchical_found_dists.append(float(d))
+
+            # after hierarchical unions, reconstruct merged clusters for all reads
+            merged_cluster_after = np.zeros((N,), dtype=int)
+            for i in range(N):
+                merged_cluster_after[i] = uf.find(i)
+            unique_final = np.unique(merged_cluster_after)
+            id_map_final = {old: new for new, old in enumerate(sorted(unique_final.tolist()))}
+            merged_cluster_mapped_final = np.array([id_map_final[int(x)] for x in merged_cluster_after], dtype=int)
+
+            # compute final cluster members and choose final keeper per final cluster
+            cluster_sizes_final = np.zeros_like(merged_cluster_mapped_final)
+            final_cluster_counts = []
+            final_unique = np.unique(merged_cluster_mapped_final)
+            final_keeper_for_cluster = {}
+            cluster_members_map = {}
+            for cid in final_unique:
+                members = np.where(merged_cluster_mapped_final == cid)[0].tolist()
+                cluster_members_map[cid] = members
+                csize = len(members)
+                final_cluster_counts.append(csize)
+                cluster_sizes_final[members] = csize
+                if csize == 1:
+                    final_keeper_for_cluster[cid] = members[0]
+                else:
+                    # prefer keep_best_metric if available; do not automatically prefer lex-keeper here unless you want to;
+                    # (user previously asked for preferring lex keepers — if desired, you can prefer lex_is_keeper among members)
+                    obs_index = list(adata_subset.obs.index)
+                    member_names = [obs_index[m] for m in members]
+                    if keep_best_metric is not None and keep_best_metric in adata_subset.obs.columns:
+                        try:
+                            vals = pd.to_numeric(adata_subset.obs.loc[member_names, keep_best_metric], errors="coerce").to_numpy(dtype=float)
+                        except Exception:
+                            vals = np.array([np.nan] * len(members), dtype=float)
+                        if np.all(np.isnan(vals)):
+                            final_keeper_for_cluster[cid] = members[0]
+                        else:
+                            if keep_best_higher:
+                                nan_mask = np.isnan(vals)
+                                vals[nan_mask] = -np.inf
+                                rel_idx = int(np.nanargmax(vals))
+                            else:
+                                nan_mask = np.isnan(vals)
+                                vals[nan_mask] = np.inf
+                                rel_idx = int(np.nanargmin(vals))
+                            final_keeper_for_cluster[cid] = members[rel_idx]
+                    else:
+                        # if lex keepers present among members, prefer them
+                        lex_members = [m for m in members if lex_is_keeper[m]]
+                        if len(lex_members) > 0:
+                            final_keeper_for_cluster[cid] = lex_members[0]
+                        else:
+                            final_keeper_for_cluster[cid] = members[0]
+
+            # update sequence__is_duplicate based on final clusters: non-keepers in multi-member clusters are duplicates
+            sequence_is_duplicate = np.zeros((N,), dtype=bool)
+            for cid in final_unique:
+                keeper = final_keeper_for_cluster[cid]
+                members = cluster_members_map[cid]
+                if len(members) > 1:
+                    for m in members:
+                        if m != keeper:
+                            sequence_is_duplicate[m] = True
+
+            # propagate hierarchical distances into hierarchical_min_pair for all cluster members
+            for (i_g, j_g, d) in hierarchical_pairs:
+                # identify their final cluster ids (after unions)
+                c_i = merged_cluster_mapped_final[int(i_g)]
+                c_j = merged_cluster_mapped_final[int(j_g)]
+                members_i = cluster_members_map.get(c_i, [int(i_g)])
+                members_j = cluster_members_map.get(c_j, [int(j_g)])
+                for mi in members_i:
+                    if np.isnan(hierarchical_min_pair[mi]) or (d < hierarchical_min_pair[mi]):
+                        hierarchical_min_pair[mi] = d
+                for mj in members_j:
+                    if np.isnan(hierarchical_min_pair[mj]) or (d < hierarchical_min_pair[mj]):
+                        hierarchical_min_pair[mj] = d
+
+            # combine lex-phase min_pair and hierarchical_min_pair into the final sequence__min_hamming_to_pair
+            combined_min = min_pair.copy()
+            for i in range(N):
+                hval = hierarchical_min_pair[i]
+                if not np.isnan(hval):
+                    if np.isnan(combined_min[i]) or (hval < combined_min[i]):
+                        combined_min[i] = hval
+
+            # write columns back into adata_subset.obs
+            adata_subset.obs["sequence__is_duplicate"] = sequence_is_duplicate
+            adata_subset.obs["sequence__merged_cluster_id"] = merged_cluster_mapped_final
+            adata_subset.obs["sequence__cluster_size"] = cluster_sizes_final
+            adata_subset.obs["fwd_hamming_to_next"] = fwd_hamming_to_next
+            adata_subset.obs["rev_hamming_to_prev"] = rev_hamming_to_prev
+            adata_subset.obs["sequence__hier_hamming_to_pair"] = hierarchical_min_pair
+            adata_subset.obs["sequence__min_hamming_to_pair"] = combined_min
+            # persist lex bookkeeping columns (informational)
+            adata_subset.obs["sequence__lex_is_keeper"] = lex_is_keeper
+            adata_subset.obs["sequence__lex_is_duplicate"] = lex_is_duplicate
 
             adata_processed_list.append(adata_subset)
 
             histograms.append({
                 "sample": sample,
                 "reference": ref,
-                "distances": local_hamming_dists,
-                "cluster_counts": cluster_counts,
+                "distances": local_hamming_dists,            # lex local comparisons
+                "cluster_counts": final_cluster_counts,
+                "hierarchical_pairs": hierarchical_found_dists,
             })
 
     # Merge annotated subsets back together BEFORE plotting so plotting sees fwd_hamming_to_next, etc.
     _original_uns = copy.deepcopy(adata.uns)
+    if len(adata_processed_list) == 0:
+        return adata.copy(), adata.copy()
+
     adata_full = ad.concat(adata_processed_list, merge="same", join="outer", index_unique=None)
     adata_full.uns = merge_uns_preserve(_original_uns, adata_full.uns, prefer="orig")
 
     # Ensure expected numeric columns exist (create if missing)
-    for col in ("fwd_hamming_to_next", "rev_hamming_to_prev"):
+    for col in ("fwd_hamming_to_next", "rev_hamming_to_prev", "sequence__min_hamming_to_pair", "sequence__hier_hamming_to_pair"):
         if col not in adata_full.obs.columns:
             adata_full.obs[col] = np.nan
 
-    # produce histogram pages (distance + cluster-size)
-    saved_histograms_map = plot_histogram_pages(histograms, distance_threshold=distance_threshold, output_directory=output_directory)
+    # histograms (now driven by adata_full if requested)
+    hist_outs = os.path.join(output_directory, "read_pair_hamming_distance_histograms")
+    make_dirs([hist_outs])
+    plot_histogram_pages(histograms, 
+                         distance_threshold=distance_threshold, 
+                         adata=adata_full, 
+                         output_directory=hist_outs,
+                         distance_types=["min","fwd","rev","hier","lex_local"],
+                         sample_key=sample_col,
+                         )
 
-    # produce hamming vs metric scatter + clusters and write cluster columns into adata_full.obs
-    scatter_saved = plot_hamming_vs_metric_pages(
-        adata_full,
-        metric_keys=metric_keys,
-        sample_col=sample_col,
-        ref_col=obs_reference_col,
-        hamming_col="fwd_hamming_to_next",
-        rows_per_fig=6,
-        output_dir=output_directory,
-        kde=True,
-        contour=True,
-        clustering={"method":"gmm","dbscan_eps":0.05,"dbscan_min_samples":6,"min_points":8,"cmap":"tab10","hull":True},
-        write_clusters_to_adata=False
-    )
+    # hamming vs metric scatter
+    scatter_outs = os.path.join(output_directory, "read_pair_hamming_distance_scatter_plots")
+    make_dirs([scatter_outs])
+    plot_hamming_vs_metric_pages(adata_full, 
+                                 metric_keys=metric_keys, 
+                                 output_dir=scatter_outs,
+                                hamming_col="sequence__min_hamming_to_pair",
+                                highlight_threshold=distance_threshold, 
+                                highlight_color="red",
+                                sample_col=sample_col)
 
-    # Mark duplicates: distance-threshold and hamming-vs-metric cluster columns
-    fwd_vals = pd.to_numeric(adata_full.obs["fwd_hamming_to_next"], errors="coerce")
-    rev_vals = pd.to_numeric(adata_full.obs["rev_hamming_to_prev"], errors="coerce")
+    # boolean columns from neighbor distances
+    fwd_vals = pd.to_numeric(adata_full.obs.get("fwd_hamming_to_next", pd.Series(np.nan, index=adata_full.obs.index)), errors="coerce")
+    rev_vals = pd.to_numeric(adata_full.obs.get("rev_hamming_to_prev", pd.Series(np.nan, index=adata_full.obs.index)), errors="coerce")
     is_dup_dist = (fwd_vals < float(distance_threshold)) | (rev_vals < float(distance_threshold))
     is_dup_dist = is_dup_dist.fillna(False).astype(bool)
     adata_full.obs["is_duplicate_distance"] = is_dup_dist.values
 
+    # combine sequence-derived flag with others
+    if "sequence__is_duplicate" in adata_full.obs.columns:
+        seq_dup = adata_full.obs["sequence__is_duplicate"].astype(bool)
+    else:
+        seq_dup = pd.Series(False, index=adata_full.obs.index)
+
+    # cluster-based duplicate indicator (if any clustering columns exist)
     cluster_cols = [c for c in adata_full.obs.columns if c.startswith("hamming_cluster__")]
     if cluster_cols:
         cl_mask = pd.Series(False, index=adata_full.obs.index)
@@ -309,14 +550,56 @@ def flag_duplicate_reads(
     else:
         adata_full.obs["is_duplicate_clustering"] = False
 
-    # combine sequence-derived flag (if present) with the other flags into final is_duplicate
-    if "sequence__is_duplicate" in adata_full.obs.columns:
-        seq_dup = adata_full.obs["sequence__is_duplicate"].astype(bool)
-    else:
-        seq_dup = pd.Series(False, index=adata_full.obs.index)
-
     final_dup = seq_dup | adata_full.obs["is_duplicate_distance"].astype(bool) | adata_full.obs["is_duplicate_clustering"].astype(bool)
     adata_full.obs["is_duplicate"] = final_dup.values
+
+    # Final keeper enforcement: recompute per-cluster keeper from sequence__merged_cluster_id and
+    # ensure that keeper is not marked duplicate
+    if "sequence__merged_cluster_id" in adata_full.obs.columns:
+        keeper_idx_by_cluster = {}
+        metric_col = keep_best_metric if 'keep_best_metric' in locals() else None
+
+        # group by cluster id
+        grp = adata_full.obs[["sequence__merged_cluster_id", "sequence__cluster_size"]].copy()
+        for cid, sub in grp.groupby("sequence__merged_cluster_id"):
+            try:
+                members = sub.index.to_list()
+            except Exception:
+                members = list(sub.index)
+            keeper = None
+            # prefer keep_best_metric (if present), else prefer lex keeper among members, else first member
+            if metric_col and metric_col in adata_full.obs.columns:
+                try:
+                    vals = pd.to_numeric(adata_full.obs.loc[members, metric_col], errors="coerce")
+                    if vals.notna().any():
+                        keeper = vals.idxmax() if keep_best_higher else vals.idxmin()
+                    else:
+                        keeper = members[0]
+                except Exception:
+                    keeper = members[0]
+            else:
+                # prefer lex keeper if present in this merged cluster
+                lex_candidates = [m for m in members if ("sequence__lex_is_keeper" in adata_full.obs.columns and adata_full.obs.at[m, "sequence__lex_is_keeper"])]
+                if len(lex_candidates) > 0:
+                    keeper = lex_candidates[0]
+                else:
+                    keeper = members[0]
+
+            keeper_idx_by_cluster[cid] = keeper
+
+        # force keepers not to be duplicates
+        is_dup_series = adata_full.obs["is_duplicate"].astype(bool)
+        for cid, keeper_idx in keeper_idx_by_cluster.items():
+            if keeper_idx in adata_full.obs.index:
+                is_dup_series.at[keeper_idx] = False
+                # clear sequence__is_duplicate for keeper if present
+                if "sequence__is_duplicate" in adata_full.obs.columns:
+                    adata_full.obs.at[keeper_idx, "sequence__is_duplicate"] = False
+                # clear lex duplicate flag too if present
+                if "sequence__lex_is_duplicate" in adata_full.obs.columns:
+                    adata_full.obs.at[keeper_idx, "sequence__lex_is_duplicate"] = False
+
+        adata_full.obs["is_duplicate"] = is_dup_series.values
 
     # reason column
     def _dup_reason_row(row):
@@ -345,6 +628,10 @@ def flag_duplicate_reads(
     return adata_unique, adata_full
 
 
+# ---------------------------
+# Plot helpers (use adata_full as input)
+# ---------------------------
+
 def plot_histogram_pages(
     histograms,
     distance_threshold,
@@ -353,42 +640,131 @@ def plot_histogram_pages(
     bins=50,
     dpi=160,
     figsize_per_cell=(5, 3),
+    adata: Optional[ad.AnnData] = None,
+    sample_key: str = "Barcode",
+    ref_key: str = "Reference_strand",
+    distance_key: str = "sequence__min_hamming_to_pair",
+    distance_types: Optional[List[str]] = None,
 ):
     """
-    Plot Hamming-distance histograms as a grid: rows = samples, columns = references.
-    Additionally plots cluster-size histograms (one per cell) using `cluster_counts` stored
-    in each histogram entry.
+    Plot Hamming-distance histograms as a grid (rows=samples, cols=references).
 
-    Returns:
-      { "distance_pages": [...filenames...], "cluster_size_pages": [...filenames...] }
+    Behavior:
+      - If `adata` is provided, pulls per-read distances from adata.obs for:
+          "min"  -> distance_key (default 'sequence__min_hamming_to_pair')
+          "fwd"  -> 'fwd_hamming_to_next'
+          "rev"  -> 'rev_hamming_to_prev'
+          "hier" -> 'sequence__hier_hamming_to_pair'
+        and also derives cluster sizes from adata.obs using
+          'sequence__merged_cluster_id' and 'sequence__cluster_size' (one size per cluster).
+      - Falls back to using the `histograms` list (legacy) for lex-local distances ('distances')
+        and cluster_counts if adata doesn't contain cluster columns.
+      - Overlays histograms for distance_types provided.
     """
+    if distance_types is None:
+        distance_types = ["min", "fwd", "rev", "hier", "lex_local"]
 
-    # Build set of unique samples and references (sorted for stable ordering)
-    samples = sorted({h["sample"] for h in histograms})
-    references = sorted({h["reference"] for h in histograms})
+    # canonicalize samples / refs
+    if adata is not None and sample_key in adata.obs.columns and ref_key in adata.obs.columns:
+        obs = adata.obs
+        sseries = obs[sample_key]
+        if not pd.api.types.is_categorical_dtype(sseries):
+            sseries = sseries.astype("category")
+        samples = list(sseries.cat.categories)
+        rseries = obs[ref_key]
+        if not pd.api.types.is_categorical_dtype(rseries):
+            rseries = rseries.astype("category")
+        references = list(rseries.cat.categories)
+        use_adata = True
+    else:
+        samples = sorted({h["sample"] for h in histograms})
+        references = sorted({h["reference"] for h in histograms})
+        use_adata = False
 
     if len(samples) == 0 or len(references) == 0:
         print("No histogram data to plot.")
         return {"distance_pages": [], "cluster_size_pages": []}
 
-    # Map (sample, reference) -> distances list and cluster_counts
-    grid_dists = defaultdict(list)
-    grid_cluster_counts = defaultdict(list)
-    counts = {}  # store number of distances for label
-    for h in histograms:
-        key = (h["sample"], h["reference"])
-        d = h.get("distances") or []
-        cc = h.get("cluster_counts") or []
-        grid_dists[key].extend(d)
-        # cluster_counts is a list where each entry is a cluster size (one per cluster)
-        grid_cluster_counts[key].extend(cc)
+    # helper to fetch arrays safely and sanitize values to 0..1
+    def clean_array(arr):
+        if arr is None or len(arr) == 0:
+            return np.array([], dtype=float)
+        a = np.asarray(arr, dtype=float)
+        a = a[np.isfinite(a)]
+        # keep values within [0,1] (hamming distances should be in this range)
+        a = a[(a >= 0.0) & (a <= 1.0)]
+        return a
+
+    # Build grid data structure keyed by (sample, ref) containing distance lists per dtype
+    grid = defaultdict(lambda: defaultdict(list))
+    # If adata available, populate from adata.obs
+    if use_adata:
+        obs = adata.obs
+        # iterate groups for speed/stability
+        try:
+            grouped = obs.groupby([sample_key, ref_key])
+        except Exception:
+            # fallback in case grouping fails (e.g., weird index types)
+            grouped = []
+            for s in samples:
+                for r in references:
+                    sub = obs[(obs[sample_key] == s) & (obs[ref_key] == r)]
+                    if not sub.empty:
+                        grouped.append(((s, r), sub))
+        if isinstance(grouped, dict) or hasattr(grouped, "groups"):
+            # pandas GroupBy
+            for (s, r), group in grouped:
+                if "min" in distance_types and distance_key in group.columns:
+                    grid[(s, r)]["min"].extend(clean_array(group[distance_key].to_numpy()))
+                if "fwd" in distance_types and "fwd_hamming_to_next" in group.columns:
+                    grid[(s, r)]["fwd"].extend(clean_array(group["fwd_hamming_to_next"].to_numpy()))
+                if "rev" in distance_types and "rev_hamming_to_prev" in group.columns:
+                    grid[(s, r)]["rev"].extend(clean_array(group["rev_hamming_to_prev"].to_numpy()))
+                if "hier" in distance_types and "sequence__hier_hamming_to_pair" in group.columns:
+                    grid[(s, r)]["hier"].extend(clean_array(group["sequence__hier_hamming_to_pair"].to_numpy()))
+        else:
+            # grouped is a list of ((s,r), sub_df)
+            for (s, r), group in grouped:
+                if "min" in distance_types and distance_key in group.columns:
+                    grid[(s, r)]["min"].extend(clean_array(group[distance_key].to_numpy()))
+                if "fwd" in distance_types and "fwd_hamming_to_next" in group.columns:
+                    grid[(s, r)]["fwd"].extend(clean_array(group["fwd_hamming_to_next"].to_numpy()))
+                if "rev" in distance_types and "rev_hamming_to_prev" in group.columns:
+                    grid[(s, r)]["rev"].extend(clean_array(group["rev_hamming_to_prev"].to_numpy()))
+                if "hier" in distance_types and "sequence__hier_hamming_to_pair" in group.columns:
+                    grid[(s, r)]["hier"].extend(clean_array(group["sequence__hier_hamming_to_pair"].to_numpy()))
+
+    # Always fill legacy lex_local and aggregated hierarchical pairs from histograms list if present
+    if histograms:
+        for h in histograms:
+            key = (h["sample"], h["reference"])
+            if "lex_local" in distance_types:
+                grid[key]["lex_local"].extend(clean_array(h.get("distances", [])))
+            # if adata did not provide a hierarchical per-read column, hist entry may contain aggregated hierarchical pairs
+            if "hier" in distance_types and "hierarchical_pairs" in h:
+                grid[key]["hier"].extend(clean_array(h.get("hierarchical_pairs", [])))
+            # also ensure cluster_counts survives here for fallback usage
+            if "cluster_counts" in h:
+                grid[key]["_legacy_cluster_counts"].extend(h.get("cluster_counts", []))
+
+    # ensure keys exist for stability
     for s in samples:
         for r in references:
-            counts[(s, r)] = len(grid_dists.get((s, r), []))
+            for dtype in distance_types:
+                _ = grid[(s, r)].get(dtype, [])
 
+    # counts used for label n=..
+    if use_adata:
+        counts = {(s, r): int(((adata.obs[sample_key] == s) & (adata.obs[ref_key] == r)).sum()) for s in samples for r in references}
+    else:
+        counts = {(s, r): sum(len(grid[(s, r)][dt]) for dt in distance_types) for s in samples for r in references}
+
+    # plotting pages
     distance_pages = []
     cluster_size_pages = []
     n_pages = math.ceil(len(samples) / rows_per_page)
+    palette = plt.get_cmap("tab10")
+    dtype_colors = {dt: palette(i % 10) for i, dt in enumerate(distance_types)}
 
     for page in range(n_pages):
         start = page * rows_per_page
@@ -397,7 +773,7 @@ def plot_histogram_pages(
         nrows = len(chunk)
         ncols = len(references)
 
-        # -- Distance histogram page --
+        # Distance histogram page
         fig_w = figsize_per_cell[0] * ncols
         fig_h = figsize_per_cell[1] * nrows
         fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False)
@@ -405,17 +781,25 @@ def plot_histogram_pages(
         for r_idx, sample_name in enumerate(chunk):
             for c_idx, ref_name in enumerate(references):
                 ax = axes[r_idx][c_idx]
-                dists = grid_dists.get((sample_name, ref_name), [])
-                if dists:
-                    ax.hist(dists, bins=bins, alpha=0.75)
-                else:
+                any_data = False
+                bins_edges = np.linspace(0.0, 1.0, bins + 1)
+                for dtype in distance_types:
+                    vals = np.asarray(grid[(sample_name, ref_name)].get(dtype, []), dtype=float)
+                    if vals.size > 0:
+                        vals = vals[np.isfinite(vals)]
+                        vals = vals[(vals >= 0.0) & (vals <= 1.0)]
+                    if vals.size > 0:
+                        any_data = True
+                        ax.hist(vals, bins=bins_edges, alpha=0.5, label=dtype, density=False, stacked=False,
+                                color=dtype_colors.get(dtype, None))
+                if not any_data:
                     ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=10, color="gray")
                 ax.axvline(distance_threshold, color="red", linestyle="--", linewidth=1)
 
                 if r_idx == 0:
                     ax.set_title(str(ref_name), fontsize=10)
                 if c_idx == 0:
-                    total_reads = sum(counts.get((sample_name, ref), 0) for ref in references)
+                    total_reads = sum(counts.get((sample_name, ref), 0) for ref in references) if not use_adata else int((adata.obs[sample_key] == sample_name).sum())
                     ax.set_ylabel(f"{sample_name}\n(n={total_reads})", fontsize=9)
                 if r_idx == nrows - 1:
                     ax.set_xlabel("Hamming Distance", fontsize=9)
@@ -424,6 +808,8 @@ def plot_histogram_pages(
 
                 ax.set_xlim(left=0.0, right=1.0)
                 ax.grid(True, alpha=0.25)
+                if r_idx == 0 and c_idx == 0:
+                    ax.legend(fontsize=7, loc="upper right")
 
         fig.suptitle(f"Hamming distance histograms (rows=samples, cols=references) — page {page+1}/{n_pages}", fontsize=12, y=0.995)
         fig.tight_layout(rect=[0, 0, 1, 0.96])
@@ -437,7 +823,7 @@ def plot_histogram_pages(
             plt.show()
         plt.close(fig)
 
-        # -- Cluster-size histogram page --
+        # Cluster-size histogram page (prefer adata-derived cluster sizes; fallback to histograms)
         fig_w = figsize_per_cell[0] * ncols
         fig_h = figsize_per_cell[1] * nrows
         fig2, axes2 = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False)
@@ -445,10 +831,32 @@ def plot_histogram_pages(
         for r_idx, sample_name in enumerate(chunk):
             for c_idx, ref_name in enumerate(references):
                 ax = axes2[r_idx][c_idx]
-                sizes = grid_cluster_counts.get((sample_name, ref_name), [])
+                sizes = []
+                # prefer adata-derived cluster sizes (one per cluster)
+                if use_adata and ("sequence__merged_cluster_id" in adata.obs.columns and "sequence__cluster_size" in adata.obs.columns):
+                    sub = adata.obs[(adata.obs[sample_key] == sample_name) & (adata.obs[ref_key] == ref_name)]
+                    if not sub.empty:
+                        # group by cluster id and take the first reported cluster_size per cluster
+                        try:
+                            grp = sub.groupby("sequence__merged_cluster_id")["sequence__cluster_size"].first()
+                            # convert to int list
+                            sizes = [int(x) for x in grp.to_numpy().tolist() if (pd.notna(x) and np.isfinite(x))]
+                        except Exception:
+                            # fallback robust approach
+                            try:
+                                unique_pairs = sub[["sequence__merged_cluster_id", "sequence__cluster_size"]].drop_duplicates()
+                                sizes = [int(x) for x in unique_pairs["sequence__cluster_size"].dropna().astype(int).tolist()]
+                            except Exception:
+                                sizes = []
+                # fallback to histograms list legacy cluster_counts if adata not available or produced no sizes
+                if (not sizes) and histograms:
+                    for h in histograms:
+                        if h.get("sample") == sample_name and h.get("reference") == ref_name:
+                            sizes = h.get("cluster_counts", []) or []
+                            break
+
                 if sizes:
-                    # plot histogram of cluster sizes (clusters counted once each)
-                    ax.hist(sizes, bins=range(1, max(2, max(sizes)+1)), alpha=0.8, align='left')
+                    ax.hist(sizes, bins=range(1, max(2, max(sizes) + 1)), alpha=0.8, align="left")
                     ax.set_xlabel("Cluster size")
                     ax.set_ylabel("Count")
                 else:
@@ -457,7 +865,7 @@ def plot_histogram_pages(
                 if r_idx == 0:
                     ax.set_title(str(ref_name), fontsize=10)
                 if c_idx == 0:
-                    total_reads = sum(counts.get((sample_name, ref), 0) for ref in references)
+                    total_reads = sum(counts.get((sample_name, ref), 0) for ref in references) if not use_adata else int((adata.obs[sample_key] == sample_name).sum())
                     ax.set_ylabel(f"{sample_name}\n(n={total_reads})", fontsize=9)
                 if r_idx != nrows - 1:
                     ax.set_xticklabels([])
@@ -476,6 +884,7 @@ def plot_histogram_pages(
         plt.close(fig2)
 
     return {"distance_pages": distance_pages, "cluster_size_pages": cluster_size_pages}
+
 
 def plot_hamming_vs_metric_pages(
     adata,
@@ -497,9 +906,12 @@ def plot_hamming_vs_metric_pages(
     write_clusters_to_adata: bool = False,
     figsize_per_cell: Tuple[float, float] = (4.0, 3.0),
     random_state: int = 0,
+    highlight_threshold: Optional[float] = None,
+    highlight_color: str = "red",
 ) -> Dict[str, Any]:
     """
-    Robust plotting of hamming (y) vs metric (x). Aligns by index; tolerates missing columns.
+    Robust plotting of hamming (y) vs metric (x). Added optional highlighting of points
+    with hamming < highlight_threshold to visually mark 'duplicate candidates'.
     """
     if isinstance(metric_keys, str):
         metric_keys = [metric_keys]
@@ -548,7 +960,7 @@ def plot_hamming_vs_metric_pages(
 
         if metric_present or hamming_present:
             sX = obs[metric].astype(float) if metric_present else None
-            sY = obs[hamming_col].astype(float) if hamming_present else None
+            sY = pd.to_numeric(obs[hamming_col], errors="coerce") if hamming_present else None
 
             if (sX is not None) and (sY is not None):
                 valid_both = sX.notna() & sY.notna() & np.isfinite(sX.values) & np.isfinite(sY.values)
@@ -631,7 +1043,17 @@ def plot_hamming_vs_metric_pages(
                         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
                         clusters_info[(sample_name, ref_name)] = {"diag": None, "n_points": 0}
                     else:
-                        ax.scatter(x, y, s=12, alpha=0.6, rasterized=True)
+                        # optionally highlight points under threshold
+                        if highlight_threshold is not None and y.size:
+                            mask_low = (y < float(highlight_threshold)) & np.isfinite(y)
+                            mask_high = ~mask_low
+                            # plot high first (gray)
+                            if mask_high.any():
+                                ax.scatter(x[mask_high], y[mask_high], s=12, alpha=0.6, rasterized=True)
+                            if mask_low.any():
+                                ax.scatter(x[mask_low], y[mask_low], s=18, alpha=0.9, rasterized=True, c=highlight_color, edgecolors="k", linewidths=0.3)
+                        else:
+                            ax.scatter(x, y, s=12, alpha=0.6, rasterized=True)
 
                         if kde and gaussian_kde is not None and x.size >= 4:
                             try:
@@ -747,7 +1169,6 @@ def plot_hamming_vs_metric_pages(
     return saved_map
 
 
-
 def _run_clustering(
     x: np.ndarray,
     y: np.ndarray,
@@ -762,9 +1183,14 @@ def _run_clustering(
     """
     Run clustering on 2D points (x,y). Returns labels (len = npoints) and diagnostics dict.
     Labels follow sklearn conventions (noise -> -1 for DBSCAN/HDBSCAN).
-
-    Ensures contiguous cluster numbers starting at 0 for non-noise clusters.
     """
+    try:
+        from sklearn.cluster import KMeans, DBSCAN
+        from sklearn.mixture import GaussianMixture
+        from sklearn.metrics import silhouette_score
+    except Exception:
+        KMeans = DBSCAN = GaussianMixture = silhouette_score = None
+
     pts = np.column_stack([x, y])
     diagnostics: Dict[str, Any] = {"method": method, "n_input": len(x)}
     if len(x) < min_points:
@@ -791,10 +1217,6 @@ def _run_clustering(
             diagnostics["means"] = gm.means_
             diagnostics["covariances"] = getattr(gm, "covariances_", None)
             diagnostics["n_clusters_found"] = int(len(np.unique(labels)))
-        elif method == "hdbscan" and hdbscan is not None:
-            clusterer = hdbscan.HDBSCAN(min_cluster_size=max(2, int(dbscan_min_samples)))
-            labels = clusterer.fit_predict(pts)
-            diagnostics["n_clusters_found"] = int(len([u for u in np.unique(labels) if u != -1]))
         else:
             # fallback: try DBSCAN then KMeans
             if DBSCAN is not None:
@@ -911,5 +1333,5 @@ def _overlay_clusters_on_ax(
                 except Exception:
                     pass
 
-    # return nothing; ax is modified in place
     return None
+
