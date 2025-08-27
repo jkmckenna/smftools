@@ -2,6 +2,7 @@ import math
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 
@@ -323,6 +324,47 @@ class HMM(nn.Module):
                 break
 
         return loglik_history if return_history else None
+    
+    def get_params(self) -> dict:
+        """
+        Return model parameters as numpy arrays on CPU.
+        """
+        with torch.no_grad():
+            return {
+                "n_states": int(self.n_states),
+                "start": self.start.detach().cpu().numpy().astype(float).reshape(-1),
+                "trans": self.trans.detach().cpu().numpy().astype(float),
+                "emission": self.emission.detach().cpu().numpy().astype(float).reshape(-1),
+            }
+
+    def print_params(self, decimals: int = 4):
+        """
+        Nicely print start, transition, and emission probabilities.
+        """
+        params = self.get_params()
+        K = params["n_states"]
+        fmt = f"{{:.{decimals}f}}"
+        print(f"HMM params (K={K} states):")
+        print(" start probs:")
+        print("  [" + ", ".join(fmt.format(v) for v in params["start"]) + "]")
+        print(" transition matrix (rows = from-state, cols = to-state):")
+        for i, row in enumerate(params["trans"]):
+            print("  s{:d}: [".format(i) + ", ".join(fmt.format(v) for v in row) + "]")
+        print(" emission P(obs==1 | state):")
+        for i, v in enumerate(params["emission"]):
+            print(f"  s{i}: {fmt.format(v)}")
+
+    def to_dataframes(self) -> dict:
+        """
+        Return pandas DataFrames for start (Series), trans (DataFrame), emission (Series).
+        """
+        p = self.get_params()
+        K = p["n_states"]
+        state_names = [f"state_{i}" for i in range(K)]
+        start_s = pd.Series(p["start"], index=state_names, name="start_prob")
+        trans_df = pd.DataFrame(p["trans"], index=state_names, columns=state_names)
+        emission_s = pd.Series(p["emission"], index=state_names, name="p_obs1")
+        return {"start": start_s, "trans": trans_df, "emission": emission_s}
 
     def predict(self, data: List[List], impute_strategy: str = "ignore", device: Optional[Union[torch.device, str]] = None) -> List[np.ndarray]:
         """
@@ -593,7 +635,7 @@ class HMM(nn.Module):
                     "putative_nucleosome": [50, 200],
                     "large_bound_stretch": [200, _np.inf],
                 },
-                "state": "Non-Methylated",
+                "state": "Non-Modified",
             }
         if accessible_patches:
             feature_sets["accessible"] = {
@@ -602,10 +644,10 @@ class HMM(nn.Module):
                     "mid_accessible_patch": [20, 80],
                     "large_accessible_patch": [80, _np.inf],
                 },
-                "state": "Methylated",
+                "state": "Modified",
             }
         if cpg:
-            feature_sets["cpg"] = {"features": {"cpg_patch": [0, _np.inf]}, "state": "Methylated"}
+            feature_sets["cpg"] = {"features": {"cpg_patch": [0, _np.inf]}, "state": "Modified"}
 
         # copy vs in-place
         if not in_place:
@@ -671,7 +713,7 @@ class HMM(nn.Module):
                 results_local.append(dists)
             return results_local
 
-        def classify_batch_local(predicted_states_batch, probabilities_batch, coordinates, classification_mapping, target_state="Methylated"):
+        def classify_batch_local(predicted_states_batch, probabilities_batch, coordinates, classification_mapping, target_state="Modified"):
             # Accept numpy arrays or torch tensors
             if isinstance(predicted_states_batch, _torch.Tensor):
                 pred_np = predicted_states_batch.detach().cpu().numpy()
@@ -684,7 +726,7 @@ class HMM(nn.Module):
 
             batch_size, L = pred_np.shape
             all_classifications_local = []
-            state_labels = ["Non-Methylated", "Methylated"]
+            state_labels = ["Non-Modified", "Modified"]
             try:
                 target_idx = state_labels.index(target_state)
             except ValueError:
@@ -712,13 +754,21 @@ class HMM(nn.Module):
                 for start, length, prob in regions:
                     # compute genomic length try/catch
                     try:
+                        # compute genomic length in same coordinate system as coordinates[]
                         feature_length = int(coordinates[start + length - 1]) - int(coordinates[start]) + 1
                     except Exception:
                         feature_length = int(length)
-                    # choose label by mapping
+
                     label = next((ftype for ftype, rng in classification_mapping.items() if rng[0] <= feature_length < rng[1]),
                                 list(classification_mapping.keys())[0])
-                    genomic_start = int(coordinates[start]) + 1
+
+                    # Store the reported start coordinate in the same coordinate system as `coordinates`.
+                    # DON'T add a +1 offset here; finalization expects coordinates in the same base.
+                    try:
+                        genomic_start = int(coordinates[start])
+                    except Exception:
+                        # If coordinates could not be interpreted to ints, fall back to storing index
+                        genomic_start = int(start)
                     final.append((genomic_start, feature_length, label, prob))
                 all_classifications_local.append(final)
             return all_classifications_local
@@ -781,7 +831,7 @@ class HMM(nn.Module):
                     else:
                         pred_states = _np.argmax(probs_batch, axis=2)
 
-                    classifications = classify_batch_local(pred_states, probs_batch, coords, feature_sets.get("footprint", {}).get("features", {}) if False else {}, target_state="Methylated")  # placeholder not used
+                    classifications = classify_batch_local(pred_states, probs_batch, coords, feature_sets.get("footprint", {}).get("features", {}) if False else {}, target_state="Modified")  # placeholder not used
 
                     # For each feature group, classify separately and write back
                     for key, fs in feature_sets.items():
@@ -885,9 +935,13 @@ class HMM(nn.Module):
                             adata.obs.at[idx, f"CpG_all_cpg_features"].append([start, length, prob])
 
         try:
+            # try to interpret var_names as integers (genomic coordinates)
             coordinates = _np.asarray(adata.var_names, dtype=int)
+            coords_are_ints = True
         except Exception:
+            # fallback: treat var positions as simple indices 0..n_vars-1
             coordinates = _np.arange(adata.shape[1], dtype=int)
+            coords_are_ints = False
 
         features_iter = all_features if not verbose else _tqdm(all_features, desc="Finalizing Layers")
         for feature in features_iter:
@@ -898,12 +952,28 @@ class HMM(nn.Module):
                     intervals = []
                 for start, length, prob in intervals:
                     if prob > threshold:
-                        # convert genomic start->index; coordinates is var_names array
-                        start_idx = _np.searchsorted(coordinates, start, side="left")
-                        end_idx = _np.searchsorted(coordinates, start + length - 1, side="right")
+                        # If coordinates are ints, we treat stored 'start' as a genomic coordinate.
+                        # Otherwise assume stored 'start' is an index (0-based).
+                        if coords_are_ints:
+                            # start is genomic coordinate (e.g. bp). Find matching / nearest indices.
+                            start_idx = _np.searchsorted(coordinates, int(start), side="left")
+                            end_idx = _np.searchsorted(coordinates, int(start) + int(length) - 1, side="right")
+                        else:
+                            # fallback: interpret 'start' as an index
+                            start_idx = int(start)
+                            end_idx = start_idx + int(length)
+
+                        # bounds check
+                        start_idx = max(0, min(start_idx, adata.shape[1]))
+                        end_idx = max(0, min(end_idx, adata.shape[1]))
+
                         if start_idx < end_idx:
                             bin_matrix[row_idx, start_idx:end_idx] = 1
                             counts[row_idx] += 1
+                        else:
+                            # optional: debug/diagnostic hook
+                            # warnings.warn(f"Feature {feature} row {row_idx} interval ({start},{length}) mapped to empty slice [{start_idx},{end_idx})")
+                            pass
             # write layer and track name
             adata.layers[feature] = bin_matrix
             appended_layers.append(feature)
@@ -920,3 +990,54 @@ class HMM(nn.Module):
         # return or in-place behavior (unchanged)
         return None if in_place else adata
 
+    def _ensure_final_layer_and_assign(self, final_adata, layer_name: str, subset_idx_mask: np.ndarray, sub_data):
+        """
+        Ensure final_adata.layers[layer_name] exists and assign rows corresponding to subset_idx_mask
+        sub_data has shape (n_subset_rows, n_vars).
+        subset_idx_mask: boolean array of length final_adata.n_obs with True where rows belong to subset.
+        """
+        from scipy.sparse import issparse, csr_matrix
+        import warnings
+
+        n_final_obs, n_vars = final_adata.shape
+        n_sub_rows = int(subset_idx_mask.sum())
+
+        # prepare row indices in final_adata
+        final_row_indices = np.nonzero(subset_idx_mask)[0]
+
+        # if sub_data is sparse, work with sparse
+        if issparse(sub_data):
+            sub_csr = sub_data.tocsr()
+            # if final layer not present, create sparse CSR with zero rows and same n_vars
+            if layer_name not in final_adata.layers:
+                # create an empty CSR of shape (n_final_obs, n_vars)
+                final_adata.layers[layer_name] = csr_matrix((n_final_obs, n_vars), dtype=sub_csr.dtype)
+            final_csr = final_adata.layers[layer_name]
+            if not issparse(final_csr):
+                # convert dense final to sparse first
+                final_csr = csr_matrix(final_csr)
+            # replace the block of rows: easiest is to build a new csr by stacking pieces
+            # (efficient for moderate sizes; for huge data you might want an in-place approach)
+            # Build list of blocks: rows before, the subset rows (from final where mask False -> zeros), rows after
+            # We'll convert final to LIL for row assignment (mutable), then back to CSR.
+            final_lil = final_csr.tolil()
+            for i_local, r in enumerate(final_row_indices):
+                final_lil.rows[r] = sub_csr.getrow(i_local).indices.tolist()
+                final_lil.data[r] = sub_csr.getrow(i_local).data.tolist()
+            final_csr = final_lil.tocsr()
+            final_adata.layers[layer_name] = final_csr
+        else:
+            # dense numpy array
+            sub_arr = np.asarray(sub_data)
+            if sub_arr.shape[0] != n_sub_rows:
+                raise ValueError(f"Sub data rows ({sub_arr.shape[0]}) != mask selected rows ({n_sub_rows})")
+            if layer_name not in final_adata.layers:
+                # create zero array with small dtype
+                final_adata.layers[layer_name] = np.zeros((n_final_obs, n_vars), dtype=sub_arr.dtype)
+            final_arr = final_adata.layers[layer_name]
+            if issparse(final_arr):
+                # convert sparse final to dense (or convert sub to sparse); we'll convert final to dense here
+                final_arr = final_arr.toarray()
+            # assign
+            final_arr[final_row_indices, :] = sub_arr
+            final_adata.layers[layer_name] = final_arr

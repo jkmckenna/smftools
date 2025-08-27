@@ -777,14 +777,10 @@ class ExperimentConfig:
         if "threads" in merged:
             tval = _parse_numeric(merged.get("threads", None), None)
             merged["threads"] = None if tval is None else int(tval)
-
-        # aligner_args default handling
-        if merged.get("aligner_args") is None:
-            if str(merged.get("aligner", "minimap2")).lower() == "minimap2":
-                merged["aligner_args"] = ['-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N', '5', '--secondary=no']
-            else:
-                merged["aligner_args"] = ['--mm2-opts', '-N 5']
                 
+        if "aligner_args" in merged and merged.get("aligner_args") is None:
+            merged.pop("aligner_args", None)
+
         # --- Resolve aligner_args into concrete list for the chosen aligner ---
         merged['aligner_args'] = resolve_aligner_args(merged)
 
@@ -823,7 +819,7 @@ class ExperimentConfig:
             make_bigwigs = merged.get("make_bigwigs", False),
             delete_intermediate_hdfs = merged.get("delete_intermediate_hdfs", True),
             mod_target_bases = merged.get("mod_target_bases", ["GpC","CpG"]),
-            enzyme_target_bases = merged.get("mod_target_bases", ["GpC"]), 
+            enzyme_target_bases = merged.get("enzyme_target_bases", ["GpC"]), 
             conversion_types = merged.get("conversion_types", ["5mC"]),
             filter_threshold = merged.get("filter_threshold", 0.8),
             m6A_threshold = merged.get("m6A_threshold", 0.7),
@@ -846,11 +842,11 @@ class ExperimentConfig:
             autocorr_site_types = merged.get("autocorr_site_types", ['GpC', 'CpG', 'any_C']),
             hmm_n_states = merged.get("hmm_n_states", 2), 
             hmm_init_emission_probs = merged.get("hmm_init_emission_probs",[[0.8, 0.2], [0.2, 0.8]]),
-            hmm_init_transition_probs = merged.get("hmm_init_emission_probs",[[0.9, 0.1], [0.1, 0.9]]),
-            hmm_init_start_probs = merged.get("hmm_init_emission_probs",[0.5, 0.5]),
+            hmm_init_transition_probs = merged.get("hmm_init_transition_probs",[[0.9, 0.1], [0.1, 0.9]]),
+            hmm_init_start_probs = merged.get("hmm_init_start_probs",[0.5, 0.5]),
             read_coord_filter = merged.get("read_coord_filter", [None, None]), 
             read_len_filter_thresholds = merged.get("read_len_filter_thresholds", [200, None]),
-            read_len_to_ref_ratio_filter_thresholds = merged.get("read_len_to_ref_ratio_filter_thresholds", [0.4, None]),
+            read_len_to_ref_ratio_filter_thresholds = merged.get("read_len_to_ref_ratio_filter_thresholds", [0.4, 1.1]),
             read_quality_filter_thresholds = merged.get("read_quality_filter_thresholds", [20, None]),
             read_mapping_quality_filter_thresholds = merged.get("read_mapping_quality_filter_thresholds", [None, None]),
             read_mod_filtering_gpc_thresholds = merged.get("read_mod_filtering_gpc_thresholds", [0.025, 0.975]),

@@ -2,29 +2,14 @@
 extends: default
 conversion_types: 
   - '5mC' # 5mC
-aligner_args:
-  minimap2:
-    - '-a'
-    - '-x'
-    - 'map-ont'
-    - '--MD'
-    - '-Y' 
-    - '-y'
-    - '-N'
-    - '5'
-    - '--secondary=no' 
-  dorado:
-    - "--mm2-opts"
-    - "-N"
-    - "5"
 
 mod_target_bases:
 - "C"
 
-# QC Params
+# Duplicate Detection Params
 duplicate_detection_site_types:
   - "any_C"
 
-# Plotting
+# Autocorrelation params
 autocorr_site_types:
   - "any_C"

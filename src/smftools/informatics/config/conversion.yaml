@@ -2,18 +2,6 @@
 extends: default
 conversion_types: 
   - '5mC' # 5mC
-aligner_args:
-  minimap2:
-    - '-a'
-    - '-x'
-    - 'map-ont'
-    - '--MD'
-    - '-Y' 
-    - '-y'
-    - '-N'
-    - '5'
-    - '--secondary=no' 
-  dorado:
-    - "--mm2-opts"
-    - "-N"
-    - "5"
+
+# Read QC Params
+read_mod_filtering_use_other_c_as_background: True
