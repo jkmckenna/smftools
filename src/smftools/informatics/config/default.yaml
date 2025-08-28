@@ -123,9 +123,15 @@ duplicate_detection_site_types: # Site types to consider for duplicate detection
   - "GpC"
   - "CpG"
   - "ambiguous_GpC_CpG"
-duplicate_detection_distance_threshold: 0.12 # Hamming distance based similarity threshold to use for marking duplicate reads.
+duplicate_detection_distance_threshold: 0.1 # Hamming distance based similarity threshold to use for marking duplicate reads.
 hamming_vs_metric_keys: # Metrics to plot the hamming distance against.
   - Fraction_any_C_site_modified
+duplicate_detection_keep_best_metric: "read_quality" # Obs metric to use to keep a representative read from a read duplicate cluster
+duplicate_detection_window_size_for_hamming_neighbors: 50 # How many neighboring reads to look at for calculating hamming distance pairs
+duplicate_detection_min_overlapping_positions: 20 # The minimum amount of valid overlapping positions that will allow duplicate detection to work
+duplicate_detection_do_hierarchical: True # Whether to follow up fwd/rev lexicographic duplicate detection with hieratchical clustering based method
+duplicate_detection_hierarchical_linkage: "average" # Method for hierarchical clustering distance calculation
+duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkage based duplicate detection.
 
 # HMM params
 hmm_n_states: 2 # Number of HMM states
@@ -160,6 +166,16 @@ autocorr_site_types:
   - "CpG"
   - "any_C"
 
+# Basic Analysis - Correlation Matrix params
+correlation_matrix_types:
+  - "pearson"
+  - "binary_covariance"
+correlation_matrix_cmaps:
+  - "seismic"
+  - "viridis"
+correlation_matrix_site_types:
+  - "GpC_site"
+
 # Pipeline control flow - Preprocessing and QC
 force_redo_preprocessing: False # Whether to force redo the entire preprocessing workflow from the initial raw anndata.
 force_reload_sample_sheet: True # Whether to force redo sample sheet loading
@@ -180,6 +196,7 @@ bypass_flag_duplicate_reads: False # Whether to skip flagging duplicate reads ba
 force_redo_flag_duplicate_reads: False # Whether to redo flagging duplicate reads based on modification similarity.
 
 # Pipeline control flow - Basic Analyses
+force_redo_basic_analyses: False # Whether to force redo the entire basic analysis pipeline from the AnnData
 bypass_basic_clustermaps: False # Whether to skip basic clustermap plotting
 force_redo_basic_clustermaps: False # Whether to redo basic clustermap plotting
 bypass_basic_umap: False # Whether to skip basic UMAP calculation/plotting
@@ -188,6 +205,10 @@ bypass_spatial_autocorr_calculations: False # Whether to skip basic spatial auto
 force_redo_spatial_autocorr_calculations: False # Whether to redo basic spatial autocorrelation calculation
 bypass_spatial_autocorr_plotting: False # Whether to skip basic spatial autocorrelation plotting
 force_redo_spatial_autocorr_plotting: False # Whether to redo basic spatial autocorrelation plotting
+bypass_matrix_corr_calculations: False # Whether to skip basic correlation matrix calculation
+force_redo_matrix_corr_calculations: False # Whether to force redo basic correlation matrix calculation
+bypass_matrix_corr_plotting: False # Whether to skip basic correlation matrix plotting
+force_redo_matrix_corr_plotting: False # Whether to force redo basic correlation matrix calculation
 
 # Pipeline control flow - HMMs
 bypass_hmm_fit: False # Whether to skip HMM fitting for each sample/reference

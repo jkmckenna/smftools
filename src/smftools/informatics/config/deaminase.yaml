@@ -13,3 +13,7 @@ duplicate_detection_site_types:
 # Autocorrelation params
 autocorr_site_types:
   - "any_C"
+
+# Correlation matrix params
+correlation_matrix_site_types:
+  - "any_C_site"

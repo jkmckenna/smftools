@@ -28,7 +28,8 @@ def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
         for read in bam:
             try:
                 # Get the barcode tag value
-                bc_tag = read.get_tag("BC", with_value_type=True)[0].split('barcode')[1]
+                bc_tag = read.get_tag("BC", with_value_type=True)[0]
+                #bc_tag = read.get_tag("BC", with_value_type=True)[0].split('barcode')[1]
                 # Open the output BAM file corresponding to the barcode
                 if bc_tag not in output_files:
                     output_path = os.path.join(split_dir, f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}")
