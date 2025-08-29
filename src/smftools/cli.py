@@ -1,5 +1,5 @@
 import click
-from .informatics import load_adata
+from . import load_adata
 
 @click.group()
 def cli():

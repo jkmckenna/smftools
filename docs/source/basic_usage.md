@@ -2,11 +2,16 @@
 
 ## Informatics Module Usage
 
-Many use cases for smftools begin here. For most users, the call below will be sufficient to convert any raw SMF dataset to an AnnData object:
+Many use cases for smftools begin here. For most users, the call below will be sufficient to convert any raw SMF dataset from Nanopore/Illumina to an AnnData object:
 
-```
+```shell
 smftools load "/Path_to_experiment_config.csv"
 ```
+
+This command takes a user passed config file handling:
+    - I/O pathes (With data input path, FASTA path, optional BED path for subsampling FASTA, and a data output path)
+    - Experiment info (SMF modality, sequencer type, barcoding kit if nanopore, sample sheet with metadata mapping)
+    - Options to override default workflow parameters from smftools/config. Params are handled from default.yaml -> modality_type.yaml -> user passed config.csv.
 
 ## Loading AnnData objects created by the informatics module
 
@@ -16,9 +21,12 @@ After creating an AnnData object holding your experiment's SMF data, you can loa
 import smftools as smf
 import anndata as ad
 input_adata = "/Path_to_experiment_AnnData.h5ad.gz"
-adata = ad.read_h5ad(input_file)
-adata.obs_names_make_unique()
+adata_accessory_data = "/Path_to_experiment_AnnData_accessory_data_directory"
+adata = safe_read_h5ad(input_adata, backup_dir=adata_accessory_data)
 ```
+
+This custom read function will take an optional directory of pickle files for data types that can not normally be saved directly in hdf5 formatting that was saved with the safe_write_h5ad function.
+
 
 If you don't have an AnnData object yet, but want to play with the downstream Preprocessing, Tools, and Plotting modules, you can load a pre-loaded SMF dataset.
 
@@ -46,10 +54,11 @@ import os
 
 output_dir = '/Path_to_output_directory'
 output_adata = 'analyzed_adata.h5ad.gz'
-final_output = os.path.join(output_dir, output_adata)
-adata.write_h5ad(final_output, compression='gzip')
+final_output_path = os.path.join(output_dir, output_adata)
+safe_write_h5ad(adata, final_output_path, compression='gzip', backup_dir="adata_accessory_data")
 ```
 
+This custom save function will make a directory of pickle files for data types that can not normally be saved directly in hdf5 formatting.
 
 ## Troubleshooting
 For more advanced usage and help troubleshooting, the API and tutorials for each of the modules is still being developed.

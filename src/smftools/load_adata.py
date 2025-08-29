@@ -13,11 +13,11 @@ def load_adata(config_path):
     Returns:
         None
     """
-    from ..readwrite import safe_read_h5ad, safe_write_h5ad
+    from .readwrite import safe_read_h5ad, safe_write_h5ad
     from .config import LoadExperimentConfig, ExperimentConfig
-    from .helpers import discover_input_files, make_dirs, concatenate_fastqs_to_bam, extract_read_features_from_bam
-    from .fast5_to_pod5 import fast5_to_pod5
-    from .subsample_fasta_from_bed import subsample_fasta_from_bed
+    from .informatics.helpers import discover_input_files, make_dirs, concatenate_fastqs_to_bam, extract_read_features_from_bam
+    from .informatics.fast5_to_pod5 import fast5_to_pod5
+    from .informatics.subsample_fasta_from_bed import subsample_fasta_from_bed
 
     import numpy as np
     import pandas as pd
@@ -36,7 +36,7 @@ def load_adata(config_path):
 
     # Load experiment config parameters into global variables
     loader = LoadExperimentConfig(config_path)
-    defaults_dir = resources.files("smftools").joinpath("informatics/config")
+    defaults_dir = resources.files("smftools").joinpath("config")
     cfg, report = ExperimentConfig.from_var_dict(loader.var_dict, date_str=date_str, defaults_dir=defaults_dir)
 
     # General config variable init - Necessary user passed inputs
@@ -174,7 +174,7 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ################################### 2) FASTA Handling ###################################
-    from .helpers import generate_converted_FASTA, get_chromosome_lengths
+    from .informatics.helpers import generate_converted_FASTA, get_chromosome_lengths
 
     # If fasta_regions_of_interest bed is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
     if cfg.fasta_regions_of_interest and '.bed' in cfg.fasta_regions_of_interest:
@@ -203,7 +203,7 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ################################### 3) Basecalling ###################################
-    from .helpers import modcall, canoncall
+    from .informatics.helpers import modcall, canoncall
     # 1) Basecall using dorado
     if basecall and cfg.sequencer == 'ont':
         if os.path.exists(unaligned_output):
@@ -219,7 +219,7 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ################################### 4) Alignment and sorting #############################################
-    from .helpers import align_and_sort_BAM, aligned_BAM_to_bed
+    from .informatics.helpers import align_and_sort_BAM, aligned_BAM_to_bed
     # 3) Align the BAM to the reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
     if os.path.exists(aligned_output) and os.path.exists(aligned_sorted_output):
         print(aligned_sorted_output + ' already exists. Using existing aligned/sorted BAM.')
@@ -235,7 +235,7 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ################################### 5) Demultiplexing ######################################################################
-    from .helpers import demux_and_index_BAM, split_and_index_BAM
+    from .informatics.helpers import demux_and_index_BAM, split_and_index_BAM
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     if os.path.isdir(split_dir):
         print(split_dir + ' already exists. Using existing demultiplexed BAMs.')
@@ -268,7 +268,7 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ################################### 6) SAMTools based BAM QC ######################################################################
-    from .helpers import bam_qc
+    from .informatics.helpers import bam_qc
     # 5) Samtools QC metrics on split BAM files
     bam_qc_dir = f"{split_dir}/bam_qc"
     if os.path.isdir(bam_qc_dir):
@@ -280,7 +280,7 @@ def load_adata(config_path):
 
     ################################### 7) AnnData loading ######################################################################
     if smf_modality != 'direct':
-        from .helpers import converted_BAM_to_adata_II
+        from .informatics.helpers import converted_BAM_to_adata_II
         # 6) Take the converted BAM and load it into an adata object.
         if smf_modality == 'deaminase':
             deaminase_footprinting = True
@@ -300,7 +300,7 @@ def load_adata(config_path):
         if os.path.isdir(mod_bed_dir):
             print(mod_bed_dir + ' already exists, skipping making modbeds')
         else:
-            from .helpers import modQC, make_modbed, extract_mods, modkit_extract_to_adata
+            from .informatics.helpers import modQC, make_modbed, extract_mods, modkit_extract_to_adata
             make_dirs([mod_bed_dir])  
 
             modQC(aligned_sorted_output, 
@@ -402,7 +402,7 @@ def load_adata(config_path):
 
     ## Load sample sheet metadata based on barcode mapping ##
     if cfg.sample_sheet_path:
-        from ..preprocessing import load_sample_sheet
+        from .preprocessing import load_sample_sheet
         load_sample_sheet(adata, 
                           cfg.sample_sheet_path, 
                           mapping_key_column=cfg.sample_sheet_mapping_column, 
@@ -412,14 +412,14 @@ def load_adata(config_path):
         pass
 
     # Adding read length, read quality, reference length, mapped_length, and mapping quality metadata to adata object.
-    from ..preprocessing import add_read_length_and_mapping_qc
+    from .preprocessing import add_read_length_and_mapping_qc
     add_read_length_and_mapping_qc(adata, bam_files, 
                                    extract_read_features_from_bam_callable=extract_read_features_from_bam, 
                                    bypass=cfg.bypass_add_read_length_and_mapping_qc,
                                    force_redo=cfg.force_redo_add_read_length_and_mapping_qc)
 
 
-    adata.obs['Raw_modification_signal'] = np.asarray(adata.X.sum(axis=1)).ravel().astype(float)
+    adata.obs['Raw_modification_signal'] =  np.nansum(adata.X, axis=1)
 
     pp_dir = f"{split_dir}/preprocessed"
     pp_length_qc_dir = f"{pp_dir}/01_Read_length_and_quality_QC_metrics"
@@ -427,7 +427,7 @@ def load_adata(config_path):
     if os.path.isdir(pp_length_qc_dir) and not cfg.force_redo_preprocessing:
         print(pp_length_qc_dir + ' already exists. Skipping read level QC plotting.')
     else:
-        from ..plotting import plot_read_qc_histograms
+        from .plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_length_qc_dir])
         obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
         plot_read_qc_histograms(adata,
@@ -437,7 +437,7 @@ def load_adata(config_path):
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ## Read length, quality, and mapping filtering
-    from ..preprocessing import filter_reads_on_length_quality_mapping
+    from .preprocessing import filter_reads_on_length_quality_mapping
     print(adata.shape)
     adata = filter_reads_on_length_quality_mapping(adata, 
                                                          filter_on_coordinates=cfg.read_coord_filter,
@@ -453,7 +453,7 @@ def load_adata(config_path):
     if os.path.isdir(pp_length_qc_dir) and not cfg.force_redo_preprocessing:
         print(pp_length_qc_dir + ' already exists. Skipping read level QC plotting.')
     else:
-        from ..plotting import plot_read_qc_histograms
+        from .plotting import plot_read_qc_histograms
         make_dirs([pp_length_qc_dir])
         obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
         plot_read_qc_histograms(adata, 
@@ -466,9 +466,9 @@ def load_adata(config_path):
     ############################################### 9) Basic Preprocessing ###############################################
 
     ############## Binarize direct modcall data and store in new layer. Clean nans and store as new layers with various nan replacement strategies ##########
-    from ..preprocessing import clean_NaN
+    from .preprocessing import clean_NaN
     if smf_modality == 'direct':
-        from ..preprocessing import calculate_position_Youden, binarize_on_Youden
+        from .preprocessing import calculate_position_Youden, binarize_on_Youden
         native = True
         # Calculate positional methylation thresholds for mod calls
         calculate_position_Youden(adata, 
@@ -498,7 +498,7 @@ def load_adata(config_path):
                   )
 
     ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats ###############
-    from ..preprocessing import append_base_context, append_binary_layer_by_base_context
+    from .preprocessing import append_base_context, append_binary_layer_by_base_context
     # Additionally, store base_context level binary modification arrays in adata.obsm
     append_base_context(adata, 
                         obs_column=reference_column, 
@@ -516,11 +516,11 @@ def load_adata(config_path):
     
     ############### Optional inversion of the adata along positions axis ###################
     if cfg.invert_adata:
-        from ..preprocessing import invert_adata
+        from .preprocessing import invert_adata
         adata = invert_adata(adata)
 
     ############### Calculate read methylation/deamination statistics for specific base contexts defined above ###############
-    from ..preprocessing import calculate_read_modification_stats
+    from .preprocessing import calculate_read_modification_stats
     calculate_read_modification_stats(adata, 
                                       reference_column, 
                                       cfg.sample_column,
@@ -535,7 +535,7 @@ def load_adata(config_path):
     if os.path.isdir(pp_meth_qc_dir) and not cfg.force_redo_preprocessing:
         print(pp_meth_qc_dir + ' already exists. Skipping read level methylation QC plotting.')
     else:
-        from ..plotting import plot_read_qc_histograms
+        from .plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
         if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
@@ -548,7 +548,7 @@ def load_adata(config_path):
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ##### Optionally filter reads on modification metrics
-    from ..preprocessing import filter_reads_on_modification_thresholds
+    from .preprocessing import filter_reads_on_modification_thresholds
     adata = filter_reads_on_modification_thresholds(adata, 
                                                           smf_modality=smf_modality,
                                                           mod_target_bases=mod_target_bases,
@@ -567,7 +567,7 @@ def load_adata(config_path):
     if os.path.isdir(pp_meth_qc_dir) and not cfg.force_redo_preprocessing:
         print(pp_meth_qc_dir + ' already exists. Skipping read level methylation QC plotting.')
     else:
-        from ..plotting import plot_read_qc_histograms
+        from .plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
         if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
@@ -581,14 +581,14 @@ def load_adata(config_path):
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ############### Calculate positional coverage in dataset ###############
-    from ..preprocessing import calculate_coverage
+    from .preprocessing import calculate_coverage
     calculate_coverage(adata, 
                        obs_column=reference_column, 
                        position_nan_threshold=0.1)
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != 'direct':
-        from ..preprocessing import flag_duplicate_reads, calculate_complexity_II
+        from .preprocessing import flag_duplicate_reads, calculate_complexity_II
         references = adata.obs[reference_column].cat.categories
 
         var_filters_sets =[]
@@ -646,7 +646,7 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
-    from ..readwrite import safe_write_h5ad
+    from .readwrite import safe_write_h5ad
     if not os.path.exists(pp_adata_path) or cfg.force_redo_preprocessing:
         print('Saving preprocessed adata post duplicate detection.')
         if ".gz" in pp_adata_path:
@@ -677,7 +677,7 @@ def load_adata(config_path):
         if os.path.isdir(pp_clustermap_dir):
             print(pp_clustermap_dir + ' already exists. Skipping clustermap plotting.')
         else:
-            from ..plotting import combined_raw_clustermap
+            from .plotting import combined_raw_clustermap
             make_dirs([pp_dir, pp_clustermap_dir])
             clustermap_results = combined_raw_clustermap(adata, 
                                                          sample_col=cfg.sample_name_col_for_plotting, 
@@ -711,7 +711,7 @@ def load_adata(config_path):
         if os.path.isdir(pp_clustermap_dir):
             print(pp_clustermap_dir + ' already exists. Skipping clustermap plotting.')
         else:
-            from ..plotting import combined_raw_clustermap
+            from .plotting import combined_raw_clustermap
             make_dirs([pp_dir, pp_clustermap_dir])
             clustermap_results = combined_raw_clustermap(adata, 
                                                          sample_col=cfg.sample_name_col_for_plotting, 
@@ -736,25 +736,31 @@ def load_adata(config_path):
         if os.path.isdir(pp_umap_dir):
             print(pp_umap_dir + ' already exists. Skipping UMAP plotting.')
         else:
-            from ..tools import calculate_umap
+            from .tools import calculate_umap
             make_dirs([pp_dir, pp_umap_dir])
             var_filters = []
             for ref in references:
                 var_filters += [f'{ref}_any_C_site']
-            adata = calculate_umap(adata, layer=cfg.layer_for_umap_plotting, var_filters=var_filters, n_pcs=10, knn_neighbors=15)
+            adata = calculate_umap(adata, 
+                                   layer=cfg.layer_for_umap_plotting, 
+                                   var_filters=var_filters, 
+                                   n_pcs=10, 
+                                   knn_neighbors=15)
 
             ## Clustering
             sc.tl.leiden(adata, resolution=0.1, flavor="igraph", n_iterations=2)
 
             # Plotting UMAP
             sc.settings.figdir = pp_umap_dir
-            sc.pl.umap(adata, color=['leiden', cfg.sample_name_col_for_plotting], show=False, save=True)
+            umap_layers = ['leiden', cfg.sample_name_col_for_plotting]
+            umap_layers += cfg.umap_layers_to_plot
+            sc.pl.umap(adata, color=umap_layers, show=False, save=True)
 
 
     ########################################################################################################################
 
     ############################################### Spatial autocorrelation analyses ########################################
-    from ..tools.read_stats import binary_autocorrelation_with_spacing
+    from .tools.read_stats import binary_autocorrelation_with_spacing
     if smf_modality != 'direct':
         pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
         pp_autocorr_dir = f"{pp_dir}/08_autocorrelations"
@@ -779,7 +785,7 @@ def load_adata(config_path):
             if os.path.isdir(pp_autocorr_dir):
                 print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
             else:
-                from ..plotting import plot_spatial_autocorr_grid
+                from .plotting import plot_spatial_autocorr_grid
                 make_dirs([pp_autocorr_dir, pp_autocorr_dir])
 
                 plot_spatial_autocorr_grid(adata, 
@@ -795,7 +801,7 @@ def load_adata(config_path):
 
     ############################################### Pearson analyses ########################################
     if smf_modality != 'direct':
-        from ..tools.position_stats import compute_positionwise_statistics, plot_positionwise_matrices
+        from .tools.position_stats import compute_positionwise_statistics, plot_positionwise_matrices
 
         pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
         pp_corr_dir = f"{pp_dir}/09_correlation_matrices"
@@ -833,7 +839,7 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ############################################### Save basic analysis adata - post preprocessing and duplicate removal ###############################################
-    from ..readwrite import safe_write_h5ad
+    from .readwrite import safe_write_h5ad
 
     if not os.path.exists(basic_analyzed_adata_path) or cfg.force_redo_preprocessing:
         print('Saving basic analyzed adata post preprocessing and duplicate removal')
@@ -845,7 +851,7 @@ def load_adata(config_path):
 
     ############################################### HMM based feature annotations ###############################################
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):
-        from ..hmm.HMM import HMM
+        from .hmm.HMM import HMM
         from scipy.sparse import issparse, csr_matrix
         import warnings
 
@@ -966,7 +972,7 @@ def load_adata(config_path):
     else:
         make_dirs([pp_dir, hmm_dir])
 
-        from ..plotting import combined_hmm_raw_clustermap
+        from .plotting import combined_hmm_raw_clustermap
         combined_hmm_raw_clustermap(
         adata,
         sample_col=cfg.sample_name_col_for_plotting,
@@ -999,7 +1005,7 @@ def load_adata(config_path):
         print(hmm_dir + ' already exists.')
     else:
         make_dirs([pp_dir, hmm_dir])
-        from ..plotting import plot_hmm_layers_rolling_by_sample_ref
+        from .plotting import plot_hmm_layers_rolling_by_sample_ref
         saved = plot_hmm_layers_rolling_by_sample_ref(
             adata,
             layers=adata.uns['hmm_appended_layers'],
@@ -1016,7 +1022,7 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ############################################### MultiQC HTML Report ###############################################
-    from .helpers import run_multiqc
+    from .informatics.helpers import run_multiqc
     # multiqc ###
     if os.path.isdir(f"{split_dir}/multiqc"):
         print(f"{split_dir}/multiqc" + ' already exists, skipping multiqc')
