@@ -1,8 +1,10 @@
+from typing import Optional
 def calculate_complexity_II(
     adata,
     output_directory='',
     sample_col='Sample_names',
-    cluster_col='merged_cluster_id',
+    ref_col: Optional[str] = 'Reference_strand',
+    cluster_col='sequence__merged_cluster_id',
     plot=True,
     save_plot=False,
     n_boot=30,
@@ -11,38 +13,16 @@ def calculate_complexity_II(
     csv_summary=True,
 ):
     """
-    Estimate and plot library complexity per sample using duplicate clusters.
+    Estimate and plot library complexity.
 
-    Requires:
-        - adata.obs[sample_col]: sample label per read
-        - adata.obs[cluster_col]: integer/str cluster id per read where duplicates share the same id
+    If ref_col is None (default), behaves as before: one calculation per sample.
+    If ref_col is provided, computes complexity for each (sample, ref) pair.
 
-    Produces (per sample):
-        - Fit of Lander–Waterman: U(d) = C0 * (1 - exp(-d / C0))
-        - Figure with bootstrap mean ± 95% CI, observed point, and fit
-        - Adds adata.uns[f'Library_complexity_{sample}'] = {'C0': ..., 'n_reads': ..., 'n_unique': ...}
-        - Optionally saves PNGs and a CSV of curve points
-
-    Parameters
-    ----------
-    output_directory : str
-        Where to save plots/CSVs if save_plot=True or csv_summary=True.
-    sample_col : str
-        Column in obs for sample grouping.
-    cluster_col : str
-        Column in obs that identifies duplicate clusters (molecules).
-    plot : bool
-        Whether to generate plots.
-    save_plot : bool
-        Save PNGs instead of showing.
-    n_boot : int
-        Number of bootstrap replicates per depth.
-    n_depths : int
-        Number of subsampling depths (evenly spaced from small to full depth).
-    random_state : int
-        RNG seed.
-    csv_summary : bool
-        Write CSV with subsampling mean/CI and fitted curve per sample.
+    Results:
+      - adata.uns['Library_complexity_results'] : dict keyed by (sample,) or (sample, ref) -> dict with fields
+          C0, n_reads, n_unique, depths, mean_unique, ci_low, ci_high
+      - Also stores per-entity record in adata.uns[f'Library_complexity_{sanitized_name}'] (backwards compatible)
+      - Optionally saves PNGs and CSVs (curve points + fit summary)
     """
     import os
     import numpy as np
@@ -59,26 +39,71 @@ def calculate_complexity_II(
     def sanitize(name: str) -> str:
         return "".join(c if c.isalnum() or c in "-._" else "_" for c in str(name))
 
-    # Checks
+    # checks
     for col in (sample_col, cluster_col):
         if col not in adata.obs.columns:
             raise KeyError(f"Required column '{col}' not found in adata.obs")
+    if ref_col is not None and ref_col not in adata.obs.columns:
+        raise KeyError(f"ref_col '{ref_col}' not found in adata.obs")
+
     if save_plot or csv_summary:
         os.makedirs(output_directory or ".", exist_ok=True)
 
-    # Prepare outputs
+    # containers to collect CSV rows across all groups
     fit_records = []
     curve_records = []
 
-    samples = adata.obs[sample_col].astype("category").cat.categories
-    for sample in samples:
-        mask = (adata.obs[sample_col] == sample).values
-        if not mask.any():
+    # output dict stored centrally
+    results = {}
+
+    # build list of groups: either samples only, or (sample, ref) pairs
+    sseries = adata.obs[sample_col].astype("category")
+    samples = list(sseries.cat.categories)
+    if ref_col is None:
+        group_keys = [(s,) for s in samples]
+    else:
+        rseries = adata.obs[ref_col].astype("category")
+        references = list(rseries.cat.categories)
+        group_keys = []
+        # iterate only pairs that exist in data to avoid empty processing
+        for s in samples:
+            mask_s = (adata.obs[sample_col] == s)
+            # find references present for this sample
+            ref_present = pd.Categorical(adata.obs.loc[mask_s, ref_col]).categories
+            # Use intersection of known reference categories and those present for sample
+            for r in ref_present:
+                group_keys.append((s, r))
+
+    # iterate groups
+    for g in group_keys:
+        if ref_col is None:
+            sample = g[0]
+            # filter mask
+            mask = (adata.obs[sample_col] == sample).values
+            group_label = f"{sample}"
+        else:
+            sample, ref = g
+            mask = (adata.obs[sample_col] == sample) & (adata.obs[ref_col] == ref)
+            group_label = f"{sample}__{ref}"
+
+        n_reads = int(mask.sum())
+        if n_reads < 2:
+            # store empty placeholders and continue
+            results[g] = {
+                "C0": np.nan,
+                "n_reads": int(n_reads),
+                "n_unique": 0,
+                "depths": np.array([], dtype=int),
+                "mean_unique": np.array([], dtype=float),
+                "ci_low": np.array([], dtype=float),
+                "ci_high": np.array([], dtype=float),
+            }
+            # also store back-compat key
+            adata.uns[f'Library_complexity_{sanitize(group_label)}'] = results[g]
             continue
 
-        # cluster ids per read for this sample
-        clusters = adata.obs.loc[mask, cluster_col].values
-        n_reads = clusters.shape[0]
+        # cluster ids array for this group
+        clusters = adata.obs.loc[mask, cluster_col].to_numpy()
         # observed unique molecules at full depth
         observed_unique = int(pd.unique(clusters).size)
 
@@ -86,28 +111,35 @@ def calculate_complexity_II(
         if n_depths < 2:
             depths = np.array([n_reads], dtype=int)
         else:
-            # spread from ~5% to 100% (at least 10 reads)
             lo = max(10, int(0.05 * n_reads))
             depths = np.unique(np.linspace(lo, n_reads, n_depths, dtype=int))
-        depths = depths[depths > 0]
+            depths = depths[depths > 0]
+        depths = depths.astype(int)
+        if depths.size == 0:
+            depths = np.array([n_reads], dtype=int)
 
-        # bootstrap expected unique at each depth
-        boot_unique = np.zeros((len(depths), n_boot), dtype=float)
+        # bootstrap sampling: for each depth, sample without replacement (if possible)
         idx_all = np.arange(n_reads)
+        boot_unique = np.zeros((len(depths), n_boot), dtype=float)
         for di, d in enumerate(depths):
-            if d > n_reads:
-                d = n_reads
+            d_use = int(min(d, n_reads))
+            # if d_use == n_reads we can short-circuit and set boot results to full observed uniques
+            if d_use == n_reads:
+                # bootstraps are deterministic in this special case
+                uniq_val = float(observed_unique)
+                boot_unique[di, :] = uniq_val
+                continue
+            # otherwise run bootstraps
             for b in range(n_boot):
-                take = rng.choice(idx_all, size=d, replace=False)
+                take = rng.choice(idx_all, size=d_use, replace=False)
                 boot_unique[di, b] = np.unique(clusters[take]).size
 
         mean_unique = boot_unique.mean(axis=1)
         lo_ci = np.percentile(boot_unique, 2.5, axis=1)
         hi_ci = np.percentile(boot_unique, 97.5, axis=1)
 
-        # fit LW to bootstrap means (guard with bounds)
-        # Initial C0 guess: observed_unique or mean at max depth
-        C0_init = max(observed_unique, mean_unique[-1])
+        # fit Lander-Waterman to the mean curve (safe bounds)
+        C0_init = max(observed_unique, mean_unique[-1] if mean_unique.size else observed_unique)
         try:
             popt, _ = curve_fit(
                 lw,
@@ -119,11 +151,10 @@ def calculate_complexity_II(
             )
             C0 = float(popt[0])
         except Exception:
-            # fallback: use observed unique as C0
             C0 = float(observed_unique)
 
-        # Store fit in adata.uns
-        adata.uns[f'Library_complexity_{sample}'] = {
+        # store results
+        results[g] = {
             "C0": C0,
             "n_reads": int(n_reads),
             "n_unique": int(observed_unique),
@@ -133,20 +164,24 @@ def calculate_complexity_II(
             "ci_high": hi_ci,
         }
 
-        # Generate smooth curve for plotting
-        x_fit = np.linspace(0, max(n_reads, depths[-1]), 200)
-        y_fit = lw(x_fit, C0)
+        # save per-group in adata.uns for backward compatibility
+        adata.uns[f'Library_complexity_{sanitize(group_label)}'] = results[g]
 
-        # Records for optional CSVs
+        # prepare curve and fit records for CSV
         fit_records.append({
             "sample": sample,
-            "C0": C0,
+            "reference": ref if ref_col is not None else "",
+            "C0": float(C0),
             "n_reads": int(n_reads),
-            "n_unique_observed": int(observed_unique)
+            "n_unique_observed": int(observed_unique),
         })
+
+        x_fit = np.linspace(0, max(n_reads, int(depths[-1]) if depths.size else n_reads), 200)
+        y_fit = lw(x_fit, C0)
         for d, mu, lo, hi in zip(depths, mean_unique, lo_ci, hi_ci):
             curve_records.append({
                 "sample": sample,
+                "reference": ref if ref_col is not None else "",
                 "type": "bootstrap",
                 "depth": int(d),
                 "mean_unique": float(mu),
@@ -156,6 +191,7 @@ def calculate_complexity_II(
         for xf, yf in zip(x_fit, y_fit):
             curve_records.append({
                 "sample": sample,
+                "reference": ref if ref_col is not None else "",
                 "type": "fit",
                 "depth": float(xf),
                 "mean_unique": float(yf),
@@ -163,38 +199,37 @@ def calculate_complexity_II(
                 "ci_high": np.nan,
             })
 
-        # Plot
+        # plotting for this group
         if plot:
             plt.figure(figsize=(6.5, 4.5))
-            # CI band
             plt.fill_between(depths, lo_ci, hi_ci, alpha=0.25, label="Bootstrap 95% CI")
-            # mean points
             plt.plot(depths, mean_unique, "o", label="Bootstrap mean")
-            # observed full-depth point
             plt.plot([n_reads], [observed_unique], "s", label="Observed (full)")
-            # LW fit
             plt.plot(x_fit, y_fit, "-", label=f"LW fit  C0≈{C0:,.0f}")
-
             plt.xlabel("Total reads (subsampled depth)")
             plt.ylabel("Unique molecules (clusters)")
-            plt.title(f"Library Complexity — {sample}")
+            title = f"Library Complexity — {sample}" + (f" / {ref}" if ref_col is not None else "")
+            plt.title(title)
             plt.grid(True, alpha=0.3)
             plt.legend()
             plt.tight_layout()
 
             if save_plot:
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                fname = f"{ts}_complexity_{sanitize(sample)}.png"
+                fname = f"complexity_{sanitize(group_label)}.png"
                 plt.savefig(os.path.join(output_directory or ".", fname), dpi=160, bbox_inches="tight")
                 plt.close()
             else:
                 plt.show()
 
-    # Optional CSV outputs
+    # store central results dict
+    adata.uns["Library_complexity_results"] = results
+
+    # CSV outputs
     if csv_summary and (fit_records or curve_records):
         fit_df = pd.DataFrame(fit_records)
         curve_df = pd.DataFrame(curve_records)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         base = output_directory or "."
-        fit_df.to_csv(os.path.join(base, f"{ts}_complexity_fit_summary.csv"), index=False)
-        curve_df.to_csv(os.path.join(base, f"{ts}_complexity_curves.csv"), index=False)
+        fit_df.to_csv(os.path.join(base, f"complexity_fit_summary.csv"), index=False)
+        curve_df.to_csv(os.path.join(base, f"complexity_curves.csv"), index=False)
+
+    return results

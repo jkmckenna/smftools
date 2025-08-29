@@ -334,7 +334,7 @@ def load_adata(config_path):
     ############################################### 8) Basic Read quality metrics: Read length, read quality, mapping quality, etc #################################################
 
     # Raw adata path info
-    raw_backup_dir = os.path.join(raw_adata_path, 'adata_accessory_data')
+    raw_backup_dir = os.path.join(os.path.dirname(raw_adata_path), 'adata_accessory_data')
 
     # Preprocessed adata path info
     pp_adata_basename = os.path.basename(raw_adata_path).split('.h5ad')[0] + '_preprocessed.h5ad.gz'
@@ -430,7 +430,11 @@ def load_adata(config_path):
         from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_length_qc_dir])
         obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
-        plot_read_qc_histograms(adata, pp_length_qc_dir, obs_to_plot, sample_key=cfg.sample_name_col_for_plotting, rows_per_fig=cfg.rows_per_qc_histogram_grid)
+        plot_read_qc_histograms(adata,
+                                pp_length_qc_dir, 
+                                obs_to_plot, 
+                                sample_key=cfg.sample_name_col_for_plotting, 
+                                rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ## Read length, quality, and mapping filtering
     from ..preprocessing import filter_reads_on_length_quality_mapping
@@ -452,7 +456,11 @@ def load_adata(config_path):
         from ..plotting import plot_read_qc_histograms
         make_dirs([pp_length_qc_dir])
         obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
-        plot_read_qc_histograms(adata, pp_length_qc_dir, obs_to_plot, sample_key=cfg.sample_name_col_for_plotting, rows_per_fig=cfg.rows_per_qc_histogram_grid)
+        plot_read_qc_histograms(adata, 
+                                pp_length_qc_dir, 
+                                obs_to_plot, 
+                                sample_key=cfg.sample_name_col_for_plotting, 
+                                rows_per_fig=cfg.rows_per_qc_histogram_grid)
     ########################################################################################################################
 
     ############################################### 9) Basic Preprocessing ###############################################
@@ -463,14 +471,31 @@ def load_adata(config_path):
         from ..preprocessing import calculate_position_Youden, binarize_on_Youden
         native = True
         # Calculate positional methylation thresholds for mod calls
-        calculate_position_Youden(adata, positive_control_sample=None, negative_control_sample=None, J_threshold=0.5, 
-                                  obs_column=reference_column, infer_on_percentile=10, inference_variable='Raw_modification_signal', save=False, output_directory='')
+        calculate_position_Youden(adata, 
+                                  positive_control_sample=None, 
+                                  negative_control_sample=None, 
+                                  J_threshold=0.5, 
+                                  obs_column=reference_column, 
+                                  infer_on_percentile=10, 
+                                  inference_variable='Raw_modification_signal', 
+                                  save=False, 
+                                  output_directory=''
+                                  )
         # binarize the modcalls based on the determined thresholds
-        binarize_on_Youden(adata, obs_column=reference_column)
-        clean_NaN(adata, layer='binarized_methylation', bypass=cfg.bypass_clean_nan, force_redo=cfg.force_redo_clean_nan)
+        binarize_on_Youden(adata, 
+                           obs_column=reference_column
+                           )
+        clean_NaN(adata, 
+                  layer='binarized_methylation',
+                  bypass=cfg.bypass_clean_nan, 
+                  force_redo=cfg.force_redo_clean_nan
+                  )
     else:
         native = False
-        clean_NaN(adata, bypass=cfg.bypass_clean_nan, force_redo=cfg.force_redo_clean_nan)
+        clean_NaN(adata, 
+                  bypass=cfg.bypass_clean_nan, 
+                  force_redo=cfg.force_redo_clean_nan
+                  )
 
     ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats ###############
     from ..preprocessing import append_base_context, append_binary_layer_by_base_context
@@ -484,10 +509,10 @@ def load_adata(config_path):
                         force_redo=cfg.force_redo_append_base_context)
     
     adata = append_binary_layer_by_base_context(adata, 
-                                                      reference_column, 
-                                                      smf_modality,
-                                                      bypass=cfg.bypass_append_binary_layer_by_base_context,
-                                                      force_redo=cfg.force_redo_append_binary_layer_by_base_context)
+                                                reference_column, 
+                                                smf_modality,
+                                                bypass=cfg.bypass_append_binary_layer_by_base_context,
+                                                force_redo=cfg.force_redo_append_binary_layer_by_base_context)
     
     ############### Optional inversion of the adata along positions axis ###################
     if cfg.invert_adata:
@@ -517,7 +542,10 @@ def load_adata(config_path):
             obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
         if 'A' in mod_target_bases:
             obs_to_plot += ['Fraction_A_site_modified']
-        plot_read_qc_histograms(adata, pp_meth_qc_dir, obs_to_plot, sample_key=cfg.sample_name_col_for_plotting, rows_per_fig=cfg.rows_per_qc_histogram_grid)
+        plot_read_qc_histograms(adata, 
+                                pp_meth_qc_dir, obs_to_plot, 
+                                sample_key=cfg.sample_name_col_for_plotting, 
+                                rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ##### Optionally filter reads on modification metrics
     from ..preprocessing import filter_reads_on_modification_thresholds
@@ -546,11 +574,17 @@ def load_adata(config_path):
             obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
         if 'A' in mod_target_bases:
             obs_to_plot += ['Fraction_A_site_modified']
-        plot_read_qc_histograms(adata, pp_meth_qc_dir, obs_to_plot, sample_key=cfg.sample_name_col_for_plotting, rows_per_fig=cfg.rows_per_qc_histogram_grid)
+        plot_read_qc_histograms(adata, 
+                                pp_meth_qc_dir,
+                                obs_to_plot, 
+                                sample_key=cfg.sample_name_col_for_plotting, 
+                                rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ############### Calculate positional coverage in dataset ###############
     from ..preprocessing import calculate_coverage
-    calculate_coverage(adata, obs_column=reference_column, position_nan_threshold=0.1)
+    calculate_coverage(adata, 
+                       obs_column=reference_column, 
+                       position_nan_threshold=0.1)
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != 'direct':
@@ -596,6 +630,7 @@ def load_adata(config_path):
             adata=adata,
             output_directory=complexity_outs,
             sample_col=cfg.sample_name_col_for_plotting,
+            ref_col=reference_column,
             cluster_col='sequence__merged_cluster_id',
             plot=True,
             save_plot=True,   # set False to display instead
@@ -653,10 +688,10 @@ def load_adata(config_path):
                                                          cmap_any_c="coolwarm", 
                                                          cmap_gpc="coolwarm", 
                                                          cmap_cpg="viridis", 
-                                                         min_quality=25, 
-                                                         min_length=500, 
-                                                         min_mapped_length_to_reference_length_ratio=0.9,
-                                                         min_position_valid_fraction=0.8,
+                                                         min_quality=cfg.read_quality_filter_thresholds[0], 
+                                                         min_length=cfg.read_len_filter_thresholds[0], 
+                                                         min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+                                                         min_position_valid_fraction=cfg.min_valid_fraction_positions_in_read_vs_ref,
                                                          bins=None,
                                                          sample_mapping=None, 
                                                          save_path=pp_clustermap_dir, 
@@ -680,16 +715,17 @@ def load_adata(config_path):
             make_dirs([pp_dir, pp_clustermap_dir])
             clustermap_results = combined_raw_clustermap(adata, 
                                                          sample_col=cfg.sample_name_col_for_plotting, 
+                                                         reference_col=cfg.reference_column,
                                                          layer_any_c=cfg.layer_for_clustermap_plotting, 
                                                          layer_gpc=cfg.layer_for_clustermap_plotting, 
                                                          layer_cpg=cfg.layer_for_clustermap_plotting, 
                                                          cmap_any_c="coolwarm", 
                                                          cmap_gpc="coolwarm", 
                                                          cmap_cpg="viridis", 
-                                                         min_quality=25, 
-                                                         min_length=500, 
-                                                         min_mapped_length_to_reference_length_ratio=0.9,
-                                                         min_position_valid_fraction=0.8,
+                                                         min_quality=cfg.read_quality_filter_thresholds[0], 
+                                                         min_length=cfg.read_len_filter_thresholds[0], 
+                                                         min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+                                                         min_position_valid_fraction=cfg.min_valid_fraction_positions_in_read_vs_ref,
                                                          bins=None,
                                                          sample_mapping=None, 
                                                          save_path=pp_clustermap_dir, 
