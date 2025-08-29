@@ -72,7 +72,7 @@ def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
 def flag_duplicate_reads(
     adata,
     var_filters_sets,
-    distance_threshold: float = 0.12,
+    distance_threshold: float = 0.07,
     obs_reference_col: str = "Reference_strand",
     sample_col: str = "Barcode",
     output_directory: Optional[str] = None,
@@ -517,8 +517,8 @@ def flag_duplicate_reads(
     scatter_outs = os.path.join(output_directory, "read_pair_hamming_distance_scatter_plots")
     make_dirs([scatter_outs])
     plot_hamming_vs_metric_pages(adata_full, 
-                                 metric_keys=metric_keys, 
-                                 output_dir=scatter_outs,
+                                metric_keys=metric_keys, 
+                                output_dir=scatter_outs,
                                 hamming_col="sequence__min_hamming_to_pair",
                                 highlight_threshold=distance_threshold, 
                                 highlight_color="red",
@@ -649,17 +649,9 @@ def plot_histogram_pages(
     """
     Plot Hamming-distance histograms as a grid (rows=samples, cols=references).
 
-    Behavior:
-      - If `adata` is provided, pulls per-read distances from adata.obs for:
-          "min"  -> distance_key (default 'sequence__min_hamming_to_pair')
-          "fwd"  -> 'fwd_hamming_to_next'
-          "rev"  -> 'rev_hamming_to_prev'
-          "hier" -> 'sequence__hier_hamming_to_pair'
-        and also derives cluster sizes from adata.obs using
-          'sequence__merged_cluster_id' and 'sequence__cluster_size' (one size per cluster).
-      - Falls back to using the `histograms` list (legacy) for lex-local distances ('distances')
-        and cluster_counts if adata doesn't contain cluster columns.
-      - Overlays histograms for distance_types provided.
+    Changes:
+      - Ensures that every subplot in a column (same ref) uses the same X-axis range and the same bins,
+        computed from the union of values for that reference across samples/dtypes (clamped to [0,1]).
     """
     if distance_types is None:
         distance_types = ["min", "fwd", "rev", "hier", "lex_local"]
@@ -685,26 +677,21 @@ def plot_histogram_pages(
         print("No histogram data to plot.")
         return {"distance_pages": [], "cluster_size_pages": []}
 
-    # helper to fetch arrays safely and sanitize values to 0..1
     def clean_array(arr):
         if arr is None or len(arr) == 0:
             return np.array([], dtype=float)
         a = np.asarray(arr, dtype=float)
         a = a[np.isfinite(a)]
-        # keep values within [0,1] (hamming distances should be in this range)
         a = a[(a >= 0.0) & (a <= 1.0)]
         return a
 
-    # Build grid data structure keyed by (sample, ref) containing distance lists per dtype
     grid = defaultdict(lambda: defaultdict(list))
-    # If adata available, populate from adata.obs
+    # populate from adata if available
     if use_adata:
         obs = adata.obs
-        # iterate groups for speed/stability
         try:
             grouped = obs.groupby([sample_key, ref_key])
         except Exception:
-            # fallback in case grouping fails (e.g., weird index types)
             grouped = []
             for s in samples:
                 for r in references:
@@ -712,7 +699,6 @@ def plot_histogram_pages(
                     if not sub.empty:
                         grouped.append(((s, r), sub))
         if isinstance(grouped, dict) or hasattr(grouped, "groups"):
-            # pandas GroupBy
             for (s, r), group in grouped:
                 if "min" in distance_types and distance_key in group.columns:
                     grid[(s, r)]["min"].extend(clean_array(group[distance_key].to_numpy()))
@@ -723,7 +709,6 @@ def plot_histogram_pages(
                 if "hier" in distance_types and "sequence__hier_hamming_to_pair" in group.columns:
                     grid[(s, r)]["hier"].extend(clean_array(group["sequence__hier_hamming_to_pair"].to_numpy()))
         else:
-            # grouped is a list of ((s,r), sub_df)
             for (s, r), group in grouped:
                 if "min" in distance_types and distance_key in group.columns:
                     grid[(s, r)]["min"].extend(clean_array(group[distance_key].to_numpy()))
@@ -734,32 +719,44 @@ def plot_histogram_pages(
                 if "hier" in distance_types and "sequence__hier_hamming_to_pair" in group.columns:
                     grid[(s, r)]["hier"].extend(clean_array(group["sequence__hier_hamming_to_pair"].to_numpy()))
 
-    # Always fill legacy lex_local and aggregated hierarchical pairs from histograms list if present
+    # legacy histograms fallback
     if histograms:
         for h in histograms:
             key = (h["sample"], h["reference"])
             if "lex_local" in distance_types:
                 grid[key]["lex_local"].extend(clean_array(h.get("distances", [])))
-            # if adata did not provide a hierarchical per-read column, hist entry may contain aggregated hierarchical pairs
             if "hier" in distance_types and "hierarchical_pairs" in h:
                 grid[key]["hier"].extend(clean_array(h.get("hierarchical_pairs", [])))
-            # also ensure cluster_counts survives here for fallback usage
             if "cluster_counts" in h:
                 grid[key]["_legacy_cluster_counts"].extend(h.get("cluster_counts", []))
 
-    # ensure keys exist for stability
-    for s in samples:
-        for r in references:
-            for dtype in distance_types:
-                _ = grid[(s, r)].get(dtype, [])
+    # Compute per-reference global x-range and bin edges (so every subplot in a column uses same bins)
+    ref_xmax = {}
+    for ref in references:
+        vals_for_ref = []
+        for s in samples:
+            for dt in distance_types:
+                a = np.asarray(grid[(s, ref)].get(dt, []), dtype=float)
+                if a.size:
+                    a = a[np.isfinite(a)]
+                    if a.size:
+                        vals_for_ref.append(a)
+        if vals_for_ref:
+            allvals = np.concatenate(vals_for_ref)
+            vmax = float(np.nanmax(allvals)) if np.isfinite(allvals).any() else 1.0
+            # pad slightly to include uppermost bin and always keep at least distance_threshold
+            vmax = max(vmax, float(distance_threshold))
+            vmax = min(1.0, max(0.01, vmax))  # clamp to [0.01, 1.0] to avoid degenerate bins
+        else:
+            vmax = 1.0
+        ref_xmax[ref] = vmax
 
-    # counts used for label n=..
+    # counts (for labels)
     if use_adata:
         counts = {(s, r): int(((adata.obs[sample_key] == s) & (adata.obs[ref_key] == r)).sum()) for s in samples for r in references}
     else:
         counts = {(s, r): sum(len(grid[(s, r)][dt]) for dt in distance_types) for s in samples for r in references}
 
-    # plotting pages
     distance_pages = []
     cluster_size_pages = []
     n_pages = math.ceil(len(samples) / rows_per_page)
@@ -782,18 +779,21 @@ def plot_histogram_pages(
             for c_idx, ref_name in enumerate(references):
                 ax = axes[r_idx][c_idx]
                 any_data = False
-                bins_edges = np.linspace(0.0, 1.0, bins + 1)
+                # pick per-column bins based on ref_xmax
+                ref_vmax = ref_xmax.get(ref_name, 1.0)
+                bins_edges = np.linspace(0.0, ref_vmax, bins + 1)
                 for dtype in distance_types:
                     vals = np.asarray(grid[(sample_name, ref_name)].get(dtype, []), dtype=float)
                     if vals.size > 0:
                         vals = vals[np.isfinite(vals)]
-                        vals = vals[(vals >= 0.0) & (vals <= 1.0)]
+                        vals = vals[(vals >= 0.0) & (vals <= ref_vmax)]
                     if vals.size > 0:
                         any_data = True
                         ax.hist(vals, bins=bins_edges, alpha=0.5, label=dtype, density=False, stacked=False,
                                 color=dtype_colors.get(dtype, None))
                 if not any_data:
                     ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=10, color="gray")
+                # threshold line (make sure it is within axis)
                 ax.axvline(distance_threshold, color="red", linestyle="--", linewidth=1)
 
                 if r_idx == 0:
@@ -806,7 +806,7 @@ def plot_histogram_pages(
                 else:
                     ax.set_xticklabels([])
 
-                ax.set_xlim(left=0.0, right=1.0)
+                ax.set_xlim(left=0.0, right=ref_vmax)
                 ax.grid(True, alpha=0.25)
                 if r_idx == 0 and c_idx == 0:
                     ax.legend(fontsize=7, loc="upper right")
@@ -823,7 +823,7 @@ def plot_histogram_pages(
             plt.show()
         plt.close(fig)
 
-        # Cluster-size histogram page (prefer adata-derived cluster sizes; fallback to histograms)
+        # Cluster-size histogram page (unchanged except it uses adata-derived sizes per cluster if available)
         fig_w = figsize_per_cell[0] * ncols
         fig_h = figsize_per_cell[1] * nrows
         fig2, axes2 = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False)
@@ -832,23 +832,18 @@ def plot_histogram_pages(
             for c_idx, ref_name in enumerate(references):
                 ax = axes2[r_idx][c_idx]
                 sizes = []
-                # prefer adata-derived cluster sizes (one per cluster)
                 if use_adata and ("sequence__merged_cluster_id" in adata.obs.columns and "sequence__cluster_size" in adata.obs.columns):
                     sub = adata.obs[(adata.obs[sample_key] == sample_name) & (adata.obs[ref_key] == ref_name)]
                     if not sub.empty:
-                        # group by cluster id and take the first reported cluster_size per cluster
                         try:
                             grp = sub.groupby("sequence__merged_cluster_id")["sequence__cluster_size"].first()
-                            # convert to int list
                             sizes = [int(x) for x in grp.to_numpy().tolist() if (pd.notna(x) and np.isfinite(x))]
                         except Exception:
-                            # fallback robust approach
                             try:
                                 unique_pairs = sub[["sequence__merged_cluster_id", "sequence__cluster_size"]].drop_duplicates()
                                 sizes = [int(x) for x in unique_pairs["sequence__cluster_size"].dropna().astype(int).tolist()]
                             except Exception:
                                 sizes = []
-                # fallback to histograms list legacy cluster_counts if adata not available or produced no sizes
                 if (not sizes) and histograms:
                     for h in histograms:
                         if h.get("sample") == sample_name and h.get("reference") == ref_name:
@@ -908,10 +903,16 @@ def plot_hamming_vs_metric_pages(
     random_state: int = 0,
     highlight_threshold: Optional[float] = None,
     highlight_color: str = "red",
+    color_by_duplicate: bool = False,
+    duplicate_col: str = "is_duplicate",
 ) -> Dict[str, Any]:
     """
-    Robust plotting of hamming (y) vs metric (x). Added optional highlighting of points
-    with hamming < highlight_threshold to visually mark 'duplicate candidates'.
+    Plot hamming (y) vs metric (x).
+
+    New behavior:
+      - If color_by_duplicate is True and adata.obs[duplicate_col] exists, points are colored by that boolean:
+           duplicates -> highlight_color (with edge), non-duplicates -> gray
+      - If color_by_duplicate is False, previous highlight_threshold behavior is preserved.
     """
     if isinstance(metric_keys, str):
         metric_keys = [metric_keys]
@@ -1034,7 +1035,6 @@ def plot_hamming_vs_metric_pages(
                         y = y_all[valid_pair_mask]
                         idxs_valid = idxs[valid_pair_mask]
                     else:
-                        # insufficient paired data
                         x = np.array([], dtype=float)
                         y = np.array([], dtype=float)
                         idxs_valid = np.array([], dtype=int)
@@ -1043,17 +1043,31 @@ def plot_hamming_vs_metric_pages(
                         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
                         clusters_info[(sample_name, ref_name)] = {"diag": None, "n_points": 0}
                     else:
-                        # optionally highlight points under threshold
-                        if highlight_threshold is not None and y.size:
-                            mask_low = (y < float(highlight_threshold)) & np.isfinite(y)
-                            mask_high = ~mask_low
-                            # plot high first (gray)
-                            if mask_high.any():
-                                ax.scatter(x[mask_high], y[mask_high], s=12, alpha=0.6, rasterized=True)
-                            if mask_low.any():
-                                ax.scatter(x[mask_low], y[mask_low], s=18, alpha=0.9, rasterized=True, c=highlight_color, edgecolors="k", linewidths=0.3)
+                        # Decide color mapping
+                        if color_by_duplicate and duplicate_col in adata.obs.columns and idxs_valid.size > 0:
+                            # get boolean series aligned to idxs_valid
+                            try:
+                                dup_flags = adata.obs.loc[idxs_valid, duplicate_col].astype(bool).to_numpy()
+                            except Exception:
+                                dup_flags = np.zeros(len(idxs_valid), dtype=bool)
+                            mask_dup = dup_flags
+                            mask_nondup = ~mask_dup
+                            # plot non-duplicates first in gray, duplicates in highlight color
+                            if mask_nondup.any():
+                                ax.scatter(x[mask_nondup], y[mask_nondup], s=12, alpha=0.6, rasterized=True, c="lightgray")
+                            if mask_dup.any():
+                                ax.scatter(x[mask_dup], y[mask_dup], s=20, alpha=0.9, rasterized=True, c=highlight_color, edgecolors="k", linewidths=0.3)
                         else:
-                            ax.scatter(x, y, s=12, alpha=0.6, rasterized=True)
+                            # old behavior: highlight by threshold if requested
+                            if highlight_threshold is not None and y.size:
+                                mask_low = (y < float(highlight_threshold)) & np.isfinite(y)
+                                mask_high = ~mask_low
+                                if mask_high.any():
+                                    ax.scatter(x[mask_high], y[mask_high], s=12, alpha=0.6, rasterized=True)
+                                if mask_low.any():
+                                    ax.scatter(x[mask_low], y[mask_low], s=18, alpha=0.9, rasterized=True, c=highlight_color, edgecolors="k", linewidths=0.3)
+                            else:
+                                ax.scatter(x, y, s=12, alpha=0.6, rasterized=True)
 
                         if kde and gaussian_kde is not None and x.size >= 4:
                             try:

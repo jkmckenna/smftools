@@ -20,7 +20,7 @@ def filter_reads_on_modification_thresholds(
     force_redo: bool = False,
     reference_column: str = 'Reference_strand',
     # memory-control options:
-    batch_size: int = 2000,
+    batch_size: int = 200,
     compute_obs_if_missing: bool = True,
     treat_zero_as_invalid: bool = False
 ) -> ad.AnnData:
@@ -241,18 +241,18 @@ def filter_reads_on_modification_thresholds(
         # optionally compute GpC_to_other_C_mod_ratio and CpG_to_other_C_mod_ratio (if other_C masks exist)
         if "GpC" in mod_target_bases and use_other_c_as_background:
             # compute per-ref background ratio if both exist
-            # Simplest approach: if 'Fraction_GpC_site_modified' and 'Fraction_any_C_site_modified' exist, compute ratio
-            if "Fraction_any_C_site_modified" in adata.obs.columns:
+            # Simplest approach: if 'Fraction_GpC_site_modified' and 'Fraction_other_C_site_modified' exist, compute ratio
+            if "Fraction_other_C_site_modified" in adata.obs.columns:
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    ratio = adata.obs["Fraction_GpC_site_modified"].astype(float) / adata.obs["Fraction_any_C_site_modified"].astype(float)
+                    ratio = adata.obs["Fraction_GpC_site_modified"].astype(float) / adata.obs["Fraction_other_C_site_modified"].astype(float)
                 adata.obs["GpC_to_other_C_mod_ratio"] = ratio.fillna(0.0)
             else:
                 adata.obs["GpC_to_other_C_mod_ratio"] = np.nan
 
         if "CpG" in mod_target_bases and use_other_c_as_background:
-            if "Fraction_any_C_site_modified" in adata.obs.columns:
+            if "Fraction_other_C_site_modified" in adata.obs.columns:
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    ratio = adata.obs["Fraction_CpG_site_modified"].astype(float) / adata.obs["Fraction_any_C_site_modified"].astype(float)
+                    ratio = adata.obs["Fraction_CpG_site_modified"].astype(float) / adata.obs["Fraction_other_C_site_modified"].astype(float)
                 adata.obs["CpG_to_other_C_mod_ratio"] = ratio.fillna(0.0)
             else:
                 adata.obs["CpG_to_other_C_mod_ratio"] = np.nan
@@ -280,36 +280,36 @@ def filter_reads_on_modification_thresholds(
     if gpc_thresholds and 'GpC' in mod_target_bases:
         lo, hi = _unpack_minmax(gpc_thresholds)
         if use_other_c_as_background and smf_modality != 'deaminase' and "GpC_to_other_C_mod_ratio" in filtered.obs.columns:
-            filtered = filtered[filtered.obs["GpC_to_other_C_mod_ratio"].astype(float) > 1].copy()
+            filtered = filtered[filtered.obs["GpC_to_other_C_mod_ratio"].astype(float) > 1]
         if lo is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_GpC_site_modified"].astype(float) > lo].copy()
+            filtered = filtered[filtered.obs["Fraction_GpC_site_modified"].astype(float) > lo]
             print(f"Removed {s0 - filtered.n_obs} reads below min GpC fraction {lo}")
         if hi is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_GpC_site_modified"].astype(float) < hi].copy()
+            filtered = filtered[filtered.obs["Fraction_GpC_site_modified"].astype(float) < hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max GpC fraction {hi}")
         if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_GpC_site_in_read_vs_reference" in filtered.obs.columns):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_GpC_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)].copy()
+            filtered = filtered[filtered.obs["Valid_GpC_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)]
             print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid GpC site fraction vs ref")
 
     # CpG thresholds
     if cpg_thresholds and 'CpG' in mod_target_bases:
         lo, hi = _unpack_minmax(cpg_thresholds)
         if use_other_c_as_background and smf_modality != 'deaminase' and "CpG_to_other_C_mod_ratio" in filtered.obs.columns:
-            filtered = filtered[filtered.obs["CpG_to_other_C_mod_ratio"].astype(float) > 1].copy()
+            filtered = filtered[filtered.obs["CpG_to_other_C_mod_ratio"].astype(float) > 1]
         if lo is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_CpG_site_modified"].astype(float) > lo].copy()
+            filtered = filtered[filtered.obs["Fraction_CpG_site_modified"].astype(float) > lo]
             print(f"Removed {s0 - filtered.n_obs} reads below min CpG fraction {lo}")
         if hi is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_CpG_site_modified"].astype(float) < hi].copy()
+            filtered = filtered[filtered.obs["Fraction_CpG_site_modified"].astype(float) < hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max CpG fraction {hi}")
         if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_CpG_site_in_read_vs_reference" in filtered.obs.columns):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_CpG_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)].copy()
+            filtered = filtered[filtered.obs["Valid_CpG_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)]
             print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid CpG site fraction vs ref")
 
     # any C thresholds
@@ -317,15 +317,15 @@ def filter_reads_on_modification_thresholds(
         lo, hi = _unpack_minmax(any_c_thresholds)
         if lo is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_any_C_site_modified"].astype(float) > lo].copy()
+            filtered = filtered[filtered.obs["Fraction_any_C_site_modified"].astype(float) > lo]
             print(f"Removed {s0 - filtered.n_obs} reads below min any-C fraction {lo}")
         if hi is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_any_C_site_modified"].astype(float) < hi].copy()
+            filtered = filtered[filtered.obs["Fraction_any_C_site_modified"].astype(float) < hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max any-C fraction {hi}")
         if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_any_C_site_in_read_vs_reference" in filtered.obs.columns):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_any_C_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)].copy()
+            filtered = filtered[filtered.obs["Valid_any_C_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)]
             print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid any-C site fraction vs ref")
 
     # A thresholds
@@ -333,150 +333,20 @@ def filter_reads_on_modification_thresholds(
         lo, hi = _unpack_minmax(a_thresholds)
         if lo is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_A_site_modified"].astype(float) > lo].copy()
+            filtered = filtered[filtered.obs["Fraction_A_site_modified"].astype(float) > lo]
             print(f"Removed {s0 - filtered.n_obs} reads below min A fraction {lo}")
         if hi is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_A_site_modified"].astype(float) < hi].copy()
+            filtered = filtered[filtered.obs["Fraction_A_site_modified"].astype(float) < hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max A fraction {hi}")
         if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_A_site_in_read_vs_reference" in filtered.obs.columns):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_A_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)].copy()
+            filtered = filtered[filtered.obs["Valid_A_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)]
             print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid A site fraction vs ref")
+
+    filtered = filtered.copy()
 
     # mark as done
     filtered.uns[uns_flag] = True
 
     return filtered
-
-
-# def filter_reads_on_modification_thresholds(adata, 
-#                                           smf_modality,
-#                                           mod_target_bases=[],
-#                                           gpc_thresholds=None, 
-#                                           cpg_thresholds=None,
-#                                           any_c_thresholds=None,
-#                                           a_thresholds=None,
-#                                           use_other_c_as_background=False,
-#                                           min_valid_fraction_positions_in_read_vs_ref=None,
-#                                           uns_flag='reads_filtered_on_modification_thresholds',
-#                                           bypass=False,
-#                                           force_redo=False):
-#     """
-#     Filter adata object using minimum thresholds for valid SMF site fraction in read, as well as minimum modification content in read.
-
-#     Parameters:
-#         adata (AnnData): An adata object.
-#         thresholds (various types) (list of floats): [A minimum read modification fraction, a maximum read modification fraction]. Floats range between 0 and 1.
-#     Returns:
-#         Anndata
-#     """
-#     import numpy as np
-#     import anndata as ad
-#     import pandas as pd
-
-#     # Only run if not already performed
-#     already = bool(adata.uns.get(uns_flag, False))
-#     if (already and not force_redo) or bypass:
-#         # QC already performed; nothing to do
-#         return adata
-
-#     if gpc_thresholds and 'GpC' in mod_target_bases:
-#         min_threshold, max_threshold = gpc_thresholds
-#         if use_other_c_as_background and smf_modality != 'deaminase':
-#             # Keep reads with SMF mod over background mod.
-#             below_background = (adata.obs['GpC_to_other_C_mod_ratio'] < 1).sum()
-#             print(f'Removing {below_background} reads that have GpC modification below background other C modification rate')
-#             adata = adata[adata.obs['GpC_to_other_C_mod_ratio'] > 1].copy()
-#         # Keep reads over a defined mod threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs['Fraction_GpC_site_modified'] > min_threshold].copy()
-#         s1 = adata.shape[0]
-#         below_threshold = s0 - s1
-#         print(f'Removing {below_threshold} reads that have GpC modification below a minimum threshold modification rate')
-#         # Keep reads below a defined mod threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs['Fraction_GpC_site_modified'] < max_threshold].copy()
-#         s1 = adata.shape[0]
-#         above_threshold = s0 - s1
-#         print(f'Removing {above_threshold} reads that have GpC modification above a maximum threshold modification rate')
-#         # Keep reads above a defined valid position threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs[f'Valid_GpC_site_in_read_vs_reference'] > min_valid_fraction_positions_in_read_vs_ref].copy()
-#         s1 = adata.shape[0]
-#         below_threshold = s0 - s1
-#         print(f'Removing {below_threshold} reads that have valid GpC sites below a minimum threshold ratio of the reference')
-
-#     if cpg_thresholds and 'CpG' in mod_target_bases:
-#         min_threshold, max_threshold = cpg_thresholds
-#         # Keep reads with SMF mod over background mod.
-#         if use_other_c_as_background and smf_modality != 'deaminase':
-#             below_background = (adata.obs['CpG_to_other_C_mod_ratio'] < 1).sum()
-#             print(f'Removing {below_background} reads that have CpG modification below background modification rate')
-#             adata = adata[adata.obs['CpG_to_other_C_mod_ratio'] > 1].copy()
-#         # Keep reads over a defined mod threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs['Fraction_CpG_site_modified'] > min_threshold].copy()
-#         s1 = adata.shape[0]
-#         below_threshold = s0 - s1
-#         print(f'Removing {below_threshold} reads that have CpG modification below a minimum threshold modification rate')
-#         # Keep reads below a defined mod threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs['Fraction_CpG_site_modified'] < max_threshold].copy()
-#         s1 = adata.shape[0]
-#         above_threshold = s0 - s1
-#         print(f'Removing {above_threshold} reads that have CpG modification above a maximum threshold modification rate')
-#         # Keep reads above a defined valid position threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs[f'Valid_CpG_site_in_read_vs_reference'] > min_valid_fraction_positions_in_read_vs_ref].copy()
-#         s1 = adata.shape[0]
-#         below_threshold = s0 - s1
-#         print(f'Removing {below_threshold} reads that have valid CpG sites below a minimum threshold ratio of the reference')
-
-#     if any_c_thresholds and 'C' in mod_target_bases:
-#         min_threshold, max_threshold = any_c_thresholds
-#         # Keep reads over a defined mod threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs['Fraction_any_C_site_modified'] > min_threshold].copy()
-#         s1 = adata.shape[0]
-#         below_threshold = s0 - s1
-#         print(f'Removing {below_threshold} reads that have C modification below a minimum threshold modification rate')
-#         # Keep reads below a defined mod threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs['Fraction_any_C_site_modified'] < max_threshold].copy()
-#         s1 = adata.shape[0]
-#         above_threshold = s0 - s1
-#         print(f'Removing {above_threshold} reads that have any C modification above a maximum threshold modification rate')
-#         # Keep reads above a defined valid position threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs[f'Valid_any_C_site_in_read_vs_reference'] > min_valid_fraction_positions_in_read_vs_ref].copy()
-#         s1 = adata.shape[0]
-#         below_threshold = s0 - s1
-#         print(f'Removing {below_threshold} reads that have valid C sites below a minimum threshold ratio of the reference')
-
-#     if a_thresholds and 'A' in mod_target_bases:
-#         min_threshold, max_threshold = a_thresholds
-#         # Keep reads over a defined mod threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs['Fraction_A_site_modified'] > min_threshold].copy()
-#         s1 = adata.shape[0]
-#         below_threshold = s0 - s1
-#         print(f'Removing {below_threshold} reads that have A modification below a minimum threshold modification rate')
-#         # Keep reads below a defined mod threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs['Fraction_A_site_modified'] < max_threshold].copy()
-#         s1 = adata.shape[0]
-#         above_threshold = s0 - s1
-#         print(f'Removing {above_threshold} reads that have any A modification above a maximum threshold modification rate')
-#         # Keep reads above a defined valid position threshold
-#         s0 = adata.shape[0]
-#         adata = adata[adata.obs[f'Valid_A_site_in_read_vs_reference'] > min_valid_fraction_positions_in_read_vs_ref].copy()
-#         s1 = adata.shape[0]
-#         below_threshold = s0 - s1
-#         print(f'Removing {below_threshold} reads that have valid A sites below a minimum threshold ratio of the reference')
-
-#     # mark as done
-#     adata.uns[uns_flag] = True
-
-#     return adata
-

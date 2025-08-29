@@ -613,7 +613,7 @@ class ExperimentConfig:
 
     # Preprocessing - Duplicate detection paramss
     duplicate_detection_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'ambiguous_GpC_CpG'])
-    duplicate_detection_distance_threshold: float = 0.1
+    duplicate_detection_distance_threshold: float = 0.07
     hamming_vs_metric_keys: List[str] = field(default_factory=lambda: ['Fraction_any_C_site_modified'])
     duplicate_detection_keep_best_metric: str ='read_quality'
     duplicate_detection_window_size_for_hamming_neighbors: int = 50
@@ -628,7 +628,7 @@ class ExperimentConfig:
     # Basic Analysis - Spatial Autocorrelation params
     rows_per_qc_autocorr_grid: int = 12
     autocorr_rolling_window_size: int = 25
-    autocorr_max_lag: int = 500
+    autocorr_max_lag: int = 800
     autocorr_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'any_C'])
 
     # Basic Analysis - Correlation Matrix params
@@ -873,7 +873,7 @@ class ExperimentConfig:
             rows_per_qc_histogram_grid = merged.get("rows_per_qc_histogram_grid", 12),
             rows_per_qc_autocorr_grid = merged.get("rows_per_qc_autocorr_grid", 12),
             autocorr_rolling_window_size = merged.get("autocorr_rolling_window_size", 25),
-            autocorr_max_lag = merged.get("autocorr_max_lag", 500), 
+            autocorr_max_lag = merged.get("autocorr_max_lag", 800), 
             autocorr_site_types = merged.get("autocorr_site_types", ['GpC', 'CpG', 'any_C']),
             hmm_n_states = merged.get("hmm_n_states", 2), 
             hmm_init_emission_probs = merged.get("hmm_init_emission_probs",[[0.8, 0.2], [0.2, 0.8]]),
@@ -891,9 +891,9 @@ class ExperimentConfig:
             read_mod_filtering_use_other_c_as_background = merged.get("read_mod_filtering_use_other_c_as_background", True),
             min_valid_fraction_positions_in_read_vs_ref = merged.get("min_valid_fraction_positions_in_read_vs_ref", 0.2), 
             duplicate_detection_site_types = merged.get("duplicate_detection_site_types", ['GpC', 'CpG', 'ambiguous_GpC_CpG']),
-            duplicate_detection_distance_threshold = merged.get("duplicate_detection_distance_threshold", 0.1),
+            duplicate_detection_distance_threshold = merged.get("duplicate_detection_distance_threshold", 0.07),
             duplicate_detection_keep_best_metric = merged.get("duplicate_detection_keep_best_metric", "read_quality"),
-            duplicate_detection_window_size_for_hamming_neighbors = merged.get("duplicate_detection_distance_threshold", 50),
+            duplicate_detection_window_size_for_hamming_neighbors = merged.get("duplicate_detection_window_size_for_hamming_neighbors", 50),
             duplicate_detection_min_overlapping_positions = merged.get("duplicate_detection_min_overlapping_positions", 20),
             duplicate_detection_do_hierarchical = merged.get("duplicate_detection_do_hierarchical", True),
             duplicate_detection_hierarchical_linkage = merged.get("duplicate_detection_hierarchical_linkage", "average"),

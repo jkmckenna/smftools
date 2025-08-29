@@ -6,6 +6,21 @@ conversion_types:
 mod_target_bases:
 - "C"
 
+read_mod_filtering_gpc_thresholds:
+  - null
+  - null
+read_mod_filtering_cpg_thresholds:
+  - null
+  - null
+read_mod_filtering_any_c_thresholds:
+  - 0.01
+  - 0.99
+read_mod_filtering_a_thresholds:
+  - null
+  - null
+
+read_mod_filtering_use_other_c_as_background: False
+
 # Duplicate Detection Params
 duplicate_detection_site_types:
   - "any_C"
