@@ -9,9 +9,10 @@ from . import plotting as pl
 from . import preprocessing as pp
 from . import tools as tl
 
-from . import datasets, hmm, readwrite
+from . import config, datasets, hmm, readwrite
 from .readwrite import adata_to_df, safe_write_h5ad, merge_barcoded_anndatas
 
+from .load_adata import load_adata
 
 from importlib.metadata import version
 
@@ -19,6 +20,7 @@ package_name = "smftools"
 __version__ = version(package_name)
 
 __all__ = [
+    "load_adata"
     "adata_to_df",
     "inform",
     "ml",

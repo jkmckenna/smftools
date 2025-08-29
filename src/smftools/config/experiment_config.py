@@ -592,8 +592,6 @@ class ExperimentConfig:
 
     # General Plotting
     sample_name_col_for_plotting: Optional[str] = 'Barcode'
-    
-    layer_for_umap_plotting: Optional[str] = 'nan_half'
     rows_per_qc_histogram_grid: int = 12
 
     # Preprocessing - Read length and quality filter params
@@ -624,6 +622,10 @@ class ExperimentConfig:
 
     # Basic Analysis - Clustermap params
     layer_for_clustermap_plotting: Optional[str] = 'nan0_0minus1'
+
+    # Basic Analysis - UMAP/Leiden params
+    layer_for_umap_plotting: Optional[str] = 'nan_half'
+    umap_layers_to_plot: List[str] = field(default_factory=lambda: ["mapped_read_length", "Raw_modification_signal"]) 
 
     # Basic Analysis - Spatial Autocorrelation params
     rows_per_qc_autocorr_grid: int = 12
@@ -870,6 +872,7 @@ class ExperimentConfig:
             sample_name_col_for_plotting = merged.get("sample_name_col_for_plotting", 'Barcode'),
             layer_for_clustermap_plotting = merged.get("layer_for_clustermap_plotting", 'nan0_0minus1'), 
             layer_for_umap_plotting = merged.get("layer_for_umap_plotting", 'nan_half'),
+            umap_layers_to_plot = merged.get("mapped_read_length", 'Raw_modification_signal'),
             rows_per_qc_histogram_grid = merged.get("rows_per_qc_histogram_grid", 12),
             rows_per_qc_autocorr_grid = merged.get("rows_per_qc_autocorr_grid", 12),
             autocorr_rolling_window_size = merged.get("autocorr_rolling_window_size", 25),

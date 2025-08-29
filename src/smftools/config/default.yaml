@@ -85,7 +85,7 @@ mapping_threshold: 0.01 # Minimum proportion of mapped reads that need to fall w
 reference_column: 'Reference_strand'
 sample_column: 'Barcode'
 
-# Read length, quality, and mapping filtering params
+# Preprocessing -  Read length, quality, and mapping filtering params
 read_coord_filter:
  - null
  - null
@@ -101,6 +101,8 @@ read_quality_filter_thresholds:
 read_mapping_quality_filter_thresholds:
   - null
   - null
+
+# Preprocessing -  Read modification filtering params
 read_mod_filtering_gpc_thresholds:
   - 0.025
   - 0.975
@@ -113,12 +115,10 @@ read_mod_filtering_any_c_thresholds:
 read_mod_filtering_a_thresholds:
   - 0.025
   - 0.975
-
 read_mod_filtering_use_other_c_as_background: False
-
 min_valid_fraction_positions_in_read_vs_ref: 0.8
 
-# Duplicate detection params
+# Preprocessing - Duplicate detection params
 duplicate_detection_site_types: # Site types to consider for duplicate detection workflow
   - "GpC"
   - "CpG"
@@ -133,31 +133,22 @@ duplicate_detection_do_hierarchical: True # Whether to follow up fwd/rev lexicog
 duplicate_detection_hierarchical_linkage: "average" # Method for hierarchical clustering distance calculation
 duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkage based duplicate detection.
 
-# HMM params
-hmm_n_states: 2 # Number of HMM states
-hmm_init_emission_probs:
-  - [0.8, 0.2]
-  - [0.2, 0.8] 
-hmm_init_transition_probs: 
-  - [0.9, 0.1]
-  - [0.1, 0.9]
-hmm_init_start_probs: 
-  - 0.5
-  - 0.5
-
 # General Plotting params
 sample_name_col_for_plotting: 'Barcode'
 
-# QC Plotting params
+# Basic Analysis - QC Plotting params
 rows_per_qc_histogram_grid: 12
 
-# Clustermap params
+# Basic Analysis - Clustermap params
 layer_for_clustermap_plotting: 'nan0_0minus1'
 
-# UMAP params
+# Basic Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'
+umap_layers_to_plot:
+  - "mapped_read_length"
+  - "Raw_modification_signal"
 
-# Spatial Autocorrelation params
+# Basic Analysis - Spatial Autocorrelation params
 rows_per_qc_autocorr_grid: 6
 autocorr_rolling_window_size: 25
 autocorr_max_lag: 800
@@ -175,6 +166,18 @@ correlation_matrix_cmaps:
   - "viridis"
 correlation_matrix_site_types:
   - "GpC_site"
+
+# HMM params
+hmm_n_states: 2 # Number of HMM states
+hmm_init_emission_probs:
+  - [0.8, 0.2]
+  - [0.2, 0.8] 
+hmm_init_transition_probs: 
+  - [0.9, 0.1]
+  - [0.1, 0.9]
+hmm_init_start_probs: 
+  - 0.5
+  - 0.5
 
 # Pipeline control flow - Preprocessing and QC
 force_redo_preprocessing: False # Whether to force redo the entire preprocessing workflow from the initial raw anndata.
