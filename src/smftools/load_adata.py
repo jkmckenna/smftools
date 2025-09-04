@@ -351,6 +351,11 @@ def load_adata(config_path):
     basic_analyzed_adata_path = os.path.join(os.path.dirname(pp_dup_rem_adata_path), basic_analyzed_adata_basename)
     basic_analyzed_backup_dir=os.path.join(os.path.dirname(pp_dup_rem_adata_path), 'duplicate_removed_analyzed_adata_I_accessory_data')
 
+    # Preprocessed duplicate removed adata with basic analyses appended path info. With additional HMM feature layers added
+    hmm_adata_basename = os.path.basename(basic_analyzed_adata_path).split('.h5ad')[0] + '_hmm.h5ad.gz'
+    hmm_adata_path = os.path.join(os.path.dirname(basic_analyzed_adata_path), hmm_adata_basename)
+    hmm_backup_dir=os.path.join(os.path.dirname(hmm_adata_path), 'duplicate_removed_analyzed_adata_I_hmm_accessory_data')
+
     if raw_adata:
         # This happens on first run of the pipeline
         adata = raw_adata
@@ -360,6 +365,7 @@ def load_adata(config_path):
         preprocessed_version_available = os.path.exists(pp_adata_path) and os.path.isdir(pp_backup_dir)
         preprocessed_dup_removed_version_available = os.path.exists(pp_dup_rem_adata_path) and os.path.isdir(pp_dup_rem_backup_dir)
         preprocessed_dup_removed_analyzed_I_version_available = os.path.exists(basic_analyzed_adata_path) and os.path.isdir(basic_analyzed_backup_dir)
+        hmm_version_available = os.path.exists(hmm_adata_path) and os.path.isdir(hmm_backup_dir)
 
         if cfg.force_redo_preprocessing:
             print(f"Forcing full redo of preprocessing workflow, starting from earliest stage adata available.")
@@ -371,6 +377,8 @@ def load_adata(config_path):
                 adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path, backup_dir=pp_dup_rem_backup_dir)
             elif preprocessed_dup_removed_analyzed_I_version_available:
                 adata, load_report = safe_read_h5ad(basic_analyzed_adata_path, backup_dir=basic_analyzed_backup_dir)
+            elif hmm_version_available:
+                adata, load_report = safe_read_h5ad(hmm_adata_path, backup_dir=hmm_backup_dir)
             else:
                 print(f"Can not redo preprocessing when there is no adata available.")
         elif cfg.force_redo_flag_duplicate_reads:
@@ -389,6 +397,8 @@ def load_adata(config_path):
                 adata, load_report = safe_read_h5ad(raw_adata_path, backup_dir=raw_backup_dir)
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
+        elif hmm_version_available:
+            adata, load_report = safe_read_h5ad(hmm_adata_path, backup_dir=hmm_backup_dir)
         elif preprocessed_dup_removed_analyzed_I_version_available:
             adata, load_report = safe_read_h5ad(basic_analyzed_adata_path, backup_dir=basic_analyzed_backup_dir)
         elif preprocessed_dup_removed_version_available:
@@ -603,25 +613,25 @@ def load_adata(config_path):
 
         # Flag duplicate reads and plot duplicate detection QC
         adata_unique, adata = flag_duplicate_reads(adata, 
-                                                            var_filters_sets, 
-                                                            distance_threshold=cfg.duplicate_detection_distance_threshold, 
-                                                            obs_reference_col=reference_column, 
-                                                            sample_col=cfg.sample_name_col_for_plotting,
-                                                            output_directory=pp_dup_qc_dir,
-                                                            metric_keys=cfg.hamming_vs_metric_keys,
-                                                            keep_best_metric=cfg.duplicate_detection_keep_best_metric,
-                                                            bypass=cfg.bypass_flag_duplicate_reads,
-                                                            force_redo=cfg.force_redo_flag_duplicate_reads,
-                                                            window_size=cfg.duplicate_detection_window_size_for_hamming_neighbors,
-                                                            min_overlap_positions=cfg.duplicate_detection_min_overlapping_positions,
-                                                            do_pca=cfg.duplicate_detection_do_pca,
-                                                            pca_n_components=50,
-                                                            pca_center=True,
-                                                            do_hierarchical=cfg.duplicate_detection_do_hierarchical,
-                                                            hierarchical_linkage=cfg.duplicate_detection_hierarchical_linkage,
-                                                            hierarchical_metric="euclidean",
-                                                            hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors
-                                                            )
+                                                    var_filters_sets, 
+                                                    distance_threshold=cfg.duplicate_detection_distance_threshold, 
+                                                    obs_reference_col=reference_column, 
+                                                    sample_col=cfg.sample_name_col_for_plotting,
+                                                    output_directory=pp_dup_qc_dir,
+                                                    metric_keys=cfg.hamming_vs_metric_keys,
+                                                    keep_best_metric=cfg.duplicate_detection_keep_best_metric,
+                                                    bypass=cfg.bypass_flag_duplicate_reads,
+                                                    force_redo=cfg.force_redo_flag_duplicate_reads,
+                                                    window_size=cfg.duplicate_detection_window_size_for_hamming_neighbors,
+                                                    min_overlap_positions=cfg.duplicate_detection_min_overlapping_positions,
+                                                    do_pca=cfg.duplicate_detection_do_pca,
+                                                    pca_n_components=50,
+                                                    pca_center=True,
+                                                    do_hierarchical=cfg.duplicate_detection_do_hierarchical,
+                                                    hierarchical_linkage=cfg.duplicate_detection_hierarchical_linkage,
+                                                    hierarchical_metric="euclidean",
+                                                    hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors
+                                                    )
         
         # Use the flagged duplicate read groups and perform complexity analysis
         complexity_outs = os.path.join(pp_dup_qc_dir, "sample_complexity_analyses")
@@ -638,6 +648,8 @@ def load_adata(config_path):
             n_depths=12,
             random_state=42,
             csv_summary=True,
+            bypass=cfg.bypass_complexity_analysis,
+            force_redo=cfg.force_redo_complexity_analysis
         )
 
     else:
@@ -865,7 +877,6 @@ def load_adata(config_path):
 
         samples = adata.obs[cfg.sample_name_col_for_plotting].cat.categories
         references = adata.obs[reference_column].cat.categories
-        mod_sites = mod_target_bases
         uns_key = "hmm_appended_layers"
 
         # ensure uns key exists (avoid KeyError later)
@@ -879,7 +890,7 @@ def load_adata(config_path):
                 if subset.shape[0] < 1:
                     continue
 
-                for mod_site in mod_sites:
+                for mod_site in cfg.hmm_methbases:
                     mod_label = {'C': 'any_C'}.get(mod_site, mod_site)
                     hmm_path = os.path.join(hmm_dir, f"{sample}_{ref}_{mod_label}_hmm_model.pth")
 
@@ -895,13 +906,7 @@ def load_adata(config_path):
                         hmm.print_params()
                     else:
                         print(f"Fitting HMM for {sample} {ref} {mod_label}")
-                        hmm = HMM(
-                            n_states=cfg.hmm_n_states,
-                            init_start=cfg.hmm_init_start_probs,
-                            init_trans=cfg.hmm_init_transition_probs,
-                            init_emission=cfg.hmm_init_emission_probs,
-                            smf_modality=smf_modality,
-                        )
+                        hmm = HMM.from_config(cfg)
                         # fit expects a list-of-seqs or 2D ndarray in the obsm
                         seqs = subset.obsm[obsm_key]
                         hmm.fit(seqs)
@@ -913,21 +918,14 @@ def load_adata(config_path):
                         print(f"Applying HMM on subset for {sample} {ref} {mod_label}")
                         # Use the new uns_key argument so subset will record appended layer names
                         # (annotate_adata modifies subset.obs/layers in-place and should write subset.uns[uns_key])
-                        hmm.annotate_adata(
-                            subset,
-                            obs_column=reference_column,
-                            layer=None,
-                            footprints=True,
-                            accessible_patches=True,
-                            cpg=True,
-                            methbases=[mod_label],
-                            in_place=True,
-                            verbose=False,
-                            uns_key=uns_key,
-                        )
+                        hmm.annotate_adata(subset,
+                                        obs_column=cfg.reference_column,
+                                        layer=cfg.layer_for_umap_plotting,
+                                        config=cfg)
 
                         # collect appended layers from subset.uns
                         appended = list(subset.uns.get(uns_key, []))
+                        print(appended)
                         if len(appended) == 0:
                             # nothing appended for this subset; continue
                             continue
@@ -964,6 +962,18 @@ def load_adata(config_path):
     else:
         pass
     
+    ## Save HMM annotated adata
+    if not os.path.exists(hmm_adata_path):
+        print('Saving basic analyzed adata post preprocessing and duplicate removal')
+        if ".gz" in hmm_adata_path:
+            safe_write_h5ad(adata, f"{hmm_adata_path}", compression='gzip', backup=True, backup_dir=hmm_backup_dir)
+        else:
+            safe_write_h5ad(adata, f"{hmm_adata_path}.gz", compression='gzip', backup=True, backup_dir=hmm_backup_dir)
+
+    ########################################################################################################################
+
+############################################### HMM based feature plotting ###############################################
+    
     pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
     hmm_dir = f"{pp_dir}/11_hmm_clustermaps"
 
@@ -971,32 +981,36 @@ def load_adata(config_path):
         print(hmm_dir + ' already exists.')
     else:
         make_dirs([pp_dir, hmm_dir])
-
         from .plotting import combined_hmm_raw_clustermap
-        combined_hmm_raw_clustermap(
-        adata,
-        sample_col=cfg.sample_name_col_for_plotting,
-        reference_col=reference_column,
-        hmm_feature_layer="any_C_all_accessible_features",
-        layer_gpc="nan0_0minus1",
-        layer_cpg="nan0_0minus1",
-        layer_any_c="nan0_0minus1",
-        cmap_hmm="tab10",
-        cmap_gpc="coolwarm",
-        cmap_cpg="viridis",
-        cmap_any_c='coolwarm',
-        min_quality=20,
-        min_length=200,
-        min_mapped_length_to_reference_length_ratio=0.9,
-        min_position_valid_fraction=0.8,
-        sample_mapping=None,
-        save_path=hmm_dir,
-        normalize_hmm=False,
-        sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
-        bins=None,
-        deaminase=True,
-        min_signal=0
-        )
+
+        for layer in ['C_all_accessible_features', 'C_small_bound_stretch', 'C_medium_bound_stretch', 'C_putative_nucleosome']:
+            save_path = os.path.join(hmm_dir, layer)
+            make_dirs([save_path])
+
+            combined_hmm_raw_clustermap(
+            adata,
+            sample_col=cfg.sample_name_col_for_plotting,
+            reference_col=reference_column,
+            hmm_feature_layer=layer,
+            layer_gpc="nan0_0minus1",
+            layer_cpg="nan0_0minus1",
+            layer_any_c="nan0_0minus1",
+            cmap_hmm="coolwarm",
+            cmap_gpc="coolwarm",
+            cmap_cpg="viridis",
+            cmap_any_c='coolwarm',
+            min_quality=20,
+            min_length=200,
+            min_mapped_length_to_reference_length_ratio=0.9,
+            min_position_valid_fraction=0.8,
+            sample_mapping=None,
+            save_path=save_path,
+            normalize_hmm=False,
+            sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
+            bins=None,
+            deaminase=True,
+            min_signal=0
+            )
 
     pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
     hmm_dir = f"{pp_dir}/12_hmm_bulk_traces"
@@ -1018,6 +1032,36 @@ def load_adata(config_path):
             save=True,
             show_raw=False
         )
+
+    pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
+    hmm_dir = f"{pp_dir}/13_hmm_fragment_distributions"
+    if os.path.isdir(hmm_dir):
+        print(hmm_dir + ' already exists.')
+    else:
+        make_dirs([pp_dir, hmm_dir])
+        from .plotting import plot_hmm_size_contours
+
+        for layer, max in [('C_all_accessible_features_lengths', 400), ('C_all_footprint_features_lengths', 160)]:
+            save_path = os.path.join(hmm_dir, layer)
+            make_dirs([save_path])
+
+            figs = plot_hmm_size_contours(
+                adata,
+                length_layer=layer,
+                sample_col=cfg.sample_name_col_for_plotting,
+                ref_obs_col=reference_column,
+                rows_per_page=6,
+                max_length_cap=max,
+                figsize_per_cell=(3.5, 2.2),
+                save_path=save_path,
+                save_pdf=False,
+                save_each_page=True,
+                dpi=200,
+                smoothing_sigma=None,
+                normalize_after_smoothing=False,
+                cmap='viridis', 
+                log_scale_z=True
+            )
 
     ########################################################################################################################
 

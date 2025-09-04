@@ -5,3 +5,27 @@ conversion_types:
 
 # Read QC Params
 read_mod_filtering_use_other_c_as_background: True
+
+# HMM
+cpg: True # whether to use the default HMM endogenous CpG patch params
+hmm_methbases:
+  - "GpC"
+  - "CpG"
+hmm_feature_sets:
+  footprint:
+    state: "Non-Modified"
+    features:
+      small_bound_stretch: [0, 20]
+      medium_bound_stretch: [20, 50]
+      putative_nucleosome: [50, 200]
+      large_bound_stretch: [200, inf]
+  accessible:
+    state: "Modified"
+    features:
+      small_accessible_patch: [0, 20]
+      mid_accessible_patch: [20, 80]
+      large_accessible_patch: [80, inf]
+  cpg:
+    state: "Modified"
+    features:
+      cpg_patch: [0, inf]

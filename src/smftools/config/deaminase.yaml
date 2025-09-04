@@ -32,3 +32,22 @@ autocorr_site_types:
 # Correlation matrix params
 correlation_matrix_site_types:
   - "any_C_site"
+
+# HMM
+cpg: False # whether to use the default HMM endogenous CpG patch params
+hmm_methbases:
+  - "C"
+hmm_feature_sets:
+  footprint:
+    state: "Non-Modified"
+    features:
+      small_bound_stretch: [0, 25]
+      medium_bound_stretch: [25, 80]
+      putative_nucleosome: [80, 200]
+      large_bound_stretch: [200, inf]
+  accessible:
+    state: "Modified"
+    features:
+      small_accessible_patch: [0, 20]
+      mid_accessible_patch: [20, 100]
+      large_accessible_patch: [100, inf]

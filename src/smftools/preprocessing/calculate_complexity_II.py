@@ -11,6 +11,9 @@ def calculate_complexity_II(
     n_depths=12,
     random_state=0,
     csv_summary=True,
+    uns_flag='complexity_analysis_complete',
+    force_redo=False,
+    bypass=False
 ):
     """
     Estimate and plot library complexity.
@@ -30,6 +33,13 @@ def calculate_complexity_II(
     import matplotlib.pyplot as plt
     from scipy.optimize import curve_fit
     from datetime import datetime
+
+    # early exits
+    already = bool(adata.uns.get(uns_flag, False))
+    if (already and not force_redo):
+        return None
+    if bypass:
+        return None
 
     rng = np.random.default_rng(random_state)
 
@@ -223,6 +233,9 @@ def calculate_complexity_II(
 
     # store central results dict
     adata.uns["Library_complexity_results"] = results
+
+    # mark complexity analysis as complete
+    adata.uns[uns_flag] = True
 
     # CSV outputs
     if csv_summary and (fit_records or curve_records):
