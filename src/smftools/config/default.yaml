@@ -133,6 +133,8 @@ duplicate_detection_do_hierarchical: True # Whether to follow up fwd/rev lexicog
 duplicate_detection_hierarchical_linkage: "average" # Method for hierarchical clustering distance calculation
 duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkage based duplicate detection.
 
+# Preprocessing - Complexity analysis params
+
 # General Plotting params
 sample_name_col_for_plotting: 'Barcode'
 
@@ -145,7 +147,7 @@ layer_for_clustermap_plotting: 'nan0_0minus1'
 # Basic Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'
 umap_layers_to_plot:
-  - "mapped_read_length"
+  - "mapped_length"
   - "Raw_modification_signal"
 
 # Basic Analysis - Spatial Autocorrelation params
@@ -178,6 +180,33 @@ hmm_init_transition_probs:
 hmm_init_start_probs: 
   - 0.5
   - 0.5
+hmm_eps: 1e-8
+hmm_dtype: "float64"
+hmm_annotation_threshold: 0.5
+hmm_batch_size: 1024
+hmm_use_viterbi: False
+footprints: True # whether to use the default HMM footprint params
+accessible_patches: True # whether to use the default HMM accessible patch params
+cpg: False # whether to use the default HMM endogenous CpG patch params
+hmm_methbases:
+  - "GpC"
+  - "CpG"
+  - "C"
+  - "A"
+hmm_feature_sets:
+  footprint:
+    state: "Non-Modified"
+    features:
+      small_bound_stretch: [0, 25]
+      medium_bound_stretch: [25, 80]
+      putative_nucleosome: [80, 200]
+      large_bound_stretch: [200, inf]
+  accessible:
+    state: "Modified"
+    features:
+      small_accessible_patch: [0, 20]
+      mid_accessible_patch: [20, 100]
+      large_accessible_patch: [100, inf]
 
 # Pipeline control flow - Preprocessing and QC
 force_redo_preprocessing: False # Whether to force redo the entire preprocessing workflow from the initial raw anndata.
@@ -197,6 +226,8 @@ bypass_filter_reads_on_modification_thresholds: False # Whether to skip filterin
 force_redo_filter_reads_on_modification_thresholds: False # Whether to redo filtering reads based on read level modification statistics.
 bypass_flag_duplicate_reads: False # Whether to skip flagging duplicate reads based on modification similarity.
 force_redo_flag_duplicate_reads: False # Whether to redo flagging duplicate reads based on modification similarity.
+bypass_complexity_analysis: False # Whether to skip complexity analysis
+force_redo_complexity_analysis: False # Whether to redo complexity analysis
 
 # Pipeline control flow - Basic Analyses
 force_redo_basic_analyses: False # Whether to force redo the entire basic analysis pipeline from the AnnData

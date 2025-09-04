@@ -14,6 +14,7 @@ except Exception:
     yaml = None
 
 import pandas as pd
+import numpy as np
 
 
 # -------------------------
@@ -79,7 +80,6 @@ def _parse_numeric(v: Any, fallback: Any = None) -> Any:
         except Exception:
             return fallback
 
-
 def _try_json_or_literal(s: Any) -> Any:
     """Try parse JSON or python literal; otherwise return original string."""
     if s is None:
@@ -101,7 +101,6 @@ def _try_json_or_literal(s: Any) -> Any:
         pass
     return s
 
-# add this helper somewhere near your other utilities (e.g. below _try_json_or_literal)
 
 def resolve_aligner_args(
     merged: dict,
@@ -214,6 +213,67 @@ def resolve_aligner_args(
     return list(default_by_aligner.get(key_align, []))
 
 
+# HMM default params and hepler functions
+def normalize_hmm_feature_sets(raw: Any) -> Dict[str, dict]:
+    """
+    Normalize user-provided `hmm_feature_sets` into canonical structure:
+      { group_name: {"features": {label: (lo, hi), ...}, "state": "<Modified|Non-Modified>"} }
+    Accepts dict, JSON/string, None. Returns {} for empty input.
+    """
+    if raw is None:
+        return {}
+    parsed = raw
+    if isinstance(raw, str):
+        parsed = _try_json_or_literal(raw)
+    if not isinstance(parsed, dict):
+        return {}
+
+    def _coerce_bound(x):
+        if x is None:
+            return None
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).strip().lower()
+        if s in ("inf", "infty", "infinite"):
+            return np.inf
+        if s in ("none", ""):
+            return None
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    def _coerce_feature_map(feats):
+        out = {}
+        if not isinstance(feats, dict):
+            return out
+        for fname, rng in feats.items():
+            if rng is None:
+                out[fname] = (0.0, np.inf)
+                continue
+            if isinstance(rng, (list, tuple)) and len(rng) >= 2:
+                lo = _coerce_bound(rng[0]) or 0.0
+                hi = _coerce_bound(rng[1])
+                if hi is None:
+                    hi = np.inf
+                out[fname] = (float(lo), float(hi) if not np.isinf(hi) else np.inf)
+            else:
+                # scalar -> treat as upper bound
+                val = _coerce_bound(rng)
+                out[fname] = (0.0, float(val) if val is not None else np.inf)
+        return out
+
+    canonical = {}
+    for grp, info in parsed.items():
+        if not isinstance(info, dict):
+            feats = _coerce_feature_map(info)
+            canonical[grp] = {"features": feats, "state": "Modified"}
+            continue
+        feats = _coerce_feature_map(info.get("features", info.get("ranges", {})))
+        state = info.get("state", info.get("label", "Modified"))
+        canonical[grp] = {"features": feats, "state": state}
+    return canonical
+
 
 # -------------------------
 # LoadExperimentConfig
@@ -272,7 +332,7 @@ class LoadExperimentConfig:
         if v == "" or v.lower() == "none":
             return None
 
-        hint = (dtype_hint or "").strip().lower()
+        hint = "" if dtype_hint is None else str(dtype_hint).strip().lower()
 
         def parse_bool(s: str):
             s2 = s.strip().lower()
@@ -609,7 +669,7 @@ class ExperimentConfig:
     read_mod_filtering_use_other_c_as_background: bool = True
     min_valid_fraction_positions_in_read_vs_ref: float = 0.2
 
-    # Preprocessing - Duplicate detection paramss
+    # Preprocessing - Duplicate detection params
     duplicate_detection_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'ambiguous_GpC_CpG'])
     duplicate_detection_distance_threshold: float = 0.07
     hamming_vs_metric_keys: List[str] = field(default_factory=lambda: ['Fraction_any_C_site_modified'])
@@ -620,12 +680,14 @@ class ExperimentConfig:
     duplicate_detection_hierarchical_linkage: str = "average"
     duplicate_detection_do_pca: bool = False
 
+    # Preprocessing - Complexity analysis params
+
     # Basic Analysis - Clustermap params
     layer_for_clustermap_plotting: Optional[str] = 'nan0_0minus1'
 
     # Basic Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = 'nan_half'
-    umap_layers_to_plot: List[str] = field(default_factory=lambda: ["mapped_read_length", "Raw_modification_signal"]) 
+    umap_layers_to_plot: List[str] = field(default_factory=lambda: ["mapped_length", "Raw_modification_signal"]) 
 
     # Basic Analysis - Spatial Autocorrelation params
     rows_per_qc_autocorr_grid: int = 12
@@ -642,7 +704,18 @@ class ExperimentConfig:
     hmm_n_states: int = 2
     hmm_init_emission_probs: List[list] = field(default_factory=lambda: [[0.8, 0.2], [0.2, 0.8]]) 
     hmm_init_transition_probs: List[list] = field(default_factory=lambda: [[0.9, 0.1], [0.1, 0.9]]) 
-    hmm_init_start_probs: List[float] = field(default_factory=lambda: [0.5, 0.5]) 
+    hmm_init_start_probs: List[float] = field(default_factory=lambda: [0.5, 0.5])
+    hmm_eps: float = 1e-8
+    hmm_dtype: str = "float64"
+    hmm_annotation_threshold: float = 0.5
+    hmm_batch_size: int = 1024
+    hmm_use_viterbi: bool = False
+    hmm_device: Optional[str] = None
+    hmm_methbases: Optional[List[str]] = None  # if None, HMM.annotate_adata will fall back to mod_target_bases
+    footprints: Optional[bool] = True
+    accessible_patches: Optional[bool] = True
+    cpg: Optional[bool] = False
+    hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
 
     # Pipeline control flow - preprocessing and QC
     force_redo_preprocessing: bool = False
@@ -662,6 +735,8 @@ class ExperimentConfig:
     force_redo_filter_reads_on_modification_thresholds: bool = False
     bypass_flag_duplicate_reads: bool = False
     force_redo_flag_duplicate_reads: bool = False
+    bypass_complexity_analysis: bool = False 
+    force_redo_complexity_analysis: bool = False
 
     # Pipeline control flow - Basic Analyses
     force_redo_basic_analyses: bool = False
@@ -824,6 +899,42 @@ class ExperimentConfig:
         if "mod_list" in merged:
             merged["mod_list"] = _parse_list(merged.get("mod_list"))
 
+        # HMM feature set handling
+        if "hmm_feature_sets" in merged:
+            merged["hmm_feature_sets"] = normalize_hmm_feature_sets(merged["hmm_feature_sets"])
+        else:
+            # allow older names (footprint_ranges, accessible_ranges, cpg_ranges) — optional:
+            maybe_fs = {}
+            if "footprint_ranges" in merged or "hmm_footprint_ranges" in merged:
+                maybe_fs["footprint"] = {"features": merged.get("hmm_footprint_ranges", merged.get("footprint_ranges")), "state": merged.get("hmm_footprint_state", "Non-Modified")}
+            if "accessible_ranges" in merged or "hmm_accessible_ranges" in merged:
+                maybe_fs["accessible"] = {"features": merged.get("hmm_accessible_ranges", merged.get("accessible_ranges")), "state": merged.get("hmm_accessible_state", "Modified")}
+            if "cpg_ranges" in merged or "hmm_cpg_ranges" in merged:
+                maybe_fs["cpg"] = {"features": merged.get("hmm_cpg_ranges", merged.get("cpg_ranges")), "state": merged.get("hmm_cpg_state", "Modified")}
+            if maybe_fs:
+                merged.setdefault("hmm_feature_sets", {})
+                for k, v in maybe_fs.items():
+                    merged["hmm_feature_sets"].setdefault(k, v)
+
+            # final normalization will be done below
+            # (do not set local hmm_feature_sets here — do it once below)
+            pass
+
+        # Final normalization of hmm_feature_sets and canonical local variables
+        merged["hmm_feature_sets"] = normalize_hmm_feature_sets(merged.get("hmm_feature_sets", {}))
+        hmm_feature_sets = merged.get("hmm_feature_sets", {})
+        hmm_annotation_threshold = merged.get("hmm_annotation_threshold", 0.5)
+        hmm_batch_size = int(merged.get("hmm_batch_size", 1024))
+        hmm_use_viterbi = bool(merged.get("hmm_use_viterbi", False))
+        hmm_device = merged.get("hmm_device", None)
+        hmm_methbases = _parse_list(merged.get("hmm_methbases", None))
+        if not hmm_methbases:  # None or []
+            hmm_methbases = _parse_list(merged.get("mod_target_bases", None))
+        if not hmm_methbases:
+            hmm_methbases = ['C']
+        hmm_methbases = list(hmm_methbases)
+
+
         # instantiate dataclass
         instance = cls(
             smf_modality = merged.get("smf_modality"),
@@ -872,7 +983,7 @@ class ExperimentConfig:
             sample_name_col_for_plotting = merged.get("sample_name_col_for_plotting", 'Barcode'),
             layer_for_clustermap_plotting = merged.get("layer_for_clustermap_plotting", 'nan0_0minus1'), 
             layer_for_umap_plotting = merged.get("layer_for_umap_plotting", 'nan_half'),
-            umap_layers_to_plot = merged.get("mapped_read_length", 'Raw_modification_signal'),
+            umap_layers_to_plot = merged.get("umap_layers_to_plot",["mapped_length", 'Raw_modification_signal']),
             rows_per_qc_histogram_grid = merged.get("rows_per_qc_histogram_grid", 12),
             rows_per_qc_autocorr_grid = merged.get("rows_per_qc_autocorr_grid", 12),
             autocorr_rolling_window_size = merged.get("autocorr_rolling_window_size", 25),
@@ -882,6 +993,17 @@ class ExperimentConfig:
             hmm_init_emission_probs = merged.get("hmm_init_emission_probs",[[0.8, 0.2], [0.2, 0.8]]),
             hmm_init_transition_probs = merged.get("hmm_init_transition_probs",[[0.9, 0.1], [0.1, 0.9]]),
             hmm_init_start_probs = merged.get("hmm_init_start_probs",[0.5, 0.5]),
+            hmm_eps = merged.get("hmm_eps", 1e-8),
+            hmm_dtype = merged.get("hmm_dtype", "float64"),
+            hmm_feature_sets = hmm_feature_sets,
+            hmm_annotation_threshold = hmm_annotation_threshold,
+            hmm_batch_size = hmm_batch_size,
+            hmm_use_viterbi = hmm_use_viterbi,
+            hmm_methbases = hmm_methbases,
+            hmm_device = hmm_device,
+            footprints = merged.get("footprints", None),
+            accessible_patches = merged.get("accessible_patches", None),
+            cpg = merged.get("cpg", None),
             read_coord_filter = merged.get("read_coord_filter", [None, None]), 
             read_len_filter_thresholds = merged.get("read_len_filter_thresholds", [200, None]),
             read_len_to_ref_ratio_filter_thresholds = merged.get("read_len_to_ref_ratio_filter_thresholds", [0.4, 1.1]),
@@ -922,6 +1044,8 @@ class ExperimentConfig:
             force_redo_filter_reads_on_modification_thresholds = merged.get("force_redo_filter_reads_on_modification_thresholds", False),
             bypass_flag_duplicate_reads = merged.get("bypass_flag_duplicate_reads", False),
             force_redo_flag_duplicate_reads = merged.get("force_redo_flag_duplicate_reads", False),
+            bypass_complexity_analysis = merged.get("bypass_complexity_analysis", False),
+            force_redo_complexity_analysis = merged.get("force_redo_complexity_analysis", False),
             force_redo_basic_analyses = merged.get("force_redo_basic_analyses", False),
             bypass_basic_clustermaps = merged.get("bypass_basic_clustermaps", False),
             force_redo_basic_clustermaps = merged.get("force_redo_basic_clustermaps", False),
@@ -974,6 +1098,28 @@ class ExperimentConfig:
     # -------------------------
     # validation & serialization
     # -------------------------
+    def _validate_hmm_features_structure(hfs: dict) -> List[str]:
+        errs = []
+        if not isinstance(hfs, dict):
+            errs.append("hmm_feature_sets must be a mapping if provided.")
+            return errs
+        for g, info in hfs.items():
+            if not isinstance(info, dict):
+                errs.append(f"hmm_feature_sets['{g}'] must be a mapping with 'features' and 'state'.")
+                continue
+            feats = info.get("features")
+            if not isinstance(feats, dict) or len(feats) == 0:
+                errs.append(f"hmm_feature_sets['{g}'] must include non-empty 'features' mapping.")
+                continue
+            for fname, rng in feats.items():
+                try:
+                    lo, hi = float(rng[0]), float(rng[1])
+                    if lo < 0 or hi <= lo:
+                        errs.append(f"Feature range for {g}:{fname} must satisfy 0 <= lo < hi; got {rng}.")
+                except Exception:
+                    errs.append(f"Feature range for {g}:{fname} is invalid: {rng}")
+        return errs
+
     def validate(self, require_paths: bool = True, raise_on_error: bool = True) -> List[str]:
         """
         Validate the config. If require_paths True, check paths (input_data_path, fasta) exist;
@@ -1008,6 +1154,10 @@ class ExperimentConfig:
 
         if raise_on_error and errors:
             raise ValueError("ExperimentConfig validation failed:\n  " + "\n  ".join(errors))
+        
+        errs = _validate_hmm_features_structure(self.hmm_feature_sets)
+        errors.extend(errs)
+
         return errors
 
     def to_dict(self) -> Dict[str, Any]:

@@ -1,5 +1,7 @@
 import math
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Any, Dict
+import ast
+import json
 
 import numpy as np
 import pandas as pd
@@ -103,6 +105,175 @@ class HMM(nn.Module):
 
             self.emission.data = self.emission.data.clamp(min=self.eps, max=1.0 - self.eps)
 
+    @staticmethod
+    def _resolve_dtype(dtype_entry):
+        """Accept torch.dtype, string ('float32'/'float64') or None -> torch.dtype."""
+        if dtype_entry is None:
+            return torch.float64
+        if isinstance(dtype_entry, torch.dtype):
+            return dtype_entry
+        s = str(dtype_entry).lower()
+        if "32" in s:
+            return torch.float32
+        if "16" in s:
+            return torch.float16
+        return torch.float64
+
+    @classmethod
+    def from_config(cls, cfg: Union[dict, "ExperimentConfig", None], *,
+                    override: Optional[dict] = None,
+                    device: Optional[Union[str, torch.device]] = None) -> "HMM":
+        """
+        Construct an HMM using keys from an ExperimentConfig instance or a plain dict.
+
+        cfg may be:
+          - an ExperimentConfig (your dataclass instance)
+          - a dict (e.g. loader.var_dict or merged defaults)
+          - None (uses internal defaults)
+
+        override: optional dict to override resolved keys (handy for tests).
+        device: optional device string or torch.device to move model to.
+        """
+        # Accept ExperimentConfig dataclass
+        if cfg is None:
+            merged = {}
+        elif hasattr(cfg, "to_dict") and callable(getattr(cfg, "to_dict")):
+            merged = dict(cfg.to_dict())
+        elif isinstance(cfg, dict):
+            merged = dict(cfg)
+        else:
+            # try attr access as fallback
+            try:
+                merged = {k: getattr(cfg, k) for k in dir(cfg) if k.startswith("hmm_")}
+            except Exception:
+                merged = {}
+
+        if override:
+            merged.update(override)
+
+        # basic resolution with fallback
+        n_states = int(merged.get("hmm_n_states", merged.get("n_states", 2)))
+        init_start = merged.get("hmm_init_start_probs", merged.get("hmm_init_start", None))
+        init_trans = merged.get("hmm_init_transition_probs", merged.get("hmm_init_trans", None))
+        init_emission = merged.get("hmm_init_emission_probs", merged.get("hmm_init_emission", None))
+        eps = float(merged.get("hmm_eps", merged.get("eps", 1e-8)))
+        dtype = cls._resolve_dtype(merged.get("hmm_dtype", merged.get("dtype", None)))
+
+        # coerce lists (if present) -> numpy arrays (the HMM constructor already sanitizes)
+        def _coerce_np(x):
+            if x is None:
+                return None
+            return np.asarray(x, dtype=float)
+
+        init_start = _coerce_np(init_start)
+        init_trans = _coerce_np(init_trans)
+        init_emission = _coerce_np(init_emission)
+
+        model = cls(
+            n_states=n_states,
+            init_start=init_start,
+            init_trans=init_trans,
+            init_emission=init_emission,
+            dtype=dtype,
+            eps=eps,
+            smf_modality=merged.get("smf_modality", None),
+        )
+
+        # move to device if requested
+        if device is not None:
+            if isinstance(device, str):
+                device = torch.device(device)
+            model.to(device)
+
+        # persist the config to the hmm class
+        cls.config = cfg
+
+        return model
+
+    def update_from_config(self, cfg: Union[dict, "ExperimentConfig", None], *,
+                           override: Optional[dict] = None):
+        """
+        Update existing model parameters from a config or dict (in-place).
+        This will normalize / reinitialize start/trans/emission using same logic as constructor.
+        """
+        if cfg is None:
+            merged = {}
+        elif hasattr(cfg, "to_dict") and callable(getattr(cfg, "to_dict")):
+            merged = dict(cfg.to_dict())
+        elif isinstance(cfg, dict):
+            merged = dict(cfg)
+        else:
+            try:
+                merged = {k: getattr(cfg, k) for k in dir(cfg) if k.startswith("hmm_")}
+            except Exception:
+                merged = {}
+
+        if override:
+            merged.update(override)
+
+        # extract same keys as from_config
+        n_states = int(merged.get("hmm_n_states", self.n_states))
+        init_start = merged.get("hmm_init_start_probs", None)
+        init_trans = merged.get("hmm_init_transition_probs", None)
+        init_emission = merged.get("hmm_init_emission_probs", None)
+        eps = merged.get("hmm_eps", None)
+        dtype = merged.get("hmm_dtype", None)
+
+        # apply dtype/eps if present
+        if eps is not None:
+            self.eps = float(eps)
+        if dtype is not None:
+            self.dtype = self._resolve_dtype(dtype)
+
+        # if n_states changes we need a fresh re-init (easy approach: reconstruct)
+        if int(n_states) != int(self.n_states):
+            # rebuild self in-place: create a new model and copy tensors
+            new_model = HMM.from_config(merged)
+            # copy content
+            with torch.no_grad():
+                self.n_states = new_model.n_states
+                self.eps = new_model.eps
+                self.dtype = new_model.dtype
+                self.start.data = new_model.start.data.clone().to(self.start.device, dtype=self.dtype)
+                self.trans.data = new_model.trans.data.clone().to(self.trans.device, dtype=self.dtype)
+                self.emission.data = new_model.emission.data.clone().to(self.emission.device, dtype=self.dtype)
+            return
+
+        # else only update provided tensors
+        def _to_tensor(obj, shape_expected=None):
+            if obj is None:
+                return None
+            arr = np.asarray(obj, dtype=float)
+            if shape_expected is not None:
+                try:
+                    arr = arr.reshape(shape_expected)
+                except Exception:
+                    # try to free-form slice/reshape (keep best-effort)
+                    arr = np.reshape(arr, shape_expected) if arr.size >= np.prod(shape_expected) else arr
+            return torch.tensor(arr, dtype=self.dtype, device=self.start.device)
+
+        with torch.no_grad():
+            if init_start is not None:
+                t = _to_tensor(init_start, (self.n_states,))
+                if t.numel() == self.n_states:
+                    self.start.data = t.clone()
+            if init_trans is not None:
+                t = _to_tensor(init_trans, (self.n_states, self.n_states))
+                if t.shape == (self.n_states, self.n_states):
+                    self.trans.data = t.clone()
+            if init_emission is not None:
+                # attempt to extract P(obs==1) if shaped (K,2)
+                arr = np.asarray(init_emission, dtype=float)
+                if arr.ndim == 2 and arr.shape[1] == 2 and arr.shape[0] >= self.n_states:
+                    em = arr[: self.n_states, 1]
+                else:
+                    em = arr.reshape(-1)[: self.n_states]
+                t = torch.tensor(em, dtype=self.dtype, device=self.start.device)
+                if t.numel() == self.n_states:
+                    self.emission.data = t.clone()
+
+            # finally normalize
+            self._normalize_params()
 
     def _ensure_device_dtype(self, device: Optional[torch.device]):
         if device is None:
@@ -590,64 +761,174 @@ class HMM(nn.Module):
         adata,
         obs_column: str,
         layer: Optional[str] = None,
-        footprints: bool = True,
-        accessible_patches: bool = False,
-        cpg: bool = False,
+        footprints: Optional[bool] = None,
+        accessible_patches: Optional[bool] = None,
+        cpg: Optional[bool] = None,
         methbases: Optional[List[str]] = None,
-        threshold: float = 0.7,
+        threshold: Optional[float] = None,
         device: Optional[Union[str, torch.device]] = None,
-        batch_size: int = 1024,
-        use_viterbi: bool = False,
+        batch_size: Optional[int] = None,
+        use_viterbi: Optional[bool] = None,
         in_place: bool = True,
         verbose: bool = True,
         uns_key: str = "hmm_appended_layers",
+        config: Optional[Union[dict, "ExperimentConfig"]] = None,  # NEW: config/dict accepted
     ):
         """
         Annotate an AnnData with HMM-derived features (in adata.obs and adata.layers).
 
-        Parameters are similar to the standalone helper:
-        - adata: AnnData object
-        - obs_column: categorical obs column grouping reads (e.g. 'Reference_strand')
-        - layer: optional layer name to read sequence matrix from; else use .X
-        - footprints, accessible_patches, cpg: which feature groups to compute
-        - methbases: list of methbases to test (defaults ["GpC","CpG","A","C"])
-        - threshold: minimum probability to accept a region
-        - device: device string or torch.device (defaults to model's device)
-        - batch_size: number of reads to predict per chunk
-        - use_viterbi: if True use Viterbi paths (batch_viterbi), otherwise argmax on posteriors
-        - in_place: if False returns a copy, else modifies adata in-place
-        - verbose: show progress bars
+        Parameters
+        ----------
+        config : optional ExperimentConfig instance or plain dict
+            When provided, the following keys (if present) are used to override defaults:
+            - hmm_feature_sets : dict (canonical feature set structure) OR a JSON/string repr
+            - hmm_annotation_threshold : float
+            - hmm_batch_size : int
+            - hmm_use_viterbi : bool
+            - hmm_methbases : list
+            - footprints / accessible_patches / cpg (booleans)
+        Other keyword args override config values if explicitly provided.
         """
+        import json, ast, warnings
         import numpy as _np
         import torch as _torch
         from tqdm import trange, tqdm as _tqdm
 
-        if methbases is None:
-            methbases = ["GpC", "CpG", "A", "C"]
+        # small helpers
+        def _try_json_or_literal(s):
+            if s is None:
+                return None
+            if not isinstance(s, str):
+                return s
+            s0 = s.strip()
+            if s0 == "":
+                return None
+            try:
+                return json.loads(s0)
+            except Exception:
+                pass
+            try:
+                return ast.literal_eval(s0)
+            except Exception:
+                return s
 
-        # Feature definitions
+        def _coerce_bool(x):
+            if x is None:
+                return False
+            if isinstance(x, bool):
+                return x
+            if isinstance(x, (int, float)):
+                return bool(x)
+            s = str(x).strip().lower()
+            return s in ("1", "true", "t", "yes", "y", "on")
+
+        def normalize_hmm_feature_sets(raw):
+            if raw is None:
+                return {}
+            parsed = raw
+            if isinstance(raw, str):
+                parsed = _try_json_or_literal(raw)
+            if not isinstance(parsed, dict):
+                return {}
+
+            def _coerce_bound(x):
+                if x is None:
+                    return None
+                if isinstance(x, (int, float)):
+                    return float(x)
+                s = str(x).strip().lower()
+                if s in ("inf", "infty", "infinite", "np.inf"):
+                    return _np.inf
+                if s in ("none", ""):
+                    return None
+                try:
+                    return float(x)
+                except Exception:
+                    return None
+
+            def _coerce_feature_map(feats):
+                out = {}
+                if not isinstance(feats, dict):
+                    return out
+                for fname, rng in feats.items():
+                    if rng is None:
+                        out[fname] = (0.0, _np.inf)
+                        continue
+                    if isinstance(rng, (list, tuple)) and len(rng) >= 2:
+                        lo = _coerce_bound(rng[0]) or 0.0
+                        hi = _coerce_bound(rng[1])
+                        if hi is None:
+                            hi = _np.inf
+                        out[fname] = (float(lo), float(hi) if not _np.isinf(hi) else _np.inf)
+                    else:
+                        val = _coerce_bound(rng)
+                        out[fname] = (0.0, float(val) if val is not None else _np.inf)
+                return out
+
+            canonical = {}
+            for grp, info in parsed.items():
+                if not isinstance(info, dict):
+                    feats = _coerce_feature_map(info)
+                    canonical[grp] = {"features": feats, "state": "Modified"}
+                    continue
+                feats = _coerce_feature_map(info.get("features", info.get("ranges", {})))
+                state = info.get("state", info.get("label", "Modified"))
+                canonical[grp] = {"features": feats, "state": state}
+            return canonical
+
+        # ---------- resolve config dict ----------
+        merged_cfg = {}
+        if config is not None:
+            if hasattr(config, "to_dict") and callable(getattr(config, "to_dict")):
+                merged_cfg = dict(config.to_dict())
+            elif isinstance(config, dict):
+                merged_cfg = dict(config)
+            else:
+                try:
+                    merged_cfg = {k: getattr(config, k) for k in dir(config) if k.startswith("hmm_")}
+                except Exception:
+                    merged_cfg = {}
+
+        def _pick(key, local_val, fallback=None):
+            if local_val is not None:
+                return local_val
+            if key in merged_cfg and merged_cfg[key] is not None:
+                return merged_cfg[key]
+            alt = f"hmm_{key}"
+            if alt in merged_cfg and merged_cfg[alt] is not None:
+                return merged_cfg[alt]
+            return fallback
+
+        # coerce booleans robustly
+        footprints = _coerce_bool(_pick("footprints", footprints, merged_cfg.get("footprints", False)))
+        accessible_patches = _coerce_bool(_pick("accessible_patches", accessible_patches, merged_cfg.get("accessible_patches", False)))
+        cpg = _coerce_bool(_pick("cpg", cpg, merged_cfg.get("cpg", False)))
+
+        threshold = float(_pick("threshold", threshold, merged_cfg.get("hmm_annotation_threshold", 0.5)))
+        batch_size = int(_pick("batch_size", batch_size, merged_cfg.get("hmm_batch_size", 1024)))
+        use_viterbi = _coerce_bool(_pick("use_viterbi", use_viterbi, merged_cfg.get("hmm_use_viterbi", False)))
+
+        methbases = merged_cfg.get("hmm_methbases", None)
+
+        # normalize whitespace/case for human-friendly inputs (but keep original tokens as given)
+        methbases = [str(m).strip() for m in methbases if m is not None]
+        if verbose:
+            print("DEBUG: final methbases list =", methbases)
+
+        # resolve feature sets: prefer canonical if it yields non-empty mapping, otherwise fall back to boolean defaults
         feature_sets = {}
-        if footprints:
-            feature_sets["footprint"] = {
-                "features": {
-                    "small_bound_stretch": [0, 20],
-                    "medium_bound_stretch": [20, 50],
-                    "putative_nucleosome": [50, 200],
-                    "large_bound_stretch": [200, _np.inf],
-                },
-                "state": "Non-Modified",
-            }
-        if accessible_patches:
-            feature_sets["accessible"] = {
-                "features": {
-                    "small_accessible_patch": [0, 20],
-                    "mid_accessible_patch": [20, 80],
-                    "large_accessible_patch": [80, _np.inf],
-                },
-                "state": "Modified",
-            }
-        if cpg:
-            feature_sets["cpg"] = {"features": {"cpg_patch": [0, _np.inf]}, "state": "Modified"}
+        if "hmm_feature_sets" in merged_cfg and merged_cfg.get("hmm_feature_sets") is not None:
+            cand = normalize_hmm_feature_sets(merged_cfg.get("hmm_feature_sets"))
+            if isinstance(cand, dict) and len(cand) > 0:
+                feature_sets = cand
+
+        if not feature_sets:
+            if verbose:
+                print("[HMM.annotate_adata] no feature sets configured; nothing to append.")
+            return None if in_place else adata
+
+        if verbose:
+            print("[HMM.annotate_adata] resolved feature sets:", list(feature_sets.keys()))
 
         # copy vs in-place
         if not in_place:
@@ -657,25 +938,28 @@ class HMM(nn.Module):
         all_features = []
         combined_prefix = "Combined"
         for key, fs in feature_sets.items():
+            feats = fs.get("features", {})
             if key == "cpg":
-                all_features += [f"CpG_{f}" for f in fs["features"]]
+                all_features += [f"CpG_{f}" for f in feats]
                 all_features.append(f"CpG_all_{key}_features")
             else:
                 for methbase in methbases:
-                    all_features += [f"{methbase}_{f}" for f in fs["features"]]
+                    all_features += [f"{methbase}_{f}" for f in feats]
                     all_features.append(f"{methbase}_all_{key}_features")
                 if len(methbases) > 1:
-                    all_features += [f"{combined_prefix}_{f}" for f in fs["features"]]
+                    all_features += [f"{combined_prefix}_{f}" for f in feats]
                     all_features.append(f"{combined_prefix}_all_{key}_features")
 
         # initialize obs columns (unique lists per row)
         n_rows = adata.shape[0]
         for feature in all_features:
-            adata.obs[feature] = [[] for _ in range(n_rows)]
-            adata.obs[f"{feature}_distances"] = [None] * n_rows
-            adata.obs[f"n_{feature}"] = -1
+            if feature not in adata.obs.columns:
+                adata.obs[feature] = [[] for _ in range(n_rows)]
+            if f"{feature}_distances" not in adata.obs.columns:
+                adata.obs[f"{feature}_distances"] = [None] * n_rows
+            if f"n_{feature}" not in adata.obs.columns:
+                adata.obs[f"n_{feature}"] = -1
 
-        # keep track of which layers we actually append (so we can write to .uns)
         appended_layers: List[str] = []
 
         # device management
@@ -726,6 +1010,7 @@ class HMM(nn.Module):
 
             batch_size, L = pred_np.shape
             all_classifications_local = []
+            # allow caller to pass arbitrary state labels mapping; default two-state mapping:
             state_labels = ["Non-Modified", "Modified"]
             try:
                 target_idx = state_labels.index(target_state)
@@ -754,20 +1039,28 @@ class HMM(nn.Module):
                 for start, length, prob in regions:
                     # compute genomic length try/catch
                     try:
-                        # compute genomic length in same coordinate system as coordinates[]
                         feature_length = int(coordinates[start + length - 1]) - int(coordinates[start]) + 1
                     except Exception:
                         feature_length = int(length)
 
-                    label = next((ftype for ftype, rng in classification_mapping.items() if rng[0] <= feature_length < rng[1]),
-                                list(classification_mapping.keys())[0])
+                    # classification_mapping values are (lo, hi) tuples or lists
+                    label = None
+                    for ftype, rng in classification_mapping.items():
+                        lo, hi = rng[0], rng[1]
+                        try:
+                            if lo <= feature_length < hi:
+                                label = ftype
+                                break
+                        except Exception:
+                            continue
+                    if label is None:
+                        # fallback to first mapping key or 'unknown'
+                        label = next(iter(classification_mapping.keys()), "feature")
 
-                    # Store the reported start coordinate in the same coordinate system as `coordinates`.
-                    # DON'T add a +1 offset here; finalization expects coordinates in the same base.
+                    # Store reported start coordinate in same coordinate system as `coordinates`.
                     try:
                         genomic_start = int(coordinates[start])
                     except Exception:
-                        # If coordinates could not be interpreted to ints, fall back to storing index
                         genomic_start = int(start)
                     final.append((genomic_start, feature_length, label, prob))
                 all_classifications_local.append(final)
@@ -775,23 +1068,37 @@ class HMM(nn.Module):
 
         # -----------------------------------------------------------------------
 
-        references = adata.obs[obs_column].cat.categories
+        # Ensure obs_column is categorical-like for iteration
+        sseries = adata.obs[obs_column]
+        if not pd.api.types.is_categorical_dtype(sseries):
+            sseries = sseries.astype("category")
+        references = list(sseries.cat.categories)
+
         ref_iter = references if not verbose else _tqdm(references, desc="Processing References")
         for ref in ref_iter:
             # subset reads with this obs_column value
             ref_mask = adata.obs[obs_column] == ref
             ref_subset = adata[ref_mask].copy()
-
             combined_mask = None
+
             # per-methbase processing
             for methbase in methbases:
-                key_lower = methbase.lower()
-                pos_mask = {
-                    "a": ref_subset.var[f"{ref}_strand_FASTA_base"] == "A",
-                    "c": ref_subset.var[f"{ref}_any_C_site"] == True,
-                    "gpc": ref_subset.var[f"{ref}_GpC_site"] == True,
-                    "cpg": ref_subset.var[f"{ref}_CpG_site"] == True,
-                }.get(key_lower, None)
+                key_lower = methbase.strip().lower()
+
+                # map several common synonyms -> canonical lookup
+                if key_lower in ("a",):
+                    pos_mask = ref_subset.var.get(f"{ref}_strand_FASTA_base") == "A"
+                elif key_lower in ("c", "any_c", "anyc", "any-c"):
+                    # unify 'C' or 'any_C' names to the any_C var column
+                    pos_mask = ref_subset.var.get(f"{ref}_any_C_site") == True
+                elif key_lower in ("gpc", "gpc_site", "gpc-site"):
+                    pos_mask = ref_subset.var.get(f"{ref}_GpC_site") == True
+                elif key_lower in ("cpg", "cpg_site", "cpg-site"):
+                    pos_mask = ref_subset.var.get(f"{ref}_CpG_site") == True
+                else:
+                    # try a best-effort: if a column named f"{ref}_{methbase}_site" exists, use it
+                    alt_col = f"{ref}_{methbase}_site"
+                    pos_mask = ref_subset.var.get(alt_col, None)
 
                 if pos_mask is None:
                     continue
@@ -831,22 +1138,22 @@ class HMM(nn.Module):
                     else:
                         pred_states = _np.argmax(probs_batch, axis=2)
 
-                    classifications = classify_batch_local(pred_states, probs_batch, coords, feature_sets.get("footprint", {}).get("features", {}) if False else {}, target_state="Modified")  # placeholder not used
-
                     # For each feature group, classify separately and write back
                     for key, fs in feature_sets.items():
                         if key == "cpg":
                             continue
-                        state_target = fs["state"]
-                        feature_map = fs["features"]
+                        state_target = fs.get("state", "Modified")
+                        feature_map = fs.get("features", {})
                         classifications = classify_batch_local(pred_states, probs_batch, coords, feature_map, target_state=state_target)
 
                         # write results to adata.obs rows (use original index names)
                         row_indices = list(sub.obs.index[start_idx:stop_idx])
                         for i_local, idx in enumerate(row_indices):
                             for start, length, label, prob in classifications[i_local]:
-                                adata.obs.at[idx, f"{methbase}_{label}"].append([start, length, prob])
-                                adata.obs.at[idx, f"{methbase}_all_{key}_features"].append([start, length, prob])
+                                col_name = f"{methbase}_{label}"
+                                all_col = f"{methbase}_all_{key}_features"
+                                adata.obs.at[idx, col_name].append([start, length, prob])
+                                adata.obs.at[idx, all_col].append([start, length, prob])
 
             # Combined subset (if multiple methbases)
             if len(methbases) > 1 and (combined_mask is not None) and (combined_mask.sum() > 0):
@@ -880,8 +1187,8 @@ class HMM(nn.Module):
                         for key, fs in feature_sets.items():
                             if key == "cpg":
                                 continue
-                            state_target = fs["state"]
-                            feature_map = fs["features"]
+                            state_target = fs.get("state", "Modified")
+                            feature_map = fs.get("features", {})
                             classifications = classify_batch_local(pred_states, probs_batch, coords_comb, feature_map, target_state=state_target)
                             row_indices = list(comb.obs.index[start_idx:stop_idx])
                             for i_local, idx in enumerate(row_indices):
@@ -890,7 +1197,7 @@ class HMM(nn.Module):
                                     adata.obs.at[idx, f"{combined_prefix}_all_{key}_features"].append([start, length, prob])
 
         # CpG special handling
-        if cpg:
+        if "cpg" in feature_sets and feature_sets.get("cpg") is not None:
             cpg_iter = references if not verbose else _tqdm(references, desc="Processing CpG")
             for ref in cpg_iter:
                 ref_mask = adata.obs[obs_column] == ref
@@ -925,8 +1232,8 @@ class HMM(nn.Module):
                         pred_states = _np.argmax(probs_batch, axis=2)
 
                     fs = feature_sets["cpg"]
-                    state_target = fs["state"]
-                    feature_map = fs["features"]
+                    state_target = fs.get("state", "Modified")
+                    feature_map = fs.get("features", {})
                     classifications = classify_batch_local(pred_states, probs_batch, coords_cpg, feature_map, target_state=state_target)
                     row_indices = list(cpg_sub.obs.index[start_idx:stop_idx])
                     for i_local, idx in enumerate(row_indices):
@@ -934,12 +1241,11 @@ class HMM(nn.Module):
                             adata.obs.at[idx, f"CpG_{label}"].append([start, length, prob])
                             adata.obs.at[idx, f"CpG_all_cpg_features"].append([start, length, prob])
 
+        # finalize: convert intervals into binary layers and distances
         try:
-            # try to interpret var_names as integers (genomic coordinates)
             coordinates = _np.asarray(adata.var_names, dtype=int)
             coords_are_ints = True
         except Exception:
-            # fallback: treat var positions as simple indices 0..n_vars-1
             coordinates = _np.arange(adata.shape[1], dtype=int)
             coords_are_ints = False
 
@@ -947,48 +1253,54 @@ class HMM(nn.Module):
         for feature in features_iter:
             bin_matrix = _np.zeros((adata.shape[0], adata.shape[1]), dtype=int)
             counts = _np.zeros(adata.shape[0], dtype=int)
+
+            # new: integer-length layer (0 where not inside a feature)
+            len_matrix = _np.zeros((adata.shape[0], adata.shape[1]), dtype=int)
+
             for row_idx, intervals in enumerate(adata.obs[feature]):
                 if not isinstance(intervals, list):
                     intervals = []
                 for start, length, prob in intervals:
                     if prob > threshold:
-                        # If coordinates are ints, we treat stored 'start' as a genomic coordinate.
-                        # Otherwise assume stored 'start' is an index (0-based).
                         if coords_are_ints:
-                            # start is genomic coordinate (e.g. bp). Find matching / nearest indices.
+                            # map genomic start/length into index interval [start_idx, end_idx)
                             start_idx = _np.searchsorted(coordinates, int(start), side="left")
                             end_idx = _np.searchsorted(coordinates, int(start) + int(length) - 1, side="right")
                         else:
-                            # fallback: interpret 'start' as an index
                             start_idx = int(start)
                             end_idx = start_idx + int(length)
 
-                        # bounds check
                         start_idx = max(0, min(start_idx, adata.shape[1]))
                         end_idx = max(0, min(end_idx, adata.shape[1]))
 
                         if start_idx < end_idx:
+                            span = end_idx - start_idx  # number of positions covered
+                            # set binary mask
                             bin_matrix[row_idx, start_idx:end_idx] = 1
+                            # set length mask: use maximum in case of overlaps
+                            existing = len_matrix[row_idx, start_idx:end_idx]
+                            len_matrix[row_idx, start_idx:end_idx] = _np.maximum(existing, span)
                             counts[row_idx] += 1
-                        else:
-                            # optional: debug/diagnostic hook
-                            # warnings.warn(f"Feature {feature} row {row_idx} interval ({start},{length}) mapped to empty slice [{start_idx},{end_idx})")
-                            pass
-            # write layer and track name
+
+            # write binary layer and length layer, track appended names
             adata.layers[feature] = bin_matrix
             appended_layers.append(feature)
+
+            # name the integer-length layer (choose suffix you like)
+            length_layer_name = f"{feature}_lengths"
+            adata.layers[length_layer_name] = len_matrix
+            appended_layers.append(length_layer_name)
 
             adata.obs[f"n_{feature}"] = counts
             adata.obs[f"{feature}_distances"] = calculate_batch_distances(adata.obs[feature].tolist(), threshold)
 
         # Merge appended_layers into adata.uns[uns_key] (preserve pre-existing and avoid duplicates)
         existing = list(adata.uns.get(uns_key, [])) if adata.uns.get(uns_key) is not None else []
-        # preserve insertion order, avoid duplicates
         new_list = existing + [l for l in appended_layers if l not in existing]
         adata.uns[uns_key] = new_list
 
-        # return or in-place behavior (unchanged)
         return None if in_place else adata
+
 
     def _ensure_final_layer_and_assign(self, final_adata, layer_name: str, subset_idx_mask: np.ndarray, sub_data):
         """
