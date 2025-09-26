@@ -51,3 +51,6 @@ hmm_feature_sets:
       small_accessible_patch: [0, 20]
       mid_accessible_patch: [20, 100]
       large_accessible_patch: [100, inf]
+
+hmm_merge_layer_features:
+  - ["C_all_accessible_features", 80]

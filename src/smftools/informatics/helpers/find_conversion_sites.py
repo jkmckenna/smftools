@@ -1,11 +1,11 @@
-def find_conversion_sites(fasta_file, modification_type, conversion_types, deaminase_footprinting=False):
+def find_conversion_sites(fasta_file, modification_type, conversions, deaminase_footprinting=False):
     """
     Finds genomic coordinates of modified bases (5mC or 6mA) in a reference FASTA file.
 
     Parameters:
         fasta_file (str): Path to the converted reference FASTA.
         modification_type (str): Modification type ('5mC' or '6mA') or 'unconverted'.
-        conversion_types (list): List of conversion types. The first element is the unconverted record type.
+        conversions (list): List of conversion types. The first element is the unconverted record type.
         deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
 
     Returns: 
@@ -15,7 +15,7 @@ def find_conversion_sites(fasta_file, modification_type, conversion_types, deami
     """
     import numpy as np
     from Bio import SeqIO
-    unconverted = conversion_types[0]
+    unconverted = conversions[0]
     record_dict = {}
 
     # Define base mapping based on modification type

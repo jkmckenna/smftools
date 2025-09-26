@@ -207,6 +207,8 @@ hmm_feature_sets:
       small_accessible_patch: [0, 20]
       mid_accessible_patch: [20, 100]
       large_accessible_patch: [100, inf]
+hmm_merge_layer_features:
+  - [null, 80]
 
 # Pipeline control flow - Preprocessing and QC
 force_redo_preprocessing: False # Whether to force redo the entire preprocessing workflow from the initial raw anndata.

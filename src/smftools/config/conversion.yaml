@@ -10,7 +10,6 @@ read_mod_filtering_use_other_c_as_background: True
 cpg: True # whether to use the default HMM endogenous CpG patch params
 hmm_methbases:
   - "GpC"
-  - "CpG"
 hmm_feature_sets:
   footprint:
     state: "Non-Modified"
@@ -29,3 +28,6 @@ hmm_feature_sets:
     state: "Modified"
     features:
       cpg_patch: [0, inf]
+
+hmm_merge_layer_features:
+  - ["GpC_all_accessible_features", 80]

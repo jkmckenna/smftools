@@ -30,7 +30,7 @@ def converted_BAM_to_adata_II(converted_FASTA,
                               split_dir,
                               mapping_threshold, 
                               experiment_name, 
-                              conversion_types, 
+                              conversions, 
                               bam_suffix, 
                               device='cpu', 
                               num_threads=8, 
@@ -45,7 +45,7 @@ def converted_BAM_to_adata_II(converted_FASTA,
         split_dir (str): Directory containing converted BAM files.
         mapping_threshold (float): Minimum fraction of aligned reads required for inclusion.
         experiment_name (str): Name for the output AnnData object.
-        conversion_types (list): List of modification types (e.g., ['unconverted', '5mC', '6mA']).
+        conversions (list): List of modification types (e.g., ['unconverted', '5mC', '6mA']).
         bam_suffix (str): File suffix for BAM files.
         num_threads (int): Number of parallel processing threads.
         deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
@@ -82,7 +82,7 @@ def converted_BAM_to_adata_II(converted_FASTA,
     print(f"Found {len(bam_files)} BAM files: {bam_files}")
 
     ## Process Conversion Sites
-    max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(converted_FASTA, conversion_types, deaminase_footprinting)
+    max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(converted_FASTA, conversions, deaminase_footprinting)
 
     ## Filter BAM Files by Mapping Threshold
     records_to_analyze = filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold)
@@ -114,13 +114,13 @@ def converted_BAM_to_adata_II(converted_FASTA,
     return final_adata, final_adata_path
 
 
-def process_conversion_sites(converted_FASTA, conversion_types=['unconverted', '5mC'], deaminase_footprinting=False):
+def process_conversion_sites(converted_FASTA, conversions=['unconverted', '5mC'], deaminase_footprinting=False):
     """
     Extracts conversion sites and determines the max reference length.
 
     Parameters:
         converted_FASTA (str): Path to the converted reference FASTA.
-        conversion_types (list): List of modification types (e.g., ['unconverted', '5mC', '6mA']).
+        conversions (list): List of modification types (e.g., ['unconverted', '5mC', '6mA']).
         deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
 
     Returns:
@@ -131,11 +131,11 @@ def process_conversion_sites(converted_FASTA, conversion_types=['unconverted', '
     record_FASTA_dict = {}
     chromosome_FASTA_dict = {}
     max_reference_length = 0
-    unconverted = conversion_types[0]
-    conversions = conversion_types[1:]
+    unconverted = conversions[0]
+    conversion_types = conversions[1:]
 
     # Process the unconverted sequence once
-    modification_dict[unconverted] = find_conversion_sites(converted_FASTA, unconverted, conversion_types, deaminase_footprinting)
+    modification_dict[unconverted] = find_conversion_sites(converted_FASTA, unconverted, conversions, deaminase_footprinting)
     # Above points to record_dict[record.id] = [sequence_length, [], [], sequence, complement] with only unconverted record.id keys
 
     # Get **max sequence length** from unconverted records
@@ -161,8 +161,8 @@ def process_conversion_sites(converted_FASTA, conversion_types=['unconverted', '
             chromosome_FASTA_dict[chromosome] = [sequence + "N" * (max_reference_length - sequence_length), complement + "N" * (max_reference_length - sequence_length)]
 
     # Process converted records
-    for conversion in conversions:
-        modification_dict[conversion] = find_conversion_sites(converted_FASTA, conversion, conversion_types, deaminase_footprinting)
+    for conversion in conversion_types:
+        modification_dict[conversion] = find_conversion_sites(converted_FASTA, conversion, conversions, deaminase_footprinting)
         # Above points to record_dict[record.id] = [sequence_length, top_strand_coordinates, bottom_strand_coordinates, sequence, complement] with only unconverted record.id keys
 
         for record, values in modification_dict[conversion].items():
