@@ -195,7 +195,7 @@ def load_adata(config_path):
         elif os.path.exists(converted_FASTA):
             print(converted_FASTA + ' already exists. Using existing converted FASTA.')
         else:
-            generate_converted_FASTA(fasta, conversion_types, strands, converted_FASTA)
+            generate_converted_FASTA(fasta, conversions, strands, converted_FASTA)
         fasta = converted_FASTA
 
     # Make a FAI and .chrom.names file for the fasta
@@ -290,7 +290,7 @@ def load_adata(config_path):
                                                                   split_dir, 
                                                                   cfg.mapping_threshold, 
                                                                   cfg.experiment_name, 
-                                                                  conversion_types, 
+                                                                  conversions, 
                                                                   bam_suffix, 
                                                                   cfg.device, 
                                                                   cfg.threads, 
@@ -922,6 +922,18 @@ def load_adata(config_path):
                                         obs_column=cfg.reference_column,
                                         layer=cfg.layer_for_umap_plotting,
                                         config=cfg)
+                        
+                        #to_merge = [("C_all_accessible_features", 80)]
+                        to_merge = cfg.hmm_merge_layer_features
+                        for layer_to_merge, merge_distance in to_merge:
+                            if layer_to_merge:
+                                hmm.merge_intervals_in_layer(subset,
+                                                            layer=layer_to_merge,
+                                                            distance_threshold=merge_distance,
+                                                            overwrite=True
+                                                            )
+                            else:
+                                pass
 
                         # collect appended layers from subset.uns
                         appended = list(subset.uns.get(uns_key, []))
@@ -964,7 +976,7 @@ def load_adata(config_path):
     
     ## Save HMM annotated adata
     if not os.path.exists(hmm_adata_path):
-        print('Saving basic analyzed adata post preprocessing and duplicate removal')
+        print('Saving hmm analyzed adata post preprocessing and duplicate removal')
         if ".gz" in hmm_adata_path:
             safe_write_h5ad(adata, f"{hmm_adata_path}", compression='gzip', backup=True, backup_dir=hmm_backup_dir)
         else:
@@ -983,7 +995,7 @@ def load_adata(config_path):
         make_dirs([pp_dir, hmm_dir])
         from .plotting import combined_hmm_raw_clustermap
 
-        for layer in ['C_all_accessible_features', 'C_small_bound_stretch', 'C_medium_bound_stretch', 'C_putative_nucleosome']:
+        for layer in ['C_all_accessible_features', 'C_small_bound_stretch', 'C_medium_bound_stretch', 'C_putative_nucleosome', 'C_all_accessible_features_merged']:
             save_path = os.path.join(hmm_dir, layer)
             make_dirs([save_path])
 
@@ -1041,7 +1053,7 @@ def load_adata(config_path):
         make_dirs([pp_dir, hmm_dir])
         from .plotting import plot_hmm_size_contours
 
-        for layer, max in [('C_all_accessible_features_lengths', 400), ('C_all_footprint_features_lengths', 160)]:
+        for layer, max in [('C_all_accessible_features_lengths', 400), ('C_all_footprint_features_lengths', 160), ('C_all_accessible_features_merged_lengths', 800)]:
             save_path = os.path.join(hmm_dir, layer)
             make_dirs([save_path])
 

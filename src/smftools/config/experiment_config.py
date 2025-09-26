@@ -716,6 +716,7 @@ class ExperimentConfig:
     accessible_patches: Optional[bool] = True
     cpg: Optional[bool] = False
     hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
+    hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 80)])
 
     # Pipeline control flow - preprocessing and QC
     force_redo_preprocessing: bool = False
@@ -933,6 +934,7 @@ class ExperimentConfig:
         if not hmm_methbases:
             hmm_methbases = ['C']
         hmm_methbases = list(hmm_methbases)
+        hmm_merge_layer_features = _parse_list(merged.get("hmm_merge_layer_features", None))
 
 
         # instantiate dataclass
@@ -1001,6 +1003,7 @@ class ExperimentConfig:
             hmm_use_viterbi = hmm_use_viterbi,
             hmm_methbases = hmm_methbases,
             hmm_device = hmm_device,
+            hmm_merge_layer_features = hmm_merge_layer_features,
             footprints = merged.get("footprints", None),
             accessible_patches = merged.get("accessible_patches", None),
             cpg = merged.get("cpg", None),

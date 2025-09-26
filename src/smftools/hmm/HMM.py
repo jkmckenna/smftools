@@ -707,7 +707,6 @@ class HMM(nn.Module):
         }
         torch.save(payload, path)
 
-
     @classmethod
     def load(cls, path: str, device: Optional[Union[torch.device, str]] = None) -> "HMM":
         """
@@ -1301,6 +1300,228 @@ class HMM(nn.Module):
 
         return None if in_place else adata
 
+    def merge_intervals_in_layer(
+        self,
+        adata,
+        layer: str,
+        distance_threshold: int = 0,
+        merged_suffix: str = "_merged",
+        length_layer_suffix: str = "_lengths",
+        update_obs: bool = True,
+        prob_strategy: str = "mean",  # 'mean'|'max'|'orig_first'
+        inplace: bool = True,
+        overwrite: bool = False,
+        verbose: bool = False,
+    ):
+        """
+        Merge intervals in `adata.layers[layer]` that are within `distance_threshold`.
+        Writes new merged binary layer named f"{layer}{merged_suffix}" and length layer
+        f"{layer}{merged_suffix}{length_layer_suffix}". Optionally updates adata.obs for merged intervals.
+
+        Parameters
+        ----------
+        layer : str
+            Name of original binary layer (0/1 mask).
+        distance_threshold : int
+            Merge intervals whose gap <= this threshold (genomic coords if adata.var_names are ints).
+        merged_suffix : str
+            Suffix appended to original layer for the merged binary layer (default "_merged").
+        length_layer_suffix : str
+            Suffix appended after merged suffix for the lengths layer (default "_lengths").
+        update_obs : bool
+            If True, create/update adata.obs[f"{layer}{merged_suffix}"] with merged intervals.
+        prob_strategy : str
+            How to combine probs when merging ('mean', 'max', 'orig_first').
+        inplace : bool
+            If False, returns a new AnnData with changes (original untouched).
+        overwrite : bool
+            If True, will overwrite existing merged layers / obs entries; otherwise will error if they exist.
+        """
+        import numpy as _np
+        from scipy.sparse import issparse
+
+        if not inplace:
+            adata = adata.copy()
+
+        merged_bin_name = f"{layer}{merged_suffix}"
+        merged_len_name = f"{layer}{merged_suffix}{length_layer_suffix}"
+
+        if (merged_bin_name in adata.layers or merged_len_name in adata.layers or
+                (update_obs and merged_bin_name in adata.obs.columns)) and not overwrite:
+            raise KeyError(f"Merged outputs exist (use overwrite=True to replace): {merged_bin_name} / {merged_len_name}")
+
+        if layer not in adata.layers:
+            raise KeyError(f"Layer '{layer}' not found in adata.layers")
+
+        bin_layer = adata.layers[layer]
+        if issparse(bin_layer):
+            bin_arr = bin_layer.toarray().astype(int)
+        else:
+            bin_arr = _np.asarray(bin_layer, dtype=int)
+
+        n_rows, n_cols = bin_arr.shape
+
+        # coordinates in genomic units if possible
+        try:
+            coords = _np.asarray(adata.var_names, dtype=int)
+            coords_are_ints = True
+        except Exception:
+            coords = _np.arange(n_cols, dtype=int)
+            coords_are_ints = False
+
+        # helper: contiguous runs of 1s -> list of (start_idx, end_idx) (end exclusive)
+        def _runs_from_mask(mask_1d):
+            idx = _np.nonzero(mask_1d)[0]
+            if idx.size == 0:
+                return []
+            runs = []
+            start = idx[0]
+            prev = idx[0]
+            for i in idx[1:]:
+                if i == prev + 1:
+                    prev = i
+                    continue
+                runs.append((start, prev + 1))
+                start = i
+                prev = i
+            runs.append((start, prev + 1))
+            return runs
+
+        # read original obs intervals/probs if available (for combining probs)
+        orig_obs = None
+        if update_obs and (layer in adata.obs.columns):
+            orig_obs = list(adata.obs[layer])  # might be non-list entries
+
+        # prepare outputs
+        merged_bin = _np.zeros_like(bin_arr, dtype=int)
+        merged_len = _np.zeros_like(bin_arr, dtype=int)
+        merged_obs_col = [[] for _ in range(n_rows)]
+        merged_counts = _np.zeros(n_rows, dtype=int)
+
+        for r in range(n_rows):
+            mask = bin_arr[r, :] != 0
+            runs = _runs_from_mask(mask)
+            if not runs:
+                merged_obs_col[r] = []
+                continue
+
+            # merge runs where gap <= distance_threshold (gap in genomic coords when possible)
+            merged_runs = []
+            cur_s, cur_e = runs[0]
+            for (s, e) in runs[1:]:
+                if coords_are_ints:
+                    end_coord = int(coords[cur_e - 1])
+                    next_start_coord = int(coords[s])
+                    gap = next_start_coord - end_coord - 1
+                else:
+                    gap = s - cur_e
+                if gap <= distance_threshold:
+                    # extend
+                    cur_e = e
+                else:
+                    merged_runs.append((cur_s, cur_e))
+                    cur_s, cur_e = s, e
+            merged_runs.append((cur_s, cur_e))
+
+            # assemble merged mask/lengths and obs entries
+            row_entries = []
+            for (s_idx, e_idx) in merged_runs:
+                if e_idx <= s_idx:
+                    continue
+                span_positions = e_idx - s_idx
+                if coords_are_ints:
+                    try:
+                        length_val = int(coords[e_idx - 1]) - int(coords[s_idx]) + 1
+                    except Exception:
+                        length_val = span_positions
+                else:
+                    length_val = span_positions
+
+                # set binary and length masks
+                merged_bin[r, s_idx:e_idx] = 1
+                existing_segment = merged_len[r, s_idx:e_idx]
+                # set to max(existing, length_val)
+                if existing_segment.size > 0:
+                    merged_len[r, s_idx:e_idx] = _np.maximum(existing_segment, length_val)
+                else:
+                    merged_len[r, s_idx:e_idx] = length_val
+
+                # determine prob from overlapping original obs (if present)
+                prob_val = 1.0
+                if update_obs and orig_obs is not None:
+                    overlaps = []
+                    for orig in (orig_obs[r] or []):
+                        try:
+                            ostart, olen, opro = orig[0], int(orig[1]), float(orig[2])
+                        except Exception:
+                            continue
+                        if coords_are_ints:
+                            ostart_idx = _np.searchsorted(coords, int(ostart), side="left")
+                            oend_idx = ostart_idx + olen
+                        else:
+                            ostart_idx = int(ostart)
+                            oend_idx = ostart_idx + olen
+                        # overlap test in index space
+                        if not (oend_idx <= s_idx or ostart_idx >= e_idx):
+                            overlaps.append(opro)
+                    if overlaps:
+                        if prob_strategy == "mean":
+                            prob_val = float(_np.mean(overlaps))
+                        elif prob_strategy == "max":
+                            prob_val = float(_np.max(overlaps))
+                        else:
+                            prob_val = float(overlaps[0])
+
+                start_coord = int(coords[s_idx]) if coords_are_ints else int(s_idx)
+                row_entries.append((start_coord, int(length_val), float(prob_val)))
+
+            merged_obs_col[r] = row_entries
+            merged_counts[r] = len(row_entries)
+
+        # write merged layers (do not overwrite originals unless overwrite=True was set above)
+        adata.layers[merged_bin_name] = merged_bin
+        adata.layers[merged_len_name] = merged_len
+
+        if update_obs:
+            adata.obs[merged_bin_name] = merged_obs_col
+            adata.obs[f"n_{merged_bin_name}"] = merged_counts
+
+            # recompute distances list per-row (gaps between adjacent merged intervals)
+            def _calc_distances(obs_list):
+                out = []
+                for intervals in obs_list:
+                    if not intervals:
+                        out.append([])
+                        continue
+                    iv = sorted(intervals, key=lambda x: int(x[0]))
+                    if len(iv) <= 1:
+                        out.append([])
+                        continue
+                    dlist = []
+                    for i in range(len(iv) - 1):
+                        endi = int(iv[i][0]) + int(iv[i][1]) - 1
+                        startn = int(iv[i + 1][0])
+                        dlist.append(startn - endi - 1)
+                    out.append(dlist)
+                return out
+
+            adata.obs[f"{merged_bin_name}_distances"] = _calc_distances(merged_obs_col)
+
+        # update uns appended list
+        uns_key = "hmm_appended_layers"
+        existing = list(adata.uns.get(uns_key, [])) if adata.uns.get(uns_key, None) is not None else []
+        for nm in (merged_bin_name, merged_len_name):
+            if nm not in existing:
+                existing.append(nm)
+        adata.uns[uns_key] = existing
+
+        if verbose:
+            print(f"Created merged binary layer: {merged_bin_name}")
+            print(f"Created merged length layer: {merged_len_name}")
+            if update_obs:
+                print(f"Updated adata.obs columns: {merged_bin_name}, n_{merged_bin_name}, {merged_bin_name}_distances")
+
+        return None if inplace else adata
 
     def _ensure_final_layer_and_assign(self, final_adata, layer_name: str, subset_idx_mask: np.ndarray, sub_data):
         """
