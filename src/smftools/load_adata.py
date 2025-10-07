@@ -772,43 +772,167 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ############################################### Spatial autocorrelation analyses ########################################
-    from .tools.read_stats import binary_autocorrelation_with_spacing
-    if smf_modality != 'direct':
-        pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
-        pp_autocorr_dir = f"{pp_dir}/08_autocorrelations"
+    from .tools.spatial_autocorrelation import binary_autocorrelation_with_spacing, analyze_autocorr_matrix, bootstrap_periodicity
+
+    pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
+    pp_autocorr_dir = f"{pp_dir}/08_autocorrelations"
+
+    if os.path.isdir(pp_autocorr_dir):
+        print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
+    else:
+        positions = adata.var_names.astype(int).values
+        lags = np.arange(cfg.autocorr_max_lag + 1)
+
+        # optional: try to parallelize autocorr per-row with joblib
+        try:
+            from joblib import Parallel, delayed
+            _have_joblib = True
+        except Exception:
+            _have_joblib = False
+
+        for site_type in cfg.autocorr_site_types:
+            layer_key = f"{site_type}_site_binary"
+            if layer_key not in adata.layers:
+                print(f"Layer {layer_key} not found in adata.layers — skipping {site_type}.")
+                continue
+
+            X = adata.layers[layer_key]
+            if getattr(X, "shape", (0,))[0] == 0:
+                print(f"Layer {layer_key} empty — skipping {site_type}.")
+                continue
+
+            # compute per-molecule autocorrs (and counts)
+            rows = []
+            counts = []
+            if _have_joblib:
+                # parallel map
+                def _worker(row):
+                    try:
+                        ac, cnts = binary_autocorrelation_with_spacing(
+                            row, positions, max_lag=cfg.autocorr_max_lag, return_counts=True
+                        )
+                    except Exception as e:
+                        # on error return NaN arrays
+                        ac = np.full(cfg.autocorr_max_lag + 1, np.nan, dtype=np.float32)
+                        cnts = np.zeros(cfg.autocorr_max_lag + 1, dtype=np.int32)
+                    return ac, cnts
+
+                res = Parallel(n_jobs=cfg.n_jobs if hasattr(cfg, "n_jobs") else -1)(
+                    delayed(_worker)(X[i]) for i in range(X.shape[0])
+                )
+                for ac, cnts in res:
+                    rows.append(ac)
+                    counts.append(cnts)
+            else:
+                # sequential fallback
+                for i in range(X.shape[0]):
+                    ac, cnts = binary_autocorrelation_with_spacing(
+                        X[i], positions, max_lag=cfg.autocorr_max_lag, return_counts=True
+                    )
+                    rows.append(ac)
+                    counts.append(cnts)
+
+            autocorr_matrix = np.asarray(rows, dtype=np.float32)
+            counts_matrix = np.asarray(counts, dtype=np.int32)
+
+            # store raw per-molecule arrays (keep memory format compact)
+            adata.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
+            adata.obsm[f"{site_type}_spatial_autocorr_counts"] = counts_matrix
+            adata.uns[f"{site_type}_spatial_autocorr_lags"] = lags
+
+            # compute global periodicity metrics across all molecules for this site_type
+            try:
+                results = analyze_autocorr_matrix(
+                    autocorr_matrix, counts_matrix, lags,
+                    nrl_search_bp=(120, 260), pad_factor=4, min_count=20, max_harmonics=6
+                )
+            except Exception as e:
+                results = {"error": str(e)}
+
+            # store global metrics (same keys you used)
+            global_metrics = {
+                "nrl_bp": results.get("nrl_bp", np.nan),
+                "xi": results.get("xi", np.nan),
+                "snr": results.get("snr", np.nan),
+                "fwhm_bp": results.get("fwhm_bp", np.nan),
+                "envelope_sample_lags": results.get("envelope_sample_lags", np.array([])).tolist(),
+                "envelope_heights": results.get("envelope_heights", np.array([])).tolist(),
+                "analyzer_error": results.get("error", None),
+            }
+            adata.uns[f"{site_type}_spatial_periodicity_metrics"] = global_metrics
+
+            # bootstrap for CI (use a reasonable default; set low only for debugging)
+            n_boot = getattr(cfg, "autocorr_bootstrap_n", 200)
+            # if user intentionally set very low n_boot in cfg, we keep that; otherwise default 200
+            try:
+                bs = bootstrap_periodicity(
+                    autocorr_matrix, counts_matrix, lags,
+                    n_boot=n_boot, nrl_search_bp=(120, 260), pad_factor=4, min_count=20
+                )
+                adata.uns[f"{site_type}_spatial_periodicity_boot"] = {
+                    "nrl_boot": np.asarray(bs["nrl_boot"]).tolist(),
+                    "xi_boot": np.asarray(bs["xi_boot"]).tolist(),
+                }
+            except Exception as e:
+                adata.uns[f"{site_type}_spatial_periodicity_boot_error"] = str(e)
+
+            # ----------------------------
+            # Compute group-level metrics for plotting (per sample × reference)
+            # ----------------------------
+            metrics_by_group = {}
+            sample_col = cfg.sample_name_col_for_plotting
+            ref_col = cfg.reference_strand_col if hasattr(cfg, "reference_strand_col") else "Reference_strand"
+            samples = adata.obs[sample_col].astype("category").cat.categories.tolist()
+            refs = adata.obs[ref_col].astype("category").cat.categories.tolist()
+
+            # iterate groups and run analyzer on each group's subset; cache errors
+            for sample_name in samples:
+                sample_mask = (adata.obs[sample_col].values == sample_name)
+                # combined group
+                mask = sample_mask
+                ac_sel = autocorr_matrix[mask, :]
+                cnt_sel = counts_matrix[mask, :] if counts_matrix is not None else None
+                if ac_sel.size:
+                    try:
+                        r = analyze_autocorr_matrix(ac_sel, cnt_sel if cnt_sel is not None else np.zeros_like(ac_sel, dtype=int),
+                                                    lags, nrl_search_bp=(120,260), pad_factor=4, min_count=10, max_harmonics=6)
+                    except Exception as e:
+                        r = {"error": str(e)}
+                else:
+                    r = {"error": "no_data"}
+                metrics_by_group[(sample_name, None)] = r
+
+                # per-reference groups
+                for ref in refs:
+                    mask_ref = sample_mask & (adata.obs[ref_col].values == ref)
+                    ac_sel = autocorr_matrix[mask_ref, :]
+                    cnt_sel = counts_matrix[mask_ref, :] if counts_matrix is not None else None
+                    if ac_sel.size:
+                        try:
+                            r = analyze_autocorr_matrix(ac_sel, cnt_sel if cnt_sel is not None else np.zeros_like(ac_sel, dtype=int),
+                                                        lags, nrl_search_bp=(120,260), pad_factor=4, min_count=10, max_harmonics=6)
+                        except Exception as e:
+                            r = {"error": str(e)}
+                    else:
+                        r = {"error": "no_data"}
+                    metrics_by_group[(sample_name, ref)] = r
+
+            # persist group metrics
+            adata.uns[f"{site_type}_spatial_periodicity_metrics_by_group"] = metrics_by_group
 
         if os.path.isdir(pp_autocorr_dir):
             print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
         else:
-            positions = adata.var_names.astype(int).values
-            for site_type in cfg.autocorr_site_types:
-                X = adata.layers[f"{site_type}_site_binary"]
+            from .plotting import plot_spatial_autocorr_grid
+            make_dirs([pp_autocorr_dir, pp_autocorr_dir])
 
-                autocorr_matrix = np.array([
-                    binary_autocorrelation_with_spacing(row, 
-                                                        positions, 
-                                                        max_lag=cfg.autocorr_max_lag)
-                    for row in X
-                ])
+            plot_spatial_autocorr_grid(adata, 
+                                        pp_autocorr_dir, 
+                                        site_types=cfg.autocorr_site_types, 
+                                        sample_col=cfg.sample_name_col_for_plotting, 
+                                        window=cfg.autocorr_rolling_window_size, 
+                                        rows_per_fig=cfg.rows_per_qc_autocorr_grid)
 
-                adata.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
-                adata.uns[f"{site_type}_spatial_autocorr_lags"] = np.arange(cfg.autocorr_max_lag + 1)
-
-            if os.path.isdir(pp_autocorr_dir):
-                print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
-            else:
-                from .plotting import plot_spatial_autocorr_grid
-                make_dirs([pp_autocorr_dir, pp_autocorr_dir])
-
-                plot_spatial_autocorr_grid(adata, 
-                                           pp_autocorr_dir, 
-                                           site_types=cfg.autocorr_site_types, 
-                                           sample_col=cfg.sample_name_col_for_plotting, 
-                                           window=cfg.autocorr_rolling_window_size, 
-                                           rows_per_fig=cfg.rows_per_qc_autocorr_grid)
-
-    else:
-        pass
     ########################################################################################################################
 
     ############################################### Pearson analyses ########################################
