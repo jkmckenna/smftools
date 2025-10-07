@@ -3,6 +3,7 @@ from .calculate_umap import calculate_umap
 from .cluster_adata_on_methylation import cluster_adata_on_methylation
 from .general_tools import create_nan_mask_from_X, combine_layers, create_nan_or_non_gpc_mask
 from .read_stats import calculate_row_entropy
+from .spatial_autocorrelation import *
 from .subset_adata import subset_adata
 
 
