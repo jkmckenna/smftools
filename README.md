@@ -29,6 +29,9 @@ The following CLI tools need to be installed and configured before using the inf
 
 ## Announcements
 
+### 11/05/25 - Version 0.2.1 is available through PyPI
+Version 0.2.1 makes the core workflow (smftools load) a command line tool that takes in an experiment_config.csv file for input/output and parameter management.
+
 ### 05/29/25 - Version 0.1.6 is available through PyPI.
 Informatics, preprocessing, tools, plotting modules have core functionality that is approaching stability on MacOS(Intel/Silicon) and Linux(Ubuntu). I will work on improving documentation/tutorials shortly. The base PyTorch/Scikit-Learn ML-infrastructure is going through some organizational changes to work with PyTorch Lightning, Hydra, and WanDB to facilitate organizational scaling, multi-device usage, and logging.
 
