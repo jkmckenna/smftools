@@ -416,3 +416,196 @@ def plot_spatial_autocorr_grid(
         warnings.warn(f"Failed to write combined CSV {combined_out}: {e}")
 
     return saved_pages
+
+
+def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=160, show=False):
+    """
+    Plot NRL and SNR vs window center from the dataframe returned by rolling_autocorr_metrics.
+    If out_png is None, returns the matplotlib Figure object; otherwise saves PNG and returns path.
+    """
+    import matplotlib.pyplot as plt
+    # sort by center
+    df2 = df.sort_values("center")
+    x = df2["center"].values
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=figsize, dpi=dpi, sharex=True)
+
+    axes[0].plot(x, df2["nrl_bp"].values, marker="o", lw=1)
+    axes[0].set_xlabel("Window center (bp)")
+    axes[0].set_ylabel("NRL (bp)")
+    axes[0].grid(True, alpha=0.2)
+
+    axes[1].plot(x, df2["snr"].values, marker="o", lw=1, color="C3")
+    axes[1].set_xlabel("Window center (bp)")
+    axes[1].set_ylabel("SNR")
+    axes[1].grid(True, alpha=0.2)
+
+    if title:
+        fig.suptitle(title, y=1.02)
+
+    fig.tight_layout()
+
+    if out_png:
+        fig.savefig(out_png, bbox_inches="tight")
+        if not show:
+            import matplotlib
+            matplotlib.pyplot.close(fig)
+        return out_png
+    if not show:
+        import matplotlib
+        matplotlib.pyplot.close(fig)
+    return fig
+
+import numpy as np
+import pandas as pd
+
+def plot_rolling_grid(
+    rolling_dict,
+    out_dir,
+    site,
+    metrics=("nrl_bp", "snr", "xi"),
+    sample_order=None,
+    reference_order=None,
+    rows_per_page: int = 6,
+    cols_per_page: int = None,
+    dpi: int = 160,
+    figsize_per_panel=(3.5, 2.2),
+    per_metric_ylim: dict = None,
+    filename_prefix: str = "rolling_grid",
+    metric_display_names: dict = None,
+):
+    """
+    Plot rolling metrics in a grid, creating a separate paginated page-set for each metric.
+
+    Parameters
+    ----------
+    rolling_dict : dict
+        mapping (sample, ref) -> DataFrame (must contain 'center' and metric columns).
+        Keys may use `None` for combined/"all" reference.
+    out_dir : str
+    site : str
+    metrics : sequence[str]
+        list of metric column names to plot. One page-set per metric will be written.
+    sample_order, reference_order : optional lists for ordering (values as in keys)
+    rows_per_page : int
+        number of sample rows per page.
+    cols_per_page : int | None
+        number of columns per page (defaults to number of unique refs).
+    figsize_per_panel : (w,h) for each subplot panel.
+    per_metric_ylim : dict or None
+        optional mapping metric -> (ymin,ymax) to force consistent y-limits for that metric.
+        If absent, y-limits are autoscaled per page.
+    filename_prefix : str
+    metric_display_names : dict or None
+        optional mapping metric -> friendly label for y-axis/title.
+
+    Returns
+    -------
+    pages_by_metric : dict mapping metric -> [out_png_paths]
+    """
+    import os
+    import math
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    if per_metric_ylim is None:
+        per_metric_ylim = {}
+    if metric_display_names is None:
+        metric_display_names = {}
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    keys = list(rolling_dict.keys())
+    if not keys:
+        raise ValueError("rolling_dict is empty")
+
+    # normalize reference labels and keep mapping to original
+    label_to_orig = {}
+    for (_sample, ref) in keys:
+        label = "all" if (ref is None) else str(ref)
+        if label not in label_to_orig:
+            label_to_orig[label] = ref
+
+    # sample ordering
+    all_samples = sorted({k[0] for k in keys}, key=lambda x: str(x))
+    sample_list = [s for s in (sample_order or all_samples) if s in all_samples]
+
+    # reference labels ordering
+    default_ref_labels = sorted(label_to_orig.keys(), key=lambda s: s)
+    if reference_order is not None:
+        ref_labels = [("all" if r is None else str(r)) for r in reference_order if (("all" if r is None else str(r)) in label_to_orig)]
+    else:
+        ref_labels = default_ref_labels
+
+    ncols_total = len(ref_labels)
+    if cols_per_page is None:
+        cols_per_page = ncols_total
+
+    pages_by_metric = {}
+
+    # for each metric produce pages
+    for metric in metrics:
+        saved_pages = []
+        display_name = metric_display_names.get(metric, metric)
+
+        # paginate samples
+        for start in range(0, len(sample_list), rows_per_page):
+            page_samples = sample_list[start : start + rows_per_page]
+            nrows = len(page_samples)
+
+            fig, axes = plt.subplots(
+                nrows=nrows, ncols=cols_per_page,
+                figsize=(figsize_per_panel[0] * cols_per_page, figsize_per_panel[1] * nrows),
+                dpi=dpi, squeeze=False
+            )
+
+            for i, sample in enumerate(page_samples):
+                for j in range(cols_per_page):
+                    ax = axes[i, j]
+                    if j >= len(ref_labels):
+                        ax.axis("off")
+                        continue
+
+                    label = ref_labels[j]
+                    orig_ref = label_to_orig.get(label, None)
+                    key = (sample, orig_ref)
+                    df = rolling_dict.get(key, None)
+
+                    ax.set_title(f"{sample} | {label}", fontsize=8)
+
+                    if df is None or df.empty or (metric not in df.columns):
+                        ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=8)
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        continue
+
+                    df2 = df.sort_values("center")
+                    x = df2["center"].values
+                    y = df2[metric].values
+
+                    ax.plot(x, y, lw=1, marker="o")
+                    ax.set_xlabel("center (bp)", fontsize=7)
+                    ax.set_ylabel(display_name, fontsize=7)
+                    ax.grid(True, alpha=0.18)
+
+                    # apply per-metric y-lim if provided
+                    if metric in per_metric_ylim:
+                        yl = per_metric_ylim[metric]
+                        try:
+                            ax.set_ylim(float(yl[0]), float(yl[1]))
+                        except Exception:
+                            pass
+
+            fig.suptitle(f"{site} — {display_name}", fontsize=10)
+            fig.tight_layout(rect=[0.03, 0.03, 1, 0.96])
+
+            page_idx = start // rows_per_page + 1
+            out_png = os.path.join(out_dir, f"{filename_prefix}_{site}_{metric}_page{page_idx}.png")
+            fig.savefig(out_png, bbox_inches="tight")
+            plt.close(fig)
+            saved_pages.append(out_png)
+
+        pages_by_metric[metric] = saved_pages
+
+    return pages_by_metric
+

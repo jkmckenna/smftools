@@ -956,7 +956,7 @@ def safe_read_h5ad(path, backup_dir="./uns_backups", restore_backups=True, re_ca
 
 #     print(f"Saved safely to {path}")
 
-def merge_barcoded_anndatas(adata_single, adata_double):
+def merge_barcoded_anndatas_core(adata_single, adata_double):
     import numpy as np
     import anndata as ad
 
