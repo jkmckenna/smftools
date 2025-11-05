@@ -10,7 +10,7 @@ from . import preprocessing as pp
 from . import tools as tl
 
 from . import config, datasets, hmm, readwrite
-from .readwrite import adata_to_df, safe_write_h5ad, merge_barcoded_anndatas
+from .readwrite import adata_to_df, safe_write_h5ad, safe_read_h5ad, merge_barcoded_anndatas_core
 
 from .load_adata import load_adata
 
@@ -30,5 +30,5 @@ __all__ = [
     "readwrite",
     "datasets",
     "safe_write_h5ad",
-    "merge_barcoded_anndatas"
+    "safe_read_h5ad"
 ]

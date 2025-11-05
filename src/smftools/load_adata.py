@@ -772,7 +772,9 @@ def load_adata(config_path):
     ########################################################################################################################
 
     ############################################### Spatial autocorrelation analyses ########################################
-    from .tools.spatial_autocorrelation import binary_autocorrelation_with_spacing, analyze_autocorr_matrix, bootstrap_periodicity
+    from .tools.spatial_autocorrelation import binary_autocorrelation_with_spacing, analyze_autocorr_matrix, bootstrap_periodicity, rolling_autocorr_metrics
+    from .plotting import plot_rolling_grid
+    import warnings
 
     pp_dir = f"{split_dir}/preprocessed_duplicates_removed"
     pp_autocorr_dir = f"{pp_dir}/08_autocorrelations"
@@ -920,9 +922,142 @@ def load_adata(config_path):
             # persist group metrics
             adata.uns[f"{site_type}_spatial_periodicity_metrics_by_group"] = metrics_by_group
 
-        if os.path.isdir(pp_autocorr_dir):
-            print(pp_autocorr_dir + ' already exists. Skipping autocorrelation plotting.')
-        else:
+            global_nrl = adata.uns.get(f"{site_type}_spatial_periodicity_metrics", {}).get("nrl_bp", None)
+
+            # configuration / sensible defaults (override in cfg if present)
+            rolling_cfg = {
+                "window_size": getattr(cfg, "rolling_window_size", getattr(cfg, "autocorr_rolling_window_size", 600)),
+                "step": getattr(cfg, "rolling_step", 100),
+                "max_lag": getattr(cfg, "rolling_max_lag", cfg.autocorr_max_lag if hasattr(cfg, "autocorr_max_lag") else 500),
+                "min_molecules_per_window": getattr(cfg, "rolling_min_molecules_per_window", 10),
+                "nrl_search_bp": getattr(cfg, "rolling_nrl_search_bp", (120, 240)),
+                "pad_factor": getattr(cfg, "rolling_pad_factor", 4),
+                "min_count_for_mean": getattr(cfg, "rolling_min_count_for_mean", 10),
+                "max_harmonics": getattr(cfg, "rolling_max_harmonics", 6),
+                "n_jobs": getattr(cfg, "rolling_n_jobs", 4),
+            }
+
+            write_plots = getattr(cfg, "rolling_write_plots", True)
+            write_csvs = getattr(cfg, "rolling_write_csvs", True)
+            min_molecules_for_group = getattr(cfg, "rolling_min_molecules_for_group", 30)  # only run rolling if group has >= this many molecules
+
+            rolling_out_dir = os.path.join(pp_autocorr_dir, "rolling_metrics")
+            os.makedirs(rolling_out_dir, exist_ok=True)
+            # also a per-site subfolder
+            site_out_dir = os.path.join(rolling_out_dir, site_type)
+            os.makedirs(site_out_dir, exist_ok=True)
+
+            combined_rows = []  # accumulate one row per window for combined CSV
+            rolling_results_by_group = {}  # store DataFrame per group in memory (persist later to adata.uns)
+
+            # iterate groups (samples × refs). `samples` and `refs` were computed above.
+            for sample_name in samples:
+                sample_mask = (adata.obs[sample_col].values == sample_name)
+                # first the combined group ("all refs")
+                group_masks = [("all", sample_mask)]
+                # then per-reference groups
+                for ref in refs:
+                    ref_mask = sample_mask & (adata.obs[ref_col].values == ref)
+                    group_masks.append((ref, ref_mask))
+
+                for ref_label, mask in group_masks:
+                    n_group = int(mask.sum())
+                    if n_group < min_molecules_for_group:
+                        # skip tiny groups
+                        if cfg.get("verbosity", 0) if hasattr(cfg, "get") else False:
+                            print(f"Skipping rolling for {site_type} {sample_name} {ref_label}: only {n_group} molecules (<{min_molecules_for_group})")
+                        # still write an empty CSV row set if desired; here we skip
+                        continue
+
+                    # extract group matrix X_group (works with dense or sparse adata.layers)
+                    X_group = X[mask, :]
+                    # positions already set above
+                    try:
+                        # call your rolling function (this may be slow; it uses cfg.n_jobs)
+                        df_roll = rolling_autocorr_metrics(
+                            X_group,
+                            positions,
+                            site_label=site_type,
+                            window_size=rolling_cfg["window_size"],
+                            step=rolling_cfg["step"],
+                            max_lag=rolling_cfg["max_lag"],
+                            min_molecules_per_window=rolling_cfg["min_molecules_per_window"],
+                            nrl_search_bp=rolling_cfg["nrl_search_bp"],
+                            pad_factor=rolling_cfg["pad_factor"],
+                            min_count_for_mean=rolling_cfg["min_count_for_mean"],
+                            max_harmonics=rolling_cfg["max_harmonics"],
+                            n_jobs=rolling_cfg["n_jobs"],
+                            verbose=False,
+                            fixed_nrl_bp=global_nrl
+                        )
+                    except Exception as e:
+                        warnings.warn(f"rolling_autocorr_metrics failed for {site_type} {sample_name} {ref_label}: {e}")
+                        continue
+
+                    # normalize column names and keep only the compact set you want
+                    # keep: center, n_molecules, nrl_bp, snr, xi, fwhm_bp
+                    if "center" not in df_roll.columns:
+                        # defensive: if the rolling function returned different schema, skip
+                        warnings.warn(f"rolling_autocorr_metrics returned unexpected schema for {site_type} {sample_name} {ref_label}")
+                        continue
+
+                    compact_df = df_roll[["center", "n_molecules", "nrl_bp", "snr", "xi", "fwhm_bp"]].copy()
+                    compact_df["site"] = site_type
+                    compact_df["sample"] = sample_name
+                    compact_df["reference"] = ref_label if ref_label != "all" else "all"
+
+                    # save per-group CSV
+                    if write_csvs:
+                        safe_sample = str(sample_name).replace(os.sep, "_")
+                        safe_ref = str(ref_label if ref_label != "all" else "all").replace(os.sep, "_")
+                        out_csv = os.path.join(site_out_dir, f"{safe_sample}__{safe_ref}__rolling_metrics.csv")
+                        try:
+                            compact_df.to_csv(out_csv, index=False)
+                        except Exception as e:
+                            warnings.warn(f"Failed to write rolling CSV {out_csv}: {e}")
+
+                    # save a plot per-group (NRL and SNR vs center)
+                    if write_plots:
+                        try:
+                            # use your plot helper; if it's in a different module, import accordingly
+                            from .plotting import plot_rolling_metrics as _plot_roll
+                        except Exception:
+                            _plot_roll = globals().get("plot_rolling_metrics", None)
+                        if _plot_roll is not None:
+                            plot_png = os.path.join(site_out_dir, f"{safe_sample}__{safe_ref}__rolling_metrics.png")
+                            try:
+                                _plot_roll(compact_df, out_png=plot_png,
+                                        title=f"{site_type} {sample_name} {ref_label}",
+                                        figsize=(10,3.5), dpi=160, show=False)
+                            except Exception as e:
+                                warnings.warn(f"Failed to create rolling plot for {site_type} {sample_name} {ref_label}: {e}")
+
+                    # store in combined_rows and in-memory dict
+                    combined_rows.append(compact_df.assign(site=site_type, sample=sample_name, reference=ref_label))
+                    rolling_results_by_group[(sample_name, None if ref_label == "all" else ref_label)] = compact_df
+
+            # persist per-site rolling metrics into adata.uns as dict of DataFrames (or empty dict)
+            adata.uns[f"{site_type}_rolling_metrics_by_group"] = rolling_results_by_group
+
+            # write combined CSV for this site across all groups
+            if len(combined_rows):
+                combined_df_site = pd.concat(combined_rows, ignore_index=True, sort=False)
+                combined_out_csv = os.path.join(rolling_out_dir, f"{site_type}__rolling_metrics_combined.csv")
+                try:
+                    combined_df_site.to_csv(combined_out_csv, index=False)
+                except Exception as e:
+                    warnings.warn(f"Failed to write combined rolling CSV for {site_type}: {e}")
+
+            rolling_dict = adata.uns[f"{site_type}_rolling_metrics_by_group"]
+            plot_out_dir = os.path.join(pp_autocorr_dir, "rolling_plots")
+            os.makedirs(plot_out_dir, exist_ok=True)
+            pages = plot_rolling_grid(rolling_dict, plot_out_dir, site_type,
+                                    rows_per_page=cfg.rows_per_qc_autocorr_grid,
+                                    cols_per_page=len(refs),
+                                    dpi=160,
+                                    metrics=("nrl_bp","snr", "xi"),
+                                    per_metric_ylim={"snr": (0, 25)})
+
             from .plotting import plot_spatial_autocorr_grid
             make_dirs([pp_autocorr_dir, pp_autocorr_dir])
 
@@ -1136,9 +1271,9 @@ def load_adata(config_path):
             cmap_cpg="viridis",
             cmap_any_c='coolwarm',
             min_quality=20,
-            min_length=200,
-            min_mapped_length_to_reference_length_ratio=0.9,
-            min_position_valid_fraction=0.8,
+            min_length=80,
+            min_mapped_length_to_reference_length_ratio=0.2,
+            min_position_valid_fraction=0.2,
             sample_mapping=None,
             save_path=save_path,
             normalize_hmm=False,

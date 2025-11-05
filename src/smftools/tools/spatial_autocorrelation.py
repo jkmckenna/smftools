@@ -1,6 +1,8 @@
 # ------------------------- Utilities -------------------------
+import pandas as pd
+import numpy as np
+
 def random_fill_nans(X):
-    import numpy as np
     nan_mask = np.isnan(X)
     X[nan_mask] = np.random.rand(*X[nan_mask].shape)
     return X
@@ -42,7 +44,6 @@ def binary_autocorrelation_with_spacing(
     (optionally) lag_counts : 1D array, shape (max_lag+1,)
         Number of pairs contributing to each lag.
     """
-    import numpy as np
 
     # mask valid entries
     valid = ~np.isnan(row)
@@ -112,7 +113,6 @@ def binary_autocorrelation_with_spacing(
     return autocorr.astype(np.float32, copy=False)
 
 
-import numpy as np
 from numpy.fft import rfft, rfftfreq
 
 # optionally use scipy for find_peaks (more robust)
@@ -308,3 +308,255 @@ def bootstrap_periodicity(autocorr_matrix, counts_matrix, lags, n_boot=200, **kw
     nrls = np.array([m.get("nrl_bp", np.nan) for m in metrics])
     xis  = np.array([m.get("xi", np.nan) for m in metrics])
     return {"nrl_boot":nrls, "xi_boot":xis, "metrics":metrics}
+
+
+# optional parallel backend
+try:
+    from joblib import Parallel, delayed
+    _have_joblib = True
+except Exception:
+    _have_joblib = False
+
+def rolling_autocorr_metrics(
+    X,
+    positions,
+    site_label: str = None,
+    window_size: int = 2000,
+    step: int = 500,
+    max_lag: int = 800,
+    min_molecules_per_window: int = 10,
+    nrl_search_bp: tuple = (120, 260),
+    pad_factor: int = 4,
+    min_count_for_mean: int = 20,
+    max_harmonics: int = 6,
+    n_jobs: int = 1,
+    verbose: bool = False,
+    return_window_results: bool = False,
+    fixed_nrl_bp: float = None,
+
+):
+    """
+    Slide a genomic window across `positions` and compute periodicity metrics per window.
+
+    Parameters
+    ----------
+    X : array-like or sparse, shape (n_molecules, n_positions)
+        Binary site matrix for a group (sample × reference × site_type).
+    positions : 1D array-like of ints
+        Genomic coordinates for columns of X (same length as X.shape[1]).
+    site_label : optional str
+        Label for the site type (used in returned dicts/df).
+    window_size : int
+        Window width in bp.
+    step : int
+        Slide step in bp.
+    max_lag : int
+        Max lag (bp) to compute autocorr out to.
+    min_molecules_per_window : int
+        Minimum molecules required to compute metrics for a window; otherwise metrics = NaN.
+    nrl_search_bp, pad_factor, min_count_for_mean, max_harmonics : forwarded to analyze_autocorr_matrix
+    n_jobs : int
+        Number of parallel jobs (uses joblib if available).
+    verbose : bool
+        Print progress messages.
+    return_window_results : bool
+        If True, return also the per-window raw `analyze_autocorr_matrix` outputs.
+
+    Returns
+    -------
+    df : pandas.DataFrame
+        One row per window with columns:
+          ['site', 'window_start', 'window_end', 'center', 'n_molecules',
+           'nrl_bp', 'snr', 'peak_power', 'fwhm_bp', 'xi', 'xi_A', 'xi_r2']
+    (optionally) window_results : list of dicts (same order as df rows) when return_window_results=True
+    """
+
+    # normalize inputs
+    pos = np.asarray(positions, dtype=np.int64)
+    n_positions = pos.size
+    X_arr = X  # could be sparse; will be handled per-row
+
+    start = int(pos.min())
+    end = int(pos.max())
+
+    # generate window starts; ensure at least one window
+    if end - start + 1 <= window_size:
+        window_starts = [start]
+    else:
+        window_starts = list(range(start, end - window_size + 1, step))
+
+    if verbose:
+        print(f"Rolling windows: {len(window_starts)} windows, window_size={window_size}, step={step}")
+
+    # helper to extract row to dense 1D np array (supports sparse rows)
+    def _row_to_arr(row):
+        # handle scipy sparse row
+        try:
+            import scipy.sparse as sp
+        except Exception:
+            sp = None
+        if sp is not None and sp.issparse(row):
+            return row.toarray().ravel()
+        else:
+            return np.asarray(row).ravel()
+
+    # function to process one window
+    def _process_window(ws):
+        we = ws + window_size
+        mask_pos = (pos >= ws) & (pos < we)
+        if mask_pos.sum() < 2:
+            return dict(
+                site=site_label,
+                window_start=ws,
+                window_end=we,
+                center=(ws + we) / 2.0,
+                n_molecules=0,
+                metrics=None,
+            )
+
+        rows_ac = []
+        rows_cnt = []
+
+        # iterate molecules (rows) and compute autocorr on sub-positions
+        n_mol = X_arr.shape[0]
+        for i in range(n_mol):
+            # safe row extraction for dense or sparse matrix
+            row_i = _row_to_arr(X_arr[i])
+            subrow = row_i[mask_pos]
+            # skip entirely-NaN rows (shouldn't happen with binaries) or empty
+            if subrow.size == 0:
+                continue
+            # compute autocorr on the windowed template; positions are pos[mask_pos]
+            try:
+                ac, cnts = binary_autocorrelation_with_spacing(subrow, pos[mask_pos], max_lag=max_lag, assume_sorted=True, return_counts=True)
+            except Exception:
+                # if autocorr fails for this row, skip it
+                continue
+            rows_ac.append(ac)
+            rows_cnt.append(cnts)
+
+        n_used = len(rows_ac)
+        if n_used < min_molecules_per_window:
+            return dict(
+                site=site_label,
+                window_start=ws,
+                window_end=we,
+                center=(ws + we) / 2.0,
+                n_molecules=n_used,
+                metrics=None,
+            )
+
+        ac_mat = np.asarray(rows_ac, dtype=np.float64)
+        cnt_mat = np.asarray(rows_cnt, dtype=np.int64)
+
+        # analyze per-window matrix using your analyzer
+        # compute weighted mean_ac (same as analyze_autocorr_matrix does earlier)
+        counts_total = cnt_mat.sum(axis=0)
+        filled = np.where(np.isfinite(ac_mat), ac_mat, 0.0)
+        s = (filled * cnt_mat).sum(axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean_ac = np.where(counts_total > 0, s / counts_total, np.nan)
+        mean_ac[counts_total < min_count_for_mean] = np.nan
+
+        # If a fixed global NRL is provided, compute metrics around that frequency
+        if fixed_nrl_bp is not None:
+            freqs, power = psd_from_autocorr(mean_ac, np.arange(mean_ac.size), pad_factor=pad_factor)
+            # locate nearest freq bin to target_freq
+            target_f = 1.0 / float(fixed_nrl_bp)
+            # mask valid freqs
+            valid_mask = np.isfinite(freqs) & np.isfinite(power)
+            if not np.any(valid_mask):
+                res = {"error": "no_power"}
+            else:
+                # find index closest to target_f within valid_mask
+                idx_all = np.arange(len(freqs))
+                valid_idx = idx_all[valid_mask]
+                idx_closest = valid_idx[np.argmin(np.abs(freqs[valid_mask] - target_f))]
+                peak_idx = int(idx_closest)
+                peak_power = float(power[peak_idx])
+                snr_val, _, bg = estimate_snr(power, peak_idx, exclude_bins=3)
+                # sample harmonics from mean_ac at integer-lag positions using fixed_nrl_bp
+                # note: lags array is integer 0..(mean_ac.size-1)
+                sample_lags, heights = sample_autocorr_at_harmonics(mean_ac, np.arange(mean_ac.size), fixed_nrl_bp, max_harmonics=max_harmonics)
+                xi, A, slope, r2 = fit_exponential_envelope(sample_lags, heights) if heights.size else (np.nan, np.nan, np.nan, np.nan)
+                res = dict(
+                    nrl_bp=float(fixed_nrl_bp),
+                    f0=float(target_f),
+                    peak_power=peak_power,
+                    fwhm_bp=np.nan,           # not robustly defined when using fixed freq (skip or compute small-band FWHM)
+                    snr=float(snr_val),
+                    bg_median=float(bg) if np.isfinite(bg) else np.nan,
+                    envelope_sample_lags=sample_lags,
+                    envelope_heights=heights,
+                    xi=xi, xi_A=A, xi_slope=slope, xi_r2=r2,
+                    freqs=freqs, power=power, mean_ac=mean_ac, counts=counts_total
+                )
+        else:
+            # existing behavior: call analyzer_fn
+            try:
+                res = analyze_autocorr_matrix(ac_mat, cnt_mat, np.arange(mean_ac.size),
+                                nrl_search_bp=nrl_search_bp,
+                                pad_factor=pad_factor,
+                                min_count=min_count_for_mean,
+                                max_harmonics=max_harmonics)
+            except Exception as e:
+                res = {"error": str(e)}
+
+        return dict(
+            site=site_label,
+            window_start=ws,
+            window_end=we,
+            center=(ws + we) / 2.0,
+            n_molecules=n_used,
+            metrics=res,
+        )
+
+    # choose mapping (parallel if available)
+    if _have_joblib and (n_jobs is not None) and (n_jobs != 1):
+        results = Parallel(n_jobs=n_jobs)(delayed(_process_window)(ws) for ws in window_starts)
+    else:
+        results = [_process_window(ws) for ws in window_starts]
+
+    # build dataframe rows
+    rows_out = []
+    window_results = []
+    for r in results:
+        metrics = r["metrics"]
+        window_results.append(metrics)
+        if metrics is None or ("error" in metrics and metrics.get("error") == "no_peak_found"):
+            rows_out.append({
+                "site": r["site"],
+                "window_start": r["window_start"],
+                "window_end": r["window_end"],
+                "center": r["center"],
+                "n_molecules": r["n_molecules"],
+                "nrl_bp": np.nan,
+                "snr": np.nan,
+                "peak_power": np.nan,
+                "fwhm_bp": np.nan,
+                "xi": np.nan,
+                "xi_A": np.nan,
+                "xi_r2": np.nan,
+                "analyzer_error": (metrics.get("error") if isinstance(metrics, dict) else "no_metrics"),
+            })
+        else:
+            rows_out.append({
+                "site": r["site"],
+                "window_start": r["window_start"],
+                "window_end": r["window_end"],
+                "center": r["center"],
+                "n_molecules": r["n_molecules"],
+                "nrl_bp": float(metrics.get("nrl_bp", np.nan)),
+                "snr": float(metrics.get("snr", np.nan)),
+                "peak_power": float(metrics.get("peak_power", np.nan)),
+                "fwhm_bp": float(metrics.get("fwhm_bp", np.nan)),
+                "xi": float(metrics.get("xi", np.nan)),
+                "xi_A": float(metrics.get("xi_A", np.nan)),
+                "xi_r2": float(metrics.get("xi_r2", np.nan)),
+                "analyzer_error": None,
+            })
+
+    df = pd.DataFrame(rows_out)
+    if return_window_results:
+        return df, window_results
+    return df
