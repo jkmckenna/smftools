@@ -13,7 +13,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from ..informatics.helpers import make_dirs
+from ..readwrite import make_dirs
 
 # optional imports for clustering / PCA / KDE
 try:
