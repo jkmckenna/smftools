@@ -5,6 +5,9 @@ from typing import Dict, Optional
 
 from .cli.load_adata import load_adata
 from .cli.cli_flows import flow_I
+from .cli.preprocess_adata import preprocess_adata
+from .cli.spatial_adata import spatial_adata
+from .cli.hmm_adata import hmm_adata
 
 from .readwrite import merge_barcoded_anndatas_core, safe_read_h5ad, safe_write_h5ad
 
@@ -19,6 +22,30 @@ def cli():
 def load(config_path):
     """Load and process data from CONFIG_PATH."""
     adata, adata_path = load_adata(config_path)
+##########################################
+
+####### Preprocessing ###########
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
+def preprocess(config_path):
+    """Preprocess data from CONFIG_PATH."""
+    preprocess_adata(config_path)
+##########################################
+
+####### Spatial ###########
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
+def spatial(config_path):
+    """Process data from CONFIG_PATH."""
+    spatial_adata(config_path)
+##########################################
+
+####### HMM ###########
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
+def hmm(config_path):
+    """Process data from CONFIG_PATH."""
+    hmm_adata(config_path)
 ##########################################
 
 ####### Processing workflow ###########
