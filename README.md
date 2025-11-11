@@ -9,12 +9,9 @@ While most genomic data structures handle low-coverage data (<100X) along large 
 
 ## Dependencies
 The following CLI tools need to be installed and configured before using the informatics (smftools.inform) module of smftools:
-1) [Dorado](https://github.com/nanoporetech/dorado) -> For standard/modified basecalling and alignment. Can be attained by downloading and configuring nanopore MinKnow software.
-2) [Samtools](https://github.com/samtools/samtools) -> For working with SAM/BAM files
-3) [Minimap2](https://github.com/lh3/minimap2) -> The aligner used by Dorado
-4) [Modkit](https://github.com/nanoporetech/modkit) -> Extracting summary statistics and read level methylation calls from modified BAM files
-5) [Bedtools](https://github.com/arq5x/bedtools2) -> For generating Bedgraphs from BAM alignment files.
-6) [BedGraphToBigWig](https://genome.ucsc.edu/goldenPath/help/bigWig.html) -> For converting BedGraphs to BigWig files for IGV sessions.
+1) [Dorado](https://github.com/nanoporetech/dorado) -> Basecalling, alignment, demultiplexing.
+2) [Minimap2](https://github.com/lh3/minimap2) -> Alignment if not using dorado.
+3) [Modkit](https://github.com/nanoporetech/modkit) -> Extracting read level methylation metrics from modified BAM files.
 
 ## Modules
 ### Informatics: Processes raw Nanopore/Illumina data from SMF experiments into an AnnData object.

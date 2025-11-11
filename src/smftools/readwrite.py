@@ -1,4 +1,6 @@
 ## readwrite ##
+from pathlib import Path
+from typing import Union, Iterable
 
 ######################################################################################################
 ## Datetime functionality
@@ -19,6 +21,37 @@ def time_string():
     from datetime import datetime
     current_time = datetime.now()
     return current_time.strftime("%H:%M:%S")
+######################################################################################################
+
+######################################################################################################
+## General file and directory handling
+def make_dirs(directories: Union[str, Path, Iterable[Union[str, Path]]]) -> None:
+    """
+    Create one or multiple directories.
+
+    Parameters
+    ----------
+    directories : str | Path | list/iterable of str | Path
+        Paths of directories to create. If a file path is passed,
+        the parent directory is created.
+
+    Returns
+    -------
+    None
+    """
+
+    # allow user to pass a single string/Path
+    if isinstance(directories, (str, Path)):
+        directories = [directories]
+
+    for d in directories:
+        p = Path(d)
+
+        # If someone passes in a file path, make its parent
+        if p.suffix:      # p.suffix != "" means it's a file
+            p = p.parent
+
+        p.mkdir(parents=True, exist_ok=True)
 ######################################################################################################
 
 ######################################################################################################

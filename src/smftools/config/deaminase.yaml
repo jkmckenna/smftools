@@ -1,11 +1,14 @@
 # Deaminase footprinting defaults
 extends: default
+
+######## smftools load params #########
 conversion_types: 
   - '5mC' # 5mC
 
 mod_target_bases:
 - "C"
 
+######## smftools preprocess params #########
 read_mod_filtering_gpc_thresholds:
   - null
   - null
@@ -25,6 +28,7 @@ read_mod_filtering_use_other_c_as_background: False
 duplicate_detection_site_types:
   - "any_C"
 
+######## smftools analyze params #########
 # Autocorrelation params
 autocorr_site_types:
   - "any_C"
@@ -33,7 +37,7 @@ autocorr_site_types:
 correlation_matrix_site_types:
   - "any_C_site"
 
-# HMM
+# ######## smftools hmm params #########
 cpg: False # whether to use the default HMM endogenous CpG patch params
 hmm_methbases:
   - "C"
@@ -41,16 +45,17 @@ hmm_feature_sets:
   footprint:
     state: "Non-Modified"
     features:
-      small_bound_stretch: [0, 25]
-      medium_bound_stretch: [25, 80]
-      putative_nucleosome: [80, 200]
+      small_bound_stretch: [10, 30]
+      medium_bound_stretch: [30, 110]
+      putative_nucleosome: [110, 200]
       large_bound_stretch: [200, inf]
   accessible:
     state: "Modified"
     features:
-      small_accessible_patch: [0, 20]
-      mid_accessible_patch: [20, 100]
-      large_accessible_patch: [100, inf]
+      small_accessible_patch: [3, 20]
+      mid_accessible_patch: [20, 40]
+      mid_large_accessible_patch: [40, 130]
+      large_accessible_patch: [130, inf]
 
 hmm_merge_layer_features:
   - ["C_all_accessible_features", 80]

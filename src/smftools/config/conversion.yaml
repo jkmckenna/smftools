@@ -1,11 +1,15 @@
 # Conversion (Bisulfite/APOBEC)footprinting defaults
 extends: default
+
+######## smftools load params #########
 conversion_types: 
   - '5mC' # 5mC
 
+######## smftools preprocess params #########
 # Read QC Params
 read_mod_filtering_use_other_c_as_background: True
 
+######## smftools hmm params #########
 # HMM
 cpg: True # whether to use the default HMM endogenous CpG patch params
 hmm_methbases:
@@ -14,16 +18,17 @@ hmm_feature_sets:
   footprint:
     state: "Non-Modified"
     features:
-      small_bound_stretch: [0, 20]
-      medium_bound_stretch: [20, 50]
-      putative_nucleosome: [50, 200]
+      small_bound_stretch: [10, 30]
+      medium_bound_stretch: [30, 110]
+      putative_nucleosome: [110, 200]
       large_bound_stretch: [200, inf]
   accessible:
     state: "Modified"
     features:
-      small_accessible_patch: [0, 20]
-      mid_accessible_patch: [20, 80]
-      large_accessible_patch: [80, inf]
+      small_accessible_patch: [3, 20]
+      mid_accessible_patch: [20, 40]
+      mid_large_accessible_patch: [40, 130]
+      large_accessible_patch: [130, inf]
   cpg:
     state: "Modified"
     features:
