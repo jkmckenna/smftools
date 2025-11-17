@@ -33,103 +33,71 @@ def preprocess_adata(config_path):
 
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
-    input_data_path = Path(cfg.input_data_path)  # Path to a directory of POD5s/FAST5s or to a BAM/FASTQ file. Necessary.
     output_directory = Path(cfg.output_directory)  # Path to the output directory to make for the analysis. Necessary.
-    fasta = Path(cfg.fasta)  # Path to reference FASTA. Necessary.
-    split_dir = Path(cfg.split_dir) # Relative path to directory for demultiplexing reads
-    split_path = output_directory / split_dir # Absolute path to directory for demultiplexing reads
-
-    # Naming of the demultiplexed output directory
-    if cfg.barcode_both_ends:
-        split_path = split_path.with_name(split_path.name + '_both_ends_barcoded')
-    else:
-        split_path = split_path.with_name(split_path.name + '_at_least_one_end_barcoded')
 
     # Make initial output directory
     make_dirs([output_directory])
-
-    bam_suffix = cfg.bam_suffix
-    strands = cfg.strands
-
-    # General config variable init - Optional user passed inputs for enzyme base specificity
-    mod_target_bases = cfg.mod_target_bases  # Nucleobases of interest that may be modified. ['GpC', 'CpG', 'C', 'A']
-
-    # Conversion/deamination specific variable init
-    conversion_types = cfg.conversion_types  # 5mC
-    conversions = cfg.conversions
-
-    # Common Anndata accession params
-    reference_column = cfg.reference_column
-
-    # If conversion_types is passed:
-    if conversion_types:
-        conversions += conversion_types
     ########################################################################################################################
 
     ################################### 1) Load existing  ###################################
-    initial_adata, initial_adata_path = load_adata(config_path)
-
-    # Raw adata path info
-    initial_backup_dir = initial_adata_path.parent / 'adata_accessory_data'
+    initial_adata, initial_adata_path, bam_files = load_adata(config_path)
 
     # Preprocessed adata path info
     pp_adata_basename = initial_adata_path.name.split(".")[0] + '_preprocessed.h5ad.gz'
     pp_adata_path = initial_adata_path.parent / pp_adata_basename
-    pp_backup_dir = pp_adata_path.parent / 'pp_adata_accessory_data'
 
     # Preprocessed duplicate removed adata path info
     pp_dup_rem_adata_basename = pp_adata_path.name.split(".")[0] + '_duplicates_removed.h5ad.gz'
     pp_dup_rem_adata_path = pp_adata_path.parent / pp_dup_rem_adata_basename
-    pp_dup_rem_backup_dir= pp_adata_path.parent / 'pp_dup_rem_adata_accessory_data'
 
     if initial_adata:
-        # This happens on first run of the pipeline
+        # This happens on first run of the load pipeline
         adata = initial_adata
 
     else:
         # If an anndata is saved, check which stages of the anndata are available
-        initial_version_available = initial_adata_path.exists() and initial_backup_dir.is_dir()
-        preprocessed_version_available = pp_adata_path.exists() and pp_backup_dir.is_dir()
-        preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists() and pp_dup_rem_backup_dir.is_dir()
+        initial_version_available = initial_adata_path.exists()
+        preprocessed_version_available = pp_adata_path.exists()
+        preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists()
 
         if cfg.force_redo_preprocessing:
             print(f"Forcing full redo of preprocessing workflow, starting from earliest stage adata available.")
             if initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path, backup_dir=initial_backup_dir)
+                adata, load_report = safe_read_h5ad(initial_adata_path)
             elif preprocessed_version_available:
-                adata, load_report = safe_read_h5ad(pp_adata_path, backup_dir=pp_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_adata_path)
             elif preprocessed_dup_removed_version_available:
-                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path, backup_dir=pp_dup_rem_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
             else:
                 print(f"Can not redo preprocessing when there is no adata available.")
                 return
         elif cfg.force_redo_flag_duplicate_reads:
             print(f"Forcing redo of duplicate detection workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
             if preprocessed_version_available:
-                adata, load_report = safe_read_h5ad(pp_adata_path, backup_dir=pp_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_adata_path)
             elif initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path, backup_dir=initial_backup_dir)
+                adata, load_report = safe_read_h5ad(initial_adata_path)
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
                 return
         elif cfg.force_redo_basic_analyses:
             print(f"Forcing redo of basic analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
             if preprocessed_version_available:
-                adata, load_report = safe_read_h5ad(pp_adata_path, backup_dir=pp_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_adata_path)
             elif initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path, backup_dir=initial_backup_dir)
+                adata, load_report = safe_read_h5ad(initial_adata_path)
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
         elif preprocessed_version_available or preprocessed_dup_removed_version_available:
             return (None, pp_adata_path, None, pp_dup_rem_adata_path)
         elif initial_version_available:
-            adata, load_report = safe_read_h5ad(initial_adata_path, backup_dir=initial_backup_dir)
+            adata, load_report = safe_read_h5ad(initial_adata_path)
         else:
             print(f"No adata available.")
             return
             
     ######### Begin Preprocessing #########
-    pp_dir = split_path / "preprocessed"
+    pp_dir = output_directory / "preprocessed"
 
     ## Load sample sheet metadata based on barcode mapping ##
     if cfg.sample_sheet_path:
@@ -145,12 +113,7 @@ def preprocess_adata(config_path):
     # Adding read length, read quality, reference length, mapped_length, and mapping quality metadata to adata object.
     pp_length_qc_dir = pp_dir / "01_Read_length_and_quality_QC_metrics"
     from ..preprocessing import add_read_length_and_mapping_qc
-    from ..informatics.bam_functions import extract_read_features_from_bam
-    bam_files = sorted(
-            p for p in split_path.iterdir()
-            if p.is_file()
-            and p.suffix == ".bam"
-            and "unclassified" not in p.name)   
+    from ..informatics.bam_functions import extract_read_features_from_bam  
     add_read_length_and_mapping_qc(adata, bam_files, 
                                    extract_read_features_from_bam_callable=extract_read_features_from_bam, 
                                    bypass=cfg.bypass_add_read_length_and_mapping_qc,
@@ -207,7 +170,7 @@ def preprocess_adata(config_path):
                                   positive_control_sample=None, 
                                   negative_control_sample=None, 
                                   J_threshold=0.5, 
-                                  obs_column=reference_column, 
+                                  obs_column=cfg.reference_column, 
                                   infer_on_percentile=10, 
                                   inference_variable='Raw_modification_signal', 
                                   save=False, 
@@ -215,7 +178,7 @@ def preprocess_adata(config_path):
                                   )
         # binarize the modcalls based on the determined thresholds
         binarize_on_Youden(adata, 
-                           obs_column=reference_column
+                           obs_column=cfg.reference_column
                            )
         clean_NaN(adata, 
                   layer='binarized_methylation',
@@ -233,15 +196,15 @@ def preprocess_adata(config_path):
     from ..preprocessing import append_base_context, append_binary_layer_by_base_context
     # Additionally, store base_context level binary modification arrays in adata.obsm
     append_base_context(adata, 
-                        obs_column=reference_column, 
+                        obs_column=cfg.reference_column, 
                         use_consensus=False, 
                         native=native, 
-                        mod_target_bases=mod_target_bases,
+                        mod_target_bases=cfg.mod_target_bases,
                         bypass=cfg.bypass_append_base_context,
                         force_redo=cfg.force_redo_append_base_context)
     
     adata = append_binary_layer_by_base_context(adata, 
-                                                reference_column, 
+                                                cfg.reference_column, 
                                                 smf_modality,
                                                 bypass=cfg.bypass_append_binary_layer_by_base_context,
                                                 force_redo=cfg.force_redo_append_binary_layer_by_base_context)
@@ -254,9 +217,9 @@ def preprocess_adata(config_path):
     ############### Calculate read methylation/deamination statistics for specific base contexts defined above ###############
     from ..preprocessing import calculate_read_modification_stats
     calculate_read_modification_stats(adata, 
-                                      reference_column, 
+                                      cfg.reference_column, 
                                       cfg.sample_column,
-                                      mod_target_bases,
+                                      cfg.mod_target_bases,
                                       bypass=cfg.bypass_calculate_read_modification_stats,
                                       force_redo=cfg.force_redo_calculate_read_modification_stats)
     
@@ -269,9 +232,9 @@ def preprocess_adata(config_path):
         from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
-        if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
+        if any(base in cfg.mod_target_bases for base in ['GpC', 'CpG', 'C']):
             obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
-        if 'A' in mod_target_bases:
+        if 'A' in cfg.mod_target_bases:
             obs_to_plot += ['Fraction_A_site_modified']
         plot_read_qc_histograms(adata, 
                                 pp_meth_qc_dir, obs_to_plot, 
@@ -282,7 +245,7 @@ def preprocess_adata(config_path):
     from ..preprocessing import filter_reads_on_modification_thresholds
     adata = filter_reads_on_modification_thresholds(adata, 
                                                           smf_modality=smf_modality,
-                                                          mod_target_bases=mod_target_bases,
+                                                          mod_target_bases=cfg.mod_target_bases,
                                                           gpc_thresholds=cfg.read_mod_filtering_gpc_thresholds, 
                                                           cpg_thresholds=cfg.read_mod_filtering_cpg_thresholds,
                                                           any_c_thresholds=cfg.read_mod_filtering_any_c_thresholds,
@@ -300,9 +263,9 @@ def preprocess_adata(config_path):
         from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
-        if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
+        if any(base in cfg.mod_target_bases for base in ['GpC', 'CpG', 'C']):
             obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
-        if 'A' in mod_target_bases:
+        if 'A' in cfg.mod_target_bases:
             obs_to_plot += ['Fraction_A_site_modified']
         plot_read_qc_histograms(adata, 
                                 pp_meth_qc_dir, obs_to_plot, 
@@ -312,13 +275,13 @@ def preprocess_adata(config_path):
     ############### Calculate positional coverage in dataset ###############
     from ..preprocessing import calculate_coverage
     calculate_coverage(adata, 
-                       obs_column=reference_column, 
+                       obs_column=cfg.reference_column, 
                        position_nan_threshold=0.1)
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != 'direct':
         from ..preprocessing import flag_duplicate_reads, calculate_complexity_II
-        references = adata.obs[reference_column].cat.categories
+        references = adata.obs[cfg.reference_column].cat.categories
 
         var_filters_sets =[]
         for ref in references:
@@ -333,7 +296,7 @@ def preprocess_adata(config_path):
         adata_unique, adata = flag_duplicate_reads(adata, 
                                                     var_filters_sets, 
                                                     distance_threshold=cfg.duplicate_detection_distance_threshold, 
-                                                    obs_reference_col=reference_column, 
+                                                    obs_reference_col=cfg.reference_column, 
                                                     sample_col=cfg.sample_name_col_for_plotting,
                                                     output_directory=pp_dup_qc_dir,
                                                     metric_keys=cfg.hamming_vs_metric_keys,
@@ -358,7 +321,7 @@ def preprocess_adata(config_path):
             adata=adata,
             output_directory=complexity_outs,
             sample_col=cfg.sample_name_col_for_plotting,
-            ref_col=reference_column,
+            ref_col=cfg.reference_column,
             cluster_col='sequence__merged_cluster_id',
             plot=True,
             save_plot=True,   # set False to display instead
@@ -380,18 +343,18 @@ def preprocess_adata(config_path):
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
         print('Saving preprocessed adata.')
         if ".gz" == pp_adata_path.suffix:
-            safe_write_h5ad(adata, pp_adata_path, compression='gzip', backup=True, backup_dir=pp_backup_dir)
+            safe_write_h5ad(adata, pp_adata_path, compression='gzip', backup=True)
         else:
             pp_adata_path = pp_adata_path.with_name(pp_adata_path.name + '.gz')
-            safe_write_h5ad(adata, pp_adata_path, compression='gzip', backup=True, backup_dir=pp_backup_dir)
+            safe_write_h5ad(adata, pp_adata_path, compression='gzip', backup=True)
 
     if not pp_dup_rem_adata_path.exists() or cfg.force_redo_preprocessing:
         print('Saving preprocessed adata with duplicates removed.')
         if ".gz" == pp_dup_rem_adata_path.suffix:
-            safe_write_h5ad(adata_unique, pp_dup_rem_adata_path, compression='gzip', backup=True, backup_dir=pp_dup_rem_backup_dir) 
+            safe_write_h5ad(adata_unique, pp_dup_rem_adata_path, compression='gzip', backup=True) 
         else:
             pp_adata_path = pp_dup_rem_adata_path.with_name(pp_dup_rem_adata_path.name + '.gz')
-            safe_write_h5ad(adata_unique, pp_dup_rem_adata_path, compression='gzip', backup=True, backup_dir=pp_dup_rem_backup_dir)
+            safe_write_h5ad(adata_unique, pp_dup_rem_adata_path, compression='gzip', backup=True)
     ########################################################################################################################
 
     return (adata, pp_adata_path, adata_unique, pp_dup_rem_adata_path)

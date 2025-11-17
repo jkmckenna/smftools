@@ -5,7 +5,7 @@ import os
 import subprocess
 import glob
 import time
-from typing import Dict, List, Any, Tuple, Union, Optional
+from typing import Dict, List, Any, Tuple, Union, Optional, Iterable
 import re
 from itertools import zip_longest
 import pysam
@@ -95,8 +95,6 @@ def align_and_sort_BAM(fasta,
     if aligner == 'minimap2':
         print(f"Converting BAM to FASTQ: {input}")
         _bam_to_fastq_with_pysam(input, input_as_fastq)
-        # bam_to_fastq_command = ['samtools', 'fastq', input]
-        # subprocess.run(bam_to_fastq_command, stdout=open(input_as_fastq, "w"))
         print(f"Aligning FASTQ to Reference: {input_as_fastq}")
         if threads:
             minimap_command = ['minimap2'] + aligner_args + ['-t', threads, str(fasta), str(input_as_fastq)]
@@ -552,7 +550,7 @@ def count_aligned_reads(bam_file):
 
     return aligned_reads_count, unaligned_reads_count, dict(record_counts)
 
-def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads):
+def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, threads):
     """
     A wrapper function for splitting BAMS and indexing them.
     Parameters:
@@ -562,8 +560,6 @@ def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, 
         barcode_kit (str): Name of barcoding kit.
         barcode_both_ends (bool): Whether to require both ends to be barcoded.
         trim (bool): Whether to trim off barcodes after demultiplexing.
-        fasta (str): File path to the reference genome to align to.
-        make_bigwigs (bool): Whether to make bigwigs
         threads (int): Number of threads to use.
     
     Returns:
@@ -594,7 +590,30 @@ def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, 
     if not bam_files:
         raise FileNotFoundError(f"No BAM files found in {split_dir} with suffix {bam_suffix}")
     
-    return bam_files
+    # ---- Optional renaming with prefix ----
+    renamed_bams = []
+    prefix = "de" if barcode_both_ends else "se"
+
+    for bam in bam_files:
+        bam = Path(bam)
+        bai = bam.with_suffix(bam_suffix + ".bai")   # dorado’s sorting produces .bam.bai
+
+        if prefix:
+            new_name = f"{prefix}_{bam.name}"
+        else:
+            new_name = bam.name
+
+        new_bam = bam.with_name(new_name)
+        bam.rename(new_bam)
+
+        # rename index if exists
+        if bai.exists():
+            new_bai = new_bam.with_suffix(bam_suffix + ".bai")
+            bai.rename(new_bai)
+
+        renamed_bams.append(new_bam)
+    
+    return renamed_bams
 
 def extract_base_identities(bam_file, chromosome, positions, max_reference_length, sequence):
     """

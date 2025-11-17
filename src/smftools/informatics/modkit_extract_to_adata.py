@@ -334,22 +334,25 @@ def parallel_extract_stranded_methylation(dict_list, dict_to_skip, max_reference
             dict_list[dict_index][record][sample] = processed_data
     return dict_list
 
-def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs=False, threads=None):
+def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs=False, threads=None, double_barcoded_path = None):
     """
     Takes modkit extract outputs and organizes it into an adata object
 
     Parameters:
-        fasta (str): File path to the reference genome to align to.
-        bam_dir (str): File path to the directory containing the aligned_sorted split modified BAM files
+        fasta (Path): File path to the reference genome to align to.
+        bam_dir (Path): File path to the directory containing the aligned_sorted split modified BAM files
+        out_dir (Path): File path to output directory
+        input_already_demuxed (bool): Whether input reads were originally demuxed
         mapping_threshold (float): A value in between 0 and 1 to threshold the minimal fraction of aligned reads which map to the reference region. References with values above the threshold are included in the output adata.
         experiment_name (str): A string to provide an experiment name to the output adata file.
         mods (list): A list of strings of the modification types to use in the analysis.
         batch_size (int): An integer number of TSV files to analyze in memory at once while loading the final adata object.
-        mod_tsv_dir (str): String representing the path to the mod TSV directory
+        mod_tsv_dir (Path): path to the mod TSV directory
         delete_batch_hdfs (bool): Whether to delete the batch hdfs after writing out the final concatenated hdf. Default is False
+        double_barcoded_path (Path): Path to dorado demux summary file of double ended barcodes
 
     Returns:
-        final_adata_path (str): Path to the final adata
+        final_adata_path (Path): Path to the final adata
     """
     ###################################################
     # Package imports
@@ -370,17 +373,14 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
     ###################################################
 
     ################## Get input tsv and bam file names into a sorted list ################
-    # get current working directory
-    parent_dir = mod_tsv_dir.parent
-
     # Make output dirs
-    h5_dir = parent_dir / 'h5ads'
-    tmp_dir = parent_dir / 'tmp'
+    h5_dir = out_dir / 'h5ads'
+    tmp_dir = out_dir / 'tmp'
     make_dirs([h5_dir, tmp_dir])
 
     existing_h5s =  h5_dir.iterdir()
     existing_h5s = [h5 for h5 in existing_h5s if '.h5ad.gz' in str(h5)]
-    final_hdf = f'{experiment_name}_final_experiment_hdf5.h5ad'    
+    final_hdf = f'{experiment_name}.h5ad'    
     final_adata_path = h5_dir / final_hdf
     final_adata_path_gz = final_adata_path + ".gz"
     final_adata = None
@@ -868,10 +868,17 @@ def modkit_extract_to_adata(fasta, bam_dir, mapping_threshold, experiment_name, 
                 consensus_sequence_list = [layer_map[i] for i in nucleotide_indexes]
                 final_adata.var[f'{record}_{strand}_{mapping_dir}_consensus_sequence_from_all_samples'] = consensus_sequence_list
 
-    #final_adata.write_h5ad(final_adata_path)
+    if input_already_demuxed:
+        final_adata.obs["demux_type"] = ["already"] * final_adata.shape[0]
+        final_adata.obs["demux_type"] = final_adata.obs["demux_type"].astype("category")
+    else:
+        from .h5ad_functions import add_demux_type_annotation
+        double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
+        add_demux_type_annotation(final_adata, double_barcoded_reads)
+
     ## Save Final AnnData
     print(f"Saving AnnData to {final_adata_path}")
-    backup_dir= final_adata_path.parent / 'adata_accessory_data'
+    backup_dir= final_adata_path.parent / experiment_name
     safe_write_h5ad(final_adata, final_adata_path, compression='gzip', backup=True, backup_dir=backup_dir)
 
     # Delete the individual h5ad files and only keep the final concatenated file

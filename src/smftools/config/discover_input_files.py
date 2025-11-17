@@ -33,6 +33,7 @@ def discover_input_files(
     pod5_exts  = {".pod5", ".p5"}
     fast5_exts = {".fast5", ".f5"}
     fastq_exts = {".fastq", ".fq", ".fastq.gz", ".fq.gz", ".fastq.bz2", ".fq.bz2", ".fastq.xz", ".fq.xz", ".fastq.zst", ".fq.zst"}
+    h5ad_exts  = {".h5ad", ".h5"}
     compressed_exts = {".gz", ".bz2", ".xz", ".zst"}
 
     def ext_key(pp: Path) -> str:
@@ -55,6 +56,7 @@ def discover_input_files(
     fast5_paths: List[Path] = []
     fastq_paths: List[Path] = []
     bam_paths: List[Path] = []
+    h5ad_paths: List[Path] = []
     other_paths: List[Path] = []
 
     def categorize_file(fp: Path) -> None:
@@ -65,6 +67,8 @@ def discover_input_files(
             fast5_paths.append(fp)
         elif key in fastq_exts:
             fastq_paths.append(fp)
+        elif key in h5ad_exts:
+            h5ad_paths.append(fp)
         elif key == bam_suffix:
             bam_paths.append(fp)
         else:
@@ -100,10 +104,12 @@ def discover_input_files(
         "fast5_paths": sorted(fast5_paths),
         "fastq_paths": sorted(fastq_paths),
         "bam_paths": sorted(bam_paths),
+        "h5ad_paths": sorted(h5ad_paths),
         "other_paths": sorted(other_paths),
         "input_is_pod5": len(pod5_paths) > 0,
         "input_is_fast5": len(fast5_paths) > 0,
         "input_is_fastq": len(fastq_paths) > 0,
         "input_is_bam": len(bam_paths) > 0,
+        "input_is_h5ad": len(h5ad_paths) > 0,
         "all_files_searched": total_searched,
     }
