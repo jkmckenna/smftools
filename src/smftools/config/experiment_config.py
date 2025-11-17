@@ -6,6 +6,7 @@ import warnings
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, IO, Sequence
+from .discover_input_files import discover_input_files
 
 # Optional dependency for YAML handling
 try:
@@ -593,7 +594,10 @@ class ExperimentConfig:
     fasta: Optional[str] = None
     bam_suffix: str = ".bam"
     recursive_input_search: bool = True
+    input_type: Optional[str] = None
+    input_files: Optional[List[Path]] = None
     split_dir: str = "demultiplexed_BAMs"
+    split_path: Optional[str] = None
     strands: List[str] = field(default_factory=lambda: ["bottom", "top"])
     conversions: List[str] = field(default_factory=lambda: ["unconverted"])
     fasta_regions_of_interest: Optional[str] = None
@@ -860,6 +864,55 @@ class ExperimentConfig:
         if merged.get("experiment_name") is None and date_str:
             merged["experiment_name"] = f"{date_str}_SMF_experiment"
 
+        # Input file types and path handling
+        input_data_path = Path(merged['input_data_path'])
+
+        # Detect the input filetype
+        if input_data_path.is_file():
+                suffix = input_data_path.suffix.lower()
+                suffixes = [s.lower() for s in input_data_path.suffixes]  # handles multi-part extensions
+
+                # recognize multi-suffix cases like .fastq.gz or .fq.gz
+                if any(s in ['.pod5', '.p5'] for s in suffixes):
+                    input_type = "pod5"
+                elif any(s in ['.fast5', '.f5'] for s in suffixes):
+                    input_type = "fast5"
+                elif any(s in ['.fastq', '.fq'] for s in suffixes):
+                    input_type = "fastq"
+                    input_files = [Path(input_data_path)]
+                elif any(s in ['.bam'] for s in suffixes):
+                    input_type = "bam"
+                elif any(s in ['.h5ad', ".h5"] for s in suffixes):
+                    input_type = "h5ad"
+                else:
+                    print("Error detecting input file type")              
+
+        elif input_data_path.is_dir():
+            found = discover_input_files(input_data_path, bam_suffix=merged["bam_suffix"], recursive=merged["recursive_input_search"])
+
+            if found["input_is_pod5"]:
+                input_type = "pod5"
+                input_files = found["pod5_paths"]
+            elif found["input_is_fast5"]:
+                input_type = "fast5"
+                input_files = found["fast5_paths"]
+            elif found["input_is_fastq"]:
+                input_type = "fastq"
+                input_files = found["fastq_paths"]
+            elif found["input_is_bam"]:
+                input_type = "bam"
+                input_files = found["bam_paths"]
+            elif found["input_is_h5ad"]:
+                input_type = "h5ad"
+                input_files = found["h5ad_paths"]
+
+            print(f"Found {found['all_files_searched']} files; fastq={len(found["fastq_paths"])}, bam={len(found["bam_paths"])}, pod5={len(found["pod5_paths"])}, fast5={len(found["fast5_paths"])}, , h5ad={len(found["h5ad_paths"])}")
+
+        # Demultiplexing output path
+        output_dir = Path(merged['output_directory'])
+        split_dir = merged.get("split_dir", "demultiplexed_BAMs")
+        split_path = output_dir / split_dir
+
         # final normalization
         if "strands" in merged:
             merged["strands"] = _parse_list(merged["strands"])
@@ -940,17 +993,20 @@ class ExperimentConfig:
         # instantiate dataclass
         instance = cls(
             smf_modality = merged.get("smf_modality"),
-            input_data_path = merged.get("input_data_path"),
+            input_data_path = input_data_path,
             recursive_input_search = merged.get("recursive_input_search"),
-            output_directory = merged.get("output_directory"),
-            fasta = merged.get("fasta"),
+            input_type = input_type,
+            input_files = input_files,
+            output_directory = output_dir,
+            fasta = Path(merged.get("fasta")),
             sequencer = merged.get("sequencer"),
-            model_dir = merged.get("model_dir"),
+            model_dir = Path(merged.get("model_dir")),
             barcode_kit = merged.get("barcode_kit"),
             fastq_barcode_map = merged.get("fastq_barcode_map"),
             fastq_auto_pairing = merged.get("fastq_auto_pairing"),
             bam_suffix = merged.get("bam_suffix", ".bam"),
-            split_dir = merged.get("split_dir", "demultiplexed_BAMs"),
+            split_dir = split_dir,
+            split_path = split_path,
             strands = merged.get("strands", ["bottom","top"]),
             conversions = merged.get("conversions", ["unconverted"]),
             fasta_regions_of_interest = merged.get("fasta_regions_of_interest"),
@@ -970,7 +1026,7 @@ class ExperimentConfig:
             delete_intermediate_hdfs = merged.get("delete_intermediate_hdfs", True),
             mod_target_bases = merged.get("mod_target_bases", ["GpC","CpG"]),
             enzyme_target_bases = merged.get("enzyme_target_bases", ["GpC"]), 
-            conversion_types = merged.get("conversion_types", ["5mC"]),
+            conversion_types = merged.get("conversions", ["unconverted"]) + merged.get("conversion_types", ["5mC"]),
             filter_threshold = merged.get("filter_threshold", 0.8),
             m6A_threshold = merged.get("m6A_threshold", 0.7),
             m5C_threshold = merged.get("m5C_threshold", 0.7),

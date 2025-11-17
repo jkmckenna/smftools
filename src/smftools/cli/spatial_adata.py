@@ -34,81 +34,44 @@ def spatial_adata(config_path):
 
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
-    input_data_path = Path(cfg.input_data_path)  # Path to a directory of POD5s/FAST5s or to a BAM/FASTQ file. Necessary.
     output_directory = Path(cfg.output_directory)  # Path to the output directory to make for the analysis. Necessary.
-    fasta = Path(cfg.fasta)  # Path to reference FASTA. Necessary.
-    split_dir = Path(cfg.split_dir) # Relative path to directory for demultiplexing reads
-    split_path = output_directory / split_dir # Absolute path to directory for demultiplexing reads
-
-    # Naming of the demultiplexed output directory
-    if cfg.barcode_both_ends:
-        split_path = split_path.with_name(split_path.name + '_both_ends_barcoded')
-    else:
-        split_path = split_path.with_name(split_path.name + '_at_least_one_end_barcoded')
 
     # Make initial output directory
     make_dirs([output_directory])
-
-    bam_suffix = cfg.bam_suffix
-    strands = cfg.strands
-
-    # General config variable init - Optional user passed inputs for enzyme base specificity
-    mod_target_bases = cfg.mod_target_bases  # Nucleobases of interest that may be modified. ['GpC', 'CpG', 'C', 'A']
-
-    # Conversion/deamination specific variable init
-    conversion_types = cfg.conversion_types  # 5mC
-    conversions = cfg.conversions
-
-    # Common Anndata accession params
-    reference_column = cfg.reference_column
-
-    # If conversion_types is passed:
-    if conversion_types:
-        conversions += conversion_types
     ########################################################################################################################
 
     ############################################### smftools load start ###############################################
-    initial_adata, initial_adata_path = load_adata(config_path)
-
-    # Initial adata path info
-    initial_backup_dir = initial_adata_path.parent / 'adata_accessory_data'
+    initial_adata, initial_adata_path, bam_files = load_adata(config_path)
     ############################################### smftools load end ###############################################
 
     ############################################### smftools preprocess start ###############################################
     pp_adata, pp_adata_path, pp_dedup_adata, pp_dup_rem_adata_path = preprocess_adata(config_path)
-
-    # Preprocessed adata path info
-    pp_backup_dir = pp_adata_path.parent / 'pp_adata_accessory_data'
-
-    # Preprocessed duplicate removed adata path info
-    pp_dup_rem_backup_dir= pp_adata_path.parent / 'pp_dedup_adata_accessory_data'
     ############################################### smftools preprocess end ###############################################
 
     ############################################### smftools spatial start ###############################################
     # Preprocessed duplicate removed adata with basic analyses appended path info
     spatial_adata_basename = pp_dup_rem_adata_path.name.split(".")[0] + '_spatial.h5ad.gz'
     spatial_adata_path = pp_dup_rem_adata_path.parent / spatial_adata_basename
-    spatial_backup_dir= pp_dup_rem_adata_path.parent /'pp_dedup_spatial_adata_accessory_data'
 
     if pp_adata and pp_dedup_adata:
-        # This happens on first run of the pipeline
+        # This happens on first run of the preprocessing pipeline
         adata = pp_adata
         adata_unique = pp_dedup_adata
     else:
         # If an anndata is saved, check which stages of the anndata are available
-        initial_version_available = initial_adata_path.exists() and initial_backup_dir.is_dir()
-        preprocessed_version_available = pp_adata_path.exists() and pp_backup_dir.is_dir()
-        preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists() and pp_dup_rem_backup_dir.is_dir()
-        preprocessed_dedup_spatial_version_available = spatial_adata_path.exists() and spatial_backup_dir.is_dir()
+        initial_version_available = initial_adata_path.exists()
+        preprocessed_version_available = pp_adata_path.exists()
+        preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists()
+        preprocessed_dedup_spatial_version_available = spatial_adata_path.exists()
 
         if cfg.force_redo_basic_analyses:
             print(f"Forcing redo of basic analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
             if preprocessed_dup_removed_version_available:
-                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path, backup_dir=pp_dup_rem_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
             elif preprocessed_version_available:
-                adata, load_report = safe_read_h5ad(pp_adata_path, backup_dir=pp_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_adata_path)
             elif initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path, backup_dir=initial_backup_dir)
+                adata, load_report = safe_read_h5ad(initial_adata_path)
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
                 return 
@@ -123,11 +86,11 @@ def spatial_adata(config_path):
             deaminase = False
         else:
             deaminase = True
-        references = adata.obs[reference_column].cat.categories
+        references = adata.obs[cfg.reference_column].cat.categories
 
         ######### Clustermaps #########
 
-        pp_dir = split_path / "preprocessed"
+        pp_dir = output_directory / "preprocessed"
         pp_clustermap_dir = pp_dir / "06_clustermaps"
 
         if pp_clustermap_dir.is_dir():
@@ -521,7 +484,7 @@ def spatial_adata(config_path):
                 layer="nan0_0minus1",
                 methods=cfg.correlation_matrix_types,
                 sample_col=cfg.sample_name_col_for_plotting,
-                ref_col=reference_column,
+                ref_col=cfg.reference_column,
                 output_key="positionwise_result",
                 site_types=cfg.correlation_matrix_site_types,
                 encoding="signed",
@@ -533,7 +496,7 @@ def spatial_adata(config_path):
                 adata,
                 methods=cfg.correlation_matrix_types,
                 sample_col=cfg.sample_name_col_for_plotting,
-                ref_col=reference_column,
+                ref_col=cfg.reference_column,
                 figsize_per_cell=(4.0, 3.0),
                 dpi=160,
                 cmaps=cfg.correlation_matrix_cmaps,
@@ -549,11 +512,11 @@ def spatial_adata(config_path):
         print('Saving spatial analyzed adata post preprocessing and duplicate removal')
         if ".gz" == spatial_adata_path.suffix:
             print(f"Spatial adata path: {spatial_adata_path}")
-            safe_write_h5ad(adata, spatial_adata_path, compression='gzip', backup=True, backup_dir=spatial_backup_dir)
+            safe_write_h5ad(adata, spatial_adata_path, compression='gzip', backup=True)
         else:
             spatial_adata_path = spatial_adata_path.with_name(spatial_adata_path.name + '.gz')
             print(f"Spatial adata path: {spatial_adata_path}")
-            safe_write_h5ad(adata, spatial_adata_path, compression='gzip', backup=True, backup_dir=spatial_backup_dir)
+            safe_write_h5ad(adata, spatial_adata_path, compression='gzip', backup=True)
     ############################################### smftools spatial end ###############################################
 
     return adata, spatial_adata_path

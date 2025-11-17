@@ -26,6 +26,8 @@ if __name__ == "__main__":
 
 def converted_BAM_to_adata(converted_FASTA, 
                               split_dir,
+                              output_dir,
+                              input_already_demuxed,
                               mapping_threshold, 
                               experiment_name, 
                               conversions, 
@@ -33,20 +35,24 @@ def converted_BAM_to_adata(converted_FASTA,
                               device='cpu', 
                               num_threads=8, 
                               deaminase_footprinting=False,
-                              delete_intermediates=True
+                              delete_intermediates=True,
+                              double_barcoded_path = None,
 ):
     """
     Converts BAM files into an AnnData object by binarizing modified base identities.
 
     Parameters:
-        converted_FASTA (str): Path to the converted FASTA reference.
-        split_dir (str): Directory containing converted BAM files.
+        converted_FASTA (Path): Path to the converted FASTA reference.
+        split_dir (Path): Directory containing converted BAM files.
+        output_dir (Path): Directory of the output dir
+        input_already_demuxed (bool): Whether input reads were originally demuxed
         mapping_threshold (float): Minimum fraction of aligned reads required for inclusion.
         experiment_name (str): Name for the output AnnData object.
         conversions (list): List of modification types (e.g., ['unconverted', '5mC', '6mA']).
         bam_suffix (str): File suffix for BAM files.
         num_threads (int): Number of parallel processing threads.
         deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
+        double_barcoded_path (Path): Path to dorado demux summary file of double ended barcodes
 
     Returns:
         str: Path to the final AnnData object.
@@ -61,10 +67,11 @@ def converted_BAM_to_adata(converted_FASTA,
     print(f"Using device: {device}")
 
     ## Set Up Directories and File Paths
-    h5_dir = split_dir / 'h5ads'
-    tmp_dir = split_dir / 'tmp'
+    h5_dir = output_dir / 'h5ads'
+    tmp_dir = output_dir / 'tmp'
     final_adata = None
-    final_adata_path = h5_dir / f'{experiment_name}_{os.path.basename(split_dir)}.h5ad.gz'
+    final_adata_path = h5_dir / f'{experiment_name}.h5ad.gz'
+    backup_dir = h5_dir / experiment_name
 
     if final_adata_path.exists():
         print(f"{final_adata_path} already exists. Using existing AnnData object.")
@@ -103,9 +110,16 @@ def converted_BAM_to_adata(converted_FASTA,
     for col in cols:
         final_adata.obs[col] = final_adata.obs[col].astype('category')
 
+    if input_already_demuxed:
+        final_adata.obs["demux_type"] = ["already"] * final_adata.shape[0]
+        final_adata.obs["demux_type"] = final_adata.obs["demux_type"].astype("category")
+    else:
+        from .h5ad_functions import add_demux_type_annotation
+        double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
+        add_demux_type_annotation(final_adata, double_barcoded_reads)
+
     ## Save Final AnnData
     print(f"Saving AnnData to {final_adata_path}")
-    backup_dir=os.path.join(os.path.dirname(final_adata_path), 'adata_accessory_data')
     safe_write_h5ad(final_adata, final_adata_path, compression='gzip', backup=True, backup_dir=backup_dir)
 
     ## Delete intermediate h5ad files and temp directories

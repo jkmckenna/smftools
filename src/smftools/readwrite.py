@@ -156,17 +156,23 @@ def concatenate_h5ads(output_file, file_suffix='h5ad.gz', delete_inputs=True):
     else:
         print('Keeping input files')
 
-def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir="./uns_backups", verbose=True):
+def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=None, verbose=True):
     """
     Save an AnnData safely by sanitizing .obs, .var, .uns, .layers, and .obsm.
 
     Returns a report dict and prints a summary of what was converted/backed up/skipped.
     """
     import os, json, pickle
+    from pathlib import Path
     import numpy as np
     import pandas as pd
     import warnings
     import anndata as _ad
+
+    path = Path(path)
+
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
 
     os.makedirs(backup_dir, exist_ok=True)
 
@@ -188,7 +194,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=".
 
     def _backup(obj, name):
         """Pickle obj to backup_dir/name.pkl and return filename (or None)."""
-        fname = os.path.join(backup_dir, f"{name}.pkl")
+        fname = backup_dir / f"{name}.pkl"
         try:
             with open(fname, "wb") as fh:
                 pickle.dump(obj, fh, protocol=pickle.HIGHEST_PROTOCOL)
@@ -549,7 +555,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=".
     print("=== end report ===\n")
     return report
 
-def safe_read_h5ad(path, backup_dir="./uns_backups", restore_backups=True, re_categorize=True, categorical_threshold=100, verbose=True):
+def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=True, categorical_threshold=100, verbose=True):
     """
     Safely load an AnnData saved by safe_write_h5ad and attempt to restore complex objects
     from the backup_dir produced during save.
@@ -578,11 +584,17 @@ def safe_read_h5ad(path, backup_dir="./uns_backups", restore_backups=True, re_ca
             A report describing restored items, parsed JSON keys, and any failures.
     """
     import os
+    from pathlib import Path
     import json
     import pickle
     import numpy as np
     import pandas as pd
     import anndata as _ad
+
+    path = Path(path)
+
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
 
     report = {
         "restored_obs_columns": [],
@@ -607,7 +619,6 @@ def safe_read_h5ad(path, backup_dir="./uns_backups", restore_backups=True, re_ca
         raise RuntimeError(f"Failed to read h5ad at {path}: {e}")
 
     # Ensure backup_dir exists (may be relative to cwd)
-    backup_dir = os.path.abspath(backup_dir)
     if verbose:
         print(f"[safe_read_h5ad] looking for backups in {backup_dir}")
 
@@ -627,8 +638,8 @@ def safe_read_h5ad(path, backup_dir="./uns_backups", restore_backups=True, re_ca
     # 2) Restore obs columns
     for col in list(adata.obs.columns):
         # Look for backup with exact naming from safe_write_h5ad: "obs.<col>_backup.pkl" or "obs.<col>_categorical_backup.pkl"
-        bname1 = os.path.join(backup_dir, f"obs.{col}_backup.pkl")
-        bname2 = os.path.join(backup_dir, f"obs.{col}_categorical_backup.pkl")
+        bname1 = backup_dir / f"obs.{col}_backup.pkl"
+        bname2 = backup_dir / f"obs.{col}_categorical_backup.pkl"
         restored = False
 
         if restore_backups:
@@ -901,93 +912,6 @@ def safe_read_h5ad(path, backup_dir="./uns_backups", restore_backups=True, re_ca
         print("=== end summary ===\n")
 
     return adata, report
-
-
-# def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir="./", verbose=True):
-#     """
-#     Saves an AnnData object safely by omitting problematic columns from .obs and .var.
-
-#     Parameters:
-#         adata (AnnData): The AnnData object to save.
-#         path (str): Output .h5ad file path.
-#         compression (str): Compression method for h5ad file.
-#         backup (bool): If True, saves problematic columns to CSV files.
-#         backup_dir (str): Directory to store backups if backup=True.
-#     """
-#     import anndata as ad
-#     import pandas as pd
-#     import os
-#     import numpy as np
-#     import json
-
-#     os.makedirs(backup_dir, exist_ok=True)
-
-#     def filter_df(df, df_name):
-#         bad_cols = []
-#         for col in df.columns:
-#             if df[col].dtype == 'object':
-#                 if not df[col].apply(lambda x: isinstance(x, (str, type(None)))).all():
-#                     bad_cols.append(col)
-#             elif pd.api.types.is_categorical_dtype(df[col]):
-#                 if not all(isinstance(x, (str, type(None))) for x in df[col].cat.categories):
-#                     bad_cols.append(col)
-#         if bad_cols and verbose:
-#             print(f"Skipping columns from {df_name}: {bad_cols}")
-#         if backup and bad_cols:
-#             df[bad_cols].to_csv(os.path.join(backup_dir, f"{df_name}_skipped_columns.csv"))
-#             if verbose:
-#                 print(f"Backed up skipped columns to {backup_dir}/{df_name}_skipped_columns.csv")
-#         return df.drop(columns=bad_cols)
-    
-#     def is_serializable(val):
-#         try:
-#             json.dumps(val)
-#             return True
-#         except (TypeError, OverflowError):
-#             return False
-
-#     def clean_uns(uns_dict):
-#         clean_uns = {}
-#         bad_keys = []
-#         for k, v in uns_dict.items():
-#             if isinstance(v, (str, int, float, type(None), list, np.ndarray, pd.DataFrame, dict)):
-#                 clean_uns[k] = v
-#             elif is_serializable(v):
-#                 clean_uns[k] = v
-#             else:
-#                 bad_keys.append(k)
-#                 if backup:
-#                     try:
-#                         with open(os.path.join(backup_dir, f"uns_{k}_backup.txt"), "w") as f:
-#                             f.write(str(v))
-#                     except Exception:
-#                         pass
-#         if bad_keys and verbose:
-#             print(f"Skipping entries from .uns: {bad_keys}")
-#         return clean_uns
-
-#     # Clean obs and var and uns
-#     obs_clean = filter_df(adata.obs, "obs")
-#     var_clean = filter_df(adata.var, "var")
-#     uns_clean = clean_uns(adata.uns)
-
-#     # Save clean version
-#     adata_copy = ad.AnnData(
-#         X=adata.X,
-#         obs=obs_clean,
-#         var=var_clean,
-#         layers=adata.layers,
-#         uns=uns_clean,
-#         obsm=adata.obsm,
-#         varm=adata.varm
-#     )
-
-#     adata_copy.obs_names = adata_copy.obs_names.astype(str)
-#     adata_copy.var_names = adata_copy.var_names.astype(str)
-
-#     adata_copy.write_h5ad(path, compression=compression)
-
-#     print(f"Saved safely to {path}")
 
 def merge_barcoded_anndatas_core(adata_single, adata_double):
     import numpy as np

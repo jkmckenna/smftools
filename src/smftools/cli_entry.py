@@ -21,7 +21,7 @@ def cli():
 @click.argument("config_path", type=click.Path(exists=True))
 def load(config_path):
     """Load and process data from CONFIG_PATH."""
-    adata, adata_path = load_adata(config_path)
+    load_adata(config_path)
 ##########################################
 
 ####### Preprocessing ###########
@@ -47,15 +47,6 @@ def hmm(config_path):
     """Process data from CONFIG_PATH."""
     hmm_adata(config_path)
 ##########################################
-
-####### Processing workflow ###########
-@cli.command()
-@click.argument("config_path", type=click.Path(exists=True))
-def flow(config_path):
-    """Load and process data from CONFIG_PATH."""
-    flow_I(config_path)
-##########################################
-
 
 ####### Merging existing anndatas from an experiment that used two different demultiplexing rules #######
 REQUIRED_KEYS = ("adata_single_path", "adata_double_path")

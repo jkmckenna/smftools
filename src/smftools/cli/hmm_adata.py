@@ -35,115 +35,76 @@ def hmm_adata(config_path):
 
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
-    input_data_path = Path(cfg.input_data_path)  # Path to a directory of POD5s/FAST5s or to a BAM/FASTQ file. Necessary.
     output_directory = Path(cfg.output_directory)  # Path to the output directory to make for the analysis. Necessary.
-    fasta = Path(cfg.fasta)  # Path to reference FASTA. Necessary.
-    split_dir = Path(cfg.split_dir) # Relative path to directory for demultiplexing reads
-    split_path = output_directory / split_dir # Absolute path to directory for demultiplexing reads
-
-    # Naming of the demultiplexed output directory
-    if cfg.barcode_both_ends:
-        split_path = split_path.with_name(split_path.name + '_both_ends_barcoded')
-    else:
-        split_path = split_path.with_name(split_path.name + '_at_least_one_end_barcoded')
 
     # Make initial output directory
     make_dirs([output_directory])
-
-    bam_suffix = cfg.bam_suffix
-    strands = cfg.strands
-
-    # General config variable init - Optional user passed inputs for enzyme base specificity
-    mod_target_bases = cfg.mod_target_bases  # Nucleobases of interest that may be modified. ['GpC', 'CpG', 'C', 'A']
-
-    # Conversion/deamination specific variable init
-    conversion_types = cfg.conversion_types  # 5mC
-    conversions = cfg.conversions
-
-    # Common Anndata accession params
-    reference_column = cfg.reference_column
-
-    # If conversion_types is passed:
-    if conversion_types:
-        conversions += conversion_types
-
-    if smf_modality != 'direct':
-        if smf_modality == 'conversion':
-            deaminase = False
-        else:
-            deaminase = True
     ########################################################################################################################
 
     ############################################### smftools load start ###############################################
-    initial_adata, initial_adata_path = load_adata(config_path)
-
-    # Initial adata path info
-    initial_backup_dir = initial_adata_path.parent / 'adata_accessory_data'
+    initial_adata, initial_adata_path, bam_files = load_adata(config_path)
     ############################################### smftools load end ###############################################
 
     ############################################### smftools preprocess start ###############################################
     pp_adata, pp_adata_path, pp_dedup_adata, pp_dup_rem_adata_path = preprocess_adata(config_path)
-
-    # Preprocessed adata path info
-    pp_backup_dir = pp_adata_path.parent / 'pp_adata_accessory_data'
-
-    # Preprocessed duplicate removed adata path info
-    pp_dup_rem_backup_dir= pp_adata_path.parent / 'pp_dedup_adata_accessory_data'
     ############################################### smftools preprocess end ###############################################
 
     ############################################### smftools spatial start ###############################################
-    pp_dedup_spatial_adata, pp_dedup_spatial_adata_path = spatial_adata(config_path)
-    # Preprocessed duplicate removed adata with basic analyses appended path info
-    pp_dedup_spatial_backup_dir= pp_dup_rem_adata_path.parent /'pp_dedup_spatial_adata_accessory_data'
+    skip_spatial = True
+    if skip_spatial:
+        pp_dedup_spatial_adata = None
+        spatial_adata_basename = pp_dup_rem_adata_path.name.split(".")[0] + '_spatial.h5ad.gz'
+        pp_dedup_spatial_adata_path = pp_dup_rem_adata_path.parent / spatial_adata_basename
+    else:
+        pp_dedup_spatial_adata, pp_dedup_spatial_adata_path = spatial_adata(config_path)
     ############################################### smftools spatial end ###############################################
 
     ############################################### smftools hmm start ###############################################
     # hmm adata
     hmm_adata_basename = pp_dedup_spatial_adata_path.with_suffix("").name + '_hmm.h5ad.gz'
     hmm_adata_path = pp_dedup_spatial_adata_path.parent / hmm_adata_basename
-    hmm_backup_dir= pp_dedup_spatial_adata_path.parent /'pp_dedup_spatial_hmm_adata_accessory_data'
 
     if pp_dedup_spatial_adata:
         # This happens on first run of the pipeline
         adata = pp_dedup_spatial_adata
     else:
         # If an anndata is saved, check which stages of the anndata are available
-        initial_version_available = initial_adata_path.exists() and initial_backup_dir.is_dir()
-        preprocessed_version_available = pp_adata_path.exists() and pp_backup_dir.is_dir()
-        preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists() and pp_dup_rem_backup_dir.is_dir()
-        preprocessed_dedup_spatial_version_available = pp_dedup_spatial_adata_path.exists() and pp_dedup_spatial_backup_dir.is_dir()
-        preprocessed_dedup_spatial_hmm_version_available = hmm_adata_path.exists() and hmm_backup_dir.is_dir()
+        initial_version_available = initial_adata_path.exists()
+        preprocessed_version_available = pp_adata_path.exists()
+        preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists()
+        preprocessed_dedup_spatial_version_available = pp_dedup_spatial_adata_path.exists()
+        preprocessed_dedup_spatial_hmm_version_available = hmm_adata_path.exists()
 
         if cfg.force_redo_hmm_fit:
             print(f"Forcing redo of basic analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
             if preprocessed_dedup_spatial_version_available:
-                adata, load_report = safe_read_h5ad(pp_dedup_spatial_adata_path, backup_dir=pp_dedup_spatial_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_dedup_spatial_adata_path)
             elif preprocessed_dup_removed_version_available:
-                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path, backup_dir=pp_dup_rem_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
             elif initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path, backup_dir=initial_backup_dir)
+                adata, load_report = safe_read_h5ad(initial_adata_path)
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
         elif preprocessed_dedup_spatial_hmm_version_available:
             return (None, hmm_adata_path)
         else:
             if preprocessed_dedup_spatial_version_available:
-                adata, load_report = safe_read_h5ad(pp_dedup_spatial_adata_path, backup_dir=pp_dedup_spatial_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_dedup_spatial_adata_path)
             elif preprocessed_dup_removed_version_available:
-                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path, backup_dir=pp_dup_rem_backup_dir)
+                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
             elif initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path, backup_dir=initial_backup_dir)
+                adata, load_report = safe_read_h5ad(initial_adata_path)
             else:            
                 print(f"No adata available.")
                 return
-    references = adata.obs[reference_column].cat.categories          
+    references = adata.obs[cfg.reference_column].cat.categories          
 ############################################### HMM based feature annotations ###############################################
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):
         from ..hmm.HMM import HMM
         from scipy.sparse import issparse, csr_matrix
         import warnings
 
-        pp_dir = split_path / "preprocessed"
+        pp_dir = output_directory / "preprocessed"
         pp_dir = pp_dir / "deduplicated"
         hmm_dir = pp_dir / "10_hmm_models"
 
@@ -153,7 +114,7 @@ def hmm_adata(config_path):
             make_dirs([pp_dir, hmm_dir])
 
         samples = adata.obs[cfg.sample_name_col_for_plotting].cat.categories
-        references = adata.obs[reference_column].cat.categories
+        references = adata.obs[cfg.reference_column].cat.categories
         uns_key = "hmm_appended_layers"
 
         # ensure uns key exists (avoid KeyError later)
@@ -162,7 +123,7 @@ def hmm_adata(config_path):
 
         for sample in samples:
             for ref in references:
-                mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (adata.obs[reference_column] == ref)
+                mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (adata.obs[cfg.reference_column] == ref)
                 subset = adata[mask].copy()
                 if subset.shape[0] < 1:
                     continue
@@ -255,10 +216,10 @@ def hmm_adata(config_path):
     if not hmm_adata_path.exists():
         print('Saving hmm analyzed adata post preprocessing and duplicate removal')
         if ".gz" == hmm_adata_path.suffix:
-            safe_write_h5ad(adata, hmm_adata_path, compression='gzip', backup=True, backup_dir=hmm_backup_dir)
+            safe_write_h5ad(adata, hmm_adata_path, compression='gzip', backup=True)
         else:
             hmm_adata_path = hmm_adata_path.with_name(hmm_adata_path.name + '.gz')
-            safe_write_h5ad(adata, hmm_adata_path, compression='gzip', backup=True, backup_dir=hmm_backup_dir)
+            safe_write_h5ad(adata, hmm_adata_path, compression='gzip', backup=True)
 
     ########################################################################################################################
 
@@ -279,7 +240,7 @@ def hmm_adata(config_path):
             combined_hmm_raw_clustermap(
             adata,
             sample_col=cfg.sample_name_col_for_plotting,
-            reference_col=reference_column,
+            reference_col=cfg.reference_column,
             hmm_feature_layer=layer,
             layer_gpc="nan0_0minus1",
             layer_cpg="nan0_0minus1",
@@ -312,7 +273,7 @@ def hmm_adata(config_path):
             adata,
             layers=adata.uns['hmm_appended_layers'],
             sample_col=cfg.sample_name_col_for_plotting,
-            ref_col=reference_column,
+            ref_col=cfg.reference_column,
             window=101,
             rows_per_page=4,
             figsize_per_cell=(4,2.5),
@@ -337,7 +298,7 @@ def hmm_adata(config_path):
                 adata,
                 length_layer=layer,
                 sample_col=cfg.sample_name_col_for_plotting,
-                ref_obs_col=reference_column,
+                ref_obs_col=cfg.reference_column,
                 rows_per_page=6,
                 max_length_cap=max,
                 figsize_per_cell=(3.5, 2.2),
