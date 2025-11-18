@@ -605,6 +605,7 @@ class ExperimentConfig:
     sample_sheet_mapping_column: Optional[str] = 'Barcode'
     experiment_name: Optional[str] = None
     input_already_demuxed: bool = False
+    summary_file: Optional[Path] = None
 
     # FASTQ input specific
     fastq_barcode_map: Optional[Dict[str, str]] = None
@@ -664,6 +665,16 @@ class ExperimentConfig:
     read_len_to_ref_ratio_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [0.4, 1.1])
     read_quality_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [20, None])
     read_mapping_quality_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [None, None])
+
+    # Preprocessing - Direct mod detection binarization params
+    fit_position_methylation_thresholds: Optional[bool] = False # Whether to use Youden J-stat to determine position by positions thresholds for modification binarization.
+    binarize_on_fixed_methlyation_threshold: Optional[float] = 0.7 # The threshold used to binarize the anndata using a fixed value if fitting parameter above is False.
+    positive_control_sample_methylation_fitting: Optional[str] = None # A positive control Sample_name to use for fully modified template data
+    negative_control_sample_methylation_fitting: Optional[str] = None # A negative control Sample_name to use for fully unmodified template data
+    infer_on_percentile_sample_methylation_fitting: Optional[int] = 10 # If a positive/negative control are not provided and fitting the data is requested, use the indicated percentile windows from the top and bottom of the dataset.
+    inference_variable_sample_methylation_fitting: Optional[str] = "Raw_modification_signal" # The obs column value used for the percentile metric above.
+    fit_j_threshold: Optional[float] = 0.5 # The J-statistic threhold to use for determining which positions pass qc for mod detection thresholding
+    output_binary_layer_name: Optional[str] = "binarized_methylation"
 
     # Preprocessing - Read modification filter params
     read_mod_filtering_gpc_thresholds: List[float] = field(default_factory=lambda: [0.025, 0.975])
@@ -908,8 +919,12 @@ class ExperimentConfig:
 
             print(f"Found {found['all_files_searched']} files; fastq={len(found["fastq_paths"])}, bam={len(found["bam_paths"])}, pod5={len(found["pod5_paths"])}, fast5={len(found["fast5_paths"])}, , h5ad={len(found["h5ad_paths"])}")
 
-        # Demultiplexing output path
+        # summary file output path
         output_dir = Path(merged['output_directory'])
+        summary_file_basename = merged["experiment_name"] + '_output_summary.csv'
+        summary_file = output_dir / summary_file_basename
+
+        # Demultiplexing output path
         split_dir = merged.get("split_dir", "demultiplexed_BAMs")
         split_path = output_dir / split_dir
 
@@ -989,7 +1004,6 @@ class ExperimentConfig:
         hmm_methbases = list(hmm_methbases)
         hmm_merge_layer_features = _parse_list(merged.get("hmm_merge_layer_features", None))
 
-
         # instantiate dataclass
         instance = cls(
             smf_modality = merged.get("smf_modality"),
@@ -998,6 +1012,7 @@ class ExperimentConfig:
             input_type = input_type,
             input_files = input_files,
             output_directory = output_dir,
+            summary_file = summary_file,
             fasta = Path(merged.get("fasta")),
             sequencer = merged.get("sequencer"),
             model_dir = Path(merged.get("model_dir")),
@@ -1039,6 +1054,14 @@ class ExperimentConfig:
             reference_column = merged.get("reference_column", 'Reference_strand'),
             sample_column = merged.get("sample_column", 'Barcode'),
             sample_name_col_for_plotting = merged.get("sample_name_col_for_plotting", 'Barcode'),
+            fit_position_methylation_thresholds = merged.get("fit_position_methylation_thresholds", False),
+            binarize_on_fixed_methlyation_threshold = merged.get("binarize_on_fixed_methlyation_threshold", 0.7),
+            positive_control_sample_methylation_fitting = merged.get("positive_control_sample_methylation_fitting", None),
+            negative_control_sample_methylation_fitting = merged.get("negative_control_sample_methylation_fitting", None),
+            infer_on_percentile_sample_methylation_fitting = merged.get("infer_on_percentile_sample_methylation_fitting", 10),
+            inference_variable_sample_methylation_fitting = merged.get("inference_variable_sample_methylation_fitting", "Raw_modification_signal"),
+            fit_j_threshold = merged.get("fit_j_threshold", 0.5),
+            output_binary_layer_name = merged.get("output_binary_layer_name", "binarized_methylation"),
             layer_for_clustermap_plotting = merged.get("layer_for_clustermap_plotting", 'nan0_0minus1'), 
             layer_for_umap_plotting = merged.get("layer_for_umap_plotting", 'nan_half'),
             umap_layers_to_plot = merged.get("umap_layers_to_plot",["mapped_length", 'Raw_modification_signal']),

@@ -16,7 +16,7 @@ conda activate smftools
 pip install smftools
 ```
 
-Ensure that you can access dorado, samtools, modkit, bedtools, and BedGraphtoBigWig executables from the terminal in this environment. These are all necessary for the functionality within the Informatics module.
+Ensure that you can access dorado, modkit, and minimap2 executables from the terminal in this environment.
 You may need to add them to $PATH if they are not globally configured.
 For example, if you want to check if dorado is executable, simply run this in the terminal:
 
@@ -24,10 +24,10 @@ For example, if you want to check if dorado is executable, simply run this in th
 dorado
 ```
 
-On Mac OSX, the following can be used to congigure bedtools (with brew) and BedGraphToBigWig (with wget). Change the BedGraphToBigWig link to include the correct architecture for your OS.
+On Mac OSX, the following can be used to congigure minimap2 (with brew) and BedGraphToBigWig (with wget).
 
 ```shell
-brew install bedtools
+brew install minimap2
 wget http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.x86_64/bedGraphToBigWig
 chmod +x bedGraphToBigWig
 sudo mv bedGraphToBigWig /usr/local/bin/
@@ -48,7 +48,7 @@ A python virtual environment can be created as an alternative to conda. I like t
 python -m venv venv-smftools
 source venv-smftools/bin/activate
 pip install --upgrade pip
-pip install -e .
+pip install .
 pip install ipykernel jupyter
 python -m ipykernel install --user --name=venv-smftools --display-name "Python (smftools)"
 ```

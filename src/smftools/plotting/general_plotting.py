@@ -168,7 +168,7 @@ def combined_hmm_raw_clustermap(
 
                         fig = plt.figure(figsize=(18, 12))
                         gs = gridspec.GridSpec(2, 4, height_ratios=[1, 6], hspace=0.01)
-                        fig.suptitle(f"{sample} - {ref}", fontsize=14, y=0.95)
+                        fig.suptitle(f"{sample} - {ref} - {total_reads} reads", fontsize=14, y=0.95)
 
                         axes_heat = [fig.add_subplot(gs[1, i]) for i in range(4)]
                         axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(4)]

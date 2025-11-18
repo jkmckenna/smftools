@@ -9,8 +9,7 @@ def hmm_adata(config_path):
     Returns:
         (pp_dedup_spatial_hmm_adata, pp_dedup_spatial_hmm_adata_path)
     """
-    from ..readwrite import safe_read_h5ad, safe_write_h5ad, make_dirs
-    from ..config import LoadExperimentConfig, ExperimentConfig
+    from ..readwrite import safe_read_h5ad, safe_write_h5ad, make_dirs, add_or_update_column_in_csv
     from .load_adata import load_adata
     from .preprocess_adata import preprocess_adata
     from .spatial_adata import spatial_adata
@@ -27,22 +26,14 @@ def hmm_adata(config_path):
     from datetime import datetime
     date_str = datetime.today().strftime("%y%m%d")
 
-    ################################### 1) General params and input organization ###################################
-    # Load experiment config parameters into global variables
-    loader = LoadExperimentConfig(config_path)
-    defaults_dir = resources.files("smftools").joinpath("config")
-    cfg, report = ExperimentConfig.from_var_dict(loader.var_dict, date_str=date_str, defaults_dir=defaults_dir)
-
+    ############################################### smftools load start ###############################################
+    initial_adata, initial_adata_path, bam_files, cfg = load_adata(config_path)
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
     output_directory = Path(cfg.output_directory)  # Path to the output directory to make for the analysis. Necessary.
 
     # Make initial output directory
     make_dirs([output_directory])
-    ########################################################################################################################
-
-    ############################################### smftools load start ###############################################
-    initial_adata, initial_adata_path, bam_files = load_adata(config_path)
     ############################################### smftools load end ###############################################
 
     ############################################### smftools preprocess start ###############################################
@@ -220,6 +211,8 @@ def hmm_adata(config_path):
         else:
             hmm_adata_path = hmm_adata_path.with_name(hmm_adata_path.name + '.gz')
             safe_write_h5ad(adata, hmm_adata_path, compression='gzip', backup=True)
+
+    add_or_update_column_in_csv(cfg.summary_file, "hmm_adata", hmm_adata_path)
 
     ########################################################################################################################
 

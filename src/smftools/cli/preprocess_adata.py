@@ -9,8 +9,7 @@ def preprocess_adata(config_path):
     Returns:
         (pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path)
     """
-    from ..readwrite import safe_read_h5ad, safe_write_h5ad, make_dirs
-    from ..config import LoadExperimentConfig, ExperimentConfig
+    from ..readwrite import safe_read_h5ad, safe_write_h5ad, make_dirs, add_or_update_column_in_csv
     from .load_adata import load_adata
 
     import numpy as np
@@ -25,11 +24,8 @@ def preprocess_adata(config_path):
     from datetime import datetime
     date_str = datetime.today().strftime("%y%m%d")
 
-    ################################### 1) General params and input organization ###################################
-    # Load experiment config parameters into global variables
-    loader = LoadExperimentConfig(config_path)
-    defaults_dir = resources.files("smftools").joinpath("config")
-    cfg, report = ExperimentConfig.from_var_dict(loader.var_dict, date_str=date_str, defaults_dir=defaults_dir)
+    ################################### 1) Load existing  ###################################
+    initial_adata, initial_adata_path, bam_files, cfg = load_adata(config_path)
 
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
@@ -37,10 +33,6 @@ def preprocess_adata(config_path):
 
     # Make initial output directory
     make_dirs([output_directory])
-    ########################################################################################################################
-
-    ################################### 1) Load existing  ###################################
-    initial_adata, initial_adata_path, bam_files = load_adata(config_path)
 
     # Preprocessed adata path info
     pp_adata_basename = initial_adata_path.name.split(".")[0] + '_preprocessed.h5ad.gz'
@@ -89,6 +81,7 @@ def preprocess_adata(config_path):
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
         elif preprocessed_version_available or preprocessed_dup_removed_version_available:
+            print(f"Preprocessed anndatas found: {pp_dup_rem_adata_path} and {pp_adata_path}")
             return (None, pp_adata_path, None, pp_dup_rem_adata_path)
         elif initial_version_available:
             adata, load_report = safe_read_h5ad(initial_adata_path)
@@ -163,25 +156,30 @@ def preprocess_adata(config_path):
     ############## Binarize direct modcall data and store in new layer. Clean nans and store as new layers with various nan replacement strategies ##########
     from ..preprocessing import clean_NaN
     if smf_modality == 'direct':
-        from ..preprocessing import calculate_position_Youden, binarize_on_Youden
+        from ..preprocessing import calculate_position_Youden, binarize_on_Youden, binarize_adata
         native = True
-        # Calculate positional methylation thresholds for mod calls
-        calculate_position_Youden(adata, 
-                                  positive_control_sample=None, 
-                                  negative_control_sample=None, 
-                                  J_threshold=0.5, 
-                                  obs_column=cfg.reference_column, 
-                                  infer_on_percentile=10, 
-                                  inference_variable='Raw_modification_signal', 
-                                  save=False, 
-                                  output_directory=''
-                                  )
-        # binarize the modcalls based on the determined thresholds
-        binarize_on_Youden(adata, 
-                           obs_column=cfg.reference_column
-                           )
+        if cfg.fit_position_methylation_thresholds:
+            # Calculate positional methylation thresholds for mod calls
+            calculate_position_Youden(adata, 
+                                    positive_control_sample=cfg.positive_control_sample_methylation_fitting, 
+                                    negative_control_sample=cfg.negative_control_sample_methylation_fitting, 
+                                    J_threshold=cfg.fit_j_threshold, 
+                                    obs_column=cfg.reference_column, 
+                                    infer_on_percentile=cfg.infer_on_percentile_sample_methylation_fitting, 
+                                    inference_variable=cfg.inference_variable_sample_methylation_fitting, 
+                                    save=False, 
+                                    output_directory=''
+                                    )
+            # binarize the modcalls based on the determined thresholds
+            binarize_on_Youden(adata, 
+                            obs_column=cfg.reference_column,
+                            output_layer_name=cfg.output_binary_layer_name
+                            )
+        else:
+            binarize_adata(adata, source="X", target_layer=cfg.output_binary_layer_name, threshold=cfg.binarize_on_fixed_methlyation_threshold)
+
         clean_NaN(adata, 
-                  layer='binarized_methylation',
+                  layer=cfg.output_binary_layer_name,
                   bypass=cfg.bypass_clean_nan, 
                   force_redo=cfg.force_redo_clean_nan
                   )
@@ -356,5 +354,8 @@ def preprocess_adata(config_path):
             pp_adata_path = pp_dup_rem_adata_path.with_name(pp_dup_rem_adata_path.name + '.gz')
             safe_write_h5ad(adata_unique, pp_dup_rem_adata_path, compression='gzip', backup=True)
     ########################################################################################################################
+
+    add_or_update_column_in_csv(cfg.summary_file, "pp_adata", pp_adata_path)
+    add_or_update_column_in_csv(cfg.summary_file, "pp_dedup_adata", pp_dup_rem_adata_path)
 
     return (adata, pp_adata_path, adata_unique, pp_dup_rem_adata_path)

@@ -22,8 +22,20 @@ batch_size: 4 # How many mod TSVs to load into memory at a time when making annd
 skip_unclassified: True # Whether to skip unclassified barcodes
 delete_batch_hdfs: True # Whether to delete intermediate barcode level hdfs after making final anndata
 
-######## smftools analyze params #########
+######## smftools preprocess params ########
+fit_position_methylation_thresholds: False # Whether to use Youden J-stat to determine position by positions thresholds for modification binarization.
+binarize_on_fixed_methlyation_threshold: 0.7 # The threshold used to binarize the anndata using a fixed value if fitting parameter above is False.
+positive_control_sample_methylation_fitting: null # A positive control Sample_name to use for fully modified template data
+negative_control_sample_methylation_fitting: null # A negative control Sample_name to use for fully unmodified template data
+infer_on_percentile_sample_methylation_fitting: 10 # If a positive/negative control are not provided and fitting the data is requested, use the indicated percentile windows from the top and bottom of the dataset.
+inference_variable_sample_methylation_fitting: "Raw_modification_signal" # The obs column value used for the percentile metric above.
+fit_j_threshold: 0.5 # The J-statistic threhold to use for determining which positions pass qc for mod detection thresholding
+output_binary_layer_name: "binarized_methylation" # The layer to store the binarized methylation data in
+
+######## smftools spatial params #########
 autocorr_site_types:
   - "A"
+
+######## smftools hmm params #########
 hmm_methbases:
   - "A"

@@ -166,7 +166,7 @@ def plot_spatial_autocorr_grid(
                         ax.set_xlabel("Lag (bp)", fontsize=7)
                         ax.tick_params(axis='both', which='major', labelsize=6)
                         ax.grid(True, alpha=0.22)
-                        col_idx += 1
+                        #col_idx += 1
                         continue
 
                     # mask low-support lags if counts available
@@ -417,7 +417,6 @@ def plot_spatial_autocorr_grid(
 
     return saved_pages
 
-
 def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=160, show=False):
     """
     Plot NRL and SNR vs window center from the dataframe returned by rolling_autocorr_metrics.
@@ -608,4 +607,3 @@ def plot_rolling_grid(
         pages_by_metric[metric] = saved_pages
 
     return pages_by_metric
-

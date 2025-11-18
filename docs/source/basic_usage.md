@@ -19,10 +19,8 @@ After creating an AnnData object holding your experiment's SMF data, you can loa
 
 ```
 import smftools as smf
-import anndata as ad
 input_adata = "/Path_to_experiment_AnnData.h5ad.gz"
-adata_accessory_data = "/Path_to_experiment_AnnData_accessory_data_directory"
-adata = safe_read_h5ad(input_adata, backup_dir=adata_accessory_data)
+adata = safe_read_h5ad(input_adata)
 ```
 
 This custom read function will take an optional directory of pickle files for data types that can not normally be saved directly in hdf5 formatting that was saved with the safe_write_h5ad function.
@@ -49,13 +47,13 @@ adata.obs_names_make_unique()
 After preprocessing and downstream analysis of the AnnData object, you can save the AnnData object at any step as so:
 
 ```
-import anndata as ad
-import os
+import smftools as smf
+from pathlib import Path
 
-output_dir = '/Path_to_output_directory'
+output_dir = Path('/Path_to_output_directory')
 output_adata = 'analyzed_adata.h5ad.gz'
-final_output_path = os.path.join(output_dir, output_adata)
-safe_write_h5ad(adata, final_output_path, compression='gzip', backup_dir="adata_accessory_data")
+final_output_path = output_dir / output_adata
+safe_write_h5ad(adata, final_output_path, compression='gzip')
 ```
 
 This custom save function will make a directory of pickle files for data types that can not normally be saved directly in hdf5 formatting.
