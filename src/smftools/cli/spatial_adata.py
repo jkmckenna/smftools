@@ -9,8 +9,7 @@ def spatial_adata(config_path):
     Returns:
         (pp_dedup_spatial_adata, pp_dedup_spatial_adata_path)
     """
-    from ..readwrite import safe_read_h5ad, safe_write_h5ad, make_dirs
-    from ..config import LoadExperimentConfig, ExperimentConfig
+    from ..readwrite import safe_read_h5ad, safe_write_h5ad, make_dirs, add_or_update_column_in_csv
     from .load_adata import load_adata
     from .preprocess_adata import preprocess_adata
 
@@ -26,22 +25,13 @@ def spatial_adata(config_path):
     from datetime import datetime
     date_str = datetime.today().strftime("%y%m%d")
 
-    ################################### 1) General params and input organization ###################################
-    # Load experiment config parameters into global variables
-    loader = LoadExperimentConfig(config_path)
-    defaults_dir = resources.files("smftools").joinpath("config")
-    cfg, report = ExperimentConfig.from_var_dict(loader.var_dict, date_str=date_str, defaults_dir=defaults_dir)
-
+    ############################################### smftools load start ###############################################
+    initial_adata, initial_adata_path, bam_files, cfg = load_adata(config_path)
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
     output_directory = Path(cfg.output_directory)  # Path to the output directory to make for the analysis. Necessary.
-
     # Make initial output directory
     make_dirs([output_directory])
-    ########################################################################################################################
-
-    ############################################### smftools load start ###############################################
-    initial_adata, initial_adata_path, bam_files = load_adata(config_path)
     ############################################### smftools load end ###############################################
 
     ############################################### smftools preprocess start ###############################################
@@ -55,10 +45,12 @@ def spatial_adata(config_path):
 
     if pp_adata and pp_dedup_adata:
         # This happens on first run of the preprocessing pipeline
+        first_pp_run = True
         adata = pp_adata
         adata_unique = pp_dedup_adata
     else:
         # If an anndata is saved, check which stages of the anndata are available
+        first_pp_run = False
         initial_version_available = initial_adata_path.exists()
         preprocessed_version_available = pp_adata_path.exists()
         preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists()
@@ -68,15 +60,28 @@ def spatial_adata(config_path):
             print(f"Forcing redo of basic analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
             if preprocessed_dup_removed_version_available:
                 adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
+                adata_version = "pp_dedup"
             elif preprocessed_version_available:
                 adata, load_report = safe_read_h5ad(pp_adata_path)
+                adata_version = "pp"
             elif initial_version_available:
                 adata, load_report = safe_read_h5ad(initial_adata_path)
+                adata_version = "initial"
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
                 return 
         elif preprocessed_dedup_spatial_version_available:
+            print(f"Preprocessed deduplicated spatial anndata found: {spatial_adata_path}")
             return None, spatial_adata_path
+        elif preprocessed_dup_removed_version_available:
+            adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
+            adata_version = "pp_dedup"
+        elif preprocessed_version_available:
+            adata, load_report = safe_read_h5ad(pp_adata_path)
+            adata_version = "pp"
+        elif initial_version_available:
+            adata, load_report = safe_read_h5ad(initial_adata_path)
+            adata_version = "initial"
         else:
             print(f"No adata available.")
             return
@@ -90,38 +95,43 @@ def spatial_adata(config_path):
 
         ######### Clustermaps #########
 
-        pp_dir = output_directory / "preprocessed"
-        pp_clustermap_dir = pp_dir / "06_clustermaps"
+        if adata_version in ['initial', 'pp'] or first_pp_run:
+            pp_dir = output_directory / "preprocessed"
+            pp_clustermap_dir = pp_dir / "06_clustermaps"
 
-        if pp_clustermap_dir.is_dir():
-            print(f'{pp_clustermap_dir} already exists. Skipping clustermap plotting.')
+            if pp_clustermap_dir.is_dir():
+                print(f'{pp_clustermap_dir} already exists. Skipping clustermap plotting.')
+            else:
+                from ..plotting import combined_raw_clustermap
+                make_dirs([pp_dir, pp_clustermap_dir])
+                clustermap_results = combined_raw_clustermap(adata, 
+                                                            sample_col=cfg.sample_name_col_for_plotting, 
+                                                            reference_col=cfg.reference_column,
+                                                            layer_any_c=cfg.layer_for_clustermap_plotting, 
+                                                            layer_gpc=cfg.layer_for_clustermap_plotting, 
+                                                            layer_cpg=cfg.layer_for_clustermap_plotting, 
+                                                            cmap_any_c="coolwarm", 
+                                                            cmap_gpc="coolwarm", 
+                                                            cmap_cpg="viridis", 
+                                                            min_quality=cfg.read_quality_filter_thresholds[0], 
+                                                            min_length=cfg.read_len_filter_thresholds[0], 
+                                                            min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+                                                            min_position_valid_fraction=cfg.min_valid_fraction_positions_in_read_vs_ref,
+                                                            bins=None,
+                                                            sample_mapping=None, 
+                                                            save_path=pp_clustermap_dir, 
+                                                            sort_by='gpc', 
+                                                            deaminase=deaminase)
+            if first_pp_run:
+                adata = adata_unique
+            else:
+                # Break if the only versions available are the initial or pp.
+                return None, None
         else:
-            from ..plotting import combined_raw_clustermap
-            make_dirs([pp_dir, pp_clustermap_dir])
-            clustermap_results = combined_raw_clustermap(adata, 
-                                                         sample_col=cfg.sample_name_col_for_plotting, 
-                                                         reference_col=cfg.reference_column,
-                                                         layer_any_c=cfg.layer_for_clustermap_plotting, 
-                                                         layer_gpc=cfg.layer_for_clustermap_plotting, 
-                                                         layer_cpg=cfg.layer_for_clustermap_plotting, 
-                                                         cmap_any_c="coolwarm", 
-                                                         cmap_gpc="coolwarm", 
-                                                         cmap_cpg="viridis", 
-                                                         min_quality=cfg.read_quality_filter_thresholds[0], 
-                                                         min_length=cfg.read_len_filter_thresholds[0], 
-                                                         min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
-                                                         min_position_valid_fraction=cfg.min_valid_fraction_positions_in_read_vs_ref,
-                                                         bins=None,
-                                                         sample_mapping=None, 
-                                                         save_path=pp_clustermap_dir, 
-                                                         sort_by='gpc', 
-                                                         deaminase=deaminase)
+            pass
         
-        # Switch the main adata moving forward to be the one with duplicates removed.
-        adata = adata_unique
-
-        #### Repeat on duplicate scrubbed anndata ###
-
+        #### Proceed with dedeuplicated preprocessed anndata ###
+        pp_dir = output_directory / "preprocessed"
         pp_dir = pp_dir / "deduplicated"
         pp_clustermap_dir = pp_dir / "06_clustermaps"
         pp_umap_dir = pp_dir / "07_umaps"
@@ -518,5 +528,7 @@ def spatial_adata(config_path):
             print(f"Spatial adata path: {spatial_adata_path}")
             safe_write_h5ad(adata, spatial_adata_path, compression='gzip', backup=True)
     ############################################### smftools spatial end ###############################################
+
+    add_or_update_column_in_csv(cfg.summary_file, "spatial_adata", spatial_adata_path)
 
     return adata, spatial_adata_path

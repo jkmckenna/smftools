@@ -1,4 +1,4 @@
-def binarize_on_Youden(adata, obs_column='Reference'):
+def binarize_on_Youden(adata, obs_column='Reference', output_layer_name='binarized_methylation'):
     """
     Binarize SMF values based on position thresholds determined by calculate_position_Youden.
 
@@ -42,4 +42,4 @@ def binarize_on_Youden(adata, obs_column='Reference'):
         binarized_methylation[cat_mask, :] = binarized_matrix
 
     # Store the binarized matrix in a new layer
-    adata.layers['binarized_methylation'] = binarized_methylation
+    adata.layers[output_layer_name] = binarized_methylation

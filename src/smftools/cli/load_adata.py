@@ -10,11 +10,10 @@ def load_adata(config_path):
         config_path (str): A string representing the file path to the experiment configuration csv file.
 
     Returns:
-        adata, adata_path, se_bam_files
+        adata, adata_path, se_bam_files, cfg
     """
-    from ..readwrite import make_dirs, safe_write_h5ad
+    from ..readwrite import make_dirs, safe_write_h5ad, add_or_update_column_in_csv
     from ..config import LoadExperimentConfig, ExperimentConfig
-    from ..informatics.discover_input_files import discover_input_files 
     from ..informatics.bam_functions import concatenate_fastqs_to_bam
     from ..informatics.pod5_functions import fast5_to_pod5
     from ..informatics.fasta_functions import subsample_fasta_from_bed
@@ -40,6 +39,10 @@ def load_adata(config_path):
 
     # Make initial output directory
     make_dirs([cfg.output_directory])
+
+    # Make a csv that contains experiment summary file paths
+    add_or_update_column_in_csv(cfg.summary_file, "experiment_name", cfg.experiment_name)
+    add_or_update_column_in_csv(cfg.summary_file, "config_path", config_path)
 
     h5_dir = cfg.output_directory / 'h5ads'
     raw_adata_path = h5_dir / f'{cfg.experiment_name}.h5ad.gz'
@@ -348,4 +351,6 @@ def load_adata(config_path):
         run_multiqc(cfg.split_path, mqc_dir)
     ########################################################################################################################
 
-    return raw_adata, raw_adata_path, se_bam_files
+    add_or_update_column_in_csv(cfg.summary_file, "load_adata", raw_adata_path)
+
+    return raw_adata, raw_adata_path, se_bam_files, cfg

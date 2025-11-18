@@ -1,6 +1,15 @@
 ## readwrite ##
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Union, Iterable
+
+from pathlib import Path
+from typing import Iterable, Sequence, Optional
+
+import warnings
+import pandas as pd
+import anndata as ad
 
 ######################################################################################################
 ## Datetime functionality
@@ -52,6 +61,70 @@ def make_dirs(directories: Union[str, Path, Iterable[Union[str, Path]]]) -> None
             p = p.parent
 
         p.mkdir(parents=True, exist_ok=True)
+
+def add_or_update_column_in_csv(
+    csv_path: str | Path,
+    column_name: str,
+    values,
+    index: bool = False,
+):
+    """
+    Add (or overwrite) a column in a CSV file.
+    If the CSV does not exist, create it containing only that column.
+
+    Parameters
+    ----------
+    csv_path : str | Path
+        Path to the CSV file.
+    column_name : str
+        Name of the column to add or update.
+    values : list | scalar | callable
+        - If list/Series: must match the number of rows.
+        - If scalar: broadcast to all rows (or single-row CSV if new file).
+        - If callable(df): function should return the column values based on df.
+    index : bool
+        Whether to write the pandas index into the CSV. Default False.
+
+    Returns
+    -------
+    pd.DataFrame : the updated DataFrame.
+    """
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Case 1 — CSV does not exist → create it
+    if not csv_path.exists():
+        if hasattr(values, "__len__") and not isinstance(values, str):
+            df = pd.DataFrame({column_name: list(values)})
+        else:
+            df = pd.DataFrame({column_name: [values]})
+        df.to_csv(csv_path, index=index)
+        return df
+
+    # Case 2 — CSV exists → load + modify
+    df = pd.read_csv(csv_path)
+
+    # If values is callable, call it with df
+    if callable(values):
+        values = values(df)
+
+    # Broadcast scalar
+    if not hasattr(values, "__len__") or isinstance(values, str):
+        df[column_name] = values
+        df.to_csv(csv_path, index=index)
+        return df
+
+    # Sequence case: lengths must match
+    if len(values) != len(df):
+        raise ValueError(
+            f"Length mismatch: CSV has {len(df)} rows "
+            f"but values has {len(values)} entries."
+        )
+
+    df[column_name] = list(values)
+    df.to_csv(csv_path, index=index)
+    return df
+
 ######################################################################################################
 
 ######################################################################################################
@@ -95,7 +168,6 @@ def adata_to_df(adata, layer=None):
 
     return df
 
-
 def save_matrix(matrix, save_name):
     """
     Input: A numpy matrix and a save_name
@@ -104,57 +176,154 @@ def save_matrix(matrix, save_name):
     import numpy as np
     np.savetxt(f'{save_name}.txt', matrix)
 
-def concatenate_h5ads(output_file, file_suffix='h5ad.gz', delete_inputs=True):
+def concatenate_h5ads(
+    output_path: str | Path,
+    *,
+    input_dir: str | Path | None = None,
+    csv_path: str | Path | None = None,
+    csv_column: str = "h5ad_path",
+    file_suffixes: Sequence[str] = (".h5ad", ".h5ad.gz"),
+    delete_inputs: bool = False,
+    restore_backups: bool = True,
+) -> Path:
     """
-    Concatenate all h5ad files in a directory and delete them after the final adata is written out.
-    Input: an output file path relative to the directory in which the function is called
-    """
-    import os
-    import anndata as ad
-    # Runtime warnings
-    import warnings
-    warnings.filterwarnings('ignore', category=UserWarning, module='anndata')
-    warnings.filterwarnings('ignore', category=FutureWarning, module='anndata')
-    
-    # List all files in the directory
-    files = os.listdir(os.getcwd())
-    # get current working directory
-    cwd = os.getcwd()
-    suffix = file_suffix
-    # Filter file names that contain the search string in their filename and keep them in a list
-    hdfs = [hdf for hdf in files if suffix in hdf]
-    # Sort file list by names and print the list of file names
-    hdfs.sort()
-    print('{0} sample files found: {1}'.format(len(hdfs), hdfs))
-    # Iterate over all of the hdf5 files and concatenate them.
-    final_adata = None
-    for hdf in hdfs:
-        print('{0}: Reading in {1} hdf5 file'.format(time_string(), hdf))
-        temp_adata = ad.read_h5ad(hdf)
-        if final_adata:
-            print('{0}: Concatenating final adata object with {1} hdf5 file'.format(time_string(), hdf))
-            final_adata = ad.concat([final_adata, temp_adata], join='outer', index_unique=None)
-        else:
-            print('{0}: Initializing final adata object with {1} hdf5 file'.format(time_string(), hdf))
-            final_adata = temp_adata
-    print('{0}: Writing final concatenated hdf5 file'.format(time_string()))
-    final_adata.write_h5ad(output_file, compression='gzip')
+    Concatenate multiple .h5ad files into one AnnData and write it safely.
 
-    # Delete the individual h5ad files and only keep the final concatenated file
-    if delete_inputs:
-        files = os.listdir(os.getcwd())
-        hdfs = [hdf for hdf in files if suffix in hdf]
-        if output_file in hdfs:
-            hdfs.remove(output_file)
-            # Iterate over the files and delete them
-            for hdf in hdfs:
-                try:
-                    os.remove(hdf)
-                    print(f"Deleted file: {hdf}")
-                except OSError as e:
-                    print(f"Error deleting file {hdf}: {e}")
+    Two input modes (choose ONE):
+      1) Directory mode: use all *.h5ad / *.h5ad.gz in `input_dir`.
+      2) CSV mode: use file paths from column `csv_column` in `csv_path`.
+
+    Parameters
+    ----------
+    output_path
+        Path to the final concatenated .h5ad (can be .h5ad or .h5ad.gz).
+    input_dir
+        Directory containing .h5ad files to concatenate. If None and csv_path
+        is also None, defaults to the current working directory.
+    csv_path
+        Path to a CSV containing file paths to concatenate (in column `csv_column`).
+    csv_column
+        Name of the column in the CSV containing .h5ad paths.
+    file_suffixes
+        Tuple of allowed suffixes (default: (".h5ad", ".h5ad.gz")).
+    delete_inputs
+        If True, delete the input .h5ad files after successful write of output.
+    restore_backups
+        Passed through to `safe_read_h5ad(restore_backups=...)`.
+
+    Returns
+    -------
+    Path
+        The path to the written concatenated .h5ad file.
+
+    Raises
+    ------
+    ValueError
+        If both `input_dir` and `csv_path` are provided, or none contain files.
+    FileNotFoundError
+        If specified CSV or directory does not exist.
+    """
+
+    # ------------------------------------------------------------------
+    # Setup and input resolution
+    # ------------------------------------------------------------------
+    output_path = Path(output_path)
+
+    if input_dir is not None and csv_path is not None:
+        raise ValueError("Provide either `input_dir` OR `csv_path`, not both.")
+
+    if csv_path is None:
+        # Directory mode
+        input_dir = Path(input_dir) if input_dir is not None else Path.cwd()
+        if not input_dir.exists():
+            raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
+        if not input_dir.is_dir():
+            raise ValueError(f"input_dir is not a directory: {input_dir}")
+
+        # collect all *.h5ad / *.h5ad.gz (or whatever file_suffixes specify)
+        suffixes_lower = tuple(s.lower() for s in file_suffixes)
+        h5_paths = sorted(
+            p for p in input_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in suffixes_lower
+        )
+
     else:
-        print('Keeping input files')
+        # CSV mode
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            raise FileNotFoundError(f"CSV path does not exist: {csv_path}")
+
+        df = pd.read_csv(csv_path, dtype=str)
+        if csv_column not in df.columns:
+            raise ValueError(
+                f"CSV {csv_path} must contain column '{csv_column}' with .h5ad paths."
+            )
+        paths = df[csv_column].dropna().astype(str).tolist()
+        if not paths:
+            raise ValueError(f"No non-empty paths in column '{csv_column}' of {csv_path}.")
+
+        h5_paths = [Path(p).expanduser() for p in paths]
+
+    if not h5_paths:
+        raise ValueError("No input .h5ad files found to concatenate.")
+
+    # Ensure directory for output exists
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Concatenate
+    # ------------------------------------------------------------------
+    warnings.filterwarnings("ignore", category=UserWarning, module="anndata")
+    warnings.filterwarnings("ignore", category=FutureWarning, module="anndata")
+
+    print(f"{time_string()}: Found {len(h5_paths)} input h5ad files:")
+    for p in h5_paths:
+        print(f"  - {p}")
+
+    final_adata: Optional[ad.AnnData] = None
+
+    for p in h5_paths:
+        print(f"{time_string()}: Reading {p}")
+        # use safe_read_h5ad; if you later add backups_path support, you can
+        # extend this signature to accept a mapping of p -> backups_path.
+        temp_adata = safe_read_h5ad(p, restore_backups=restore_backups)
+
+        if final_adata is None:
+            print(f"{time_string()}: Initializing final AnnData with {p}")
+            final_adata = temp_adata
+        else:
+            print(f"{time_string()}: Concatenating {p} into final AnnData")
+            final_adata = ad.concat(
+                [final_adata, temp_adata],
+                join="outer",
+                index_unique=None,
+            )
+
+    if final_adata is None:
+        raise RuntimeError("Unexpected: no AnnData objects loaded.")
+
+    print(f"{time_string()}: Writing concatenated AnnData to {output_path}")
+    safe_write_h5ad(final_adata, output_path, backup=restore_backups)
+
+    # ------------------------------------------------------------------
+    # Optional cleanup (delete inputs)
+    # ------------------------------------------------------------------
+    if delete_inputs:
+        out_resolved = output_path.resolve()
+        for p in h5_paths:
+            try:
+                # Don't delete the output file if it happens to be in the list
+                if p.resolve() == out_resolved:
+                    continue
+                if p.exists():
+                    p.unlink()
+                    print(f"Deleted input file: {p}")
+            except OSError as e:
+                print(f"Error deleting file {p}: {e}")
+    else:
+        print("Keeping input files.")
+
+    return output_path
 
 def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=None, verbose=True):
     """
