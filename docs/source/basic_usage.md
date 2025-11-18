@@ -1,6 +1,6 @@
 # Basic Usage
 
-## Informatics Module Usage
+## Load Usage
 
 Many use cases for smftools begin here. For most users, the call below will be sufficient to convert any raw SMF dataset from Nanopore/Illumina to an AnnData object:
 
@@ -13,7 +13,45 @@ This command takes a user passed config file handling:
     - Experiment info (SMF modality, sequencer type, barcoding kit if nanopore, sample sheet with metadata mapping)
     - Options to override default workflow parameters from smftools/config. Params are handled from default.yaml -> modality_type.yaml -> user passed config.csv.
 
-## Loading AnnData objects created by the informatics module
+## Preprocess Usage
+
+This command performs preprocessing on the anndata object. It automatically runs the load command under the hood if starting from raw data.
+
+```shell
+smftools preprocess "/Path_to_experiment_config.csv"
+```
+
+## Spatial Usage
+
+This command performs spatial analysis on the anndata object. It automatically runs the load command and preprocessing under the hood if they have not been already run.
+
+```shell
+smftools spatial "/Path_to_experiment_config.csv"
+```
+
+## HMM Usage
+
+This command performs hmm based feature annotation on the anndata object. It automatically runs the load command and preprocessing under the hood if they have not been already run.
+
+```shell
+smftools hmm "/Path_to_experiment_config.csv"
+```
+
+## Batch Usage
+
+This command performs batch processing of any of the above commands across multiple experiments. It takes in a tsv, txt, or csv of experiment specific config csvs.
+```shell
+smftools batch preprocess "/Path_to_experiment_config_path_list.csv"
+```
+
+## Concatenate Usage
+
+This command concatenates multiple h5ad files and saves them to a new output. The h5ads to concatenate are provided as a txt, tsv, or h5ad file of paths.
+```shell
+smftools concatenate output.h5ad "/Path_to_h5ad_path_list.csv"
+```
+
+## Reading AnnData objects created by smftools
 
 After creating an AnnData object holding your experiment's SMF data, you can load the AnnData object as so:
 
