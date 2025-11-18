@@ -1,3 +1,8 @@
+import shutil
+def check_executable_exists(cmd: str) -> bool:
+    """Return True if a command-line executable is available in PATH."""
+    return shutil.which(cmd) is not None
+
 def load_adata(config_path):
     """
     High-level function to call for converting raw sequencing data to an adata object. 
@@ -58,8 +63,32 @@ def load_adata(config_path):
         bam_qc_dir = cfg.output_directory / "bam_qc"
         mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
         mods = [mod_map[mod] for mod in cfg.mod_list]
+        if not check_executable_exists("dorado"):
+            raise RuntimeError(
+                "Error: 'dorado' is not installed or not in PATH. "
+                "Install from https://github.com/nanoporetech/dorado"
+            )
+        if not check_executable_exists("modkit"):
+            raise RuntimeError(
+                "Error: 'modkit' is not installed or not in PATH. "
+                "Install from https://github.com/nanoporetech/modkit"
+            )
     else:
         pass
+    
+    if not cfg.input_already_demuxed or cfg.aligner == "dorado":
+        if not check_executable_exists("dorado"):
+            raise RuntimeError(
+                "Error: 'dorado' is not installed or not in PATH. "
+                "Install from https://github.com/nanoporetech/dorado"
+            )
+
+    if cfg.aligner == "minimap2":
+        if not check_executable_exists("minimap2"):
+            raise RuntimeError(
+                "Error: 'minimap2' is not installed or not in PATH. "
+                "Install minimap2"
+            )
 
     # # Detect the input filetypes
     # If the input files are fast5 files, convert the files to a pod5 file before proceeding.

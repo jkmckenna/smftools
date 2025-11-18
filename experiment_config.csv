@@ -5,15 +5,10 @@ fasta,/path_to_fasta.fasta,Path to initial FASTA file,,str
 fasta_regions_of_interest,/path_to_bed.bed,Path to a bed file to subsample the fasta on.,,str 
 output_directory,/outputs,Directory to act as root for all analysis outputs,,str 
 experiment_name,,An experiment name for the final h5ad file,,str 
+model_dir,/path_to_dorado_model_dir,Path,,str 
 model,None,The dorado basecalling model to use,,str 
 barcode_kit,SQK-NBD114-24,The barcoding kit used for the experiment,,str 
 mapping_threshold,0.05,Minimum proportion of reads mapping to a reference to further use that reference (Ranges from 0-1 as a proportion of mapped reads),,float
-filter_threshold,0.8,Minimum probability to call a canonical base identity,,float
-m6A_threshold,0.8,Minimum probability to flag m6A as True,,float
-m5C_threshold,0.8,Minimum probability to flag m5C as True,,float
-hm5C_threshold,0.8,Minimum probability to flag hm5C as True,,float
 mod_list,[5mC_5hmC],Modified base names for Dorado,"""6mA"", ""5mC_5hmC""",list
 batch_size,4,number of samples to analyze at a time,,int
 conversion_types,[5mC],Types of modification types to use in conversion SMF,"5mC', '6mA'",list
-barcode_both_ends,TRUE,whether to require both ends of a read to be barcoded for demultiplexing,,bool
-trim,FALSE,whether to trim barcodes and adapters from reads during demultiplexing,,bool
