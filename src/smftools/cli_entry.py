@@ -116,7 +116,19 @@ def batch(task, config_table: Path, column: str, sep: str | None):
 
         # If table has no header or only one column, treat it as raw paths
         if df.shape[1] == 1 and column not in df.columns:
-            config_series = df.iloc[:, 0]
+            # re-read as headerless single-column list, so we don't drop the first path
+            try:
+                df = pd.read_csv(
+                    config_table,
+                    sep=sep,
+                    header=None,
+                    names=[column],
+                    dtype=str,
+                )
+            except Exception as e:
+                raise click.ClickException(f"Failed to read {config_table} as headerless list: {e}") from e
+
+            config_series = df[column]
         else:
             if column not in df.columns:
                 raise click.ClickException(

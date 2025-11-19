@@ -128,8 +128,10 @@ def load_adata(config_path):
 
     # Determine if the input data needs to be basecalled
     if cfg.input_type == "pod5":
+        print(f'Detected pod5 inputs: {cfg.input_files}')
         basecall = True
     elif cfg.input_type in ["bam"]:
+        print(f'Detected bam input: {cfg.input_files}')
         basecall = False
     else:
         print('Error, can not find input bam or pod5')
@@ -144,7 +146,7 @@ def load_adata(config_path):
         else:
             bam = cfg.output_directory / f"{model_basename}_canonical_basecalls"
     else:
-        bam_base = cfg.input_data_path.stem
+        bam_base = cfg.input_data_path.name
         bam = cfg.output_directory / bam_base
 
     # Generate path names for the unaligned, aligned, as well as the aligned/sorted bam.
@@ -173,7 +175,7 @@ def load_adata(config_path):
         fasta_basename = fasta.parent / fasta.stem
         converted_FASTA_basename = fasta_basename.with_name(fasta_basename.name + '_converted.fasta') 
         converted_FASTA = cfg.output_directory / converted_FASTA_basename
-        if 'converted.fa' in fasta:
+        if 'converted.fa' in fasta.name:
             print(f'{fasta} is already converted. Using existing converted FASTA.')
             converted_FASTA = fasta
         elif converted_FASTA.exists():
