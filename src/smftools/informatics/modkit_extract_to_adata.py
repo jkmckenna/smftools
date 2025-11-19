@@ -846,6 +846,7 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
 
     ohe_bases = ['A', 'C', 'G', 'T'] # ignore N bases for consensus
     ohe_layers = [f"{ohe_base}_binary_encoding" for ohe_base in ohe_bases]
+    final_adata.uns['References'] = {}
     for record in records_to_analyze:
         # Add FASTA sequence to the object
         sequence = record_seq_dict[record][0]
@@ -853,6 +854,7 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
         final_adata.var[f'{record}_top_strand_FASTA_base'] = list(sequence)
         final_adata.var[f'{record}_bottom_strand_FASTA_base'] = list(complement)
         final_adata.uns[f'{record}_FASTA_sequence'] = sequence
+        final_adata.uns['References'][f'{record}_FASTA_sequence'] = sequence
         # Add consensus sequence of samples mapped to the record to the object
         record_subset = final_adata[final_adata.obs['Reference'] == record]
         for strand in record_subset.obs['Strand'].cat.categories:

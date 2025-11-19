@@ -886,15 +886,19 @@ class ExperimentConfig:
                 # recognize multi-suffix cases like .fastq.gz or .fq.gz
                 if any(s in ['.pod5', '.p5'] for s in suffixes):
                     input_type = "pod5"
+                    input_files = [Path(input_data_path)]
                 elif any(s in ['.fast5', '.f5'] for s in suffixes):
                     input_type = "fast5"
+                    input_files = [Path(input_data_path)]
                 elif any(s in ['.fastq', '.fq'] for s in suffixes):
                     input_type = "fastq"
                     input_files = [Path(input_data_path)]
                 elif any(s in ['.bam'] for s in suffixes):
                     input_type = "bam"
+                    input_files = [Path(input_data_path)]
                 elif any(s in ['.h5ad', ".h5"] for s in suffixes):
                     input_type = "h5ad"
+                    input_files = [Path(input_data_path)]
                 else:
                     print("Error detecting input file type")              
 

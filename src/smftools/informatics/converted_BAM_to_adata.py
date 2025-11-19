@@ -98,10 +98,12 @@ def converted_BAM_to_adata(converted_FASTA,
     ## Process BAMs in Parallel
     final_adata = process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, h5_dir, num_threads, max_reference_length, device, deaminase_footprinting)
 
+    final_adata.uns['References'] = {}
     for chromosome, [seq, comp] in chromosome_FASTA_dict.items():
         final_adata.var[f'{chromosome}_top_strand_FASTA_base'] = list(seq)
         final_adata.var[f'{chromosome}_bottom_strand_FASTA_base'] = list(comp)
         final_adata.uns[f'{chromosome}_FASTA_sequence'] = seq
+        final_adata.uns['References'][f'{chromosome}_FASTA_sequence'] = seq
 
     final_adata.obs_names_make_unique()
     cols = final_adata.obs.columns
