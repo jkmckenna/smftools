@@ -3,7 +3,7 @@ from .basecalling import canoncall, modcall
 from .bed_functions import aligned_BAM_to_bed, _bed_to_bigwig, extract_read_lengths_from_bed, _plot_bed_histograms
 from .converted_BAM_to_adata import converted_BAM_to_adata
 from .fasta_functions import find_conversion_sites, generate_converted_FASTA, get_chromosome_lengths, get_native_references, index_fasta, subsample_fasta_from_bed
-from .h5ad_functions import add_demux_type_annotation
+from .h5ad_functions import add_demux_type_annotation, add_read_length_and_mapping_qc
 from .modkit_functions import extract_mods, make_modbed, modQC
 from .modkit_extract_to_adata import modkit_extract_to_adata
 from .ohe import one_hot_encode, one_hot_decode, ohe_layers_decode, ohe_batching

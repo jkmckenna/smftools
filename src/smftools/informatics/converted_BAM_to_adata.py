@@ -71,7 +71,6 @@ def converted_BAM_to_adata(converted_FASTA,
     tmp_dir = output_dir / 'tmp'
     final_adata = None
     final_adata_path = h5_dir / f'{experiment_name}.h5ad.gz'
-    backup_dir = h5_dir / experiment_name
 
     if final_adata_path.exists():
         print(f"{final_adata_path} already exists. Using existing AnnData object.")
@@ -119,10 +118,6 @@ def converted_BAM_to_adata(converted_FASTA,
         from .h5ad_functions import add_demux_type_annotation
         double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
         add_demux_type_annotation(final_adata, double_barcoded_reads)
-
-    ## Save Final AnnData
-    print(f"Saving AnnData to {final_adata_path}")
-    safe_write_h5ad(final_adata, final_adata_path, compression='gzip', backup=True, backup_dir=backup_dir)
 
     ## Delete intermediate h5ad files and temp directories
     if delete_intermediates:

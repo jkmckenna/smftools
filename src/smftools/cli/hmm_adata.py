@@ -27,7 +27,7 @@ def hmm_adata(config_path):
     date_str = datetime.today().strftime("%y%m%d")
 
     ############################################### smftools load start ###############################################
-    initial_adata, initial_adata_path, bam_files, cfg = load_adata(config_path)
+    adata, adata_path, cfg = load_adata(config_path)
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
     output_directory = Path(cfg.output_directory)  # Path to the output directory to make for the analysis. Necessary.
@@ -41,35 +41,32 @@ def hmm_adata(config_path):
     ############################################### smftools preprocess end ###############################################
 
     ############################################### smftools spatial start ###############################################
-    skip_spatial = True
-    if skip_spatial:
-        pp_dedup_spatial_adata = None
-        spatial_adata_basename = pp_dup_rem_adata_path.name.split(".")[0] + '_spatial.h5ad.gz'
-        pp_dedup_spatial_adata_path = pp_dup_rem_adata_path.parent / spatial_adata_basename
-    else:
-        pp_dedup_spatial_adata, pp_dedup_spatial_adata_path = spatial_adata(config_path)
+    spatial_ad, spatial_adata_path = spatial_adata(config_path)
     ############################################### smftools spatial end ###############################################
 
     ############################################### smftools hmm start ###############################################
-    # hmm adata
-    hmm_adata_basename = pp_dedup_spatial_adata_path.with_suffix("").name + '_hmm.h5ad.gz'
-    hmm_adata_path = pp_dedup_spatial_adata_path.parent / hmm_adata_basename
-
-    if pp_dedup_spatial_adata:
+    input_manager_df = pd.read_csv(cfg.summary_file)
+    initial_adata_path = Path(input_manager_df['load_adata'][0])
+    pp_adata_path = Path(input_manager_df['pp_adata'][0])
+    pp_dup_rem_adata_path = Path(input_manager_df['pp_dedup_adata'][0])
+    spatial_adata_path = Path(input_manager_df['spatial_adata'][0])
+    hmm_adata_path = Path(input_manager_df['hmm_adata'][0])
+    
+    if spatial_ad:
         # This happens on first run of the pipeline
-        adata = pp_dedup_spatial_adata
+        adata = spatial_ad
     else:
         # If an anndata is saved, check which stages of the anndata are available
         initial_version_available = initial_adata_path.exists()
         preprocessed_version_available = pp_adata_path.exists()
         preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists()
-        preprocessed_dedup_spatial_version_available = pp_dedup_spatial_adata_path.exists()
+        preprocessed_dedup_spatial_version_available = spatial_adata_path.exists()
         preprocessed_dedup_spatial_hmm_version_available = hmm_adata_path.exists()
 
         if cfg.force_redo_hmm_fit:
             print(f"Forcing redo of basic analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
             if preprocessed_dedup_spatial_version_available:
-                adata, load_report = safe_read_h5ad(pp_dedup_spatial_adata_path)
+                adata, load_report = safe_read_h5ad(spatial_adata_path)
             elif preprocessed_dup_removed_version_available:
                 adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
             elif initial_version_available:
@@ -80,7 +77,7 @@ def hmm_adata(config_path):
             return (None, hmm_adata_path)
         else:
             if preprocessed_dedup_spatial_version_available:
-                adata, load_report = safe_read_h5ad(pp_dedup_spatial_adata_path)
+                adata, load_report = safe_read_h5ad(spatial_adata_path)
             elif preprocessed_dup_removed_version_available:
                 adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
             elif initial_version_available:

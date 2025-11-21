@@ -31,9 +31,9 @@ def filter_reads_on_modification_thresholds(
     - Otherwise, computes the relevant per-read metrics per-reference in batches
       and writes them into adata.obs before filtering.
 
-    Parameters of interest (same semantics as your original function):
+    Parameters of interest :
       - gpc_thresholds, cpg_thresholds, any_c_thresholds, a_thresholds:
-          each should be [min, max] (floats 0..1) or None.
+          each should be [min, max] (floats 0..1) or None. Thresholds are inclusive.
       - use_other_c_as_background: require GpC/CpG > other_C background (if present).
       - min_valid_fraction_positions_in_read_vs_ref: minimum fraction of valid sites
           in the read vs reference (0..1). If None, this check is skipped.
@@ -283,15 +283,15 @@ def filter_reads_on_modification_thresholds(
             filtered = filtered[filtered.obs["GpC_to_other_C_mod_ratio"].astype(float) > 1]
         if lo is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_GpC_site_modified"].astype(float) > lo]
+            filtered = filtered[filtered.obs["Fraction_GpC_site_modified"].astype(float) >= lo]
             print(f"Removed {s0 - filtered.n_obs} reads below min GpC fraction {lo}")
         if hi is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_GpC_site_modified"].astype(float) < hi]
+            filtered = filtered[filtered.obs["Fraction_GpC_site_modified"].astype(float) <= hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max GpC fraction {hi}")
         if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_GpC_site_in_read_vs_reference" in filtered.obs.columns):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_GpC_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)]
+            filtered = filtered[filtered.obs["Valid_GpC_site_in_read_vs_reference"].astype(float) >= float(min_valid_fraction_positions_in_read_vs_ref)]
             print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid GpC site fraction vs ref")
 
     # CpG thresholds
@@ -301,15 +301,15 @@ def filter_reads_on_modification_thresholds(
             filtered = filtered[filtered.obs["CpG_to_other_C_mod_ratio"].astype(float) > 1]
         if lo is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_CpG_site_modified"].astype(float) > lo]
+            filtered = filtered[filtered.obs["Fraction_CpG_site_modified"].astype(float) >= lo]
             print(f"Removed {s0 - filtered.n_obs} reads below min CpG fraction {lo}")
         if hi is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_CpG_site_modified"].astype(float) < hi]
+            filtered = filtered[filtered.obs["Fraction_CpG_site_modified"].astype(float) <= hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max CpG fraction {hi}")
         if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_CpG_site_in_read_vs_reference" in filtered.obs.columns):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_CpG_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)]
+            filtered = filtered[filtered.obs["Valid_CpG_site_in_read_vs_reference"].astype(float) >= float(min_valid_fraction_positions_in_read_vs_ref)]
             print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid CpG site fraction vs ref")
 
     # any C thresholds
@@ -317,15 +317,15 @@ def filter_reads_on_modification_thresholds(
         lo, hi = _unpack_minmax(any_c_thresholds)
         if lo is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_any_C_site_modified"].astype(float) > lo]
+            filtered = filtered[filtered.obs["Fraction_any_C_site_modified"].astype(float) >= lo]
             print(f"Removed {s0 - filtered.n_obs} reads below min any-C fraction {lo}")
         if hi is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_any_C_site_modified"].astype(float) < hi]
+            filtered = filtered[filtered.obs["Fraction_any_C_site_modified"].astype(float) <= hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max any-C fraction {hi}")
         if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_any_C_site_in_read_vs_reference" in filtered.obs.columns):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_any_C_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)]
+            filtered = filtered[filtered.obs["Valid_any_C_site_in_read_vs_reference"].astype(float) >= float(min_valid_fraction_positions_in_read_vs_ref)]
             print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid any-C site fraction vs ref")
 
     # A thresholds
@@ -333,15 +333,15 @@ def filter_reads_on_modification_thresholds(
         lo, hi = _unpack_minmax(a_thresholds)
         if lo is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_A_site_modified"].astype(float) > lo]
+            filtered = filtered[filtered.obs["Fraction_A_site_modified"].astype(float) >= lo]
             print(f"Removed {s0 - filtered.n_obs} reads below min A fraction {lo}")
         if hi is not None:
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Fraction_A_site_modified"].astype(float) < hi]
+            filtered = filtered[filtered.obs["Fraction_A_site_modified"].astype(float) <= hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max A fraction {hi}")
         if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_A_site_in_read_vs_reference" in filtered.obs.columns):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_A_site_in_read_vs_reference"].astype(float) > float(min_valid_fraction_positions_in_read_vs_ref)]
+            filtered = filtered[filtered.obs["Valid_A_site_in_read_vs_reference"].astype(float) >= float(min_valid_fraction_positions_in_read_vs_ref)]
             print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid A site fraction vs ref")
 
     filtered = filtered.copy()
