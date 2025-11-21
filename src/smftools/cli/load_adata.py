@@ -1,7 +1,70 @@
 import shutil
+from pathlib import Path
+from typing import Union, Iterable
+
 def check_executable_exists(cmd: str) -> bool:
     """Return True if a command-line executable is available in PATH."""
     return shutil.which(cmd) is not None
+
+def delete_tsvs(
+    tsv_dir: Union[str, Path, Iterable[str], None],
+    *,
+    dry_run: bool = False,
+    verbose: bool = True,
+):
+    """
+    Delete intermediate tsv files.
+
+    Parameters
+    ----------
+
+    tsv_dir : str | Path | None
+        Path to a directory to remove recursively (e.g. a tsv dir created earlier).
+    dry_run : bool
+        If True, print what *would* be removed but do not actually delete.
+    verbose : bool
+        Print progress / warnings.
+    """
+    # Helper: remove a single file path (Path-like or string)
+    def _maybe_unlink(p: Path):
+        if not p.exists():
+            if verbose:
+                print(f"[skip] not found: {p}")
+            return
+        if not p.is_file():
+            if verbose:
+                print(f"[skip] not a file: {p}")
+            return
+        if dry_run:
+            print(f"[dry-run] would remove file: {p}")
+            return
+        try:
+            p.unlink()
+            if verbose:
+                print(f"Removed file: {p}")
+        except Exception as e:
+            print(f"[error] failed to remove file {p}: {e}")
+
+    # Remove tmp_dir recursively (if provided)
+    if tsv_dir is not None:
+        td = Path(tsv_dir)
+        if not td.exists():
+            if verbose:
+                print(f"[skip] tsv_dir not found: {td}")
+        else:
+            if not td.is_dir():
+                if verbose:
+                    print(f"[skip] tsv_dir is not a directory: {td}")
+            else:
+                if dry_run:
+                    print(f"[dry-run] would remove directory tree: {td}")
+                else:
+                    try:
+                        shutil.rmtree(td)
+                        if verbose:
+                            print(f"Removed directory tree: {td}")
+                    except Exception as e:
+                        print(f"[error] failed to remove tmp dir {td}: {e}")
 
 def load_adata(config_path):
     """
@@ -48,9 +111,54 @@ def load_adata(config_path):
     # Make a csv that contains experiment summary file paths
     add_or_update_column_in_csv(cfg.summary_file, "experiment_name", cfg.experiment_name)
     add_or_update_column_in_csv(cfg.summary_file, "config_path", config_path)
+    add_or_update_column_in_csv(cfg.summary_file, "input_data_path", cfg.input_data_path)
+    add_or_update_column_in_csv(cfg.summary_file, "input_files", cfg.input_files)
 
+    # Initial h5ad file naming
     h5_dir = cfg.output_directory / 'h5ads'
     raw_adata_path = h5_dir / f'{cfg.experiment_name}.h5ad.gz'
+
+    # Preprocessed adata path info
+    pp_adata_basename = raw_adata_path.name.split(".")[0] + '_preprocessed.h5ad.gz'
+    pp_adata_path = raw_adata_path.parent / pp_adata_basename
+
+    # Preprocessed duplicate removed adata path info
+    pp_dup_rem_adata_basename = pp_adata_path.name.split(".")[0] + '_duplicates_removed.h5ad.gz'
+    pp_dup_rem_adata_path = pp_adata_path.parent / pp_dup_rem_adata_basename
+
+    # Preprocessed duplicate removed adata with basic analyses appended path info
+    spatial_adata_basename = pp_dup_rem_adata_path.name.split(".")[0] + '_spatial.h5ad.gz'
+    spatial_adata_path = pp_dup_rem_adata_path.parent / spatial_adata_basename
+
+    # hmm adata
+    hmm_adata_basename = spatial_adata_path.with_suffix("").name + '_hmm.h5ad.gz'
+    hmm_adata_path = spatial_adata_path.parent / hmm_adata_basename
+
+    add_or_update_column_in_csv(cfg.summary_file, "load_adata", raw_adata_path)
+    add_or_update_column_in_csv(cfg.summary_file, "pp_adata", pp_adata_path)
+    add_or_update_column_in_csv(cfg.summary_file, "pp_dedup_adata", pp_dup_rem_adata_path)
+    add_or_update_column_in_csv(cfg.summary_file, "spatial_adata", spatial_adata_path)
+    add_or_update_column_in_csv(cfg.summary_file, "hmm_adata", hmm_adata_path)
+
+    if cfg.force_redo_load_adata:
+        pass
+    elif hmm_adata_path.exists():
+        print(f"HMM AnnData already exists: {hmm_adata_path}\n Skipping smftools load")
+        return None, hmm_adata_path, cfg
+    elif spatial_adata_path.exists():
+        print(f"Spatial AnnData already exists: {spatial_adata_path}\n Skipping smftools load")
+        return None, spatial_adata_path, cfg
+    elif pp_dup_rem_adata_path.exists():
+        print(f"Preprocessed deduplicated AnnData already exists: {pp_dup_rem_adata_path}\n Skipping smftools load")
+        return None, pp_dup_rem_adata_path, cfg
+    elif pp_adata_path.exists():
+        print(f"Preprocessed Anndata already exists: {pp_adata_path}\n Skipping smftools load")
+        return None, pp_adata_path, cfg
+    elif raw_adata_path.exists():
+        print(f"Anndata from smftools load already exists: {raw_adata_path}\n Skipping smftools load")
+        return None, raw_adata_path, cfg
+    else:
+        pass
 
     # Naming of the demultiplexed output directory
     double_barcoded_path = cfg.split_path / "both_ends_barcoded"
@@ -59,7 +167,9 @@ def load_adata(config_path):
     # Direct methylation detection SMF specific parameters
     if cfg.smf_modality == 'direct':
         mod_bed_dir = cfg.output_directory / "mod_beds"
+        add_or_update_column_in_csv(cfg.summary_file, "mod_bed_dir", mod_bed_dir)
         mod_tsv_dir = cfg.output_directory / "mod_tsvs"
+        add_or_update_column_in_csv(cfg.summary_file, "mod_tsv_dir", mod_tsv_dir)
         bam_qc_dir = cfg.output_directory / "bam_qc"
         mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
         mods = [mod_map[mod] for mod in cfg.mod_list]
@@ -95,28 +205,33 @@ def load_adata(config_path):
     if cfg.input_type == "fast5":
         # take the input directory of fast5 files and write out a single pod5 file into the output directory.
         output_pod5 = cfg.output_directory / 'FAST5s_to_POD5.pod5'
-        print(f'Input directory contains fast5 files, converting them and concatenating into a single pod5 file in the {output_pod5}')
-        fast5_to_pod5(cfg.input_data_path, output_pod5)
+        if output_pod5.exists():
+            pass
+        else:
+            print(f'Input directory contains fast5 files, converting them and concatenating into a single pod5 file in the {output_pod5}')
+            fast5_to_pod5(cfg.input_data_path, output_pod5)
         # Reassign the pod5_dir variable to point to the new pod5 file.
         cfg.input_data_path = output_pod5
         cfg.input_type == "pod5"
     # If the input is a fastq or a directory of fastqs, concatenate them into an unaligned BAM and save the barcode
     elif cfg.input_type == "fastq":
         # Output file for FASTQ concatenation.
-        output_bam = cfg.output_directory / 'FASTQs_concatenated_into_BAM.bam'
-
-        summary = concatenate_fastqs_to_bam(
-            cfg.input_files,
-            output_bam,
-            barcode_tag='BC',
-            gzip_suffixes=('.gz','.gzip'),
-            barcode_map=cfg.fastq_barcode_map,
-            add_read_group=True,
-            rg_sample_field=None,
-            progress=False,
-            auto_pair=cfg.fastq_auto_pairing)
-        
-        print(f"Found the following barcodes: {summary['barcodes']}")
+        output_bam = cfg.output_directory / 'canonical_basecalls.bam'
+        if output_bam.exists():
+            pass
+        else:
+            summary = concatenate_fastqs_to_bam(
+                cfg.input_files,
+                output_bam,
+                barcode_tag='BC',
+                gzip_suffixes=('.gz','.gzip'),
+                barcode_map=cfg.fastq_barcode_map,
+                add_read_group=True,
+                rg_sample_field=None,
+                progress=False,
+                auto_pair=cfg.fastq_auto_pairing)
+            
+            print(f"Found the following barcodes: {summary['barcodes']}")
 
         # Set the input data path to the concatenated BAM.
         cfg.input_data_path = output_bam
@@ -125,6 +240,8 @@ def load_adata(config_path):
         pass
     else:
         pass
+    
+    add_or_update_column_in_csv(cfg.summary_file, "input_data_path", cfg.input_data_path)
 
     # Determine if the input data needs to be basecalled
     if cfg.input_type == "pod5":
@@ -151,10 +268,14 @@ def load_adata(config_path):
 
     # Generate path names for the unaligned, aligned, as well as the aligned/sorted bam.
     unaligned_output = bam.with_suffix(cfg.bam_suffix)
-    aligned_BAM = bam.with_name(bam.stem + "_aligned")
+    aligned_BAM = cfg.output_directory / (bam.stem + "_aligned") # doing this allows specifying an input bam in a seperate directory as the aligned output bams
     aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
-    aligned_sorted_BAM =aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
+    aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
     aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
+
+    add_or_update_column_in_csv(cfg.summary_file, "basecalled_bam", unaligned_output)
+    add_or_update_column_in_csv(cfg.summary_file, "aligned_bam", aligned_output)
+    add_or_update_column_in_csv(cfg.summary_file, "sorted_bam", aligned_sorted_output)
     ########################################################################################################################
 
     ################################### 2) FASTA Handling ###################################
@@ -184,6 +305,8 @@ def load_adata(config_path):
             generate_converted_FASTA(fasta, cfg.conversion_types, cfg.strands, converted_FASTA)
         fasta = converted_FASTA
 
+    add_or_update_column_in_csv(cfg.summary_file, "fasta", fasta)
+
     # Make a FAI and .chrom.names file for the fasta
     get_chromosome_lengths(fasta)
     ########################################################################################################################
@@ -192,7 +315,9 @@ def load_adata(config_path):
     from ..informatics.basecalling import modcall, canoncall
     # 1) Basecall using dorado
     if basecall and cfg.sequencer == 'ont':
-        if unaligned_output.exists():
+        if aligned_sorted_output.exists():
+            print(f'{aligned_sorted_output} already exists. Using existing basecalled, aligned, sorted BAM.')
+        elif unaligned_output.exists():
             print(f'{unaligned_output} already exists. Using existing basecalled BAM.')
         elif cfg.smf_modality != 'direct':
             canoncall(str(cfg.model_dir), cfg.model, str(cfg.input_data_path), cfg.barcode_kit, str(bam), cfg.bam_suffix, cfg.barcode_both_ends, cfg.trim, cfg.device)
@@ -208,17 +333,20 @@ def load_adata(config_path):
     from ..informatics.bam_functions import align_and_sort_BAM
     from ..informatics.bed_functions import aligned_BAM_to_bed
     # 3) Align the BAM to the reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
-    if aligned_output.exists() and aligned_sorted_output.exists():
+    if aligned_sorted_output.exists():
         print(f'{aligned_sorted_output} already exists. Using existing aligned/sorted BAM.')
     else:
         align_and_sort_BAM(fasta, unaligned_output, cfg.bam_suffix, cfg.output_directory, cfg.make_bigwigs, cfg.threads, cfg.aligner, cfg.aligner_args)
+        # Deleted the unsorted aligned output
+        aligned_output.unlink()
 
-    # Make beds and provide basic histograms
-    bed_dir = cfg.output_directory / 'beds'
-    if bed_dir.is_dir():
-        print(f'{bed_dir} already exists. Skipping BAM -> BED conversion for {aligned_sorted_output}')
-    else:
-        aligned_BAM_to_bed(aligned_output, cfg.output_directory, fasta, cfg.make_bigwigs, cfg.threads)
+    if cfg.make_beds:
+        # Make beds and provide basic histograms
+        bed_dir = cfg.output_directory / 'beds'
+        if bed_dir.is_dir():
+            print(f'{bed_dir} already exists. Skipping BAM -> BED conversion for {aligned_sorted_output}')
+        else:
+            aligned_BAM_to_bed(aligned_sorted_output, cfg.output_directory, fasta, cfg.make_bigwigs, cfg.threads)
     ########################################################################################################################
 
     ################################### 5) Demultiplexing ######################################################################
@@ -228,18 +356,23 @@ def load_adata(config_path):
         if cfg.split_path.is_dir():
             print(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
 
-            bam_files = sorted(
+            all_bam_files = sorted(
                 p for p in cfg.split_path.iterdir()
                 if p.is_file()
                 and p.suffix == cfg.bam_suffix
-                and "unclassified" not in p.name
             )
+            unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
+            bam_files = [p for p in all_bam_files if "unclassified" not in p.name]
+
         else:
             make_dirs([cfg.split_path])
-            bam_files = split_and_index_BAM(aligned_sorted_BAM, 
+            all_bam_files = split_and_index_BAM(aligned_sorted_BAM, 
                                 cfg.split_path, 
                                 cfg.bam_suffix)
             
+            unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
+            bam_files = sorted(p for p in all_bam_files if "unclassified" not in p.name)
+
         se_bam_files = bam_files
         bam_dir = cfg.split_path
             
@@ -247,15 +380,16 @@ def load_adata(config_path):
         if single_barcoded_path.is_dir():
             print(f"{single_barcoded_path} already exists. Using existing single ended demultiplexed BAMs.")
 
-            se_bam_files = sorted(
+            all_se_bam_files = sorted(
                 p for p in single_barcoded_path.iterdir()
                 if p.is_file()
                 and p.suffix == cfg.bam_suffix
-                and "unclassified" not in p.name
             )  
+            unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
+            se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
         else:
             make_dirs([cfg.split_path, single_barcoded_path])          
-            se_bam_files = demux_and_index_BAM(aligned_sorted_BAM, 
+            all_se_bam_files = demux_and_index_BAM(aligned_sorted_BAM, 
                                             single_barcoded_path, 
                                             cfg.bam_suffix, 
                                             cfg.barcode_kit, 
@@ -263,18 +397,22 @@ def load_adata(config_path):
                                             cfg.trim, 
                                             cfg.threads)
             
+            unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
+            se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
+            
         if double_barcoded_path.is_dir():
             print(f"{double_barcoded_path} already exists. Using existing double ended demultiplexed BAMs.")
 
-            de_bam_files = sorted(
+            all_de_bam_files = sorted(
                 p for p in double_barcoded_path.iterdir()
                 if p.is_file()
                 and p.suffix == cfg.bam_suffix
-                and "unclassified" not in p.name
             )  
+            unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
+            de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
         else:      
             make_dirs([cfg.split_path, double_barcoded_path])       
-            de_bam_files = demux_and_index_BAM(aligned_sorted_BAM, 
+            all_de_bam_files = demux_and_index_BAM(aligned_sorted_BAM, 
                                             double_barcoded_path, 
                                             cfg.bam_suffix, 
                                             cfg.barcode_kit, 
@@ -282,16 +420,23 @@ def load_adata(config_path):
                                             cfg.trim, 
                                             cfg.threads)
             
+            unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
+            de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
+            
         bam_files = se_bam_files + de_bam_files
+        unclassified_bams = unclassified_se_bams + unclassified_de_bams
         bam_dir = single_barcoded_path
 
-    # Make beds and provide basic histograms
-    bed_dir = cfg.split_path / 'beds'
-    if bed_dir.is_dir():
-        print(f'{bed_dir} already exists. Skipping BAM -> BED conversion for demultiplexed bams')
-    else:
-        for bam in bam_files:
-            aligned_BAM_to_bed(bam, cfg.split_path, fasta, cfg.make_bigwigs, cfg.threads)
+    add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
+
+    if cfg.make_beds:
+        # Make beds and provide basic histograms
+        bed_dir = cfg.split_path / 'beds'
+        if bed_dir.is_dir():
+            print(f'{bed_dir} already exists. Skipping BAM -> BED conversion for demultiplexed bams')
+        else:
+            for bam in bam_files:
+                aligned_BAM_to_bed(bam, cfg.split_path, fasta, cfg.make_bigwigs, cfg.threads)
     ########################################################################################################################
 
     ################################### 6) SAMTools based BAM QC ######################################################################
@@ -355,7 +500,6 @@ def load_adata(config_path):
                          threads=cfg.threads) # Extract methylations calls for split BAM files into split TSV files
             
         from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
-
         #6 Load the modification data from TSVs into an adata object
         raw_adata, raw_adata_path = modkit_extract_to_adata(fasta, 
                                                                 bam_dir, 
@@ -369,7 +513,25 @@ def load_adata(config_path):
                                                                 cfg.delete_batch_hdfs, 
                                                                 cfg.threads,
                                                                 double_barcoded_path)
+        if cfg.delete_intermediate_tsvs:
+            delete_tsvs(mod_tsv_dir)
 
+    ########################################################################################################################
+
+    ############################################### Add basic read length, read quality, mapping quality stats ###############################################
+    from ..informatics.h5ad_functions import add_read_length_and_mapping_qc
+    from ..informatics.bam_functions import extract_read_features_from_bam  
+    add_read_length_and_mapping_qc(raw_adata, se_bam_files, 
+                                   extract_read_features_from_bam_callable=extract_read_features_from_bam, 
+                                   bypass=cfg.bypass_add_read_length_and_mapping_qc,
+                                   force_redo=cfg.force_redo_add_read_length_and_mapping_qc)
+
+    raw_adata.obs['Raw_modification_signal'] =  np.nansum(raw_adata.X, axis=1)
+    ########################################################################################################################
+
+    ############################################### Save final adata ###############################################
+    print(f"Saving AnnData to {raw_adata_path}")
+    safe_write_h5ad(raw_adata, raw_adata_path, compression='gzip', backup=True)
     ########################################################################################################################
 
     ############################################### MultiQC HTML Report ###############################################
@@ -382,6 +544,21 @@ def load_adata(config_path):
         run_multiqc(cfg.split_path, mqc_dir)
     ########################################################################################################################
 
-    add_or_update_column_in_csv(cfg.summary_file, "load_adata", raw_adata_path)
+    ############################################### delete intermediate BAM files ###############################################
+    if cfg.delete_intermediate_bams:
+        # delete aligned and sorted bam
+        aligned_sorted_output.unlink()
+        bai = aligned_sorted_output.parent / (aligned_sorted_output.name + '.bai')
+        bai.unlink()
+        # delete the demultiplexed bams. Keep the demultiplexing summary files and directories to faciliate demultiplexing in the future with these files
+        for bam in bam_files:
+            bai = bam.parent / (bam.name + '.bai')
+            bam.unlink()
+            bai.unlink()
+        for bam in unclassified_bams:
+            bai = bam.parent / (bam.name + '.bai')
+            bam.unlink()
+            bai.unlink()            
+    ########################################################################################################################
 
-    return raw_adata, raw_adata_path, se_bam_files, cfg
+    return raw_adata, raw_adata_path, cfg

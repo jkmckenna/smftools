@@ -4,6 +4,9 @@ from .bam_functions import count_aligned_reads
 import pandas as pd
 from tqdm import tqdm
 import numpy as np
+from pathlib import Path
+from typing import Union, Iterable, Optional
+import shutil
 
 def filter_bam_records(bam, mapping_threshold):
     """Processes a single BAM file, counts reads, and determines records to analyze."""
@@ -333,6 +336,95 @@ def parallel_extract_stranded_methylation(dict_list, dict_to_skip, max_reference
         ):
             dict_list[dict_index][record][sample] = processed_data
     return dict_list
+
+def delete_intermediate_h5ads_and_tmpdir(
+    h5_dir: Union[str, Path, Iterable[str], None],
+    tmp_dir: Optional[Union[str, Path]] = None,
+    *,
+    dry_run: bool = False,
+    verbose: bool = True,
+):
+    """
+    Delete intermediate .h5ad files and a temporary directory.
+
+    Parameters
+    ----------
+    h5_dir : str | Path | iterable[str] | None
+        If a directory path is given, all files directly inside it will be considered.
+        If an iterable of file paths is given, those files will be considered.
+        Only files ending with '.h5ad' (and not ending with '.gz') are removed.
+    tmp_dir : str | Path | None
+        Path to a directory to remove recursively (e.g. a temp dir created earlier).
+    dry_run : bool
+        If True, print what *would* be removed but do not actually delete.
+    verbose : bool
+        Print progress / warnings.
+    """
+    # Helper: remove a single file path (Path-like or string)
+    def _maybe_unlink(p: Path):
+        if not p.exists():
+            if verbose:
+                print(f"[skip] not found: {p}")
+            return
+        if not p.is_file():
+            if verbose:
+                print(f"[skip] not a file: {p}")
+            return
+        if dry_run:
+            print(f"[dry-run] would remove file: {p}")
+            return
+        try:
+            p.unlink()
+            if verbose:
+                print(f"Removed file: {p}")
+        except Exception as e:
+            print(f"[error] failed to remove file {p}: {e}")
+
+    # Handle h5_dir input (directory OR iterable of file paths)
+    if h5_dir is not None:
+        # If it's a path to a directory, iterate its children
+        if isinstance(h5_dir, (str, Path)) and Path(h5_dir).is_dir():
+            dpath = Path(h5_dir)
+            for p in dpath.iterdir():
+                # only target top-level files (not recursing); require '.h5ad' suffix and exclude gz
+                name = p.name.lower()
+                if name.endswith(".h5ad") and not name.endswith(".gz"):
+                    _maybe_unlink(p)
+                else:
+                    if verbose:
+                        # optional: comment this out if too noisy
+                        print(f"[skip] not matching pattern: {p.name}")
+        else:
+            # treat as iterable of file paths
+            for f in h5_dir:
+                p = Path(f)
+                name = p.name.lower()
+                if name.endswith(".h5ad") and not name.endswith(".gz"):
+                    _maybe_unlink(p)
+                else:
+                    if verbose:
+                        print(f"[skip] not matching pattern or not a file: {p}")
+
+    # Remove tmp_dir recursively (if provided)
+    if tmp_dir is not None:
+        td = Path(tmp_dir)
+        if not td.exists():
+            if verbose:
+                print(f"[skip] tmp_dir not found: {td}")
+        else:
+            if not td.is_dir():
+                if verbose:
+                    print(f"[skip] tmp_dir is not a directory: {td}")
+            else:
+                if dry_run:
+                    print(f"[dry-run] would remove directory tree: {td}")
+                else:
+                    try:
+                        shutil.rmtree(td)
+                        if verbose:
+                            print(f"Removed directory tree: {td}")
+                    except Exception as e:
+                        print(f"[error] failed to remove tmp dir {td}: {e}")
 
 def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapping_threshold, experiment_name, mods, batch_size, mod_tsv_dir, delete_batch_hdfs=False, threads=None, double_barcoded_path = None):
     """
@@ -815,8 +907,7 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
             gc.collect()
 
     # Iterate over all of the batched hdf5 files and concatenate them.
-    os.chdir(h5_dir)
-    files = os.listdir(h5_dir)        
+    files = h5_dir.iterdir()       
     # Filter file names that contain the search string in their filename and keep them in a list
     hdfs = [hdf for hdf in files if 'hdf5.h5ad' in hdf and hdf != final_hdf]
     combined_hdfs = [hdf for hdf in hdfs if "combined" in hdf]
@@ -827,7 +918,7 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
     # Sort file list by names and print the list of file names
     hdfs.sort()
     print('{0} sample files found: {1}'.format(len(hdfs), hdfs))
-    hdf_paths = [os.path.join(h5_dir, hd5) for hd5 in hdfs]
+    hdf_paths = [h5_dir / hd5 for hd5 in hdfs]
     final_adata = None
     for hdf_index, hdf in enumerate(hdf_paths):
         print('{0}: Reading in {1} hdf5 file'.format(readwrite.time_string(), hdfs[hdf_index]))
@@ -878,22 +969,8 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
         double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
         add_demux_type_annotation(final_adata, double_barcoded_reads)
 
-    ## Save Final AnnData
-    print(f"Saving AnnData to {final_adata_path}")
-    backup_dir= final_adata_path.parent / experiment_name
-    safe_write_h5ad(final_adata, final_adata_path, compression='gzip', backup=True, backup_dir=backup_dir)
-
     # Delete the individual h5ad files and only keep the final concatenated file
     if delete_batch_hdfs:
-        files = h5_dir.iterdir()
-        hdfs_to_delete = [hdf for hdf in files if 'hdf5.h5ad' in hdf.name and hdf != final_hdf]
-        hdf_paths_to_delete = [h5_dir / hdf for hdf in hdfs_to_delete]
-        # Iterate over the files and delete them
-        for hdf in hdf_paths_to_delete:
-            try:
-                os.remove(str(hdf))
-                print(f"Deleted file: {hdf}")
-            except OSError as e:
-                print(f"Error deleting file {hdf}: {e}")
+        delete_intermediate_h5ads_and_tmpdir(h5_dir, tmp_dir)
 
     return final_adata, final_adata_path

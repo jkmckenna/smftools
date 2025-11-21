@@ -21,6 +21,8 @@ fastq_barcode_map: null # For FASTQ files, an optional map of file paths to barc
 fastq_auto_pairing: True # For FASTQ files, attempt to find read pair files automatically.
 input_already_demuxed: False # If the input files are already demultiplexed.
 delete_intermediate_hdfs: True # Whether to delete the intermediate hdfs from the conversion/deamination workflows.
+delete_intermediate_bams: True # Whether to delete intermediate BAM files.
+delete_intermediate_tsvs: True # Whether to delete intermediate TSV files.
 
 # Sequencing modality and general experiment params
 smf_modality: 'conversion' # conversion, deaminase, direct
@@ -78,6 +80,7 @@ aligner_args:
 
 # Sorted BAM and BED specific handling
 make_bigwigs: False # Whether to make coverage bigwigs
+make_beds: False # Whether to make beds from the aligned bams
 
 # Nanopore specific demultiplexing
 barcode_both_ends: False # dorado demultiplexing
@@ -94,13 +97,13 @@ read_coord_filter:
  - null
  - null
 read_len_filter_thresholds:
-  - 200
+  - 100
   - null
 read_len_to_ref_ratio_filter_thresholds:
-  - 0.8
+  - 0.5
   - null
 read_quality_filter_thresholds:
-  - 20
+  - 15
   - null
 read_mapping_quality_filter_thresholds:
   - null
@@ -120,7 +123,7 @@ read_mod_filtering_a_thresholds:
   - 0.025
   - 0.975
 read_mod_filtering_use_other_c_as_background: False
-min_valid_fraction_positions_in_read_vs_ref: 0.8
+min_valid_fraction_positions_in_read_vs_ref: 0.5
 
 # Duplicate detection params
 duplicate_detection_site_types: # Site types to consider for duplicate detection workflow
@@ -137,7 +140,8 @@ duplicate_detection_do_hierarchical: True # Whether to follow up fwd/rev lexicog
 duplicate_detection_hierarchical_linkage: "average" # Method for hierarchical clustering distance calculation
 duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkage based duplicate detection.
 
-# Complexity analysis params
+# Position QC params
+position_max_nan_threshold: 0.1 # The maximum amount of nans to tolerate in a column
 
 ######## smftools analyze params #########
 # Basic Analysis - QC Plotting params
@@ -213,6 +217,9 @@ hmm_feature_sets:
       large_accessible_patch: [110, inf]
 hmm_merge_layer_features:
   - [null, 80]
+
+# Pipeline control flow - load adata
+force_redo_load_adata: False # Whether to perform load adata command from start
 
 # Pipeline control flow - Preprocessing and QC
 force_redo_preprocessing: False # Whether to force redo the entire preprocessing workflow from the initial raw anndata.

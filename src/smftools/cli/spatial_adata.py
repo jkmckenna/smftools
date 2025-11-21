@@ -26,7 +26,7 @@ def spatial_adata(config_path):
     date_str = datetime.today().strftime("%y%m%d")
 
     ############################################### smftools load start ###############################################
-    initial_adata, initial_adata_path, bam_files, cfg = load_adata(config_path)
+    adata, adata_path, cfg = load_adata(config_path)
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
     output_directory = Path(cfg.output_directory)  # Path to the output directory to make for the analysis. Necessary.
@@ -39,9 +39,12 @@ def spatial_adata(config_path):
     ############################################### smftools preprocess end ###############################################
 
     ############################################### smftools spatial start ###############################################
-    # Preprocessed duplicate removed adata with basic analyses appended path info
-    spatial_adata_basename = pp_dup_rem_adata_path.name.split(".")[0] + '_spatial.h5ad.gz'
-    spatial_adata_path = pp_dup_rem_adata_path.parent / spatial_adata_basename
+    input_manager_df = pd.read_csv(cfg.summary_file)
+    initial_adata_path = Path(input_manager_df['load_adata'][0])
+    pp_adata_path = Path(input_manager_df['pp_adata'][0])
+    pp_dup_rem_adata_path = Path(input_manager_df['pp_dedup_adata'][0])
+    spatial_adata_path = Path(input_manager_df['spatial_adata'][0])
+    hmm_adata_path = Path(input_manager_df['hmm_adata'][0])
 
     if pp_adata and pp_dedup_adata:
         # This happens on first run of the preprocessing pipeline
@@ -55,6 +58,7 @@ def spatial_adata(config_path):
         preprocessed_version_available = pp_adata_path.exists()
         preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists()
         preprocessed_dedup_spatial_version_available = spatial_adata_path.exists()
+        hmm_version_available = hmm_adata_path.exists()
 
         if cfg.force_redo_basic_analyses:
             print(f"Forcing redo of basic analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
@@ -94,9 +98,9 @@ def spatial_adata(config_path):
         references = adata.obs[cfg.reference_column].cat.categories
 
         ######### Clustermaps #########
+        pp_dir = output_directory / "preprocessed"
 
-        if adata_version in ['initial', 'pp'] or first_pp_run:
-            pp_dir = output_directory / "preprocessed"
+        if preprocessed_version_available:
             pp_clustermap_dir = pp_dir / "06_clustermaps"
 
             if pp_clustermap_dir.is_dir():
@@ -104,7 +108,13 @@ def spatial_adata(config_path):
             else:
                 from ..plotting import combined_raw_clustermap
                 make_dirs([pp_dir, pp_clustermap_dir])
-                clustermap_results = combined_raw_clustermap(adata, 
+
+                if not first_pp_run:
+                    pp_adata, load_report = safe_read_h5ad(pp_adata_path)
+                else:
+                    pp_adata = adata
+                
+                clustermap_results = combined_raw_clustermap(pp_adata, 
                                                             sample_col=cfg.sample_name_col_for_plotting, 
                                                             reference_col=cfg.reference_column,
                                                             layer_any_c=cfg.layer_for_clustermap_plotting, 
@@ -125,13 +135,12 @@ def spatial_adata(config_path):
             if first_pp_run:
                 adata = adata_unique
             else:
-                # Break if the only versions available are the initial or pp.
-                return None, None
+                pass
+
         else:
             pass
         
         #### Proceed with dedeuplicated preprocessed anndata ###
-        pp_dir = output_directory / "preprocessed"
         pp_dir = pp_dir / "deduplicated"
         pp_clustermap_dir = pp_dir / "06_clustermaps"
         pp_umap_dir = pp_dir / "07_umaps"
@@ -180,7 +189,7 @@ def spatial_adata(config_path):
 
             # Plotting UMAP
             sc.settings.figdir = pp_umap_dir
-            umap_layers = ['leiden', cfg.sample_name_col_for_plotting]
+            umap_layers = ['leiden', cfg.sample_name_col_for_plotting, 'Reference_strand']
             umap_layers += cfg.umap_layers_to_plot
             sc.pl.umap(adata, color=umap_layers, show=False, save=True)
 

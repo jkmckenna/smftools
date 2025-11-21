@@ -26,14 +26,31 @@ def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, 
     """
     bam_path = str(bam_path)
     fastq_path = str(fastq_path)
-    with pysam.AlignmentFile(bam_path, "rb", check_sq=False) as bam, open(fastq_path, "w") as fq:
+    with pysam.AlignmentFile(bam_path, "rb", check_sq=False) as bam, open(fastq_path, "w", encoding="utf-8") as fq:
         for r in bam.fetch(until_eof=True):
-            # Skip secondary/supplementary if you want (optional):
-            # if r.is_secondary or r.is_supplementary: continue
-            name = r.query_name
+            # Optionally skip secondary/supplementary:
+            # if r.is_secondary or r.is_supplementary:
+            #     continue
+
+            name = r.query_name or ""
             seq = r.query_sequence or ""
-            qual = r.qual or ""
-            fq.write(f"@{name}\n{seq}\n+\n{qual}\n")
+
+            # Get numeric qualities; may be None
+            q = r.query_qualities
+
+            if q is None:
+                # fallback: fill with low quality ("!")
+                qual_str = "!" * len(seq)
+            else:
+                # q is an array/list of ints (Phred scores).
+                # Convert to FASTQ string with Phred+33 encoding,
+                # clamping to sane range [0, 93] to stay in printable ASCII.
+                qual_str = "".join(
+                    chr(min(max(int(qv), 0), 93) + 33)
+                    for qv in q
+                )
+
+            fq.write(f"@{name}\n{seq}\n+\n{qual_str}\n")
 
 def _sort_bam_with_pysam(in_bam: Union[str, Path], out_bam: Union[str, Path], threads: Optional[int] = None) -> None:
     in_bam, out_bam = str(in_bam), str(out_bam)
@@ -100,7 +117,7 @@ def align_and_sort_BAM(fasta,
             minimap_command = ['minimap2'] + aligner_args + ['-t', threads, str(fasta), str(input_as_fastq)]
         else:
             minimap_command = ['minimap2'] + aligner_args + [str(fasta), str(input_as_fastq)]
-        subprocess.run(minimap_command, stdout=open(aligned_output, "w"))
+        subprocess.run(minimap_command, stdout=open(aligned_output, "wb"))
         os.remove(input_as_fastq)
 
     elif aligner == 'dorado':
@@ -584,7 +601,7 @@ def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, 
 
     bam_files = sorted(
         p for p in split_dir.glob(f"*{bam_suffix}")
-        if p.is_file() and p.suffix == bam_suffix and "unclassified" not in p.name
+        if p.is_file() and p.suffix == bam_suffix
     )
 
     if not bam_files:

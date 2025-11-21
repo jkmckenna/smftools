@@ -611,6 +611,10 @@ class ExperimentConfig:
     fastq_barcode_map: Optional[Dict[str, str]] = None
     fastq_auto_pairing: bool = True
 
+    # Remove intermediate file options
+    delete_intermediate_bams: bool = True
+    delete_intermediate_tsvs: bool = True
+
     # Conversion/Deamination file handling
     delete_intermediate_hdfs: bool = True
 
@@ -650,6 +654,7 @@ class ExperimentConfig:
     aligner: str = "minimap2"
     aligner_args: Optional[List[str]] = None
     make_bigwigs: bool = False
+    make_beds: bool = False
 
     # Anndata structure
     reference_column: Optional[str] = 'Reference_strand'
@@ -661,9 +666,9 @@ class ExperimentConfig:
 
     # Preprocessing - Read length and quality filter params
     read_coord_filter: Optional[Sequence[float]] = field(default_factory=lambda: [None, None])
-    read_len_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [200, None])
-    read_len_to_ref_ratio_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [0.4, 1.1])
-    read_quality_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [20, None])
+    read_len_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [100, None])
+    read_len_to_ref_ratio_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [0.4, 1.5])
+    read_quality_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [15, None])
     read_mapping_quality_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [None, None])
 
     # Preprocessing - Direct mod detection binarization params
@@ -695,7 +700,8 @@ class ExperimentConfig:
     duplicate_detection_hierarchical_linkage: str = "average"
     duplicate_detection_do_pca: bool = False
 
-    # Preprocessing - Complexity analysis params
+    # Preprocessing - Position QC
+    position_max_nan_threshold: float = 0.1
 
     # Basic Analysis - Clustermap params
     layer_for_clustermap_plotting: Optional[str] = 'nan0_0minus1'
@@ -732,6 +738,9 @@ class ExperimentConfig:
     cpg: Optional[bool] = False
     hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
     hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 80)])
+
+    # Pipeline control flow - load adata
+    force_redo_load_adata: bool = False
 
     # Pipeline control flow - preprocessing and QC
     force_redo_preprocessing: bool = False
@@ -1038,10 +1047,13 @@ class ExperimentConfig:
             threads = merged.get("threads"),
             sample_sheet_path = merged.get("sample_sheet_path"),
             sample_sheet_mapping_column = merged.get("sample_sheet_mapping_column"),
+            delete_intermediate_bams = merged.get("delete_intermediate_bams", True),
+            delete_intermediate_tsvs = merged.get("delete_intermediate_tsvs", True),
             aligner = merged.get("aligner", "minimap2"),
             aligner_args = merged.get("aligner_args", None),
             device = merged.get("device", "auto"),
             make_bigwigs = merged.get("make_bigwigs", False),
+            make_beds = merged.get("make_beds", False),
             delete_intermediate_hdfs = merged.get("delete_intermediate_hdfs", True),
             mod_target_bases = merged.get("mod_target_bases", ["GpC","CpG"]),
             enzyme_target_bases = merged.get("enzyme_target_bases", ["GpC"]), 
@@ -1091,9 +1103,9 @@ class ExperimentConfig:
             accessible_patches = merged.get("accessible_patches", None),
             cpg = merged.get("cpg", None),
             read_coord_filter = merged.get("read_coord_filter", [None, None]), 
-            read_len_filter_thresholds = merged.get("read_len_filter_thresholds", [200, None]),
-            read_len_to_ref_ratio_filter_thresholds = merged.get("read_len_to_ref_ratio_filter_thresholds", [0.4, 1.1]),
-            read_quality_filter_thresholds = merged.get("read_quality_filter_thresholds", [20, None]),
+            read_len_filter_thresholds = merged.get("read_len_filter_thresholds", [100, None]),
+            read_len_to_ref_ratio_filter_thresholds = merged.get("read_len_to_ref_ratio_filter_thresholds", [0.3, None]),
+            read_quality_filter_thresholds = merged.get("read_quality_filter_thresholds", [15, None]),
             read_mapping_quality_filter_thresholds = merged.get("read_mapping_quality_filter_thresholds", [None, None]),
             read_mod_filtering_gpc_thresholds = merged.get("read_mod_filtering_gpc_thresholds", [0.025, 0.975]),
             read_mod_filtering_cpg_thresholds = merged.get("read_mod_filtering_cpg_thresholds", [0.0, 1.0]),
@@ -1109,10 +1121,12 @@ class ExperimentConfig:
             duplicate_detection_do_hierarchical = merged.get("duplicate_detection_do_hierarchical", True),
             duplicate_detection_hierarchical_linkage = merged.get("duplicate_detection_hierarchical_linkage", "average"),
             duplicate_detection_do_pca = merged.get("duplicate_detection_do_pca", False),
+            position_max_nan_threshold = merged.get("position_max_nan_threshold", 0.1),
             correlation_matrix_types = merged.get("correlation_matrix_types", ["pearson", "binary_covariance"]),
             correlation_matrix_cmaps = merged.get("correlation_matrix_cmaps", ["seismic", "viridis"]),
             correlation_matrix_site_types = merged.get("correlation_matrix_site_types", ["GpC_site"]),
             hamming_vs_metric_keys = merged.get("hamming_vs_metric_keys", ['Fraction_any_C_site_modified']),
+            force_redo_load_adata = merged.get("force_redo_load_adata", False), 
             force_redo_preprocessing = merged.get("force_redo_preprocessing", False), 
             force_reload_sample_sheet = merged.get("force_reload_sample_sheet", True),
             bypass_add_read_length_and_mapping_qc = merged.get("bypass_add_read_length_and_mapping_qc", False),

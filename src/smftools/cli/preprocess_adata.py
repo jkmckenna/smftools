@@ -25,7 +25,7 @@ def preprocess_adata(config_path):
     date_str = datetime.today().strftime("%y%m%d")
 
     ################################### 1) Load existing  ###################################
-    initial_adata, initial_adata_path, bam_files, cfg = load_adata(config_path)
+    adata, adata_path, cfg = load_adata(config_path)
 
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
@@ -34,23 +34,23 @@ def preprocess_adata(config_path):
     # Make initial output directory
     make_dirs([output_directory])
 
-    # Preprocessed adata path info
-    pp_adata_basename = initial_adata_path.name.split(".")[0] + '_preprocessed.h5ad.gz'
-    pp_adata_path = initial_adata_path.parent / pp_adata_basename
+    input_manager_df = pd.read_csv(cfg.summary_file)
+    initial_adata_path = Path(input_manager_df['load_adata'][0])
+    pp_adata_path = Path(input_manager_df['pp_adata'][0])
+    pp_dup_rem_adata_path = Path(input_manager_df['pp_dedup_adata'][0])
+    spatial_adata_path = Path(input_manager_df['spatial_adata'][0])
+    hmm_adata_path = Path(input_manager_df['hmm_adata'][0])
 
-    # Preprocessed duplicate removed adata path info
-    pp_dup_rem_adata_basename = pp_adata_path.name.split(".")[0] + '_duplicates_removed.h5ad.gz'
-    pp_dup_rem_adata_path = pp_adata_path.parent / pp_dup_rem_adata_basename
-
-    if initial_adata:
+    if adata:
         # This happens on first run of the load pipeline
-        adata = initial_adata
-
+        pass
     else:
         # If an anndata is saved, check which stages of the anndata are available
         initial_version_available = initial_adata_path.exists()
         preprocessed_version_available = pp_adata_path.exists()
         preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists()
+        spatial_adata_exists = spatial_adata_path.exists()
+        hmm_adata_exists = hmm_adata_path.exists()
 
         if cfg.force_redo_preprocessing:
             print(f"Forcing full redo of preprocessing workflow, starting from earliest stage adata available.")
@@ -80,6 +80,12 @@ def preprocess_adata(config_path):
                 adata, load_report = safe_read_h5ad(initial_adata_path)
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
+        elif hmm_adata_exists:
+            print(f"HMM anndata found: {hmm_adata_path}")
+            return (None, None, None, None)      
+        elif spatial_adata_exists:
+            print(f"Spatial anndata found: {spatial_adata_exists}")
+            return (None, None, None, None)            
         elif preprocessed_version_available or preprocessed_dup_removed_version_available:
             print(f"Preprocessed anndatas found: {pp_dup_rem_adata_path} and {pp_adata_path}")
             return (None, pp_adata_path, None, pp_dup_rem_adata_path)
@@ -105,14 +111,6 @@ def preprocess_adata(config_path):
     
     # Adding read length, read quality, reference length, mapped_length, and mapping quality metadata to adata object.
     pp_length_qc_dir = pp_dir / "01_Read_length_and_quality_QC_metrics"
-    from ..preprocessing import add_read_length_and_mapping_qc
-    from ..informatics.bam_functions import extract_read_features_from_bam  
-    add_read_length_and_mapping_qc(adata, bam_files, 
-                                   extract_read_features_from_bam_callable=extract_read_features_from_bam, 
-                                   bypass=cfg.bypass_add_read_length_and_mapping_qc,
-                                   force_redo=cfg.force_redo_add_read_length_and_mapping_qc)
-
-    adata.obs['Raw_modification_signal'] =  np.nansum(adata.X, axis=1)
 
     if pp_length_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         print( f'{pp_length_qc_dir} already exists. Skipping read level QC plotting.')
@@ -274,7 +272,7 @@ def preprocess_adata(config_path):
     from ..preprocessing import calculate_coverage
     calculate_coverage(adata, 
                        obs_column=cfg.reference_column, 
-                       position_nan_threshold=0.1)
+                       position_nan_threshold=cfg.position_max_nan_threshold)
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != 'direct':
@@ -313,7 +311,7 @@ def preprocess_adata(config_path):
                                                     )
         
         # Use the flagged duplicate read groups and perform complexity analysis
-        complexity_outs = os.path.join(pp_dup_qc_dir, "sample_complexity_analyses")
+        complexity_outs = pp_dup_qc_dir / "sample_complexity_analyses"
         make_dirs([complexity_outs])
         calculate_complexity_II(
             adata=adata,
@@ -333,7 +331,6 @@ def preprocess_adata(config_path):
 
     else:
         adata_unique = adata
-
     ########################################################################################################################
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
