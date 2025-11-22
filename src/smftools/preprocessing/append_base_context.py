@@ -34,7 +34,7 @@ def append_base_context(adata,
     site_types = []
     
     if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
-        site_types += ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C_site', 'any_C_site']
+        site_types += ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C_site', 'C_site']
     
     if 'A' in mod_target_bases:
         site_types += ['A_site']
@@ -70,7 +70,7 @@ def append_base_context(adata,
                 # Iterate through the sequence and apply the criteria
                 for i in range(1, len(sequence) - 1):
                     if sequence[i] == 'C':
-                        boolean_dict[f'{cat}_any_C_site'][i] = True
+                        boolean_dict[f'{cat}_C_site'][i] = True
                         if sequence[i - 1] == 'G' and sequence[i + 1] != 'G':
                             boolean_dict[f'{cat}_GpC_site'][i] = True
                         elif sequence[i - 1] == 'G' and sequence[i + 1] == 'G':
@@ -83,7 +83,7 @@ def append_base_context(adata,
                 # Iterate through the sequence and apply the criteria
                 for i in range(1, len(sequence) - 1):
                     if sequence[i] == 'G':
-                        boolean_dict[f'{cat}_any_C_site'][i] = True
+                        boolean_dict[f'{cat}_C_site'][i] = True
                         if sequence[i + 1] == 'C' and sequence[i - 1] != 'C':
                             boolean_dict[f'{cat}_GpC_site'][i] = True
                         elif sequence[i - 1] == 'C' and sequence[i + 1] == 'C':

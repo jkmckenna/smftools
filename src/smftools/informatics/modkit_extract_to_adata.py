@@ -388,7 +388,7 @@ def delete_intermediate_h5ads_and_tmpdir(
             for p in dpath.iterdir():
                 # only target top-level files (not recursing); require '.h5ad' suffix and exclude gz
                 name = p.name.lower()
-                if name.endswith(".h5ad") and not name.endswith(".gz"):
+                if "h5ad" in name:
                     _maybe_unlink(p)
                 else:
                     if verbose:
@@ -472,16 +472,11 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
 
     existing_h5s =  h5_dir.iterdir()
     existing_h5s = [h5 for h5 in existing_h5s if '.h5ad.gz' in str(h5)]
-    final_hdf = f'{experiment_name}.h5ad'    
+    final_hdf = f'{experiment_name}.h5ad.gz'    
     final_adata_path = h5_dir / final_hdf
-    final_adata_path_gz = final_adata_path + ".gz"
     final_adata = None
-
-    if final_adata_path_gz.exists():
-        print(f'{final_adata_path_gz} already exists. Using existing adata')
-        return final_adata, final_adata_path_gz
     
-    elif final_adata_path.exists():
+    if final_adata_path.exists():
         print(f'{final_adata_path} already exists. Using existing adata')
         return final_adata, final_adata_path
     
@@ -580,7 +575,7 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
             bam_path_list = bam_path_list[batch_size:]
         print('{0}: tsvs in batch {1} '.format(readwrite.time_string(), tsv_batch))
 
-        batch_already_processed = sum([1 for h5 in existing_h5s if f'_{batch}_' in h5])
+        batch_already_processed = sum([1 for h5 in existing_h5s if f'_{batch}_' in h5.name])
     ###################################################
         if batch_already_processed:
             print(f'Batch {batch} has already been processed into h5ads. Skipping batch and using existing files')
@@ -768,7 +763,6 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
 
 
             # Save the sample files in the batch as gzipped hdf5 files
-            os.chdir(h5_dir)
             print('{0}: Converting batch {1} dictionaries to anndata objects'.format(readwrite.time_string(), batch))
             for dict_index, dict_type in enumerate(dict_list):
                 if dict_index not in dict_to_skip:
@@ -898,7 +892,7 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
 
                     try:
                         print('{0}: Writing {1} anndata out as a hdf5 file'.format(readwrite.time_string(), sample_types[dict_index]))
-                        adata.write_h5ad('{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz'.format(readwrite.date_string(), batch, sample_types[dict_index]), compression='gzip')
+                        adata.write_h5ad(h5_dir / '{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz'.format(readwrite.date_string(), batch, sample_types[dict_index]), compression='gzip')
                     except:
                         print(f"Skipping writing anndata for sample")
 
@@ -909,8 +903,8 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
     # Iterate over all of the batched hdf5 files and concatenate them.
     files = h5_dir.iterdir()       
     # Filter file names that contain the search string in their filename and keep them in a list
-    hdfs = [hdf for hdf in files if 'hdf5.h5ad' in hdf and hdf != final_hdf]
-    combined_hdfs = [hdf for hdf in hdfs if "combined" in hdf]
+    hdfs = [hdf for hdf in files if 'hdf5.h5ad' in hdf.name and hdf != final_hdf]
+    combined_hdfs = [hdf for hdf in hdfs if "combined" in hdf.name]
     if len(combined_hdfs) > 0:
         hdfs = combined_hdfs
     else:

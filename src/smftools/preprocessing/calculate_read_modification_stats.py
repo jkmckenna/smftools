@@ -36,7 +36,7 @@ def calculate_read_modification_stats(adata,
     site_types = []
 
     if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
-        site_types += ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C_site', 'any_C_site']
+        site_types += ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C_site', 'C_site']
     
     if 'A' in mod_target_bases:
         site_types += ['A_site']

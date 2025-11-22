@@ -112,7 +112,7 @@ def load_adata(config_path):
     add_or_update_column_in_csv(cfg.summary_file, "experiment_name", cfg.experiment_name)
     add_or_update_column_in_csv(cfg.summary_file, "config_path", config_path)
     add_or_update_column_in_csv(cfg.summary_file, "input_data_path", cfg.input_data_path)
-    add_or_update_column_in_csv(cfg.summary_file, "input_files", cfg.input_files)
+    add_or_update_column_in_csv(cfg.summary_file, "input_files", [cfg.input_files])
 
     # Initial h5ad file naming
     h5_dir = cfg.output_directory / 'h5ads'
@@ -123,15 +123,19 @@ def load_adata(config_path):
     pp_adata_path = raw_adata_path.parent / pp_adata_basename
 
     # Preprocessed duplicate removed adata path info
-    pp_dup_rem_adata_basename = pp_adata_path.name.split(".")[0] + '_duplicates_removed.h5ad.gz'
-    pp_dup_rem_adata_path = pp_adata_path.parent / pp_dup_rem_adata_basename
+    if cfg.smf_modality == 'direct':
+        # For direct SMF, link the duplicate removed version just to the preprocessed version, since there is not a duplicate removal step for direct workflow
+        pp_dup_rem_adata_path = pp_adata_path
+    else:
+        pp_dup_rem_adata_basename = pp_adata_path.name.split(".")[0] + '_duplicates_removed.h5ad.gz'
+        pp_dup_rem_adata_path = pp_adata_path.parent / pp_dup_rem_adata_basename
 
     # Preprocessed duplicate removed adata with basic analyses appended path info
     spatial_adata_basename = pp_dup_rem_adata_path.name.split(".")[0] + '_spatial.h5ad.gz'
     spatial_adata_path = pp_dup_rem_adata_path.parent / spatial_adata_basename
 
     # hmm adata
-    hmm_adata_basename = spatial_adata_path.with_suffix("").name + '_hmm.h5ad.gz'
+    hmm_adata_basename = spatial_adata_path.name.split(".")[0] + '_hmm.h5ad.gz'
     hmm_adata_path = spatial_adata_path.parent / hmm_adata_basename
 
     add_or_update_column_in_csv(cfg.summary_file, "load_adata", raw_adata_path)
@@ -281,6 +285,11 @@ def load_adata(config_path):
     ################################### 2) FASTA Handling ###################################
     from ..informatics.fasta_functions import generate_converted_FASTA, get_chromosome_lengths
 
+    try:
+        cfg.fasta = Path(cfg.fasta)
+    except:
+        print("Need to provide an input FASTA path to proceed with smftools load")
+
     # If fasta_regions_of_interest bed is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
     if cfg.fasta_regions_of_interest and '.bed' in cfg.fasta_regions_of_interest:
         fasta_basename = cfg.fasta.parent / cfg.fasta.stem
@@ -315,6 +324,10 @@ def load_adata(config_path):
     from ..informatics.basecalling import modcall, canoncall
     # 1) Basecall using dorado
     if basecall and cfg.sequencer == 'ont':
+        try:
+            cfg.model_dir = Path(cfg.model_dir)
+        except:
+            print("Need to provide a valid path to a dorado model directory to use dorado basecalling")
         if aligned_sorted_output.exists():
             print(f'{aligned_sorted_output} already exists. Using existing basecalled, aligned, sorted BAM.')
         elif unaligned_output.exists():
@@ -485,19 +498,16 @@ def load_adata(config_path):
                         cfg.thresholds, 
                         mod_bed_dir) # Generate bed files of position methylation summaries for every sample
             
-        if mod_tsv_dir.is_dir():
-            print(f'{mod_tsv_dir} already exists, skipping making modtsvs')
-        else:
-            from ..informatics.modkit_functions import extract_mods
-            make_dirs([mod_tsv_dir])
+        from ..informatics.modkit_functions import extract_mods
+        make_dirs([mod_tsv_dir])
 
-            extract_mods(cfg.thresholds, 
-                         mod_tsv_dir, 
-                         bam_dir, 
-                         cfg.bam_suffix, 
-                         skip_unclassified=cfg.skip_unclassified, 
-                         modkit_summary=False,
-                         threads=cfg.threads) # Extract methylations calls for split BAM files into split TSV files
+        extract_mods(cfg.thresholds, 
+                        mod_tsv_dir, 
+                        bam_dir, 
+                        cfg.bam_suffix, 
+                        skip_unclassified=cfg.skip_unclassified, 
+                        modkit_summary=False,
+                        threads=cfg.threads) # Extract methylations calls for split BAM files into split TSV files
             
         from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
         #6 Load the modification data from TSVs into an adata object
@@ -515,6 +525,9 @@ def load_adata(config_path):
                                                                 double_barcoded_path)
         if cfg.delete_intermediate_tsvs:
             delete_tsvs(mod_tsv_dir)
+
+    raw_adata.obs['Experiment_name'] = [cfg.experiment_name] * raw_adata.shape[0]
+    raw_adata.obs['Experiment_name_and_barcode'] = (raw_adata.obs['Experiment_name'].astype(str) + "_" + raw_adata.obs['Barcode'].astype(str))
 
     ########################################################################################################################
 

@@ -86,9 +86,12 @@ def preprocess_adata(config_path):
         elif spatial_adata_exists:
             print(f"Spatial anndata found: {spatial_adata_exists}")
             return (None, None, None, None)            
-        elif preprocessed_version_available or preprocessed_dup_removed_version_available:
-            print(f"Preprocessed anndatas found: {pp_dup_rem_adata_path} and {pp_adata_path}")
+        elif preprocessed_dup_removed_version_available:
+            print(f"Preprocessed deduplicated anndata found: {pp_dup_rem_adata_path}")
             return (None, pp_adata_path, None, pp_dup_rem_adata_path)
+        elif preprocessed_version_available:
+            print(f"Preprocessed anndata found: {pp_adata_path}")
+            adata, load_report = safe_read_h5ad(pp_adata_path)
         elif initial_version_available:
             adata, load_report = safe_read_h5ad(initial_adata_path)
         else:
@@ -157,6 +160,8 @@ def preprocess_adata(config_path):
         from ..preprocessing import calculate_position_Youden, binarize_on_Youden, binarize_adata
         native = True
         if cfg.fit_position_methylation_thresholds:
+            pp_Youden_dir = pp_dir / "02B_Position_wide_Youden_threshold_performance"
+            make_dirs([pp_Youden_dir])
             # Calculate positional methylation thresholds for mod calls
             calculate_position_Youden(adata, 
                                     positive_control_sample=cfg.positive_control_sample_methylation_fitting, 
@@ -165,8 +170,8 @@ def preprocess_adata(config_path):
                                     obs_column=cfg.reference_column, 
                                     infer_on_percentile=cfg.infer_on_percentile_sample_methylation_fitting, 
                                     inference_variable=cfg.inference_variable_sample_methylation_fitting, 
-                                    save=False, 
-                                    output_directory=''
+                                    save=True, 
+                                    output_directory=pp_Youden_dir
                                     )
             # binarize the modcalls based on the determined thresholds
             binarize_on_Youden(adata, 
@@ -174,7 +179,10 @@ def preprocess_adata(config_path):
                             output_layer_name=cfg.output_binary_layer_name
                             )
         else:
-            binarize_adata(adata, source="X", target_layer=cfg.output_binary_layer_name, threshold=cfg.binarize_on_fixed_methlyation_threshold)
+            binarize_adata(adata, 
+                           source="X", 
+                           target_layer=cfg.output_binary_layer_name, 
+                           threshold=cfg.binarize_on_fixed_methlyation_threshold)
 
         clean_NaN(adata, 
                   layer=cfg.output_binary_layer_name,
@@ -351,8 +359,5 @@ def preprocess_adata(config_path):
             pp_adata_path = pp_dup_rem_adata_path.with_name(pp_dup_rem_adata_path.name + '.gz')
             safe_write_h5ad(adata_unique, pp_dup_rem_adata_path, compression='gzip', backup=True)
     ########################################################################################################################
-
-    add_or_update_column_in_csv(cfg.summary_file, "pp_adata", pp_adata_path)
-    add_or_update_column_in_csv(cfg.summary_file, "pp_dedup_adata", pp_dup_rem_adata_path)
 
     return (adata, pp_adata_path, adata_unique, pp_dup_rem_adata_path)

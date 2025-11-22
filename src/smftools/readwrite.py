@@ -284,8 +284,6 @@ def concatenate_h5ads(
 
     for p in h5_paths:
         print(f"{time_string()}: Reading {p}")
-        # use safe_read_h5ad; if you later add backups_path support, you can
-        # extend this signature to accept a mapping of p -> backups_path.
         temp_adata, read_report = safe_read_h5ad(p, restore_backups=restore_backups)
 
         if final_adata is None:
@@ -296,6 +294,8 @@ def concatenate_h5ads(
             final_adata = ad.concat(
                 [final_adata, temp_adata],
                 join="outer",
+                merge='unique',
+                uns_merge='unique',
                 index_unique=None,
             )
 
