@@ -221,14 +221,14 @@ def batch(task, config_table: Path, column: str, sep: str | None):
     show_default=True,
 )
 @click.option(
-    "--no-delete",
-    is_flag=True,
-    help="Do NOT delete input .h5ad files after concatenation.",
+    "--delete",
+    is_flag=False,
+    help="Delete input .h5ad files after concatenation.",
 )
 @click.option(
-    "--no-restore",
+    "--restore",
     is_flag=True,
-    help="Do NOT restore .h5ad backups during reading.",
+    help="Restore .h5ad backups during reading.",
 )
 def concatenate_cmd(
     output_path: Path,
@@ -236,8 +236,8 @@ def concatenate_cmd(
     csv_path: Path | None,
     csv_column: str,
     suffix: Sequence[str],
-    no_delete: bool,
-    no_restore: bool,
+    delete: bool,
+    restore: bool,
 ):
     """
     Concatenate multiple .h5ad files into a single output file.
@@ -263,92 +263,8 @@ def concatenate_cmd(
             csv_path=csv_path,
             csv_column=csv_column,
             file_suffixes=tuple(suffix),
-            delete_inputs=not no_delete,
-            restore_backups=not no_restore,
-        )
-        click.echo(f"✓ Concatenated file written to: {out}")
-
-    except Exception as e:
-        raise click.ClickException(str(e)) from e
-@cli.command("concatenate")
-@click.argument(
-    "output_path",
-    type=click.Path(path_type=Path, dir_okay=False),
-)
-@click.option(
-    "--input-dir",
-    "-d",
-    type=click.Path(path_type=Path, file_okay=False),
-    default=None,
-    help="Directory containing .h5ad/.h5ad.gz files to concatenate.",
-)
-@click.option(
-    "--csv-path",
-    "-c",
-    type=click.Path(path_type=Path, dir_okay=False),
-    default=None,
-    help="CSV/TSV/TXT containing file paths of h5ad files.",
-)
-@click.option(
-    "--csv-column",
-    "-C",
-    default="h5ad_path",
-    help="Column in the CSV containing file paths (ignored for TXT).",
-    show_default=True,
-)
-@click.option(
-    "--suffix",
-    "-s",
-    multiple=True,
-    default=[".h5ad", ".h5ad.gz"],
-    help="Allowed file suffixes (repeatable).",
-    show_default=True,
-)
-@click.option(
-    "--no-delete",
-    is_flag=True,
-    help="Do NOT delete input .h5ad files after concatenation.",
-)
-@click.option(
-    "--no-restore",
-    is_flag=True,
-    help="Do NOT restore .h5ad backups during reading.",
-)
-def concatenate_cmd(
-    output_path: Path,
-    input_dir: Path | None,
-    csv_path: Path | None,
-    csv_column: str,
-    suffix: Sequence[str],
-    no_delete: bool,
-    no_restore: bool,
-):
-    """
-    Concatenate multiple .h5ad files into a single output file.
-
-    Two modes:
-
-        smftools concatenate out.h5ad --input-dir ./dir
-
-        smftools concatenate out.h5ad --csv-path paths.csv --csv-column h5ad_path
-
-    TXT input also works (one file path per line).
-
-    Uses safe_read_h5ad() and safe_write_h5ad().
-    """
-
-    if input_dir and csv_path:
-        raise click.ClickException("Provide only ONE of --input-dir or --csv-path.")
-
-    try:
-        out = concatenate_h5ads(
-            output_path=output_path,
-            input_dir=input_dir,
-            csv_path=csv_path,
-            csv_column=csv_column,
-            file_suffixes=tuple(suffix),
-            delete_inputs=not no_delete,
-            restore_backups=not no_restore,
+            delete_inputs=delete,
+            restore_backups=restore,
         )
         click.echo(f"✓ Concatenated file written to: {out}")
 

@@ -46,6 +46,11 @@ def spatial_adata(config_path):
     spatial_adata_path = Path(input_manager_df['spatial_adata'][0])
     hmm_adata_path = Path(input_manager_df['hmm_adata'][0])
 
+    if smf_modality == 'conversion':
+        deaminase = False
+    else:
+        deaminase = True
+
     if pp_adata and pp_dedup_adata:
         # This happens on first run of the preprocessing pipeline
         first_pp_run = True
@@ -89,17 +94,12 @@ def spatial_adata(config_path):
         else:
             print(f"No adata available.")
             return
+        
+    pp_dir = output_directory / "preprocessed"
+    references = adata.obs[cfg.reference_column].cat.categories
 
     if smf_modality != 'direct':
-        if smf_modality == 'conversion':
-            deaminase = False
-        else:
-            deaminase = True
-        references = adata.obs[cfg.reference_column].cat.categories
-
         ######### Clustermaps #########
-        pp_dir = output_directory / "preprocessed"
-
         if preprocessed_version_available:
             pp_clustermap_dir = pp_dir / "06_clustermaps"
 
@@ -117,12 +117,15 @@ def spatial_adata(config_path):
                 clustermap_results = combined_raw_clustermap(pp_adata, 
                                                             sample_col=cfg.sample_name_col_for_plotting, 
                                                             reference_col=cfg.reference_column,
+                                                            mod_target_bases=cfg.mod_target_bases,
                                                             layer_any_c=cfg.layer_for_clustermap_plotting, 
                                                             layer_gpc=cfg.layer_for_clustermap_plotting, 
                                                             layer_cpg=cfg.layer_for_clustermap_plotting, 
+                                                            layer_a=cfg.layer_for_clustermap_plotting, 
                                                             cmap_any_c="coolwarm", 
                                                             cmap_gpc="coolwarm", 
                                                             cmap_cpg="viridis", 
+                                                            cmap_a="coolwarm",
                                                             min_quality=cfg.read_quality_filter_thresholds[0], 
                                                             min_length=cfg.read_len_filter_thresholds[0], 
                                                             min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
@@ -140,58 +143,76 @@ def spatial_adata(config_path):
         else:
             pass
         
-        #### Proceed with dedeuplicated preprocessed anndata ###
-        pp_dir = pp_dir / "deduplicated"
-        pp_clustermap_dir = pp_dir / "06_clustermaps"
-        pp_umap_dir = pp_dir / "07_umaps"
+    #### Proceed with dedeuplicated preprocessed anndata ###
+    pp_dir = pp_dir / "deduplicated"
+    pp_clustermap_dir = pp_dir / "06_clustermaps"
+    pp_umap_dir = pp_dir / "07_umaps"
 
-        if pp_clustermap_dir.is_dir():
-            print(f'{pp_clustermap_dir} already exists. Skipping clustermap plotting.')
+    if pp_clustermap_dir.is_dir():
+        print(f'{pp_clustermap_dir} already exists. Skipping clustermap plotting.')
+    else:
+        from ..plotting import combined_raw_clustermap
+        make_dirs([pp_dir, pp_clustermap_dir])
+        if smf_modality != 'direct':
+            sort_by = 'gpc'
         else:
-            from ..plotting import combined_raw_clustermap
-            make_dirs([pp_dir, pp_clustermap_dir])
-            clustermap_results = combined_raw_clustermap(adata, 
-                                                         sample_col=cfg.sample_name_col_for_plotting, 
-                                                         reference_col=cfg.reference_column,
-                                                         layer_any_c=cfg.layer_for_clustermap_plotting, 
-                                                         layer_gpc=cfg.layer_for_clustermap_plotting, 
-                                                         layer_cpg=cfg.layer_for_clustermap_plotting, 
-                                                         cmap_any_c="coolwarm", 
-                                                         cmap_gpc="coolwarm", 
-                                                         cmap_cpg="viridis", 
-                                                         min_quality=cfg.read_quality_filter_thresholds[0], 
-                                                         min_length=cfg.read_len_filter_thresholds[0], 
-                                                         min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
-                                                         min_position_valid_fraction=cfg.min_valid_fraction_positions_in_read_vs_ref,
-                                                         bins=None,
-                                                         sample_mapping=None, 
-                                                         save_path=pp_clustermap_dir, 
-                                                         sort_by='gpc', 
-                                                         deaminase=deaminase)
-        
-        ######### PCA/UMAP/Leiden #########
-        if pp_umap_dir.is_dir():
-            print(f'{pp_umap_dir} already exists. Skipping UMAP plotting.')
-        else:
-            from ..tools import calculate_umap
-            make_dirs([pp_umap_dir])
-            var_filters = []
+            sort_by = 'any_a'
+        clustermap_results = combined_raw_clustermap(adata, 
+                                                        sample_col=cfg.sample_name_col_for_plotting, 
+                                                        reference_col=cfg.reference_column,
+                                                        mod_target_bases=cfg.mod_target_bases,
+                                                        layer_any_c=cfg.layer_for_clustermap_plotting, 
+                                                        layer_gpc=cfg.layer_for_clustermap_plotting, 
+                                                        layer_cpg=cfg.layer_for_clustermap_plotting, 
+                                                        layer_a=cfg.layer_for_clustermap_plotting, 
+                                                        cmap_any_c="coolwarm", 
+                                                        cmap_gpc="coolwarm", 
+                                                        cmap_cpg="viridis", 
+                                                        cmap_a="coolwarm", 
+                                                        min_quality=cfg.read_quality_filter_thresholds[0], 
+                                                        min_length=cfg.read_len_filter_thresholds[0], 
+                                                        min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+                                                        min_position_valid_fraction=1-cfg.position_max_nan_threshold,
+                                                        bins=None,
+                                                        sample_mapping=None, 
+                                                        save_path=pp_clustermap_dir, 
+                                                        sort_by=sort_by, 
+                                                        deaminase=deaminase)
+    
+    ######### PCA/UMAP/Leiden #########
+    if pp_umap_dir.is_dir():
+        print(f'{pp_umap_dir} already exists. Skipping UMAP plotting.')
+    else:
+        from ..tools import calculate_umap
+        make_dirs([pp_umap_dir])
+
+        var_filters = []
+        if smf_modality == 'direct':
+            for ref in references:
+                for base in cfg.mod_target_bases:
+                    var_filters += [f'{ref}_{base}_site']  
+        elif deaminase:
             for ref in references:
                 var_filters += [f'{ref}_any_C_site']
-            adata = calculate_umap(adata, 
-                                   layer=cfg.layer_for_umap_plotting, 
-                                   var_filters=var_filters, 
-                                   n_pcs=10, 
-                                   knn_neighbors=15)
+        else:
+            for ref in references:
+                for base in cfg.mod_target_bases:
+                    var_filters += [f'{ref}_{base}_site']
 
-            ## Clustering
-            sc.tl.leiden(adata, resolution=0.1, flavor="igraph", n_iterations=2)
+        adata = calculate_umap(adata, 
+                                layer=cfg.layer_for_umap_plotting, 
+                                var_filters=var_filters, 
+                                n_pcs=10, 
+                                knn_neighbors=15)
 
-            # Plotting UMAP
-            sc.settings.figdir = pp_umap_dir
-            umap_layers = ['leiden', cfg.sample_name_col_for_plotting, 'Reference_strand']
-            umap_layers += cfg.umap_layers_to_plot
-            sc.pl.umap(adata, color=umap_layers, show=False, save=True)
+        ## Clustering
+        sc.tl.leiden(adata, resolution=0.1, flavor="igraph", n_iterations=2)
+
+        # Plotting UMAP
+        sc.settings.figdir = pp_umap_dir
+        umap_layers = ['leiden', cfg.sample_name_col_for_plotting, 'Reference_strand']
+        umap_layers += cfg.umap_layers_to_plot
+        sc.pl.umap(adata, color=umap_layers, show=False, save=True)
 
     ########## Spatial autocorrelation analyses ###########
     from ..tools.spatial_autocorrelation import binary_autocorrelation_with_spacing, analyze_autocorr_matrix, bootstrap_periodicity, rolling_autocorr_metrics

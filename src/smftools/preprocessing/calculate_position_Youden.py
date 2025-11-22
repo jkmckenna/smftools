@@ -103,7 +103,7 @@ def calculate_position_Youden(adata, positive_control_sample='positive', negativ
                     probability_thresholding_list[position] = (0.8, np.nan)
         title = f'ROC Curve for {n_passed_positions} positions with J-stat greater than {J_threshold}\n out of {n_total_positions} total positions on {cat}'
         plt.title(title)
-        save_name = output_directory + f'/{title}'
+        save_name = output_directory / f"{title}.png"
         if save:
             plt.savefig(save_name)
             plt.close()

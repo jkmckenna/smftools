@@ -1,6 +1,40 @@
+from __future__ import annotations
+
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+import scipy.cluster.hierarchy as sch
+import matplotlib.gridspec as gridspec
+import os
+import math
+import pandas as pd
+
+from typing import Optional, Mapping, Sequence, Any, Dict, List
+from pathlib import Path
+
+def normalized_mean(matrix: np.ndarray) -> np.ndarray:
+    mean = np.nanmean(matrix, axis=0)
+    denom = (mean.max() - mean.min()) + 1e-9
+    return (mean - mean.min()) / denom
+
+def methylation_fraction(matrix: np.ndarray) -> np.ndarray:
+    """
+    Fraction methylated per column.
+    Methylated = 1
+    Valid = finite AND not 0
+    """
+    matrix = np.asarray(matrix)
+    valid_mask = np.isfinite(matrix) & (matrix != 0)
+    methyl_mask = (matrix == 1) & np.isfinite(matrix)
+
+    methylated = methyl_mask.sum(axis=0)
+    valid = valid_mask.sum(axis=0)
+
+    return np.divide(
+        methylated, valid,
+        out=np.zeros_like(methylated, dtype=float),
+        where=valid != 0
+    )
 
 def clean_barplot(ax, mean_values, title):
     x = np.arange(len(mean_values))
@@ -17,438 +51,1091 @@ def clean_barplot(ax, mean_values, title):
 
     ax.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
 
+# def combined_hmm_raw_clustermap(
+#     adata,
+#     sample_col='Sample_Names',
+#     reference_col='Reference_strand',
+#     hmm_feature_layer="hmm_combined",
+#     layer_gpc="nan0_0minus1",
+#     layer_cpg="nan0_0minus1",
+#     layer_any_c="nan0_0minus1",
+#     cmap_hmm="tab10",
+#     cmap_gpc="coolwarm",
+#     cmap_cpg="viridis",
+#     cmap_any_c='coolwarm',
+#     min_quality=20,
+#     min_length=200,
+#     min_mapped_length_to_reference_length_ratio=0.8,
+#     min_position_valid_fraction=0.5,
+#     sample_mapping=None,
+#     save_path=None,
+#     normalize_hmm=False,
+#     sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
+#     bins=None,
+#     deaminase=False,
+#     min_signal=0
+#     ):
+
+#     results = []
+#     if deaminase:
+#         signal_type = 'deamination'
+#     else:
+#         signal_type = 'methylation'
+
+#     for ref in adata.obs[reference_col].cat.categories:
+#         for sample in adata.obs[sample_col].cat.categories:
+#             try:
+#                 subset = adata[
+#                     (adata.obs[reference_col] == ref) &
+#                     (adata.obs[sample_col] == sample) &
+#                     (adata.obs['read_quality'] >= min_quality) &
+#                     (adata.obs['read_length'] >= min_length) &
+#                     (adata.obs['mapped_length_to_reference_length_ratio'] > min_mapped_length_to_reference_length_ratio)
+#                 ]
+                
+#                 mask = subset.var[f"{ref}_valid_fraction"].astype(float) > float(min_position_valid_fraction)
+#                 subset = subset[:, mask]
+
+#                 if subset.shape[0] == 0:
+#                     print(f"  No reads left after filtering for {sample} - {ref}")
+#                     continue
+
+#                 if bins:
+#                     print(f"Using defined bins to subset clustermap for {sample} - {ref}")
+#                     bins_temp = bins
+#                 else:
+#                     print(f"Using all reads for clustermap for {sample} - {ref}")
+#                     bins_temp = {"All": (subset.obs['Reference_strand'] == ref)}
+
+#                 # Get column positions (not var_names!) of site masks
+#                 gpc_sites = np.where(subset.var[f"{ref}_GpC_site"].values)[0]
+#                 cpg_sites = np.where(subset.var[f"{ref}_CpG_site"].values)[0]
+#                 any_c_sites = np.where(subset.var[f"{ref}_any_C_site"].values)[0]
+#                 num_gpc = len(gpc_sites)
+#                 num_cpg = len(cpg_sites)
+#                 num_c = len(any_c_sites)
+#                 print(f"Found {num_gpc} GpC sites at {gpc_sites} \nand {num_cpg} CpG sites at {cpg_sites} for {sample} - {ref}")
+
+#                 # Use var_names for x-axis tick labels
+#                 gpc_labels = subset.var_names[gpc_sites].astype(int)
+#                 cpg_labels = subset.var_names[cpg_sites].astype(int)
+#                 any_c_labels = subset.var_names[any_c_sites].astype(int)
+
+#                 stacked_hmm_feature, stacked_gpc, stacked_cpg, stacked_any_c = [], [], [], []
+#                 row_labels, bin_labels = [], []
+#                 bin_boundaries = []
+
+#                 total_reads = subset.shape[0]
+#                 percentages = {}
+#                 last_idx = 0
+
+#                 for bin_label, bin_filter in bins_temp.items():
+#                     subset_bin = subset[bin_filter].copy()
+#                     num_reads = subset_bin.shape[0]
+#                     print(f"analyzing {num_reads} reads for {bin_label} bin in {sample} - {ref}")
+#                     percent_reads = (num_reads / total_reads) * 100 if total_reads > 0 else 0
+#                     percentages[bin_label] = percent_reads
+
+#                     if num_reads > 0 and num_cpg > 0 and num_gpc > 0:
+#                         # Determine sorting order
+#                         if sort_by.startswith("obs:"):
+#                             colname = sort_by.split("obs:")[1]
+#                             order = np.argsort(subset_bin.obs[colname].values)
+#                         elif sort_by == "gpc":
+#                             linkage = sch.linkage(subset_bin[:, gpc_sites].layers[layer_gpc], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "cpg":
+#                             linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "gpc_cpg":
+#                             linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "none":
+#                             order = np.arange(num_reads)
+#                         elif sort_by == "any_c":
+#                             linkage = sch.linkage(subset_bin.layers[layer_any_c], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         else:
+#                             raise ValueError(f"Unsupported sort_by option: {sort_by}")
+
+#                         stacked_hmm_feature.append(subset_bin[order].layers[hmm_feature_layer])
+#                         stacked_gpc.append(subset_bin[order][:, gpc_sites].layers[layer_gpc])
+#                         stacked_cpg.append(subset_bin[order][:, cpg_sites].layers[layer_cpg])
+#                         stacked_any_c.append(subset_bin[order][:, any_c_sites].layers[layer_any_c])
+
+#                         row_labels.extend([bin_label] * num_reads)
+#                         bin_labels.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
+#                         last_idx += num_reads
+#                         bin_boundaries.append(last_idx)
+
+#                 if stacked_hmm_feature:
+#                     hmm_matrix = np.vstack(stacked_hmm_feature)
+#                     gpc_matrix = np.vstack(stacked_gpc)
+#                     cpg_matrix = np.vstack(stacked_cpg)
+#                     any_c_matrix = np.vstack(stacked_any_c)
+
+#                     if hmm_matrix.size > 0:
+#                         def normalized_mean(matrix):
+#                             mean = np.nanmean(matrix, axis=0)
+#                             normalized = (mean - mean.min()) / (mean.max() - mean.min() + 1e-9)
+#                             return normalized
+
+#                         def methylation_fraction(matrix):
+#                             methylated = (matrix == 1).sum(axis=0)
+#                             valid = (matrix != 0).sum(axis=0)
+#                             return np.divide(methylated, valid, out=np.zeros_like(methylated, dtype=float), where=valid != 0)
+
+#                         if normalize_hmm:
+#                             mean_hmm = normalized_mean(hmm_matrix)
+#                         else:
+#                             mean_hmm = np.nanmean(hmm_matrix, axis=0)
+#                         mean_gpc = methylation_fraction(gpc_matrix)
+#                         mean_cpg = methylation_fraction(cpg_matrix)
+#                         mean_any_c = methylation_fraction(any_c_matrix)
+
+#                         fig = plt.figure(figsize=(18, 12))
+#                         gs = gridspec.GridSpec(2, 4, height_ratios=[1, 6], hspace=0.01)
+#                         fig.suptitle(f"{sample} - {ref} - {total_reads} reads", fontsize=14, y=0.95)
+
+#                         axes_heat = [fig.add_subplot(gs[1, i]) for i in range(4)]
+#                         axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(4)]
+
+#                         clean_barplot(axes_bar[0], mean_hmm, f"{hmm_feature_layer} HMM Features")
+#                         clean_barplot(axes_bar[1], mean_gpc, f"GpC Accessibility Signal")
+#                         clean_barplot(axes_bar[2], mean_cpg, f"CpG Accessibility Signal")
+#                         clean_barplot(axes_bar[3], mean_any_c, f"Any C Accessibility Signal")
+                        
+#                         hmm_labels = subset.var_names.astype(int)
+#                         hmm_label_spacing = 150
+#                         sns.heatmap(hmm_matrix, cmap=cmap_hmm, ax=axes_heat[0], xticklabels=hmm_labels[::hmm_label_spacing], yticklabels=False, cbar=False)
+#                         axes_heat[0].set_xticks(range(0, len(hmm_labels), hmm_label_spacing))
+#                         axes_heat[0].set_xticklabels(hmm_labels[::hmm_label_spacing], rotation=90, fontsize=10)
+#                         for boundary in bin_boundaries[:-1]:
+#                             axes_heat[0].axhline(y=boundary, color="black", linewidth=2)
+
+#                         sns.heatmap(gpc_matrix, cmap=cmap_gpc, ax=axes_heat[1], xticklabels=gpc_labels[::5], yticklabels=False, cbar=False)
+#                         axes_heat[1].set_xticks(range(0, len(gpc_labels), 5))
+#                         axes_heat[1].set_xticklabels(gpc_labels[::5], rotation=90, fontsize=10)
+#                         for boundary in bin_boundaries[:-1]:
+#                             axes_heat[1].axhline(y=boundary, color="black", linewidth=2)
+
+#                         sns.heatmap(cpg_matrix, cmap=cmap_cpg, ax=axes_heat[2], xticklabels=cpg_labels, yticklabels=False, cbar=False)
+#                         axes_heat[2].set_xticklabels(cpg_labels, rotation=90, fontsize=10)
+#                         for boundary in bin_boundaries[:-1]:
+#                             axes_heat[2].axhline(y=boundary, color="black", linewidth=2)
+
+#                         sns.heatmap(any_c_matrix, cmap=cmap_any_c, ax=axes_heat[3], xticklabels=any_c_labels[::20], yticklabels=False, cbar=False)
+#                         axes_heat[3].set_xticks(range(0, len(any_c_labels), 20))
+#                         axes_heat[3].set_xticklabels(any_c_labels[::20], rotation=90, fontsize=10)
+#                         for boundary in bin_boundaries[:-1]:
+#                             axes_heat[3].axhline(y=boundary, color="black", linewidth=2)
+
+#                         plt.tight_layout()
+
+#                         if save_path:
+#                             save_name = f"{ref} — {sample}"
+#                             os.makedirs(save_path, exist_ok=True)
+#                             safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+#                             out_file = os.path.join(save_path, f"{safe_name}.png")
+#                             plt.savefig(out_file, dpi=300)
+#                             print(f"Saved: {out_file}")
+#                             plt.close()
+#                         else:
+#                             plt.show()
+
+#                         print(f"Summary for {sample} - {ref}:")
+#                         for bin_label, percent in percentages.items():
+#                             print(f"  - {bin_label}: {percent:.1f}%")
+
+#                         results.append({
+#                             "sample": sample,
+#                             "ref": ref,
+#                             "hmm_matrix": hmm_matrix,
+#                             "gpc_matrix": gpc_matrix,
+#                             "cpg_matrix": cpg_matrix,
+#                             "row_labels": row_labels,
+#                             "bin_labels": bin_labels,
+#                             "bin_boundaries": bin_boundaries,
+#                             "percentages": percentages
+#                         })
+                        
+#                         #adata.uns['clustermap_results'] = results
+
+#             except Exception as e:
+#                 import traceback
+#                 traceback.print_exc()
+#                 continue
+
+
 def combined_hmm_raw_clustermap(
     adata,
-    sample_col='Sample_Names',
-    reference_col='Reference_strand',
-    hmm_feature_layer="hmm_combined",
-    layer_gpc="nan0_0minus1",
-    layer_cpg="nan0_0minus1",
-    layer_any_c="nan0_0minus1",
-    cmap_hmm="tab10",
-    cmap_gpc="coolwarm",
-    cmap_cpg="viridis",
-    cmap_any_c='coolwarm',
-    min_quality=20,
-    min_length=200,
-    min_mapped_length_to_reference_length_ratio=0.8,
-    min_position_valid_fraction=0.5,
-    sample_mapping=None,
-    save_path=None,
-    normalize_hmm=False,
-    sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
-    bins=None,
-    deaminase=False,
-    min_signal=0
-    ):
-    import scipy.cluster.hierarchy as sch
-    import pandas as pd
-    import numpy as np
-    import seaborn as sns
-    import matplotlib.pyplot as plt
-    import matplotlib.gridspec as gridspec
-    import os
+    sample_col: str = "Sample_Names",
+    reference_col: str = "Reference_strand",
+
+    hmm_feature_layer: str = "hmm_combined",
+
+    layer_gpc: str = "nan0_0minus1",
+    layer_cpg: str = "nan0_0minus1",
+    layer_any_c: str = "nan0_0minus1",
+    layer_a: str = "nan0_0minus1",
+
+    cmap_hmm: str = "tab10",
+    cmap_gpc: str = "coolwarm",
+    cmap_cpg: str = "viridis",
+    cmap_any_c: str = "coolwarm",
+    cmap_a: str = "coolwarm",
+
+    min_quality: int = 20,
+    min_length: int = 200,
+    min_mapped_length_to_reference_length_ratio: float = 0.8,
+    min_position_valid_fraction: float = 0.5,
+
+    save_path: str | Path | None = None,
+    normalize_hmm: bool = False,
+
+    sort_by: str = "gpc",
+    bins: Optional[Dict[str, Any]] = None,
+
+    deaminase: bool = False,
+    min_signal: float = 0.0,
+
+    # ---- fixed tick label controls (counts, not spacing)
+    n_xticks_hmm: int = 10,
+    n_xticks_any_c: int = 8,
+    n_xticks_gpc: int = 8,
+    n_xticks_cpg: int = 8,
+    n_xticks_a: int = 8,
+):
+    """
+    Makes a multi-panel clustermap per (sample, reference):
+      HMM panel (always) + optional raw panels for any_C, GpC, CpG, and A sites.
+
+    Panels are added only if the corresponding site mask exists AND has >0 sites.
+
+    sort_by options:
+      'gpc', 'cpg', 'any_c', 'any_a', 'gpc_cpg', 'none', or 'obs:<col>'
+    """
 
     results = []
-    if deaminase:
-        signal_type = 'deamination'
-    else:
-        signal_type = 'methylation'
+    signal_type = "deamination" if deaminase else "methylation"
 
+    def pick_xticks(labels: np.ndarray, n_ticks: int):
+        """Return tick positions and tick labels for evenly spaced n_ticks."""
+        if labels.size == 0:
+            return [], []
+        n_ticks = max(2, int(n_ticks))
+        idx = np.linspace(0, len(labels) - 1, n_ticks).round().astype(int)
+        idx = np.unique(idx)
+        return idx.tolist(), labels[idx].tolist()
+
+    # iterate refs x samples
     for ref in adata.obs[reference_col].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
             try:
                 subset = adata[
                     (adata.obs[reference_col] == ref) &
                     (adata.obs[sample_col] == sample) &
-                    (adata.obs['read_quality'] >= min_quality) &
-                    (adata.obs['read_length'] >= min_length) &
-                    (adata.obs['mapped_length_to_reference_length_ratio'] > min_mapped_length_to_reference_length_ratio)
+                    (adata.obs["read_quality"] >= min_quality) &
+                    (adata.obs["read_length"] >= min_length) &
+                    (adata.obs["mapped_length_to_reference_length_ratio"] >
+                     min_mapped_length_to_reference_length_ratio)
                 ]
-                
-                mask = subset.var[f"{ref}_valid_fraction"].astype(float) > float(min_position_valid_fraction)
-                subset = subset[:, mask]
+
+                # positional valid filter
+                vf_key = f"{ref}_valid_fraction"
+                if vf_key in subset.var:
+                    mask = subset.var[vf_key].astype(float) > float(min_position_valid_fraction)
+                    subset = subset[:, mask]
 
                 if subset.shape[0] == 0:
-                    print(f"  No reads left after filtering for {sample} - {ref}")
                     continue
 
-                if bins:
-                    print(f"Using defined bins to subset clustermap for {sample} - {ref}")
-                    bins_temp = bins
+                # bins
+                if bins is None:
+                    bins_temp = {"All": np.ones(subset.n_obs, dtype=bool)}
                 else:
-                    print(f"Using all reads for clustermap for {sample} - {ref}")
-                    bins_temp = {"All": (subset.obs['Reference_strand'] == ref)}
+                    bins_temp = bins
 
-                # Get column positions (not var_names!) of site masks
-                gpc_sites = np.where(subset.var[f"{ref}_GpC_site"].values)[0]
-                cpg_sites = np.where(subset.var[f"{ref}_CpG_site"].values)[0]
-                any_c_sites = np.where(subset.var[f"{ref}_any_C_site"].values)[0]
-                num_gpc = len(gpc_sites)
-                num_cpg = len(cpg_sites)
-                num_c = len(any_c_sites)
-                print(f"Found {num_gpc} GpC sites at {gpc_sites} \nand {num_cpg} CpG sites at {cpg_sites} for {sample} - {ref}")
+                # ----- site masks (robust to naming variants) -----
+                def _sites_for(key_a, key_b=None):
+                    if key_a in subset.var:
+                        return np.where(subset.var[key_a].values)[0]
+                    if key_b and key_b in subset.var:
+                        return np.where(subset.var[key_b].values)[0]
+                    return np.array([], dtype=int)
 
-                # Use var_names for x-axis tick labels
-                gpc_labels = subset.var_names[gpc_sites].astype(int)
-                cpg_labels = subset.var_names[cpg_sites].astype(int)
-                any_c_labels = subset.var_names[any_c_sites].astype(int)
+                gpc_sites = _sites_for(f"{ref}_GpC_site")
+                cpg_sites = _sites_for(f"{ref}_CpG_site")
+                any_c_sites = _sites_for(f"{ref}_any_C_site", f"{ref}_C_site")
+                any_a_sites = _sites_for(f"{ref}_A_site", f"{ref}_any_A_site")
 
-                stacked_hmm_feature, stacked_gpc, stacked_cpg, stacked_any_c = [], [], [], []
-                row_labels, bin_labels = [], []
-                bin_boundaries = []
+                gpc_labels = subset.var_names[gpc_sites].astype(int) if gpc_sites.size else np.array([])
+                cpg_labels = subset.var_names[cpg_sites].astype(int) if cpg_sites.size else np.array([])
+                any_c_labels = subset.var_names[any_c_sites].astype(int) if any_c_sites.size else np.array([])
+                any_a_labels = subset.var_names[any_a_sites].astype(int) if any_a_sites.size else np.array([])
 
-                total_reads = subset.shape[0]
+                # stacked matrices per bin
+                stacked_hmm = []
+                stacked_any_c, stacked_gpc, stacked_cpg, stacked_any_a = [], [], [], []
+                row_labels, bin_labels, bin_boundaries = [], [], []
+                total_reads = subset.n_obs
                 percentages = {}
                 last_idx = 0
 
                 for bin_label, bin_filter in bins_temp.items():
                     subset_bin = subset[bin_filter].copy()
-                    num_reads = subset_bin.shape[0]
-                    print(f"analyzing {num_reads} reads for {bin_label} bin in {sample} - {ref}")
-                    percent_reads = (num_reads / total_reads) * 100 if total_reads > 0 else 0
+                    num_reads = subset_bin.n_obs
+                    if num_reads == 0:
+                        continue
+
+                    percent_reads = (num_reads / total_reads) * 100 if total_reads else 0
                     percentages[bin_label] = percent_reads
 
-                    if num_reads > 0 and num_cpg > 0 and num_gpc > 0:
-                        # Determine sorting order
-                        if sort_by.startswith("obs:"):
-                            colname = sort_by.split("obs:")[1]
-                            order = np.argsort(subset_bin.obs[colname].values)
-                        elif sort_by == "gpc":
-                            linkage = sch.linkage(subset_bin[:, gpc_sites].layers[layer_gpc], method="ward")
-                            order = sch.leaves_list(linkage)
-                        elif sort_by == "cpg":
-                            linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
-                            order = sch.leaves_list(linkage)
-                        elif sort_by == "gpc_cpg":
-                            linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
-                            order = sch.leaves_list(linkage)
-                        elif sort_by == "none":
-                            order = np.arange(num_reads)
-                        elif sort_by == "any_c":
-                            linkage = sch.linkage(subset_bin.layers[layer_any_c], method="ward")
-                            order = sch.leaves_list(linkage)
-                        else:
-                            raise ValueError(f"Unsupported sort_by option: {sort_by}")
+                    # sorting order
+                    if sort_by.startswith("obs:"):
+                        colname = sort_by.split("obs:")[1]
+                        order = np.argsort(subset_bin.obs[colname].values)
+                    elif sort_by == "gpc" and gpc_sites.size:
+                        linkage = sch.linkage(subset_bin[:, gpc_sites].layers[layer_gpc], method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "cpg" and cpg_sites.size:
+                        linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "any_c" and any_c_sites.size:
+                        linkage = sch.linkage(subset_bin[:, any_c_sites].layers[layer_any_c], method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "any_a" and any_a_sites.size:
+                        linkage = sch.linkage(subset_bin[:, any_a_sites].layers[layer_a], method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "gpc_cpg" and (gpc_sites.size or cpg_sites.size):
+                        linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "none":
+                        order = np.arange(num_reads)
+                    else:
+                        order = np.arange(num_reads)
 
-                        stacked_hmm_feature.append(subset_bin[order].layers[hmm_feature_layer])
-                        stacked_gpc.append(subset_bin[order][:, gpc_sites].layers[layer_gpc])
-                        stacked_cpg.append(subset_bin[order][:, cpg_sites].layers[layer_cpg])
-                        stacked_any_c.append(subset_bin[order][:, any_c_sites].layers[layer_any_c])
+                    sb = subset_bin[order]
 
-                        row_labels.extend([bin_label] * num_reads)
-                        bin_labels.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
-                        last_idx += num_reads
-                        bin_boundaries.append(last_idx)
+                    # always HMM
+                    if hmm_feature_layer not in sb.layers:
+                        raise KeyError(f"Layer '{hmm_feature_layer}' not found.")
+                    stacked_hmm.append(sb.layers[hmm_feature_layer])
 
-                if stacked_hmm_feature:
-                    hmm_matrix = np.vstack(stacked_hmm_feature)
-                    gpc_matrix = np.vstack(stacked_gpc)
-                    cpg_matrix = np.vstack(stacked_cpg)
-                    any_c_matrix = np.vstack(stacked_any_c)
+                    # optional raw panels
+                    if any_c_sites.size:
+                        stacked_any_c.append(sb[:, any_c_sites].layers[layer_any_c])
+                    if gpc_sites.size:
+                        stacked_gpc.append(sb[:, gpc_sites].layers[layer_gpc])
+                    if cpg_sites.size:
+                        stacked_cpg.append(sb[:, cpg_sites].layers[layer_cpg])
+                    if any_a_sites.size:
+                        stacked_any_a.append(sb[:, any_a_sites].layers[layer_a])
 
-                    if hmm_matrix.size > 0:
-                        def normalized_mean(matrix):
-                            mean = np.nanmean(matrix, axis=0)
-                            normalized = (mean - mean.min()) / (mean.max() - mean.min() + 1e-9)
-                            return normalized
+                    row_labels.extend([bin_label] * num_reads)
+                    bin_labels.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
+                    last_idx += num_reads
+                    bin_boundaries.append(last_idx)
 
-                        def methylation_fraction(matrix):
-                            methylated = (matrix == 1).sum(axis=0)
-                            valid = (matrix != 0).sum(axis=0)
-                            return np.divide(methylated, valid, out=np.zeros_like(methylated, dtype=float), where=valid != 0)
-
-                        if normalize_hmm:
-                            mean_hmm = normalized_mean(hmm_matrix)
-                        else:
-                            mean_hmm = np.nanmean(hmm_matrix, axis=0)
-                        mean_gpc = methylation_fraction(gpc_matrix)
-                        mean_cpg = methylation_fraction(cpg_matrix)
-                        mean_any_c = methylation_fraction(any_c_matrix)
-
-                        fig = plt.figure(figsize=(18, 12))
-                        gs = gridspec.GridSpec(2, 4, height_ratios=[1, 6], hspace=0.01)
-                        fig.suptitle(f"{sample} - {ref} - {total_reads} reads", fontsize=14, y=0.95)
-
-                        axes_heat = [fig.add_subplot(gs[1, i]) for i in range(4)]
-                        axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(4)]
-
-                        clean_barplot(axes_bar[0], mean_hmm, f"{hmm_feature_layer} HMM Features")
-                        clean_barplot(axes_bar[1], mean_gpc, f"GpC Accessibility Signal")
-                        clean_barplot(axes_bar[2], mean_cpg, f"CpG Accessibility Signal")
-                        clean_barplot(axes_bar[3], mean_any_c, f"Any C Accessibility Signal")
-                        
-                        hmm_labels = subset.var_names.astype(int)
-                        hmm_label_spacing = 150
-                        sns.heatmap(hmm_matrix, cmap=cmap_hmm, ax=axes_heat[0], xticklabels=hmm_labels[::hmm_label_spacing], yticklabels=False, cbar=False)
-                        axes_heat[0].set_xticks(range(0, len(hmm_labels), hmm_label_spacing))
-                        axes_heat[0].set_xticklabels(hmm_labels[::hmm_label_spacing], rotation=90, fontsize=10)
-                        for boundary in bin_boundaries[:-1]:
-                            axes_heat[0].axhline(y=boundary, color="black", linewidth=2)
-
-                        sns.heatmap(gpc_matrix, cmap=cmap_gpc, ax=axes_heat[1], xticklabels=gpc_labels[::5], yticklabels=False, cbar=False)
-                        axes_heat[1].set_xticks(range(0, len(gpc_labels), 5))
-                        axes_heat[1].set_xticklabels(gpc_labels[::5], rotation=90, fontsize=10)
-                        for boundary in bin_boundaries[:-1]:
-                            axes_heat[1].axhline(y=boundary, color="black", linewidth=2)
-
-                        sns.heatmap(cpg_matrix, cmap=cmap_cpg, ax=axes_heat[2], xticklabels=cpg_labels, yticklabels=False, cbar=False)
-                        axes_heat[2].set_xticklabels(cpg_labels, rotation=90, fontsize=10)
-                        for boundary in bin_boundaries[:-1]:
-                            axes_heat[2].axhline(y=boundary, color="black", linewidth=2)
-
-                        sns.heatmap(any_c_matrix, cmap=cmap_any_c, ax=axes_heat[3], xticklabels=any_c_labels[::20], yticklabels=False, cbar=False)
-                        axes_heat[3].set_xticks(range(0, len(any_c_labels), 20))
-                        axes_heat[3].set_xticklabels(any_c_labels[::20], rotation=90, fontsize=10)
-                        for boundary in bin_boundaries[:-1]:
-                            axes_heat[3].axhline(y=boundary, color="black", linewidth=2)
-
-                        plt.tight_layout()
-
-                        if save_path:
-                            save_name = f"{ref} — {sample}"
-                            os.makedirs(save_path, exist_ok=True)
-                            safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
-                            out_file = os.path.join(save_path, f"{safe_name}.png")
-                            plt.savefig(out_file, dpi=300)
-                            print(f"Saved: {out_file}")
-                            plt.close()
-                        else:
-                            plt.show()
-
-                        print(f"Summary for {sample} - {ref}:")
-                        for bin_label, percent in percentages.items():
-                            print(f"  - {bin_label}: {percent:.1f}%")
-
-                        results.append({
-                            "sample": sample,
-                            "ref": ref,
-                            "hmm_matrix": hmm_matrix,
-                            "gpc_matrix": gpc_matrix,
-                            "cpg_matrix": cpg_matrix,
-                            "row_labels": row_labels,
-                            "bin_labels": bin_labels,
-                            "bin_boundaries": bin_boundaries,
-                            "percentages": percentages
-                        })
-                        
-                        adata.uns['clustermap_results'] = results
-
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                continue
-
-
-def combined_raw_clustermap(
-    adata,
-    sample_col='Sample_Names',
-    reference_col='Reference_strand',
-    layer_any_c="nan0_0minus1",
-    layer_gpc="nan0_0minus1",
-    layer_cpg="nan0_0minus1",
-    cmap_any_c="coolwarm",
-    cmap_gpc="coolwarm",
-    cmap_cpg="viridis",
-    min_quality=20,
-    min_length=200,
-    min_mapped_length_to_reference_length_ratio=0.8,
-    min_position_valid_fraction=0.5,
-    sample_mapping=None,
-    save_path=None,
-    sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
-    bins=None,
-    deaminase=False,
-    min_signal=0
-    ):
-    import scipy.cluster.hierarchy as sch
-    import pandas as pd
-    import numpy as np
-    import seaborn as sns
-    import matplotlib.pyplot as plt
-    import matplotlib.gridspec as gridspec
-    import os
-
-    results = []
-
-    for ref in adata.obs[reference_col].cat.categories:
-        for sample in adata.obs[sample_col].cat.categories:
-            try:
-                subset = adata[
-                    (adata.obs[reference_col] == ref) &
-                    (adata.obs[sample_col] == sample) &
-                    (adata.obs['read_quality'] >= min_quality) &
-                    (adata.obs['mapped_length'] >= min_length) &
-                    (adata.obs['mapped_length_to_reference_length_ratio'] >= min_mapped_length_to_reference_length_ratio)
-                ]
-
-                mask = subset.var[f"{ref}_valid_fraction"].astype(float) > float(min_position_valid_fraction)
-                subset = subset[:, mask]
-
-                if subset.shape[0] == 0:
-                    print(f"  No reads left after filtering for {sample} - {ref}")
+                if not stacked_hmm:
                     continue
 
-                if bins:
-                    print(f"Using defined bins to subset clustermap for {sample} - {ref}")
-                    bins_temp = bins
-                else:
-                    print(f"Using all reads for clustermap for {sample} - {ref}")
-                    bins_temp = {"All": (subset.obs['Reference_strand'] == ref)}
+                hmm_matrix = np.vstack(stacked_hmm)
+                mean_hmm = normalized_mean(hmm_matrix) if normalize_hmm else np.nanmean(hmm_matrix, axis=0)
 
-                # Get column positions (not var_names!) of site masks
-                any_c_sites = np.where(subset.var[f"{ref}_any_C_site"].values)[0]
-                gpc_sites = np.where(subset.var[f"{ref}_GpC_site"].values)[0]
-                cpg_sites = np.where(subset.var[f"{ref}_CpG_site"].values)[0]
-                num_any_c = len(any_c_sites)
-                num_gpc = len(gpc_sites)
-                num_cpg = len(cpg_sites)
-                print(f"Found {num_gpc} GpC sites at {gpc_sites} \nand {num_cpg} CpG sites at {cpg_sites}\n and {num_any_c} any_C sites at {any_c_sites} for {sample} - {ref}")
-
-                # Use var_names for x-axis tick labels
-                gpc_labels = subset.var_names[gpc_sites].astype(int)
-                cpg_labels = subset.var_names[cpg_sites].astype(int)
-                any_c_labels = subset.var_names[any_c_sites].astype(int)
-
-                stacked_any_c, stacked_gpc, stacked_cpg = [], [], []
-                row_labels, bin_labels = [], []
-                bin_boundaries = []
-
-                total_reads = subset.shape[0]
-                percentages = {}
-                last_idx = 0
-
-                for bin_label, bin_filter in bins_temp.items():
-                    subset_bin = subset[bin_filter].copy()
-                    num_reads = subset_bin.shape[0]
-                    print(f"analyzing {num_reads} reads for {bin_label} bin in {sample} - {ref}")
-                    percent_reads = (num_reads / total_reads) * 100 if total_reads > 0 else 0
-                    percentages[bin_label] = percent_reads
-
-                    if num_reads > 0 and num_cpg > 0 and num_gpc > 0:
-                        # Determine sorting order
-                        if sort_by.startswith("obs:"):
-                            colname = sort_by.split("obs:")[1]
-                            order = np.argsort(subset_bin.obs[colname].values)
-                        elif sort_by == "gpc":
-                            linkage = sch.linkage(subset_bin[:, gpc_sites].layers[layer_gpc], method="ward")
-                            order = sch.leaves_list(linkage)
-                        elif sort_by == "cpg":
-                            linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
-                            order = sch.leaves_list(linkage)
-                        elif sort_by == "any_c":
-                            linkage = sch.linkage(subset_bin[:, any_c_sites].layers[layer_any_c], method="ward")
-                            order = sch.leaves_list(linkage)
-                        elif sort_by == "gpc_cpg":
-                            linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
-                            order = sch.leaves_list(linkage)
-                        elif sort_by == "none":
-                            order = np.arange(num_reads)
-                        else:
-                            raise ValueError(f"Unsupported sort_by option: {sort_by}")
-
-                        stacked_any_c.append(subset_bin[order][:, any_c_sites].layers[layer_any_c])
-                        stacked_gpc.append(subset_bin[order][:, gpc_sites].layers[layer_gpc])
-                        stacked_cpg.append(subset_bin[order][:, cpg_sites].layers[layer_cpg])
-
-                        row_labels.extend([bin_label] * num_reads)
-                        bin_labels.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
-                        last_idx += num_reads
-                        bin_boundaries.append(last_idx)
+                # build panel list dynamically: (name, matrix, labels, cmap, mean, n_ticks)
+                panels = [
+                    ("HMM", hmm_matrix, subset.var_names.astype(int), cmap_hmm, mean_hmm, n_xticks_hmm)
+                ]
 
                 if stacked_any_c:
                     any_c_matrix = np.vstack(stacked_any_c)
+                    panels.append(("any_C", any_c_matrix, any_c_labels, cmap_any_c,
+                                   methylation_fraction(any_c_matrix), n_xticks_any_c))
+                if stacked_gpc:
                     gpc_matrix = np.vstack(stacked_gpc)
+                    panels.append(("GpC", gpc_matrix, gpc_labels, cmap_gpc,
+                                   methylation_fraction(gpc_matrix), n_xticks_gpc))
+                if stacked_cpg:
                     cpg_matrix = np.vstack(stacked_cpg)
+                    panels.append(("CpG", cpg_matrix, cpg_labels, cmap_cpg,
+                                   methylation_fraction(cpg_matrix), n_xticks_cpg))
+                if stacked_any_a:
+                    any_a_matrix = np.vstack(stacked_any_a)
+                    panels.append(("A", any_a_matrix, any_a_labels, cmap_a,
+                                   methylation_fraction(any_a_matrix), n_xticks_a))
 
-                    if any_c_matrix.size > 0:
-                        def normalized_mean(matrix):
-                            mean = np.nanmean(matrix, axis=0)
-                            normalized = (mean - mean.min()) / (mean.max() - mean.min() + 1e-9)
-                            return normalized
+                # ---- plotting ----
+                n_panels = len(panels)
+                fig = plt.figure(figsize=(4.5 * n_panels, 10))
+                gs = gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
+                fig.suptitle(f"{sample} - {ref} - {total_reads} reads ({signal_type})",
+                             fontsize=14, y=0.98)
 
-                        def methylation_fraction(matrix):
-                            methylated = (matrix == 1).sum(axis=0)
-                            valid = (matrix != 0).sum(axis=0)
-                            return np.divide(methylated, valid, out=np.zeros_like(methylated, dtype=float), where=valid != 0)
+                axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
+                axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
 
-                        mean_gpc = methylation_fraction(gpc_matrix)
-                        mean_cpg = methylation_fraction(cpg_matrix)
-                        mean_any_c = methylation_fraction(any_c_matrix)
+                for i, (pname, mat, labels, cmap, mean_vec, n_ticks) in enumerate(panels):
+                    # bar
+                    axes_bar[i].plot(mean_vec)
+                    axes_bar[i].set_title(pname, fontsize=10)
+                    axes_bar[i].set_ylabel("mean", fontsize=8)
 
-                        fig = plt.figure(figsize=(18, 12))
-                        gs = gridspec.GridSpec(2, 3, height_ratios=[1, 6], hspace=0.01)
-                        fig.suptitle(f"{sample} - {ref} - {total_reads} reads", fontsize=14, y=0.95)
+                    # heat
+                    sns.heatmap(mat, cmap=cmap, ax=axes_heat[i],
+                                yticklabels=False, cbar=False)
 
-                        axes_heat = [fig.add_subplot(gs[1, i]) for i in range(3)]
-                        axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(3)]
+                    xtick_pos, xtick_labels = pick_xticks(np.asarray(labels), n_ticks)
+                    axes_heat[i].set_xticks(xtick_pos)
+                    axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=8)
 
-                        clean_barplot(axes_bar[0], mean_any_c, f"any C site Modification Signal")
-                        clean_barplot(axes_bar[1], mean_gpc, f"GpC Modification Signal")
-                        clean_barplot(axes_bar[2], mean_cpg, f"CpG Modification Signal")
+                    for boundary in bin_boundaries[:-1]:
+                        axes_heat[i].axhline(y=boundary, color="black", linewidth=1.5)
+
+                    axes_heat[i].set_xlabel("position", fontsize=9)
+
+                plt.tight_layout()
+
+                if save_path is not None:
+                    save_path = Path(save_path)
+                    save_path.mkdir(parents=True, exist_ok=True)
+                    safe_name = f"{ref}__{sample}".replace(os.sep, "_")
+                    out_file = save_path / f"{safe_name}.png"
+                    plt.savefig(out_file, dpi=300)
+                    plt.close(fig)
+                else:
+                    plt.show()
+
+                results.append({
+                    "sample": sample,
+                    "ref": ref,
+                    "panels": [p[0] for p in panels],
+                    "row_labels": row_labels,
+                    "bin_labels": bin_labels,
+                    "bin_boundaries": bin_boundaries,
+                    "percentages": percentages,
+                })
+                adata.uns["clustermap_results"] = results
+
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                continue
+
+    return results
+
+
+# def combined_raw_clustermap(
+#     adata,
+#     sample_col='Sample_Names',
+#     reference_col='Reference_strand',
+#     mod_target_bases=['GpC', 'CpG'],
+#     layer_any_c="nan0_0minus1",
+#     layer_gpc="nan0_0minus1",
+#     layer_cpg="nan0_0minus1",
+#     layer_a="nan0_0minus1",
+#     cmap_any_c="coolwarm",
+#     cmap_gpc="coolwarm",
+#     cmap_cpg="viridis",
+#     cmap_a="coolwarm",
+#     min_quality=20,
+#     min_length=200,
+#     min_mapped_length_to_reference_length_ratio=0.8,
+#     min_position_valid_fraction=0.5,
+#     sample_mapping=None,
+#     save_path=None,
+#     sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', 'any_a', or 'obs:<column>'
+#     bins=None,
+#     deaminase=False,
+#     min_signal=0
+#     ):
+
+#     results = []
+
+#     for ref in adata.obs[reference_col].cat.categories:
+#         for sample in adata.obs[sample_col].cat.categories:
+#             try:
+#                 subset = adata[
+#                     (adata.obs[reference_col] == ref) &
+#                     (adata.obs[sample_col] == sample) &
+#                     (adata.obs['read_quality'] >= min_quality) &
+#                     (adata.obs['mapped_length'] >= min_length) &
+#                     (adata.obs['mapped_length_to_reference_length_ratio'] >= min_mapped_length_to_reference_length_ratio)
+#                 ]
+
+#                 mask = subset.var[f"{ref}_valid_fraction"].astype(float) > float(min_position_valid_fraction)
+#                 subset = subset[:, mask]
+
+#                 if subset.shape[0] == 0:
+#                     print(f"  No reads left after filtering for {sample} - {ref}")
+#                     continue
+
+#                 if bins:
+#                     print(f"Using defined bins to subset clustermap for {sample} - {ref}")
+#                     bins_temp = bins
+#                 else:
+#                     print(f"Using all reads for clustermap for {sample} - {ref}")
+#                     bins_temp = {"All": (subset.obs['Reference_strand'] == ref)}
+
+#                 num_any_c = 0
+#                 num_gpc = 0
+#                 num_cpg = 0
+#                 num_any_a = 0
+
+#                 # Get column positions (not var_names!) of site masks
+#                 if any(base in ["C", "CpG", "GpC"] for base in mod_target_bases):
+#                     any_c_sites = np.where(subset.var[f"{ref}_C_site"].values)[0]
+#                     gpc_sites = np.where(subset.var[f"{ref}_GpC_site"].values)[0]
+#                     cpg_sites = np.where(subset.var[f"{ref}_CpG_site"].values)[0]
+#                     num_any_c = len(any_c_sites)
+#                     num_gpc = len(gpc_sites)
+#                     num_cpg = len(cpg_sites)
+#                     print(f"Found {num_gpc} GpC sites at {gpc_sites} \nand {num_cpg} CpG sites at {cpg_sites}\n and {num_any_c} any_C sites at {any_c_sites} for {sample} - {ref}")
+
+#                     # Use var_names for x-axis tick labels
+#                     gpc_labels = subset.var_names[gpc_sites].astype(int)
+#                     cpg_labels = subset.var_names[cpg_sites].astype(int)
+#                     any_c_labels = subset.var_names[any_c_sites].astype(int)
+#                 stacked_any_c, stacked_gpc, stacked_cpg = [], [], []
+
+#                 if "A" in mod_target_bases:
+#                     any_a_sites = np.where(subset.var[f"{ref}_A_site"].values)[0]
+#                     num_any_a = len(any_a_sites)
+#                     print(f"Found {num_any_a} any_A sites at {any_a_sites} for {sample} - {ref}")
+#                     any_a_labels = subset.var_names[any_a_sites].astype(int)
+#                 stacked_any_a = []
+
+#                 row_labels, bin_labels = [], []
+#                 bin_boundaries = []
+
+#                 total_reads = subset.shape[0]
+#                 percentages = {}
+#                 last_idx = 0
+
+#                 for bin_label, bin_filter in bins_temp.items():
+#                     subset_bin = subset[bin_filter].copy()
+#                     num_reads = subset_bin.shape[0]
+#                     print(f"analyzing {num_reads} reads for {bin_label} bin in {sample} - {ref}")
+#                     percent_reads = (num_reads / total_reads) * 100 if total_reads > 0 else 0
+#                     percentages[bin_label] = percent_reads
+
+#                     if num_reads > 0 and num_cpg > 0 and num_gpc > 0:
+#                         # Determine sorting order
+#                         if sort_by.startswith("obs:"):
+#                             colname = sort_by.split("obs:")[1]
+#                             order = np.argsort(subset_bin.obs[colname].values)
+#                         elif sort_by == "gpc":
+#                             linkage = sch.linkage(subset_bin[:, gpc_sites].layers[layer_gpc], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "cpg":
+#                             linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "any_c":
+#                             linkage = sch.linkage(subset_bin[:, any_c_sites].layers[layer_any_c], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "gpc_cpg":
+#                             linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "none":
+#                             order = np.arange(num_reads)
+#                         elif sort_by == "any_a":
+#                             linkage = sch.linkage(subset_bin.layers[layer_a], method="ward")
+#                             order = sch.leaves_list(linkage)                            
+#                         else:
+#                             raise ValueError(f"Unsupported sort_by option: {sort_by}")
+
+#                         stacked_any_c.append(subset_bin[order][:, any_c_sites].layers[layer_any_c])
+#                         stacked_gpc.append(subset_bin[order][:, gpc_sites].layers[layer_gpc])
+#                         stacked_cpg.append(subset_bin[order][:, cpg_sites].layers[layer_cpg])
+
+#                     if num_reads > 0 and num_any_a > 0:
+#                         # Determine sorting order
+#                         if sort_by.startswith("obs:"):
+#                             colname = sort_by.split("obs:")[1]
+#                             order = np.argsort(subset_bin.obs[colname].values)
+#                         elif sort_by == "gpc":
+#                             linkage = sch.linkage(subset_bin[:, gpc_sites].layers[layer_gpc], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "cpg":
+#                             linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "any_c":
+#                             linkage = sch.linkage(subset_bin[:, any_c_sites].layers[layer_any_c], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "gpc_cpg":
+#                             linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
+#                             order = sch.leaves_list(linkage)
+#                         elif sort_by == "none":
+#                             order = np.arange(num_reads)
+#                         elif sort_by == "any_a":
+#                             linkage = sch.linkage(subset_bin.layers[layer_a], method="ward")
+#                             order = sch.leaves_list(linkage)                            
+#                         else:
+#                             raise ValueError(f"Unsupported sort_by option: {sort_by}")
                         
-
-                        sns.heatmap(any_c_matrix, cmap=cmap_any_c, ax=axes_heat[0], xticklabels=any_c_labels[::20], yticklabels=False, cbar=False)
-                        axes_heat[0].set_xticks(range(0, len(any_c_labels), 20))
-                        axes_heat[0].set_xticklabels(any_c_labels[::20], rotation=90, fontsize=10)
-                        for boundary in bin_boundaries[:-1]:
-                            axes_heat[0].axhline(y=boundary, color="black", linewidth=2)
-
-                        sns.heatmap(gpc_matrix, cmap=cmap_gpc, ax=axes_heat[1], xticklabels=gpc_labels[::5], yticklabels=False, cbar=False)
-                        axes_heat[1].set_xticks(range(0, len(gpc_labels), 5))
-                        axes_heat[1].set_xticklabels(gpc_labels[::5], rotation=90, fontsize=10)
-                        for boundary in bin_boundaries[:-1]:
-                            axes_heat[1].axhline(y=boundary, color="black", linewidth=2)
-
-                        sns.heatmap(cpg_matrix, cmap=cmap_cpg, ax=axes_heat[2], xticklabels=cpg_labels, yticklabels=False, cbar=False)
-                        axes_heat[2].set_xticklabels(cpg_labels, rotation=90, fontsize=10)
-                        for boundary in bin_boundaries[:-1]:
-                            axes_heat[2].axhline(y=boundary, color="black", linewidth=2)
-
-                        plt.tight_layout()
-
-                        if save_path:
-                            save_name = f"{ref} — {sample}"
-                            os.makedirs(save_path, exist_ok=True)
-                            safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
-                            out_file = os.path.join(save_path, f"{safe_name}.png")
-                            plt.savefig(out_file, dpi=300)
-                            print(f"Saved: {out_file}")
-                            plt.close()
-                        else:
-                            plt.show()
-
-                        print(f"Summary for {sample} - {ref}:")
-                        for bin_label, percent in percentages.items():
-                            print(f"  - {bin_label}: {percent:.1f}%")
-
-                        results.append({
-                            "sample": sample,
-                            "ref": ref,
-                            "any_c_matrix": any_c_matrix,
-                            "gpc_matrix": gpc_matrix,
-                            "cpg_matrix": cpg_matrix,
-                            "row_labels": row_labels,
-                            "bin_labels": bin_labels,
-                            "bin_boundaries": bin_boundaries,
-                            "percentages": percentages
-                        })
+#                         stacked_any_a.append(subset_bin[order][:, any_a_sites].layers[layer_a])
                         
-                        adata.uns['clustermap_results'] = results
+                        
+#                     row_labels.extend([bin_label] * num_reads)
+#                     bin_labels.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
+#                     last_idx += num_reads
+#                     bin_boundaries.append(last_idx)
+
+#                 gs_dim = 0
+
+#                 if stacked_any_c:
+#                     any_c_matrix = np.vstack(stacked_any_c)
+#                     gpc_matrix = np.vstack(stacked_gpc)
+#                     cpg_matrix = np.vstack(stacked_cpg)
+#                     if any_c_matrix.size > 0:
+#                         mean_gpc = methylation_fraction(gpc_matrix)
+#                         mean_cpg = methylation_fraction(cpg_matrix)
+#                         mean_any_c = methylation_fraction(any_c_matrix)
+#                     gs_dim += 3
+
+#                 if stacked_any_a:
+#                     any_a_matrix = np.vstack(stacked_any_a)
+#                     if any_a_matrix.size > 0:
+#                         mean_any_a = methylation_fraction(any_a_matrix)
+#                         gs_dim += 1
+                    
+
+#                 fig = plt.figure(figsize=(18, 12))
+#                 gs = gridspec.GridSpec(2, gs_dim, height_ratios=[1, 6], hspace=0.01)
+#                 fig.suptitle(f"{sample} - {ref} - {total_reads} reads", fontsize=14, y=0.95)
+#                 axes_heat = [fig.add_subplot(gs[1, i]) for i in range(gs_dim)]
+#                 axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(gs_dim)]
+
+#                 current_ax = 0
+
+#                 if stacked_any_c:
+#                     if any_c_matrix.size > 0:
+#                         clean_barplot(axes_bar[current_ax], mean_any_c, f"any C site Modification Signal")
+#                         sns.heatmap(any_c_matrix, cmap=cmap_any_c, ax=axes_heat[current_ax], xticklabels=any_c_labels[::20], yticklabels=False, cbar=False)
+#                         axes_heat[current_ax].set_xticks(range(0, len(any_c_labels), 20))
+#                         axes_heat[current_ax].set_xticklabels(any_c_labels[::20], rotation=90, fontsize=10)
+#                         for boundary in bin_boundaries[:-1]:
+#                             axes_heat[current_ax].axhline(y=boundary, color="black", linewidth=2)
+#                         current_ax +=1
+
+#                         clean_barplot(axes_bar[current_ax], mean_gpc, f"GpC Modification Signal")
+#                         sns.heatmap(gpc_matrix, cmap=cmap_gpc, ax=axes_heat[current_ax], xticklabels=gpc_labels[::5], yticklabels=False, cbar=False)
+#                         axes_heat[current_ax].set_xticks(range(0, len(gpc_labels), 5))
+#                         axes_heat[current_ax].set_xticklabels(gpc_labels[::5], rotation=90, fontsize=10)
+#                         for boundary in bin_boundaries[:-1]:
+#                             axes_heat[current_ax].axhline(y=boundary, color="black", linewidth=2)
+#                         current_ax +=1
+
+#                         clean_barplot(axes_bar[current_ax], mean_cpg, f"CpG Modification Signal")
+#                         sns.heatmap(cpg_matrix, cmap=cmap_cpg, ax=axes_heat[2], xticklabels=cpg_labels, yticklabels=False, cbar=False)
+#                         axes_heat[current_ax].set_xticklabels(cpg_labels, rotation=90, fontsize=10)
+#                         for boundary in bin_boundaries[:-1]:
+#                             axes_heat[current_ax].axhline(y=boundary, color="black", linewidth=2)  
+#                         current_ax +=1  
+
+#                         results.append({
+#                             "sample": sample,
+#                             "ref": ref,
+#                             "any_c_matrix": any_c_matrix,
+#                             "gpc_matrix": gpc_matrix,
+#                             "cpg_matrix": cpg_matrix,
+#                             "row_labels": row_labels,
+#                             "bin_labels": bin_labels,
+#                             "bin_boundaries": bin_boundaries,
+#                             "percentages": percentages
+#                         })                    
+
+#                 if stacked_any_a:
+#                     if any_a_matrix.size > 0:
+#                         clean_barplot(axes_bar[current_ax], mean_any_a, f"any A site Modification Signal")
+#                         sns.heatmap(any_a_matrix, cmap=cmap_a, ax=axes_heat[current_ax], xticklabels=any_a_labels[::20], yticklabels=False, cbar=False)
+#                         axes_heat[current_ax].set_xticks(range(0, len(any_a_labels), 20))
+#                         axes_heat[current_ax].set_xticklabels(any_a_labels[::20], rotation=90, fontsize=10)
+#                         for boundary in bin_boundaries[:-1]:
+#                             axes_heat[current_ax].axhline(y=boundary, color="black", linewidth=2)
+#                         current_ax +=1
+
+#                         results.append({
+#                             "sample": sample,
+#                             "ref": ref,
+#                             "any_a_matrix": any_a_matrix,
+#                             "row_labels": row_labels,
+#                             "bin_labels": bin_labels,
+#                             "bin_boundaries": bin_boundaries,
+#                             "percentages": percentages
+#                         }) 
+
+#                 plt.tight_layout()
+
+#                 if save_path:
+#                     save_name = f"{ref} — {sample}"
+#                     os.makedirs(save_path, exist_ok=True)
+#                     safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
+#                     out_file = os.path.join(save_path, f"{safe_name}.png")
+#                     plt.savefig(out_file, dpi=300)
+#                     print(f"Saved: {out_file}")
+#                     plt.close()
+#                 else:
+#                     plt.show()
+
+#                 print(f"Summary for {sample} - {ref}:")
+#                 for bin_label, percent in percentages.items():
+#                     print(f"  - {bin_label}: {percent:.1f}%")
+                
+#                 adata.uns['clustermap_results'] = results
+
+#             except Exception as e:
+#                 import traceback
+#                 traceback.print_exc()
+#                 continue
+
+def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
+    """
+    Return indices for ~n_ticks evenly spaced labels across [0, n_positions-1].
+    Always includes 0 and n_positions-1 when possible.
+    """
+    n_ticks = int(max(2, n_ticks))
+    if n_positions <= n_ticks:
+        return np.arange(n_positions)
+
+    # linspace gives fixed count
+    pos = np.linspace(0, n_positions - 1, n_ticks)
+    return np.unique(np.round(pos).astype(int))
+
+def combined_raw_clustermap(
+    adata,
+    sample_col: str = "Sample_Names",
+    reference_col: str = "Reference_strand",
+    mod_target_bases: Sequence[str] = ("GpC", "CpG"),
+    layer_any_c: str = "nan0_0minus1",
+    layer_gpc: str = "nan0_0minus1",
+    layer_cpg: str = "nan0_0minus1",
+    layer_a: str = "nan0_0minus1",
+    cmap_any_c: str = "coolwarm",
+    cmap_gpc: str = "coolwarm",
+    cmap_cpg: str = "viridis",
+    cmap_a: str = "coolwarm",
+    min_quality: float = 20,
+    min_length: int = 200,
+    min_mapped_length_to_reference_length_ratio: float = 0.8,
+    min_position_valid_fraction: float = 0.5,
+    sample_mapping: Optional[Mapping[str, str]] = None,
+    save_path: str | Path | None = None,
+    sort_by: str = "gpc",  # 'gpc','cpg','any_c','gpc_cpg','any_a','none','obs:<col>'
+    bins: Optional[Dict[str, Any]] = None,
+    deaminase: bool = False,
+    min_signal: float = 0,
+    # NEW tick controls
+    n_xticks_any_c: int = 10,
+    n_xticks_gpc: int = 10,
+    n_xticks_cpg: int = 10,
+    n_xticks_any_a: int = 10,
+    xtick_rotation: int = 90,
+    xtick_fontsize: int = 9,
+):
+    """
+    Plot stacked heatmaps + per-position mean barplots for any_C, GpC, CpG, and optional A.
+
+    Key fixes vs old version:
+      - order computed ONCE per bin, applied to all matrices
+      - no hard-coded axes indices
+      - NaNs excluded from methylation denominators
+      - var_names not forced to int
+      - fixed count of x tick labels per block (controllable)
+      - adata.uns updated once at end
+
+    Returns
+    -------
+    results : list[dict]
+        One entry per (sample, ref) plot with matrices + bin metadata.
+    """
+
+    results: List[Dict[str, Any]] = []
+    save_path = Path(save_path) if save_path is not None else None
+    if save_path is not None:
+        save_path.mkdir(parents=True, exist_ok=True)
+
+    # Ensure categorical
+    for col in (sample_col, reference_col):
+        if col not in adata.obs:
+            raise KeyError(f"{col} not in adata.obs")
+        if not pd.api.types.is_categorical_dtype(adata.obs[col]):
+            adata.obs[col] = adata.obs[col].astype("category")
+
+    base_set = set(mod_target_bases)
+    include_any_c = any(b in {"C", "CpG", "GpC"} for b in base_set)
+    include_any_a = "A" in base_set
+
+    for ref in adata.obs[reference_col].cat.categories:
+        for sample in adata.obs[sample_col].cat.categories:
+
+            # Optionally remap sample label for display
+            display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
+
+            try:
+                subset = adata[
+                    (adata.obs[reference_col] == ref) &
+                    (adata.obs[sample_col] == sample) &
+                    (adata.obs["read_quality"] >= min_quality) &
+                    (adata.obs["mapped_length"] >= min_length) &
+                    (adata.obs["mapped_length_to_reference_length_ratio"] >= min_mapped_length_to_reference_length_ratio)
+                ]
+
+                # position-level mask
+                valid_key = f"{ref}_valid_fraction"
+                if valid_key in subset.var:
+                    mask = subset.var[valid_key].astype(float).values > float(min_position_valid_fraction)
+                    subset = subset[:, mask]
+
+                if subset.shape[0] == 0:
+                    print(f"No reads left after filtering for {display_sample} - {ref}")
+                    continue
+
+                # bins mode
+                if bins is None:
+                    bins_temp = {"All": (subset.obs[reference_col] == ref)}
+                else:
+                    bins_temp = bins
+
+                # find sites (positions)
+                any_c_sites = gpc_sites = cpg_sites = np.array([], dtype=int)
+                any_a_sites = np.array([], dtype=int)
+
+                num_any_c = num_gpc = num_cpg = num_any_a = 0
+
+                if include_any_c:
+                    any_c_sites = np.where(subset.var.get(f"{ref}_C_site", False).values)[0]
+                    gpc_sites   = np.where(subset.var.get(f"{ref}_GpC_site", False).values)[0]
+                    cpg_sites   = np.where(subset.var.get(f"{ref}_CpG_site", False).values)[0]
+
+                    num_any_c, num_gpc, num_cpg = len(any_c_sites), len(gpc_sites), len(cpg_sites)
+
+                    any_c_labels = subset.var_names[any_c_sites].astype(str)
+                    gpc_labels   = subset.var_names[gpc_sites].astype(str)
+                    cpg_labels   = subset.var_names[cpg_sites].astype(str)
+
+                if include_any_a:
+                    any_a_sites = np.where(subset.var.get(f"{ref}_A_site", False).values)[0]
+                    num_any_a = len(any_a_sites)
+                    any_a_labels = subset.var_names[any_a_sites].astype(str)
+
+                stacked_any_c, stacked_gpc, stacked_cpg, stacked_any_a = [], [], [], []
+                row_labels, bin_labels, bin_boundaries = [], [], []
+                percentages = {}
+                last_idx = 0
+                total_reads = subset.shape[0]
+
+                # ----------------------------
+                # per-bin stacking
+                # ----------------------------
+                for bin_label, bin_filter in bins_temp.items():
+                    subset_bin = subset[bin_filter].copy()
+                    num_reads = subset_bin.shape[0]
+                    if num_reads == 0:
+                        percentages[bin_label] = 0.0
+                        continue
+
+                    percent_reads = (num_reads / total_reads) * 100
+                    percentages[bin_label] = percent_reads
+
+                    # compute order ONCE
+                    if sort_by.startswith("obs:"):
+                        colname = sort_by.split("obs:")[1]
+                        order = np.argsort(subset_bin.obs[colname].values)
+
+                    elif sort_by == "gpc" and num_gpc > 0:
+                        linkage = sch.linkage(subset_bin[:, gpc_sites].layers[layer_gpc], method="ward")
+                        order = sch.leaves_list(linkage)
+
+                    elif sort_by == "cpg" and num_cpg > 0:
+                        linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
+                        order = sch.leaves_list(linkage)
+
+                    elif sort_by == "any_c" and num_any_c > 0:
+                        linkage = sch.linkage(subset_bin[:, any_c_sites].layers[layer_any_c], method="ward")
+                        order = sch.leaves_list(linkage)
+
+                    elif sort_by == "gpc_cpg":
+                        linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
+                        order = sch.leaves_list(linkage)
+
+                    elif sort_by == "any_a" and num_any_a > 0:
+                        linkage = sch.linkage(subset_bin[:, any_a_sites].layers[layer_a], method="ward")
+                        order = sch.leaves_list(linkage)
+
+                    elif sort_by == "none":
+                        order = np.arange(num_reads)
+
+                    else:
+                        order = np.arange(num_reads)
+
+                    subset_bin = subset_bin[order]
+
+                    # stack consistently
+                    if include_any_c and num_any_c > 0:
+                        stacked_any_c.append(subset_bin[:, any_c_sites].layers[layer_any_c])
+                    if include_any_c and num_gpc > 0:
+                        stacked_gpc.append(subset_bin[:, gpc_sites].layers[layer_gpc])
+                    if include_any_c and num_cpg > 0:
+                        stacked_cpg.append(subset_bin[:, cpg_sites].layers[layer_cpg])
+                    if include_any_a and num_any_a > 0:
+                        stacked_any_a.append(subset_bin[:, any_a_sites].layers[layer_a])
+
+                    row_labels.extend([bin_label] * num_reads)
+                    bin_labels.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
+                    last_idx += num_reads
+                    bin_boundaries.append(last_idx)
+
+                # ----------------------------
+                # build matrices + means
+                # ----------------------------
+                blocks = []  # list of dicts describing what to plot in order
+
+                if include_any_c and stacked_any_c:
+                    any_c_matrix = np.vstack(stacked_any_c)
+                    gpc_matrix   = np.vstack(stacked_gpc) if stacked_gpc else np.empty((0, 0))
+                    cpg_matrix   = np.vstack(stacked_cpg) if stacked_cpg else np.empty((0, 0))
+
+                    mean_any_c = methylation_fraction(any_c_matrix) if any_c_matrix.size else None
+                    mean_gpc   = methylation_fraction(gpc_matrix) if gpc_matrix.size else None
+                    mean_cpg   = methylation_fraction(cpg_matrix) if cpg_matrix.size else None
+
+                    if any_c_matrix.size:
+                        blocks.append(dict(
+                            name="any_c",
+                            matrix=any_c_matrix,
+                            mean=mean_any_c,
+                            labels=any_c_labels,
+                            cmap=cmap_any_c,
+                            n_xticks=n_xticks_any_c,
+                            title="any C site Modification Signal"
+                        ))
+                    if gpc_matrix.size:
+                        blocks.append(dict(
+                            name="gpc",
+                            matrix=gpc_matrix,
+                            mean=mean_gpc,
+                            labels=gpc_labels,
+                            cmap=cmap_gpc,
+                            n_xticks=n_xticks_gpc,
+                            title="GpC Modification Signal"
+                        ))
+                    if cpg_matrix.size:
+                        blocks.append(dict(
+                            name="cpg",
+                            matrix=cpg_matrix,
+                            mean=mean_cpg,
+                            labels=cpg_labels,
+                            cmap=cmap_cpg,
+                            n_xticks=n_xticks_cpg,
+                            title="CpG Modification Signal"
+                        ))
+
+                if include_any_a and stacked_any_a:
+                    any_a_matrix = np.vstack(stacked_any_a)
+                    mean_any_a = methylation_fraction(any_a_matrix) if any_a_matrix.size else None
+                    if any_a_matrix.size:
+                        blocks.append(dict(
+                            name="any_a",
+                            matrix=any_a_matrix,
+                            mean=mean_any_a,
+                            labels=any_a_labels,
+                            cmap=cmap_a,
+                            n_xticks=n_xticks_any_a,
+                            title="any A site Modification Signal"
+                        ))
+
+                if not blocks:
+                    print(f"No matrices to plot for {display_sample} - {ref}")
+                    continue
+
+                gs_dim = len(blocks)
+                fig = plt.figure(figsize=(5.5 * gs_dim, 11))
+                gs = gridspec.GridSpec(2, gs_dim, height_ratios=[1, 6], hspace=0.02)
+                fig.suptitle(f"{display_sample} - {ref} - {total_reads} reads", fontsize=14, y=0.97)
+
+                axes_heat = [fig.add_subplot(gs[1, i]) for i in range(gs_dim)]
+                axes_bar  = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(gs_dim)]
+
+                # ----------------------------
+                # plot blocks
+                # ----------------------------
+                for i, blk in enumerate(blocks):
+                    mat = blk["matrix"]
+                    mean = blk["mean"]
+                    labels = np.asarray(blk["labels"], dtype=str)
+                    n_xticks = blk["n_xticks"]
+
+                    # barplot
+                    clean_barplot(axes_bar[i], mean, blk["title"])
+
+                    # heatmap
+                    sns.heatmap(
+                        mat,
+                        cmap=blk["cmap"],
+                        ax=axes_heat[i],
+                        yticklabels=False,
+                        cbar=False
+                    )
+
+                    # fixed tick labels
+                    tick_pos = _fixed_tick_positions(len(labels), n_xticks)
+                    axes_heat[i].set_xticks(tick_pos)
+                    axes_heat[i].set_xticklabels(
+                        labels[tick_pos],
+                        rotation=xtick_rotation,
+                        fontsize=xtick_fontsize
+                    )
+
+                    # bin separators
+                    for boundary in bin_boundaries[:-1]:
+                        axes_heat[i].axhline(y=boundary, color="black", linewidth=2)
+
+                    axes_heat[i].set_xlabel("Position", fontsize=9)
+
+                plt.tight_layout()
+
+                # save or show
+                if save_path is not None:
+                    safe_name = f"{ref}__{display_sample}".replace("=", "").replace("__", "_").replace(",", "_").replace(" ", "_")
+                    out_file = save_path / f"{safe_name}.png"
+                    fig.savefig(out_file, dpi=300)
+                    plt.close(fig)
+                    print(f"Saved: {out_file}")
+                else:
+                    plt.show()
+
+                # record results
+                rec = {
+                    "sample": str(sample),
+                    "ref": str(ref),
+                    "row_labels": row_labels,
+                    "bin_labels": bin_labels,
+                    "bin_boundaries": bin_boundaries,
+                    "percentages": percentages,
+                }
+                for blk in blocks:
+                    rec[f"{blk['name']}_matrix"] = blk["matrix"]
+                    rec[f"{blk['name']}_labels"] = list(map(str, blk["labels"]))
+                results.append(rec)
+
+                print(f"Summary for {display_sample} - {ref}:")
+                for bin_label, percent in percentages.items():
+                    print(f"  - {bin_label}: {percent:.1f}%")
 
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 continue
-            
 
-import os
-import math
-from typing import List, Optional, Sequence, Tuple
+    # store once at the end (HDF5 safe)
+    # matrices won't be HDF5-safe; store only metadata + maybe hit counts
+    # adata.uns["clustermap_results"] = [
+    #     {k: v for k, v in r.items() if not k.endswith("_matrix")}
+    #     for r in results
+    # ]
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+    return results
 
 def plot_hmm_layers_rolling_by_sample_ref(
     adata,

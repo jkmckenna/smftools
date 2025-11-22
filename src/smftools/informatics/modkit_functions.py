@@ -2,6 +2,7 @@ import os
 import subprocess
 import glob
 import zipfile
+from pathlib import Path
 
 def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified=True, modkit_summary=False, threads=None):
     """
@@ -22,7 +23,9 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassifi
 
     """
     filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold = thresholds
-    bam_files = glob.glob(split_dir / f"*{bam_suffix}")
+    bam_files = sorted(p for p in split_dir.iterdir() if bam_suffix in p.name and '.bai' not in p.name)
+    if skip_unclassified:
+        bam_files = [p for p in bam_files if "unclassified" not in p.name]
     print(f"Running modkit extract for the following bam files: {bam_files}")
 
     if threads:
@@ -32,53 +35,48 @@ def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassifi
 
     for input_file in bam_files:
         print(input_file)
-        # Extract the file basename
-        file_name = input_file.name
-        if skip_unclassified and "unclassified" in file_name:
-            print("Skipping modkit extract on unclassified reads")
+        # Construct the output TSV file path
+        output_tsv = mod_tsv_dir / (input_file.stem + "_extract.tsv")
+        output_tsv_gz = output_tsv.parent / (output_tsv.name + '.gz')
+        if output_tsv_gz.exists():
+            print(f"{output_tsv_gz} already exists, skipping modkit extract")
         else:
-            # Construct the output TSV file path
-            output_tsv = mod_tsv_dir / file_name.stem + "_extract.tsv"
-            output_tsv_gz = output_tsv + '.gz'
-            if output_tsv_gz.exists():
-                print(f"{output_tsv_gz} already exists, skipping modkit extract")
+            print(f"Extracting modification data from {input_file}")
+            if modkit_summary:
+                # Run modkit summary
+                subprocess.run(["modkit", "summary", str(input_file)])
             else:
-                print(f"Extracting modification data from {input_file}")
-                if modkit_summary:
-                    # Run modkit summary
-                    subprocess.run(["modkit", "summary", str(input_file)])
-                else:
-                    pass
-                # Run modkit extract
-                if threads:
-                    extract_command = [
-                        "modkit", "extract",
-                        "calls", "--mapped-only",
-                        "--filter-threshold", f'{filter_threshold}',
-                        "--mod-thresholds", f"m:{m5C_threshold}",
-                        "--mod-thresholds", f"a:{m6A_threshold}",
-                        "--mod-thresholds", f"h:{hm5C_threshold}",
-                        "-t", threads,
-                        str(input_file), str(output_tsv)
-                        ]
-                else:
-                    extract_command = [
-                        "modkit", "extract",
-                        "calls", "--mapped-only",
-                        "--filter-threshold", f'{filter_threshold}',
-                        "--mod-thresholds", f"m:{m5C_threshold}",
-                        "--mod-thresholds", f"a:{m6A_threshold}",
-                        "--mod-thresholds", f"h:{hm5C_threshold}",
-                        str(input_file), str(output_tsv)
-                        ]                    
-                subprocess.run(extract_command)
-                # Zip the output TSV
-                print(f'zipping {output_tsv}')
-                if threads:
-                    zip_command = ["pigz", "-f", "-p", threads, str(output_tsv)]
-                else:
-                    zip_command = ["pigz", "-f", str(output_tsv)]
-                subprocess.run(zip_command, check=True)
+                pass
+            # Run modkit extract
+            if threads:
+                extract_command = [
+                    "modkit", "extract",
+                    "calls", "--mapped-only",
+                    "--filter-threshold", f'{filter_threshold}',
+                    "--mod-thresholds", f"m:{m5C_threshold}",
+                    "--mod-thresholds", f"a:{m6A_threshold}",
+                    "--mod-thresholds", f"h:{hm5C_threshold}",
+                    "-t", threads,
+                    str(input_file), str(output_tsv)
+                    ]
+            else:
+                extract_command = [
+                    "modkit", "extract",
+                    "calls", "--mapped-only",
+                    "--filter-threshold", f'{filter_threshold}',
+                    "--mod-thresholds", f"m:{m5C_threshold}",
+                    "--mod-thresholds", f"a:{m6A_threshold}",
+                    "--mod-thresholds", f"h:{hm5C_threshold}",
+                    str(input_file), str(output_tsv)
+                    ]                    
+            subprocess.run(extract_command)
+            # Zip the output TSV
+            print(f'zipping {output_tsv}')
+            if threads:
+                zip_command = ["pigz", "-f", "-p", threads, str(output_tsv)]
+            else:
+                zip_command = ["pigz", "-f", str(output_tsv)]
+            subprocess.run(zip_command, check=True)
     return
 
 def make_modbed(aligned_sorted_output, thresholds, mod_bed_dir):

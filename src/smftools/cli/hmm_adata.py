@@ -85,7 +85,8 @@ def hmm_adata(config_path):
             else:            
                 print(f"No adata available.")
                 return
-    references = adata.obs[cfg.reference_column].cat.categories          
+    references = adata.obs[cfg.reference_column].cat.categories  
+    deaminase = smf_modality == 'deaminase'        
 ############################################### HMM based feature annotations ###############################################
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):
         from ..hmm.HMM import HMM
@@ -117,8 +118,8 @@ def hmm_adata(config_path):
                     continue
 
                 for mod_site in cfg.hmm_methbases:
-                    mod_label = {'C': 'any_C'}.get(mod_site, mod_site)
-                    hmm_path = os.path.join(hmm_dir, f"{sample}_{ref}_{mod_label}_hmm_model.pth")
+                    mod_label = {'C': 'C'}.get(mod_site, mod_site)
+                    hmm_path = hmm_dir / f"{sample}_{ref}_{mod_label}_hmm_model.pth"
 
                     # ensure the input obsm exists
                     obsm_key = f'{ref}_{mod_label}_site'
@@ -222,8 +223,38 @@ def hmm_adata(config_path):
     else:
         make_dirs([pp_dir, hmm_dir])
         from ..plotting import combined_hmm_raw_clustermap
+        feature_layers = [
+            "all_accessible_features",
+            "large_accessible_patch",
+            "small_bound_stretch",
+            "medium_bound_stretch",
+            "putative_nucleosome",
+            "all_accessible_features_merged",
+        ]
 
-        for layer in ['C_all_accessible_features', 'C_small_bound_stretch', 'C_medium_bound_stretch', 'C_putative_nucleosome', 'C_all_accessible_features_merged']:
+        layers: list[str] = []
+
+        if any(base in ["C", "CpG", "GpC"] for base in cfg.mod_target_bases):
+            if smf_modality == 'deaminase':
+                layers.extend([f"C_{layer}" for layer in feature_layers])
+            elif smf_modality == 'conversion':
+                layers.extend([f"GpC_{layer}" for layer in feature_layers])
+
+        if 'A' in cfg.mod_target_bases:
+            layers.extend([f"A_{layer}" for layer in feature_layers])
+
+        if not layers:
+            raise ValueError(
+                f"No HMM feature layers matched mod_target_bases={cfg.mod_target_bases} "
+                f"and smf_modality={smf_modality}"
+            )
+        
+        if smf_modality == 'direct':
+            sort_by = "any_a"
+        else:
+            sort_by = 'gpc'
+
+        for layer in layers:
             save_path = hmm_dir / layer
             make_dirs([save_path])
 
@@ -235,20 +266,21 @@ def hmm_adata(config_path):
             layer_gpc="nan0_0minus1",
             layer_cpg="nan0_0minus1",
             layer_any_c="nan0_0minus1",
+            layer_a= "nan0_0minus1",
             cmap_hmm="coolwarm",
             cmap_gpc="coolwarm",
             cmap_cpg="viridis",
             cmap_any_c='coolwarm',
-            min_quality=20,
-            min_length=80,
-            min_mapped_length_to_reference_length_ratio=0.2,
-            min_position_valid_fraction=0.2,
-            sample_mapping=None,
+            cmap_a= "coolwarm",
+            min_quality=cfg.read_quality_filter_thresholds[0],
+            min_length=cfg.read_len_filter_thresholds[0],
+            min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+            min_position_valid_fraction=1-cfg.position_max_nan_threshold,
             save_path=save_path,
             normalize_hmm=False,
-            sort_by="gpc",  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
+            sort_by=sort_by,  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
             bins=None,
-            deaminase=True,
+            deaminase=deaminase,
             min_signal=0
             )
 
