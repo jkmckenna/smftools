@@ -55,7 +55,6 @@ dependencies = [
     "omegaconf",
     "pandas>=1.4.2",
     "pod5>=0.1.21",
-    "pomegranate>=1.0.0",
     "pyfaidx>=0.8.0",
     "pybedtools>=0.12.0",
     "pyBigWig>=0.3.24",
