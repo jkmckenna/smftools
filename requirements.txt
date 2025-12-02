@@ -16,7 +16,6 @@ numpy>=1.22.0,<2
 omegaconf
 pandas>=1.4.2
 pod5>=0.1.21
-pomegranate>=1.0.0
 pybedtools>=0.12.0
 pyBigWig>=0.3.24
 pyfaidx>=0.8.0
