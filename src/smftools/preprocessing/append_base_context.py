@@ -9,6 +9,7 @@ def append_base_context(adata,
 ):
     """
     Adds nucleobase context to the position within the given category. When use_consensus is True, it uses the consensus sequence, otherwise it defaults to the FASTA sequence.
+    This needs to be performed prior to AnnData inversion step.
 
     Parameters:
         adata (AnnData): The input adata object.
@@ -60,6 +61,7 @@ def append_base_context(adata,
             else:
                 # This sequence is the unconverted FASTA sequence of the original input FASTA for the locus
                 sequence = adata.uns[f'{basename}_FASTA_sequence']
+
         # Init a dict keyed by reference site type that points to a bool of whether the position is that site type.    
         boolean_dict = {}
         for site_type in site_types:
@@ -110,7 +112,14 @@ def append_base_context(adata,
                 print('Error: top or bottom strand of conversion could not be determined. Ensure this value is in the Reference name.')
 
         for site_type in site_types:
+            # Site context annotations for each reference
             adata.var[f'{ref}_{site_type}'] = boolean_dict[f'{ref}_{site_type}'].astype(bool)
+            # Restrict the site type labels to only be in positions that occur at a high enough frequency in the dataset
+            if adata.uns["positional_coverage_calculated"] == True:
+                adata.var[f'{ref}_{site_type}'] = (adata.var[f'{ref}_{site_type}']) & (adata.var[f'position_in_{ref}'])
+            else:
+                pass
+            
             if native:
                 adata.obsm[f'{ref}_{site_type}'] = adata[:, adata.var[f'{ref}_{site_type}'] == True].layers['binarized_methylation']
             else:

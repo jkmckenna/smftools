@@ -186,6 +186,12 @@ def preprocess_adata(config_path):
                   bypass=cfg.bypass_clean_nan, 
                   force_redo=cfg.force_redo_clean_nan
                   )
+        
+    ############### Calculate positional coverage by reference set in dataset ###############
+    from ..preprocessing import calculate_coverage
+    calculate_coverage(adata, 
+                       ref_column=cfg.reference_column, 
+                       position_nan_threshold=cfg.position_max_nan_threshold)
 
     ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats ###############
     from ..preprocessing import append_base_context, append_binary_layer_by_base_context
@@ -266,12 +272,6 @@ def preprocess_adata(config_path):
                                 pp_meth_qc_dir, obs_to_plot, 
                                 sample_key=cfg.sample_name_col_for_plotting, 
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
-        
-    ############### Calculate positional coverage by reference set in dataset ###############
-    from ..preprocessing import calculate_coverage
-    calculate_coverage(adata, 
-                       obs_column=cfg.reference_column, 
-                       position_nan_threshold=cfg.position_max_nan_threshold)
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != 'direct':
