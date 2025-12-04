@@ -62,7 +62,7 @@ def preprocess_adata(config_path):
                 adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
             else:
                 print(f"Can not redo preprocessing when there is no adata available.")
-                return
+                return (None, None, None, None)  
         elif cfg.force_redo_flag_duplicate_reads:
             print(f"Forcing redo of duplicate detection workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
             if preprocessed_version_available:
@@ -71,15 +71,7 @@ def preprocess_adata(config_path):
                 adata, load_report = safe_read_h5ad(initial_adata_path)
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
-                return
-        elif cfg.force_redo_basic_analyses:
-            print(f"Forcing redo of basic analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
-            if preprocessed_version_available:
-                adata, load_report = safe_read_h5ad(pp_adata_path)
-            elif initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path)
-            else:
-                print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
+                return (None, None, None, None)  
         elif hmm_adata_exists:
             print(f"HMM anndata found: {hmm_adata_path}")
             return (None, None, None, None)      
@@ -120,10 +112,9 @@ def preprocess_adata(config_path):
     else:
         from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_length_qc_dir])
-        obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
         plot_read_qc_histograms(adata,
                                 pp_length_qc_dir, 
-                                obs_to_plot, 
+                                cfg.obs_to_plot_pp_qc, 
                                 sample_key=cfg.sample_name_col_for_plotting, 
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
@@ -147,10 +138,9 @@ def preprocess_adata(config_path):
     else:
         from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_length_qc_dir])
-        obs_to_plot = ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal']
         plot_read_qc_histograms(adata,
                                 pp_length_qc_dir, 
-                                obs_to_plot, 
+                                cfg.obs_to_plot_pp_qc, 
                                 sample_key=cfg.sample_name_col_for_plotting, 
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
         
@@ -167,7 +157,8 @@ def preprocess_adata(config_path):
                                     positive_control_sample=cfg.positive_control_sample_methylation_fitting, 
                                     negative_control_sample=cfg.negative_control_sample_methylation_fitting, 
                                     J_threshold=cfg.fit_j_threshold, 
-                                    obs_column=cfg.reference_column, 
+                                    ref_column=cfg.reference_column, 
+                                    sample_column=cfg.sample_column,
                                     infer_on_percentile=cfg.infer_on_percentile_sample_methylation_fitting, 
                                     inference_variable=cfg.inference_variable_sample_methylation_fitting, 
                                     save=True, 
@@ -175,7 +166,7 @@ def preprocess_adata(config_path):
                                     )
             # binarize the modcalls based on the determined thresholds
             binarize_on_Youden(adata, 
-                            obs_column=cfg.reference_column,
+                            ref_column=cfg.reference_column,
                             output_layer_name=cfg.output_binary_layer_name
                             )
         else:
@@ -200,7 +191,7 @@ def preprocess_adata(config_path):
     from ..preprocessing import append_base_context, append_binary_layer_by_base_context
     # Additionally, store base_context level binary modification arrays in adata.obsm
     append_base_context(adata, 
-                        obs_column=cfg.reference_column, 
+                        ref_column=cfg.reference_column, 
                         use_consensus=False, 
                         native=native, 
                         mod_target_bases=cfg.mod_target_bases,
@@ -237,7 +228,7 @@ def preprocess_adata(config_path):
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
         if any(base in cfg.mod_target_bases for base in ['GpC', 'CpG', 'C']):
-            obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
+            obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_C_site_modified']
         if 'A' in cfg.mod_target_bases:
             obs_to_plot += ['Fraction_A_site_modified']
         plot_read_qc_histograms(adata, 
@@ -252,7 +243,7 @@ def preprocess_adata(config_path):
                                                           mod_target_bases=cfg.mod_target_bases,
                                                           gpc_thresholds=cfg.read_mod_filtering_gpc_thresholds, 
                                                           cpg_thresholds=cfg.read_mod_filtering_cpg_thresholds,
-                                                          any_c_thresholds=cfg.read_mod_filtering_any_c_thresholds,
+                                                          any_c_thresholds=cfg.read_mod_filtering_c_thresholds,
                                                           a_thresholds=cfg.read_mod_filtering_a_thresholds,
                                                           use_other_c_as_background=cfg.read_mod_filtering_use_other_c_as_background,
                                                           min_valid_fraction_positions_in_read_vs_ref=cfg.min_valid_fraction_positions_in_read_vs_ref,
@@ -268,7 +259,7 @@ def preprocess_adata(config_path):
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
         if any(base in cfg.mod_target_bases for base in ['GpC', 'CpG', 'C']):
-            obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_any_C_site_modified']
+            obs_to_plot += ['Fraction_GpC_site_modified', 'Fraction_CpG_site_modified', 'Fraction_other_C_site_modified', 'Fraction_C_site_modified']
         if 'A' in cfg.mod_target_bases:
             obs_to_plot += ['Fraction_A_site_modified']
         plot_read_qc_histograms(adata, 
@@ -276,7 +267,7 @@ def preprocess_adata(config_path):
                                 sample_key=cfg.sample_name_col_for_plotting, 
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
         
-    ############### Calculate positional coverage in dataset ###############
+    ############### Calculate positional coverage by reference set in dataset ###############
     from ..preprocessing import calculate_coverage
     calculate_coverage(adata, 
                        obs_column=cfg.reference_column, 

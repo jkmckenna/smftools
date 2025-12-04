@@ -15,7 +15,7 @@ read_mod_filtering_gpc_thresholds:
 read_mod_filtering_cpg_thresholds:
   - null
   - null
-read_mod_filtering_any_c_thresholds:
+read_mod_filtering_c_thresholds:
   - 0.01
   - 0.99
 read_mod_filtering_a_thresholds:
@@ -26,16 +26,16 @@ read_mod_filtering_use_other_c_as_background: False
 
 # Duplicate Detection Params
 duplicate_detection_site_types:
-  - "any_C"
+  - "C"
 
 ######## smftools analyze params #########
 # Autocorrelation params
 autocorr_site_types:
-  - "any_C"
+  - "C"
 
 # Correlation matrix params
 correlation_matrix_site_types:
-  - "any_C_site"
+  - "C_site"
 
 # ######## smftools hmm params #########
 cpg: False # whether to use the default HMM endogenous CpG patch params
@@ -45,17 +45,17 @@ hmm_feature_sets:
   footprint:
     state: "Non-Modified"
     features:
-      small_bound_stretch: [10, 30]
-      medium_bound_stretch: [30, 110]
-      putative_nucleosome: [110, 200]
+      small_bound_stretch: [6, 40]
+      medium_bound_stretch: [40, 100]
+      putative_nucleosome: [100, 200]
       large_bound_stretch: [200, inf]
   accessible:
     state: "Modified"
     features:
       small_accessible_patch: [3, 20]
       mid_accessible_patch: [20, 40]
-      mid_large_accessible_patch: [40, 130]
-      large_accessible_patch: [130, inf]
+      large_accessible_patch: [40, 110]
+      nucleosome_depleted_region: [110, inf]
 
 hmm_merge_layer_features:
   - ["C_all_accessible_features", 80]

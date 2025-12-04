@@ -63,9 +63,11 @@ def hmm_adata(config_path):
         preprocessed_dedup_spatial_version_available = spatial_adata_path.exists()
         preprocessed_dedup_spatial_hmm_version_available = hmm_adata_path.exists()
 
-        if cfg.force_redo_hmm_fit:
-            print(f"Forcing redo of basic analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
-            if preprocessed_dedup_spatial_version_available:
+        if cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply:
+            print(f"Forcing redo of hmm analysis workflow.")
+            if preprocessed_dedup_spatial_hmm_version_available:
+                adata, load_report = safe_read_h5ad(hmm_adata_path)
+            elif preprocessed_dedup_spatial_version_available:
                 adata, load_report = safe_read_h5ad(spatial_adata_path)
             elif preprocessed_dup_removed_version_available:
                 adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
@@ -74,7 +76,7 @@ def hmm_adata(config_path):
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
         elif preprocessed_dedup_spatial_hmm_version_available:
-            return (None, hmm_adata_path)
+            adata, load_report = safe_read_h5ad(hmm_adata_path)
         else:
             if preprocessed_dedup_spatial_version_available:
                 adata, load_report = safe_read_h5ad(spatial_adata_path)
@@ -128,7 +130,7 @@ def hmm_adata(config_path):
                         continue
 
                     # Fit or load model
-                    if os.path.exists(hmm_path) and not cfg.force_redo_hmm_fit:
+                    if hmm_path.exists() and not cfg.force_redo_hmm_fit:
                         hmm = HMM.load(hmm_path)
                         hmm.print_params()
                     else:
@@ -145,12 +147,17 @@ def hmm_adata(config_path):
                         print(f"Applying HMM on subset for {sample} {ref} {mod_label}")
                         # Use the new uns_key argument so subset will record appended layer names
                         # (annotate_adata modifies subset.obs/layers in-place and should write subset.uns[uns_key])
+                        if smf_modality == "direct":
+                            hmm_layer = cfg.output_binary_layer_name
+                        else:
+                            hmm_layer = None
+
                         hmm.annotate_adata(subset,
                                         obs_column=cfg.reference_column,
-                                        layer=cfg.layer_for_umap_plotting,
-                                        config=cfg)
+                                        layer=hmm_layer,
+                                        config=cfg
+                                        )
                         
-                        #to_merge = [("C_all_accessible_features", 80)]
                         to_merge = cfg.hmm_merge_layer_features
                         for layer_to_merge, merge_distance in to_merge:
                             if layer_to_merge:
@@ -223,25 +230,17 @@ def hmm_adata(config_path):
     else:
         make_dirs([pp_dir, hmm_dir])
         from ..plotting import combined_hmm_raw_clustermap
-        feature_layers = [
-            "all_accessible_features",
-            "large_accessible_patch",
-            "small_bound_stretch",
-            "medium_bound_stretch",
-            "putative_nucleosome",
-            "all_accessible_features_merged",
-        ]
 
         layers: list[str] = []
 
         if any(base in ["C", "CpG", "GpC"] for base in cfg.mod_target_bases):
             if smf_modality == 'deaminase':
-                layers.extend([f"C_{layer}" for layer in feature_layers])
+                layers.extend([f"C_{layer}" for layer in cfg.hmm_clustermap_feature_layers])
             elif smf_modality == 'conversion':
-                layers.extend([f"GpC_{layer}" for layer in feature_layers])
+                layers.extend([f"GpC_{layer}" for layer in cfg.hmm_clustermap_feature_layers])
 
         if 'A' in cfg.mod_target_bases:
-            layers.extend([f"A_{layer}" for layer in feature_layers])
+            layers.extend([f"A_{layer}" for layer in cfg.hmm_clustermap_feature_layers])
 
         if not layers:
             raise ValueError(
@@ -250,7 +249,7 @@ def hmm_adata(config_path):
             )
         
         if smf_modality == 'direct':
-            sort_by = "any_a"
+            sort_by = "a"
         else:
             sort_by = 'gpc'
 
@@ -263,15 +262,15 @@ def hmm_adata(config_path):
             sample_col=cfg.sample_name_col_for_plotting,
             reference_col=cfg.reference_column,
             hmm_feature_layer=layer,
-            layer_gpc="nan0_0minus1",
-            layer_cpg="nan0_0minus1",
-            layer_any_c="nan0_0minus1",
-            layer_a= "nan0_0minus1",
-            cmap_hmm="coolwarm",
-            cmap_gpc="coolwarm",
-            cmap_cpg="viridis",
-            cmap_any_c='coolwarm',
-            cmap_a= "coolwarm",
+            layer_gpc=cfg.layer_for_clustermap_plotting,
+            layer_cpg=cfg.layer_for_clustermap_plotting,
+            layer_c=cfg.layer_for_clustermap_plotting,
+            layer_a=cfg.layer_for_clustermap_plotting,
+            cmap_hmm=cfg.clustermap_cmap_hmm,
+            cmap_gpc=cfg.clustermap_cmap_gpc,
+            cmap_cpg=cfg.clustermap_cmap_cpg,
+            cmap_c=cfg.clustermap_cmap_c,
+            cmap_a=cfg.clustermap_cmap_a,
             min_quality=cfg.read_quality_filter_thresholds[0],
             min_length=cfg.read_len_filter_thresholds[0],
             min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
@@ -291,9 +290,10 @@ def hmm_adata(config_path):
     else:
         make_dirs([pp_dir, hmm_dir])
         from ..plotting import plot_hmm_layers_rolling_by_sample_ref
+        bulk_hmm_layers = [layer for layer in adata.uns['hmm_appended_layers'] if "_lengths" not in layer]
         saved = plot_hmm_layers_rolling_by_sample_ref(
             adata,
-            layers=adata.uns['hmm_appended_layers'],
+            layers=bulk_hmm_layers,
             sample_col=cfg.sample_name_col_for_plotting,
             ref_col=cfg.reference_column,
             window=101,

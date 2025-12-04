@@ -21,7 +21,7 @@ fastq_barcode_map: null # For FASTQ files, an optional map of file paths to barc
 fastq_auto_pairing: True # For FASTQ files, attempt to find read pair files automatically.
 input_already_demuxed: False # If the input files are already demultiplexed.
 delete_intermediate_hdfs: True # Whether to delete the intermediate hdfs from the conversion/deamination workflows.
-delete_intermediate_bams: True # Whether to delete intermediate BAM files.
+delete_intermediate_bams: False # Whether to delete intermediate BAM files.
 delete_intermediate_tsvs: True # Whether to delete intermediate TSV files.
 
 # Sequencing modality and general experiment params
@@ -116,7 +116,7 @@ read_mod_filtering_gpc_thresholds:
 read_mod_filtering_cpg_thresholds:
   - 0.0
   - 1.0
-read_mod_filtering_any_c_thresholds:
+read_mod_filtering_c_thresholds:
   - 0.025
   - 0.975
 read_mod_filtering_a_thresholds:
@@ -125,6 +125,16 @@ read_mod_filtering_a_thresholds:
 read_mod_filtering_use_other_c_as_background: False
 min_valid_fraction_positions_in_read_vs_ref: 0.5
 
+# Plotting params for read length histograms
+obs_to_plot_pp_qc:
+  - read_length
+  - mapped_length
+  - read_quality
+  - mapping_quality
+  - mapped_length_to_reference_length_ratio
+  - mapped_length_to_read_length_ratio
+  - Raw_modification_signal
+
 # Duplicate detection params
 duplicate_detection_site_types: # Site types to consider for duplicate detection workflow
   - "GpC"
@@ -132,7 +142,7 @@ duplicate_detection_site_types: # Site types to consider for duplicate detection
   - "ambiguous_GpC_CpG"
 duplicate_detection_distance_threshold: 0.07 # Hamming distance based similarity threshold to use for marking duplicate reads.
 hamming_vs_metric_keys: # Metrics to plot the hamming distance against.
-  - Fraction_any_C_site_modified
+  - Fraction_C_site_modified
 duplicate_detection_keep_best_metric: "read_quality" # Obs metric to use to keep a representative read from a read duplicate cluster
 duplicate_detection_window_size_for_hamming_neighbors: 50 # How many neighboring reads to look at for calculating hamming distance pairs
 duplicate_detection_min_overlapping_positions: 20 # The minimum amount of valid overlapping positions that will allow duplicate detection to work
@@ -143,29 +153,33 @@ duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkag
 # Position QC params
 position_max_nan_threshold: 0.1 # The maximum amount of nans to tolerate in a column
 
-######## smftools analyze params #########
-# Basic Analysis - QC Plotting params
+######## smftools spatial params #########
+# Spatial Analysis - QC Plotting params
 rows_per_qc_histogram_grid: 12
 
-# Basic Analysis - Clustermap params
+# Spatial Analysis - Clustermap params
 layer_for_clustermap_plotting: 'nan0_0minus1'
+clustermap_cmap_c: "coolwarm"
+clustermap_cmap_gpc: "coolwarm"
+clustermap_cmap_cpg: "coolwarm"
+clustermap_cmap_a: "coolwarm"
 
-# Basic Analysis - UMAP/Leiden params
+# Spatial Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'
 umap_layers_to_plot:
   - "mapped_length"
   - "Raw_modification_signal"
 
-# Basic Analysis - Spatial Autocorrelation params
+# Spatial Analysis - Spatial Autocorrelation params
 rows_per_qc_autocorr_grid: 6
 autocorr_rolling_window_size: 25
 autocorr_max_lag: 800
 autocorr_site_types:
   - "GpC"
   - "CpG"
-  - "any_C"
+  - "C"
 
-# Basic Analysis - Correlation Matrix params
+# Spatial Analysis - Correlation Matrix params
 correlation_matrix_types:
   - "pearson"
   - "binary_covariance"
@@ -204,19 +218,31 @@ hmm_feature_sets:
   footprint:
     state: "Non-Modified"
     features:
-      small_bound_stretch: [10, 40]
-      medium_bound_stretch: [40, 110]
-      putative_nucleosome: [110, 200]
+      small_bound_stretch: [6, 40]
+      medium_bound_stretch: [40, 100]
+      putative_nucleosome: [100, 200]
       large_bound_stretch: [200, inf]
   accessible:
     state: "Modified"
     features:
       small_accessible_patch: [3, 20]
       mid_accessible_patch: [20, 40]
-      mid_large_accessible_patch: [40, 110]
-      large_accessible_patch: [110, inf]
+      large_accessible_patch: [40, 110]
+      nucleosome_depleted_region: [110, inf]
 hmm_merge_layer_features:
   - [null, 80]
+clustermap_cmap_hmm: "coolwarm"
+hmm_clustermap_feature_layers:
+  - all_accessible_features
+  - all_accessible_features_merged
+  - small_accessible_patch
+  - mid_accessible_patch
+  - large_accessible_patch
+  - nucleosome_depleted_region
+  - small_bound_stretch
+  - medium_bound_stretch
+  - putative_nucleosome
+  - large_bound_stretch
 
 # Pipeline control flow - load adata
 force_redo_load_adata: False # Whether to perform load adata command from start
@@ -242,8 +268,8 @@ force_redo_flag_duplicate_reads: False # Whether to redo flagging duplicate read
 bypass_complexity_analysis: False # Whether to skip complexity analysis
 force_redo_complexity_analysis: False # Whether to redo complexity analysis
 
-# Pipeline control flow - Basic Analyses
-force_redo_basic_analyses: False # Whether to force redo the entire basic analysis pipeline from the AnnData
+# Pipeline control flow - Spatial Analyses
+force_redo_spatial_analyses: False # Whether to force redo the entire basic analysis pipeline from the AnnData
 bypass_basic_clustermaps: False # Whether to skip basic clustermap plotting
 force_redo_basic_clustermaps: False # Whether to redo basic clustermap plotting
 bypass_basic_umap: False # Whether to skip basic UMAP calculation/plotting

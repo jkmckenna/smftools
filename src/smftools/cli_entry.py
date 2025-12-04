@@ -244,9 +244,9 @@ def concatenate_cmd(
 
     Two modes:
 
-        smftools concatenate out.h5ad --input-dir ./dir
+        smftools concatenate out.h5ad.gz --input-dir ./dir
 
-        smftools concatenate out.h5ad --csv-path paths.csv --csv-column h5ad_path
+        smftools concatenate out.h5ad.gz --csv-path paths.csv --csv-column h5ad_path
 
     TXT input also works (one file path per line).
 
@@ -266,7 +266,7 @@ def concatenate_cmd(
             delete_inputs=delete,
             restore_backups=restore,
         )
-        click.echo(f"✓ Concatenated file written to: {out}")
+        click.echo(f"Concatenated file written to: {out}")
 
     except Exception as e:
         raise click.ClickException(str(e)) from e

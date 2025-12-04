@@ -65,8 +65,8 @@ def spatial_adata(config_path):
         preprocessed_dedup_spatial_version_available = spatial_adata_path.exists()
         hmm_version_available = hmm_adata_path.exists()
 
-        if cfg.force_redo_basic_analyses:
-            print(f"Forcing redo of basic analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
+        if cfg.force_redo_spatial_analyses or not preprocessed_dedup_spatial_version_available:
+            print(f"Spatial analysis workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
             if preprocessed_dup_removed_version_available:
                 adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
                 adata_version = "pp_dedup"
@@ -79,21 +79,26 @@ def spatial_adata(config_path):
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
                 return 
+        elif hmm_version_available:
+            print(f"Preprocessed deduplicated spatial hmm anndata found: {hmm_adata_path}")
+            return None, hmm_adata_path
         elif preprocessed_dedup_spatial_version_available:
             print(f"Preprocessed deduplicated spatial anndata found: {spatial_adata_path}")
             return None, spatial_adata_path
-        elif preprocessed_dup_removed_version_available:
-            adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
-            adata_version = "pp_dedup"
-        elif preprocessed_version_available:
-            adata, load_report = safe_read_h5ad(pp_adata_path)
-            adata_version = "pp"
-        elif initial_version_available:
-            adata, load_report = safe_read_h5ad(initial_adata_path)
-            adata_version = "initial"
         else:
             print(f"No adata available.")
             return
+        
+    ## Load sample sheet metadata based on barcode mapping ##
+    if cfg.sample_sheet_path:
+        from ..preprocessing import load_sample_sheet
+        load_sample_sheet(adata, 
+                          cfg.sample_sheet_path, 
+                          mapping_key_column=cfg.sample_sheet_mapping_column, 
+                          as_category=True,
+                          force_reload=cfg.force_reload_sample_sheet)
+    else:
+        pass
         
     pp_dir = output_directory / "preprocessed"
     references = adata.obs[cfg.reference_column].cat.categories
@@ -118,14 +123,14 @@ def spatial_adata(config_path):
                                                             sample_col=cfg.sample_name_col_for_plotting, 
                                                             reference_col=cfg.reference_column,
                                                             mod_target_bases=cfg.mod_target_bases,
-                                                            layer_any_c=cfg.layer_for_clustermap_plotting, 
+                                                            layer_c=cfg.layer_for_clustermap_plotting, 
                                                             layer_gpc=cfg.layer_for_clustermap_plotting, 
                                                             layer_cpg=cfg.layer_for_clustermap_plotting, 
                                                             layer_a=cfg.layer_for_clustermap_plotting, 
-                                                            cmap_any_c="coolwarm", 
-                                                            cmap_gpc="coolwarm", 
-                                                            cmap_cpg="viridis", 
-                                                            cmap_a="coolwarm",
+                                                            cmap_c=cfg.clustermap_cmap_c, 
+                                                            cmap_gpc=cfg.clustermap_cmap_gpc, 
+                                                            cmap_cpg=cfg.clustermap_cmap_cpg, 
+                                                            cmap_a=cfg.clustermap_cmap_a, 
                                                             min_quality=cfg.read_quality_filter_thresholds[0], 
                                                             min_length=cfg.read_len_filter_thresholds[0], 
                                                             min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
@@ -142,6 +147,8 @@ def spatial_adata(config_path):
 
         else:
             pass
+    else:
+        pass
         
     #### Proceed with dedeuplicated preprocessed anndata ###
     pp_dir = pp_dir / "deduplicated"
@@ -156,19 +163,19 @@ def spatial_adata(config_path):
         if smf_modality != 'direct':
             sort_by = 'gpc'
         else:
-            sort_by = 'any_a'
+            sort_by = 'a'
         clustermap_results = combined_raw_clustermap(adata, 
                                                         sample_col=cfg.sample_name_col_for_plotting, 
                                                         reference_col=cfg.reference_column,
                                                         mod_target_bases=cfg.mod_target_bases,
-                                                        layer_any_c=cfg.layer_for_clustermap_plotting, 
+                                                        layer_c=cfg.layer_for_clustermap_plotting, 
                                                         layer_gpc=cfg.layer_for_clustermap_plotting, 
                                                         layer_cpg=cfg.layer_for_clustermap_plotting, 
                                                         layer_a=cfg.layer_for_clustermap_plotting, 
-                                                        cmap_any_c="coolwarm", 
-                                                        cmap_gpc="coolwarm", 
-                                                        cmap_cpg="viridis", 
-                                                        cmap_a="coolwarm", 
+                                                        cmap_c=cfg.clustermap_cmap_c, 
+                                                        cmap_gpc=cfg.clustermap_cmap_gpc, 
+                                                        cmap_cpg=cfg.clustermap_cmap_cpg, 
+                                                        cmap_a=cfg.clustermap_cmap_a, 
                                                         min_quality=cfg.read_quality_filter_thresholds[0], 
                                                         min_length=cfg.read_len_filter_thresholds[0], 
                                                         min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
@@ -193,7 +200,7 @@ def spatial_adata(config_path):
                     var_filters += [f'{ref}_{base}_site']  
         elif deaminase:
             for ref in references:
-                var_filters += [f'{ref}_any_C_site']
+                var_filters += [f'{ref}_C_site']
         else:
             for ref in references:
                 for base in cfg.mod_target_bases:

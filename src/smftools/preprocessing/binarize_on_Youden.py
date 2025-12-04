@@ -1,4 +1,6 @@
-def binarize_on_Youden(adata, obs_column='Reference', output_layer_name='binarized_methylation'):
+def binarize_on_Youden(adata, 
+                       ref_column='Reference_strand', 
+                       output_layer_name='binarized_methylation'):
     """
     Binarize SMF values based on position thresholds determined by calculate_position_Youden.
 
@@ -16,18 +18,18 @@ def binarize_on_Youden(adata, obs_column='Reference', output_layer_name='binariz
     binarized_methylation = np.full_like(adata.X, np.nan, dtype=float)  # Keeps same shape as adata.X
 
     # Get unique categories
-    categories = adata.obs[obs_column].cat.categories
+    references = adata.obs[ref_column].cat.categories
 
-    for cat in categories:
+    for ref in references:
         # Select subset for this category
-        cat_mask = adata.obs[obs_column] == cat
-        cat_subset = adata[cat_mask]
+        ref_mask = adata.obs[ref_column] == ref
+        ref_subset = adata[ref_mask]
 
         # Extract the probability matrix
-        original_matrix = cat_subset.X.copy()
+        original_matrix = ref_subset.X.copy()
 
         # Extract the thresholds for each position efficiently
-        thresholds = np.array(cat_subset.var[f'{cat}_position_methylation_thresholding_Youden_stats'].apply(lambda x: x[0]))
+        thresholds = np.array(ref_subset.var[f'{ref}_position_methylation_thresholding_Youden_stats'].apply(lambda x: x[0]))
 
         # Identify NaN values
         nan_mask = np.isnan(original_matrix)
@@ -39,7 +41,7 @@ def binarize_on_Youden(adata, obs_column='Reference', output_layer_name='binariz
         binarized_matrix[nan_mask] = np.nan
 
         # Assign the binarized values back into the preallocated storage
-        binarized_methylation[cat_mask, :] = binarized_matrix
+        binarized_methylation[ref_subset, :] = binarized_matrix
 
     # Store the binarized matrix in a new layer
     adata.layers[output_layer_name] = binarized_methylation
