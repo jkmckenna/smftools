@@ -312,7 +312,14 @@ def hmm_adata(config_path):
         make_dirs([pp_dir, hmm_dir])
         from ..plotting import plot_hmm_size_contours
 
-        for layer, max in [('C_all_accessible_features_lengths', 400), ('C_all_footprint_features_lengths', 160), ('C_all_accessible_features_merged_lengths', 800)]:
+        if smf_modality == 'deaminase':
+            fragments = [('C_all_accessible_features_lengths', 400), ('C_all_footprint_features_lengths', 160), ('C_all_accessible_features_merged_lengths', 800)]
+        elif smf_modality == 'conversion':
+            fragments = [('GpC_all_accessible_features_lengths', 400), ('GpC_all_footprint_features_lengths', 160), ('GpC_all_accessible_features_merged_lengths', 800)]
+        elif smf_modality == "direct":
+            fragments = [('A_all_accessible_features_lengths', 400), ('A_all_footprint_features_lengths', 160), ('A_all_accessible_features_merged_lengths', 800)]
+
+        for layer, max in fragments:
             save_path = hmm_dir / layer
             make_dirs([save_path])
 
