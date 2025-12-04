@@ -772,6 +772,8 @@ class HMM(nn.Module):
         verbose: bool = True,
         uns_key: str = "hmm_appended_layers",
         config: Optional[Union[dict, "ExperimentConfig"]] = None,  # NEW: config/dict accepted
+        uns_flag: str = "hmm_annotated",
+        force_redo: bool = False
     ):
         """
         Annotate an AnnData with HMM-derived features (in adata.obs and adata.layers).
@@ -792,6 +794,12 @@ class HMM(nn.Module):
         import numpy as _np
         import torch as _torch
         from tqdm import trange, tqdm as _tqdm
+
+        # Only run if not already performed
+        already = bool(adata.uns.get(uns_flag, False))
+        if (already and not force_redo):
+            # QC already performed; nothing to do
+            return None if in_place else adata
 
         # small helpers
         def _try_json_or_literal(s):
@@ -1297,6 +1305,9 @@ class HMM(nn.Module):
         existing = list(adata.uns.get(uns_key, [])) if adata.uns.get(uns_key) is not None else []
         new_list = existing + [l for l in appended_layers if l not in existing]
         adata.uns[uns_key] = new_list
+
+        # Mark that the annotation has been completed
+        adata.uns[uns_flag] = True
 
         return None if in_place else adata
 

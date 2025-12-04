@@ -9,6 +9,13 @@ conversion_types:
 # Read QC Params
 read_mod_filtering_use_other_c_as_background: True
 
+# Spatial Analysis - Clustermap params
+layer_for_clustermap_plotting: 'nan0_0minus1'
+clustermap_cmap_c: "coolwarm"
+clustermap_cmap_gpc: "coolwarm"
+clustermap_cmap_cpg: "viridis"
+clustermap_cmap_a: "coolwarm"
+
 ######## smftools hmm params #########
 # HMM
 cpg: True # whether to use the default HMM endogenous CpG patch params
@@ -18,17 +25,17 @@ hmm_feature_sets:
   footprint:
     state: "Non-Modified"
     features:
-      small_bound_stretch: [10, 30]
-      medium_bound_stretch: [30, 110]
-      putative_nucleosome: [110, 200]
+      small_bound_stretch: [6, 40]
+      medium_bound_stretch: [40, 100]
+      putative_nucleosome: [100, 200]
       large_bound_stretch: [200, inf]
   accessible:
     state: "Modified"
     features:
       small_accessible_patch: [3, 20]
       mid_accessible_patch: [20, 40]
-      mid_large_accessible_patch: [40, 130]
-      large_accessible_patch: [130, inf]
+      large_accessible_patch: [40, 110]
+      nucleosome_depleted_region: [110, inf]
   cpg:
     state: "Modified"
     features:

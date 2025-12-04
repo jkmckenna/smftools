@@ -276,13 +276,13 @@ def combined_hmm_raw_clustermap(
 
     layer_gpc: str = "nan0_0minus1",
     layer_cpg: str = "nan0_0minus1",
-    layer_any_c: str = "nan0_0minus1",
+    layer_c: str = "nan0_0minus1",
     layer_a: str = "nan0_0minus1",
 
     cmap_hmm: str = "tab10",
     cmap_gpc: str = "coolwarm",
     cmap_cpg: str = "viridis",
-    cmap_any_c: str = "coolwarm",
+    cmap_c: str = "coolwarm",
     cmap_a: str = "coolwarm",
 
     min_quality: int = 20,
@@ -308,12 +308,12 @@ def combined_hmm_raw_clustermap(
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
-      HMM panel (always) + optional raw panels for any_C, GpC, CpG, and A sites.
+      HMM panel (always) + optional raw panels for C, GpC, CpG, and A sites.
 
     Panels are added only if the corresponding site mask exists AND has >0 sites.
 
     sort_by options:
-      'gpc', 'cpg', 'any_c', 'any_a', 'gpc_cpg', 'none', or 'obs:<col>'
+      'gpc', 'cpg', 'c', 'a', 'gpc_cpg', 'none', or 'obs:<col>'
     """
     def pick_xticks(labels: np.ndarray, n_ticks: int):
         if labels.size == 0:
@@ -411,11 +411,11 @@ def combined_hmm_raw_clustermap(
                         linkage = sch.linkage(sb[:, cpg_sites].layers[layer_cpg], method="ward")
                         order = sch.leaves_list(linkage)
 
-                    elif sort_by == "any_c" and any_c_sites.size:
-                        linkage = sch.linkage(sb[:, any_c_sites].layers[layer_any_c], method="ward")
+                    elif sort_by == "c" and any_c_sites.size:
+                        linkage = sch.linkage(sb[:, any_c_sites].layers[layer_c], method="ward")
                         order = sch.leaves_list(linkage)
 
-                    elif sort_by == "any_a" and any_a_sites.size:
+                    elif sort_by == "a" and any_a_sites.size:
                         linkage = sch.linkage(sb[:, any_a_sites].layers[layer_a], method="ward")
                         order = sch.leaves_list(linkage)
 
@@ -431,7 +431,7 @@ def combined_hmm_raw_clustermap(
                     # ---- collect matrices ----
                     stacked_hmm.append(sb.layers[hmm_feature_layer])
                     if any_c_sites.size:
-                        stacked_any_c.append(sb[:, any_c_sites].layers[layer_any_c])
+                        stacked_any_c.append(sb[:, any_c_sites].layers[layer_c])
                     if gpc_sites.size:
                         stacked_gpc.append(sb[:, gpc_sites].layers[layer_gpc])
                     if cpg_sites.size:
@@ -454,7 +454,7 @@ def combined_hmm_raw_clustermap(
 
                 if stacked_any_c:
                     m = np.vstack(stacked_any_c)
-                    panels.append(("any_C", m, any_c_labels, cmap_any_c, methylation_fraction(m), n_xticks_any_c))
+                    panels.append(("C", m, any_c_labels, cmap_c, methylation_fraction(m), n_xticks_any_c))
 
                 if stacked_gpc:
                     m = np.vstack(stacked_gpc)
@@ -795,11 +795,11 @@ def combined_raw_clustermap(
     sample_col: str = "Sample_Names",
     reference_col: str = "Reference_strand",
     mod_target_bases: Sequence[str] = ("GpC", "CpG"),
-    layer_any_c: str = "nan0_0minus1",
+    layer_c: str = "nan0_0minus1",
     layer_gpc: str = "nan0_0minus1",
     layer_cpg: str = "nan0_0minus1",
     layer_a: str = "nan0_0minus1",
-    cmap_any_c: str = "coolwarm",
+    cmap_c: str = "coolwarm",
     cmap_gpc: str = "coolwarm",
     cmap_cpg: str = "viridis",
     cmap_a: str = "coolwarm",
@@ -809,7 +809,7 @@ def combined_raw_clustermap(
     min_position_valid_fraction: float = 0.5,
     sample_mapping: Optional[Mapping[str, str]] = None,
     save_path: str | Path | None = None,
-    sort_by: str = "gpc",  # 'gpc','cpg','any_c','gpc_cpg','any_a','none','obs:<col>'
+    sort_by: str = "gpc",  # 'gpc','cpg','c','gpc_cpg','a','none','obs:<col>'
     bins: Optional[Dict[str, Any]] = None,
     deaminase: bool = False,
     min_signal: float = 0,
@@ -822,7 +822,7 @@ def combined_raw_clustermap(
     xtick_fontsize: int = 9,
 ):
     """
-    Plot stacked heatmaps + per-position mean barplots for any_C, GpC, CpG, and optional A.
+    Plot stacked heatmaps + per-position mean barplots for C, GpC, CpG, and optional A.
 
     Key fixes vs old version:
       - order computed ONCE per bin, applied to all matrices
@@ -939,15 +939,15 @@ def combined_raw_clustermap(
                         linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
                         order = sch.leaves_list(linkage)
 
-                    elif sort_by == "any_c" and num_any_c > 0:
-                        linkage = sch.linkage(subset_bin[:, any_c_sites].layers[layer_any_c], method="ward")
+                    elif sort_by == "c" and num_any_c > 0:
+                        linkage = sch.linkage(subset_bin[:, any_c_sites].layers[layer_c], method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "gpc_cpg":
                         linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
                         order = sch.leaves_list(linkage)
 
-                    elif sort_by == "any_a" and num_any_a > 0:
+                    elif sort_by == "a" and num_any_a > 0:
                         linkage = sch.linkage(subset_bin[:, any_a_sites].layers[layer_a], method="ward")
                         order = sch.leaves_list(linkage)
 
@@ -961,7 +961,7 @@ def combined_raw_clustermap(
 
                     # stack consistently
                     if include_any_c and num_any_c > 0:
-                        stacked_any_c.append(subset_bin[:, any_c_sites].layers[layer_any_c])
+                        stacked_any_c.append(subset_bin[:, any_c_sites].layers[layer_c])
                     if include_any_c and num_gpc > 0:
                         stacked_gpc.append(subset_bin[:, gpc_sites].layers[layer_gpc])
                     if include_any_c and num_cpg > 0:
@@ -990,11 +990,11 @@ def combined_raw_clustermap(
 
                     if any_c_matrix.size:
                         blocks.append(dict(
-                            name="any_c",
+                            name="c",
                             matrix=any_c_matrix,
                             mean=mean_any_c,
                             labels=any_c_labels,
-                            cmap=cmap_any_c,
+                            cmap=cmap_c,
                             n_xticks=n_xticks_any_c,
                             title="any C site Modification Signal"
                         ))
@@ -1024,7 +1024,7 @@ def combined_raw_clustermap(
                     mean_any_a = methylation_fraction(any_a_matrix) if any_a_matrix.size else None
                     if any_a_matrix.size:
                         blocks.append(dict(
-                            name="any_a",
+                            name="a",
                             matrix=any_a_matrix,
                             mean=mean_any_a,
                             labels=any_a_labels,

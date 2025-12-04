@@ -612,7 +612,7 @@ class ExperimentConfig:
     fastq_auto_pairing: bool = True
 
     # Remove intermediate file options
-    delete_intermediate_bams: bool = True
+    delete_intermediate_bams: bool = False
     delete_intermediate_tsvs: bool = True
 
     # Conversion/Deamination file handling
@@ -647,7 +647,8 @@ class ExperimentConfig:
     m5C_threshold: float = 0.7
     hm5C_threshold: float = 0.7
     thresholds: List[float] = field(default_factory=list)
-    mod_list: List[str] = field(default_factory=lambda: ["5mC_5hmC", "6mA"])
+    mod_list: List[str] = field(default_factory=lambda: ["5mC_5hmC", "6mA"]) # Dorado modified basecalling codes
+    mod_map: Dict[str, str] = field(default_factory=lambda: {'6mA': '6mA', '5mC_5hmC': '5mC'}) # Map from dorado modified basecalling codes to codes used in modkit_extract_to_adata function
 
     # Alignment params
     mapping_threshold: float = 0.01 # Min threshold for fraction of reads in a sample mapping to a reference in order to include the reference in the anndata
@@ -684,15 +685,18 @@ class ExperimentConfig:
     # Preprocessing - Read modification filter params
     read_mod_filtering_gpc_thresholds: List[float] = field(default_factory=lambda: [0.025, 0.975])
     read_mod_filtering_cpg_thresholds: List[float] = field(default_factory=lambda: [0.00, 1])
-    read_mod_filtering_any_c_thresholds: List[float] = field(default_factory=lambda: [0.025, 0.975])
+    read_mod_filtering_c_thresholds: List[float] = field(default_factory=lambda: [0.025, 0.975])
     read_mod_filtering_a_thresholds: List[float] = field(default_factory=lambda: [0.025, 0.975])
     read_mod_filtering_use_other_c_as_background: bool = True
     min_valid_fraction_positions_in_read_vs_ref: float = 0.2
 
+    # Preprocessing - plotting params
+    obs_to_plot_pp_qc: List[str] = field(default_factory=lambda: ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal'])
+
     # Preprocessing - Duplicate detection params
     duplicate_detection_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'ambiguous_GpC_CpG'])
     duplicate_detection_distance_threshold: float = 0.07
-    hamming_vs_metric_keys: List[str] = field(default_factory=lambda: ['Fraction_any_C_site_modified'])
+    hamming_vs_metric_keys: List[str] = field(default_factory=lambda: ['Fraction_C_site_modified'])
     duplicate_detection_keep_best_metric: str ='read_quality'
     duplicate_detection_window_size_for_hamming_neighbors: int = 50
     duplicate_detection_min_overlapping_positions: int = 20
@@ -703,20 +707,24 @@ class ExperimentConfig:
     # Preprocessing - Position QC
     position_max_nan_threshold: float = 0.1
 
-    # Basic Analysis - Clustermap params
+    # Spatial Analysis - Clustermap params
     layer_for_clustermap_plotting: Optional[str] = 'nan0_0minus1'
+    clustermap_cmap_c: Optional[str] = 'coolwarm'
+    clustermap_cmap_gpc: Optional[str] = 'coolwarm'
+    clustermap_cmap_cpg: Optional[str] = 'coolwarm'
+    clustermap_cmap_a: Optional[str] = 'coolwarm'
 
-    # Basic Analysis - UMAP/Leiden params
+    # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = 'nan_half'
     umap_layers_to_plot: List[str] = field(default_factory=lambda: ["mapped_length", "Raw_modification_signal"]) 
 
-    # Basic Analysis - Spatial Autocorrelation params
+    # Spatial Analysis - Spatial Autocorrelation params
     rows_per_qc_autocorr_grid: int = 12
     autocorr_rolling_window_size: int = 25
     autocorr_max_lag: int = 800
-    autocorr_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'any_C'])
+    autocorr_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'C'])
 
-    # Basic Analysis - Correlation Matrix params
+    # Spatial Analysis - Correlation Matrix params
     correlation_matrix_types: List[str] = field(default_factory=lambda: ["pearson", "binary_covariance"]) 
     correlation_matrix_cmaps: List[str] = field(default_factory=lambda: ["seismic", "viridis"]) 
     correlation_matrix_site_types: List[str] = field(default_factory=lambda: ["GpC_site"]) 
@@ -738,6 +746,8 @@ class ExperimentConfig:
     cpg: Optional[bool] = False
     hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
     hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 80)])
+    clustermap_cmap_hmm: Optional[str] = 'coolwarm'
+    hmm_clustermap_feature_layers: List[str] = field(default_factory=lambda: ["all_accessible_features"]) 
 
     # Pipeline control flow - load adata
     force_redo_load_adata: bool = False
@@ -763,8 +773,8 @@ class ExperimentConfig:
     bypass_complexity_analysis: bool = False 
     force_redo_complexity_analysis: bool = False
 
-    # Pipeline control flow - Basic Analyses
-    force_redo_basic_analyses: bool = False
+    # Pipeline control flow - Spatial Analyses
+    force_redo_spatial_analyses: bool = False
     bypass_basic_clustermaps: bool = False
     force_redo_basic_clustermaps: bool = False
     bypass_basic_umap: bool = False
@@ -981,6 +991,9 @@ class ExperimentConfig:
         if "mod_list" in merged:
             merged["mod_list"] = _parse_list(merged.get("mod_list"))
 
+        # Preprocessing args
+        obs_to_plot_pp_qc = _parse_list(merged.get("obs_to_plot_pp_qc", None))
+
         # HMM feature set handling
         if "hmm_feature_sets" in merged:
             merged["hmm_feature_sets"] = normalize_hmm_feature_sets(merged["hmm_feature_sets"])
@@ -1016,6 +1029,7 @@ class ExperimentConfig:
             hmm_methbases = ['C']
         hmm_methbases = list(hmm_methbases)
         hmm_merge_layer_features = _parse_list(merged.get("hmm_merge_layer_features", None))
+        hmm_clustermap_feature_layers = _parse_list(merged.get("hmm_clustermap_feature_layers", "all_accessible_features"))
 
         # instantiate dataclass
         instance = cls(
@@ -1047,7 +1061,7 @@ class ExperimentConfig:
             threads = merged.get("threads"),
             sample_sheet_path = merged.get("sample_sheet_path"),
             sample_sheet_mapping_column = merged.get("sample_sheet_mapping_column"),
-            delete_intermediate_bams = merged.get("delete_intermediate_bams", True),
+            delete_intermediate_bams = merged.get("delete_intermediate_bams", False),
             delete_intermediate_tsvs = merged.get("delete_intermediate_tsvs", True),
             aligner = merged.get("aligner", "minimap2"),
             aligner_args = merged.get("aligner_args", None),
@@ -1070,6 +1084,7 @@ class ExperimentConfig:
             reference_column = merged.get("reference_column", 'Reference_strand'),
             sample_column = merged.get("sample_column", 'Barcode'),
             sample_name_col_for_plotting = merged.get("sample_name_col_for_plotting", 'Barcode'),
+            obs_to_plot_pp_qc = obs_to_plot_pp_qc,
             fit_position_methylation_thresholds = merged.get("fit_position_methylation_thresholds", False),
             binarize_on_fixed_methlyation_threshold = merged.get("binarize_on_fixed_methlyation_threshold", 0.7),
             positive_control_sample_methylation_fitting = merged.get("positive_control_sample_methylation_fitting", None),
@@ -1079,13 +1094,17 @@ class ExperimentConfig:
             fit_j_threshold = merged.get("fit_j_threshold", 0.5),
             output_binary_layer_name = merged.get("output_binary_layer_name", "binarized_methylation"),
             layer_for_clustermap_plotting = merged.get("layer_for_clustermap_plotting", 'nan0_0minus1'), 
+            clustermap_cmap_c = merged.get("clustermap_cmap_c", 'coolwarm'),
+            clustermap_cmap_gpc = merged.get("clustermap_cmap_gpc", 'coolwarm'),
+            clustermap_cmap_cpg = merged.get("clustermap_cmap_cpg", 'coolwarm'),
+            clustermap_cmap_a = merged.get("clustermap_cmap_a", 'coolwarm'),
             layer_for_umap_plotting = merged.get("layer_for_umap_plotting", 'nan_half'),
             umap_layers_to_plot = merged.get("umap_layers_to_plot",["mapped_length", 'Raw_modification_signal']),
             rows_per_qc_histogram_grid = merged.get("rows_per_qc_histogram_grid", 12),
             rows_per_qc_autocorr_grid = merged.get("rows_per_qc_autocorr_grid", 12),
             autocorr_rolling_window_size = merged.get("autocorr_rolling_window_size", 25),
             autocorr_max_lag = merged.get("autocorr_max_lag", 800), 
-            autocorr_site_types = merged.get("autocorr_site_types", ['GpC', 'CpG', 'any_C']),
+            autocorr_site_types = merged.get("autocorr_site_types", ['GpC', 'CpG', 'C']),
             hmm_n_states = merged.get("hmm_n_states", 2), 
             hmm_init_emission_probs = merged.get("hmm_init_emission_probs",[[0.8, 0.2], [0.2, 0.8]]),
             hmm_init_transition_probs = merged.get("hmm_init_transition_probs",[[0.9, 0.1], [0.1, 0.9]]),
@@ -1099,6 +1118,8 @@ class ExperimentConfig:
             hmm_methbases = hmm_methbases,
             hmm_device = hmm_device,
             hmm_merge_layer_features = hmm_merge_layer_features,
+            clustermap_cmap_hmm = merged.get("clustermap_cmap_hmm", 'coolwarm'),
+            hmm_clustermap_feature_layers = hmm_clustermap_feature_layers,
             footprints = merged.get("footprints", None),
             accessible_patches = merged.get("accessible_patches", None),
             cpg = merged.get("cpg", None),
@@ -1109,7 +1130,7 @@ class ExperimentConfig:
             read_mapping_quality_filter_thresholds = merged.get("read_mapping_quality_filter_thresholds", [None, None]),
             read_mod_filtering_gpc_thresholds = merged.get("read_mod_filtering_gpc_thresholds", [0.025, 0.975]),
             read_mod_filtering_cpg_thresholds = merged.get("read_mod_filtering_cpg_thresholds", [0.0, 1.0]),
-            read_mod_filtering_any_c_thresholds = merged.get("read_mod_filtering_any_c_thresholds", [0.025, 0.975]),
+            read_mod_filtering_c_thresholds = merged.get("read_mod_filtering_c_thresholds", [0.025, 0.975]),
             read_mod_filtering_a_thresholds = merged.get("read_mod_filtering_a_thresholds", [0.025, 0.975]),
             read_mod_filtering_use_other_c_as_background = merged.get("read_mod_filtering_use_other_c_as_background", True),
             min_valid_fraction_positions_in_read_vs_ref = merged.get("min_valid_fraction_positions_in_read_vs_ref", 0.2), 
@@ -1125,7 +1146,7 @@ class ExperimentConfig:
             correlation_matrix_types = merged.get("correlation_matrix_types", ["pearson", "binary_covariance"]),
             correlation_matrix_cmaps = merged.get("correlation_matrix_cmaps", ["seismic", "viridis"]),
             correlation_matrix_site_types = merged.get("correlation_matrix_site_types", ["GpC_site"]),
-            hamming_vs_metric_keys = merged.get("hamming_vs_metric_keys", ['Fraction_any_C_site_modified']),
+            hamming_vs_metric_keys = merged.get("hamming_vs_metric_keys", ['Fraction_C_site_modified']),
             force_redo_load_adata = merged.get("force_redo_load_adata", False), 
             force_redo_preprocessing = merged.get("force_redo_preprocessing", False), 
             force_reload_sample_sheet = merged.get("force_reload_sample_sheet", True),
@@ -1146,7 +1167,7 @@ class ExperimentConfig:
             force_redo_flag_duplicate_reads = merged.get("force_redo_flag_duplicate_reads", False),
             bypass_complexity_analysis = merged.get("bypass_complexity_analysis", False),
             force_redo_complexity_analysis = merged.get("force_redo_complexity_analysis", False),
-            force_redo_basic_analyses = merged.get("force_redo_basic_analyses", False),
+            force_redo_spatial_analyses = merged.get("force_redo_spatial_analyses", False),
             bypass_basic_clustermaps = merged.get("bypass_basic_clustermaps", False),
             force_redo_basic_clustermaps = merged.get("force_redo_basic_clustermaps", False),
             bypass_basic_umap = merged.get("bypass_basic_umap", False),

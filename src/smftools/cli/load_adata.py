@@ -175,8 +175,7 @@ def load_adata(config_path):
         mod_tsv_dir = cfg.output_directory / "mod_tsvs"
         add_or_update_column_in_csv(cfg.summary_file, "mod_tsv_dir", mod_tsv_dir)
         bam_qc_dir = cfg.output_directory / "bam_qc"
-        mod_map = {'6mA': '6mA', '5mC_5hmC': '5mC'}
-        mods = [mod_map[mod] for mod in cfg.mod_list]
+        mods = [cfg.mod_map[mod] for mod in cfg.mod_list]
         if not check_executable_exists("dorado"):
             raise RuntimeError(
                 "Error: 'dorado' is not installed or not in PATH. "
