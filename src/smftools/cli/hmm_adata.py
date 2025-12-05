@@ -112,101 +112,126 @@ def hmm_adata(config_path):
         if adata.uns.get(uns_key) is None:
             adata.uns[uns_key] = []
 
-        for sample in samples:
-            for ref in references:
-                mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (adata.obs[cfg.reference_column] == ref)
-                subset = adata[mask].copy()
-                if subset.shape[0] < 1:
-                    continue
-
-                for mod_site in cfg.hmm_methbases:
-                    mod_label = {'C': 'C'}.get(mod_site, mod_site)
-                    hmm_path = hmm_dir / f"{sample}_{ref}_{mod_label}_hmm_model.pth"
-
-                    # ensure the input obsm exists
-                    obsm_key = f'{ref}_{mod_label}_site'
-                    if obsm_key not in subset.obsm:
-                        print(f"Skipping {sample} {ref} {mod_label}: missing obsm '{obsm_key}'")
+        if adata.uns.get('hmm_annotated', False) and not cfg.force_redo_hmm_fit and not cfg.force_redo_hmm_apply:
+            pass
+        else:
+            for sample in samples:
+                for ref in references:
+                    mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (adata.obs[cfg.reference_column] == ref)
+                    subset = adata[mask].copy()
+                    if subset.shape[0] < 1:
                         continue
 
-                    # Fit or load model
-                    if hmm_path.exists() and not cfg.force_redo_hmm_fit:
-                        hmm = HMM.load(hmm_path)
-                        hmm.print_params()
-                    else:
-                        print(f"Fitting HMM for {sample} {ref} {mod_label}")
-                        hmm = HMM.from_config(cfg)
-                        # fit expects a list-of-seqs or 2D ndarray in the obsm
-                        seqs = subset.obsm[obsm_key]
-                        hmm.fit(seqs)
-                        hmm.print_params()
-                        hmm.save(hmm_path)
+                    for mod_site in cfg.hmm_methbases:
+                        mod_label = {'C': 'C'}.get(mod_site, mod_site)
+                        hmm_path = hmm_dir / f"{sample}_{ref}_{mod_label}_hmm_model.pth"
 
-                    # Apply / annotate on the subset, then copy layers back to final_adata
-                    if (not cfg.bypass_hmm_apply) or cfg.force_redo_hmm_apply:
-                        print(f"Applying HMM on subset for {sample} {ref} {mod_label}")
-                        # Use the new uns_key argument so subset will record appended layer names
-                        # (annotate_adata modifies subset.obs/layers in-place and should write subset.uns[uns_key])
-                        if smf_modality == "direct":
-                            hmm_layer = cfg.output_binary_layer_name
-                        else:
-                            hmm_layer = None
-
-                        hmm.annotate_adata(subset,
-                                        obs_column=cfg.reference_column,
-                                        layer=hmm_layer,
-                                        config=cfg
-                                        )
-                        
-                        to_merge = cfg.hmm_merge_layer_features
-                        for layer_to_merge, merge_distance in to_merge:
-                            if layer_to_merge:
-                                hmm.merge_intervals_in_layer(subset,
-                                                            layer=layer_to_merge,
-                                                            distance_threshold=merge_distance,
-                                                            overwrite=True
-                                                            )
-                            else:
-                                pass
-
-                        # collect appended layers from subset.uns
-                        appended = list(subset.uns.get(uns_key, []))
-                        print(appended)
-                        if len(appended) == 0:
-                            # nothing appended for this subset; continue
+                        # ensure the input obsm exists
+                        obsm_key = f'{ref}_{mod_label}_site'
+                        if obsm_key not in subset.obsm:
+                            print(f"Skipping {sample} {ref} {mod_label}: missing obsm '{obsm_key}'")
                             continue
 
-                        # copy each appended layer into adata
-                        subset_mask_bool = mask.values if hasattr(mask, "values") else np.asarray(mask)
-                        for layer_name in appended:
-                            if layer_name not in subset.layers:
-                                # defensive: skip
-                                warnings.warn(f"Expected layer {layer_name} in subset but not found; skipping copy.")
-                                continue
-                            sub_layer = subset.layers[layer_name]
-                            # ensure final layer exists and assign rows
-                            try:
-                               hmm._ensure_final_layer_and_assign(adata, layer_name, subset_mask_bool, sub_layer)
-                            except Exception as e:
-                                warnings.warn(f"Failed to copy layer {layer_name} into adata: {e}", stacklevel=2)
-                                # fallback: if dense and small, try to coerce
-                                if issparse(sub_layer):
-                                    arr = sub_layer.toarray()
-                                else:
-                                    arr = np.asarray(sub_layer)
-                                adata.layers[layer_name] = adata.layers.get(layer_name, np.zeros((adata.shape[0], arr.shape[1]), dtype=arr.dtype))
-                                final_idx = np.nonzero(subset_mask_bool)[0]
-                                adata.layers[layer_name][final_idx, :] = arr
+                        # Fit or load model
+                        if hmm_path.exists() and not cfg.force_redo_hmm_fit:
+                            hmm = HMM.load(hmm_path)
+                            hmm.print_params()
+                        else:
+                            print(f"Fitting HMM for {sample} {ref} {mod_label}")
+                            hmm = HMM.from_config(cfg)
+                            # fit expects a list-of-seqs or 2D ndarray in the obsm
+                            seqs = subset.obsm[obsm_key]
+                            hmm.fit(seqs)
+                            hmm.print_params()
+                            hmm.save(hmm_path)
 
-                        # merge appended layer names into adata.uns
-                        existing = list(adata.uns.get(uns_key, []))
-                        for ln in appended:
-                            if ln not in existing:
-                                existing.append(ln)
-                        adata.uns[uns_key] = existing
+                        # Apply / annotate on the subset, then copy layers back to final_adata
+                        if cfg.bypass_hmm_apply:
+                            pass
+                        else:
+                            print(f"Applying HMM on subset for {sample} {ref} {mod_label}")
+                            # Use the new uns_key argument so subset will record appended layer names
+                            # (annotate_adata modifies subset.obs/layers in-place and should write subset.uns[uns_key])
+                            if smf_modality == "direct":
+                                hmm_layer = cfg.output_binary_layer_name
+                            else:
+                                hmm_layer = None
+
+                            hmm.annotate_adata(subset,
+                                            obs_column=cfg.reference_column,
+                                            layer=hmm_layer,
+                                            config=cfg,
+                                            force_redo=cfg.force_redo_hmm_apply
+                                            )
+                            
+                            if adata.uns.get('hmm_annotated', False) and not cfg.force_redo_hmm_apply:
+                                pass
+                            else:
+                                to_merge = cfg.hmm_merge_layer_features
+                                for layer_to_merge, merge_distance in to_merge:
+                                    if layer_to_merge:
+                                        hmm.merge_intervals_in_layer(subset,
+                                                                    layer=layer_to_merge,
+                                                                    distance_threshold=merge_distance,
+                                                                    overwrite=True
+                                                                    )
+                                    else:
+                                        pass
+
+                                # collect appended layers from subset.uns
+                                appended = list(subset.uns.get(uns_key, []))
+                                print(appended)
+                                if len(appended) == 0:
+                                    # nothing appended for this subset; continue
+                                    continue
+
+                                # copy each appended layer into adata
+                                subset_mask_bool = mask.values if hasattr(mask, "values") else np.asarray(mask)
+                                for layer_name in appended:
+                                    if layer_name not in subset.layers:
+                                        # defensive: skip
+                                        warnings.warn(f"Expected layer {layer_name} in subset but not found; skipping copy.")
+                                        continue
+                                    sub_layer = subset.layers[layer_name]
+                                    # ensure final layer exists and assign rows
+                                    try:
+                                        hmm._ensure_final_layer_and_assign(adata, layer_name, subset_mask_bool, sub_layer)
+                                    except Exception as e:
+                                        warnings.warn(f"Failed to copy layer {layer_name} into adata: {e}", stacklevel=2)
+                                        # fallback: if dense and small, try to coerce
+                                        if issparse(sub_layer):
+                                            arr = sub_layer.toarray()
+                                        else:
+                                            arr = np.asarray(sub_layer)
+                                        adata.layers[layer_name] = adata.layers.get(layer_name, np.zeros((adata.shape[0], arr.shape[1]), dtype=arr.dtype))
+                                        final_idx = np.nonzero(subset_mask_bool)[0]
+                                        adata.layers[layer_name][final_idx, :] = arr
+
+                                # merge appended layer names into adata.uns
+                                existing = list(adata.uns.get(uns_key, []))
+                                for ln in appended:
+                                    if ln not in existing:
+                                        existing.append(ln)
+                                adata.uns[uns_key] = existing
 
     else:
         pass
+
+    from ..hmm import call_hmm_peaks
+    hmm_dir = pp_dir / "11_hmm_peak_calling"
+    if hmm_dir.is_dir():
+        pass
+    else:
+        make_dirs([pp_dir, hmm_dir])
+
+        call_hmm_peaks(
+                adata,
+                feature_configs=cfg.hmm_peak_feature_configs,
+                ref_column=cfg.reference_column,
+                site_types=cfg.mod_target_bases,
+                save_plot=True,
+                output_dir=hmm_dir,
+                index_col_suffix=cfg.reindexed_var_suffix)
     
     ## Save HMM annotated adata
     if not hmm_adata_path.exists():
@@ -222,40 +247,30 @@ def hmm_adata(config_path):
     ########################################################################################################################
 
 ############################################### HMM based feature plotting ###############################################
-    
+    from ..plotting import combined_hmm_raw_clustermap
     hmm_dir = pp_dir / "11_hmm_clustermaps"
+    make_dirs([pp_dir, hmm_dir])
 
-    if hmm_dir.is_dir():
-        print(f'{hmm_dir} already exists.')
-    else:
-        make_dirs([pp_dir, hmm_dir])
-        from ..plotting import combined_hmm_raw_clustermap
+    layers: list[str] = []
 
-        layers: list[str] = []
+    for base in cfg.hmm_methbases:
+        layers.extend([f"{base}_{layer}" for layer in cfg.hmm_clustermap_feature_layers])
 
-        if any(base in ["C", "CpG", "GpC"] for base in cfg.mod_target_bases):
-            if smf_modality == 'deaminase':
-                layers.extend([f"C_{layer}" for layer in cfg.hmm_clustermap_feature_layers])
-            elif smf_modality == 'conversion':
-                layers.extend([f"GpC_{layer}" for layer in cfg.hmm_clustermap_feature_layers])
+    if cfg.cpg:
+        layers.extend(["CpG_cpg_patch"])
 
-        if 'A' in cfg.mod_target_bases:
-            layers.extend([f"A_{layer}" for layer in cfg.hmm_clustermap_feature_layers])
+    if not layers:
+        raise ValueError(
+            f"No HMM feature layers matched mod_target_bases={cfg.mod_target_bases} "
+            f"and smf_modality={smf_modality}"
+        )
 
-        if not layers:
-            raise ValueError(
-                f"No HMM feature layers matched mod_target_bases={cfg.mod_target_bases} "
-                f"and smf_modality={smf_modality}"
-            )
-        
-        if smf_modality == 'direct':
-            sort_by = "a"
+    for layer in layers:
+        hmm_cluster_save_dir = hmm_dir / layer
+        if hmm_cluster_save_dir.is_dir():
+            pass
         else:
-            sort_by = 'gpc'
-
-        for layer in layers:
-            save_path = hmm_dir / layer
-            make_dirs([save_path])
+            make_dirs([hmm_cluster_save_dir])
 
             combined_hmm_raw_clustermap(
             adata,
@@ -275,12 +290,13 @@ def hmm_adata(config_path):
             min_length=cfg.read_len_filter_thresholds[0],
             min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
             min_position_valid_fraction=1-cfg.position_max_nan_threshold,
-            save_path=save_path,
+            save_path=hmm_cluster_save_dir,
             normalize_hmm=False,
-            sort_by=sort_by,  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
+            sort_by=cfg.hmm_clustermap_sortby,  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
             bins=None,
             deaminase=deaminase,
-            min_signal=0
+            min_signal=0,
+            index_col_suffix=cfg.reindexed_var_suffix
             )
 
     hmm_dir = pp_dir / "12_hmm_bulk_traces"
@@ -313,11 +329,11 @@ def hmm_adata(config_path):
         from ..plotting import plot_hmm_size_contours
 
         if smf_modality == 'deaminase':
-            fragments = [('C_all_accessible_features_lengths', 400), ('C_all_footprint_features_lengths', 160), ('C_all_accessible_features_merged_lengths', 800)]
+            fragments = [('C_all_accessible_features_lengths', 400), ('C_all_footprint_features_lengths', 250), ('C_all_accessible_features_merged_lengths', 800)]
         elif smf_modality == 'conversion':
-            fragments = [('GpC_all_accessible_features_lengths', 400), ('GpC_all_footprint_features_lengths', 160), ('GpC_all_accessible_features_merged_lengths', 800)]
+            fragments = [('GpC_all_accessible_features_lengths', 400), ('GpC_all_footprint_features_lengths', 250), ('GpC_all_accessible_features_merged_lengths', 800)]
         elif smf_modality == "direct":
-            fragments = [('A_all_accessible_features_lengths', 400), ('A_all_footprint_features_lengths', 160), ('A_all_accessible_features_merged_lengths', 800)]
+            fragments = [('A_all_accessible_features_lengths', 400), ('A_all_footprint_features_lengths', 200), ('A_all_accessible_features_merged_lengths', 800)]
 
         for layer, max in fragments:
             save_path = hmm_dir / layer
@@ -335,9 +351,9 @@ def hmm_adata(config_path):
                 save_pdf=False,
                 save_each_page=True,
                 dpi=200,
-                smoothing_sigma=None,
-                normalize_after_smoothing=False,
-                cmap='viridis', 
+                smoothing_sigma=(10, 10),
+                normalize_after_smoothing=True,
+                cmap='Greens', 
                 log_scale_z=True
             )
     ########################################################################################################################

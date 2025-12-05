@@ -90,7 +90,7 @@ def plot_volcano_relative_risk(
                 safe_name = f"{ref}_{group_label}".replace("=", "").replace("__", "_").replace(",", "_").replace(" ", "_")
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
-                print(f"📁 Saved: {out_file}")
+                print(f"Saved: {out_file}")
 
             plt.show()
 
@@ -449,7 +449,7 @@ def plot_positionwise_matrix_grid(
             os.makedirs(save_path, exist_ok=True)
             fname = outer_label.replace("_", "").replace("=", "") + ".png"
             plt.savefig(os.path.join(save_path, fname), dpi=300, bbox_inches='tight')
-            print(f"✅ Saved {fname}")
+            print(f"Saved {fname}")
 
         plt.close(fig)
 
@@ -459,4 +459,4 @@ def plot_positionwise_matrix_grid(
         for outer_label in parsed['outer'].unique():
             plot_one_grid(outer_label)
 
-    print("✅ Finished plotting all grids.")
+    print("Finished plotting all grids.")

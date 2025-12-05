@@ -9,8 +9,61 @@ import os
 import math
 import pandas as pd
 
-from typing import Optional, Mapping, Sequence, Any, Dict, List
+from typing import Optional, Mapping, Sequence, Any, Dict, List, Tuple
 from pathlib import Path
+
+def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
+    """
+    Return indices for ~n_ticks evenly spaced labels across [0, n_positions-1].
+    Always includes 0 and n_positions-1 when possible.
+    """
+    n_ticks = int(max(2, n_ticks))
+    if n_positions <= n_ticks:
+        return np.arange(n_positions)
+
+    # linspace gives fixed count
+    pos = np.linspace(0, n_positions - 1, n_ticks)
+    return np.unique(np.round(pos).astype(int))
+
+def _select_labels(subset, sites: np.ndarray, reference: str, index_col_suffix: str | None):
+    """
+    Select tick labels for the heatmap axis.
+
+    Parameters
+    ----------
+    subset : AnnData view
+        The per-bin subset of the AnnData.
+    sites : np.ndarray[int]
+        Indices of the subset.var positions to annotate.
+    reference : str
+        Reference name (e.g., '6B6_top').
+    index_col_suffix : None or str
+        If None → use subset.var_names
+        Else     → use subset.var[f"{reference}_{index_col_suffix}"]
+
+    Returns
+    -------
+    np.ndarray[str]
+        The labels to use for tick positions.
+    """
+    if sites.size == 0:
+        return np.array([])
+
+    # Default behavior: use var_names
+    if index_col_suffix is None:
+        return subset.var_names[sites].astype(str)
+
+    # Otherwise: use a computed column adata.var[f"{reference}_{suffix}"]
+    colname = f"{reference}_{index_col_suffix}"
+
+    if colname not in subset.var:
+        raise KeyError(
+            f"index_col_suffix='{index_col_suffix}' requires var column '{colname}', "
+            f"but it is not present in adata.var."
+        )
+
+    labels = subset.var[colname].astype(str).values
+    return labels[sites]
 
 def normalized_mean(matrix: np.ndarray) -> np.ndarray:
     mean = np.nanmean(matrix, axis=0)
@@ -266,7 +319,6 @@ def clean_barplot(ax, mean_values, title):
 #                 traceback.print_exc()
 #                 continue
 
-
 def combined_hmm_raw_clustermap(
     adata,
     sample_col: str = "Sample_Names",
@@ -305,6 +357,8 @@ def combined_hmm_raw_clustermap(
     n_xticks_gpc: int = 8,
     n_xticks_cpg: int = 8,
     n_xticks_a: int = 8,
+
+    index_col_suffix: str | None = None,
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
@@ -313,7 +367,7 @@ def combined_hmm_raw_clustermap(
     Panels are added only if the corresponding site mask exists AND has >0 sites.
 
     sort_by options:
-      'gpc', 'cpg', 'c', 'a', 'gpc_cpg', 'none', or 'obs:<col>'
+      'gpc', 'cpg', 'c', 'a', 'gpc_cpg', 'none', 'hmm', or 'obs:<col>'
     """
     def pick_xticks(labels: np.ndarray, n_ticks: int):
         if labels.size == 0:
@@ -363,18 +417,19 @@ def combined_hmm_raw_clustermap(
                             return np.where(subset.var[k].values)[0]
                     return np.array([], dtype=int)
 
-                gpc_sites = _sites(f"{ref}_GpC_site")
-                cpg_sites = _sites(f"{ref}_CpG_site")
+                gpc_sites   = _sites(f"{ref}_GpC_site")
+                cpg_sites   = _sites(f"{ref}_CpG_site")
                 any_c_sites = _sites(f"{ref}_any_C_site", f"{ref}_C_site")
                 any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
 
-                def _labels(sites):
-                    return subset.var_names[sites].astype(int) if sites.size else np.array([])
-
-                gpc_labels = _labels(gpc_sites)
-                cpg_labels = _labels(cpg_sites)
-                any_c_labels = _labels(any_c_sites)
-                any_a_labels = _labels(any_a_sites)
+                # ---- labels via _select_labels ----
+                # HMM uses *all* columns
+                hmm_sites   = np.arange(subset.n_vars, dtype=int)
+                hmm_labels  = _select_labels(subset, hmm_sites,   ref, index_col_suffix)
+                gpc_labels  = _select_labels(subset, gpc_sites,   ref, index_col_suffix)
+                cpg_labels  = _select_labels(subset, cpg_sites,   ref, index_col_suffix)
+                any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
+                any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
 
                 # storage
                 stacked_hmm = []
@@ -422,6 +477,10 @@ def combined_hmm_raw_clustermap(
                     elif sort_by == "gpc_cpg" and gpc_sites.size and cpg_sites.size:
                         linkage = sch.linkage(sb.layers[layer_gpc], method="ward")
                         order = sch.leaves_list(linkage)
+                    
+                    elif sort_by == "hmm" and hmm_sites.size:
+                        linkage = sch.linkage(sb[:, hmm_sites].layers[hmm_feature_layer], method="ward")
+                        order = sch.leaves_list(linkage)
 
                     else:
                         order = np.arange(n)
@@ -449,7 +508,7 @@ def combined_hmm_raw_clustermap(
                 mean_hmm = normalized_mean(hmm_matrix) if normalize_hmm else np.nanmean(hmm_matrix, axis=0)
 
                 panels = [
-                    ("HMM", hmm_matrix, subset.var_names.astype(int), cmap_hmm, mean_hmm, n_xticks_hmm),
+                    (f"HMM - {hmm_feature_layer}", hmm_matrix, hmm_labels, cmap_hmm, mean_hmm, n_xticks_hmm),
                 ]
 
                 if stacked_any_c:
@@ -777,19 +836,6 @@ def combined_hmm_raw_clustermap(
 #                 traceback.print_exc()
 #                 continue
 
-def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
-    """
-    Return indices for ~n_ticks evenly spaced labels across [0, n_positions-1].
-    Always includes 0 and n_positions-1 when possible.
-    """
-    n_ticks = int(max(2, n_ticks))
-    if n_positions <= n_ticks:
-        return np.arange(n_positions)
-
-    # linspace gives fixed count
-    pos = np.linspace(0, n_positions - 1, n_ticks)
-    return np.unique(np.round(pos).astype(int))
-
 def combined_raw_clustermap(
     adata,
     sample_col: str = "Sample_Names",
@@ -813,13 +859,13 @@ def combined_raw_clustermap(
     bins: Optional[Dict[str, Any]] = None,
     deaminase: bool = False,
     min_signal: float = 0,
-    # NEW tick controls
     n_xticks_any_c: int = 10,
     n_xticks_gpc: int = 10,
     n_xticks_cpg: int = 10,
     n_xticks_any_a: int = 10,
     xtick_rotation: int = 90,
     xtick_fontsize: int = 9,
+    index_col_suffix: str | None = None,
 ):
     """
     Plot stacked heatmaps + per-position mean barplots for C, GpC, CpG, and optional A.
@@ -898,14 +944,14 @@ def combined_raw_clustermap(
 
                     num_any_c, num_gpc, num_cpg = len(any_c_sites), len(gpc_sites), len(cpg_sites)
 
-                    any_c_labels = subset.var_names[any_c_sites].astype(str)
-                    gpc_labels   = subset.var_names[gpc_sites].astype(str)
-                    cpg_labels   = subset.var_names[cpg_sites].astype(str)
+                    any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
+                    gpc_labels   = _select_labels(subset, gpc_sites, ref, index_col_suffix)
+                    cpg_labels   = _select_labels(subset, cpg_sites, ref, index_col_suffix)
 
                 if include_any_a:
                     any_a_sites = np.where(subset.var.get(f"{ref}_A_site", False).values)[0]
                     num_any_a = len(any_a_sites)
-                    any_a_labels = subset.var_names[any_a_sites].astype(str)
+                    any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
 
                 stacked_any_c, stacked_gpc, stacked_cpg, stacked_any_a = [], [], [], []
                 row_labels, bin_labels, bin_boundaries = [], [], []
@@ -1141,7 +1187,7 @@ def plot_hmm_layers_rolling_by_sample_ref(
     output_dir: Optional[str] = None,
     save: bool = True,
     show_raw: bool = False,
-    cmap: str = "tab10",
+    cmap: str = "tab20",
     use_var_coords: bool = True,
 ):
     """

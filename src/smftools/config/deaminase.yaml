@@ -7,6 +7,8 @@ conversion_types:
 
 mod_target_bases:
 - "C"
+enzyme_target_bases:
+- "C"
 
 ######## smftools preprocess params #########
 read_mod_filtering_gpc_thresholds:

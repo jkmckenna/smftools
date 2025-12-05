@@ -1,5 +1,5 @@
 import math
-from typing import List, Optional, Tuple, Union, Any, Dict
+from typing import List, Optional, Tuple, Union, Any, Dict, Sequence
 import ast
 import json
 

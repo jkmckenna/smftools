@@ -722,6 +722,100 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
             print(" -", e)
 
     print("=== end report ===\n")
+
+    # ---------- create CSV output directory ----------
+    try:
+        csv_dir = path.parent / "csvs"
+        csv_dir.mkdir(exist_ok=True)
+        if verbose:
+            print(f"CSV outputs will be written to: {csv_dir}")
+    except Exception as e:
+        msg = f"Failed to create CSV output directory: {e}"
+        report['errors'].append(msg)
+        if verbose:
+            print(msg)
+        csv_dir = path.parent  # fallback just in case
+
+    # ---------- write keys summary CSV ----------
+    try:
+        meta_rows = []
+
+        # obs columns
+        for col in adata_copy.obs.columns:
+            meta_rows.append({
+                "kind": "obs",
+                "name": col,
+                "dtype": str(adata_copy.obs[col].dtype),
+            })
+
+        # var columns
+        for col in adata_copy.var.columns:
+            meta_rows.append({
+                "kind": "var",
+                "name": col,
+                "dtype": str(adata_copy.var[col].dtype),
+            })
+
+        # layers
+        for k, v in adata_copy.layers.items():
+            meta_rows.append({
+                "kind": "layer",
+                "name": k,
+                "dtype": str(np.asarray(v).dtype),
+            })
+
+        # obsm
+        for k, v in adata_copy.obsm.items():
+            meta_rows.append({
+                "kind": "obsm",
+                "name": k,
+                "dtype": str(np.asarray(v).dtype),
+            })
+
+        # uns
+        for k, v in adata_copy.uns.items():
+            meta_rows.append({
+                "kind": "uns",
+                "name": k,
+                "dtype": type(v).__name__,
+            })
+
+        meta_df = pd.DataFrame(meta_rows)
+
+        # same base name, inside csvs/
+        base = path.stem    # removes .h5ad
+        meta_path = csv_dir / f"{base}.keys.csv"
+
+        meta_df.to_csv(meta_path, index=False)
+        if verbose:
+            print(f"Wrote keys summary CSV to {meta_path}")
+
+    except Exception as e:
+        msg = f"Failed to write keys CSV: {e}"
+        report["errors"].append(msg)
+        if verbose:
+            print(msg)
+
+    # ---------- write full obs and var dataframes ----------
+    try:
+        base = path.stem
+
+        obs_path = csv_dir / f"{base}.obs.csv"
+        var_path = csv_dir / f"{base}.var.csv"
+
+        adata_copy.obs.to_csv(obs_path, index=True)
+        adata_copy.var.to_csv(var_path, index=True)
+
+        if verbose:
+            print(f"Wrote obs DataFrame to {obs_path}")
+            print(f"Wrote var DataFrame to {var_path}")
+
+    except Exception as e:
+        msg = f"Failed to write obs/var CSVs: {e}"
+        report["errors"].append(msg)
+        if verbose:
+            print(msg)
+
     return report
 
 def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=True, categorical_threshold=100, verbose=True):
