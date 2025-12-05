@@ -79,15 +79,10 @@ def spatial_adata(config_path):
             else:
                 print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
                 return 
-        elif hmm_version_available:
-            print(f"Preprocessed deduplicated spatial hmm anndata found: {hmm_adata_path}")
-            return None, hmm_adata_path
         elif preprocessed_dedup_spatial_version_available:
-            print(f"Preprocessed deduplicated spatial anndata found: {spatial_adata_path}")
-            return None, spatial_adata_path
-        else:
-            print(f"No adata available.")
-            return
+            adata, load_report = safe_read_h5ad(spatial_adata_path)
+        elif hmm_version_available:
+            adata, load_report = safe_read_h5ad(hmm_adata_path)
         
     ## Load sample sheet metadata based on barcode mapping ##
     if cfg.sample_sheet_path:
@@ -138,8 +133,9 @@ def spatial_adata(config_path):
                                                             bins=None,
                                                             sample_mapping=None, 
                                                             save_path=pp_clustermap_dir, 
-                                                            sort_by='gpc', 
-                                                            deaminase=deaminase)
+                                                            sort_by=cfg.spatial_clustermap_sortby, 
+                                                            deaminase=deaminase,
+                                                            index_col_suffix=cfg.reindexed_var_suffix)
             if first_pp_run:
                 adata = adata_unique
             else:
@@ -160,10 +156,6 @@ def spatial_adata(config_path):
     else:
         from ..plotting import combined_raw_clustermap
         make_dirs([pp_dir, pp_clustermap_dir])
-        if smf_modality != 'direct':
-            sort_by = 'gpc'
-        else:
-            sort_by = 'a'
         clustermap_results = combined_raw_clustermap(adata, 
                                                         sample_col=cfg.sample_name_col_for_plotting, 
                                                         reference_col=cfg.reference_column,
@@ -183,8 +175,9 @@ def spatial_adata(config_path):
                                                         bins=None,
                                                         sample_mapping=None, 
                                                         save_path=pp_clustermap_dir, 
-                                                        sort_by=sort_by, 
-                                                        deaminase=deaminase)
+                                                        sort_by=cfg.spatial_clustermap_sortby, 
+                                                        deaminase=deaminase,
+                                                        index_col_suffix=cfg.reindexed_var_suffix)
     
     ######### PCA/UMAP/Leiden #########
     if pp_umap_dir.is_dir():

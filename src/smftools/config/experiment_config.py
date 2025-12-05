@@ -214,7 +214,7 @@ def resolve_aligner_args(
     return list(default_by_aligner.get(key_align, []))
 
 
-# HMM default params and hepler functions
+# HMM default params and helper functions
 def normalize_hmm_feature_sets(raw: Any) -> Dict[str, dict]:
     """
     Normalize user-provided `hmm_feature_sets` into canonical structure:
@@ -274,6 +274,58 @@ def normalize_hmm_feature_sets(raw: Any) -> Dict[str, dict]:
         state = info.get("state", info.get("label", "Modified"))
         canonical[grp] = {"features": feats, "state": state}
     return canonical
+
+def normalize_peak_feature_configs(raw: Any) -> Dict[str, dict]:
+    """
+    Normalize user-provided `hmm_peak_feature_configs` into:
+      {
+        layer_name: {
+          "min_distance": int,
+          "peak_width": int,
+          "peak_prominence": float,
+          "peak_threshold": float,
+          "rolling_window": int,
+        },
+        ...
+      }
+
+    Accepts dict, JSON/string, None. Returns {} for empty input.
+    """
+    if raw is None:
+        return {}
+
+    parsed = raw
+    if isinstance(raw, str):
+        parsed = _try_json_or_literal(raw)
+    if not isinstance(parsed, dict):
+        return {}
+
+    defaults = {
+        "min_distance": 200,
+        "peak_width": 200,
+        "peak_prominence": 0.2,
+        "peak_threshold": 0.8,
+        "rolling_window": 1,
+    }
+
+    out: Dict[str, dict] = {}
+    for layer, conf in parsed.items():
+        if conf is None:
+            conf = {}
+        if not isinstance(conf, dict):
+            # allow shorthand like 300 -> interpreted as peak_width
+            conf = {"peak_width": conf}
+
+        full = defaults.copy()
+        full.update(conf)
+        out[str(layer)] = {
+            "min_distance": int(full["min_distance"]),
+            "peak_width": int(full["peak_width"]),
+            "peak_prominence": float(full["peak_prominence"]),
+            "peak_threshold": float(full["peak_threshold"]),
+            "rolling_window": int(full["rolling_window"]),
+        }
+    return out
 
 
 # -------------------------
@@ -672,6 +724,10 @@ class ExperimentConfig:
     read_quality_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [15, None])
     read_mapping_quality_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [None, None])
 
+    # Preprocessing - Optional reindexing params
+    reindexing_offsets: Dict[str, int] = field(default_factory=dict)
+    reindexed_var_suffix: Optional[str] = "reindexed"
+
     # Preprocessing - Direct mod detection binarization params
     fit_position_methylation_thresholds: Optional[bool] = False # Whether to use Youden J-stat to determine position by positions thresholds for modification binarization.
     binarize_on_fixed_methlyation_threshold: Optional[float] = 0.7 # The threshold used to binarize the anndata using a fixed value if fitting parameter above is False.
@@ -713,6 +769,7 @@ class ExperimentConfig:
     clustermap_cmap_gpc: Optional[str] = 'coolwarm'
     clustermap_cmap_cpg: Optional[str] = 'coolwarm'
     clustermap_cmap_a: Optional[str] = 'coolwarm'
+    spatial_clustermap_sortby: Optional[str] = 'gpc'
 
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = 'nan_half'
@@ -748,6 +805,8 @@ class ExperimentConfig:
     hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 80)])
     clustermap_cmap_hmm: Optional[str] = 'coolwarm'
     hmm_clustermap_feature_layers: List[str] = field(default_factory=lambda: ["all_accessible_features"]) 
+    hmm_clustermap_sortby: Optional[str] = 'hmm'
+    hmm_peak_feature_configs: Dict[str, Any] = field(default_factory=dict)
 
     # Pipeline control flow - load adata
     force_redo_load_adata: bool = False
@@ -1031,6 +1090,12 @@ class ExperimentConfig:
         hmm_merge_layer_features = _parse_list(merged.get("hmm_merge_layer_features", None))
         hmm_clustermap_feature_layers = _parse_list(merged.get("hmm_clustermap_feature_layers", "all_accessible_features"))
 
+        # HMM peak feature configs (for call_hmm_peaks)
+        merged["hmm_peak_feature_configs"] = normalize_peak_feature_configs(
+            merged.get("hmm_peak_feature_configs", {})
+        )
+        hmm_peak_feature_configs = merged.get("hmm_peak_feature_configs", {})
+
         # instantiate dataclass
         instance = cls(
             smf_modality = merged.get("smf_modality"),
@@ -1093,11 +1158,14 @@ class ExperimentConfig:
             inference_variable_sample_methylation_fitting = merged.get("inference_variable_sample_methylation_fitting", "Raw_modification_signal"),
             fit_j_threshold = merged.get("fit_j_threshold", 0.5),
             output_binary_layer_name = merged.get("output_binary_layer_name", "binarized_methylation"),
+            reindexing_offsets = merged.get("reindexing_offsets", {None: None}),
+            reindexed_var_suffix = merged.get("reindexed_var_suffix", "reindexed"),
             layer_for_clustermap_plotting = merged.get("layer_for_clustermap_plotting", 'nan0_0minus1'), 
             clustermap_cmap_c = merged.get("clustermap_cmap_c", 'coolwarm'),
             clustermap_cmap_gpc = merged.get("clustermap_cmap_gpc", 'coolwarm'),
             clustermap_cmap_cpg = merged.get("clustermap_cmap_cpg", 'coolwarm'),
             clustermap_cmap_a = merged.get("clustermap_cmap_a", 'coolwarm'),
+            spatial_clustermap_sortby = merged.get("spatial_clustermap_sortby", 'gpc'),
             layer_for_umap_plotting = merged.get("layer_for_umap_plotting", 'nan_half'),
             umap_layers_to_plot = merged.get("umap_layers_to_plot",["mapped_length", 'Raw_modification_signal']),
             rows_per_qc_histogram_grid = merged.get("rows_per_qc_histogram_grid", 12),
@@ -1120,6 +1188,8 @@ class ExperimentConfig:
             hmm_merge_layer_features = hmm_merge_layer_features,
             clustermap_cmap_hmm = merged.get("clustermap_cmap_hmm", 'coolwarm'),
             hmm_clustermap_feature_layers = hmm_clustermap_feature_layers,
+            hmm_clustermap_sortby = merged.get("hmm_clustermap_sortby", 'hmm'),
+            hmm_peak_feature_configs = hmm_peak_feature_configs,
             footprints = merged.get("footprints", None),
             accessible_patches = merged.get("accessible_patches", None),
             cpg = merged.get("cpg", None),

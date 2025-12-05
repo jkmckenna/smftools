@@ -215,6 +215,13 @@ def preprocess_adata(config_path):
         from ..preprocessing import invert_adata
         adata = invert_adata(adata)
 
+    ############### Optional reindexing of the adata for each reference ###################
+    from ..preprocessing import reindex_references_adata
+    reindex_references_adata(adata,
+                             reference_col=cfg.reference_column,
+                             offsets=cfg.reindexing_offsets,
+                             new_col=cfg.reindexed_var_suffix)
+
     ############### Calculate read methylation/deamination statistics for specific base contexts defined above ###############
     from ..preprocessing import calculate_read_modification_stats
     calculate_read_modification_stats(adata, 

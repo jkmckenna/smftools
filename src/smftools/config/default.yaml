@@ -153,6 +153,11 @@ duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkag
 # Position QC params
 position_max_nan_threshold: 0.1 # The maximum amount of nans to tolerate in a column
 
+# Reindexing params
+reindexing_offsets:
+  null : null
+reindexed_var_suffix: "reindexed"
+
 ######## smftools spatial params #########
 # Spatial Analysis - QC Plotting params
 rows_per_qc_histogram_grid: 12
@@ -163,6 +168,7 @@ clustermap_cmap_c: "coolwarm"
 clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
+spatial_clustermap_sortby: "gpc"
 
 # Spatial Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'
@@ -243,6 +249,77 @@ hmm_clustermap_feature_layers:
   - medium_bound_stretch
   - putative_nucleosome
   - large_bound_stretch
+hmm_clustermap_sortby: "hmm"
+hmm_peak_feature_configs:
+  all_accessible_features:
+    min_distance: 200 # The minimum distance in between called peaks
+    peak_width: 200 # The window width to calculate sum/mean hmm signal per read centered at the peak center.
+    peak_prominence: 0.1 # The minimum prominence to call a peak
+    peak_threshold: 0.80 # The minimum mean hmm signal in each molecule within the peak window to mark the molecule as positive for the feature.
+    rolling_window: 50 # Window size for the rolling average smoothing before peak calling
+
+  all_accessible_features_merged:
+    min_distance: 250
+    peak_width: 250
+    peak_prominence: 0.05
+    peak_threshold: 0.80
+    rolling_window: 50 
+
+  small_accessible_patch:
+    min_distance: 40
+    peak_width: 30
+    peak_prominence: 0.1
+    peak_threshold: 0.8
+    rolling_window: 40 
+
+  mid_accessible_patch:
+    min_distance: 100
+    peak_width: 60
+    peak_prominence: 0.025
+    peak_threshold: 0.80
+    rolling_window: 50 
+
+  large_accessible_patch:
+    min_distance: 100
+    peak_width: 100
+    peak_prominence: 0.025
+    peak_threshold: 0.80
+    rolling_window: 50 
+
+  nucleosome_depleted_region:
+    min_distance: 200
+    peak_width: 200
+    peak_prominence: 0.025
+    peak_threshold: 0.80
+    rolling_window: 50 
+
+  small_bound_stretch:
+    min_distance: 20
+    peak_width: 20
+    peak_prominence: 0.01
+    peak_threshold: 0.50
+    rolling_window: 10 
+
+  medium_bound_stretch:
+    min_distance: 40
+    peak_width: 40
+    peak_prominence: 0.01
+    peak_threshold: 0.50
+    rolling_window: 20 
+
+  putative_nucleosome:
+    min_distance: 160
+    peak_width: 147     # canonical nucleosome footprint
+    peak_prominence: 0.025
+    peak_threshold: 0.60
+    rolling_window: 20 
+
+  large_bound_stretch:
+    min_distance: 250
+    peak_width: 300
+    peak_prominence: 0.20
+    peak_threshold: 0.80
+    rolling_window: 50 
 
 # Pipeline control flow - load adata
 force_redo_load_adata: False # Whether to perform load adata command from start

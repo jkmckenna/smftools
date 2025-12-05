@@ -16,6 +16,7 @@ from .filter_reads_on_length_quality_mapping import filter_reads_on_length_quali
 from .invert_adata import invert_adata
 from .load_sample_sheet import load_sample_sheet
 from .flag_duplicate_reads import flag_duplicate_reads
+from .reindex_references_adata import reindex_references_adata
 from .subsample_adata import subsample_adata
 
 __all__ = [
