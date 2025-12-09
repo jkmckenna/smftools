@@ -1,9 +1,7 @@
-from .add_read_length_and_mapping_qc import add_read_length_and_mapping_qc
 from .append_base_context import append_base_context
 from .append_binary_layer_by_base_context import append_binary_layer_by_base_context
 from .binarize_on_Youden import binarize_on_Youden
 from .binarize import binarize_adata
-from .calculate_complexity import calculate_complexity
 from .calculate_complexity_II import calculate_complexity_II
 from .calculate_read_modification_stats import calculate_read_modification_stats
 from .calculate_coverage import calculate_coverage
@@ -20,12 +18,11 @@ from .reindex_references_adata import reindex_references_adata
 from .subsample_adata import subsample_adata
 
 __all__ = [
-    "add_read_length_and_mapping_qc",
     "append_base_context",
     "append_binary_layer_by_base_context",
     "binarize_on_Youden",
     "binarize_adata",
-    "calculate_complexity",
+    "calculate_complexity_II",
     "calculate_read_modification_stats",
     "calculate_coverage",    
     "calculate_position_Youden",

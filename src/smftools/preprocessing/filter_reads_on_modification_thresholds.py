@@ -15,7 +15,7 @@ def filter_reads_on_modification_thresholds(
     a_thresholds: Optional[Sequence[float]] = None,
     use_other_c_as_background: bool = False,
     min_valid_fraction_positions_in_read_vs_ref: Optional[float] = None,
-    uns_flag: str = 'reads_filtered_on_modification_thresholds',
+    uns_flag: str = 'filter_reads_on_modification_thresholds_performed',
     bypass: bool = False,
     force_redo: bool = False,
     reference_column: str = 'Reference_strand',

@@ -5,7 +5,7 @@ def append_base_context(adata,
                         mod_target_bases=['GpC', 'CpG'],
                         bypass=False,
                         force_redo=False,
-                        uns_flag='base_context_added'
+                        uns_flag='append_base_context_performed'
 ):
     """
     Adds nucleobase context to the position within the given category. When use_consensus is True, it uses the consensus sequence, otherwise it defaults to the FASTA sequence.
@@ -115,7 +115,7 @@ def append_base_context(adata,
             # Site context annotations for each reference
             adata.var[f'{ref}_{site_type}'] = boolean_dict[f'{ref}_{site_type}'].astype(bool)
             # Restrict the site type labels to only be in positions that occur at a high enough frequency in the dataset
-            if adata.uns["positional_coverage_calculated"] == True:
+            if adata.uns["calculate_coverage_performed"] == True:
                 adata.var[f'{ref}_{site_type}'] = (adata.var[f'{ref}_{site_type}']) & (adata.var[f'position_in_{ref}'])
             else:
                 pass

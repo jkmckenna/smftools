@@ -248,7 +248,7 @@ def hmm_adata(config_path):
 
 ############################################### HMM based feature plotting ###############################################
     from ..plotting import combined_hmm_raw_clustermap
-    hmm_dir = pp_dir / "11_hmm_clustermaps"
+    hmm_dir = pp_dir / "12_hmm_clustermaps"
     make_dirs([pp_dir, hmm_dir])
 
     layers: list[str] = []
@@ -299,7 +299,7 @@ def hmm_adata(config_path):
             index_col_suffix=cfg.reindexed_var_suffix
             )
 
-    hmm_dir = pp_dir / "12_hmm_bulk_traces"
+    hmm_dir = pp_dir / "13_hmm_bulk_traces"
 
     if hmm_dir.is_dir():
         print(f'{hmm_dir} already exists.')
@@ -320,7 +320,7 @@ def hmm_adata(config_path):
             show_raw=False
         )
 
-    hmm_dir = pp_dir / "13_hmm_fragment_distributions"
+    hmm_dir = pp_dir / "14_hmm_fragment_distributions"
 
     if hmm_dir.is_dir():
         print(f'{hmm_dir} already exists.')

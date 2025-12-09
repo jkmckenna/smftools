@@ -11,7 +11,7 @@ def calculate_complexity_II(
     n_depths=12,
     random_state=0,
     csv_summary=True,
-    uns_flag='complexity_analysis_complete',
+    uns_flag='calculate_complexity_II_performed',
     force_redo=False,
     bypass=False
 ):

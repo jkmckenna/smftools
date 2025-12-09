@@ -77,7 +77,7 @@ def flag_duplicate_reads(
     sample_col: str = "Barcode",
     output_directory: Optional[str] = None,
     metric_keys: Union[str, List[str]] = ("Fraction_any_C_site_modified",),
-    uns_flag: str = "read_duplicate_detection_performed",
+    uns_flag: str = "flag_duplicate_reads_performed",
     uns_filtered_flag: str = "read_duplicates_removed",
     bypass: bool = False,
     force_redo: bool = False,

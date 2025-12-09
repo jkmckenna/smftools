@@ -2,7 +2,7 @@ def calculate_read_modification_stats(adata,
                                       reference_column, 
                                       sample_names_col, 
                                       mod_target_bases,
-                                      uns_flag="read_modification_stats_calculated",
+                                      uns_flag="calculate_read_modification_stats_performed",
                                       bypass=False,
                                       force_redo=False
 ):

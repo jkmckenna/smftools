@@ -75,7 +75,7 @@ def add_read_length_and_mapping_qc(
     adata,
     bam_files: Optional[List[str]] = None,
     read_metrics: Optional[Dict[str, Union[list, tuple]]] = None,
-    uns_flag: str = "read_lenth_and_mapping_qc_performed",
+    uns_flag: str = "add_read_length_and_mapping_qc_performed",
     extract_read_features_from_bam_callable = None,
     bypass: bool = False,
     force_redo: bool = True

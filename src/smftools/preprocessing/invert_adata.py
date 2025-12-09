@@ -1,6 +1,6 @@
 ## invert_adata
 
-def invert_adata(adata, uns_flag='adata_positions_inverted', force_redo=False):
+def invert_adata(adata, uns_flag='invert_adata_performed', force_redo=False):
     """
     Inverts the AnnData object along the column (variable) axis.
 
