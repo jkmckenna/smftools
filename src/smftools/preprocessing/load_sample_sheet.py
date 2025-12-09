@@ -2,7 +2,7 @@ def load_sample_sheet(adata,
                       sample_sheet_path, 
                       mapping_key_column='obs_names',
                       as_category=True,
-                      uns_flag='sample_sheet_loaded',
+                      uns_flag='load_sample_sheet_performed',
                       force_reload=True
                         ):
     """

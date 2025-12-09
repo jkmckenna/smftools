@@ -70,24 +70,15 @@ def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = N
 
 def align_and_sort_BAM(fasta, 
                        input, 
-                       bam_suffix='.bam', 
-                       output_directory='aligned_outputs', 
-                       make_bigwigs=False, 
-                       threads=None, 
-                       aligner='minimap2',
-                       aligner_args=['-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N', '5', '--secondary=no']):
+                       cfg,
+):
     """
     A wrapper for running dorado aligner and samtools functions
     
     Parameters:
         fasta (str): File path to the reference genome to align to.
         input (str): File path to the basecalled file to align. Works for .bam and .fastq files
-        bam_suffix (str): The suffix to use for the BAM file.
-        output_directory (str): A file path to the directory to output all the analyses.
-        make_bigwigs (bool): Whether to make bigwigs
-        threads (int): Number of additional threads to use
-        aligner (str): Aligner to use. minimap2 and dorado options
-        aligner_args (list): list of optional parameters to use for the alignment
+        cfg: The configuration object
 
     Returns:
         None
@@ -97,40 +88,48 @@ def align_and_sort_BAM(fasta,
     input_suffix = input.suffix
     input_as_fastq = input.with_name(input.stem + '.fastq')
 
-    output_path_minus_suffix = output_directory / input.stem
+    output_path_minus_suffix = cfg.output_directory / input.stem
     
     aligned_BAM = output_path_minus_suffix.with_name(output_path_minus_suffix.stem + "_aligned")
-    aligned_output = aligned_BAM.with_suffix(bam_suffix)
+    aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
     aligned_sorted_BAM =aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
-    aligned_sorted_output = aligned_sorted_BAM.with_suffix(bam_suffix)
+    aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
 
-    if threads:
-        threads = str(threads)
+    if cfg.threads:
+        threads = str(cfg.threads)
     else:
-        pass
+        threads = None
     
-    if aligner == 'minimap2':
-        print(f"Converting BAM to FASTQ: {input}")
-        _bam_to_fastq_with_pysam(input, input_as_fastq)
-        print(f"Aligning FASTQ to Reference: {input_as_fastq}")
-        if threads:
-            minimap_command = ['minimap2'] + aligner_args + ['-t', threads, str(fasta), str(input_as_fastq)]
-        else:
-            minimap_command = ['minimap2'] + aligner_args + [str(fasta), str(input_as_fastq)]
-        subprocess.run(minimap_command, stdout=open(aligned_output, "wb"))
-        os.remove(input_as_fastq)
+    if cfg.aligner == 'minimap2':
+        if not cfg.align_from_bam:
+            print(f"Converting BAM to FASTQ: {input}")
+            _bam_to_fastq_with_pysam(input, input_as_fastq)
+            print(f"Aligning FASTQ to Reference: {input_as_fastq}")
+            mm_input = input_as_fastq
+        else: 
+            print(f"Aligning BAM to Reference: {input}")
+            mm_input = input
 
-    elif aligner == 'dorado':
+        if threads:
+            minimap_command = ['minimap2'] + cfg.aligner_args + ['-t', threads, str(fasta), str(mm_input)]
+        else:
+            minimap_command = ['minimap2'] + cfg.aligner_args + [str(fasta), str(mm_input)]
+        subprocess.run(minimap_command, stdout=open(aligned_output, "wb"))
+
+        if not cfg.align_from_bam:
+            os.remove(input_as_fastq)
+
+    elif cfg.aligner == 'dorado':
         # Run dorado aligner
         print(f"Aligning BAM to Reference: {input}")
         if threads:
-            alignment_command = ["dorado", "aligner", "-t", threads] + aligner_args + [str(fasta), str(input)]
+            alignment_command = ["dorado", "aligner", "-t", threads] + cfg.aligner_args + [str(fasta), str(input)]
         else:
-            alignment_command = ["dorado", "aligner"] + aligner_args + [str(fasta), str(input)]
+            alignment_command = ["dorado", "aligner"] + cfg.aligner_args + [str(fasta), str(input)]
         subprocess.run(alignment_command, stdout=open(aligned_output, "wb"))
 
     else:
-        print(f'Aligner not recognized: {aligner}. Choose from minimap2 and dorado')
+        print(f'Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado')
         return
     
     # --- Sort & Index with pysam ---

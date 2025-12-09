@@ -3,7 +3,15 @@
 def reindex_references_adata(adata, 
                              reference_col="Reference_strand", 
                              offsets=None, 
-                             new_col="reindexed"):
+                             new_col="reindexed",
+                             uns_flag='reindex_references_adata_performed', 
+                             force_redo=False):
+    
+    # Only run if not already performed
+    already = bool(adata.uns.get(uns_flag, False))
+    if (already and not force_redo):
+        return None
+    
     if offsets is None:
         pass
     else:
@@ -22,3 +30,8 @@ def reindex_references_adata(adata,
                 # Add offset to all var positions
                 adata.var[colname] = var_coords + offset_value
 
+    # mark as done
+    adata.uns[uns_flag] = True
+
+    print("Reindexing complete!")
+    return None

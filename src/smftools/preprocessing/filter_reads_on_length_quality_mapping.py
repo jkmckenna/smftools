@@ -11,7 +11,7 @@ def filter_reads_on_length_quality_mapping(
     length_ratio: Optional[Sequence[float]] = None,         # e.g. [min, max]
     read_quality: Optional[Sequence[float]] = None,         # e.g. [min, max]  (commonly min only)
     mapping_quality: Optional[Sequence[float]] = None,      # e.g. [min, max]  (commonly min only)
-    uns_flag: str = "reads_removed_failing_length_quality_mapping_qc",
+    uns_flag: str = "filter_reads_on_length_quality_mapping_performed",
     bypass: bool = False,
     force_redo: bool = True
 ) -> ad.AnnData:

@@ -2,6 +2,8 @@ import shutil
 from pathlib import Path
 from typing import Union, Iterable
 
+from .helpers import AdataPaths
+
 def check_executable_exists(cmd: str) -> bool:
     """Return True if a command-line executable is available in PATH."""
     return shutil.which(cmd) is not None
@@ -66,116 +68,81 @@ def delete_tsvs(
                     except Exception as e:
                         print(f"[error] failed to remove tmp dir {td}: {e}")
 
-def load_adata(config_path):
+def load_adata_core(cfg, paths: AdataPaths):
     """
-    High-level function to call for converting raw sequencing data to an adata object. 
-    Command line accesses this through smftools load <config_path>
-    Works for nanopore pod5, fast5, and unaligned modBAM data types for direct SMF workflows.
-    Works for nanopore pod5, fast5, unaligned BAM for conversion SMF workflows.
-    Also works for illumina fastq and unaligned BAM for conversion SMF workflows.
+    Core load pipeline.
 
-    Parameters:
-        config_path (str): A string representing the file path to the experiment configuration csv file.
+    Assumes:
+    - cfg is a fully initialized ExperimentConfig
+    - paths is an AdataPaths object describing canonical h5ad stage paths
+    - No stage-skipping or early returns based on existing AnnDatas are done here
+      (that happens in the wrapper).
 
-    Returns:
-        adata, adata_path, se_bam_files, cfg
+    Does:
+    - handle input format (fast5/pod5/fastq/bam/h5ad)
+    - basecalling / alignment / demux / BAM QC
+    - optional bed + bigwig generation
+    - AnnData construction (conversion or direct modality)
+    - basic read-level QC annotations
+    - write raw AnnData to paths.raw
+    - run MultiQC
+    - optional deletion of intermediate BAMs
+
+    Returns
+    -------
+    raw_adata : anndata.AnnData
+        Newly created raw AnnData object.
+    raw_adata_path : Path
+        Path where the raw AnnData was written (paths.raw).
+    cfg : ExperimentConfig
+        (Same object, possibly with some fields updated, e.g. fasta path.)
     """
-    from ..readwrite import make_dirs, safe_write_h5ad, add_or_update_column_in_csv
-    from ..config import LoadExperimentConfig, ExperimentConfig
-    from ..informatics.bam_functions import concatenate_fastqs_to_bam
-    from ..informatics.pod5_functions import fast5_to_pod5
-    from ..informatics.fasta_functions import subsample_fasta_from_bed
+    import os
+    from pathlib import Path
 
     import numpy as np
     import pandas as pd
     import anndata as ad
     import scanpy as sc
 
-    import os
-    from importlib import resources
-    from pathlib import Path
+    from .helpers import write_gz_h5ad
 
-    from datetime import datetime
-    date_str = datetime.today().strftime("%y%m%d")
+    from ..readwrite import make_dirs, add_or_update_column_in_csv
+
+    from ..informatics.bam_functions import concatenate_fastqs_to_bam, align_and_sort_BAM, demux_and_index_BAM, split_and_index_BAM, bam_qc, extract_read_features_from_bam
+    from ..informatics.bed_functions import aligned_BAM_to_bed
+    from ..informatics.pod5_functions import fast5_to_pod5
+    from ..informatics.fasta_functions import subsample_fasta_from_bed, generate_converted_FASTA, get_chromosome_lengths
+    from ..informatics.basecalling import modcall, canoncall
+    from ..informatics.modkit_functions import modQC, make_modbed, extract_mods
+    from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
+    from ..informatics.converted_BAM_to_adata import converted_BAM_to_adata
+    from ..informatics.h5ad_functions import add_read_length_and_mapping_qc
+    from ..informatics.run_multiqc import run_multiqc
 
     ################################### 1) General params and input organization ###################################
+    output_directory = Path(cfg.output_directory)
+    make_dirs([output_directory])
 
-    # Load experiment config parameters into global variables
-    loader = LoadExperimentConfig(config_path)
-    defaults_dir = resources.files("smftools").joinpath("config")
-    cfg, report = ExperimentConfig.from_var_dict(loader.var_dict, date_str=date_str, defaults_dir=defaults_dir)
-
-    # Make initial output directory
-    make_dirs([cfg.output_directory])
-
-    # Make a csv that contains experiment summary file paths
-    add_or_update_column_in_csv(cfg.summary_file, "experiment_name", cfg.experiment_name)
-    add_or_update_column_in_csv(cfg.summary_file, "config_path", config_path)
-    add_or_update_column_in_csv(cfg.summary_file, "input_data_path", cfg.input_data_path)
-    add_or_update_column_in_csv(cfg.summary_file, "input_files", [cfg.input_files])
-
-    # Initial h5ad file naming
-    h5_dir = cfg.output_directory / 'h5ads'
-    raw_adata_path = h5_dir / f'{cfg.experiment_name}.h5ad.gz'
-
-    # Preprocessed adata path info
-    pp_adata_basename = raw_adata_path.name.split(".")[0] + '_preprocessed.h5ad.gz'
-    pp_adata_path = raw_adata_path.parent / pp_adata_basename
-
-    # Preprocessed duplicate removed adata path info
-    if cfg.smf_modality == 'direct':
-        # For direct SMF, link the duplicate removed version just to the preprocessed version, since there is not a duplicate removal step for direct workflow
-        pp_dup_rem_adata_path = pp_adata_path
-    else:
-        pp_dup_rem_adata_basename = pp_adata_path.name.split(".")[0] + '_duplicates_removed.h5ad.gz'
-        pp_dup_rem_adata_path = pp_adata_path.parent / pp_dup_rem_adata_basename
-
-    # Preprocessed duplicate removed adata with basic analyses appended path info
-    spatial_adata_basename = pp_dup_rem_adata_path.name.split(".")[0] + '_spatial.h5ad.gz'
-    spatial_adata_path = pp_dup_rem_adata_path.parent / spatial_adata_basename
-
-    # hmm adata
-    hmm_adata_basename = spatial_adata_path.name.split(".")[0] + '_hmm.h5ad.gz'
-    hmm_adata_path = spatial_adata_path.parent / hmm_adata_basename
-
-    add_or_update_column_in_csv(cfg.summary_file, "load_adata", raw_adata_path)
-    add_or_update_column_in_csv(cfg.summary_file, "pp_adata", pp_adata_path)
-    add_or_update_column_in_csv(cfg.summary_file, "pp_dedup_adata", pp_dup_rem_adata_path)
-    add_or_update_column_in_csv(cfg.summary_file, "spatial_adata", spatial_adata_path)
-    add_or_update_column_in_csv(cfg.summary_file, "hmm_adata", hmm_adata_path)
-
-    if cfg.force_redo_load_adata:
-        pass
-    elif hmm_adata_path.exists():
-        print(f"HMM AnnData already exists: {hmm_adata_path}\n Skipping smftools load")
-        return None, hmm_adata_path, cfg
-    elif spatial_adata_path.exists():
-        print(f"Spatial AnnData already exists: {spatial_adata_path}\n Skipping smftools load")
-        return None, spatial_adata_path, cfg
-    elif pp_dup_rem_adata_path.exists():
-        print(f"Preprocessed deduplicated AnnData already exists: {pp_dup_rem_adata_path}\n Skipping smftools load")
-        return None, pp_dup_rem_adata_path, cfg
-    elif pp_adata_path.exists():
-        print(f"Preprocessed Anndata already exists: {pp_adata_path}\n Skipping smftools load")
-        return None, pp_adata_path, cfg
-    elif raw_adata_path.exists():
-        print(f"Anndata from smftools load already exists: {raw_adata_path}\n Skipping smftools load")
-        return None, raw_adata_path, cfg
-    else:
-        pass
+    raw_adata_path = paths.raw
+    pp_adata_path = paths.pp
+    pp_dup_rem_adata_path = paths.pp_dedup
+    spatial_adata_path = paths.spatial
+    hmm_adata_path = paths.hmm
 
     # Naming of the demultiplexed output directory
     double_barcoded_path = cfg.split_path / "both_ends_barcoded"
     single_barcoded_path = cfg.split_path / "at_least_one_end_barcoded"
 
     # Direct methylation detection SMF specific parameters
-    if cfg.smf_modality == 'direct':
+    if cfg.smf_modality == "direct":
         mod_bed_dir = cfg.output_directory / "mod_beds"
         add_or_update_column_in_csv(cfg.summary_file, "mod_bed_dir", mod_bed_dir)
         mod_tsv_dir = cfg.output_directory / "mod_tsvs"
         add_or_update_column_in_csv(cfg.summary_file, "mod_tsv_dir", mod_tsv_dir)
         bam_qc_dir = cfg.output_directory / "bam_qc"
         mods = [cfg.mod_map[mod] for mod in cfg.mod_list]
+
         if not check_executable_exists("dorado"):
             raise RuntimeError(
                 "Error: 'dorado' is not installed or not in PATH. "
@@ -187,9 +154,12 @@ def load_adata(config_path):
                 "Install from https://github.com/nanoporetech/modkit"
             )
     else:
-        pass
-    
-    if not cfg.input_already_demuxed or cfg.aligner == "dorado":
+        mod_bed_dir = None
+        mod_tsv_dir = None
+        mods = None
+
+    # demux / aligner executables
+    if (not cfg.input_already_demuxed) or cfg.aligner == "dorado":
         if not check_executable_exists("dorado"):
             raise RuntimeError(
                 "Error: 'dorado' is not installed or not in PATH. "
@@ -215,7 +185,7 @@ def load_adata(config_path):
             fast5_to_pod5(cfg.input_data_path, output_pod5)
         # Reassign the pod5_dir variable to point to the new pod5 file.
         cfg.input_data_path = output_pod5
-        cfg.input_type == "pod5"
+        cfg.input_type = "pod5"
     # If the input is a fastq or a directory of fastqs, concatenate them into an unaligned BAM and save the barcode
     elif cfg.input_type == "fastq":
         # Output file for FASTQ concatenation.
@@ -348,7 +318,7 @@ def load_adata(config_path):
     if aligned_sorted_output.exists():
         print(f'{aligned_sorted_output} already exists. Using existing aligned/sorted BAM.')
     else:
-        align_and_sort_BAM(fasta, unaligned_output, cfg.bam_suffix, cfg.output_directory, cfg.make_bigwigs, cfg.threads, cfg.aligner, cfg.aligner_args)
+        align_and_sort_BAM(fasta, unaligned_output, cfg)
         # Deleted the unsorted aligned output
         aligned_output.unlink()
 
@@ -543,7 +513,7 @@ def load_adata(config_path):
 
     ############################################### Save final adata ###############################################
     print(f"Saving AnnData to {raw_adata_path}")
-    safe_write_h5ad(raw_adata, raw_adata_path, compression='gzip', backup=True)
+    write_gz_h5ad(raw_adata, raw_adata_path)
     ########################################################################################################################
 
     ############################################### MultiQC HTML Report ###############################################
@@ -574,3 +544,94 @@ def load_adata(config_path):
     ########################################################################################################################
 
     return raw_adata, raw_adata_path, cfg
+
+def load_adata(config_path: str):
+    """
+    CLI-facing wrapper for the load pipeline.
+
+    - Reads config CSV into ExperimentConfig
+    - Computes canonical paths for all downstream AnnData stages
+    - Registers those in the summary CSV
+    - Applies stage-skipping logic (hmm > spatial > pp_dedup > pp > raw)
+    - If needed, calls the core pipeline to actually build the raw AnnData
+
+    Returns
+    -------
+    adata : anndata.AnnData | None
+        Newly created AnnData object, or None if we skipped because a later-stage
+        AnnData already exists.
+    adata_path : pathlib.Path
+        Path to the "current" AnnData that should be used downstream.
+    cfg : ExperimentConfig
+        Config object for downstream steps.
+    """
+    from importlib import resources
+    from datetime import datetime
+    from pathlib import Path
+
+    import pandas as pd  # used for summary file reading downstream if needed
+
+    from ..readwrite import make_dirs, add_or_update_column_in_csv
+    from ..config import LoadExperimentConfig, ExperimentConfig
+
+    from .helpers import get_adata_paths
+
+    date_str = datetime.today().strftime("%y%m%d")
+
+    # -----------------------------
+    # 1) Load config into cfg
+    # -----------------------------
+    loader = LoadExperimentConfig(config_path)
+    defaults_dir = resources.files("smftools").joinpath("config")
+    cfg, report = ExperimentConfig.from_var_dict(
+        loader.var_dict, date_str=date_str, defaults_dir=defaults_dir
+    )
+
+    # Ensure base output dir
+    make_dirs([cfg.output_directory])
+
+    # -----------------------------
+    # 2) Compute and register paths
+    # -----------------------------
+    paths = get_adata_paths(cfg)
+
+    # experiment-level metadata in summary CSV
+    add_or_update_column_in_csv(cfg.summary_file, "experiment_name", cfg.experiment_name)
+    add_or_update_column_in_csv(cfg.summary_file, "config_path", config_path)
+    add_or_update_column_in_csv(cfg.summary_file, "input_data_path", cfg.input_data_path)
+    add_or_update_column_in_csv(cfg.summary_file, "input_files", [cfg.input_files])
+
+    # AnnData stage paths
+    add_or_update_column_in_csv(cfg.summary_file, "load_adata", paths.raw)
+    add_or_update_column_in_csv(cfg.summary_file, "pp_adata", paths.pp)
+    add_or_update_column_in_csv(cfg.summary_file, "pp_dedup_adata", paths.pp_dedup)
+    add_or_update_column_in_csv(cfg.summary_file, "spatial_adata", paths.spatial)
+    add_or_update_column_in_csv(cfg.summary_file, "hmm_adata", paths.hmm)
+
+    # -----------------------------
+    # 3) Stage skipping logic
+    # -----------------------------
+    if not getattr(cfg, "force_redo_load_adata", False):
+        if paths.hmm.exists():
+            print(f"HMM AnnData already exists: {paths.hmm}\nSkipping smftools load")
+            return None, paths.hmm, cfg
+        if paths.spatial.exists():
+            print(f"Spatial AnnData already exists: {paths.spatial}\nSkipping smftools load")
+            return None, paths.spatial, cfg
+        if paths.pp_dedup.exists():
+            print(
+                f"Preprocessed deduplicated AnnData already exists: {paths.pp_dedup}\n"
+                f"Skipping smftools load"
+            )
+            return None, paths.pp_dedup, cfg
+        if paths.pp.exists():
+            print(f"Preprocessed AnnData already exists: {paths.pp}\nSkipping smftools load")
+            return None, paths.pp, cfg
+        if paths.raw.exists():
+            print(f"Raw AnnData from smftools load already exists: {paths.raw}\nSkipping smftools load")
+            return None, paths.raw, cfg
+
+    # If we get here, we actually want to run the full load pipeline
+    adata, adata_path, cfg = load_adata_core(cfg, paths)
+
+    return adata, adata_path, cfg

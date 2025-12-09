@@ -704,7 +704,8 @@ class ExperimentConfig:
 
     # Alignment params
     mapping_threshold: float = 0.01 # Min threshold for fraction of reads in a sample mapping to a reference in order to include the reference in the anndata
-    aligner: str = "minimap2"
+    align_from_bam: bool = False # Whether minimap2 should align from a bam file as input. If False, aligns from FASTQ 
+    aligner: str = "dorado"
     aligner_args: Optional[List[str]] = None
     make_bigwigs: bool = False
     make_beds: bool = False
@@ -999,7 +1000,14 @@ class ExperimentConfig:
                 input_type = "h5ad"
                 input_files = found["h5ad_paths"]
 
-            print(f"Found {found['all_files_searched']} files; fastq={len(found["fastq_paths"])}, bam={len(found["bam_paths"])}, pod5={len(found["pod5_paths"])}, fast5={len(found["fast5_paths"])}, , h5ad={len(found["h5ad_paths"])}")
+            print(
+                f"Found {found['all_files_searched']} files; "
+                f"fastq={len(found['fastq_paths'])}, "
+                f"bam={len(found['bam_paths'])}, "
+                f"pod5={len(found['pod5_paths'])}, "
+                f"fast5={len(found['fast5_paths'])}, "
+                f"h5ad={len(found['h5ad_paths'])}"
+            )
 
         # summary file output path
         output_dir = Path(merged['output_directory'])
@@ -1128,6 +1136,7 @@ class ExperimentConfig:
             sample_sheet_mapping_column = merged.get("sample_sheet_mapping_column"),
             delete_intermediate_bams = merged.get("delete_intermediate_bams", False),
             delete_intermediate_tsvs = merged.get("delete_intermediate_tsvs", True),
+            align_from_bam = merged.get("align_from_bam", False),
             aligner = merged.get("aligner", "minimap2"),
             aligner_args = merged.get("aligner_args", None),
             device = merged.get("device", "auto"),
@@ -1289,6 +1298,7 @@ class ExperimentConfig:
     # -------------------------
     # validation & serialization
     # -------------------------
+    @staticmethod
     def _validate_hmm_features_structure(hfs: dict) -> List[str]:
         errs = []
         if not isinstance(hfs, dict):

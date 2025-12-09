@@ -1,101 +1,227 @@
-def preprocess_adata(config_path):
-    """
-    High-level function to call for preprocessing an adata object. 
-    Command line accesses this through smftools preprocess <config_path>
+from pathlib import Path
+from typing import Optional, Tuple
 
-    Parameters:
-        config_path (str): A string representing the file path to the experiment configuration csv file.
+import anndata as ad
 
-    Returns:
-        (pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path)
+def preprocess_adata(
+    config_path: str,
+) -> Tuple[Optional[ad.AnnData], Optional[Path], Optional[ad.AnnData], Optional[Path]]:
     """
-    from ..readwrite import safe_read_h5ad, safe_write_h5ad, make_dirs, add_or_update_column_in_csv
+    CLI-facing wrapper for preprocessing.
+
+    Called by: `smftools preprocess <config_path>`
+
+    - Ensure a raw AnnData exists (or some later-stage AnnData) via `load_adata`.
+    - Determine which AnnData stages exist (raw, pp, pp_dedup, spatial, hmm).
+    - Respect cfg flags (force_redo_preprocessing, force_redo_flag_duplicate_reads).
+    - Decide what starting AnnData to load (or whether to early-return).
+    - Call `preprocess_adata_core(...)` when appropriate.
+
+    Returns
+    -------
+    pp_adata : AnnData | None
+        Preprocessed AnnData (may be None if we skipped work).
+    pp_adata_path : Path | None
+        Path to preprocessed AnnData.
+    pp_dedup_adata : AnnData | None
+        Preprocessed, duplicate-removed AnnData.
+    pp_dedup_adata_path : Path | None
+        Path to preprocessed, duplicate-removed AnnData.
+    """
+    from ..readwrite import safe_read_h5ad
     from .load_adata import load_adata
+    from .helpers import get_adata_paths
 
-    import numpy as np
-    import pandas as pd
-    import anndata as ad
-    import scanpy as sc
+    # 1) Ensure config is loaded and at least *some* AnnData stage exists
+    loaded_adata, loaded_path, cfg = load_adata(config_path)
 
-    import os
-    from importlib import resources
+    # 2) Compute canonical paths
+    paths = get_adata_paths(cfg)
+    raw_path = paths.raw
+    pp_path = paths.pp
+    pp_dedup_path = paths.pp_dedup
+    spatial_path = paths.spatial
+    hmm_path = paths.hmm
+
+    raw_exists = raw_path.exists()
+    pp_exists = pp_path.exists()
+    pp_dedup_exists = pp_dedup_path.exists()
+    spatial_exists = spatial_path.exists()
+    hmm_exists = hmm_path.exists()
+
+    # Helper: reuse loaded_adata if it matches the path we want, else read from disk
+    def _load(path: Path):
+        if loaded_adata is not None and loaded_path == path:
+            return loaded_adata
+        adata, _ = safe_read_h5ad(path)
+        return adata
+
+    # -----------------------------
+    # Case A: full redo of preprocessing
+    # -----------------------------
+    if getattr(cfg, "force_redo_preprocessing", False):
+        print("Forcing full redo of preprocessing workflow, starting from latest stage AnnData available.")
+
+        if hmm_exists:
+            adata = _load(hmm_path)
+        elif spatial_exists:
+            adata = _load(spatial_path)
+        elif pp_dedup_exists:
+            adata = _load(pp_dedup_path)
+        elif pp_exists:
+            adata = _load(pp_path)
+        elif raw_exists:
+            adata = _load(raw_path)
+        else:
+            print("Cannot redo preprocessing: no AnnData available at any stage.")
+            return (None, None, None, None)
+
+        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+            adata=adata,
+            cfg=cfg,
+            pp_adata_path=pp_path,
+            pp_dup_rem_adata_path=pp_dedup_path,
+        )
+        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
+
+    # -----------------------------
+    # Case B: redo duplicate detection only
+    # -----------------------------
+    if getattr(cfg, "force_redo_flag_duplicate_reads", False):
+        print(
+            "Forcing redo of duplicate detection workflow, starting from the preprocessed AnnData "
+            "if available. Otherwise, will use the raw AnnData."
+        )
+        if pp_exists:
+            adata = _load(pp_path)
+        elif raw_exists:
+            adata = _load(raw_path)
+        else:
+            print(
+                "Cannot redo duplicate detection: no compatible AnnData available "
+                "(need at least raw or preprocessed)."
+            )
+            return (None, None, None, None)
+
+        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+            adata=adata,
+            cfg=cfg,
+            pp_adata_path=pp_path,
+            pp_dup_rem_adata_path=pp_dedup_path,
+        )
+        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
+
+    # -----------------------------
+    # Case C: normal behavior (no explicit redo flags)
+    # -----------------------------
+
+    # If HMM exists, preprocessing is considered “done enough”
+    if hmm_exists:
+        print(f"Skipping preprocessing. HMM AnnData found: {hmm_path}")
+        return (None, None, None, None)
+
+    # If spatial exists, also skip re-preprocessing by default
+    if spatial_exists:
+        print(f"Skipping preprocessing. Spatial AnnData found: {spatial_path}")
+        return (None, None, None, None)
+
+    # If pp_dedup exists, just return paths (no recomputation)
+    if pp_dedup_exists:
+        print(f"Skipping preprocessing. Preprocessed deduplicated AnnData found: {pp_dedup_path}")
+        return (None, pp_path, None, pp_dedup_path)
+
+    # If pp exists but pp_dedup does not, load pp and run core
+    if pp_exists:
+        print(f"Preprocessed AnnData found: {pp_path}")
+        adata = _load(pp_path)
+        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+            adata=adata,
+            cfg=cfg,
+            pp_adata_path=pp_path,
+            pp_dup_rem_adata_path=pp_dedup_path,
+        )
+        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
+
+    # Otherwise, fall back to raw (if available)
+    if raw_exists:
+        adata = _load(raw_path)
+        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+            adata=adata,
+            cfg=cfg,
+            pp_adata_path=pp_path,
+            pp_dup_rem_adata_path=pp_dedup_path,
+        )
+        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
+
+    print("No AnnData available at any stage for preprocessing.")
+    return (None, None, None, None)
+
+
+def preprocess_adata_core(
+    adata: ad.AnnData,
+    cfg,
+    pp_adata_path: Path,
+    pp_dup_rem_adata_path: Path,
+) -> Tuple[ad.AnnData, Path, ad.AnnData, Path]:
+    """
+    Core preprocessing pipeline.
+
+    Assumes:
+    - `adata` is an AnnData object at some stage (raw/pp/etc.) to start preprocessing from.
+    - `cfg` is the ExperimentConfig containing all thresholds & options.
+    - `pp_adata_path` and `pp_dup_rem_adata_path` are the target output paths for
+      preprocessed and preprocessed+deduplicated AnnData.
+
+    Does NOT:
+    - Decide which stage to load from (that's the wrapper's job).
+    - Decide whether to skip entirely; it always runs its steps, but individual
+      sub-steps may skip based on `cfg.bypass_*` or directory existence.
+
+    Returns
+    -------
+    pp_adata : AnnData
+        Preprocessed AnnData (with QC filters, binarization, etc.).
+    pp_adata_path : Path
+        Path where pp_adata was written.
+    pp_dedup_adata : AnnData
+        Preprocessed AnnData with duplicate reads removed (for non-direct SMF).
+    pp_dup_rem_adata_path : Path
+        Path where pp_dedup_adata was written.
+    """
     from pathlib import Path
 
-    from datetime import datetime
-    date_str = datetime.today().strftime("%y%m%d")
+    import numpy as np
+
+    from .helpers import write_gz_h5ad
+    from ..readwrite import make_dirs
+    from ..preprocessing import (
+        load_sample_sheet,
+        filter_reads_on_length_quality_mapping,
+        clean_NaN,
+        calculate_coverage,
+        append_base_context,
+        append_binary_layer_by_base_context,
+        calculate_read_modification_stats,
+        filter_reads_on_modification_thresholds,
+        flag_duplicate_reads,
+        calculate_complexity_II,
+        calculate_position_Youden,
+        binarize_on_Youden,
+        binarize_adata,
+    )
+    from ..plotting import plot_read_qc_histograms
 
     ################################### 1) Load existing  ###################################
-    adata, adata_path, cfg = load_adata(config_path)
-
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
     output_directory = Path(cfg.output_directory)  # Path to the output directory to make for the analysis. Necessary.
-
-    # Make initial output directory
     make_dirs([output_directory])
 
-    input_manager_df = pd.read_csv(cfg.summary_file)
-    initial_adata_path = Path(input_manager_df['load_adata'][0])
-    pp_adata_path = Path(input_manager_df['pp_adata'][0])
-    pp_dup_rem_adata_path = Path(input_manager_df['pp_dedup_adata'][0])
-    spatial_adata_path = Path(input_manager_df['spatial_adata'][0])
-    hmm_adata_path = Path(input_manager_df['hmm_adata'][0])
-
-    if adata:
-        # This happens on first run of the load pipeline
-        pass
-    else:
-        # If an anndata is saved, check which stages of the anndata are available
-        initial_version_available = initial_adata_path.exists()
-        preprocessed_version_available = pp_adata_path.exists()
-        preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists()
-        spatial_adata_exists = spatial_adata_path.exists()
-        hmm_adata_exists = hmm_adata_path.exists()
-
-        if cfg.force_redo_preprocessing:
-            print(f"Forcing full redo of preprocessing workflow, starting from earliest stage adata available.")
-            if initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path)
-            elif preprocessed_version_available:
-                adata, load_report = safe_read_h5ad(pp_adata_path)
-            elif preprocessed_dup_removed_version_available:
-                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
-            else:
-                print(f"Can not redo preprocessing when there is no adata available.")
-                return (None, None, None, None)  
-        elif cfg.force_redo_flag_duplicate_reads:
-            print(f"Forcing redo of duplicate detection workflow, starting from the preprocessed adata if available. Otherwise, will use the raw adata.")
-            if preprocessed_version_available:
-                adata, load_report = safe_read_h5ad(pp_adata_path)
-            elif initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path)
-            else:
-                print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
-                return (None, None, None, None)  
-        elif hmm_adata_exists:
-            print(f"HMM anndata found: {hmm_adata_path}")
-            return (None, None, None, None)      
-        elif spatial_adata_exists:
-            print(f"Spatial anndata found: {spatial_adata_exists}")
-            return (None, None, None, None)            
-        elif preprocessed_dup_removed_version_available:
-            print(f"Preprocessed deduplicated anndata found: {pp_dup_rem_adata_path}")
-            return (None, pp_adata_path, None, pp_dup_rem_adata_path)
-        elif preprocessed_version_available:
-            print(f"Preprocessed anndata found: {pp_adata_path}")
-            adata, load_report = safe_read_h5ad(pp_adata_path)
-        elif initial_version_available:
-            adata, load_report = safe_read_h5ad(initial_adata_path)
-        else:
-            print(f"No adata available.")
-            return
-            
     ######### Begin Preprocessing #########
     pp_dir = output_directory / "preprocessed"
 
     ## Load sample sheet metadata based on barcode mapping ##
-    if cfg.sample_sheet_path:
-        from ..preprocessing import load_sample_sheet
+    if getattr(cfg, "sample_sheet_path", None):
         load_sample_sheet(adata, 
                           cfg.sample_sheet_path, 
                           mapping_key_column=cfg.sample_sheet_mapping_column, 
@@ -110,7 +236,6 @@ def preprocess_adata(config_path):
     if pp_length_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         print( f'{pp_length_qc_dir} already exists. Skipping read level QC plotting.')
     else:
-        from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_length_qc_dir])
         plot_read_qc_histograms(adata,
                                 pp_length_qc_dir, 
@@ -119,7 +244,6 @@ def preprocess_adata(config_path):
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     # Filter on read length, read quality, reference length, mapped_length, and mapping quality metadata.
-    from ..preprocessing import filter_reads_on_length_quality_mapping
     print(adata.shape)
     adata = filter_reads_on_length_quality_mapping(adata, 
                                                          filter_on_coordinates=cfg.read_coord_filter,
@@ -136,7 +260,6 @@ def preprocess_adata(config_path):
     if pp_length_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         print( f'{pp_length_qc_dir} already exists. Skipping read level QC plotting.')
     else:
-        from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_length_qc_dir])
         plot_read_qc_histograms(adata,
                                 pp_length_qc_dir, 
@@ -145,9 +268,7 @@ def preprocess_adata(config_path):
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
         
     ############## Binarize direct modcall data and store in new layer. Clean nans and store as new layers with various nan replacement strategies ##########
-    from ..preprocessing import clean_NaN
     if smf_modality == 'direct':
-        from ..preprocessing import calculate_position_Youden, binarize_on_Youden, binarize_adata
         native = True
         if cfg.fit_position_methylation_thresholds:
             pp_Youden_dir = pp_dir / "02B_Position_wide_Youden_threshold_performance"
@@ -188,13 +309,11 @@ def preprocess_adata(config_path):
                   )
         
     ############### Calculate positional coverage by reference set in dataset ###############
-    from ..preprocessing import calculate_coverage
     calculate_coverage(adata, 
                        ref_column=cfg.reference_column, 
                        position_nan_threshold=cfg.position_max_nan_threshold)
 
     ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats ###############
-    from ..preprocessing import append_base_context, append_binary_layer_by_base_context
     # Additionally, store base_context level binary modification arrays in adata.obsm
     append_base_context(adata, 
                         ref_column=cfg.reference_column, 
@@ -209,27 +328,14 @@ def preprocess_adata(config_path):
                                                 smf_modality,
                                                 bypass=cfg.bypass_append_binary_layer_by_base_context,
                                                 force_redo=cfg.force_redo_append_binary_layer_by_base_context)
-    
-    ############### Optional inversion of the adata along positions axis ###################
-    if cfg.invert_adata:
-        from ..preprocessing import invert_adata
-        adata = invert_adata(adata)
-
-    ############### Optional reindexing of the adata for each reference ###################
-    from ..preprocessing import reindex_references_adata
-    reindex_references_adata(adata,
-                             reference_col=cfg.reference_column,
-                             offsets=cfg.reindexing_offsets,
-                             new_col=cfg.reindexed_var_suffix)
 
     ############### Calculate read methylation/deamination statistics for specific base contexts defined above ###############
-    from ..preprocessing import calculate_read_modification_stats
     calculate_read_modification_stats(adata, 
                                       cfg.reference_column, 
                                       cfg.sample_column,
                                       cfg.mod_target_bases,
                                       bypass=cfg.bypass_calculate_read_modification_stats,
-                                      force_redo=cfg.force_redo_calculate_read_modification_stats)
+                                      force_redo=cfg.force_redo_calculate_read_modification_stats)    
     
     ### Make a dir for outputting sample level read modification metrics before filtering ###
     pp_meth_qc_dir = pp_dir / "03_read_modification_QC_metrics"
@@ -237,7 +343,6 @@ def preprocess_adata(config_path):
     if pp_meth_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         print(f'{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting.')
     else:
-        from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
         if any(base in cfg.mod_target_bases for base in ['GpC', 'CpG', 'C']):
@@ -250,7 +355,6 @@ def preprocess_adata(config_path):
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
 
     ##### Optionally filter reads on modification metrics
-    from ..preprocessing import filter_reads_on_modification_thresholds
     adata = filter_reads_on_modification_thresholds(adata, 
                                                           smf_modality=smf_modality,
                                                           mod_target_bases=cfg.mod_target_bases,
@@ -268,7 +372,6 @@ def preprocess_adata(config_path):
     if pp_meth_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         print(f'{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting.')
     else:
-        from ..plotting import plot_read_qc_histograms
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ['Raw_modification_signal']
         if any(base in cfg.mod_target_bases for base in ['GpC', 'CpG', 'C']):
@@ -282,7 +385,6 @@ def preprocess_adata(config_path):
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != 'direct':
-        from ..preprocessing import flag_duplicate_reads, calculate_complexity_II
         references = adata.obs[cfg.reference_column].cat.categories
 
         var_filters_sets =[]
@@ -340,22 +442,14 @@ def preprocess_adata(config_path):
     ########################################################################################################################
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
-    from ..readwrite import safe_write_h5ad
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
         print('Saving preprocessed adata.')
-        if ".gz" == pp_adata_path.suffix:
-            safe_write_h5ad(adata, pp_adata_path, compression='gzip', backup=True)
-        else:
-            pp_adata_path = pp_adata_path.with_name(pp_adata_path.name + '.gz')
-            safe_write_h5ad(adata, pp_adata_path, compression='gzip', backup=True)
+        write_gz_h5ad(adata, pp_adata_path)
 
     if not pp_dup_rem_adata_path.exists() or cfg.force_redo_preprocessing:
         print('Saving preprocessed adata with duplicates removed.')
-        if ".gz" == pp_dup_rem_adata_path.suffix:
-            safe_write_h5ad(adata_unique, pp_dup_rem_adata_path, compression='gzip', backup=True) 
-        else:
-            pp_adata_path = pp_dup_rem_adata_path.with_name(pp_dup_rem_adata_path.name + '.gz')
-            safe_write_h5ad(adata_unique, pp_dup_rem_adata_path, compression='gzip', backup=True)
+        write_gz_h5ad(adata_unique, pp_dup_rem_adata_path) 
+
     ########################################################################################################################
 
     return (adata, pp_adata_path, adata_unique, pp_dup_rem_adata_path)

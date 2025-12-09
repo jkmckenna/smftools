@@ -1,7 +1,7 @@
 def calculate_coverage(adata, 
                        ref_column='Reference_strand', 
                        position_nan_threshold=0.01, 
-                       uns_flag='positional_coverage_calculated'):
+                       uns_flag='calculate_coverage_performed'):
     """
     Append position-level metadata regarding whether the position is informative within the given observation category.
 

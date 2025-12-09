@@ -6,7 +6,7 @@ def append_binary_layer_by_base_context(
     reference_column: str,
     smf_modality: str = "conversion",
     verbose: bool = True,
-    uns_flag: str = "binary_layers_by_base_context_added",
+    uns_flag: str = "append_binary_layer_by_base_context_performed",
     bypass: bool = False,
     force_redo: bool = False
 ):
@@ -27,7 +27,7 @@ def append_binary_layer_by_base_context(
 
     # Only run if not already performed
     already = bool(adata.uns.get(uns_flag, False))
-    if (already and not force_redo) or bypass or ("base_context_added" not in adata.uns):
+    if (already and not force_redo) or bypass or ("append_base_context_performed" not in adata.uns):
         # QC already performed; nothing to do
         return adata
 
