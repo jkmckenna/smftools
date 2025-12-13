@@ -207,6 +207,11 @@ def spatial_adata_core(
         offsets=cfg.reindexing_offsets,
         new_col=cfg.reindexed_var_suffix,
     )
+
+    if adata.uns.get("reindex_references_adata_performed", False):
+        reindex_suffix = cfg.reindexed_var_suffix
+    else:
+        reindex_suffix = None
         
     pp_dir = output_directory / "preprocessed"
     references = adata.obs[cfg.reference_column].cat.categories
@@ -232,6 +237,34 @@ def spatial_adata_core(
                 else:
                     pp_adata, _ = safe_read_h5ad(pp_adata_path)
 
+                # -----------------------------
+                # Optional sample sheet metadata
+                # -----------------------------
+                if getattr(cfg, "sample_sheet_path", None):
+                    load_sample_sheet(
+                        pp_adata,
+                        cfg.sample_sheet_path,
+                        mapping_key_column=cfg.sample_sheet_mapping_column,
+                        as_category=True,
+                        force_reload=cfg.force_reload_sample_sheet,
+                    )
+
+                # -----------------------------
+                # Optional inversion along positions axis
+                # -----------------------------
+                if getattr(cfg, "invert_adata", False):
+                    pp_adata = invert_adata(pp_adata)
+
+                # -----------------------------
+                # Optional reindexing by reference
+                # -----------------------------
+                reindex_references_adata(
+                    pp_adata,
+                    reference_col=cfg.reference_column,
+                    offsets=cfg.reindexing_offsets,
+                    new_col=cfg.reindexed_var_suffix,
+                )
+
                 combined_raw_clustermap(
                     pp_adata,
                     sample_col=cfg.sample_name_col_for_plotting,
@@ -254,7 +287,7 @@ def spatial_adata_core(
                     save_path=pp_clustermap_dir,
                     sort_by=cfg.spatial_clustermap_sortby,
                     deaminase=deaminase,
-                    index_col_suffix=cfg.reindexed_var_suffix,
+                    index_col_suffix=reindex_suffix,
                 )
         
     # ============================================================
@@ -293,7 +326,7 @@ def spatial_adata_core(
             save_path=pp_clustermap_dir_dedup,
             sort_by=cfg.spatial_clustermap_sortby,
             deaminase=deaminase,
-            index_col_suffix=cfg.reindexed_var_suffix,
+            index_col_suffix=reindex_suffix,
         )
 
     # UMAP / Leiden
@@ -369,7 +402,7 @@ def spatial_adata_core(
                 def _worker(row):
                     try:
                         ac, cnts = binary_autocorrelation_with_spacing(
-                            row, positions, max_lag=cfg.autocorr_max_lag, return_counts=True
+                            row, positions, max_lag=cfg.autocorr_max_lag, return_counts=True, normalize=cfg.autocorr_normalization_method
                         )
                     except Exception:
                         ac = np.full(cfg.autocorr_max_lag + 1, np.nan, dtype=np.float32)
@@ -385,7 +418,7 @@ def spatial_adata_core(
             else:
                 for i in range(X.shape[0]):
                     ac, cnts = binary_autocorrelation_with_spacing(
-                        X[i], positions, max_lag=cfg.autocorr_max_lag, return_counts=True
+                        X[i], positions, max_lag=cfg.autocorr_max_lag, return_counts=True, normalize=cfg.autocorr_normalization_method
                     )
                     rows.append(ac)
                     counts.append(cnts)
@@ -650,6 +683,7 @@ def spatial_adata_core(
                 sample_col=cfg.sample_name_col_for_plotting,
                 window=cfg.autocorr_rolling_window_size,
                 rows_per_fig=cfg.rows_per_qc_autocorr_grid,
+                normalization_method=cfg.autocorr_normalization_method,
             )
 
     # ============================================================

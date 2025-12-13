@@ -511,6 +511,12 @@ def load_adata_core(cfg, paths: AdataPaths):
     raw_adata.obs['Raw_modification_signal'] =  np.nansum(raw_adata.X, axis=1)
     ########################################################################################################################
 
+    ############################################### if input data type was pod5, append the pod5 file origin to each read ###############################################
+    from ..informatics.h5ad_functions import annotate_pod5_origin
+    if cfg.input_type == "pod5":
+        annotate_pod5_origin(raw_adata, cfg.input_data_path, n_jobs=cfg.threads, csv_path=output_directory / "read_to_pod5_origin_mapping.csv")
+    ########################################################################################################################
+
     ############################################### Save final adata ###############################################
     print(f"Saving AnnData to {raw_adata_path}")
     write_gz_h5ad(raw_adata, raw_adata_path)

@@ -4,6 +4,12 @@ import numpy as np
 import scipy.sparse as sp
 from typing import Optional, List, Dict, Union
 
+import os
+import glob
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+from pod5 import Reader
+
 def add_demux_type_annotation(
     adata,
     double_demux_source,
@@ -195,3 +201,129 @@ def add_read_length_and_mapping_qc(
     adata.uns[uns_flag] = True
 
     return None
+
+def _collect_read_origins_from_pod5(pod5_path: str, target_ids: set[str]) -> dict[str, str]:
+    """
+    Worker function: scan one POD5 file and return a mapping
+    {read_id: pod5_basename} only for read_ids in `target_ids`.
+    """
+    basename = os.path.basename(pod5_path)
+    mapping: dict[str, str] = {}
+
+    with Reader(pod5_path) as reader:
+        for read in reader.reads():
+            # Cast read id to string
+            rid = str(read.read_id)
+            if rid in target_ids:
+                mapping[rid] = basename
+
+    return mapping
+
+def annotate_pod5_origin(
+    adata,
+    pod5_dir: str,
+    pattern: str = "*.pod5",
+    n_jobs: int | None = None,
+    fill_value: str | None = "unknown",
+    verbose: bool = True,
+    csv_path: str | None = None,
+):
+    """
+    Add `pod5_origin` column to `adata.obs`, containing the POD5 basename
+    each read came from.
+
+    Parameters
+    ----------
+    adata
+        AnnData with obs_names == read_ids (as strings).
+    pod5_dir
+        Directory containing POD5 files.
+    pattern
+        Glob pattern for POD5 files inside `pod5_dir`.
+    n_jobs
+        Number of worker processes. If None or <=1, runs serially.
+    fill_value
+        Value to use when a read_id is not found in any POD5 file.
+        If None, leaves missing as NaN.
+    verbose
+        Print progress info.
+    csv_path
+        Path to a csv of the read to pod5 origin mapping
+
+    Returns
+    -------
+    None (modifies `adata` in-place).
+    """
+    pod5_files = sorted(glob.glob(os.path.join(pod5_dir, pattern)))
+    if not pod5_files:
+        raise FileNotFoundError(f"No POD5 files matching {pattern!r} in {pod5_dir!r}")
+
+    # Make sure obs_names are strings
+    obs_names = adata.obs_names.astype(str)
+    target_ids = set(obs_names)  # only these are interesting
+
+    if verbose:
+        print(f"Found {len(pod5_files)} POD5 files.")
+        print(f"Tracking {len(target_ids)} read IDs from AnnData.")
+
+    # --- Collect mappings (possibly multiprocessed) ---
+    global_mapping: dict[str, str] = {}
+
+    if n_jobs is None or n_jobs <= 1:
+        # Serial version (less overhead, useful for debugging)
+        if verbose:
+            print("Running in SERIAL mode.")
+        for f in pod5_files:
+            if verbose:
+                print(f"  Scanning {os.path.basename(f)} ...")
+            part = _collect_read_origins_from_pod5(f, target_ids)
+            global_mapping.update(part)
+    else:
+        if verbose:
+            print(f"Running in PARALLEL mode with {n_jobs} workers.")
+        with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+            futures = {
+                ex.submit(_collect_read_origins_from_pod5, f, target_ids): f
+                for f in pod5_files
+            }
+            for fut in as_completed(futures):
+                f = futures[fut]
+                try:
+                    part = fut.result()
+                except Exception as e:
+                    print(f"Error while processing {f}: {e}")
+                    continue
+                global_mapping.update(part)
+                if verbose:
+                    print(f"  Finished {os.path.basename(f)} "
+                          f"({len(part)} matching reads)")
+
+    if verbose:
+        print(f"Total reads matched: {len(global_mapping)}")
+
+    # --- Populate obs['pod5_origin'] in AnnData order, memory-efficiently ---
+    origin = np.empty(adata.n_obs, dtype=object)
+    default = None if fill_value is None else fill_value
+    for i, rid in enumerate(obs_names):
+        origin[i] = global_mapping.get(rid, default)
+
+    adata.obs["pod5_origin"] = origin
+    if verbose:
+        print("Assigned `pod5_origin` to adata.obs.")
+
+    # --- Optionally write a CSV ---
+    if csv_path is not None:
+        if verbose:
+            print(f"Writing CSV mapping to: {csv_path}")
+
+        # Create DataFrame in AnnData order for easier cross-referencing
+        df = pd.DataFrame({
+            "read_id": obs_names,
+            "pod5_origin": origin,
+        })
+        df.to_csv(csv_path, index=False)
+
+        if verbose:
+            print("CSV saved.")
+
+    return global_mapping

@@ -1,102 +1,96 @@
-def hmm_adata(config_path):
-    """
-    High-level function to call for hmm analysis of an adata object. 
-    Command line accesses this through smftools hmm <config_path>
+from typing import Tuple
+from pathlib import Path
 
-    Parameters:
-        config_path (str): A string representing the file path to the experiment configuration csv file.
-
-    Returns:
-        (pp_dedup_spatial_hmm_adata, pp_dedup_spatial_hmm_adata_path)
+def hmm_adata(config_path: str):
     """
-    from ..readwrite import safe_read_h5ad, safe_write_h5ad, make_dirs, add_or_update_column_in_csv
+    CLI-facing wrapper for HMM analysis.
+
+    Command line entrypoint:
+        smftools hmm <config_path>
+
+    Responsibilities:
+    - Build cfg via load_adata()
+    - Ensure preprocess + spatial stages are run
+    - Decide which AnnData to start from (hmm > spatial > pp_dedup > pp > raw)
+    - Call hmm_adata_core(cfg, adata, paths)
+    """
+    from ..readwrite import safe_read_h5ad
     from .load_adata import load_adata
     from .preprocess_adata import preprocess_adata
     from .spatial_adata import spatial_adata
+    from .helpers import get_adata_paths
 
-    import numpy as np
-    import pandas as pd
-    import anndata as ad
-    import scanpy as sc
+    # 1) load cfg / stage paths
+    _, _, cfg = load_adata(config_path)
+    paths = get_adata_paths(cfg)
+
+    # 2) make sure upstream stages are run (they have their own skipping logic)
+    preprocess_adata(config_path)
+    spatial_ad, _ = spatial_adata(config_path)
+
+    # 3) choose starting AnnData
+    # Prefer:
+    #   - existing HMM h5ad if not forcing redo
+    #   - in-memory spatial_ad from wrapper call
+    #   - saved spatial / pp_dedup / pp / raw on disk
+    if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply):
+        adata, _ = safe_read_h5ad(paths.hmm)
+        return adata, paths.hmm
+
+    if spatial_ad is not None:
+        adata = spatial_ad
+    elif paths.spatial.exists():
+        adata, _ = safe_read_h5ad(paths.spatial)
+    elif paths.pp_dedup.exists():
+        adata, _ = safe_read_h5ad(paths.pp_dedup)
+    elif paths.pp.exists():
+        adata, _ = safe_read_h5ad(paths.pp)
+    elif paths.raw.exists():
+        adata, _ = safe_read_h5ad(paths.raw)
+    else:
+        raise FileNotFoundError(
+            "No AnnData available for HMM: expected at least raw or preprocessed h5ad."
+        )
+
+    # 4) delegate to core
+    adata, hmm_adata_path = hmm_adata_core(cfg, adata, paths)
+    return adata, hmm_adata_path
+
+def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
+    """
+    Core HMM analysis pipeline.
+
+    Assumes:
+    - cfg is an ExperimentConfig
+    - adata is the starting AnnData (typically spatial + dedup)
+    - paths is an AdataPaths object (with .raw/.pp/.pp_dedup/.spatial/.hmm)
+
+    Does NOT decide which h5ad to start from – that is the wrapper's job.
+    """
 
     import os
-    from importlib import resources
-    from pathlib import Path
+    import warnings
 
-    from datetime import datetime
-    date_str = datetime.today().strftime("%y%m%d")
+    import numpy as np
 
-    ############################################### smftools load start ###############################################
-    adata, adata_path, cfg = load_adata(config_path)
-    # General config variable init - Necessary user passed inputs
-    smf_modality = cfg.smf_modality # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
-    output_directory = Path(cfg.output_directory)  # Path to the output directory to make for the analysis. Necessary.
+    from scipy.sparse import issparse
 
-    # Make initial output directory
+    from ..readwrite import safe_write_h5ad, make_dirs, add_or_update_column_in_csv
+    from .helpers import write_gz_h5ad
+    from ..hmm.HMM import HMM
+    from ..hmm import call_hmm_peaks
+    from ..plotting import combined_hmm_raw_clustermap, plot_hmm_layers_rolling_by_sample_ref, plot_hmm_size_contours
+
+    smf_modality = cfg.smf_modality
+    deaminase = smf_modality == "deaminase"
+
+    output_directory = Path(cfg.output_directory)
     make_dirs([output_directory])
-    ############################################### smftools load end ###############################################
 
-    ############################################### smftools preprocess start ###############################################
-    pp_adata, pp_adata_path, pp_dedup_adata, pp_dup_rem_adata_path = preprocess_adata(config_path)
-    ############################################### smftools preprocess end ###############################################
-
-    ############################################### smftools spatial start ###############################################
-    spatial_ad, spatial_adata_path = spatial_adata(config_path)
-    ############################################### smftools spatial end ###############################################
-
-    ############################################### smftools hmm start ###############################################
-    input_manager_df = pd.read_csv(cfg.summary_file)
-    initial_adata_path = Path(input_manager_df['load_adata'][0])
-    pp_adata_path = Path(input_manager_df['pp_adata'][0])
-    pp_dup_rem_adata_path = Path(input_manager_df['pp_dedup_adata'][0])
-    spatial_adata_path = Path(input_manager_df['spatial_adata'][0])
-    hmm_adata_path = Path(input_manager_df['hmm_adata'][0])
-    
-    if spatial_ad:
-        # This happens on first run of the pipeline
-        adata = spatial_ad
-    else:
-        # If an anndata is saved, check which stages of the anndata are available
-        initial_version_available = initial_adata_path.exists()
-        preprocessed_version_available = pp_adata_path.exists()
-        preprocessed_dup_removed_version_available = pp_dup_rem_adata_path.exists()
-        preprocessed_dedup_spatial_version_available = spatial_adata_path.exists()
-        preprocessed_dedup_spatial_hmm_version_available = hmm_adata_path.exists()
-
-        if cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply:
-            print(f"Forcing redo of hmm analysis workflow.")
-            if preprocessed_dedup_spatial_hmm_version_available:
-                adata, load_report = safe_read_h5ad(hmm_adata_path)
-            elif preprocessed_dedup_spatial_version_available:
-                adata, load_report = safe_read_h5ad(spatial_adata_path)
-            elif preprocessed_dup_removed_version_available:
-                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
-            elif initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path)
-            else:
-                print(f"Can not redo duplicate detection when there is no compatible adata available: either raw or preprocessed are required")
-        elif preprocessed_dedup_spatial_hmm_version_available:
-            adata, load_report = safe_read_h5ad(hmm_adata_path)
-        else:
-            if preprocessed_dedup_spatial_version_available:
-                adata, load_report = safe_read_h5ad(spatial_adata_path)
-            elif preprocessed_dup_removed_version_available:
-                adata, load_report = safe_read_h5ad(pp_dup_rem_adata_path)
-            elif initial_version_available:
-                adata, load_report = safe_read_h5ad(initial_adata_path)
-            else:            
-                print(f"No adata available.")
-                return
-    references = adata.obs[cfg.reference_column].cat.categories  
-    deaminase = smf_modality == 'deaminase'        
+    pp_dir = output_directory / "preprocessed" / "deduplicated"
 ############################################### HMM based feature annotations ###############################################
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):
-        from ..hmm.HMM import HMM
-        from scipy.sparse import issparse, csr_matrix
-        import warnings
 
-        pp_dir = output_directory / "preprocessed"
-        pp_dir = pp_dir / "deduplicated"
         hmm_dir = pp_dir / "10_hmm_models"
 
         if hmm_dir.is_dir():
@@ -214,10 +208,6 @@ def hmm_adata(config_path):
                                         existing.append(ln)
                                 adata.uns[uns_key] = existing
 
-    else:
-        pass
-
-    from ..hmm import call_hmm_peaks
     hmm_dir = pp_dir / "11_hmm_peak_calling"
     if hmm_dir.is_dir():
         pass
@@ -234,15 +224,9 @@ def hmm_adata(config_path):
                 index_col_suffix=cfg.reindexed_var_suffix)
     
     ## Save HMM annotated adata
-    if not hmm_adata_path.exists():
-        print('Saving hmm analyzed adata post preprocessing and duplicate removal')
-        if ".gz" == hmm_adata_path.suffix:
-            safe_write_h5ad(adata, hmm_adata_path, compression='gzip', backup=True)
-        else:
-            hmm_adata_path = hmm_adata_path.with_name(hmm_adata_path.name + '.gz')
-            safe_write_h5ad(adata, hmm_adata_path, compression='gzip', backup=True)
-
-    add_or_update_column_in_csv(cfg.summary_file, "hmm_adata", hmm_adata_path)
+    if not paths.hmm.exists():
+        print("Saving spatial analyzed AnnData (post preprocessing and duplicate removal).")
+        write_gz_h5ad(adata, paths.hmm)
 
     ########################################################################################################################
 
@@ -358,4 +342,4 @@ def hmm_adata(config_path):
             )
     ########################################################################################################################
 
-    return (adata, hmm_adata_path)
+    return (adata, paths.hmm)

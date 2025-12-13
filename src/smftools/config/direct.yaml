@@ -39,6 +39,11 @@ output_binary_layer_name: "binarized_methylation" # The layer to store the binar
 autocorr_site_types:
   - "A"
 
+spatial_clustermap_sortby: "a"
+
 ######## smftools hmm params #########
 hmm_methbases:
   - "A"
+
+hmm_merge_layer_features:
+  - ["A_all_accessible_features", 60]

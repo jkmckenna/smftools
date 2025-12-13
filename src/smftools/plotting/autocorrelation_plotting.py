@@ -14,6 +14,7 @@ def plot_spatial_autocorr_grid(
     references: Optional[list] = None,
     annotate_periodicity: bool = True,
     counts_key_suffix: str = "_counts",
+    normalization_method: str = "pearson",
     # plotting thresholds
     plot_min_count: int = 10,
 ):
@@ -164,6 +165,7 @@ def plot_spatial_autocorr_grid(
                         ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=8)
                         ax.set_xlim(0, 1)
                         ax.set_xlabel("Lag (bp)", fontsize=7)
+                        ax.set_ylabel(f"Autocorrelation {normalization_method} normalized", fontsize=7)
                         ax.tick_params(axis='both', which='major', labelsize=6)
                         ax.grid(True, alpha=0.22)
                         #col_idx += 1
@@ -288,6 +290,7 @@ def plot_spatial_autocorr_grid(
 
                     # small cosmetics
                     ax.set_xlabel("Lag (bp)", fontsize=7)
+                    ax.set_ylabel(f"Autocorrelation {normalization_method} normalized", fontsize=7)
                     ax.tick_params(axis='both', which='major', labelsize=6)
                     ax.grid(True, alpha=0.22)
 
@@ -303,7 +306,7 @@ def plot_spatial_autocorr_grid(
             label = f"{sample_name}\n(n={n_reads_grp})"
             fig.text(0.02, ycenter, label, va='center', ha='left', rotation='vertical', fontsize=9)
 
-        fig.suptitle("Spatial autocorrelation by sample × (site_type × reference)", y=0.995, fontsize=11)
+        fig.suptitle(f"Spatial autocorrelation ({normalization_method}) by sample × (site_type × reference)", y=0.995, fontsize=11)
 
         page_idx = start_idx // rows_per_fig + 1
         out_png = os.path.join(out_dir, f"{filename_prefix}_page{page_idx}.png")

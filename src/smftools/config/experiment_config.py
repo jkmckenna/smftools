@@ -654,7 +654,7 @@ class ExperimentConfig:
     conversions: List[str] = field(default_factory=lambda: ["unconverted"])
     fasta_regions_of_interest: Optional[str] = None
     sample_sheet_path: Optional[str] = None
-    sample_sheet_mapping_column: Optional[str] = 'Barcode'
+    sample_sheet_mapping_column: Optional[str] = 'Experiment_name_and_barcode'
     experiment_name: Optional[str] = None
     input_already_demuxed: bool = False
     summary_file: Optional[Path] = None
@@ -777,6 +777,7 @@ class ExperimentConfig:
     umap_layers_to_plot: List[str] = field(default_factory=lambda: ["mapped_length", "Raw_modification_signal"]) 
 
     # Spatial Analysis - Spatial Autocorrelation params
+    autocorr_normalization_method: str = 'pearson'
     rows_per_qc_autocorr_grid: int = 12
     autocorr_rolling_window_size: int = 25
     autocorr_max_lag: int = 800
@@ -803,7 +804,7 @@ class ExperimentConfig:
     accessible_patches: Optional[bool] = True
     cpg: Optional[bool] = False
     hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
-    hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 80)])
+    hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 60)])
     clustermap_cmap_hmm: Optional[str] = 'coolwarm'
     hmm_clustermap_feature_layers: List[str] = field(default_factory=lambda: ["all_accessible_features"]) 
     hmm_clustermap_sortby: Optional[str] = 'hmm'
@@ -1179,6 +1180,7 @@ class ExperimentConfig:
             umap_layers_to_plot = merged.get("umap_layers_to_plot",["mapped_length", 'Raw_modification_signal']),
             rows_per_qc_histogram_grid = merged.get("rows_per_qc_histogram_grid", 12),
             rows_per_qc_autocorr_grid = merged.get("rows_per_qc_autocorr_grid", 12),
+            autocorr_normalization_method = merged.get("autocorr_normalization_method", "pearson"),
             autocorr_rolling_window_size = merged.get("autocorr_rolling_window_size", 25),
             autocorr_max_lag = merged.get("autocorr_max_lag", 800), 
             autocorr_site_types = merged.get("autocorr_site_types", ['GpC', 'CpG', 'C']),

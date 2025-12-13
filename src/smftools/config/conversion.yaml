@@ -9,6 +9,10 @@ conversion_types:
 # Read QC Params
 read_mod_filtering_use_other_c_as_background: True
 
+# Spatial Analysis - Autocorr params
+autocorr_site_types:
+  - "GpC"
+
 # Spatial Analysis - Clustermap params
 layer_for_clustermap_plotting: 'nan0_0minus1'
 clustermap_cmap_c: "coolwarm"
@@ -42,4 +46,4 @@ hmm_feature_sets:
       cpg_patch: [0, inf]
 
 hmm_merge_layer_features:
-  - ["GpC_all_accessible_features", 80]
+  - ["GpC_all_accessible_features", 60]

@@ -128,4 +128,6 @@ def calculate_position_Youden(adata,
 
         adata.var[f'{ref}_position_methylation_thresholding_Youden_stats'] = probability_thresholding_list
         J_max_list = [probability_thresholding_list[i][1] for i in range(adata.shape[1])]
-        adata.var[f'{ref}_position_passed_QC'] = [True if i > J_threshold else False for i in J_max_list]
+        adata.var[f'{ref}_position_passed_Youden_thresholding_QC'] = [True if i > J_threshold else False for i in J_max_list]
+
+    print(f"Finished calculating position Youden statistics")
