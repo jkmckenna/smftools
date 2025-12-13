@@ -323,11 +323,11 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
         adata.obs["Read_mismatch_trend"] = adata.obs_names.map(mismatch_trend_series)
 
         # Attach One-Hot Encodings to Layers
-        adata.layers["A_binary_encoding"] = df_A
-        adata.layers["C_binary_encoding"] = df_C
-        adata.layers["G_binary_encoding"] = df_G
-        adata.layers["T_binary_encoding"] = df_T
-        adata.layers["N_binary_encoding"] = df_N
+        adata.layers["A_binary_sequence_encoding"] = df_A
+        adata.layers["C_binary_sequence_encoding"] = df_C
+        adata.layers["G_binary_sequence_encoding"] = df_G
+        adata.layers["T_binary_sequence_encoding"] = df_T
+        adata.layers["N_binary_sequence_encoding"] = df_N
 
         adata_list.append(adata)
 

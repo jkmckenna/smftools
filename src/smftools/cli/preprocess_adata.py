@@ -311,7 +311,9 @@ def preprocess_adata_core(
     ############### Calculate positional coverage by reference set in dataset ###############
     calculate_coverage(adata, 
                        ref_column=cfg.reference_column, 
-                       position_nan_threshold=cfg.position_max_nan_threshold)
+                       position_nan_threshold=cfg.position_max_nan_threshold,
+                       smf_modality=smf_modality,
+                       target_layer=cfg.output_binary_layer_name)
 
     ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats ###############
     # Additionally, store base_context level binary modification arrays in adata.obsm

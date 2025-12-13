@@ -179,13 +179,12 @@ umap_layers_to_plot:
   - "Raw_modification_signal"
 
 # Spatial Analysis - Spatial Autocorrelation params
+autocorr_normalization_method: "pearson" # options are pearson or sum
 rows_per_qc_autocorr_grid: 6
 autocorr_rolling_window_size: 25
 autocorr_max_lag: 800
 autocorr_site_types:
   - "GpC"
-  - "CpG"
-  - "C"
 
 # Spatial Analysis - Correlation Matrix params
 correlation_matrix_types:
@@ -211,9 +210,9 @@ hmm_init_start_probs:
   - 0.5
 hmm_eps: 1e-8
 hmm_dtype: "float64"
-hmm_annotation_threshold: 0.5
-hmm_batch_size: 1024
-hmm_use_viterbi: False
+hmm_annotation_threshold: 0.5 # The minimum probability threshold of a feature interval to accept it for layer annotation.
+hmm_batch_size: 1024 # hmm batch size
+hmm_use_viterbi: False # Whether to use viterbi decoding. If False, uses forward-backward gammas. Viterbi is smoother, but less sensitive.
 footprints: True # whether to use the default HMM footprint params
 accessible_patches: True # whether to use the default HMM accessible patch params
 cpg: False # whether to use the default HMM endogenous CpG patch params
@@ -238,7 +237,7 @@ hmm_feature_sets:
       large_accessible_patch: [40, 110]
       nucleosome_depleted_region: [110, inf]
 hmm_merge_layer_features:
-  - [null, 80]
+  - [null, 60]
 clustermap_cmap_hmm: "coolwarm"
 hmm_clustermap_feature_layers:
   - all_accessible_features

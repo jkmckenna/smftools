@@ -60,4 +60,4 @@ hmm_feature_sets:
       nucleosome_depleted_region: [110, inf]
 
 hmm_merge_layer_features:
-  - ["C_all_accessible_features", 80]
+  - ["C_all_accessible_features", 60]

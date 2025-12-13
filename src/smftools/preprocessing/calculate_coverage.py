@@ -1,6 +1,8 @@
 def calculate_coverage(adata, 
                        ref_column='Reference_strand', 
                        position_nan_threshold=0.01, 
+                       smf_modality='deaminase',
+                       target_layer = 'binarized_methylation',
                        uns_flag='calculate_coverage_performed'):
     """
     Append position-level metadata regarding whether the position is informative within the given observation category.
@@ -9,6 +11,8 @@ def calculate_coverage(adata,
         adata (AnnData): An AnnData object
         obs_column (str): Observation column value to subset on prior to calculating position statistics for that category.
         position_nan_threshold (float): A minimal fractional threshold of coverage within the obs_column category to call the position as valid.
+        smf_modality (str): The smfmodality. For conversion/deaminase, use the adata.X. For direct, use the target_layer
+        target_layer (str): The layer to use for direct smf coverage calculations
 
     Modifies:
         - Adds new columns to `adata.var` containing coverage statistics.
@@ -34,8 +38,13 @@ def calculate_coverage(adata,
         ref_mask = adata.obs[ref_column] == ref
         temp_ref_adata = adata[ref_mask]
 
+        if smf_modality == "direct":
+            matrix = temp_ref_adata.layers[target_layer]
+        else:
+            matrix = temp_ref_adata.X
+
         # Compute fraction of valid coverage
-        ref_valid_coverage = np.sum(~np.isnan(temp_ref_adata.X), axis=0)
+        ref_valid_coverage = np.sum(~np.isnan(matrix), axis=0)
         ref_valid_fraction = ref_valid_coverage / temp_ref_adata.shape[0]  # Avoid extra computation
 
         # Store coverage stats

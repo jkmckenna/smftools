@@ -7,6 +7,8 @@ import numpy as np
 from pathlib import Path
 from typing import Union, Iterable, Optional
 import shutil
+import re
+
 
 def filter_bam_records(bam, mapping_threshold):
     """Processes a single BAM file, counts reads, and determines records to analyze."""
@@ -492,6 +494,36 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
     bam_path_list = [bam_dir / bam for bam in bams]
     print(f'{len(tsvs)} sample tsv files found: {tsvs}')
     print(f'{len(bams)} sample bams found: {bams}')
+
+    # Map global sample index (bami / final_sample_index) -> sample name / barcode
+    sample_name_map = {}
+    barcode_map = {}
+
+    for idx, bam_path in enumerate(bam_path_list):
+        stem = bam_path.stem
+
+        # Try to peel off a "barcode..." suffix if present.
+        # This handles things like:
+        #   "mySample_barcode01"   -> sample="mySample", barcode="barcode01"
+        #   "run1-s1_barcode05"   -> sample="run1-s1", barcode="barcode05"
+        #   "barcode01"           -> sample="barcode01", barcode="barcode01"
+        m = re.search(r"^(.*?)[_\-\.]?(barcode[0-9A-Za-z\-]+)$", stem)
+        if m:
+            sample_name = m.group(1) or stem
+            barcode = m.group(2)
+        else:
+            # Fallback: treat the whole stem as both sample & barcode
+            sample_name = stem
+            barcode = stem
+
+        # make sample name of the format of the bam file stem
+        sample_name = sample_name + f"_{barcode}"
+
+        # Clean the barcode name to be an integer
+        barcode = int(barcode.split("barcode")[1])
+
+        sample_name_map[idx] = sample_name
+        barcode_map[idx] = str(barcode)
     ##########################################################################################
 
     ######### Get Record names that have over a passed threshold of mapped reads #############
@@ -794,8 +826,8 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
                                 temp_adata.var_names = temp_df.columns
                                 temp_adata.var_names = temp_adata.var_names.astype(str)
                                 print('{0}: Adding {1} anndata for sample {2}'.format(readwrite.time_string(), sample_types[dict_index], final_sample_index))
-                                temp_adata.obs['Sample'] = [str(final_sample_index)] * len(temp_adata)
-                                temp_adata.obs['Barcode'] = [str(final_sample_index)] * len(temp_adata)
+                                temp_adata.obs['Sample'] = [sample_name_map[final_sample_index]] * len(temp_adata)
+                                temp_adata.obs['Barcode'] = [barcode_map[final_sample_index]] * len(temp_adata)
                                 temp_adata.obs['Reference'] = [f'{record}'] * len(temp_adata)
                                 temp_adata.obs['Strand'] = [strand] * len(temp_adata)
                                 temp_adata.obs['Dataset'] = [dataset] * len(temp_adata)
@@ -868,7 +900,7 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
                                 # Store the results in AnnData layers
                                 ohe_df_map = {0: df_A, 1: df_C, 2: df_G, 3: df_T, 4: df_N}
                                 for j, base in enumerate(['A', 'C', 'G', 'T', 'N']):
-                                    temp_adata.layers[f'{base}_binary_encoding'] = ohe_df_map[j]
+                                    temp_adata.layers[f'{base}_binary_sequence_encoding'] = ohe_df_map[j]
                                     ohe_df_map[j] = None  # Reassign pointer for memory usage purposes
 
                                 # If final adata object already has a sample loaded, concatenate the current sample into the existing adata object 
@@ -930,7 +962,7 @@ def modkit_extract_to_adata(fasta, bam_dir, out_dir, input_already_demuxed, mapp
         final_adata.obs[col] = final_adata.obs[col].astype('category')
 
     ohe_bases = ['A', 'C', 'G', 'T'] # ignore N bases for consensus
-    ohe_layers = [f"{ohe_base}_binary_encoding" for ohe_base in ohe_bases]
+    ohe_layers = [f"{ohe_base}_binary_sequence_encoding" for ohe_base in ohe_bases]
     final_adata.uns['References'] = {}
     for record in records_to_analyze:
         # Add FASTA sequence to the object
