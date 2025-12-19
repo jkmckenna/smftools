@@ -46,4 +46,4 @@ hmm_feature_sets:
       cpg_patch: [0, inf]
 
 hmm_merge_layer_features:
-  - ["GpC_all_accessible_features", 60]
+  - ["all_accessible_features", 60]

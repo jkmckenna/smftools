@@ -116,14 +116,16 @@ def append_base_context(adata,
             adata.var[f'{ref}_{site_type}'] = boolean_dict[f'{ref}_{site_type}'].astype(bool)
             # Restrict the site type labels to only be in positions that occur at a high enough frequency in the dataset
             if adata.uns["calculate_coverage_performed"] == True:
-                adata.var[f'{ref}_{site_type}'] = (adata.var[f'{ref}_{site_type}']) & (adata.var[f'position_in_{ref}'])
+                adata.var[f'{ref}_{site_type}_valid_coverage'] = (adata.var[f'{ref}_{site_type}']) & (adata.var[f'position_in_{ref}'])
             else:
                 pass
             
             if native:
                 adata.obsm[f'{ref}_{site_type}'] = adata[:, adata.var[f'{ref}_{site_type}'] == True].layers['binarized_methylation']
+                adata.obsm[f'{ref}_{site_type}_valid_coverage'] = adata[:, adata.var[f'{ref}_{site_type}_valid_coverage'] == True].layers['binarized_methylation']
             else:
                 adata.obsm[f'{ref}_{site_type}'] = adata[:, adata.var[f'{ref}_{site_type}'] == True].X
+                adata.obsm[f'{ref}_{site_type}_valid_coverage'] = adata[:, adata.var[f'{ref}_{site_type}_valid_coverage'] == True].X
 
     # mark as done
     adata.uns[uns_flag] = True

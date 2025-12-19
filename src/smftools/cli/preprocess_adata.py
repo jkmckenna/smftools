@@ -324,12 +324,6 @@ def preprocess_adata_core(
                         mod_target_bases=cfg.mod_target_bases,
                         bypass=cfg.bypass_append_base_context,
                         force_redo=cfg.force_redo_append_base_context)
-    
-    adata = append_binary_layer_by_base_context(adata, 
-                                                cfg.reference_column, 
-                                                smf_modality,
-                                                bypass=cfg.bypass_append_binary_layer_by_base_context,
-                                                force_redo=cfg.force_redo_append_binary_layer_by_base_context)
 
     ############### Calculate read methylation/deamination statistics for specific base contexts defined above ###############
     calculate_read_modification_stats(adata, 
@@ -384,6 +378,32 @@ def preprocess_adata_core(
                                 pp_meth_qc_dir, obs_to_plot, 
                                 sample_key=cfg.sample_name_col_for_plotting, 
                                 rows_per_fig=cfg.rows_per_qc_histogram_grid)
+        
+    ############### Calculate final positional coverage by reference set in dataset after filtering reads ###############
+    calculate_coverage(adata, 
+                       ref_column=cfg.reference_column, 
+                       position_nan_threshold=cfg.position_max_nan_threshold,
+                       smf_modality=smf_modality,
+                       target_layer=cfg.output_binary_layer_name,
+                       force_redo=True)
+
+    ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats after filtering reads ###############
+    # Additionally, store base_context level binary modification arrays in adata.obsm
+    append_base_context(adata, 
+                        ref_column=cfg.reference_column, 
+                        use_consensus=False, 
+                        native=native, 
+                        mod_target_bases=cfg.mod_target_bases,
+                        bypass=cfg.bypass_append_base_context,
+                        force_redo=True)
+    
+    # Add site type binary modification layers for valid coverage sites
+    adata = append_binary_layer_by_base_context(adata, 
+                                                cfg.reference_column, 
+                                                smf_modality,
+                                                bypass=cfg.bypass_append_binary_layer_by_base_context,
+                                                force_redo=cfg.force_redo_append_binary_layer_by_base_context,
+                                                from_valid_sites_only=True)
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != 'direct':
@@ -417,7 +437,9 @@ def preprocess_adata_core(
                                                     do_hierarchical=cfg.duplicate_detection_do_hierarchical,
                                                     hierarchical_linkage=cfg.duplicate_detection_hierarchical_linkage,
                                                     hierarchical_metric="euclidean",
-                                                    hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors
+                                                    hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors,
+                                                    demux_types=("double", "already"),
+                                                    demux_col="demux_type"
                                                     )
         
         # Use the flagged duplicate read groups and perform complexity analysis

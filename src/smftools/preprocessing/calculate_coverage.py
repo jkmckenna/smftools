@@ -3,7 +3,9 @@ def calculate_coverage(adata,
                        position_nan_threshold=0.01, 
                        smf_modality='deaminase',
                        target_layer = 'binarized_methylation',
-                       uns_flag='calculate_coverage_performed'):
+                       uns_flag='calculate_coverage_performed',
+                       force_redo=False,
+                       ):
     """
     Append position-level metadata regarding whether the position is informative within the given observation category.
 
@@ -23,7 +25,7 @@ def calculate_coverage(adata,
 
     # Only run if not already performed
     already = bool(adata.uns.get(uns_flag, False))
-    if already:
+    if already and not force_redo:
         # QC already performed; nothing to do
         return
     
@@ -48,6 +50,7 @@ def calculate_coverage(adata,
         ref_valid_fraction = ref_valid_coverage / temp_ref_adata.shape[0]  # Avoid extra computation
 
         # Store coverage stats
+        adata.var[f'{ref}_valid_count'] = pd.Series(ref_valid_coverage, index=adata.var.index)
         adata.var[f'{ref}_valid_fraction'] = pd.Series(ref_valid_fraction, index=adata.var.index)
 
         # Assign whether the position is covered based on threshold

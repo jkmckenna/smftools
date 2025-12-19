@@ -4,7 +4,7 @@ import warnings
 import math
 import os
 from collections import defaultdict
-from typing import Dict, Any, Tuple, Union, List, Optional
+from typing import Dict, Any, Tuple, Union, List, Optional, Sequence
 
 import torch
 import anndata as ad
@@ -93,15 +93,104 @@ def flag_duplicate_reads(
     hierarchical_metric: str = "euclidean",
     hierarchical_window: int = 50,
     random_state: int = 0,
+    demux_types: Optional[Sequence[str]] = None,
+    demux_col: str = "demux_type",
 ):
     """
-    Duplicate-flagging pipeline where hierarchical stage operates only on representatives
-    (one representative per lex cluster, i.e. the keeper). Final keeper assignment and
-    enforcement happens only after hierarchical merging.
+    Duplicate-flagging pipeline with demux-aware keeper preference.
 
-    Returns (adata_unique, adata_full) as before; writes sequence__* columns into adata.obs.
+    Behavior:
+      - All reads are processed (no masking by demux).
+      - At each keeper decision (lex rep, final in-subset, final enforcement),
+        we prefer a keeper whose `demux_col` value ∈ `demux_types` (if any exist
+        in the cluster). Among those candidates, we choose by keep_best_metric.
+        If no demux-preferred candidates exist, fallback to metric/lex/first.
     """
-    # early exits
+    import copy
+    import warnings
+    import numpy as np
+    import pandas as pd
+    import torch
+    import anndata as ad
+    from ..readwrite import make_dirs
+
+    # optional imports already guarded at module import time, but re-check
+    try:
+        from scipy.cluster import hierarchy as sch
+        from scipy.spatial.distance import pdist
+        SCIPY_AVAILABLE = True
+    except Exception:
+        sch = None
+        pdist = None
+        SCIPY_AVAILABLE = False
+    try:
+        from sklearn.decomposition import PCA
+        SKLEARN_AVAILABLE = True
+    except Exception:
+        PCA = None
+        SKLEARN_AVAILABLE = False
+
+    # -------- helper: demux-aware keeper selection --------
+    def _choose_keeper_with_demux_preference(
+        members_idx: List[int],
+        adata_subset: ad.AnnData,
+        obs_index_list: List[Any],
+        *,
+        demux_col: str = "demux_type",
+        preferred_types: Optional[Sequence[str]] = None,
+        keep_best_metric: Optional[str] = None,
+        keep_best_higher: bool = True,
+        lex_keeper_mask: Optional[np.ndarray] = None,  # aligned to members order
+    ) -> int:
+        """
+        Prefer members whose demux_col ∈ preferred_types.
+        Among candidates, pick by keep_best_metric (higher/lower).
+        If metric missing/NaN, prefer lex keeper (via mask) among candidates.
+        Fallback: first candidate.
+        Returns the chosen *member index* (int from members_idx).
+        """
+        # 1) demux-preferred candidates
+        if preferred_types and (demux_col in adata_subset.obs.columns):
+            preferred = set(map(str, preferred_types))
+            demux_series = adata_subset.obs[demux_col].astype("string")
+            names = [obs_index_list[m] for m in members_idx]
+            is_pref = demux_series.loc[names].isin(preferred).to_numpy()
+            candidates = [members_idx[i] for i, ok in enumerate(is_pref) if ok]
+        else:
+            candidates = []
+
+        if not candidates:
+            candidates = list(members_idx)
+
+        # 2) metric-based within candidates
+        if keep_best_metric and (keep_best_metric in adata_subset.obs.columns):
+            cand_names = [obs_index_list[m] for m in candidates]
+            try:
+                vals = pd.to_numeric(
+                    adata_subset.obs.loc[cand_names, keep_best_metric],
+                    errors="coerce",
+                ).to_numpy(dtype=float)
+            except Exception:
+                vals = np.array([np.nan] * len(candidates), dtype=float)
+
+            if not np.all(np.isnan(vals)):
+                if keep_best_higher:
+                    vals = np.where(np.isnan(vals), -np.inf, vals)
+                    return candidates[int(np.nanargmax(vals))]
+                else:
+                    vals = np.where(np.isnan(vals), np.inf, vals)
+                    return candidates[int(np.nanargmin(vals))]
+
+        # 3) metric unhelpful — prefer lex keeper if provided
+        if lex_keeper_mask is not None:
+            for i, midx in enumerate(members_idx):
+                if (midx in candidates) and bool(lex_keeper_mask[i]):
+                    return midx
+
+        # 4) fallback
+        return candidates[0]
+
+    # -------- early exits --------
     already = bool(adata.uns.get(uns_flag, False))
     if (already and not force_redo):
         if "is_duplicate" in adata.obs.columns:
@@ -119,13 +208,11 @@ def flag_duplicate_reads(
     class UnionFind:
         def __init__(self, size):
             self.parent = list(range(size))
-
         def find(self, x):
             while self.parent[x] != x:
                 self.parent[x] = self.parent[self.parent[x]]
                 x = self.parent[x]
             return x
-
         def union(self, x, y):
             rx = self.find(x); ry = self.find(y)
             if rx != ry:
@@ -233,10 +320,9 @@ def flag_duplicate_reads(
                                         fwd_hamming_to_next[sorted_idx[i]] = d
                 return cluster_pairs_local
 
-            # run forward pass
+            # run forward & reverse windows
             pairs_fwd = cluster_pass(X_tensor, reverse=False, record_distances=True)
             involved_in_fwd = set([p for pair in pairs_fwd for p in pair])
-            # build mask for reverse pass to avoid re-checking items already paired
             mask_for_rev = np.ones(N, dtype=bool)
             if len(involved_in_fwd) > 0:
                 for idx in involved_in_fwd:
@@ -245,7 +331,6 @@ def flag_duplicate_reads(
             if len(rev_idx_map) > 0:
                 reduced_tensor = X_tensor[rev_idx_map]
                 pairs_rev_local = cluster_pass(reduced_tensor, reverse=True, record_distances=True)
-                # remap local reduced indices to global
                 remapped_rev_pairs = [(int(rev_idx_map[i]), int(rev_idx_map[j])) for (i, j) in pairs_rev_local]
             else:
                 remapped_rev_pairs = []
@@ -265,63 +350,49 @@ def flag_duplicate_reads(
             id_map = {old: new for new, old in enumerate(sorted(unique_initial.tolist()))}
             merged_cluster_mapped = np.array([id_map[int(x)] for x in merged_cluster], dtype=int)
 
-            # cluster sizes and choose lex-keeper per lex-cluster (representatives)
+            # cluster sizes and choose lex-keeper per lex-cluster (demux-aware)
             cluster_sizes = np.zeros_like(merged_cluster_mapped)
             cluster_counts = []
             unique_clusters = np.unique(merged_cluster_mapped)
             keeper_for_cluster = {}
+
+            obs_index = list(adata_subset.obs.index)
             for cid in unique_clusters:
                 members = np.where(merged_cluster_mapped == cid)[0].tolist()
                 csize = int(len(members))
                 cluster_counts.append(csize)
                 cluster_sizes[members] = csize
-                # pick lex keeper (representative)
-                if len(members) == 1:
-                    keeper_for_cluster[cid] = members[0]
-                else:
-                    if keep_best_metric is None:
-                        keeper_for_cluster[cid] = members[0]
-                    else:
-                        obs_index = list(adata_subset.obs.index)
-                        member_names = [obs_index[m] for m in members]
-                        try:
-                            vals = pd.to_numeric(adata_subset.obs.loc[member_names, keep_best_metric], errors="coerce").to_numpy(dtype=float)
-                        except Exception:
-                            vals = np.array([np.nan] * len(members), dtype=float)
-                        if np.all(np.isnan(vals)):
-                            keeper_for_cluster[cid] = members[0]
-                        else:
-                            if keep_best_higher:
-                                nan_mask = np.isnan(vals)
-                                vals[nan_mask] = -np.inf
-                                rel_idx = int(np.nanargmax(vals))
-                            else:
-                                nan_mask = np.isnan(vals)
-                                vals[nan_mask] = np.inf
-                                rel_idx = int(np.nanargmin(vals))
-                            keeper_for_cluster[cid] = members[rel_idx]
 
-            # expose lex keeper info (record only; do not enforce deletion yet)
+                keeper_for_cluster[cid] = _choose_keeper_with_demux_preference(
+                    members,
+                    adata_subset,
+                    obs_index,
+                    demux_col=demux_col,
+                    preferred_types=demux_types,
+                    keep_best_metric=keep_best_metric,
+                    keep_best_higher=keep_best_higher,
+                    lex_keeper_mask=None,  # no lex preference yet
+                )
+
+            # expose lex keeper info (record only)
             lex_is_keeper = np.zeros((N,), dtype=bool)
             lex_is_duplicate = np.zeros((N,), dtype=bool)
-            for cid, members in zip(unique_clusters, [np.where(merged_cluster_mapped == cid)[0].tolist() for cid in unique_clusters]):
+            for cid in unique_clusters:
+                members = np.where(merged_cluster_mapped == cid)[0].tolist()
                 keeper_idx = keeper_for_cluster[cid]
                 lex_is_keeper[keeper_idx] = True
                 for m in members:
                     if m != keeper_idx:
                         lex_is_duplicate[m] = True
-            # note: these are just recorded for inspection / later preference
-            # and will be written to adata_subset.obs below
+
             # record lex min pair (min of fwd/rev neighbor) for each read
             min_pair = np.full((N,), np.nan, dtype=float)
             for i in range(N):
                 a = fwd_hamming_to_next[i]
                 b = rev_hamming_to_prev[i]
                 vals = []
-                if not np.isnan(a):
-                    vals.append(a)
-                if not np.isnan(b):
-                    vals.append(b)
+                if not np.isnan(a): vals.append(a)
+                if not np.isnan(b): vals.append(b)
                 if vals:
                     min_pair[i] = float(np.nanmin(vals))
 
@@ -363,7 +434,7 @@ def flag_duplicate_reads(
                         warnings.warn(f"hierarchical pass failed: {e}; skipping hierarchical stage.")
                         leaves = np.arange(len(rep_global_indices), dtype=int)
 
-                    # apply windowed hamming comparisons across ordered reps and union via same UF (so clusters of all reads merge)
+                    # windowed hamming comparisons across ordered reps and union
                     order_global_reps = [rep_global_indices[i] for i in leaves]
                     n_reps = len(order_global_reps)
                     for pos in range(n_reps):
@@ -391,53 +462,36 @@ def flag_duplicate_reads(
             id_map_final = {old: new for new, old in enumerate(sorted(unique_final.tolist()))}
             merged_cluster_mapped_final = np.array([id_map_final[int(x)] for x in merged_cluster_after], dtype=int)
 
-            # compute final cluster members and choose final keeper per final cluster
+            # compute final cluster members and choose final keeper per final cluster (demux-aware)
             cluster_sizes_final = np.zeros_like(merged_cluster_mapped_final)
-            final_cluster_counts = []
-            final_unique = np.unique(merged_cluster_mapped_final)
             final_keeper_for_cluster = {}
             cluster_members_map = {}
-            for cid in final_unique:
+
+            obs_index = list(adata_subset.obs.index)
+            lex_mask_full = lex_is_keeper  # use lex keeper as optional tiebreaker
+
+            for cid in np.unique(merged_cluster_mapped_final):
                 members = np.where(merged_cluster_mapped_final == cid)[0].tolist()
                 cluster_members_map[cid] = members
-                csize = len(members)
-                final_cluster_counts.append(csize)
-                cluster_sizes_final[members] = csize
-                if csize == 1:
-                    final_keeper_for_cluster[cid] = members[0]
-                else:
-                    # prefer keep_best_metric if available; do not automatically prefer lex-keeper here unless you want to;
-                    # (user previously asked for preferring lex keepers — if desired, you can prefer lex_is_keeper among members)
-                    obs_index = list(adata_subset.obs.index)
-                    member_names = [obs_index[m] for m in members]
-                    if keep_best_metric is not None and keep_best_metric in adata_subset.obs.columns:
-                        try:
-                            vals = pd.to_numeric(adata_subset.obs.loc[member_names, keep_best_metric], errors="coerce").to_numpy(dtype=float)
-                        except Exception:
-                            vals = np.array([np.nan] * len(members), dtype=float)
-                        if np.all(np.isnan(vals)):
-                            final_keeper_for_cluster[cid] = members[0]
-                        else:
-                            if keep_best_higher:
-                                nan_mask = np.isnan(vals)
-                                vals[nan_mask] = -np.inf
-                                rel_idx = int(np.nanargmax(vals))
-                            else:
-                                nan_mask = np.isnan(vals)
-                                vals[nan_mask] = np.inf
-                                rel_idx = int(np.nanargmin(vals))
-                            final_keeper_for_cluster[cid] = members[rel_idx]
-                    else:
-                        # if lex keepers present among members, prefer them
-                        lex_members = [m for m in members if lex_is_keeper[m]]
-                        if len(lex_members) > 0:
-                            final_keeper_for_cluster[cid] = lex_members[0]
-                        else:
-                            final_keeper_for_cluster[cid] = members[0]
+                cluster_sizes_final[members] = len(members)
 
-            # update sequence__is_duplicate based on final clusters: non-keepers in multi-member clusters are duplicates
+                lex_mask_members = np.array([bool(lex_mask_full[m]) for m in members], dtype=bool)
+
+                keeper = _choose_keeper_with_demux_preference(
+                    members,
+                    adata_subset,
+                    obs_index,
+                    demux_col=demux_col,
+                    preferred_types=demux_types,
+                    keep_best_metric=keep_best_metric,
+                    keep_best_higher=keep_best_higher,
+                    lex_keeper_mask=lex_mask_members,
+                )
+                final_keeper_for_cluster[cid] = keeper
+
+            # update sequence__is_duplicate based on final clusters
             sequence_is_duplicate = np.zeros((N,), dtype=bool)
-            for cid in final_unique:
+            for cid in np.unique(merged_cluster_mapped_final):
                 keeper = final_keeper_for_cluster[cid]
                 members = cluster_members_map[cid]
                 if len(members) > 1:
@@ -447,7 +501,6 @@ def flag_duplicate_reads(
 
             # propagate hierarchical distances into hierarchical_min_pair for all cluster members
             for (i_g, j_g, d) in hierarchical_pairs:
-                # identify their final cluster ids (after unions)
                 c_i = merged_cluster_mapped_final[int(i_g)]
                 c_j = merged_cluster_mapped_final[int(j_g)]
                 members_i = cluster_members_map.get(c_i, [int(i_g)])
@@ -459,7 +512,7 @@ def flag_duplicate_reads(
                     if np.isnan(hierarchical_min_pair[mj]) or (d < hierarchical_min_pair[mj]):
                         hierarchical_min_pair[mj] = d
 
-            # combine lex-phase min_pair and hierarchical_min_pair into the final sequence__min_hamming_to_pair
+            # combine min pairs
             combined_min = min_pair.copy()
             for i in range(N):
                 hval = hierarchical_min_pair[i]
@@ -475,7 +528,7 @@ def flag_duplicate_reads(
             adata_subset.obs["rev_hamming_to_prev"] = rev_hamming_to_prev
             adata_subset.obs["sequence__hier_hamming_to_pair"] = hierarchical_min_pair
             adata_subset.obs["sequence__min_hamming_to_pair"] = combined_min
-            # persist lex bookkeeping columns (informational)
+            # persist lex bookkeeping
             adata_subset.obs["sequence__lex_is_keeper"] = lex_is_keeper
             adata_subset.obs["sequence__lex_is_duplicate"] = lex_is_duplicate
 
@@ -484,17 +537,35 @@ def flag_duplicate_reads(
             histograms.append({
                 "sample": sample,
                 "reference": ref,
-                "distances": local_hamming_dists,            # lex local comparisons
-                "cluster_counts": final_cluster_counts,
+                "distances": local_hamming_dists,
+                "cluster_counts": [int(x) for x in np.unique(cluster_sizes_final[cluster_sizes_final > 0])],
                 "hierarchical_pairs": hierarchical_found_dists,
             })
 
-    # Merge annotated subsets back together BEFORE plotting so plotting sees fwd_hamming_to_next, etc.
+    # Merge annotated subsets back together BEFORE plotting
     _original_uns = copy.deepcopy(adata.uns)
     if len(adata_processed_list) == 0:
         return adata.copy(), adata.copy()
 
     adata_full = ad.concat(adata_processed_list, merge="same", join="outer", index_unique=None)
+    # preserve uns (prefer original on conflicts)
+    def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
+        out = copy.deepcopy(new_uns) if new_uns is not None else {}
+        for k, v in (orig_uns or {}).items():
+            if k not in out:
+                out[k] = copy.deepcopy(v)
+            else:
+                try:
+                    equal = (out[k] == v)
+                except Exception:
+                    equal = False
+                if equal:
+                    continue
+                if prefer == "orig":
+                    out[k] = copy.deepcopy(v)
+                else:
+                    out[f"orig_uns__{k}"] = copy.deepcopy(v)
+        return out
     adata_full.uns = merge_uns_preserve(_original_uns, adata_full.uns, prefer="orig")
 
     # Ensure expected numeric columns exist (create if missing)
@@ -502,20 +573,21 @@ def flag_duplicate_reads(
         if col not in adata_full.obs.columns:
             adata_full.obs[col] = np.nan
 
-    # histograms (now driven by adata_full if requested)
-    hist_outs = os.path.join(output_directory, "read_pair_hamming_distance_histograms")
-    make_dirs([hist_outs])
+    # histograms
+    hist_outs = os.path.join(output_directory, "read_pair_hamming_distance_histograms") if output_directory else None
+    if hist_outs:
+        make_dirs([hist_outs])
     plot_histogram_pages(histograms, 
                          distance_threshold=distance_threshold, 
                          adata=adata_full, 
                          output_directory=hist_outs,
                          distance_types=["min","fwd","rev","hier","lex_local"],
-                         sample_key=sample_col,
-                         )
+                         sample_key=sample_col)
 
     # hamming vs metric scatter
-    scatter_outs = os.path.join(output_directory, "read_pair_hamming_distance_scatter_plots")
-    make_dirs([scatter_outs])
+    scatter_outs = os.path.join(output_directory, "read_pair_hamming_distance_scatter_plots") if output_directory else None
+    if scatter_outs:
+        make_dirs([scatter_outs])
     plot_hamming_vs_metric_pages(adata_full, 
                                 metric_keys=metric_keys, 
                                 output_dir=scatter_outs,
@@ -531,13 +603,8 @@ def flag_duplicate_reads(
     is_dup_dist = is_dup_dist.fillna(False).astype(bool)
     adata_full.obs["is_duplicate_distance"] = is_dup_dist.values
 
-    # combine sequence-derived flag with others
-    if "sequence__is_duplicate" in adata_full.obs.columns:
-        seq_dup = adata_full.obs["sequence__is_duplicate"].astype(bool)
-    else:
-        seq_dup = pd.Series(False, index=adata_full.obs.index)
-
-    # cluster-based duplicate indicator (if any clustering columns exist)
+    # combine with sequence flag and any clustering flags
+    seq_dup = adata_full.obs["sequence__is_duplicate"].astype(bool) if "sequence__is_duplicate" in adata_full.obs.columns else pd.Series(False, index=adata_full.obs.index)
     cluster_cols = [c for c in adata_full.obs.columns if c.startswith("hamming_cluster__")]
     if cluster_cols:
         cl_mask = pd.Series(False, index=adata_full.obs.index)
@@ -553,53 +620,48 @@ def flag_duplicate_reads(
     final_dup = seq_dup | adata_full.obs["is_duplicate_distance"].astype(bool) | adata_full.obs["is_duplicate_clustering"].astype(bool)
     adata_full.obs["is_duplicate"] = final_dup.values
 
-    # Final keeper enforcement: recompute per-cluster keeper from sequence__merged_cluster_id and
-    # ensure that keeper is not marked duplicate
-    if "sequence__merged_cluster_id" in adata_full.obs.columns:
-        keeper_idx_by_cluster = {}
-        metric_col = keep_best_metric if 'keep_best_metric' in locals() else None
+    # -------- Final keeper enforcement on adata_full (demux-aware) --------
+    keeper_idx_by_cluster = {}
+    metric_col = keep_best_metric
 
-        # group by cluster id
-        grp = adata_full.obs[["sequence__merged_cluster_id", "sequence__cluster_size"]].copy()
-        for cid, sub in grp.groupby("sequence__merged_cluster_id"):
-            try:
-                members = sub.index.to_list()
-            except Exception:
-                members = list(sub.index)
-            keeper = None
-            # prefer keep_best_metric (if present), else prefer lex keeper among members, else first member
-            if metric_col and metric_col in adata_full.obs.columns:
-                try:
-                    vals = pd.to_numeric(adata_full.obs.loc[members, metric_col], errors="coerce")
-                    if vals.notna().any():
-                        keeper = vals.idxmax() if keep_best_higher else vals.idxmin()
-                    else:
-                        keeper = members[0]
-                except Exception:
-                    keeper = members[0]
-            else:
-                # prefer lex keeper if present in this merged cluster
-                lex_candidates = [m for m in members if ("sequence__lex_is_keeper" in adata_full.obs.columns and adata_full.obs.at[m, "sequence__lex_is_keeper"])]
-                if len(lex_candidates) > 0:
-                    keeper = lex_candidates[0]
-                else:
-                    keeper = members[0]
+    # Build an index→row-number mapping
+    name_to_pos = {name: i for i, name in enumerate(adata_full.obs.index)}
+    obs_index_full = list(adata_full.obs.index)
 
-            keeper_idx_by_cluster[cid] = keeper
+    lex_col = "sequence__lex_is_keeper" if "sequence__lex_is_keeper" in adata_full.obs.columns else None
 
-        # force keepers not to be duplicates
-        is_dup_series = adata_full.obs["is_duplicate"].astype(bool)
-        for cid, keeper_idx in keeper_idx_by_cluster.items():
-            if keeper_idx in adata_full.obs.index:
-                is_dup_series.at[keeper_idx] = False
-                # clear sequence__is_duplicate for keeper if present
-                if "sequence__is_duplicate" in adata_full.obs.columns:
-                    adata_full.obs.at[keeper_idx, "sequence__is_duplicate"] = False
-                # clear lex duplicate flag too if present
-                if "sequence__lex_is_duplicate" in adata_full.obs.columns:
-                    adata_full.obs.at[keeper_idx, "sequence__lex_is_duplicate"] = False
+    for cid, sub in adata_full.obs.groupby("sequence__merged_cluster_id", dropna=False):
+        members_names = sub.index.to_list()
+        members_pos = [name_to_pos[n] for n in members_names]
 
-        adata_full.obs["is_duplicate"] = is_dup_series.values
+        if lex_col:
+            lex_mask_members = adata_full.obs.loc[members_names, lex_col].astype(bool).to_numpy()
+        else:
+            lex_mask_members = np.zeros(len(members_pos), dtype=bool)
+
+        keeper_pos = _choose_keeper_with_demux_preference(
+            members_pos,
+            adata_full,
+            obs_index_full,
+            demux_col=demux_col,
+            preferred_types=demux_types,
+            keep_best_metric=metric_col,
+            keep_best_higher=keep_best_higher,
+            lex_keeper_mask=lex_mask_members,
+        )
+        keeper_name = obs_index_full[keeper_pos]
+        keeper_idx_by_cluster[cid] = keeper_name
+
+    # enforce: keepers are not duplicates
+    is_dup_series = adata_full.obs["is_duplicate"].astype(bool)
+    for cid, keeper_name in keeper_idx_by_cluster.items():
+        if keeper_name in adata_full.obs.index:
+            is_dup_series.at[keeper_name] = False
+            if "sequence__is_duplicate" in adata_full.obs.columns:
+                adata_full.obs.at[keeper_name, "sequence__is_duplicate"] = False
+            if "sequence__lex_is_duplicate" in adata_full.obs.columns:
+                adata_full.obs.at[keeper_name, "sequence__lex_is_duplicate"] = False
+    adata_full.obs["is_duplicate"] = is_dup_series.values
 
     # reason column
     def _dup_reason_row(row):
@@ -611,7 +673,6 @@ def flag_duplicate_reads(
         if bool(row.get("sequence__is_duplicate", False)):
             reasons.append("sequence_cluster")
         return ";".join(reasons) if reasons else ""
-
     try:
         reasons = adata_full.obs.apply(_dup_reason_row, axis=1)
         adata_full.obs["is_duplicate_reason"] = reasons.values

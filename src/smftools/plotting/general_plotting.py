@@ -341,6 +341,9 @@ def combined_hmm_raw_clustermap(
     min_length: int = 200,
     min_mapped_length_to_reference_length_ratio: float = 0.8,
     min_position_valid_fraction: float = 0.5,
+    demux_types: Sequence[str] = ("single", "double", "already"),
+
+    sample_mapping: Optional[Mapping[str, str]] = None,
 
     save_path: str | Path | None = None,
     normalize_hmm: bool = False,
@@ -376,32 +379,70 @@ def combined_hmm_raw_clustermap(
         idx = np.unique(idx)
         return idx.tolist(), labels[idx].tolist()
     
+    # Helper: build a True mask if filter is inactive or column missing
+    def _mask_or_true(series_name: str, predicate):
+        if series_name not in adata.obs:
+            return pd.Series(True, index=adata.obs.index)
+        s = adata.obs[series_name]
+        try:
+            return predicate(s)
+        except Exception:
+            # Fallback: all True if bad dtype / predicate failure
+            return pd.Series(True, index=adata.obs.index)
+    
     results = []
     signal_type = "deamination" if deaminase else "methylation"
 
     for ref in adata.obs[reference_col].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
+            # Optionally remap sample label for display
+            display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
+            # Row-level masks (obs)
+            qmask = _mask_or_true(
+                "read_quality",
+                (lambda s: s >= float(min_quality)) if (min_quality is not None) else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lm_mask = _mask_or_true(
+                "mapped_length",
+                (lambda s: s >= float(min_length)) if (min_length is not None) else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lrr_mask = _mask_or_true(
+                "mapped_length_to_reference_length_ratio",
+                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio)) if (min_mapped_length_to_reference_length_ratio is not None) else (lambda s: pd.Series(True, index=s.index)),
+            )
+
+            demux_mask = _mask_or_true(
+                "demux_type",
+                (lambda s: s.astype("string").isin(list(demux_types))) if (demux_types is not None) else (lambda s: pd.Series(True, index=s.index)),
+            )
+
+            ref_mask = (adata.obs[reference_col] == ref)
+            sample_mask = (adata.obs[sample_col] == sample)
+
+            row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
+
+            if not bool(row_mask.any()):
+                print(f"No reads for {display_sample} - {ref} after read quality and length filtering")
+                continue
 
             try:
                 # ---- subset reads ----
-                subset = adata[
-                    (adata.obs[reference_col] == ref) &
-                    (adata.obs[sample_col] == sample) &
-                    (adata.obs["read_quality"] >= min_quality) &
-                    (adata.obs["read_length"] >= min_length) &
-                    (
-                        adata.obs["mapped_length_to_reference_length_ratio"]
-                        > min_mapped_length_to_reference_length_ratio
-                    )
-                ]
+                subset = adata[row_mask, :].copy()
 
-                # ---- valid fraction filter ----
-                vf_key = f"{ref}_valid_fraction"
-                if vf_key in subset.var:
-                    mask = subset.var[vf_key].astype(float) > float(min_position_valid_fraction)
-                    subset = subset[:, mask]
+                # Column-level mask (var)
+                if (min_position_valid_fraction is not None):
+                    valid_key = f"{ref}_valid_fraction"
+                    if valid_key in subset.var:
+                        v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
+                        col_mask = np.asarray(v > float(min_position_valid_fraction), dtype=bool)
+                        if col_mask.any():
+                            subset = subset[:, col_mask].copy()
+                        else:
+                            print(f"No positions left after valid_fraction filter for {display_sample} - {ref}")
+                            continue
 
                 if subset.shape[0] == 0:
+                    print(f"No reads left after filtering for {display_sample} - {ref}")
                     continue
 
                 # ---- bins ----
@@ -849,10 +890,11 @@ def combined_raw_clustermap(
     cmap_gpc: str = "coolwarm",
     cmap_cpg: str = "viridis",
     cmap_a: str = "coolwarm",
-    min_quality: float = 20,
-    min_length: int = 200,
-    min_mapped_length_to_reference_length_ratio: float = 0.8,
-    min_position_valid_fraction: float = 0.5,
+    min_quality: float | None = 20,
+    min_length: int | None = 200,
+    min_mapped_length_to_reference_length_ratio: float | None = 0,
+    min_position_valid_fraction: float | None = 0,
+    demux_types: Sequence[str] = ("single", "double", "already"),
     sample_mapping: Optional[Mapping[str, str]] = None,
     save_path: str | Path | None = None,
     sort_by: str = "gpc",  # 'gpc','cpg','c','gpc_cpg','a','none','obs:<col>'
@@ -883,6 +925,16 @@ def combined_raw_clustermap(
     results : list[dict]
         One entry per (sample, ref) plot with matrices + bin metadata.
     """
+    # Helper: build a True mask if filter is inactive or column missing
+    def _mask_or_true(series_name: str, predicate):
+        if series_name not in adata.obs:
+            return pd.Series(True, index=adata.obs.index)
+        s = adata.obs[series_name]
+        try:
+            return predicate(s)
+        except Exception:
+            # Fallback: all True if bad dtype / predicate failure
+            return pd.Series(True, index=adata.obs.index)
 
     results: List[Dict[str, Any]] = []
     save_path = Path(save_path) if save_path is not None else None
@@ -906,20 +958,48 @@ def combined_raw_clustermap(
             # Optionally remap sample label for display
             display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
 
-            try:
-                subset = adata[
-                    (adata.obs[reference_col] == ref) &
-                    (adata.obs[sample_col] == sample) &
-                    (adata.obs["read_quality"] >= min_quality) &
-                    (adata.obs["mapped_length"] >= min_length) &
-                    (adata.obs["mapped_length_to_reference_length_ratio"] >= min_mapped_length_to_reference_length_ratio)
-                ]
+            # Row-level masks (obs)
+            qmask = _mask_or_true(
+                "read_quality",
+                (lambda s: s >= float(min_quality)) if (min_quality is not None) else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lm_mask = _mask_or_true(
+                "mapped_length",
+                (lambda s: s >= float(min_length)) if (min_length is not None) else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lrr_mask = _mask_or_true(
+                "mapped_length_to_reference_length_ratio",
+                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio)) if (min_mapped_length_to_reference_length_ratio is not None) else (lambda s: pd.Series(True, index=s.index)),
+            )
 
-                # position-level mask
-                valid_key = f"{ref}_valid_fraction"
-                if valid_key in subset.var:
-                    mask = subset.var[valid_key].astype(float).values > float(min_position_valid_fraction)
-                    subset = subset[:, mask]
+            demux_mask = _mask_or_true(
+                "demux_type",
+                (lambda s: s.astype("string").isin(list(demux_types))) if (demux_types is not None) else (lambda s: pd.Series(True, index=s.index)),
+            )
+
+            ref_mask = (adata.obs[reference_col] == ref)
+            sample_mask = (adata.obs[sample_col] == sample)
+
+            row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
+
+            if not bool(row_mask.any()):
+                print(f"No reads for {display_sample} - {ref} after read quality and length filtering")
+                continue
+
+            try:
+                subset = adata[row_mask, :].copy()
+
+                # Column-level mask (var)
+                if (min_position_valid_fraction is not None):
+                    valid_key = f"{ref}_valid_fraction"
+                    if valid_key in subset.var:
+                        v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
+                        col_mask = np.asarray(v > float(min_position_valid_fraction), dtype=bool)
+                        if col_mask.any():
+                            subset = subset[:, col_mask].copy()
+                        else:
+                            print(f"No positions left after valid_fraction filter for {display_sample} - {ref}")
+                            continue
 
                 if subset.shape[0] == 0:
                     print(f"No reads left after filtering for {display_sample} - {ref}")
@@ -1161,13 +1241,6 @@ def combined_raw_clustermap(
                 import traceback
                 traceback.print_exc()
                 continue
-
-    # store once at the end (HDF5 safe)
-    # matrices won't be HDF5-safe; store only metadata + maybe hit counts
-    # adata.uns["clustermap_results"] = [
-    #     {k: v for k, v in r.items() if not k.endswith("_matrix")}
-    #     for r in results
-    # ]
 
     return results
 
