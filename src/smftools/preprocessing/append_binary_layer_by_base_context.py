@@ -8,7 +8,10 @@ def append_binary_layer_by_base_context(
     verbose: bool = True,
     uns_flag: str = "append_binary_layer_by_base_context_performed",
     bypass: bool = False,
-    force_redo: bool = False
+    force_redo: bool = False,
+    from_valid_sites_only: bool = False,
+    valid_site_col_suffix: str = "_valid_coverage"
+
 ):
     """
     Build per-reference C/G-site masked layers:
@@ -24,6 +27,8 @@ def append_binary_layer_by_base_context(
       - Masked positions are filled with np.nan to make masked vs unmasked explicit.
       - Requires append_base_context to be run first
     """
+    if not from_valid_sites_only:
+        valid_site_col_suffix = ""
 
     # Only run if not already performed
     already = bool(adata.uns.get(uns_flag, False))
@@ -46,10 +51,11 @@ def append_binary_layer_by_base_context(
 
     # expected per-reference var column names
     references = adata.obs[reference_column].astype("category").cat.categories
-    reference_to_gpc_column = {ref: f"{ref}_GpC_site" for ref in references}
-    reference_to_cpg_column = {ref: f"{ref}_CpG_site" for ref in references}
-    reference_to_c_column = {ref: f"{ref}_C_site" for ref in references}
-    reference_to_other_c_column = {ref: f"{ref}_other_C_site" for ref in references}
+    reference_to_gpc_column = {ref: f"{ref}_GpC_site{valid_site_col_suffix}" for ref in references}
+    reference_to_cpg_column = {ref: f"{ref}_CpG_site{valid_site_col_suffix}" for ref in references}
+    reference_to_c_column = {ref: f"{ref}_C_site{valid_site_col_suffix}" for ref in references}
+    reference_to_other_c_column = {ref: f"{ref}_other_C_site{valid_site_col_suffix}" for ref in references}
+    reference_to_a_column = {ref: f"{ref}_A_site{valid_site_col_suffix}" for ref in references}
 
     # verify var columns exist and build boolean masks per ref (len = n_vars)
     n_obs, n_vars = adata.shape
@@ -69,6 +75,7 @@ def append_binary_layer_by_base_context(
     cpg_var_masks = {ref: _col_mask_or_warn(col) for ref, col in reference_to_cpg_column.items()}
     c_var_masks =   {ref: _col_mask_or_warn(col) for ref, col in reference_to_c_column.items()}
     other_c_var_masks = {ref: _col_mask_or_warn(col) for ref, col in reference_to_other_c_column.items()}
+    a_var_masks = {ref: _col_mask_or_warn(col) for ref, col in reference_to_a_column.items()}
 
     # prepare X as dense float32 for layer filling (we leave adata.X untouched)
     X = adata.X
@@ -83,6 +90,7 @@ def append_binary_layer_by_base_context(
     masked_cpg = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
     masked_any_c = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
     masked_other_c = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
+    masked_a = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
 
     # fill row-blocks per reference (this avoids creating a full row×var boolean mask)
     obs_ref_series = adata.obs[reference_column]
@@ -97,6 +105,7 @@ def append_binary_layer_by_base_context(
         cpg_cols = cpg_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
         c_cols   = c_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
         other_c_cols = other_c_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
+        a_cols = a_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
 
         if gpc_cols.any():
             # assign only the submatrix (rows x selected cols)
@@ -107,6 +116,8 @@ def append_binary_layer_by_base_context(
             masked_any_c[np.ix_(row_idx, c_cols)] = X[np.ix_(row_idx, c_cols)]
         if other_c_cols.any():
             masked_other_c[np.ix_(row_idx, other_c_cols)] = X[np.ix_(row_idx, other_c_cols)]
+        if a_cols.any():
+            masked_a[np.ix_(row_idx, other_c_cols)] = X[np.ix_(row_idx, other_c_cols)]
 
     # Build combined layer:
     # - numeric_sum: sum where either exists, NaN where neither exists
@@ -126,6 +137,7 @@ def append_binary_layer_by_base_context(
     adata.layers['GpC_CpG_combined_site_binary'] = combined_sum
     adata.layers['C_site_binary'] = masked_any_c
     adata.layers['other_C_site_binary'] = masked_other_c
+    adata.layers['A_site_binary'] = masked_a
 
     if verbose:
         def _filled_positions(arr):
@@ -136,6 +148,8 @@ def append_binary_layer_by_base_context(
         print(f"  GpC+CpG combined: {_filled_positions(combined_sum)}")
         print(f"  C: {_filled_positions(masked_any_c)}")
         print(f"  other_C: {_filled_positions(masked_other_c)}")
+        print(f"  A: {_filled_positions(masked_a)}")
+
 
     # mark as done
     adata.uns[uns_flag] = True

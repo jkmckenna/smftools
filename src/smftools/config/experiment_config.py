@@ -81,6 +81,7 @@ def _parse_numeric(v: Any, fallback: Any = None) -> Any:
         except Exception:
             return fallback
 
+
 def _try_json_or_literal(s: Any) -> Any:
     """Try parse JSON or python literal; otherwise return original string."""
     if s is None:
@@ -274,6 +275,7 @@ def normalize_hmm_feature_sets(raw: Any) -> Dict[str, dict]:
         state = info.get("state", info.get("label", "Modified"))
         canonical[grp] = {"features": feats, "state": state}
     return canonical
+
 
 def normalize_peak_feature_configs(raw: Any) -> Dict[str, dict]:
     """
@@ -800,6 +802,15 @@ class ExperimentConfig:
     hmm_use_viterbi: bool = False
     hmm_device: Optional[str] = None
     hmm_methbases: Optional[List[str]] = None  # if None, HMM.annotate_adata will fall back to mod_target_bases
+    # HMM fitting/application strategy
+    hmm_fit_strategy: str = "per_group"  # "per_group" | "shared_transitions"
+    hmm_shared_scope: List[str] = field(default_factory=lambda: ["reference", "methbase"])
+    hmm_groupby: List[str] = field(default_factory=lambda: ["sample", "reference", "methbase"])
+    # Shared-transitions adaptation behavior
+    hmm_adapt_emissions: bool = True
+    hmm_adapt_startprobs: bool = True
+    hmm_emission_adapt_iters: int = 5
+    hmm_emission_adapt_tol: float = 1e-4
     footprints: Optional[bool] = True
     accessible_patches: Optional[bool] = True
     cpg: Optional[bool] = False
@@ -1099,6 +1110,16 @@ class ExperimentConfig:
         hmm_merge_layer_features = _parse_list(merged.get("hmm_merge_layer_features", None))
         hmm_clustermap_feature_layers = _parse_list(merged.get("hmm_clustermap_feature_layers", "all_accessible_features"))
 
+        hmm_fit_strategy = str(merged.get("hmm_fit_strategy", "per_group")).strip()
+        hmm_shared_scope = _parse_list(merged.get("hmm_shared_scope", ["reference", "methbase"]))
+        hmm_groupby = _parse_list(merged.get("hmm_groupby", ["sample", "reference", "methbase"]))
+
+        hmm_adapt_emissions = _parse_bool(merged.get("hmm_adapt_emissions", True))
+        hmm_adapt_startprobs = _parse_bool(merged.get("hmm_adapt_startprobs", True))
+        hmm_emission_adapt_iters = int(_parse_numeric(merged.get("hmm_emission_adapt_iters", 5), 5))
+        hmm_emission_adapt_tol = float(_parse_numeric(merged.get("hmm_emission_adapt_tol", 1e-4), 1e-4))
+
+
         # HMM peak feature configs (for call_hmm_peaks)
         merged["hmm_peak_feature_configs"] = normalize_peak_feature_configs(
             merged.get("hmm_peak_feature_configs", {})
@@ -1189,6 +1210,13 @@ class ExperimentConfig:
             hmm_init_transition_probs = merged.get("hmm_init_transition_probs",[[0.9, 0.1], [0.1, 0.9]]),
             hmm_init_start_probs = merged.get("hmm_init_start_probs",[0.5, 0.5]),
             hmm_eps = merged.get("hmm_eps", 1e-8),
+            hmm_fit_strategy = hmm_fit_strategy,
+            hmm_shared_scope = hmm_shared_scope,
+            hmm_groupby = hmm_groupby,
+            hmm_adapt_emissions = hmm_adapt_emissions,
+            hmm_adapt_startprobs = hmm_adapt_startprobs,
+            hmm_emission_adapt_iters = hmm_emission_adapt_iters,
+            hmm_emission_adapt_tol = hmm_emission_adapt_tol,
             hmm_dtype = merged.get("hmm_dtype", "float64"),
             hmm_feature_sets = hmm_feature_sets,
             hmm_annotation_threshold = hmm_annotation_threshold,

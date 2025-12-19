@@ -4,7 +4,9 @@ def calculate_read_modification_stats(adata,
                                       mod_target_bases,
                                       uns_flag="calculate_read_modification_stats_performed",
                                       bypass=False,
-                                      force_redo=False
+                                      force_redo=False,
+                                      valid_sites_only=False,
+                                      valid_site_suffix="_valid_coverage",
 ):
     """
     Adds methylation/deamination statistics for each read. 
@@ -22,6 +24,9 @@ def calculate_read_modification_stats(adata,
     import numpy as np
     import anndata as ad
     import pandas as pd
+
+    if not valid_sites_only:
+        valid_site_suffix = ""
 
     # Only run if not already performed
     already = bool(adata.uns.get(uns_flag, False))
@@ -53,7 +58,7 @@ def calculate_read_modification_stats(adata,
         ref_subset = adata[adata.obs[reference_column] == ref]
         for site_type in site_types:
             print(f'Iterating over {ref}_{site_type}')
-            observation_matrix = ref_subset.obsm[f'{ref}_{site_type}']
+            observation_matrix = ref_subset.obsm[f'{ref}_{site_type}{valid_site_suffix}']
             total_positions_in_read = np.nansum(~np.isnan(observation_matrix), axis=1)
             total_positions_in_reference = observation_matrix.shape[1]
             fraction_valid_positions_in_read_vs_ref = total_positions_in_read / total_positions_in_reference

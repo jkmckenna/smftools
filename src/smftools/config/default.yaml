@@ -101,7 +101,7 @@ read_len_filter_thresholds:
   - 100
   - null
 read_len_to_ref_ratio_filter_thresholds:
-  - 0.5
+  - null
   - null
 read_quality_filter_thresholds:
   - 15
@@ -209,6 +209,15 @@ hmm_init_start_probs:
   - 0.5
   - 0.5
 hmm_eps: 1e-8
+# Fitting strategy
+hmm_fit_strategy: "per_group"      # "per_group" | "shared_transitions"
+hmm_shared_scope: ["reference", "methbase"]
+hmm_groupby: ["sample", "reference", "methbase"]
+# If hmm_fit_strategy == shared_transitions
+hmm_adapt_emissions: true
+hmm_adapt_startprobs: true
+hmm_emission_adapt_iters: 5
+hmm_emission_adapt_tol: 1.0e-4
 hmm_dtype: "float64"
 hmm_annotation_threshold: 0.5 # The minimum probability threshold of a feature interval to accept it for layer annotation.
 hmm_batch_size: 1024 # hmm batch size
@@ -237,7 +246,7 @@ hmm_feature_sets:
       large_accessible_patch: [40, 110]
       nucleosome_depleted_region: [110, inf]
 hmm_merge_layer_features:
-  - [null, 60]
+  - ["all_accessible_features", 60]
 clustermap_cmap_hmm: "coolwarm"
 hmm_clustermap_feature_layers:
   - all_accessible_features
@@ -245,7 +254,9 @@ hmm_clustermap_feature_layers:
   - small_accessible_patch
   - mid_accessible_patch
   - large_accessible_patch
+  - large_accessible_patch_merged
   - nucleosome_depleted_region
+  - nucleosome_depleted_region_merged
   - small_bound_stretch
   - medium_bound_stretch
   - putative_nucleosome
