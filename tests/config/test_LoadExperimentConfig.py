@@ -1,7 +1,7 @@
 ## test_LoadExperimentConfig
 
 import pytest
-from smftools.inform.helpers import LoadExperimentConfig
+from smftools.config.experiment_config import LoadExperimentConfig
 
 csv_path = "/tests/_test_inputs/test_experiment_config_direct_I.csv"
 

@@ -21,7 +21,7 @@ fastq_barcode_map: null # For FASTQ files, an optional map of file paths to barc
 fastq_auto_pairing: True # For FASTQ files, attempt to find read pair files automatically.
 input_already_demuxed: False # If the input files are already demultiplexed.
 delete_intermediate_hdfs: True # Whether to delete the intermediate hdfs from the conversion/deamination workflows.
-delete_intermediate_bams: False # Whether to delete intermediate BAM files.
+delete_intermediate_bams: True # Whether to delete intermediate BAM files.
 delete_intermediate_tsvs: True # Whether to delete intermediate TSV files.
 
 # Sequencing modality and general experiment params
@@ -88,7 +88,7 @@ barcode_both_ends: False # dorado demultiplexing
 trim: False # dorado adapter and barcode removal during demultiplexing
 
 # Anndata structure
-mapping_threshold: 0.01 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
+mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
 reference_column: 'Reference_strand'
 sample_column: 'Barcode'
 

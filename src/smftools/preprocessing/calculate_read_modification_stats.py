@@ -25,6 +25,12 @@ def calculate_read_modification_stats(adata,
     import anndata as ad
     import pandas as pd
 
+    if valid_sites_only:
+        if adata.uns.get("calculate_coverage_performed", False):
+            pass
+        else:
+            valid_sites_only = False
+
     if not valid_sites_only:
         valid_site_suffix = ""
 
