@@ -20,7 +20,7 @@ venvs/
 /environment.yml
 
 # Tests
-/tests/_test_inputs/
+/tests/_test_inputs/dorado_models
 /tests/_test_outputs/
 
 # OS

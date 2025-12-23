@@ -1,0 +1,17 @@
+﻿variable,value,help,options,type
+smf_modality,conversion,Modality of SMF. Can either be conversion or direct.,"conversion, direct",str 
+input_data_path,tests/_test_inputs/_test_pod5_I.pod5,Path to directory/file containing input sequencing data,,str 
+fasta,tests/_test_inputs/_test_fasta_I.fa,Path to initial FASTA file,,str 
+fasta_regions_of_interest,tests/_test_inputs/_test_bed_I.bed,Path to a bed file to subsample the fasta on.,,str 
+output_directory,tests/_test_outputs,Directory to act as root for all analysis outputs,,str 
+experiment_name,testing_set_I,An experiment name for the final h5ad file,,str 
+model,tests/_test_inputs/dorado_models/dna_r10.4.1_e8.2_400bps_hac@v4.3.0,The dorado basecalling model to use,,str 
+barcode_kit,SQK-NBD114-24,The barcoding kit used for the experiment,,str 
+mapping_threshold,0.05,Minimum proportion of reads mapping to a reference to further use that reference (Ranges from 0-1 as a proportion of mapped reads),,float
+filter_threshold,0.8,Minimum probability to call a canonical base identity,,float
+m6A_threshold,0.8,Minimum probability to flag m6A as True,,float
+m5C_threshold,0.8,Minimum probability to flag m5C as True,,float
+hm5C_threshold,0.8,Minimum probability to flag hm5C as True,,float
+mod_list,"[6mA,5mC_5hmC]",Modified base names for Dorado,"""6mA"", ""5mC_5hmC""",list
+batch_size,4,number of samples to analyze at a time,,int
+conversion_types,"[6mA,5mC]",Types of modification types to use in conversion SMF,"5mC', '6mA'",list

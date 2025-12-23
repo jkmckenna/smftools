@@ -1,0 +1,22 @@
+﻿variable,value,help,options,type
+smf_modality,direct,Modality of SMF. Can either be conversion or direct.,"conversion, direct",str 
+input_data_path,/Users/josephmckenna/git/smftools/tests/_test_inputs/_test_pod5_I.pod5,Path to directory/file containing input sequencing data,,str 
+fasta,/Users/josephmckenna/git/smftools/tests/_test_inputs/_test_fasta_I.fa,Path to initial FASTA file,,str 
+fasta_regions_of_interest,/Users/josephmckenna/git/smftools/tests/_test_inputs/_test_bed_I.bed,Path to a bed file to subsample the fasta on.,,str 
+output_directory,/Users/josephmckenna/git/smftools/tests/_test_outputs,Directory to act as root for all analysis outputs,,str 
+experiment_name,testing,An experiment name for the final h5ad file,,str 
+model_dir,/Users/josephmckenna/dorado_models/,The dorado basecalling model directory to use,,str 
+model,hac,The dorado basecalling model to use,"hac, sup, fast",str 
+barcode_kit,SQK-NBD114-24,The barcoding kit used for the experiment,,str 
+mapping_threshold,0.01,Minimum proportion of reads mapping to a reference to further use that reference (Ranges from 0-1 as a proportion of mapped reads),,float
+filter_threshold,0.8,Minimum probability to call a canonical base identity,,float
+m6A_threshold,0.8,Minimum probability to flag m6A as True,,float
+m5C_threshold,0.8,Minimum probability to flag m5C as True,,float
+hm5C_threshold,0.8,Minimum probability to flag hm5C as True,,float
+mod_list,"[6mA,5mC_5hmC]",Modified base names for Dorado,"""6mA"", ""5mC_5hmC""",list
+batch_size,4,number of samples to analyze at a time,,int
+conversion_types,,Types of modification types to use in conversion SMF,"5mC', '6mA'",list
+barcode_both_ends,TRUE,whether to require both ends of a read to be barcoded for demultiplexing,,bool
+trim,FALSE,whether to trim barcodes and adapters from reads during demultiplexing,,bool
+device,auto,basecalling device,"auto, metal, cpu, cuda",str 
+threads,6,Max number of CPU threads to use,,int
