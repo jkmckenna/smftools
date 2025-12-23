@@ -1,17 +1,17 @@
-# ## test_LoadExperimentConfig
+## test_LoadExperimentConfig
 
-# import pytest
-# from smftools.config.experiment_config import LoadExperimentConfig
+import pytest
+from importlib.resources import files, as_file
 
-# csv_path = "/tests/_test_inputs/test_experiment_config_direct_I.csv"
+from smftools.config.experiment_config import LoadExperimentConfig
 
-# @pytest.fixture
-# def config():
-#     # Fixture to initialize the LoadExperimentConfig instance
-#     return LoadExperimentConfig(csv_path)
+csv_resource = files("smftools.tests._test_inputs").joinpath("test_experiment_config_direct_I.csv")
 
-# def test_var_dict(config):
-#     assert type(config.sef.var_dict) == dict
-    
-#     key_types = [type(key) == str for key in config.sef.var_dict.keys()]
-#     assert False not in key_types
+@pytest.fixture
+def config():
+    with as_file(csv_resource) as csv_path:
+        return LoadExperimentConfig(csv_path)
+
+def test_var_dict(config):
+    assert isinstance(config.sef.var_dict, dict)
+    assert all(isinstance(k, str) for k in config.sef.var_dict.keys())

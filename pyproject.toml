@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "smftools"
 description = "Single Molecule Footprinting Analysis in Python."
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.10,<3.13"
 license = { file = "LICENSE" }
 authors = [
     {name = "Joseph McKenna"}
@@ -32,7 +32,6 @@ classifiers = [
     "Natural Language :: English",
     "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -128,3 +127,22 @@ markers = [
 [tool.coverage.run]
 source = ["smftools"]
 omit = ["tests/*"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+src = ["src", "tests"]
+exclude = [
+    "docs/**",
+    "**/*archived*/**",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "ISC"]
+ignore = ["E","F","I","B","UP","SIM","ISC"]
