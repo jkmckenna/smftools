@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Union, Iterable
 
 from pathlib import Path
-from typing import Iterable, Sequence, Optional
+from typing import Iterable, Sequence, Optional, List
 
 import warnings
 import pandas as pd
@@ -176,6 +176,53 @@ def save_matrix(matrix, save_name):
     import numpy as np
     np.savetxt(f'{save_name}.txt', matrix)
 
+
+def _harmonize_var_schema(adatas: List[ad.AnnData]) -> None:
+    """
+    In-place:
+      - Make every AnnData.var have the *union* of columns.
+      - Normalize dtypes so columns can hold NaN and round-trip via HDF5:
+          * ints -> float64 (to support NaN)
+          * objects -> try numeric->float64, else pandas 'string'
+    """
+    import numpy as np
+    # 1) Union of all .var columns
+    all_cols = set()
+    for a in adatas:
+        all_cols.update(a.var.columns)
+    all_cols = list(all_cols)
+
+    # 2) Add any missing columns as float64 NaN
+    for a in adatas:
+        missing = [c for c in all_cols if c not in a.var.columns]
+        for c in missing:
+            a.var[c] = np.nan  # becomes float64 by default
+
+    # 3) Normalize dtypes per AnnData so concat doesn't create mixed/object columns
+    for a in adatas:
+        for c in a.var.columns:
+            s = a.var[c]
+            dt = s.dtype
+
+            # Integer/unsigned -> float64 (so NaN fits)
+            if dt.kind in ("i", "u"):
+                a.var[c] = s.astype("float64")
+                continue
+
+            # Object -> numeric if possible; else pandas 'string'
+            if dt == "O":
+                try:
+                    s_num = pd.to_numeric(s, errors="raise")
+                    a.var[c] = s_num.astype("float64")
+                except Exception:
+                    a.var[c] = s.astype("string")
+
+    # Optional: ensure consistent column order (sorted + stable)
+    # Not required, but can make diffs easier to read:
+    all_cols_sorted = sorted(all_cols)
+    for a in adatas:
+        a.var = a.var.reindex(columns=all_cols_sorted)
+
 def concatenate_h5ads(
     output_path: str | Path,
     *,
@@ -280,27 +327,41 @@ def concatenate_h5ads(
     for p in h5_paths:
         print(f"  - {p}")
 
-    final_adata: Optional[ad.AnnData] = None
-
+    # Load all first so we can harmonize schemas before concat
+    loaded: List[ad.AnnData] = []
     for p in h5_paths:
         print(f"{time_string()}: Reading {p}")
-        temp_adata, read_report = safe_read_h5ad(p, restore_backups=restore_backups)
+        a, _ = safe_read_h5ad(p, restore_backups=restore_backups)
+        loaded.append(a)
 
-        if final_adata is None:
-            print(f"{time_string()}: Initializing final AnnData with {p}")
-            final_adata = temp_adata
-        else:
-            print(f"{time_string()}: Concatenating {p} into final AnnData")
-            final_adata = ad.concat(
-                [final_adata, temp_adata],
-                join="outer",
-                merge='unique',
-                uns_merge='unique',
-                index_unique=None,
-            )
+    # Critical: make every .var share the same columns + safe dtypes
+    _harmonize_var_schema(loaded)
 
-    if final_adata is None:
-        raise RuntimeError("Unexpected: no AnnData objects loaded.")
+    print(f"{time_string()}: Concatenating {len(loaded)} AnnData objects")
+    final_adata = ad.concat(
+        loaded,
+        axis=0,              # stack observations
+        join="outer",        # keep union of variables
+        merge="unique",
+        uns_merge="unique",
+        index_unique=None,
+    )
+
+    # Defensive pass: ensure final var dtypes are write-safe
+    for c in final_adata.var.columns:
+        s = final_adata.var[c]
+        dt = s.dtype
+        if dt.kind in ("i", "u"):
+            final_adata.var[c] = s.astype("float64")
+        elif dt == "O":
+            try:
+                s_num = pd.to_numeric(s, errors="raise")
+                final_adata.var[c] = s_num.astype("float64")
+            except Exception:
+                final_adata.var[c] = s.astype("string")
+
+    # Let anndata write pandas StringArray reliably
+    ad.settings.allow_write_nullable_strings = True
 
     print(f"{time_string()}: Writing concatenated AnnData to {output_path}")
     safe_write_h5ad(final_adata, output_path, backup=restore_backups)

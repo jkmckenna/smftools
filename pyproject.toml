@@ -120,6 +120,10 @@ addopts = [
 testpaths = ["tests"]
 pythonpath = ["src"]
 xfail_strict = true
+markers = [
+    "workflow: slow, end-to-end style workflows",
+    "unit: fast default tests",
+]
 
 [tool.coverage.run]
 source = ["smftools"]
