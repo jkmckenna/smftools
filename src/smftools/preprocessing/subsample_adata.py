@@ -13,7 +13,6 @@ def subsample_adata(adata, obs_columns=None, max_samples=2000, random_seed=42):
     Returns:
         AnnData: A new AnnData object with subsampled observations.
     """
-    import anndata as ad
     import numpy as np
 
     np.random.seed(random_seed)  # Ensure reproducibility

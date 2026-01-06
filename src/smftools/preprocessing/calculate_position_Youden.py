@@ -29,11 +29,9 @@ def calculate_position_Youden(
     Returns:
         None
     """
-    import numpy as np
-    import pandas as pd
-    import anndata as ad
     import matplotlib.pyplot as plt
-    from sklearn.metrics import roc_curve, roc_auc_score
+    import numpy as np
+    from sklearn.metrics import roc_curve
 
     control_samples = [positive_control_sample, negative_control_sample]
     references = adata.obs[ref_column].cat.categories
@@ -135,7 +133,7 @@ def calculate_position_Youden(
                     if max_J > J_threshold:
                         n_passed_positions += 1
                         plt.plot(fpr, tpr, label="ROC curve")
-                except:
+                except Exception:
                     probability_thresholding_list[position] = (0.8, np.nan)
         title = f"ROC Curve for {n_passed_positions} positions with J-stat greater than {J_threshold}\n out of {n_total_positions} total positions on {ref}"
         plt.title(title)
@@ -154,4 +152,4 @@ def calculate_position_Youden(
             True if i > J_threshold else False for i in J_max_list
         ]
 
-    print(f"Finished calculating position Youden statistics")
+    print("Finished calculating position Youden statistics")

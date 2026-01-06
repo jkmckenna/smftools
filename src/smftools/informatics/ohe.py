@@ -1,8 +1,8 @@
-import numpy as np
-import anndata as ad
-
-import os
 import concurrent.futures
+import os
+
+import anndata as ad
+import numpy as np
 
 
 def one_hot_encode(sequence, device="auto"):

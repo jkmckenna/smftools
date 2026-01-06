@@ -1,13 +1,15 @@
 import concurrent.futures
 import gc
-from .bam_functions import count_aligned_reads
+import re
+import shutil
+from pathlib import Path
+from typing import Iterable, Optional, Union
+
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
-import numpy as np
-from pathlib import Path
-from typing import Union, Iterable, Optional
-import shutil
-import re
+
+from .bam_functions import count_aligned_reads
 
 
 def filter_bam_records(bam, mapping_threshold):
@@ -499,20 +501,20 @@ def modkit_extract_to_adata(
     """
     ###################################################
     # Package imports
-    from .. import readwrite
-    from ..readwrite import safe_write_h5ad, make_dirs
-    from .fasta_functions import get_native_references
-    from .bam_functions import extract_base_identities
-    from .ohe import ohe_batching
-    import pandas as pd
-    import anndata as ad
-    import os
     import gc
     import math
+
+    import anndata as ad
     import numpy as np
+    import pandas as pd
     from Bio.Seq import Seq
     from tqdm import tqdm
-    import h5py
+
+    from .. import readwrite
+    from ..readwrite import make_dirs
+    from .bam_functions import extract_base_identities
+    from .fasta_functions import get_native_references
+    from .ohe import ohe_batching
     ###################################################
 
     ################## Get input tsv and bam file names into a sorted list ################
@@ -1240,8 +1242,8 @@ def modkit_extract_to_adata(
                             ),
                             compression="gzip",
                         )
-                    except:
-                        print(f"Skipping writing anndata for sample")
+                    except Exception:
+                        print("Skipping writing anndata for sample")
 
             # Delete the batch dictionaries from memory
             del dict_list, adata

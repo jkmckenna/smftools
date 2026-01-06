@@ -1,24 +1,21 @@
-import numpy as np
-import time
-import os
 import gc
-import pandas as pd
-import anndata as ad
-from tqdm import tqdm
 import multiprocessing
-from multiprocessing import Manager, Lock, current_process, Pool
+import shutil
+import time
 import traceback
-import gzip
+from multiprocessing import Manager, Pool, current_process
+from pathlib import Path
+from typing import Iterable, Optional, Union
+
+import anndata as ad
+import numpy as np
+import pandas as pd
 import torch
 
-import shutil
-from pathlib import Path
-from typing import Union, Iterable, Optional
-
-from ..readwrite import make_dirs, safe_write_h5ad
+from ..readwrite import make_dirs
+from .bam_functions import count_aligned_reads, extract_base_identities
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .fasta_functions import find_conversion_sites
-from .bam_functions import count_aligned_reads, extract_base_identities
 from .ohe import ohe_batching
 
 if __name__ == "__main__":
@@ -390,7 +387,7 @@ def process_single_bam(
         adata.obs["Sample"] = [sample] * len(adata)
         try:
             barcode = sample.split("barcode")[1]
-        except:
+        except Exception:
             barcode = np.nan
         adata.obs["Barcode"] = [int(barcode)] * len(adata)
         adata.obs["Barcode"] = adata.obs["Barcode"].astype(str)
@@ -479,7 +476,7 @@ def worker_function(
 
         progress_queue.put(sample)
 
-    except Exception as e:
+    except Exception:
         print(
             f"{timestamp()} [Worker {worker_id}] ERROR while processing {sample}:\n{traceback.format_exc()}"
         )

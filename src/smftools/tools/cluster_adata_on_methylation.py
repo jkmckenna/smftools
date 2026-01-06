@@ -23,10 +23,11 @@ def cluster_adata_on_methylation(
     Returns:
         None
     """
-    import pandas as pd
     import numpy as np
-    from . import subset_adata
+    import pandas as pd
+
     from ..readwrite import adata_to_df
+    from . import subset_adata
 
     # Ensure obs_columns are categorical
     for col in obs_columns:
@@ -70,7 +71,7 @@ def cluster_adata_on_methylation(
             df2 = df.reset_index(drop=True)
             if method == "hierarchical":
                 try:
-                    from scipy.cluster.hierarchy import linkage, dendrogram
+                    from scipy.cluster.hierarchy import dendrogram, linkage
 
                     # Perform hierarchical clustering on rows using the average linkage method and Euclidean metric
                     row_linkage = linkage(df2.values, method="average", metric="euclidean")
@@ -92,7 +93,7 @@ def cluster_adata_on_methylation(
                         dtype=int,
                     )
                     adata.obs.update(temp_obs_data)
-                except:
+                except Exception:
                     print(
                         f"Error found in {subgroup} of {site_type}_{layer}_hierarchical_clustering_index_within_{subgroup_name}"
                     )
@@ -134,7 +135,7 @@ def cluster_adata_on_methylation(
                         dtype=int,
                     )
                     adata.obs.update(temp_obs_data)
-                except:
+                except Exception:
                     print(
                         f"Error found in {subgroup} of {site_type}_{layer}_kmeans_clustering_index_within_{subgroup_name}"
                     )

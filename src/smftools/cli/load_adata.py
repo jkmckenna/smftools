@@ -1,6 +1,6 @@
 import shutil
 from pathlib import Path
-from typing import Union, Iterable
+from typing import Iterable, Union
 
 from .helpers import AdataPaths
 
@@ -101,39 +101,33 @@ def load_adata_core(cfg, paths: AdataPaths):
     cfg : ExperimentConfig
         (Same object, possibly with some fields updated, e.g. fasta path.)
     """
-    import os
     from pathlib import Path
 
     import numpy as np
-    import pandas as pd
-    import anndata as ad
-    import scanpy as sc
-
-    from .helpers import write_gz_h5ad
-
-    from ..readwrite import make_dirs, add_or_update_column_in_csv
 
     from ..informatics.bam_functions import (
-        concatenate_fastqs_to_bam,
         align_and_sort_BAM,
-        demux_and_index_BAM,
-        split_and_index_BAM,
         bam_qc,
+        concatenate_fastqs_to_bam,
+        demux_and_index_BAM,
         extract_read_features_from_bam,
+        split_and_index_BAM,
     )
+    from ..informatics.basecalling import canoncall, modcall
     from ..informatics.bed_functions import aligned_BAM_to_bed
-    from ..informatics.pod5_functions import fast5_to_pod5
+    from ..informatics.converted_BAM_to_adata import converted_BAM_to_adata
     from ..informatics.fasta_functions import (
-        subsample_fasta_from_bed,
         generate_converted_FASTA,
         get_chromosome_lengths,
+        subsample_fasta_from_bed,
     )
-    from ..informatics.basecalling import modcall, canoncall
-    from ..informatics.modkit_functions import modQC, make_modbed, extract_mods
-    from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
-    from ..informatics.converted_BAM_to_adata import converted_BAM_to_adata
     from ..informatics.h5ad_functions import add_read_length_and_mapping_qc
+    from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
+    from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
+    from ..informatics.pod5_functions import fast5_to_pod5
     from ..informatics.run_multiqc import run_multiqc
+    from ..readwrite import add_or_update_column_in_csv, make_dirs
+    from .helpers import write_gz_h5ad
 
     ################################### 1) General params and input organization ###################################
     output_directory = Path(cfg.output_directory)
@@ -271,11 +265,10 @@ def load_adata_core(cfg, paths: AdataPaths):
     ########################################################################################################################
 
     ################################### 2) FASTA Handling ###################################
-    from ..informatics.fasta_functions import generate_converted_FASTA, get_chromosome_lengths
 
     try:
         cfg.fasta = Path(cfg.fasta)
-    except:
+    except Exception:
         print("Need to provide an input FASTA path to proceed with smftools load")
 
     # If fasta_regions_of_interest bed is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
@@ -315,13 +308,12 @@ def load_adata_core(cfg, paths: AdataPaths):
     ########################################################################################################################
 
     ################################### 3) Basecalling ###################################
-    from ..informatics.basecalling import modcall, canoncall
 
     # 1) Basecall using dorado
     if basecall and cfg.sequencer == "ont":
         try:
             cfg.model_dir = Path(cfg.model_dir)
-        except:
+        except Exception:
             print(
                 "Need to provide a valid path to a dorado model directory to use dorado basecalling"
             )
@@ -357,14 +349,12 @@ def load_adata_core(cfg, paths: AdataPaths):
                 cfg.device,
             )
     elif basecall:
-        print(f"Basecalling is currently only supported for ont sequencers and not pacbio.")
+        print("Basecalling is currently only supported for ont sequencers and not pacbio.")
     else:
         pass
     ########################################################################################################################
 
     ################################### 4) Alignment and sorting #############################################
-    from ..informatics.bam_functions import align_and_sort_BAM
-    from ..informatics.bed_functions import aligned_BAM_to_bed
 
     # 3) Align the BAM to the reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
     if aligned_sorted_output.exists():
@@ -388,7 +378,6 @@ def load_adata_core(cfg, paths: AdataPaths):
     ########################################################################################################################
 
     ################################### 5) Demultiplexing ######################################################################
-    from ..informatics.bam_functions import demux_and_index_BAM, split_and_index_BAM
 
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     if cfg.input_already_demuxed:
@@ -485,7 +474,6 @@ def load_adata_core(cfg, paths: AdataPaths):
     ########################################################################################################################
 
     ################################### 6) SAMTools based BAM QC ######################################################################
-    from ..informatics.bam_functions import bam_qc
 
     # 5) Samtools QC metrics on split BAM files
     bam_qc_dir = cfg.split_path / "bam_qc"
@@ -524,7 +512,7 @@ def load_adata_core(cfg, paths: AdataPaths):
         if mod_bed_dir.is_dir():
             print(f"{mod_bed_dir} already exists, skipping making modbeds")
         else:
-            from ..informatics.modkit_functions import modQC, make_modbed
+            from ..informatics.modkit_functions import make_modbed, modQC
 
             make_dirs([mod_bed_dir])
 
@@ -576,8 +564,6 @@ def load_adata_core(cfg, paths: AdataPaths):
     ########################################################################################################################
 
     ############################################### Add basic read length, read quality, mapping quality stats ###############################################
-    from ..informatics.h5ad_functions import add_read_length_and_mapping_qc
-    from ..informatics.bam_functions import extract_read_features_from_bam
 
     add_read_length_and_mapping_qc(
         raw_adata,
@@ -608,7 +594,6 @@ def load_adata_core(cfg, paths: AdataPaths):
     ########################################################################################################################
 
     ############################################### MultiQC HTML Report ###############################################
-    from ..informatics.run_multiqc import run_multiqc
 
     # multiqc ###
     mqc_dir = cfg.split_path / "multiqc"
@@ -658,15 +643,11 @@ def load_adata(config_path: str):
     cfg : ExperimentConfig
         Config object for downstream steps.
     """
-    from importlib import resources
     from datetime import datetime
-    from pathlib import Path
+    from importlib import resources
 
-    import pandas as pd  # used for summary file reading downstream if needed
-
-    from ..readwrite import make_dirs, add_or_update_column_in_csv
-    from ..config import LoadExperimentConfig, ExperimentConfig
-
+    from ..config import ExperimentConfig, LoadExperimentConfig
+    from ..readwrite import add_or_update_column_in_csv, make_dirs
     from .helpers import get_adata_paths
 
     date_str = datetime.today().strftime("%y%m%d")

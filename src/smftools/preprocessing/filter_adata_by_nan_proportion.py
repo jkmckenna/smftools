@@ -13,7 +13,6 @@ def filter_adata_by_nan_proportion(adata, threshold, axis="obs"):
         filtered_adata
     """
     import numpy as np
-    import anndata as ad
 
     if axis == "obs":
         # Calculate the proportion of NaN values in each read

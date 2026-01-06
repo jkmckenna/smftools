@@ -13,7 +13,6 @@ def binary_layers_to_ohe(adata, binary_layers, stack="hstack"):
     Input: An adata object and a list of layers containing a binary encoding.
     """
     import numpy as np
-    import anndata as ad
 
     # Ensure that the N layer is last!
     # Grab all binary layers that are not encoding N

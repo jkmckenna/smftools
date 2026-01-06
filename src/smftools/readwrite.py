@@ -1,15 +1,13 @@
 ## readwrite ##
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Union, Iterable
-
-from pathlib import Path
-from typing import Iterable, Sequence, Optional, List
-
 import warnings
-import pandas as pd
+from pathlib import Path
+from typing import Iterable, List, Sequence, Union
+
 import anndata as ad
+import pandas as pd
+from Bio import SeqIO
 
 
 ######################################################################################################
@@ -151,8 +149,6 @@ def adata_to_df(adata, layer=None):
         pd.DataFrame: A DataFrame where rows are observations and columns are positions.
     """
     import pandas as pd
-    import anndata as ad
-    import numpy as np
 
     # Validate that the requested layer exists
     if layer and layer not in adata.layers:
@@ -407,12 +403,14 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
 
     Returns a report dict and prints a summary of what was converted/backed up/skipped.
     """
-    import os, json, pickle
+    import json
+    import os
+    import pickle
     from pathlib import Path
+
+    import anndata as _ad
     import numpy as np
     import pandas as pd
-    import warnings
-    import anndata as _ad
 
     path = Path(path)
 
@@ -958,13 +956,14 @@ def safe_read_h5ad(
         report : dict
             A report describing restored items, parsed JSON keys, and any failures.
     """
-    import os
-    from pathlib import Path
     import json
+    import os
     import pickle
+    from pathlib import Path
+
+    import anndata as _ad
     import numpy as np
     import pandas as pd
-    import anndata as _ad
 
     path = Path(path)
 
@@ -1319,8 +1318,8 @@ def safe_read_h5ad(
 
 
 def merge_barcoded_anndatas_core(adata_single, adata_double):
-    import numpy as np
     import anndata as ad
+    import numpy as np
 
     # Step 1: Identify overlap
     overlap = np.intersect1d(adata_single.obs_names, adata_double.obs_names)
@@ -1346,8 +1345,6 @@ def merge_barcoded_anndatas_core(adata_single, adata_double):
 ######################################################################################################
 
 ### File conversion misc ###
-import argparse
-from Bio import SeqIO
 
 
 def genbank_to_gff(genbank_file, output_file, record_id):

@@ -1,17 +1,14 @@
-from pathlib import Path
-import os
-import subprocess
-from typing import List, Optional, Union
-import pysam
-import pybedtools
-import pyBigWig
-
-import numpy as np
-import pandas as pd
 import concurrent.futures
+import os
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pybedtools
+import pyBigWig
+import pysam
 
 from ..readwrite import make_dirs
 

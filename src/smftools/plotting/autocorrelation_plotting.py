@@ -1,5 +1,8 @@
 from typing import Optional
 
+import numpy as np
+import pandas as pd
+
 
 def plot_spatial_autocorr_grid(
     adata,
@@ -30,10 +33,9 @@ def plot_spatial_autocorr_grid(
     fall back to running the analyzer for that group (slow) and cache the result into adata.uns.
     """
     import os
-    import numpy as np
-    import pandas as pd
-    import matplotlib.pyplot as plt
     import warnings
+
+    import matplotlib.pyplot as plt
 
     # Try importing analyzer (used only as fallback)
     try:
@@ -549,10 +551,6 @@ def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=16
     return fig
 
 
-import numpy as np
-import pandas as pd
-
-
 def plot_rolling_grid(
     rolling_dict,
     out_dir,
@@ -598,10 +596,8 @@ def plot_rolling_grid(
     pages_by_metric : dict mapping metric -> [out_png_paths]
     """
     import os
-    import math
+
     import matplotlib.pyplot as plt
-    import numpy as np
-    import pandas as pd
 
     if per_metric_ylim is None:
         per_metric_ylim = {}

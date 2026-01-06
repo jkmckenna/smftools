@@ -1,9 +1,4 @@
-from . import models
-from . import data
-from . import utils
-from . import evaluation
-from . import inference
-from . import training
+from . import data, evaluation, inference, models, training, utils
 
 __all__ = [
     "calculate_relative_risk_on_activity",

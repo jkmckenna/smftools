@@ -30,11 +30,11 @@ def calculate_complexity_II(
       - Optionally saves PNGs and CSVs (curve points + fit summary)
     """
     import os
+
+    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
-    import matplotlib.pyplot as plt
     from scipy.optimize import curve_fit
-    from datetime import datetime
 
     # early exits
     already = bool(adata.uns.get(uns_flag, False))
@@ -252,7 +252,7 @@ def calculate_complexity_II(
         fit_df = pd.DataFrame(fit_records)
         curve_df = pd.DataFrame(curve_records)
         base = output_directory or "."
-        fit_df.to_csv(os.path.join(base, f"complexity_fit_summary.csv"), index=False)
-        curve_df.to_csv(os.path.join(base, f"complexity_curves.csv"), index=False)
+        fit_df.to_csv(os.path.join(base, "complexity_fit_summary.csv"), index=False)
+        curve_df.to_csv(os.path.join(base, "complexity_curves.csv"), index=False)
 
     return results

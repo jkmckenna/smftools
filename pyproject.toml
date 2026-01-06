@@ -146,4 +146,4 @@ line-ending = "lf"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "ISC"]
-ignore = ["E","F","I","B","UP","SIM","ISC"]
+ignore = ["E501", "F", "B", "UP","SIM"]

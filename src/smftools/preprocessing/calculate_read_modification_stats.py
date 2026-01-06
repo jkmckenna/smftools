@@ -23,7 +23,6 @@ def calculate_read_modification_stats(
         None
     """
     import numpy as np
-    import anndata as ad
     import pandas as pd
 
     if valid_sites_only:
@@ -102,17 +101,17 @@ def calculate_read_modification_stats(
     if any(base in mod_target_bases for base in ["GpC", "CpG", "C"]):
         with np.errstate(divide="ignore", invalid="ignore"):
             gpc_to_c_ratio = np.divide(
-                adata.obs[f"Fraction_GpC_site_modified"],
-                adata.obs[f"Fraction_other_C_site_modified"],
-                out=np.full_like(adata.obs[f"Fraction_GpC_site_modified"], np.nan, dtype=float),
-                where=adata.obs[f"Fraction_other_C_site_modified"] != 0,
+                adata.obs["Fraction_GpC_site_modified"],
+                adata.obs["Fraction_other_C_site_modified"],
+                out=np.full_like(adata.obs["Fraction_GpC_site_modified"], np.nan, dtype=float),
+                where=adata.obs["Fraction_other_C_site_modified"] != 0,
             )
 
             cpg_to_c_ratio = np.divide(
-                adata.obs[f"Fraction_CpG_site_modified"],
-                adata.obs[f"Fraction_other_C_site_modified"],
-                out=np.full_like(adata.obs[f"Fraction_CpG_site_modified"], np.nan, dtype=float),
-                where=adata.obs[f"Fraction_other_C_site_modified"] != 0,
+                adata.obs["Fraction_CpG_site_modified"],
+                adata.obs["Fraction_other_C_site_modified"],
+                out=np.full_like(adata.obs["Fraction_CpG_site_modified"], np.nan, dtype=float),
+                where=adata.obs["Fraction_other_C_site_modified"] != 0,
             )
 
         adata.obs["GpC_to_other_C_mod_ratio"] = gpc_to_c_ratio

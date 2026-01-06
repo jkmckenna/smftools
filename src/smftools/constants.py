@@ -1,6 +1,7 @@
 from __future__ import annotations
-from typing import Final, Mapping, Any, Dict
+
 from types import MappingProxyType
+from typing import Any, Dict, Final, Mapping
 
 
 ## Helpers ##

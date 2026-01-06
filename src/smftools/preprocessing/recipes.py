@@ -35,18 +35,16 @@ def recipe_1_Kissiov_and_McKenna_2025(
     Returns:
         variables (dict): A dictionary of variables to append to the parent scope.
     """
-    import anndata as ad
-    import pandas as pd
-    import numpy as np
-    from .load_sample_sheet import load_sample_sheet
-    from .calculate_coverage import calculate_coverage
+
     from .append_C_context import append_C_context
     from .calculate_converted_read_methylation_stats import (
         calculate_converted_read_methylation_stats,
     )
-    from .invert_adata import invert_adata
+    from .calculate_coverage import calculate_coverage
     from .calculate_read_length_stats import calculate_read_length_stats
     from .clean_NaN import clean_NaN
+    from .invert_adata import invert_adata
+    from .load_sample_sheet import load_sample_sheet
 
     # Clean up some of the Reference metadata and save variable names that point to sets of values in the column.
     adata.obs[reference_column] = adata.obs[reference_column].astype("category")
@@ -130,11 +128,9 @@ def recipe_2_Kissiov_and_McKenna_2025(
         filtered_adata (AnnData): An AnnData object containing the filtered reads
         duplicates (AnnData): An AnnData object containing the duplicate reads
     """
-    import anndata as ad
-    import pandas as pd
-    import numpy as np
-    from .mark_duplicates import mark_duplicates
+
     from .calculate_complexity import calculate_complexity
+    from .mark_duplicates import mark_duplicates
     from .remove_duplicates import remove_duplicates
 
     # Add here a way to remove reads below a given read quality (based on nan content). Need to also add a way to pull from BAM files the read quality from each read

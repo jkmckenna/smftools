@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-import copy
-import torch
+from typing import Any, List, Optional, Sequence, Tuple, Union
+
 import numpy as np
-from scipy.sparse import issparse
+import torch
 
 # FIX: import _to_dense_np to avoid NameError
-from ..hmm.HMM import create_hmm, _safe_int_coords, normalize_hmm_feature_sets, _to_dense_np
+from ..hmm.HMM import _safe_int_coords, _to_dense_np, create_hmm, normalize_hmm_feature_sets
 
 # =============================================================================
 # Helpers: extracting training arrays
@@ -56,25 +56,25 @@ def _resolve_pos_mask_for_methbase(subset, ref: str, methbase: str) -> Optional[
     if key in ("c", "any_c", "anyc", "any-c"):
         for col in (f"{ref}_any_C_site", f"{ref}_C_site"):
             if col in subset.var:
-                return np.asarray(subset.var[col] == True)
+                return np.asarray(subset.var[col])
         return None
 
     if key in ("gpc", "gpc_site", "gpc-site"):
         col = f"{ref}_GpC_site"
         if col not in subset.var:
             return None
-        return np.asarray(subset.var[col] == True)
+        return np.asarray(subset.var[col])
 
     if key in ("cpg", "cpg_site", "cpg-site"):
         col = f"{ref}_CpG_site"
         if col not in subset.var:
             return None
-        return np.asarray(subset.var[col] == True)
+        return np.asarray(subset.var[col])
 
     alt = f"{ref}_{methbase}_site"
     if alt not in subset.var:
         return None
-    return np.asarray(subset.var[alt] == True)
+    return np.asarray(subset.var[alt])
 
 
 def build_single_channel(
@@ -264,7 +264,9 @@ class HMMTrainer:
 
     def _path(self, kind: str, sample: str, ref: str, label: str) -> Path:
         # kind: "GLOBAL" | "PER" | "ADAPT"
-        safe = lambda s: str(s).replace("/", "_")
+        def safe(s):
+            str(s).replace("/", "_")
+
         return self.models_dir / f"{kind}_{safe(sample)}_{safe(ref)}_{safe(label)}.pt"
 
     def _save(self, model, path: Path):
@@ -408,10 +410,10 @@ def hmm_adata(config_path: str):
     - Call hmm_adata_core(cfg, adata, paths)
     """
     from ..readwrite import safe_read_h5ad
+    from .helpers import get_adata_paths
     from .load_adata import load_adata
     from .preprocess_adata import preprocess_adata
     from .spatial_adata import spatial_adata
-    from .helpers import get_adata_paths
 
     # 1) load cfg / stage paths
     _, _, cfg = load_adata(config_path)
@@ -462,21 +464,16 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
     Does NOT decide which h5ad to start from – that is the wrapper's job.
     """
 
-    import os
-    import warnings
-
     import numpy as np
 
-    from scipy.sparse import issparse
-
-    from ..readwrite import safe_write_h5ad, make_dirs, add_or_update_column_in_csv
-    from .helpers import write_gz_h5ad
     from ..hmm import call_hmm_peaks
     from ..plotting import (
         combined_hmm_raw_clustermap,
         plot_hmm_layers_rolling_by_sample_ref,
         plot_hmm_size_contours,
     )
+    from ..readwrite import make_dirs
+    from .helpers import write_gz_h5ad
 
     smf_modality = cfg.smf_modality
     deaminase = smf_modality == "deaminase"
@@ -774,9 +771,9 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
             hmm_layers = list(adata.uns.get("hmm_appended_layers", []) or [])
             # keep only real feature layers; drop lengths/states/posterior
             hmm_layers = [
-                l
-                for l in hmm_layers
-                if not any(s in l for s in ("_lengths", "_states", "_posterior"))
+                layer
+                for layer in hmm_layers
+                if not any(s in layer for s in ("_lengths", "_states", "_posterior"))
             ]
             print(f"HMM appended layers: {hmm_layers}")
 
@@ -805,7 +802,6 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
     ########################################################################################################################
 
     ############################################### HMM based feature plotting ###############################################
-    from ..plotting import combined_hmm_raw_clustermap
 
     hmm_dir = pp_dir / "12_hmm_clustermaps"
     make_dirs([pp_dir, hmm_dir])
@@ -873,7 +869,9 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
         from ..plotting import plot_hmm_layers_rolling_by_sample_ref
 
         bulk_hmm_layers = [
-            l for l in hmm_layers if not any(s in l for s in ("_lengths", "_states", "_posterior"))
+            layer
+            for layer in hmm_layers
+            if not any(s in layer for s in ("_lengths", "_states", "_posterior"))
         ]
         saved = plot_hmm_layers_rolling_by_sample_ref(
             adata,

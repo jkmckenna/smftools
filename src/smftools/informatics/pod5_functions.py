@@ -1,13 +1,13 @@
-from ..config import LoadExperimentConfig
-from ..readwrite import make_dirs
-
 import os
 import subprocess
 from pathlib import Path
+from typing import List, Union
 
 import pod5 as p5
 
-from typing import Union, List
+from ..config import LoadExperimentConfig
+from ..informatics.basecalling import canoncall, modcall
+from ..readwrite import make_dirs
 
 
 def basecall_pod5s(config_path):
@@ -172,7 +172,7 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
         print("Error: pod5_path passed does not exist")
         return None
 
-    if type(read_name_path) == str:
+    if type(read_name_path) is str:
         input_read_name_base = os.path.basename(read_name_path)
         output_base = (
             input_pod5_base.split(".pod5")[0]
@@ -195,7 +195,7 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
                         for read_record in reader.reads(selection=read_names, missing_ok=True):
                             read_records.append(read_record.to_read())
                             print(f"Found read in {input_pod5}: {read_record.read_id}")
-                    except:
+                    except Exception:
                         print("Skipping pod5, could not find reads")
         else:
             with p5.Reader(pod5_path) as reader:
@@ -203,10 +203,10 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
                     for read_record in reader.reads(selection=read_names):
                         read_records.append(read_record.to_read())
                         print(f"Found read in {input_pod5}: {read_record}")
-                except:
+                except Exception:
                     print("Could not find reads")
 
-    elif type(read_name_path) == int:
+    elif type(read_name_path) is int:
         import random
 
         output_base = (

@@ -1,3 +1,38 @@
+import warnings
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+# optional imports
+try:
+    from joblib import Parallel, delayed
+
+    JOBLIB_AVAILABLE = True
+except Exception:
+    JOBLIB_AVAILABLE = False
+
+try:
+    from scipy.stats import chi2_contingency
+
+    SCIPY_STATS_AVAILABLE = True
+except Exception:
+    SCIPY_STATS_AVAILABLE = False
+
+# -----------------------------
+# Compute positionwise statistic (multi-method + simple site_types)
+# -----------------------------
+import os
+from contextlib import contextmanager
+from itertools import cycle
+
+import joblib
+from joblib import Parallel, cpu_count, delayed
+from scipy.stats import chi2_contingency
+from tqdm import tqdm
+
+
 # ------------------------- Utilities -------------------------
 def random_fill_nans(X):
     import numpy as np
@@ -125,47 +160,6 @@ def calculate_relative_risk_on_activity(adata, sites, alpha=0.05, groupby=None):
             results_dict[ref][group] = (results_df, sig_df)
 
     return results_dict
-
-
-import copy
-import warnings
-from typing import Dict, Any, List, Optional, Tuple, Union
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-
-# optional imports
-try:
-    from joblib import Parallel, delayed
-
-    JOBLIB_AVAILABLE = True
-except Exception:
-    JOBLIB_AVAILABLE = False
-
-try:
-    from scipy.stats import chi2_contingency
-
-    SCIPY_STATS_AVAILABLE = True
-except Exception:
-    SCIPY_STATS_AVAILABLE = False
-
-# -----------------------------
-# Compute positionwise statistic (multi-method + simple site_types)
-# -----------------------------
-import numpy as np
-import pandas as pd
-from typing import List, Optional, Sequence, Dict, Any, Tuple
-from contextlib import contextmanager
-from joblib import Parallel, delayed, cpu_count
-import joblib
-from tqdm import tqdm
-from scipy.stats import chi2_contingency
-import warnings
-import matplotlib.pyplot as plt
-from itertools import cycle
-import os
-import warnings
 
 
 # ---------------------------

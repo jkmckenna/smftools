@@ -1,7 +1,7 @@
-import torch
-import pandas as pd
 import numpy as np
-from pytorch_lightning import Trainer
+import pandas as pd
+import torch
+
 from .inference_utils import annotate_split_column
 
 

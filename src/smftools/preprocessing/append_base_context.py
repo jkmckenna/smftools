@@ -23,7 +23,6 @@ def append_base_context(
         None
     """
     import numpy as np
-    import anndata as ad
 
     # Only run if not already performed
     already = bool(adata.uns.get(uns_flag, False))
@@ -126,23 +125,21 @@ def append_base_context(
                 )
                 if native:
                     adata.obsm[f"{ref}_{site_type}_valid_coverage"] = adata[
-                        :, adata.var[f"{ref}_{site_type}_valid_coverage"] == True
+                        :, adata.var[f"{ref}_{site_type}_valid_coverage"]
                     ].layers["binarized_methylation"]
                 else:
                     adata.obsm[f"{ref}_{site_type}_valid_coverage"] = adata[
-                        :, adata.var[f"{ref}_{site_type}_valid_coverage"] == True
+                        :, adata.var[f"{ref}_{site_type}_valid_coverage"]
                     ].X
             else:
                 pass
 
             if native:
-                adata.obsm[f"{ref}_{site_type}"] = adata[
-                    :, adata.var[f"{ref}_{site_type}"] == True
-                ].layers["binarized_methylation"]
+                adata.obsm[f"{ref}_{site_type}"] = adata[:, adata.var[f"{ref}_{site_type}"]].layers[
+                    "binarized_methylation"
+                ]
             else:
-                adata.obsm[f"{ref}_{site_type}"] = adata[
-                    :, adata.var[f"{ref}_{site_type}"] == True
-                ].X
+                adata.obsm[f"{ref}_{site_type}"] = adata[:, adata.var[f"{ref}_{site_type}"]].X
 
     # mark as done
     adata.uns[uns_flag] = True

@@ -15,7 +15,6 @@ def calculate_read_length_stats(adata, reference_column="", sample_names_col="")
         lower_bound (int): first valid position in the dataset
     """
     import numpy as np
-    import anndata as ad
     import pandas as pd
 
     print("Calculating read length statistics")

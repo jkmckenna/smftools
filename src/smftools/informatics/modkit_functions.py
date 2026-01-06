@@ -1,8 +1,4 @@
-import os
 import subprocess
-import glob
-import zipfile
-from pathlib import Path
 
 
 def extract_mods(
@@ -115,7 +111,6 @@ def make_modbed(aligned_sorted_output, thresholds, mod_bed_dir):
     Returns:
         None
     """
-    import os
     import subprocess
 
     filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold = thresholds

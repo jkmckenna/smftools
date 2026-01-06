@@ -9,8 +9,9 @@ def run_multiqc(input_dir, output_dir):
     Returns:
     - None: The function executes MultiQC and prints the status.
     """
-    from ..readwrite import make_dirs
     import subprocess
+
+    from ..readwrite import make_dirs
 
     # Ensure the output directory exists
     make_dirs(output_dir)

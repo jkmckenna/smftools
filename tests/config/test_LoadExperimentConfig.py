@@ -1,7 +1,8 @@
 ## test_LoadExperimentConfig
 
+from importlib.resources import as_file, files
+
 import pytest
-from importlib.resources import files, as_file
 
 from smftools.config.experiment_config import LoadExperimentConfig
 

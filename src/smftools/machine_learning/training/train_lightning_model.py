@@ -1,6 +1,7 @@
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+
 from ..data import AnnDataModule
 from ..models import TorchClassifierWrapper
 

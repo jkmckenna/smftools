@@ -7,9 +7,10 @@ def calculate_umap(
     overwrite=True,
     threads=8,
 ):
-    import scanpy as sc
-    import numpy as np
     import os
+
+    import numpy as np
+    import scanpy as sc
     from scipy.sparse import issparse
 
     os.environ["OMP_NUM_THREADS"] = str(threads)
@@ -67,6 +68,6 @@ def calculate_umap(
 
     adata.varm["PCs"] = pc_matrix
 
-    print(f"Stored: adata.obsm['X_pca'] and adata.obsm['X_umap']")
+    print("Stored: adata.obsm['X_pca'] and adata.obsm['X_umap']")
 
     return adata
