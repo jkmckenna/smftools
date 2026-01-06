@@ -8,7 +8,7 @@ def reindex_references_adata(
 ):
     """
     Reindex genomic coordinates by adding per-reference offsets.
-    
+
     BEHAVIOR:
       - If offsets is None or empty, or a reference is missing from offsets,
         create a reindex column for that reference that simply copies var_names.
@@ -44,9 +44,7 @@ def reindex_references_adata(
     # 3. Gather all references
     # ============================================================
     ref_series = adata.obs[reference_col]
-    references = (
-        ref_series.cat.categories if hasattr(ref_series, "cat") else ref_series.unique()
-    )
+    references = ref_series.cat.categories if hasattr(ref_series, "cat") else ref_series.unique()
 
     # ============================================================
     # 4. Create reindexed columns

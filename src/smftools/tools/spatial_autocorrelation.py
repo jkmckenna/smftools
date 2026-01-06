@@ -2,18 +2,20 @@
 import pandas as pd
 import numpy as np
 
+
 def random_fill_nans(X):
     nan_mask = np.isnan(X)
     X[nan_mask] = np.random.rand(*X[nan_mask].shape)
     return X
 
+
 def binary_autocorrelation_with_spacing(
-    row, 
-    positions, 
-    max_lag=1000, 
+    row,
+    positions,
+    max_lag=1000,
     assume_sorted=True,
-    normalize: str = "sum", 
-    return_counts: bool = False
+    normalize: str = "sum",
+    return_counts: bool = False,
 ):
     """
     Fast autocorrelation over real genomic spacing.
@@ -82,12 +84,12 @@ def binary_autocorrelation_with_spacing(
             j += 1
         # consider pairs (i, i+1...j-1)
         if j - i > 1:
-            diffs = pos[i+1:j] - pos[i]                 # 1..max_lag
-            contrib = xc[i] * xc[i+1:j]                 # contributions for each pair
+            diffs = pos[i + 1 : j] - pos[i]  # 1..max_lag
+            contrib = xc[i] * xc[i + 1 : j]  # contributions for each pair
             # accumulate weighted sums and counts per lag
             # bincount returns length >= max(diffs)+1; we request minlength
-            bc_vals = np.bincount(diffs, weights=contrib, minlength=max_lag+1)[:max_lag+1]
-            bc_counts = np.bincount(diffs, minlength=max_lag+1)[:max_lag+1]
+            bc_vals = np.bincount(diffs, weights=contrib, minlength=max_lag + 1)[: max_lag + 1]
+            bc_counts = np.bincount(diffs, minlength=max_lag + 1)[: max_lag + 1]
             lag_sums += bc_vals
             lag_counts += bc_counts
 
@@ -118,9 +120,11 @@ from numpy.fft import rfft, rfftfreq
 # optionally use scipy for find_peaks (more robust)
 try:
     from scipy.signal import find_peaks
+
     _have_scipy = True
 except Exception:
     _have_scipy = False
+
 
 # ---------- helpers ----------
 def weighted_mean_autocorr(ac_matrix, counts_matrix, min_count=20):
@@ -138,6 +142,7 @@ def weighted_mean_autocorr(ac_matrix, counts_matrix, min_count=20):
     mean_ac[counts_total < min_count] = np.nan
     return mean_ac, counts_total
 
+
 def psd_from_autocorr(mean_ac, lags, pad_factor=4):
     n = len(mean_ac)
     pad_n = int(max(2**10, pad_factor * n))  # pad to at least some min to stabilize FFT res
@@ -149,7 +154,8 @@ def psd_from_autocorr(mean_ac, lags, pad_factor=4):
     freqs = rfftfreq(pad_n, d=df)
     return freqs, power
 
-def find_peak_in_nrl_band(freqs, power, nrl_search_bp=(120,260), prominence_frac=0.05):
+
+def find_peak_in_nrl_band(freqs, power, nrl_search_bp=(120, 260), prominence_frac=0.05):
     fmin = 1.0 / nrl_search_bp[1]
     fmax = 1.0 / nrl_search_bp[0]
     band_mask = (freqs >= fmin) & (freqs <= fmax)
@@ -170,6 +176,7 @@ def find_peak_in_nrl_band(freqs, power, nrl_search_bp=(120,260), prominence_frac
     idx = band_indices[rel]
     return freqs[idx], idx
 
+
 def fwhm_freq_to_bp(freqs, power, peak_idx):
     # find half power
     pk = power[peak_idx]
@@ -182,39 +189,41 @@ def fwhm_freq_to_bp(freqs, power, peak_idx):
     if left == peak_idx:
         left_f = freqs[peak_idx]
     else:
-        x0, x1 = freqs[left], freqs[left+1]
-        y0, y1 = power[left], power[left+1]
-        left_f = x0 if y1 == y0 else x0 + (half - y0)*(x1-x0)/(y1-y0)
+        x0, x1 = freqs[left], freqs[left + 1]
+        y0, y1 = power[left], power[left + 1]
+        left_f = x0 if y1 == y0 else x0 + (half - y0) * (x1 - x0) / (y1 - y0)
     # move right
     right = peak_idx
-    while right < len(power)-1 and power[right] > half:
+    while right < len(power) - 1 and power[right] > half:
         right += 1
     if right == peak_idx:
         right_f = freqs[peak_idx]
     else:
-        x0, x1 = freqs[right-1], freqs[right]
-        y0, y1 = power[right-1], power[right]
-        right_f = x1 if y1 == y0 else x0 + (half - y0)*(x1-x0)/(y1-y0)
+        x0, x1 = freqs[right - 1], freqs[right]
+        y0, y1 = power[right - 1], power[right]
+        right_f = x1 if y1 == y0 else x0 + (half - y0) * (x1 - x0) / (y1 - y0)
     # convert to bp approximating delta_NRL = |1/left_f - 1/right_f|
     left_NRL = 1.0 / right_f if right_f > 0 else np.nan
     right_NRL = 1.0 / left_f if left_f > 0 else np.nan
     fwhm_bp = abs(left_NRL - right_NRL)
     return fwhm_bp, left_f, right_f
 
+
 def estimate_snr(power, peak_idx, exclude_bins=5):
     pk = power[peak_idx]
     mask = np.ones_like(power, dtype=bool)
-    lo = max(0, peak_idx-exclude_bins)
-    hi = min(len(power), peak_idx+exclude_bins+1)
+    lo = max(0, peak_idx - exclude_bins)
+    hi = min(len(power), peak_idx + exclude_bins + 1)
     mask[lo:hi] = False
     bg = power[mask]
     bg_med = np.median(bg) if bg.size else np.median(power)
     return pk / (bg_med if bg_med > 0 else np.finfo(float).eps), pk, bg_med
 
+
 def sample_autocorr_at_harmonics(mean_ac, lags, nrl_bp, max_harmonics=6):
     sample_lags = []
     heights = []
-    for m in range(1, max_harmonics+1):
+    for m in range(1, max_harmonics + 1):
         target = m * nrl_bp
         # stop if beyond observed lag range
         if target > lags[-1]:
@@ -227,6 +236,7 @@ def sample_autocorr_at_harmonics(mean_ac, lags, nrl_bp, max_harmonics=6):
         heights.append(h)
     return np.array(sample_lags), np.array(heights)
 
+
 def fit_exponential_envelope(sample_lags, heights, counts=None):
     # heights ~ A * exp(-lag / xi)
     mask = (heights > 0) & np.isfinite(heights)
@@ -238,7 +248,7 @@ def fit_exponential_envelope(sample_lags, heights, counts=None):
         w = np.ones_like(y)
     else:
         w = np.asarray(counts[mask], dtype=float)
-        w = w / (np.max(w) if np.max(w)>0 else 1.0)
+        w = w / (np.max(w) if np.max(w) > 0 else 1.0)
     # weighted linear regression y = b0 + b1 * x
     X = np.vstack([np.ones_like(x), x]).T
     W = np.diag(w)
@@ -253,47 +263,61 @@ def fit_exponential_envelope(sample_lags, heights, counts=None):
     xi = -1.0 / b1 if b1 < 0 else np.nan
     # R^2
     y_pred = X.dot(b)
-    ss_res = np.sum(w * (y - y_pred)**2)
-    ss_tot = np.sum(w * (y - np.average(y, weights=w))**2)
-    r2 = 1.0 - ss_res/ss_tot if ss_tot != 0 else np.nan
+    ss_res = np.sum(w * (y - y_pred) ** 2)
+    ss_tot = np.sum(w * (y - np.average(y, weights=w)) ** 2)
+    r2 = 1.0 - ss_res / ss_tot if ss_tot != 0 else np.nan
     return xi, A, b1, r2
 
+
 # ---------- main analysis per site_type ----------
-def analyze_autocorr_matrix(autocorr_matrix, counts_matrix, lags,
-                            nrl_search_bp=(120,260), pad_factor=4,
-                            min_count=20, max_harmonics=6):
+def analyze_autocorr_matrix(
+    autocorr_matrix,
+    counts_matrix,
+    lags,
+    nrl_search_bp=(120, 260),
+    pad_factor=4,
+    min_count=20,
+    max_harmonics=6,
+):
     """
     Return dict: nrl_bp, peak_power, fwhm_bp, snr, xi, envelope points, freqs, power, mean_ac
     """
-    mean_ac, counts_total = weighted_mean_autocorr(autocorr_matrix, counts_matrix, min_count=min_count)
+    mean_ac, counts_total = weighted_mean_autocorr(
+        autocorr_matrix, counts_matrix, min_count=min_count
+    )
     freqs, power = psd_from_autocorr(mean_ac, lags, pad_factor=pad_factor)
     f0, peak_idx = find_peak_in_nrl_band(freqs, power, nrl_search_bp=nrl_search_bp)
     if f0 is None:
-        return {"error":"no_peak_found", "mean_ac":mean_ac, "counts":counts_total}
+        return {"error": "no_peak_found", "mean_ac": mean_ac, "counts": counts_total}
     nrl_bp = 1.0 / f0
     fwhm_bp, left_f, right_f = fwhm_freq_to_bp(freqs, power, peak_idx)
     snr, peak_power, bg = estimate_snr(power, peak_idx)
-    sample_lags, heights = sample_autocorr_at_harmonics(mean_ac, lags, nrl_bp, max_harmonics=max_harmonics)
-    xi, A, slope, r2 = fit_exponential_envelope(sample_lags, heights) if heights.size else (np.nan,)*4
+    sample_lags, heights = sample_autocorr_at_harmonics(
+        mean_ac, lags, nrl_bp, max_harmonics=max_harmonics
+    )
+    xi, A, slope, r2 = (
+        fit_exponential_envelope(sample_lags, heights) if heights.size else (np.nan,) * 4
+    )
 
     return dict(
-        nrl_bp = nrl_bp,
-        f0 = f0,
-        peak_power = peak_power,
-        fwhm_bp = fwhm_bp,
-        snr = snr,
-        bg_median = bg,
-        envelope_sample_lags = sample_lags,
-        envelope_heights = heights,
-        xi = xi,
-        xi_A = A,
-        xi_slope = slope,
-        xi_r2 = r2,
-        freqs = freqs,
-        power = power,
-        mean_ac = mean_ac,
-        counts = counts_total
+        nrl_bp=nrl_bp,
+        f0=f0,
+        peak_power=peak_power,
+        fwhm_bp=fwhm_bp,
+        snr=snr,
+        bg_median=bg,
+        envelope_sample_lags=sample_lags,
+        envelope_heights=heights,
+        xi=xi,
+        xi_A=A,
+        xi_slope=slope,
+        xi_r2=r2,
+        freqs=freqs,
+        power=power,
+        mean_ac=mean_ac,
+        counts=counts_total,
     )
+
 
 # ---------- bootstrap wrapper ----------
 def bootstrap_periodicity(autocorr_matrix, counts_matrix, lags, n_boot=200, **kwargs):
@@ -302,20 +326,24 @@ def bootstrap_periodicity(autocorr_matrix, counts_matrix, lags, n_boot=200, **kw
     n = autocorr_matrix.shape[0]
     for _ in range(n_boot):
         sample_idx = rng.integers(0, n, size=n)
-        res = analyze_autocorr_matrix(autocorr_matrix[sample_idx], counts_matrix[sample_idx], lags, **kwargs)
+        res = analyze_autocorr_matrix(
+            autocorr_matrix[sample_idx], counts_matrix[sample_idx], lags, **kwargs
+        )
         metrics.append(res)
     # extract key fields robustly
     nrls = np.array([m.get("nrl_bp", np.nan) for m in metrics])
-    xis  = np.array([m.get("xi", np.nan) for m in metrics])
-    return {"nrl_boot":nrls, "xi_boot":xis, "metrics":metrics}
+    xis = np.array([m.get("xi", np.nan) for m in metrics])
+    return {"nrl_boot": nrls, "xi_boot": xis, "metrics": metrics}
 
 
 # optional parallel backend
 try:
     from joblib import Parallel, delayed
+
     _have_joblib = True
 except Exception:
     _have_joblib = False
+
 
 def rolling_autocorr_metrics(
     X,
@@ -333,7 +361,6 @@ def rolling_autocorr_metrics(
     verbose: bool = False,
     return_window_results: bool = False,
     fixed_nrl_bp: float = None,
-
 ):
     """
     Slide a genomic window across `positions` and compute periodicity metrics per window.
@@ -386,7 +413,9 @@ def rolling_autocorr_metrics(
         window_starts = list(range(start, end - window_size + 1, step))
 
     if verbose:
-        print(f"Rolling windows: {len(window_starts)} windows, window_size={window_size}, step={step}")
+        print(
+            f"Rolling windows: {len(window_starts)} windows, window_size={window_size}, step={step}"
+        )
 
     # helper to extract row to dense 1D np array (supports sparse rows)
     def _row_to_arr(row):
@@ -428,7 +457,9 @@ def rolling_autocorr_metrics(
                 continue
             # compute autocorr on the windowed template; positions are pos[mask_pos]
             try:
-                ac, cnts = binary_autocorrelation_with_spacing(subrow, pos[mask_pos], max_lag=max_lag, assume_sorted=True, return_counts=True)
+                ac, cnts = binary_autocorrelation_with_spacing(
+                    subrow, pos[mask_pos], max_lag=max_lag, assume_sorted=True, return_counts=True
+                )
             except Exception:
                 # if autocorr fails for this row, skip it
                 continue
@@ -460,7 +491,9 @@ def rolling_autocorr_metrics(
 
         # If a fixed global NRL is provided, compute metrics around that frequency
         if fixed_nrl_bp is not None:
-            freqs, power = psd_from_autocorr(mean_ac, np.arange(mean_ac.size), pad_factor=pad_factor)
+            freqs, power = psd_from_autocorr(
+                mean_ac, np.arange(mean_ac.size), pad_factor=pad_factor
+            )
             # locate nearest freq bin to target_freq
             target_f = 1.0 / float(fixed_nrl_bp)
             # mask valid freqs
@@ -477,28 +510,44 @@ def rolling_autocorr_metrics(
                 snr_val, _, bg = estimate_snr(power, peak_idx, exclude_bins=3)
                 # sample harmonics from mean_ac at integer-lag positions using fixed_nrl_bp
                 # note: lags array is integer 0..(mean_ac.size-1)
-                sample_lags, heights = sample_autocorr_at_harmonics(mean_ac, np.arange(mean_ac.size), fixed_nrl_bp, max_harmonics=max_harmonics)
-                xi, A, slope, r2 = fit_exponential_envelope(sample_lags, heights) if heights.size else (np.nan, np.nan, np.nan, np.nan)
+                sample_lags, heights = sample_autocorr_at_harmonics(
+                    mean_ac, np.arange(mean_ac.size), fixed_nrl_bp, max_harmonics=max_harmonics
+                )
+                xi, A, slope, r2 = (
+                    fit_exponential_envelope(sample_lags, heights)
+                    if heights.size
+                    else (np.nan, np.nan, np.nan, np.nan)
+                )
                 res = dict(
                     nrl_bp=float(fixed_nrl_bp),
                     f0=float(target_f),
                     peak_power=peak_power,
-                    fwhm_bp=np.nan,           # not robustly defined when using fixed freq (skip or compute small-band FWHM)
+                    fwhm_bp=np.nan,  # not robustly defined when using fixed freq (skip or compute small-band FWHM)
                     snr=float(snr_val),
                     bg_median=float(bg) if np.isfinite(bg) else np.nan,
                     envelope_sample_lags=sample_lags,
                     envelope_heights=heights,
-                    xi=xi, xi_A=A, xi_slope=slope, xi_r2=r2,
-                    freqs=freqs, power=power, mean_ac=mean_ac, counts=counts_total
+                    xi=xi,
+                    xi_A=A,
+                    xi_slope=slope,
+                    xi_r2=r2,
+                    freqs=freqs,
+                    power=power,
+                    mean_ac=mean_ac,
+                    counts=counts_total,
                 )
         else:
             # existing behavior: call analyzer_fn
             try:
-                res = analyze_autocorr_matrix(ac_mat, cnt_mat, np.arange(mean_ac.size),
-                                nrl_search_bp=nrl_search_bp,
-                                pad_factor=pad_factor,
-                                min_count=min_count_for_mean,
-                                max_harmonics=max_harmonics)
+                res = analyze_autocorr_matrix(
+                    ac_mat,
+                    cnt_mat,
+                    np.arange(mean_ac.size),
+                    nrl_search_bp=nrl_search_bp,
+                    pad_factor=pad_factor,
+                    min_count=min_count_for_mean,
+                    max_harmonics=max_harmonics,
+                )
             except Exception as e:
                 res = {"error": str(e)}
 
@@ -524,37 +573,43 @@ def rolling_autocorr_metrics(
         metrics = r["metrics"]
         window_results.append(metrics)
         if metrics is None or ("error" in metrics and metrics.get("error") == "no_peak_found"):
-            rows_out.append({
-                "site": r["site"],
-                "window_start": r["window_start"],
-                "window_end": r["window_end"],
-                "center": r["center"],
-                "n_molecules": r["n_molecules"],
-                "nrl_bp": np.nan,
-                "snr": np.nan,
-                "peak_power": np.nan,
-                "fwhm_bp": np.nan,
-                "xi": np.nan,
-                "xi_A": np.nan,
-                "xi_r2": np.nan,
-                "analyzer_error": (metrics.get("error") if isinstance(metrics, dict) else "no_metrics"),
-            })
+            rows_out.append(
+                {
+                    "site": r["site"],
+                    "window_start": r["window_start"],
+                    "window_end": r["window_end"],
+                    "center": r["center"],
+                    "n_molecules": r["n_molecules"],
+                    "nrl_bp": np.nan,
+                    "snr": np.nan,
+                    "peak_power": np.nan,
+                    "fwhm_bp": np.nan,
+                    "xi": np.nan,
+                    "xi_A": np.nan,
+                    "xi_r2": np.nan,
+                    "analyzer_error": (
+                        metrics.get("error") if isinstance(metrics, dict) else "no_metrics"
+                    ),
+                }
+            )
         else:
-            rows_out.append({
-                "site": r["site"],
-                "window_start": r["window_start"],
-                "window_end": r["window_end"],
-                "center": r["center"],
-                "n_molecules": r["n_molecules"],
-                "nrl_bp": float(metrics.get("nrl_bp", np.nan)),
-                "snr": float(metrics.get("snr", np.nan)),
-                "peak_power": float(metrics.get("peak_power", np.nan)),
-                "fwhm_bp": float(metrics.get("fwhm_bp", np.nan)),
-                "xi": float(metrics.get("xi", np.nan)),
-                "xi_A": float(metrics.get("xi_A", np.nan)),
-                "xi_r2": float(metrics.get("xi_r2", np.nan)),
-                "analyzer_error": None,
-            })
+            rows_out.append(
+                {
+                    "site": r["site"],
+                    "window_start": r["window_start"],
+                    "window_end": r["window_end"],
+                    "center": r["center"],
+                    "n_molecules": r["n_molecules"],
+                    "nrl_bp": float(metrics.get("nrl_bp", np.nan)),
+                    "snr": float(metrics.get("snr", np.nan)),
+                    "peak_power": float(metrics.get("peak_power", np.nan)),
+                    "fwhm_bp": float(metrics.get("fwhm_bp", np.nan)),
+                    "xi": float(metrics.get("xi", np.nan)),
+                    "xi_A": float(metrics.get("xi_A", np.nan)),
+                    "xi_r2": float(metrics.get("xi_r2", np.nan)),
+                    "analyzer_error": None,
+                }
+            )
 
     df = pd.DataFrame(rows_out)
     if return_window_results:

@@ -4,14 +4,8 @@ import numpy as np
 from pytorch_lightning import Trainer
 from .inference_utils import annotate_split_column
 
-def run_lightning_inference(
-    adata,
-    model,
-    datamodule,
-    trainer,
-    prefix="model",
-    devices=1
-):
+
+def run_lightning_inference(adata, model, datamodule, trainer, prefix="model", devices=1):
     """
     Run inference on AnnData using TorchClassifierWrapper + AnnDataModule (in inference mode).
     """
@@ -57,7 +51,9 @@ def run_lightning_inference(
     full_prefix = f"{prefix}_{label_col}"
 
     adata.obs[f"{full_prefix}_pred"] = pred_class_idx
-    adata.obs[f"{full_prefix}_pred_label"] = pd.Categorical(pred_class_labels, categories=class_labels)
+    adata.obs[f"{full_prefix}_pred_label"] = pd.Categorical(
+        pred_class_labels, categories=class_labels
+    )
     adata.obs[f"{full_prefix}_pred_prob"] = pred_class_probs
 
     for i, class_name in enumerate(class_labels):

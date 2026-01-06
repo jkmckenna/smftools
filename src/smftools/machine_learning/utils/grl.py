@@ -1,5 +1,6 @@
 import torch
 
+
 class GradReverse(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, alpha):
@@ -9,6 +10,7 @@ class GradReverse(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         return -ctx.alpha * grad_output, None
+
 
 def grad_reverse(x, alpha=1.0):
     return GradReverse.apply(x, alpha)

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class ScaledModel(nn.Module):
     def __init__(self, model, mean, std):
         super().__init__()

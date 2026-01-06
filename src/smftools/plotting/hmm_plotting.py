@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
+
 def plot_hmm_size_contours(
     adata,
     length_layer: str,
@@ -36,6 +37,7 @@ def plot_hmm_size_contours(
 
     Other args are the same as prior function.
     """
+
     # --- helper: gaussian smoothing (scipy fallback -> numpy separable conv) ---
     def _gaussian_1d_kernel(sigma: float, eps: float = 1e-12):
         if sigma <= 0 or sigma is None:
@@ -43,25 +45,31 @@ def plot_hmm_size_contours(
         # choose kernel size = odd ~ 6*sigma (covers +/-3 sigma)
         radius = max(1, int(math.ceil(3.0 * float(sigma))))
         xs = np.arange(-radius, radius + 1, dtype=float)
-        k = np.exp(-(xs ** 2) / (2.0 * sigma ** 2))
+        k = np.exp(-(xs**2) / (2.0 * sigma**2))
         k_sum = k.sum()
         if k_sum <= eps:
             k = np.array([1.0], dtype=float)
             k_sum = 1.0
         return k / k_sum
 
-    def _smooth_with_numpy_separable(Z: np.ndarray, sigma_len: float, sigma_pos: float) -> np.ndarray:
+    def _smooth_with_numpy_separable(
+        Z: np.ndarray, sigma_len: float, sigma_pos: float
+    ) -> np.ndarray:
         # Z shape: (n_lengths, n_positions)
         out = Z.copy()
         # smooth along length axis (axis=0)
         if sigma_len and sigma_len > 0:
             k_len = _gaussian_1d_kernel(sigma_len)
             # convolve each column
-            out = np.apply_along_axis(lambda col: np.convolve(col, k_len, mode="same"), axis=0, arr=out)
+            out = np.apply_along_axis(
+                lambda col: np.convolve(col, k_len, mode="same"), axis=0, arr=out
+            )
         # smooth along position axis (axis=1)
         if sigma_pos and sigma_pos > 0:
             k_pos = _gaussian_1d_kernel(sigma_pos)
-            out = np.apply_along_axis(lambda row: np.convolve(row, k_pos, mode="same"), axis=1, arr=out)
+            out = np.apply_along_axis(
+                lambda row: np.convolve(row, k_pos, mode="same"), axis=1, arr=out
+            )
         return out
 
     # prefer scipy.ndimage if available (faster and better boundary handling)
@@ -69,6 +77,7 @@ def plot_hmm_size_contours(
     if use_scipy_if_available:
         try:
             from scipy.ndimage import gaussian_filter as _scipy_gaussian_filter
+
             _have_scipy = True
         except Exception:
             _have_scipy = False
@@ -84,8 +93,16 @@ def plot_hmm_size_contours(
             return _smooth_with_numpy_separable(Z, float(sigma_len or 0.0), float(sigma_pos or 0.0))
 
     # --- gather unique ordered labels ---
-    samples = list(adata.obs[sample_col].cat.categories) if getattr(adata.obs[sample_col], "dtype", None) == "category" else list(pd.Categorical(adata.obs[sample_col]).categories)
-    refs = list(adata.obs[ref_obs_col].cat.categories) if getattr(adata.obs[ref_obs_col], "dtype", None) == "category" else list(pd.Categorical(adata.obs[ref_obs_col]).categories)
+    samples = (
+        list(adata.obs[sample_col].cat.categories)
+        if getattr(adata.obs[sample_col], "dtype", None) == "category"
+        else list(pd.Categorical(adata.obs[sample_col]).categories)
+    )
+    refs = (
+        list(adata.obs[ref_obs_col].cat.categories)
+        if getattr(adata.obs[ref_obs_col], "dtype", None) == "category"
+        else list(pd.Categorical(adata.obs[ref_obs_col]).categories)
+    )
 
     n_samples = len(samples)
     n_refs = len(refs)
@@ -146,7 +163,7 @@ def plot_hmm_size_contours(
         fig_w = n_refs * figsize_per_cell[0]
         fig_h = rows_on_page * figsize_per_cell[1]
         fig, axes = plt.subplots(rows_on_page, n_refs, figsize=(fig_w, fig_h), squeeze=False)
-        fig.suptitle(f"HMM size contours (page {p+1}/{pages})", fontsize=12)
+        fig.suptitle(f"HMM size contours (page {p + 1}/{pages})", fontsize=12)
 
         # for each panel compute p(length | position)
         for i_row, sample in enumerate(page_samples):
@@ -160,7 +177,9 @@ def plot_hmm_size_contours(
                     ax.set_title(f"{sample} / {ref}")
                     continue
 
-                row_idx = np.nonzero(panel_mask.values if hasattr(panel_mask, "values") else np.asarray(panel_mask))[0]
+                row_idx = np.nonzero(
+                    panel_mask.values if hasattr(panel_mask, "values") else np.asarray(panel_mask)
+                )[0]
                 if row_idx.size == 0:
                     ax.text(0.5, 0.5, "no reads", ha="center", va="center")
                     ax.set_title(f"{sample} / {ref}")
@@ -178,7 +197,9 @@ def plot_hmm_size_contours(
                 max_len_here = min(max_len, max_len_local)
 
                 lengths_range = np.arange(1, max_len_here + 1, dtype=int)
-                Z = np.zeros((len(lengths_range), n_positions), dtype=float)  # rows=length, cols=pos
+                Z = np.zeros(
+                    (len(lengths_range), n_positions), dtype=float
+                )  # rows=length, cols=pos
 
                 # fill Z by efficient bincount across columns
                 for j in range(n_positions):
@@ -222,7 +243,9 @@ def plot_hmm_size_contours(
                 dy = 1.0
                 y_edges = np.concatenate([y - 0.5, [y[-1] + 0.5]])
 
-                pcm = ax.pcolormesh(x_edges, y_edges, Z_plot, cmap=cmap, shading="auto", vmin=vmin, vmax=vmax)
+                pcm = ax.pcolormesh(
+                    x_edges, y_edges, Z_plot, cmap=cmap, shading="auto", vmin=vmin, vmax=vmax
+                )
                 ax.set_title(f"{sample} / {ref}")
                 ax.set_ylabel("length")
                 if i_row == rows_on_page - 1:
@@ -243,9 +266,10 @@ def plot_hmm_size_contours(
         # saving per page if requested
         if save_path is not None:
             import os
+
             os.makedirs(save_path, exist_ok=True)
             if save_each_page:
-                fname = f"hmm_size_page_{p+1:03d}.png"
+                fname = f"hmm_size_page_{p + 1:03d}.png"
                 out = os.path.join(save_path, fname)
                 fig.savefig(out, dpi=dpi, bbox_inches="tight")
 

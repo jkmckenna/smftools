@@ -1,15 +1,16 @@
-def calculate_read_modification_stats(adata, 
-                                      reference_column, 
-                                      sample_names_col, 
-                                      mod_target_bases,
-                                      uns_flag="calculate_read_modification_stats_performed",
-                                      bypass=False,
-                                      force_redo=False,
-                                      valid_sites_only=False,
-                                      valid_site_suffix="_valid_coverage",
+def calculate_read_modification_stats(
+    adata,
+    reference_column,
+    sample_names_col,
+    mod_target_bases,
+    uns_flag="calculate_read_modification_stats_performed",
+    bypass=False,
+    force_redo=False,
+    valid_sites_only=False,
+    valid_site_suffix="_valid_coverage",
 ):
     """
-    Adds methylation/deamination statistics for each read. 
+    Adds methylation/deamination statistics for each read.
     Indicates the read GpC and CpG methylation ratio to other_C methylation (background false positive metric for Cytosine MTase SMF).
 
     Parameters:
@@ -19,7 +20,7 @@ def calculate_read_modification_stats(adata,
         mod_target_bases:
 
     Returns:
-        None 
+        None
     """
     import numpy as np
     import anndata as ad
@@ -40,34 +41,41 @@ def calculate_read_modification_stats(adata,
         # QC already performed; nothing to do
         return
 
-    print('Calculating read level Modification statistics')
+    print("Calculating read level Modification statistics")
 
     references = set(adata.obs[reference_column])
     sample_names = set(adata.obs[sample_names_col])
     site_types = []
 
-    if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
-        site_types += ['GpC_site', 'CpG_site', 'ambiguous_GpC_CpG_site', 'other_C_site', 'C_site']
-    
-    if 'A' in mod_target_bases:
-        site_types += ['A_site']
+    if any(base in mod_target_bases for base in ["GpC", "CpG", "C"]):
+        site_types += ["GpC_site", "CpG_site", "ambiguous_GpC_CpG_site", "other_C_site", "C_site"]
+
+    if "A" in mod_target_bases:
+        site_types += ["A_site"]
 
     for site_type in site_types:
-        adata.obs[f'Modified_{site_type}_count'] = pd.Series(0, index=adata.obs_names, dtype=int)
-        adata.obs[f'Total_{site_type}_in_read'] = pd.Series(0, index=adata.obs_names, dtype=int)
-        adata.obs[f'Fraction_{site_type}_modified'] = pd.Series(np.nan, index=adata.obs_names, dtype=float)
-        adata.obs[f'Total_{site_type}_in_reference'] = pd.Series(np.nan, index=adata.obs_names, dtype=int)
-        adata.obs[f'Valid_{site_type}_in_read_vs_reference'] = pd.Series(np.nan, index=adata.obs_names, dtype=float)
-
+        adata.obs[f"Modified_{site_type}_count"] = pd.Series(0, index=adata.obs_names, dtype=int)
+        adata.obs[f"Total_{site_type}_in_read"] = pd.Series(0, index=adata.obs_names, dtype=int)
+        adata.obs[f"Fraction_{site_type}_modified"] = pd.Series(
+            np.nan, index=adata.obs_names, dtype=float
+        )
+        adata.obs[f"Total_{site_type}_in_reference"] = pd.Series(
+            np.nan, index=adata.obs_names, dtype=int
+        )
+        adata.obs[f"Valid_{site_type}_in_read_vs_reference"] = pd.Series(
+            np.nan, index=adata.obs_names, dtype=float
+        )
 
     for ref in references:
         ref_subset = adata[adata.obs[reference_column] == ref]
         for site_type in site_types:
-            print(f'Iterating over {ref}_{site_type}')
-            observation_matrix = ref_subset.obsm[f'{ref}_{site_type}{valid_site_suffix}']
+            print(f"Iterating over {ref}_{site_type}")
+            observation_matrix = ref_subset.obsm[f"{ref}_{site_type}{valid_site_suffix}"]
             total_positions_in_read = np.nansum(~np.isnan(observation_matrix), axis=1)
             total_positions_in_reference = observation_matrix.shape[1]
-            fraction_valid_positions_in_read_vs_ref = total_positions_in_read / total_positions_in_reference
+            fraction_valid_positions_in_read_vs_ref = (
+                total_positions_in_read / total_positions_in_reference
+            )
             number_mods_in_read = np.nansum(observation_matrix, axis=1)
             fraction_modified = number_mods_in_read / total_positions_in_read
 
@@ -75,36 +83,40 @@ def calculate_read_modification_stats(adata,
                 number_mods_in_read,
                 total_positions_in_read,
                 out=np.full_like(number_mods_in_read, np.nan, dtype=float),
-                where=total_positions_in_read != 0
+                where=total_positions_in_read != 0,
             )
 
-            temp_obs_data = pd.DataFrame({f'Total_{site_type}_in_read': total_positions_in_read,
-                                        f'Modified_{site_type}_count': number_mods_in_read,
-                                        f'Fraction_{site_type}_modified': fraction_modified,
-                                        f'Total_{site_type}_in_reference': total_positions_in_reference,
-                                        f'Valid_{site_type}_in_read_vs_reference': fraction_valid_positions_in_read_vs_ref}, 
-                                        index=ref_subset.obs.index)
-            
+            temp_obs_data = pd.DataFrame(
+                {
+                    f"Total_{site_type}_in_read": total_positions_in_read,
+                    f"Modified_{site_type}_count": number_mods_in_read,
+                    f"Fraction_{site_type}_modified": fraction_modified,
+                    f"Total_{site_type}_in_reference": total_positions_in_reference,
+                    f"Valid_{site_type}_in_read_vs_reference": fraction_valid_positions_in_read_vs_ref,
+                },
+                index=ref_subset.obs.index,
+            )
+
             adata.obs.update(temp_obs_data)
 
-    if any(base in mod_target_bases for base in ['GpC', 'CpG', 'C']):
-        with np.errstate(divide='ignore', invalid='ignore'):
+    if any(base in mod_target_bases for base in ["GpC", "CpG", "C"]):
+        with np.errstate(divide="ignore", invalid="ignore"):
             gpc_to_c_ratio = np.divide(
-                adata.obs[f'Fraction_GpC_site_modified'],
-                adata.obs[f'Fraction_other_C_site_modified'],
-                out=np.full_like(adata.obs[f'Fraction_GpC_site_modified'], np.nan, dtype=float),
-                where=adata.obs[f'Fraction_other_C_site_modified'] != 0
+                adata.obs[f"Fraction_GpC_site_modified"],
+                adata.obs[f"Fraction_other_C_site_modified"],
+                out=np.full_like(adata.obs[f"Fraction_GpC_site_modified"], np.nan, dtype=float),
+                where=adata.obs[f"Fraction_other_C_site_modified"] != 0,
             )
 
             cpg_to_c_ratio = np.divide(
-                adata.obs[f'Fraction_CpG_site_modified'],
-                adata.obs[f'Fraction_other_C_site_modified'],
-                out=np.full_like(adata.obs[f'Fraction_CpG_site_modified'], np.nan, dtype=float),
-                where=adata.obs[f'Fraction_other_C_site_modified'] != 0
-                )
-            
-        adata.obs['GpC_to_other_C_mod_ratio'] = gpc_to_c_ratio
-        adata.obs['CpG_to_other_C_mod_ratio'] = cpg_to_c_ratio
+                adata.obs[f"Fraction_CpG_site_modified"],
+                adata.obs[f"Fraction_other_C_site_modified"],
+                out=np.full_like(adata.obs[f"Fraction_CpG_site_modified"], np.nan, dtype=float),
+                where=adata.obs[f"Fraction_other_C_site_modified"] != 0,
+            )
+
+        adata.obs["GpC_to_other_C_mod_ratio"] = gpc_to_c_ratio
+        adata.obs["CpG_to_other_C_mod_ratio"] = cpg_to_c_ratio
 
     # mark as done
     adata.uns[uns_flag] = True

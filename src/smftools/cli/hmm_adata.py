@@ -15,7 +15,10 @@ from ..hmm.HMM import create_hmm, _safe_int_coords, normalize_hmm_feature_sets, 
 # Helpers: extracting training arrays
 # =============================================================================
 
-def _get_training_matrix(subset, cols_mask: np.ndarray, smf_modality: Optional[str], cfg) -> Tuple[np.ndarray, Optional[str]]:
+
+def _get_training_matrix(
+    subset, cols_mask: np.ndarray, smf_modality: Optional[str], cfg
+) -> Tuple[np.ndarray, Optional[str]]:
     """
     Matches your existing behavior:
       - direct -> uses cfg.output_binary_layer_name in .layers
@@ -74,7 +77,9 @@ def _resolve_pos_mask_for_methbase(subset, ref: str, methbase: str) -> Optional[
     return np.asarray(subset.var[alt] == True)
 
 
-def build_single_channel(subset, ref: str, methbase: str, smf_modality: Optional[str], cfg) -> Tuple[np.ndarray, np.ndarray]:
+def build_single_channel(
+    subset, ref: str, methbase: str, smf_modality: Optional[str], cfg
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Returns:
       X     (N, Lmb) float with NaNs allowed
@@ -88,7 +93,9 @@ def build_single_channel(subset, ref: str, methbase: str, smf_modality: Optional
     return X, coords
 
 
-def build_multi_channel_union(subset, ref: str, methbases: Sequence[str], smf_modality: Optional[str], cfg) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+def build_multi_channel_union(
+    subset, ref: str, methbases: Sequence[str], smf_modality: Optional[str], cfg
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Build (N, Lunion, C) on union coordinate grid across methbases.
 
@@ -126,12 +133,13 @@ def build_multi_channel_union(subset, ref: str, methbases: Sequence[str], smf_mo
     used = [mb for (mb, _, _, _) in per]
     return X3, coords, used
 
+
 @dataclass
 class HMMTask:
     name: str
-    signals: List[str]                  # e.g. ["GpC"] or ["GpC","CpG"] or ["CpG"]
-    feature_groups: List[str]           # e.g. ["footprint","accessible"] or ["cpg"]
-    output_prefix: Optional[str] = None # force prefix (CpG task uses "CpG")
+    signals: List[str]  # e.g. ["GpC"] or ["GpC","CpG"] or ["CpG"]
+    feature_groups: List[str]  # e.g. ["footprint","accessible"] or ["cpg"]
+    output_prefix: Optional[str] = None  # force prefix (CpG task uses "CpG")
 
 
 def build_hmm_tasks(cfg: Union[dict, Any]) -> List[HMMTask]:
@@ -211,7 +219,9 @@ def _ensure_layer_and_assign_rows(adata, layer_name: str, row_mask: np.ndarray, 
 
     arr = _to_dense_np(subset_layer)
     if arr.shape != (int(row_mask.sum()), adata.n_vars):
-        raise ValueError(f"subset layer '{layer_name}' shape {arr.shape} != ({int(row_mask.sum())}, {adata.n_vars})")
+        raise ValueError(
+            f"subset layer '{layer_name}' shape {arr.shape} != ({int(row_mask.sum())}, {adata.n_vars})"
+        )
 
     if layer_name not in adata.layers:
         adata.layers[layer_name] = np.zeros((adata.n_obs, adata.n_vars), dtype=arr.dtype)
@@ -228,6 +238,7 @@ def resolve_torch_device(device_str: str | None) -> torch.device:
             return torch.device("mps")
         return torch.device("cpu")
     return torch.device(d)
+
 
 # =============================================================================
 # Model selection + fit strategy manager
@@ -261,7 +272,9 @@ class HMMTrainer:
         if getattr(model, "hmm_name", None) == "multi":
             override["hmm_n_channels"] = int(getattr(model, "n_channels", 2))
         if getattr(model, "hmm_name", None) == "single_distance_binned":
-            override["hmm_distance_bins"] = list(getattr(model, "distance_bins", [1, 5, 10, 25, 50, 100]))
+            override["hmm_distance_bins"] = list(
+                getattr(model, "distance_bins", [1, 5, 10, 25, 50, 100])
+            )
 
         payload = {
             "state_dict": model.state_dict(),
@@ -285,7 +298,6 @@ class HMMTrainer:
         m.to(device)
         m.eval()
         return m
-
 
     def fit_or_load(
         self,
@@ -313,7 +325,9 @@ class HMMTrainer:
             else:
                 base = create_hmm(self.cfg, arch=arch).to(device)
                 if arch == "single_distance_binned":
-                    base.fit(X, device=device, coords=coords, max_iter=max_iter, tol=tol, verbose=verbose)
+                    base.fit(
+                        X, device=device, coords=coords, max_iter=max_iter, tol=tol, verbose=verbose
+                    )
                 else:
                     base.fit(X, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
                 self._save(base, p_global)
@@ -326,20 +340,22 @@ class HMMTrainer:
             adapted = copy.deepcopy(base).to(device)
             if arch == "single_distance_binned":
                 adapted.adapt_emissions(
-                                        X, coords,
-                                        device=device,
-                                        max_iter=int(getattr(self.cfg, "hmm_adapt_iters", 10)),
-                                        verbose=verbose,
-                                    )
+                    X,
+                    coords,
+                    device=device,
+                    max_iter=int(getattr(self.cfg, "hmm_adapt_iters", 10)),
+                    verbose=verbose,
+                )
 
             else:
                 adapted.adapt_emissions(
-                                        X, coords,
-                                        device=device,
-                                        max_iter=int(getattr(self.cfg, "hmm_adapt_iters", 10)),
-                                        verbose=verbose,
-                                    )
-                
+                    X,
+                    coords,
+                    device=device,
+                    max_iter=int(getattr(self.cfg, "hmm_adapt_iters", 10)),
+                    verbose=verbose,
+                )
+
             self._save(adapted, p_adapt)
             return adapted
 
@@ -376,6 +392,7 @@ def _fully_qualified_merge_layers(cfg, prefix: str) -> List[Tuple[str, int]]:
             continue
         out.append((f"{prefix}_{core_layer}", int(dist)))
     return out
+
 
 def hmm_adata(config_path: str):
     """
@@ -432,6 +449,7 @@ def hmm_adata(config_path: str):
     adata, hmm_adata_path = hmm_adata_core(cfg, adata, paths)
     return adata, hmm_adata_path
 
+
 def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
     """
     Core HMM analysis pipeline.
@@ -454,7 +472,11 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
     from ..readwrite import safe_write_h5ad, make_dirs, add_or_update_column_in_csv
     from .helpers import write_gz_h5ad
     from ..hmm import call_hmm_peaks
-    from ..plotting import combined_hmm_raw_clustermap, plot_hmm_layers_rolling_by_sample_ref, plot_hmm_size_contours
+    from ..plotting import (
+        combined_hmm_raw_clustermap,
+        plot_hmm_layers_rolling_by_sample_ref,
+        plot_hmm_size_contours,
+    )
 
     smf_modality = cfg.smf_modality
     deaminase = smf_modality == "deaminase"
@@ -464,10 +486,8 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
 
     pp_dir = output_directory / "preprocessed" / "deduplicated"
 
-
     # ---------------------------- HMM annotate stage ----------------------------
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):
-
         hmm_models_dir = pp_dir / "10_hmm_models"
         make_dirs([pp_dir, hmm_models_dir])
 
@@ -496,7 +516,7 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
 
         if not methbases:
             raise ValueError("cfg.hmm_methbases is empty.")
-        
+
         # Top-level skip
         already = bool(adata.uns.get("hmm_annotated", False))
         if already and not (bool(getattr(cfg, "force_redo_hmm_fit", False)) or force_apply):
@@ -505,9 +525,8 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
         else:
             for sample in samples:
                 for ref in references:
-                    mask = (
-                        (adata.obs[cfg.sample_name_col_for_plotting] == sample)
-                        & (adata.obs[cfg.reference_column] == ref)
+                    mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
+                        adata.obs[cfg.reference_column] == ref
                     )
                     if int(np.sum(mask)) == 0:
                         continue
@@ -522,21 +541,43 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                     device = resolve_torch_device(cfg.device)
 
                     # ---- split feature sets ----
-                    feature_sets_all = normalize_hmm_feature_sets(getattr(cfg, "hmm_feature_sets", None))
-                    feature_sets_access = {k: v for k, v in feature_sets_all.items() if k in ("footprint", "accessible")}
-                    feature_sets_cpg = {"cpg": feature_sets_all["cpg"]} if "cpg" in feature_sets_all else {}
+                    feature_sets_all = normalize_hmm_feature_sets(
+                        getattr(cfg, "hmm_feature_sets", None)
+                    )
+                    feature_sets_access = {
+                        k: v
+                        for k, v in feature_sets_all.items()
+                        if k in ("footprint", "accessible")
+                    }
+                    feature_sets_cpg = (
+                        {"cpg": feature_sets_all["cpg"]} if "cpg" in feature_sets_all else {}
+                    )
 
                     # =========================
                     # 1) Single-channel accessibility (per methbase)
                     # =========================
                     for mb in methbases:
                         try:
-                            X, coords = build_single_channel(subset, ref=str(ref), methbase=str(mb), smf_modality=smf_modality, cfg=cfg)
+                            X, coords = build_single_channel(
+                                subset,
+                                ref=str(ref),
+                                methbase=str(mb),
+                                smf_modality=smf_modality,
+                                cfg=cfg,
+                            )
                         except Exception:
                             continue
 
                         arch = trainer.choose_arch(multichannel=False)
-                        hmm = trainer.fit_or_load(sample=str(sample), ref=str(ref), label=str(mb), arch=arch, X=X, coords=coords, device=device)
+                        hmm = trainer.fit_or_load(
+                            sample=str(sample),
+                            ref=str(ref),
+                            label=str(mb),
+                            arch=arch,
+                            X=X,
+                            coords=coords,
+                            device=device,
+                        )
 
                         if not bypass_apply:
                             pm = _resolve_pos_mask_for_methbase(subset, str(ref), str(mb))
@@ -551,7 +592,7 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                                 decode=decode,
                                 write_posterior=write_post,
                                 posterior_state=post_state,
-                                feature_sets=feature_sets_access,     # <--- ONLY accessibility feature sets
+                                feature_sets=feature_sets_access,  # <--- ONLY accessibility feature sets
                                 prob_threshold=prob_thr,
                                 uns_key=uns_key,
                                 uns_flag=f"hmm_annotated_{mb}",
@@ -559,18 +600,29 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                             )
 
                             # merges for this mb
-                            for core_layer, dist in getattr(cfg, "hmm_merge_layer_features", []) or []:
+                            for core_layer, dist in (
+                                getattr(cfg, "hmm_merge_layer_features", []) or []
+                            ):
                                 base_layer = f"{mb}_{core_layer}"
                                 if base_layer in subset.layers:
                                     merged_base = hmm.merge_intervals_to_new_layer(
-                                        subset, base_layer, distance_threshold=int(dist), suffix=merged_suffix, overwrite=True
+                                        subset,
+                                        base_layer,
+                                        distance_threshold=int(dist),
+                                        suffix=merged_suffix,
+                                        overwrite=True,
                                     )
                                     # write merged size classes based on whichever group core_layer corresponds to
                                     for group, fs in feature_sets_access.items():
                                         fmap = fs.get("features", {}) or {}
                                         if fmap:
                                             hmm.write_size_class_layers_from_binary(
-                                                subset, merged_base, out_prefix=str(mb), feature_ranges=fmap, suffix=merged_suffix, overwrite=True
+                                                subset,
+                                                merged_base,
+                                                out_prefix=str(mb),
+                                                feature_ranges=fmap,
+                                                suffix=merged_suffix,
+                                                overwrite=True,
                                             )
 
                     # =========================
@@ -578,7 +630,13 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                     # =========================
                     if run_multi and len(methbases) >= 2:
                         try:
-                            X3, coords_u, used_mbs = build_multi_channel_union(subset, ref=str(ref), methbases=methbases, smf_modality=smf_modality, cfg=cfg)
+                            X3, coords_u, used_mbs = build_multi_channel_union(
+                                subset,
+                                ref=str(ref),
+                                methbases=methbases,
+                                smf_modality=smf_modality,
+                                cfg=cfg,
+                            )
                         except Exception:
                             X3, coords_u, used_mbs = None, None, []
 
@@ -589,7 +647,15 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                                 union_mask = pm if union_mask is None else (union_mask | pm)
 
                             arch = trainer.choose_arch(multichannel=True)
-                            hmmc = trainer.fit_or_load(sample=str(sample), ref=str(ref), label="Combined", arch=arch, X=X3, coords=coords_u, device=device)
+                            hmmc = trainer.fit_or_load(
+                                sample=str(sample),
+                                ref=str(ref),
+                                label="Combined",
+                                arch=arch,
+                                X=X3,
+                                coords=coords_u,
+                                device=device,
+                            )
 
                             if not bypass_apply:
                                 hmmc.annotate_adata(
@@ -610,17 +676,28 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                                     force_redo=force_apply,
                                 )
 
-                                for core_layer, dist in getattr(cfg, "hmm_merge_layer_features", []) or []:
+                                for core_layer, dist in (
+                                    getattr(cfg, "hmm_merge_layer_features", []) or []
+                                ):
                                     base_layer = f"Combined_{core_layer}"
                                     if base_layer in subset.layers:
                                         merged_base = hmmc.merge_intervals_to_new_layer(
-                                            subset, base_layer, distance_threshold=int(dist), suffix=merged_suffix, overwrite=True
+                                            subset,
+                                            base_layer,
+                                            distance_threshold=int(dist),
+                                            suffix=merged_suffix,
+                                            overwrite=True,
                                         )
                                         for group, fs in feature_sets_access.items():
                                             fmap = fs.get("features", {}) or {}
                                             if fmap:
                                                 hmmc.write_size_class_layers_from_binary(
-                                                    subset, merged_base, out_prefix="Combined", feature_ranges=fmap, suffix=merged_suffix, overwrite=True
+                                                    subset,
+                                                    merged_base,
+                                                    out_prefix="Combined",
+                                                    feature_ranges=fmap,
+                                                    suffix=merged_suffix,
+                                                    overwrite=True,
                                                 )
 
                     # =========================
@@ -628,13 +705,27 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                     # =========================
                     if run_cpg:
                         try:
-                            Xcpg, coordscpg = build_single_channel(subset, ref=str(ref), methbase="CpG", smf_modality=smf_modality, cfg=cfg)
+                            Xcpg, coordscpg = build_single_channel(
+                                subset,
+                                ref=str(ref),
+                                methbase="CpG",
+                                smf_modality=smf_modality,
+                                cfg=cfg,
+                            )
                         except Exception:
                             Xcpg, coordscpg = None, None
 
                         if Xcpg is not None and Xcpg.size and feature_sets_cpg:
                             arch = trainer.choose_arch(multichannel=False)
-                            hmmg = trainer.fit_or_load(sample=str(sample), ref=str(ref), label="CpG", arch=arch, X=Xcpg, coords=coordscpg, device=device)
+                            hmmg = trainer.fit_or_load(
+                                sample=str(sample),
+                                ref=str(ref),
+                                label="CpG",
+                                arch=arch,
+                                X=Xcpg,
+                                coords=coordscpg,
+                                device=device,
+                            )
 
                             if not bypass_apply:
                                 pm = _resolve_pos_mask_for_methbase(subset, str(ref), "CpG")
@@ -649,7 +740,7 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                                     decode=decode,
                                     write_posterior=write_post,
                                     posterior_state=post_state,
-                                    feature_sets=feature_sets_cpg,   # <--- ONLY cpg group (cpg_patch)
+                                    feature_sets=feature_sets_cpg,  # <--- ONLY cpg group (cpg_patch)
                                     prob_threshold=prob_thr,
                                     uns_key=uns_key,
                                     uns_flag="hmm_annotated_CpG",
@@ -659,9 +750,15 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                     # ------------------------------------------------------------
                     # Copy newly created subset layers back into the full adata
                     # ------------------------------------------------------------
-                    appended = list(subset.uns.get(uns_key, [])) if subset.uns.get(uns_key) is not None else []
+                    appended = (
+                        list(subset.uns.get(uns_key, []))
+                        if subset.uns.get(uns_key) is not None
+                        else []
+                    )
                     if appended:
-                        row_mask = np.asarray(mask.values if hasattr(mask, "values") else mask, dtype=bool)
+                        row_mask = np.asarray(
+                            mask.values if hasattr(mask, "values") else mask, dtype=bool
+                        )
 
                         for ln in appended:
                             if ln not in subset.layers:
@@ -676,9 +773,12 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
 
             hmm_layers = list(adata.uns.get("hmm_appended_layers", []) or [])
             # keep only real feature layers; drop lengths/states/posterior
-            hmm_layers = [l for l in hmm_layers if not any(s in l for s in ("_lengths", "_states", "_posterior"))]
+            hmm_layers = [
+                l
+                for l in hmm_layers
+                if not any(s in l for s in ("_lengths", "_states", "_posterior"))
+            ]
             print(f"HMM appended layers: {hmm_layers}")
-
 
     # ---------------------------- HMM peak calling stage ----------------------------
     hmm_dir = pp_dir / "11_hmm_peak_calling"
@@ -688,14 +788,15 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
         make_dirs([pp_dir, hmm_dir])
 
         call_hmm_peaks(
-                adata,
-                feature_configs=cfg.hmm_peak_feature_configs,
-                ref_column=cfg.reference_column,
-                site_types=cfg.mod_target_bases,
-                save_plot=True,
-                output_dir=hmm_dir,
-                index_col_suffix=cfg.reindexed_var_suffix)
-    
+            adata,
+            feature_configs=cfg.hmm_peak_feature_configs,
+            ref_column=cfg.reference_column,
+            site_types=cfg.mod_target_bases,
+            save_plot=True,
+            output_dir=hmm_dir,
+            index_col_suffix=cfg.reindexed_var_suffix,
+        )
+
     ## Save HMM annotated adata
     if not paths.hmm.exists():
         print("Saving hmm analyzed AnnData (post preprocessing and duplicate removal).")
@@ -703,8 +804,9 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
 
     ########################################################################################################################
 
-############################################### HMM based feature plotting ###############################################
+    ############################################### HMM based feature plotting ###############################################
     from ..plotting import combined_hmm_raw_clustermap
+
     hmm_dir = pp_dir / "12_hmm_clustermaps"
     make_dirs([pp_dir, hmm_dir])
 
@@ -718,7 +820,6 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
 
     if cfg.cpg:
         layers.extend(["CpG_cpg_patch"])
-
 
     if not layers:
         raise ValueError(
@@ -734,41 +835,46 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
             make_dirs([hmm_cluster_save_dir])
 
             combined_hmm_raw_clustermap(
-            adata,
-            sample_col=cfg.sample_name_col_for_plotting,
-            reference_col=cfg.reference_column,
-            hmm_feature_layer=layer,
-            layer_gpc=cfg.layer_for_clustermap_plotting,
-            layer_cpg=cfg.layer_for_clustermap_plotting,
-            layer_c=cfg.layer_for_clustermap_plotting,
-            layer_a=cfg.layer_for_clustermap_plotting,
-            cmap_hmm=cfg.clustermap_cmap_hmm,
-            cmap_gpc=cfg.clustermap_cmap_gpc,
-            cmap_cpg=cfg.clustermap_cmap_cpg,
-            cmap_c=cfg.clustermap_cmap_c,
-            cmap_a=cfg.clustermap_cmap_a,
-            min_quality=cfg.read_quality_filter_thresholds[0],
-            min_length=cfg.read_len_filter_thresholds[0],
-            min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
-            min_position_valid_fraction=1-cfg.position_max_nan_threshold,
-            demux_types=("double", "already"),
-            save_path=hmm_cluster_save_dir,
-            normalize_hmm=False,
-            sort_by=cfg.hmm_clustermap_sortby,  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
-            bins=None,
-            deaminase=deaminase,
-            min_signal=0,
-            index_col_suffix=cfg.reindexed_var_suffix
+                adata,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                hmm_feature_layer=layer,
+                layer_gpc=cfg.layer_for_clustermap_plotting,
+                layer_cpg=cfg.layer_for_clustermap_plotting,
+                layer_c=cfg.layer_for_clustermap_plotting,
+                layer_a=cfg.layer_for_clustermap_plotting,
+                cmap_hmm=cfg.clustermap_cmap_hmm,
+                cmap_gpc=cfg.clustermap_cmap_gpc,
+                cmap_cpg=cfg.clustermap_cmap_cpg,
+                cmap_c=cfg.clustermap_cmap_c,
+                cmap_a=cfg.clustermap_cmap_a,
+                min_quality=cfg.read_quality_filter_thresholds[0],
+                min_length=cfg.read_len_filter_thresholds[0],
+                min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[
+                    0
+                ],
+                min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
+                demux_types=("double", "already"),
+                save_path=hmm_cluster_save_dir,
+                normalize_hmm=False,
+                sort_by=cfg.hmm_clustermap_sortby,  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
+                bins=None,
+                deaminase=deaminase,
+                min_signal=0,
+                index_col_suffix=cfg.reindexed_var_suffix,
             )
 
     hmm_dir = pp_dir / "13_hmm_bulk_traces"
 
     if hmm_dir.is_dir():
-        print(f'{hmm_dir} already exists.')
+        print(f"{hmm_dir} already exists.")
     else:
         make_dirs([pp_dir, hmm_dir])
         from ..plotting import plot_hmm_layers_rolling_by_sample_ref
-        bulk_hmm_layers = [l for l in hmm_layers if not any(s in l for s in ("_lengths", "_states", "_posterior"))]
+
+        bulk_hmm_layers = [
+            l for l in hmm_layers if not any(s in l for s in ("_lengths", "_states", "_posterior"))
+        ]
         saved = plot_hmm_layers_rolling_by_sample_ref(
             adata,
             layers=bulk_hmm_layers,
@@ -776,26 +882,38 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
             ref_col=cfg.reference_column,
             window=101,
             rows_per_page=4,
-            figsize_per_cell=(4,2.5),
+            figsize_per_cell=(4, 2.5),
             output_dir=hmm_dir,
             save=True,
-            show_raw=False
+            show_raw=False,
         )
 
     hmm_dir = pp_dir / "14_hmm_fragment_distributions"
 
     if hmm_dir.is_dir():
-        print(f'{hmm_dir} already exists.')
+        print(f"{hmm_dir} already exists.")
     else:
         make_dirs([pp_dir, hmm_dir])
         from ..plotting import plot_hmm_size_contours
 
-        if smf_modality == 'deaminase':
-            fragments = [('C_all_accessible_features_lengths', 400), ('C_all_footprint_features_lengths', 250), ('C_all_accessible_features_merged_lengths', 800)]
-        elif smf_modality == 'conversion':
-            fragments = [('GpC_all_accessible_features_lengths', 400), ('GpC_all_footprint_features_lengths', 250), ('GpC_all_accessible_features_merged_lengths', 800)]
+        if smf_modality == "deaminase":
+            fragments = [
+                ("C_all_accessible_features_lengths", 400),
+                ("C_all_footprint_features_lengths", 250),
+                ("C_all_accessible_features_merged_lengths", 800),
+            ]
+        elif smf_modality == "conversion":
+            fragments = [
+                ("GpC_all_accessible_features_lengths", 400),
+                ("GpC_all_footprint_features_lengths", 250),
+                ("GpC_all_accessible_features_merged_lengths", 800),
+            ]
         elif smf_modality == "direct":
-            fragments = [('A_all_accessible_features_lengths', 400), ('A_all_footprint_features_lengths', 200), ('A_all_accessible_features_merged_lengths', 800)]
+            fragments = [
+                ("A_all_accessible_features_lengths", 400),
+                ("A_all_footprint_features_lengths", 200),
+                ("A_all_accessible_features_merged_lengths", 800),
+            ]
 
         for layer, max in fragments:
             save_path = hmm_dir / layer
@@ -815,8 +933,8 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                 dpi=200,
                 smoothing_sigma=(10, 10),
                 normalize_after_smoothing=True,
-                cmap='Greens', 
-                log_scale_z=True
+                cmap="Greens",
+                log_scale_z=True,
             )
     ########################################################################################################################
 

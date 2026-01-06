@@ -22,10 +22,12 @@ _HMM_REGISTRY: Dict[str, type] = {}
 
 def register_hmm(name: str):
     """Decorator to register an HMM backend under a string key."""
+
     def deco(cls):
         _HMM_REGISTRY[name] = cls
         cls.hmm_name = name
         return cls
+
     return deco
 
 
@@ -33,7 +35,12 @@ def create_hmm(cfg: Union[dict, Any, None], arch: Optional[str] = None, **kwargs
     """
     Factory: creates an HMM from cfg + arch (override).
     """
-    key = arch or getattr(cfg, "hmm_arch", None) or (cfg.get("hmm_arch") if isinstance(cfg, dict) else None) or "single"
+    key = (
+        arch
+        or getattr(cfg, "hmm_arch", None)
+        or (cfg.get("hmm_arch") if isinstance(cfg, dict) else None)
+        or "single"
+    )
     if key not in _HMM_REGISTRY:
         raise KeyError(f"Unknown hmm_arch={key!r}. Known: {sorted(_HMM_REGISTRY.keys())}")
     return _HMM_REGISTRY[key].from_config(cfg, **kwargs)
@@ -42,12 +49,15 @@ def create_hmm(cfg: Union[dict, Any, None], arch: Optional[str] = None, **kwargs
 # =============================================================================
 # Small utilities
 # =============================================================================
-def _coerce_dtype_for_device(dtype: torch.dtype, device: Optional[Union[str, torch.device]]) -> torch.dtype:
+def _coerce_dtype_for_device(
+    dtype: torch.dtype, device: Optional[Union[str, torch.device]]
+) -> torch.dtype:
     """MPS does not support float64. When targeting MPS, coerce to float32."""
     dev = torch.device(device) if isinstance(device, str) else device
     if dev is not None and getattr(dev, "type", None) == "mps" and dtype == torch.float64:
         return torch.float32
     return dtype
+
 
 def _try_json_or_literal(x: Any) -> Any:
     if x is None:
@@ -143,6 +153,7 @@ def _to_dense_np(x):
         return x.toarray()
     return np.asarray(x)
 
+
 def _ensure_2d_np(x):
     x = _to_dense_np(x)
     if x.ndim == 1:
@@ -151,9 +162,11 @@ def _ensure_2d_np(x):
         raise ValueError(f"Expected 2D array; got shape {x.shape}")
     return x
 
+
 # =============================================================================
 # Feature-set normalization
 # =============================================================================
+
 
 def normalize_hmm_feature_sets(raw: Any) -> Dict[str, Dict[str, Any]]:
     """
@@ -220,6 +233,7 @@ def normalize_hmm_feature_sets(raw: Any) -> Dict[str, Dict[str, Any]]:
 # BaseHMM: shared decoding + annotation pipeline
 # =============================================================================
 
+
 class BaseHMM(nn.Module):
     """
     BaseHMM responsibilities:
@@ -252,7 +266,9 @@ class BaseHMM(nn.Module):
     # ------------------------- config -------------------------
 
     @classmethod
-    def from_config(cls, cfg: Union[dict, Any, None], *, override: Optional[dict] = None, device=None):
+    def from_config(
+        cls, cfg: Union[dict, Any, None], *, override: Optional[dict] = None, device=None
+    ):
         merged = cls._cfg_to_dict(cfg)
         if override:
             merged.update(override)
@@ -294,18 +310,22 @@ class BaseHMM(nn.Module):
             # start
             self.start.data = self.start.data.reshape(-1)
             if self.start.data.numel() != K:
-                self.start.data = torch.full((K,), 1.0 / K, dtype=self.dtype, device=self.start.device)
-            self.start.data = (self.start.data + self.eps)
+                self.start.data = torch.full(
+                    (K,), 1.0 / K, dtype=self.dtype, device=self.start.device
+                )
+            self.start.data = self.start.data + self.eps
             self.start.data = self.start.data / self.start.data.sum()
 
             # trans
             self.trans.data = self.trans.data.reshape(K, K)
-            self.trans.data = (self.trans.data + self.eps)
+            self.trans.data = self.trans.data + self.eps
             rs = self.trans.data.sum(dim=1, keepdim=True)
             rs[rs == 0.0] = 1.0
             self.trans.data = self.trans.data / rs
 
-    def _ensure_device_dtype(self, device: Optional[Union[str, torch.device]] = None) -> torch.device:
+    def _ensure_device_dtype(
+        self, device: Optional[Union[str, torch.device]] = None
+    ) -> torch.device:
         if device is None:
             device = next(self.parameters()).device
         device = torch.device(device) if isinstance(device, str) else device
@@ -368,9 +388,9 @@ class BaseHMM(nn.Module):
         eps = float(self.eps)
         K = self.n_states
 
-        logB = self._log_emission(obs, mask)           # (N,L,K)
-        logA = torch.log(self.trans + eps)             # (K,K)
-        logstart = torch.log(self.start + eps)         # (K,)
+        logB = self._log_emission(obs, mask)  # (N,L,K)
+        logA = torch.log(self.trans + eps)  # (K,K)
+        logstart = torch.log(self.start + eps)  # (K,)
 
         N, L, _ = logB.shape
 
@@ -408,9 +428,9 @@ class BaseHMM(nn.Module):
         eps = float(self.eps)
         K = self.n_states
 
-        logB = self._log_emission(obs, mask)         # (N,L,K)
-        logA = torch.log(self.trans + eps)           # (K,K)
-        logstart = torch.log(self.start + eps)       # (K,)
+        logB = self._log_emission(obs, mask)  # (N,L,K)
+        logA = torch.log(self.trans + eps)  # (K,K)
+        logstart = torch.log(self.start + eps)  # (K,)
 
         N, L, _ = logB.shape
         delta = torch.empty((N, L, K), dtype=self.dtype, device=device)
@@ -472,7 +492,6 @@ class BaseHMM(nn.Module):
 
         return st.detach().cpu().numpy(), gamma.detach().cpu().numpy()
 
-
     # ------------------------- EM fit -------------------------
 
     def fit(
@@ -500,7 +519,8 @@ class BaseHMM(nn.Module):
 
         device = self._ensure_device_dtype(device)
         return self.fit_em(
-            X, coords,
+            X,
+            coords,
             device=device,
             max_iter=max_iter,
             tol=tol,
@@ -510,7 +530,6 @@ class BaseHMM(nn.Module):
             verbose=verbose,
             **kwargs,
         )
-
 
     def adapt_emissions(
         self,
@@ -528,7 +547,8 @@ class BaseHMM(nn.Module):
         Emission-only adaptation (global -> sample adapt).
         """
         return self.fit(
-            X, coords,
+            X,
+            coords,
             max_iter=int(iters),
             tol=0.0,
             device=device,
@@ -587,7 +607,11 @@ class BaseHMM(nn.Module):
         torch_dtype = getattr(torch, dtype_str.split(".")[-1], torch.float64)
         torch_dtype = _coerce_dtype_for_device(torch_dtype, device)  # <<< NEW
 
-        model = klass(n_states=int(payload["n_states"]), eps=float(payload.get("eps", 1e-8)), dtype=torch_dtype)
+        model = klass(
+            n_states=int(payload["n_states"]),
+            eps=float(payload.get("eps", 1e-8)),
+            dtype=torch_dtype,
+        )
         dev = torch.device(device) if isinstance(device, str) else (device or torch.device("cpu"))
         model.to(dev)
 
@@ -632,7 +656,7 @@ class BaseHMM(nn.Module):
         for i in range(n):
             runs = BaseHMM._runs_from_bool(bin_mat[i].astype(bool))
             for s, e in runs:
-                out[i, s:e] = (e - s)
+                out[i, s:e] = e - s
         return out
 
     @staticmethod
@@ -658,7 +682,7 @@ class BaseHMM(nn.Module):
                 e = s + 1
                 while e < L and row[e] == v:
                     e += 1
-                out[i, s:e] = (e - s)
+                out[i, s:e] = e - s
                 s = e
         return out
 
@@ -774,13 +798,15 @@ class BaseHMM(nn.Module):
                     if float(lo) <= float(length_bp) < float(hi):
                         nm = f"{out_prefix}_{feat_name}{suffix}"
                         adata.layers[nm][i, s:e] = 1
-                        adata.layers[f"{nm}_lengths"][i, s:e] = (e - s)
+                        adata.layers[f"{nm}_lengths"][i, s:e] = e - s
                         break
 
         # fill lengths for each size layer (consistent, even if overlaps)
         for feat_name in feature_ranges.keys():
             nm = f"{out_prefix}_{feat_name}{suffix}"
-            adata.layers[f"{nm}_lengths"] = self._write_lengths_for_binary_layer(np.asarray(adata.layers[nm]))
+            adata.layers[f"{nm}_lengths"] = self._write_lengths_for_binary_layer(
+                np.asarray(adata.layers[nm])
+            )
 
         key = "hmm_appended_layers"
         if adata.uns.get(key) is None:
@@ -870,7 +896,9 @@ class BaseHMM(nn.Module):
             raise ValueError(f"var_mask length {var_mask.shape[0]} != adata.n_vars {adata.n_vars}")
 
         # decode
-        states, gamma = self.decode(X, coords, decode=decode, device=device)   # states (N,L), gamma (N,L,K)
+        states, gamma = self.decode(
+            X, coords, decode=decode, device=device
+        )  # states (N,L), gamma (N,L,K)
         N, L = states.shape
         if N != adata.n_obs:
             raise ValueError(f"X has N={N} rows but adata.n_obs={adata.n_obs}")
@@ -884,7 +912,9 @@ class BaseHMM(nn.Module):
 
         # build mapping from coords order -> masked column order
         coord_to_pos_in_decoded = {int(c): i for i, c in enumerate(coords.tolist())}
-        take = np.array([coord_to_pos_in_decoded.get(int(c), -1) for c in masked_coords.tolist()], dtype=int)
+        take = np.array(
+            [coord_to_pos_in_decoded.get(int(c), -1) for c in masked_coords.tolist()], dtype=int
+        )
         good = take >= 0
         masked_idx = masked_idx[good]
         take = take[good]
@@ -920,7 +950,7 @@ class BaseHMM(nn.Module):
 
         # allocate outputs
         for group, fs in feature_sets.items():
-            fmap = (fs.get("features", {}) or {})
+            fmap = fs.get("features", {}) or {}
             if not fmap:
                 continue
 
@@ -928,7 +958,9 @@ class BaseHMM(nn.Module):
             if all_layer not in adata.layers:
                 adata.layers[all_layer] = np.zeros((adata.n_obs, adata.n_vars), dtype=np.uint8)
             if f"{all_layer}_lengths" not in adata.layers:
-                adata.layers[f"{all_layer}_lengths"] = np.zeros((adata.n_obs, adata.n_vars), dtype=np.int32)
+                adata.layers[f"{all_layer}_lengths"] = np.zeros(
+                    (adata.n_obs, adata.n_vars), dtype=np.int32
+                )
             for nm in (all_layer, f"{all_layer}_lengths"):
                 if nm not in appended:
                     appended.append(nm)
@@ -936,16 +968,25 @@ class BaseHMM(nn.Module):
             for feat in fmap.keys():
                 nm = f"{prefix}_{feat}"
                 if nm not in adata.layers:
-                    adata.layers[nm] = np.zeros((adata.n_obs, adata.n_vars), dtype=np.int32 if nm.endswith("_lengths") else np.uint8)
+                    adata.layers[nm] = np.zeros(
+                        (adata.n_obs, adata.n_vars),
+                        dtype=np.int32 if nm.endswith("_lengths") else np.uint8,
+                    )
                 if f"{nm}_lengths" not in adata.layers:
-                    adata.layers[f"{nm}_lengths"] = np.zeros((adata.n_obs, adata.n_vars), dtype=np.int32)
+                    adata.layers[f"{nm}_lengths"] = np.zeros(
+                        (adata.n_obs, adata.n_vars), dtype=np.int32
+                    )
                 for outnm in (nm, f"{nm}_lengths"):
                     if outnm not in appended:
                         appended.append(outnm)
 
             # classify runs per row
             target_idx = self.resolve_target_state_index(fs.get("state", "Modified"))
-            membership = (states == target_idx) if str(decode).lower() == "viterbi" else (gamma[:, :, target_idx] >= float(prob_threshold))
+            membership = (
+                (states == target_idx)
+                if str(decode).lower() == "viterbi"
+                else (gamma[:, :, target_idx] >= float(prob_threshold))
+            )
 
             for i in range(N):
                 runs = self._runs_from_bool(membership[i].astype(bool))
@@ -957,7 +998,7 @@ class BaseHMM(nn.Module):
 
                     # pick feature bin
                     chosen = None
-                    for feat_name, (lo, hi) in (fmap.items()):
+                    for feat_name, (lo, hi) in fmap.items():
                         if float(lo) <= float(glen) < float(hi):
                             chosen = feat_name
                             break
@@ -974,26 +1015,35 @@ class BaseHMM(nn.Module):
                         adata.layers[f"{prefix}_all_{group}_features"][i, left:right] = 1
                     else:
                         # only fill at masked indices
-                        cols = masked_idx[(masked_coords >= coords[s]) & (masked_coords <= coords[e - 1])]
+                        cols = masked_idx[
+                            (masked_coords >= coords[s]) & (masked_coords <= coords[e - 1])
+                        ]
                         if cols.size == 0:
                             continue
                         adata.layers[f"{prefix}_{chosen}"][i, cols] = 1
                         adata.layers[f"{prefix}_all_{group}_features"][i, cols] = 1
 
             # lengths derived from binary
-            adata.layers[f"{prefix}_all_{group}_features_lengths"] = self._write_lengths_for_binary_layer(np.asarray(adata.layers[f"{prefix}_all_{group}_features"]))
+            adata.layers[f"{prefix}_all_{group}_features_lengths"] = (
+                self._write_lengths_for_binary_layer(
+                    np.asarray(adata.layers[f"{prefix}_all_{group}_features"])
+                )
+            )
             for feat in fmap.keys():
                 nm = f"{prefix}_{feat}"
-                adata.layers[f"{nm}_lengths"] = self._write_lengths_for_binary_layer(np.asarray(adata.layers[nm]))
+                adata.layers[f"{nm}_lengths"] = self._write_lengths_for_binary_layer(
+                    np.asarray(adata.layers[nm])
+                )
 
         adata.uns[uns_key] = appended
         adata.uns[uns_flag] = True
         return None
 
-
     # ------------------------- row-copy helper (workflow uses it) -------------------------
 
-    def _ensure_final_layer_and_assign(self, final_adata, layer_name: str, subset_idx_mask: np.ndarray, sub_data):
+    def _ensure_final_layer_and_assign(
+        self, final_adata, layer_name: str, subset_idx_mask: np.ndarray, sub_data
+    ):
         """
         Assign rows from sub_data into final_adata.layers[layer_name] for rows where subset_idx_mask is True.
         Handles dense arrays. If you want sparse support, add it here.
@@ -1016,6 +1066,7 @@ class BaseHMM(nn.Module):
 # Single-channel Bernoulli HMM
 # =============================================================================
 
+
 @register_hmm("single")
 class SingleBernoulliHMM(BaseHMM):
     """
@@ -1023,7 +1074,13 @@ class SingleBernoulliHMM(BaseHMM):
       emission[k] = P(obs==1 | state=k)
     """
 
-    def __init__(self, n_states: int = 2, init_emission: Optional[Sequence[float]] = None, eps: float = 1e-8, dtype: torch.dtype = torch.float64):
+    def __init__(
+        self,
+        n_states: int = 2,
+        init_emission: Optional[Sequence[float]] = None,
+        eps: float = 1e-8,
+        dtype: torch.dtype = torch.float64,
+    ):
         super().__init__(n_states=n_states, eps=eps, dtype=dtype)
         if init_emission is None:
             em = np.full((self.n_states,), 0.5, dtype=float)
@@ -1055,7 +1112,9 @@ class SingleBernoulliHMM(BaseHMM):
         with torch.no_grad():
             self.emission.data = self.emission.data.reshape(-1)
             if self.emission.data.numel() != self.n_states:
-                self.emission.data = torch.full((self.n_states,), 0.5, dtype=self.dtype, device=self.emission.device)
+                self.emission.data = torch.full(
+                    (self.n_states,), 0.5, dtype=self.dtype, device=self.emission.device
+                )
             self.emission.data = self.emission.data.clamp(min=self.eps, max=1.0 - self.eps)
 
     def _ensure_device_dtype(self, device=None) -> torch.device:
@@ -1149,17 +1208,17 @@ class SingleBernoulliHMM(BaseHMM):
                 trans_acc += xi.sum(dim=0)
 
             # emission update
-            mask_f = mask.float().unsqueeze(-1)                 # (N,L,1)
-            emit_num = (gamma * obs.unsqueeze(-1) * mask_f).sum(dim=(0, 1))   # (K,)
-            emit_den = (gamma * mask_f).sum(dim=(0, 1))                      # (K,)
+            mask_f = mask.float().unsqueeze(-1)  # (N,L,1)
+            emit_num = (gamma * obs.unsqueeze(-1) * mask_f).sum(dim=(0, 1))  # (K,)
+            emit_den = (gamma * mask_f).sum(dim=(0, 1))  # (K,)
 
             with torch.no_grad():
                 if update_start:
-                    new_start = (start_acc + eps)
+                    new_start = start_acc + eps
                     self.start.data = new_start / new_start.sum()
 
                 if update_trans:
-                    new_trans = (trans_acc + eps)
+                    new_trans = trans_acc + eps
                     rs = new_trans.sum(dim=1, keepdim=True)
                     rs[rs == 0.0] = 1.0
                     self.trans.data = new_trans / rs
@@ -1178,7 +1237,6 @@ class SingleBernoulliHMM(BaseHMM):
                 break
 
         return hist
-    
 
     def adapt_emissions(
         self,
@@ -1202,11 +1260,10 @@ class SingleBernoulliHMM(BaseHMM):
         )
 
 
-
-
 # =============================================================================
 # Multi-channel Bernoulli HMM (union coordinate grid)
 # =============================================================================
+
 
 @register_hmm("multi")
 class MultiBernoulliHMM(BaseHMM):
@@ -1216,7 +1273,14 @@ class MultiBernoulliHMM(BaseHMM):
     X must be (N,L,C) on a union coordinate grid; NaN per-channel allowed.
     """
 
-    def __init__(self, n_states: int = 2, n_channels: int = 2, init_emission: Optional[Any] = None, eps: float = 1e-8, dtype: torch.dtype = torch.float64):
+    def __init__(
+        self,
+        n_states: int = 2,
+        n_channels: int = 2,
+        init_emission: Optional[Any] = None,
+        eps: float = 1e-8,
+        dtype: torch.dtype = torch.float64,
+    ):
         super().__init__(n_states=n_states, eps=eps, dtype=dtype)
         self.n_channels = int(n_channels)
         if self.n_channels < 1:
@@ -1248,7 +1312,9 @@ class MultiBernoulliHMM(BaseHMM):
         dtype = _coerce_dtype_for_device(dtype, device)  # <<< NEW
         n_channels = int(merged.get("hmm_n_channels", merged.get("n_channels", 2)))
         init_em = merged.get("hmm_init_emission_probs", None)
-        model = cls(n_states=n_states, n_channels=n_channels, init_emission=init_em, eps=eps, dtype=dtype)
+        model = cls(
+            n_states=n_states, n_channels=n_channels, init_emission=init_em, eps=eps, dtype=dtype
+        )
         if device is not None:
             model.to(torch.device(device) if isinstance(device, str) else device)
         model._persisted_cfg = merged
@@ -1279,8 +1345,8 @@ class MultiBernoulliHMM(BaseHMM):
         logp = torch.log(p + self.eps).view(1, 1, K, C)
         log1mp = torch.log1p(-p + self.eps).view(1, 1, K, C)
 
-        o = obs.unsqueeze(2)       # (N,L,1,C)
-        m = mask.unsqueeze(2)      # (N,L,1,C)
+        o = obs.unsqueeze(2)  # (N,L,1,C)
+        m = mask.unsqueeze(2)  # (N,L,1,C)
 
         logBC = o * logp + (1.0 - o) * log1mp
         logBC = torch.where(m, logBC, torch.zeros_like(logBC))
@@ -1361,20 +1427,20 @@ class MultiBernoulliHMM(BaseHMM):
                 trans_acc += xi.sum(dim=0)
 
             # emission update per channel
-            gamma_k = gamma.unsqueeze(-1)         # (N,L,K,1)
-            obs_c = obs.unsqueeze(2)              # (N,L,1,C)
-            mask_c = mask.unsqueeze(2).float()    # (N,L,1,C)
+            gamma_k = gamma.unsqueeze(-1)  # (N,L,K,1)
+            obs_c = obs.unsqueeze(2)  # (N,L,1,C)
+            mask_c = mask.unsqueeze(2).float()  # (N,L,1,C)
 
             emit_num = (gamma_k * obs_c * mask_c).sum(dim=(0, 1))  # (K,C)
-            emit_den = (gamma_k * mask_c).sum(dim=(0, 1))          # (K,C)
+            emit_den = (gamma_k * mask_c).sum(dim=(0, 1))  # (K,C)
 
             with torch.no_grad():
                 if update_start:
-                    new_start = (start_acc + eps)
+                    new_start = start_acc + eps
                     self.start.data = new_start / new_start.sum()
 
                 if update_trans:
-                    new_trans = (trans_acc + eps)
+                    new_trans = trans_acc + eps
                     rs = new_trans.sum(dim=1, keepdim=True)
                     rs[rs == 0.0] = 1.0
                     self.trans.data = new_trans / rs
@@ -1415,7 +1481,6 @@ class MultiBernoulliHMM(BaseHMM):
             verbose=verbose,
         )
 
-    
     def _ensure_n_channels(self, C: int, device: torch.device):
         C = int(C)
         if C == self.n_channels:
@@ -1430,14 +1495,16 @@ class MultiBernoulliHMM(BaseHMM):
                 fill = old.mean(axis=1, keepdims=True)
                 new[:, m:] = fill
             self.n_channels = C
-            self.emission = nn.Parameter(torch.tensor(new, dtype=self.dtype, device=device), requires_grad=False)
+            self.emission = nn.Parameter(
+                torch.tensor(new, dtype=self.dtype, device=device), requires_grad=False
+            )
             self._normalize_emission()
-
 
 
 # =============================================================================
 # Distance-binned transitions (single-channel only)
 # =============================================================================
+
 
 @register_hmm("single_distance_binned")
 class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
@@ -1460,7 +1527,9 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
     ):
         super().__init__(n_states=n_states, init_emission=init_emission, eps=eps, dtype=dtype)
 
-        self.distance_bins = np.asarray(distance_bins if distance_bins is not None else [1, 5, 10, 25, 50, 100], dtype=int)
+        self.distance_bins = np.asarray(
+            distance_bins if distance_bins is not None else [1, 5, 10, 25, 50, 100], dtype=int
+        )
         self.n_bins = int(len(self.distance_bins) + 1)
 
         if init_trans_by_bin is None:
@@ -1518,15 +1587,22 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
 
     def _extra_save_payload(self) -> dict:
         p = super()._extra_save_payload()
-        p.update({
-            "distance_bins": torch.tensor(self.distance_bins, dtype=torch.long),
-            "trans_by_bin": self.trans_by_bin.detach().cpu(),
-        })
+        p.update(
+            {
+                "distance_bins": torch.tensor(self.distance_bins, dtype=torch.long),
+                "trans_by_bin": self.trans_by_bin.detach().cpu(),
+            }
+        )
         return p
 
     def _load_extra_payload(self, payload: dict, *, device: torch.device):
         super()._load_extra_payload(payload, device=device)
-        self.distance_bins = payload.get("distance_bins", torch.tensor([1, 5, 10, 25, 50, 100])).cpu().numpy().astype(int)
+        self.distance_bins = (
+            payload.get("distance_bins", torch.tensor([1, 5, 10, 25, 50, 100]))
+            .cpu()
+            .numpy()
+            .astype(int)
+        )
         self.n_bins = int(len(self.distance_bins) + 1)
         with torch.no_grad():
             self.trans_by_bin.data = payload["trans_by_bin"].to(device=device, dtype=self.dtype)
@@ -1536,7 +1612,9 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         d = np.diff(np.asarray(coords, dtype=int))
         return np.digitize(d, self.distance_bins, right=True)  # length L-1
 
-    def _forward_backward(self, obs: torch.Tensor, mask: torch.Tensor, *, coords: Optional[np.ndarray] = None) -> torch.Tensor:
+    def _forward_backward(
+        self, obs: torch.Tensor, mask: torch.Tensor, *, coords: Optional[np.ndarray] = None
+    ) -> torch.Tensor:
         if coords is None:
             raise ValueError("Distance-binned HMM requires coords.")
         device = obs.device
@@ -1572,7 +1650,9 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         logZ = _logsumexp(log_gamma, dim=2).unsqueeze(2)
         return (log_gamma - logZ).exp()
 
-    def _viterbi(self, obs: torch.Tensor, mask: torch.Tensor, *, coords: Optional[np.ndarray] = None) -> torch.Tensor:
+    def _viterbi(
+        self, obs: torch.Tensor, mask: torch.Tensor, *, coords: Optional[np.ndarray] = None
+    ) -> torch.Tensor:
         if coords is None:
             raise ValueError("Distance-binned HMM requires coords.")
         device = obs.device
@@ -1688,11 +1768,11 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
 
             with torch.no_grad():
                 if update_start:
-                    new_start = (start_acc + eps)
+                    new_start = start_acc + eps
                     self.start.data = new_start / new_start.sum()
 
                 if update_trans:
-                    tb = (trans_acc_by_bin + eps)
+                    tb = trans_acc_by_bin + eps
                     rs = tb.sum(dim=2, keepdim=True)
                     rs[rs == 0.0] = 1.0
                     self.trans_by_bin.data = tb / rs
@@ -1712,7 +1792,7 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
                 break
 
         return hist
-    
+
     def adapt_emissions(
         self,
         X: np.ndarray,
@@ -1735,10 +1815,10 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         )
 
 
-
 # =============================================================================
 # Facade class to match workflow import style
 # =============================================================================
+
 
 class HMM:
     """
@@ -1748,6 +1828,7 @@ class HMM:
       hmm.save(...)
       hmm = HMM.load(...)
     """
+
     @staticmethod
     def from_config(cfg, arch: Optional[str] = None, **kwargs) -> BaseHMM:
         return create_hmm(cfg, arch=arch, **kwargs)

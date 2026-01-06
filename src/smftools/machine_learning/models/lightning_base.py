@@ -2,9 +2,15 @@ import torch
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 from sklearn.metrics import (
-    roc_auc_score, precision_recall_curve, auc, f1_score, confusion_matrix, roc_curve
+    roc_auc_score,
+    precision_recall_curve,
+    auc,
+    f1_score,
+    confusion_matrix,
+    roc_curve,
 )
 import numpy as np
+
 
 class TorchClassifierWrapper(pl.LightningModule):
     """
@@ -16,25 +22,26 @@ class TorchClassifierWrapper(pl.LightningModule):
     - Can pass the index of the class label to use as the focus class when calculating precision/recall.
     - Contains a prediction step to run inference with.
     """
+
     def __init__(
         self,
         model: torch.nn.Module,
         label_col: str,
         num_classes: int,
-        class_names: list=None,
+        class_names: list = None,
         optimizer_cls=torch.optim.AdamW,
         optimizer_kwargs=None,
         criterion_kwargs=None,
         lr: float = 1e-3,
         focus_class: int = 1,  # used for binary or multiclass precision-recall
         class_weights=None,
-        enforce_eval_balance: bool=False,
-        target_eval_freq: float=0.3,
-        max_eval_positive: int=None
+        enforce_eval_balance: bool = False,
+        target_eval_freq: float = 0.3,
+        max_eval_positive: int = None,
     ):
         super().__init__()
         self.model = model
-        self.save_hyperparameters(ignore=['model'])  # logs all except actual model instance
+        self.save_hyperparameters(ignore=["model"])  # logs all except actual model instance
         self.optimizer_cls = optimizer_cls
         self.optimizer_kwargs = optimizer_kwargs or {"weight_decay": 1e-4}
         self.criterion = None
@@ -57,14 +64,17 @@ class TorchClassifierWrapper(pl.LightningModule):
                 if torch.is_tensor(class_weights[self.focus_class]):
                     self.criterion_kwargs["pos_weight"] = class_weights[self.focus_class]
                 else:
-                    self.criterion_kwargs["pos_weight"] = torch.tensor(class_weights[self.focus_class], dtype=torch.float32, device=self.device)
+                    self.criterion_kwargs["pos_weight"] = torch.tensor(
+                        class_weights[self.focus_class], dtype=torch.float32, device=self.device
+                    )
             else:
                 # CrossEntropyLoss expects weight tensor of size C
                 if torch.is_tensor(class_weights):
                     self.criterion_kwargs["weight"] = class_weights
                 else:
-                    self.criterion_kwargs["weight"] = torch.tensor(class_weights, dtype=torch.float32)
-
+                    self.criterion_kwargs["weight"] = torch.tensor(
+                        class_weights, dtype=torch.float32
+                    )
 
         self._val_outputs = []
         self._test_outputs = []
@@ -78,12 +88,20 @@ class TorchClassifierWrapper(pl.LightningModule):
 
     def _init_criterion(self):
         if self.num_classes == 2:
-            if "pos_weight" in self.criterion_kwargs and not torch.is_tensor(self.criterion_kwargs["pos_weight"]):
-                self.criterion_kwargs["pos_weight"] = torch.tensor(self.criterion_kwargs["pos_weight"], dtype=torch.float32, device=self.device)
+            if "pos_weight" in self.criterion_kwargs and not torch.is_tensor(
+                self.criterion_kwargs["pos_weight"]
+            ):
+                self.criterion_kwargs["pos_weight"] = torch.tensor(
+                    self.criterion_kwargs["pos_weight"], dtype=torch.float32, device=self.device
+                )
             self.criterion = torch.nn.BCEWithLogitsLoss(**self.criterion_kwargs)
         else:
-            if "weight" in self.criterion_kwargs and not torch.is_tensor(self.criterion_kwargs["weight"]):
-                self.criterion_kwargs["weight"] = torch.tensor(self.criterion_kwargs["weight"], dtype=torch.float32, device=self.device)
+            if "weight" in self.criterion_kwargs and not torch.is_tensor(
+                self.criterion_kwargs["weight"]
+            ):
+                self.criterion_kwargs["weight"] = torch.tensor(
+                    self.criterion_kwargs["weight"], dtype=torch.float32, device=self.device
+                )
             self.criterion = torch.nn.CrossEntropyLoss(**self.criterion_kwargs)
 
     def _resolve_focus_class(self, focus_class):
@@ -93,11 +111,13 @@ class TorchClassifierWrapper(pl.LightningModule):
             if self.class_names is None:
                 raise ValueError("class_names must be provided if focus_class is a string.")
             if focus_class not in self.class_names:
-                raise ValueError(f"focus_class '{focus_class}' not found in class_names {self.class_names}.")
+                raise ValueError(
+                    f"focus_class '{focus_class}' not found in class_names {self.class_names}."
+                )
             return self.class_names.index(focus_class)
         else:
             raise ValueError(f"focus_class must be int or str, got {type(focus_class)}")
-        
+
     def set_training_indices(self, datamodule):
         """
         Store obs_names for train/val/test subsets used during training.
@@ -140,7 +160,7 @@ class TorchClassifierWrapper(pl.LightningModule):
         self.log_dict({"val_loss": loss, "val_acc": acc}, prog_bar=False)
         self._val_outputs.append((logits.detach(), y.detach()))
         return loss
-    
+
     def test_step(self, batch, batch_idx):
         """
         Test step for a batch through the Lightning Trainer.
@@ -189,7 +209,7 @@ class TorchClassifierWrapper(pl.LightningModule):
             return self.criterion(logits.view(-1, 1), y)
         else:
             return self.criterion(logits, y)
-        
+
     def _get_probs(self, logits):
         """
         A helper function for getting class probabilities for binary vs multiclass classifications.
@@ -207,8 +227,10 @@ class TorchClassifierWrapper(pl.LightningModule):
             return (torch.sigmoid(logits.view(-1)) >= 0.5).long()
         else:
             return logits.argmax(dim=1)
-        
-    def _subsample_for_fixed_positive_frequency(self, y_true, probs, target_freq=0.3, max_positive=None):
+
+    def _subsample_for_fixed_positive_frequency(
+        self, y_true, probs, target_freq=0.3, max_positive=None
+    ):
         pos_idx = np.where(y_true == self.focus_class)[0]
         neg_idx = np.where(y_true != self.focus_class)[0]
 
@@ -216,16 +238,20 @@ class TorchClassifierWrapper(pl.LightningModule):
         max_positives_possible = len(pos_idx)
 
         # maximum achievable positive class frequency
-        max_possible_freq = max_positives_possible / (max_positives_possible + max_negatives_possible)
+        max_possible_freq = max_positives_possible / (
+            max_positives_possible + max_negatives_possible
+        )
 
         if target_freq > max_possible_freq:
             target_freq = max_possible_freq  # clip if you ask for impossible freq
 
         # now calculate positive count
-        num_pos_target = min(int(target_freq * max_negatives_possible / (1 - target_freq)), max_positives_possible)
+        num_pos_target = min(
+            int(target_freq * max_negatives_possible / (1 - target_freq)), max_positives_possible
+        )
         num_neg_target = int(num_pos_target * (1 - target_freq) / target_freq)
         num_neg_target = min(num_neg_target, max_negatives_possible)
-        
+
         pos_sampled = np.random.choice(pos_idx, size=num_pos_target, replace=False)
         neg_sampled = np.random.choice(neg_idx, size=num_neg_target, replace=False)
 
@@ -235,7 +261,7 @@ class TorchClassifierWrapper(pl.LightningModule):
         actual_freq = len(pos_sampled) / len(sampled_idx)
 
         return sampled_idx
-        
+
     def _log_classification_metrics(self, logits, targets, prefix="val"):
         """
         A helper function for logging validation and testing split model evaluations.
@@ -252,9 +278,12 @@ class TorchClassifierWrapper(pl.LightningModule):
         num_pos = binary_focus.sum()
 
         # Subsample if you want to enforce a fixed proportion of the positive class
-        if prefix == 'test' and self.enforce_eval_balance:
+        if prefix == "test" and self.enforce_eval_balance:
             sampled_idx = self._subsample_for_fixed_positive_frequency(
-                y_true, probs, target_freq=self.target_eval_freq, max_positive=self.max_eval_positive
+                y_true,
+                probs,
+                target_freq=self.target_eval_freq,
+                max_positive=self.max_eval_positive,
             )
             y_true = y_true[sampled_idx]
             probs = probs[sampled_idx]
@@ -289,7 +318,7 @@ class TorchClassifierWrapper(pl.LightningModule):
         cm = confusion_matrix(y_true, preds)
 
         # Save attributes for later plotting
-        if prefix == 'test':
+        if prefix == "test":
             self.test_roc_curve = (fpr, tpr)
             self.test_pr_curve = (rc, pr)
             self.test_roc_auc = roc_auc
@@ -298,19 +327,21 @@ class TorchClassifierWrapper(pl.LightningModule):
             self.test_num_pos = num_pos
             self.test_acc = acc
             self.test_f1 = f1
-        elif prefix == 'val':
+        elif prefix == "val":
             pass
 
         # Logging
-        self.log_dict({
-            f"{prefix}_acc": acc,
-            f"{prefix}_f1": f1,
-            f"{prefix}_auc": roc_auc,
-            f"{prefix}_pr_auc": pr_auc,
-            f"{prefix}_pr_auc_norm": pr_auc_norm,
-            f"{prefix}_pos_freq": pos_freq,
-            f"{prefix}_num_pos": num_pos
-        })
+        self.log_dict(
+            {
+                f"{prefix}_acc": acc,
+                f"{prefix}_f1": f1,
+                f"{prefix}_auc": roc_auc,
+                f"{prefix}_pr_auc": pr_auc,
+                f"{prefix}_pr_auc_norm": pr_auc_norm,
+                f"{prefix}_pos_freq": pos_freq,
+                f"{prefix}_num_pos": num_pos,
+            }
+        )
         setattr(self, f"{prefix}_confusion_matrix", cm)
 
     def _plot_roc_pr_curves(self, logits, targets):
@@ -334,7 +365,7 @@ class TorchClassifierWrapper(pl.LightningModule):
         pos_freq = self.test_pos_freq
         plt.subplot(1, 2, 2)
         plt.plot(rc, pr, label=f"PR AUC={pr_auc:.3f}")
-        plt.axhline(pos_freq, linestyle='--', color="gray")
+        plt.axhline(pos_freq, linestyle="--", color="gray")
         plt.xlabel("Recall")
         plt.ylabel("Precision")
         plt.ylim(0, 1.05)

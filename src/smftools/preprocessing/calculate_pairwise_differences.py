@@ -1,5 +1,6 @@
 # calculate_pairwise_differences
 
+
 def calculate_pairwise_differences(arrays):
     """
     Calculate the pairwise differences for a list of h-stacked ndarrays. Ignore N-positions
@@ -41,7 +42,7 @@ def calculate_pairwise_differences(arrays):
             # Calculate the hamming distance directly with boolean operations
             differences = (array_i != array_j) & ~combined_mask
             distance = np.sum(differences) / np.sum(~combined_mask)
-            
+
             # Store the symmetric distances
             distance_matrix[i, j] = distance
             distance_matrix[j, i] = distance

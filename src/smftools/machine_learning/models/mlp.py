@@ -1,9 +1,18 @@
 import torch
 import torch.nn as nn
 from .base import BaseTorchModel
-    
+
+
 class MLPClassifier(BaseTorchModel):
-    def __init__(self, input_dim, num_classes=2, hidden_dims=[64, 64], dropout=0.2, use_batchnorm=True, **kwargs):
+    def __init__(
+        self,
+        input_dim,
+        num_classes=2,
+        hidden_dims=[64, 64],
+        dropout=0.2,
+        use_batchnorm=True,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         layers = []
         in_dim = input_dim

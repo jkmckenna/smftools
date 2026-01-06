@@ -1,6 +1,15 @@
 # recipes
 
-def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory, mapping_key_column='Sample', reference_column = 'Reference', sample_names_col='Sample_names', invert=True):
+
+def recipe_1_Kissiov_and_McKenna_2025(
+    adata,
+    sample_sheet_path,
+    output_directory,
+    mapping_key_column="Sample",
+    reference_column="Reference",
+    sample_names_col="Sample_names",
+    invert=True,
+):
     """
     The first part of the preprocessing workflow applied to the smf.inform.pod_to_adata() output derived from Kissiov_and_McKenna_2025.
 
@@ -32,30 +41,34 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
     from .load_sample_sheet import load_sample_sheet
     from .calculate_coverage import calculate_coverage
     from .append_C_context import append_C_context
-    from .calculate_converted_read_methylation_stats import calculate_converted_read_methylation_stats
+    from .calculate_converted_read_methylation_stats import (
+        calculate_converted_read_methylation_stats,
+    )
     from .invert_adata import invert_adata
     from .calculate_read_length_stats import calculate_read_length_stats
     from .clean_NaN import clean_NaN
 
     # Clean up some of the Reference metadata and save variable names that point to sets of values in the column.
-    adata.obs[reference_column] = adata.obs[reference_column].astype('category')
+    adata.obs[reference_column] = adata.obs[reference_column].astype("category")
     references = adata.obs[reference_column].cat.categories
-    split_references = [(reference, reference.split('_')[0][1:]) for reference in references]
+    split_references = [(reference, reference.split("_")[0][1:]) for reference in references]
     reference_mapping = {k: v for k, v in split_references}
-    adata.obs[f'{reference_column}_short'] = adata.obs[reference_column].map(reference_mapping)
-    short_references = set(adata.obs[f'{reference_column}_short'])
+    adata.obs[f"{reference_column}_short"] = adata.obs[reference_column].map(reference_mapping)
+    short_references = set(adata.obs[f"{reference_column}_short"])
     binary_layers = list(adata.layers.keys())
 
     # load sample sheet metadata
     load_sample_sheet(adata, sample_sheet_path, mapping_key_column)
 
     # hold sample names set
-    adata.obs[sample_names_col] = adata.obs[sample_names_col].astype('category')
+    adata.obs[sample_names_col] = adata.obs[sample_names_col].astype("category")
     sample_names = adata.obs[sample_names_col].cat.categories
 
     # Add position level metadata
     calculate_coverage(adata, obs_column=reference_column)
-    adata.var['SNP_position'] = (adata.var[f'N_{reference_column}_with_position'] > 0) & (adata.var[f'N_{reference_column}_with_position'] < len(references)).astype(bool)
+    adata.var["SNP_position"] = (adata.var[f"N_{reference_column}_with_position"] > 0) & (
+        adata.var[f"N_{reference_column}_with_position"] < len(references)
+    ).astype(bool)
 
     # Append cytosine context to the reference positions based on the conversion strand.
     append_C_context(adata, obs_column=reference_column, use_consensus=False)
@@ -64,7 +77,9 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
     calculate_converted_read_methylation_stats(adata, reference_column, sample_names_col)
 
     # Calculate read length statistics
-    upper_bound, lower_bound = calculate_read_length_stats(adata, reference_column, sample_names_col)
+    upper_bound, lower_bound = calculate_read_length_stats(
+        adata, reference_column, sample_names_col
+    )
 
     # Invert the adata object (ie flip the strand orientation for visualization)
     if invert:
@@ -81,11 +96,19 @@ def recipe_1_Kissiov_and_McKenna_2025(adata, sample_sheet_path, output_directory
         "sample_names": sample_names,
         "upper_bound": upper_bound,
         "lower_bound": lower_bound,
-        "references": references
+        "references": references,
     }
     return variables
 
-def recipe_2_Kissiov_and_McKenna_2025(adata, output_directory, binary_layers, distance_thresholds={}, reference_column = 'Reference', sample_names_col='Sample_names'):
+
+def recipe_2_Kissiov_and_McKenna_2025(
+    adata,
+    output_directory,
+    binary_layers,
+    distance_thresholds={},
+    reference_column="Reference",
+    sample_names_col="Sample_names",
+):
     """
     The second part of the preprocessing workflow applied to the adata that has already been preprocessed by recipe_1_Kissiov_and_McKenna_2025.
 
@@ -117,10 +140,24 @@ def recipe_2_Kissiov_and_McKenna_2025(adata, output_directory, binary_layers, di
     # Add here a way to remove reads below a given read quality (based on nan content). Need to also add a way to pull from BAM files the read quality from each read
 
     # Duplicate detection using pairwise hamming distance across reads
-    mark_duplicates(adata, binary_layers, obs_column=reference_column, sample_col=sample_names_col, distance_thresholds=distance_thresholds, method='N_masked_distances')
+    mark_duplicates(
+        adata,
+        binary_layers,
+        obs_column=reference_column,
+        sample_col=sample_names_col,
+        distance_thresholds=distance_thresholds,
+        method="N_masked_distances",
+    )
 
     # Complexity analysis using the marked duplicates and the lander-watermann algorithm
-    calculate_complexity(adata, output_directory, obs_column=reference_column, sample_col=sample_names_col, plot=True, save_plot=False)
+    calculate_complexity(
+        adata,
+        output_directory,
+        obs_column=reference_column,
+        sample_col=sample_names_col,
+        plot=True,
+        save_plot=False,
+    )
 
     # Remove duplicate reads and store the duplicate reads in a new AnnData object named duplicates.
     filtered_adata, duplicates = remove_duplicates(adata)

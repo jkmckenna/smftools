@@ -3,6 +3,7 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
+
 def spatial_adata(
     config_path: str,
 ) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
@@ -55,11 +56,14 @@ def spatial_adata(
 
     # 2) Ensure preprocessing has been run
     #    This will create pp/pp_dedup as needed or return them if they already exist.
-    pp_adata, pp_adata_path_ret, pp_dedup_adata, pp_dedup_adata_path_ret = preprocess_adata(config_path)
+    pp_adata, pp_adata_path_ret, pp_dedup_adata, pp_dedup_adata_path_ret = preprocess_adata(
+        config_path
+    )
 
     # Helper to load from disk, reusing loaded_adata if it matches
     def _load(path: Path):
         from ..readwrite import safe_read_h5ad
+
         if loaded_adata is not None and loaded_path == path:
             return loaded_adata
         adata, _ = safe_read_h5ad(path)
@@ -212,7 +216,7 @@ def spatial_adata_core(
         reindex_suffix = cfg.reindexed_var_suffix
     else:
         reindex_suffix = None
-        
+
     pp_dir = output_directory / "preprocessed"
     references = adata.obs[cfg.reference_column].cat.categories
 
@@ -228,7 +232,9 @@ def spatial_adata_core(
             if pp_clustermap_dir.is_dir() and not getattr(
                 cfg, "force_redo_spatial_analyses", False
             ):
-                print(f"{pp_clustermap_dir} already exists. Skipping clustermap plotting for preprocessed AnnData.")
+                print(
+                    f"{pp_clustermap_dir} already exists. Skipping clustermap plotting for preprocessed AnnData."
+                )
             else:
                 make_dirs([pp_dir, pp_clustermap_dir])
 
@@ -280,7 +286,9 @@ def spatial_adata_core(
                     cmap_a=cfg.clustermap_cmap_a,
                     min_quality=cfg.read_quality_filter_thresholds[0],
                     min_length=cfg.read_len_filter_thresholds[0],
-                    min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+                    min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[
+                        0
+                    ],
                     min_position_valid_fraction=cfg.min_valid_fraction_positions_in_read_vs_ref,
                     demux_types=("double", "already"),
                     bins=None,
@@ -290,7 +298,7 @@ def spatial_adata_core(
                     deaminase=deaminase,
                     index_col_suffix=reindex_suffix,
                 )
-        
+
     # ============================================================
     # 2) Clustermaps + UMAP on *deduplicated* preprocessed AnnData
     # ============================================================
@@ -299,10 +307,10 @@ def spatial_adata_core(
     pp_umap_dir = pp_dir_dedup / "07_umaps"
 
     # Clustermaps on deduplicated adata
-    if pp_clustermap_dir_dedup.is_dir() and not getattr(
-        cfg, "force_redo_spatial_analyses", False
-    ):
-        print(f"{pp_clustermap_dir_dedup} already exists. Skipping clustermap plotting for deduplicated AnnData.")
+    if pp_clustermap_dir_dedup.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        print(
+            f"{pp_clustermap_dir_dedup} already exists. Skipping clustermap plotting for deduplicated AnnData."
+        )
     else:
         make_dirs([pp_dir_dedup, pp_clustermap_dir_dedup])
         combined_raw_clustermap(
@@ -320,7 +328,9 @@ def spatial_adata_core(
             cmap_a=cfg.clustermap_cmap_a,
             min_quality=cfg.read_quality_filter_thresholds[0],
             min_length=cfg.read_len_filter_thresholds[0],
-            min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+            min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[
+                0
+            ],
             min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
             demux_types=("double", "already"),
             bins=None,
@@ -378,11 +388,14 @@ def spatial_adata_core(
 
         try:
             from joblib import Parallel, delayed
+
             _have_joblib = True
         except Exception:
             _have_joblib = False
 
-        samples = adata.obs[cfg.sample_name_col_for_plotting].astype("category").cat.categories.tolist()
+        samples = (
+            adata.obs[cfg.sample_name_col_for_plotting].astype("category").cat.categories.tolist()
+        )
         ref_col = getattr(cfg, "reference_strand_col", "Reference_strand")
         refs = adata.obs[ref_col].astype("category").cat.categories.tolist()
 
@@ -401,10 +414,15 @@ def spatial_adata_core(
             counts = []
 
             if _have_joblib:
+
                 def _worker(row):
                     try:
                         ac, cnts = binary_autocorrelation_with_spacing(
-                            row, positions, max_lag=cfg.autocorr_max_lag, return_counts=True, normalize=cfg.autocorr_normalization_method
+                            row,
+                            positions,
+                            max_lag=cfg.autocorr_max_lag,
+                            return_counts=True,
+                            normalize=cfg.autocorr_normalization_method,
                         )
                     except Exception:
                         ac = np.full(cfg.autocorr_max_lag + 1, np.nan, dtype=np.float32)
@@ -420,7 +438,11 @@ def spatial_adata_core(
             else:
                 for i in range(X.shape[0]):
                     ac, cnts = binary_autocorrelation_with_spacing(
-                        X[i], positions, max_lag=cfg.autocorr_max_lag, return_counts=True, normalize=cfg.autocorr_normalization_method
+                        X[i],
+                        positions,
+                        max_lag=cfg.autocorr_max_lag,
+                        return_counts=True,
+                        normalize=cfg.autocorr_normalization_method,
                     )
                     rows.append(ac)
                     counts.append(cnts)
@@ -509,7 +531,9 @@ def spatial_adata_core(
                         try:
                             r = analyze_autocorr_matrix(
                                 ac_sel,
-                                cnt_sel if cnt_sel is not None else np.zeros_like(ac_sel, dtype=int),
+                                cnt_sel
+                                if cnt_sel is not None
+                                else np.zeros_like(ac_sel, dtype=int),
                                 lags,
                                 nrl_search_bp=(120, 260),
                                 pad_factor=4,
@@ -524,7 +548,9 @@ def spatial_adata_core(
 
             adata.uns[f"{site_type}_spatial_periodicity_metrics_by_group"] = metrics_by_group
 
-            global_nrl = adata.uns.get(f"{site_type}_spatial_periodicity_metrics", {}).get("nrl_bp", None)
+            global_nrl = adata.uns.get(f"{site_type}_spatial_periodicity_metrics", {}).get(
+                "nrl_bp", None
+            )
 
             rolling_cfg = {
                 "window_size": getattr(
@@ -602,14 +628,18 @@ def spatial_adata_core(
                         )
                         continue
 
-                    compact_df = df_roll[["center", "n_molecules", "nrl_bp", "snr", "xi", "fwhm_bp"]].copy()
+                    compact_df = df_roll[
+                        ["center", "n_molecules", "nrl_bp", "snr", "xi", "fwhm_bp"]
+                    ].copy()
                     compact_df["site"] = site_type
                     compact_df["sample"] = sample_name
                     compact_df["reference"] = ref_label if ref_label != "all" else "all"
 
                     if write_csvs:
                         safe_sample = str(sample_name).replace(os.sep, "_")
-                        safe_ref = str(ref_label if ref_label != "all" else "all").replace(os.sep, "_")
+                        safe_ref = str(ref_label if ref_label != "all" else "all").replace(
+                            os.sep, "_"
+                        )
                         out_csv = os.path.join(
                             site_out_dir,
                             f"{safe_sample}__{safe_ref}__rolling_metrics.csv",
@@ -647,7 +677,9 @@ def spatial_adata_core(
                     combined_rows.append(
                         compact_df.assign(site=site_type, sample=sample_name, reference=ref_label)
                     )
-                    rolling_results_by_group[(sample_name, None if ref_label == "all" else ref_label)] = compact_df
+                    rolling_results_by_group[
+                        (sample_name, None if ref_label == "all" else ref_label)
+                    ] = compact_df
 
             adata.uns[f"{site_type}_rolling_metrics_by_group"] = rolling_results_by_group
 
@@ -659,9 +691,7 @@ def spatial_adata_core(
                 try:
                     combined_df_site.to_csv(combined_out_csv, index=False)
                 except Exception as e:
-                    warnings.warn(
-                        f"Failed to write combined rolling CSV for {site_type}: {e}"
-                    )
+                    warnings.warn(f"Failed to write combined rolling CSV for {site_type}: {e}")
 
             rolling_dict = adata.uns[f"{site_type}_rolling_metrics_by_group"]
             plot_out_dir = os.path.join(pp_autocorr_dir, "rolling_plots")

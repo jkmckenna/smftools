@@ -3,12 +3,7 @@ import numpy as np
 from .inference_utils import annotate_split_column
 
 
-def run_sklearn_inference(
-    adata,
-    model,
-    datamodule, 
-    prefix="model"
-):
+def run_sklearn_inference(adata, model, datamodule, prefix="model"):
     """
     Run inference on AnnData using SklearnModelWrapper.
     """
@@ -44,7 +39,9 @@ def run_sklearn_inference(
     full_prefix = f"{prefix}_{label_col}"
 
     adata.obs[f"{full_prefix}_pred"] = pred_class_idx
-    adata.obs[f"{full_prefix}_pred_label"] = pd.Categorical(pred_class_labels, categories=class_labels)
+    adata.obs[f"{full_prefix}_pred_label"] = pd.Categorical(
+        pred_class_labels, categories=class_labels
+    )
     adata.obs[f"{full_prefix}_pred_prob"] = pred_class_probs
 
     for i, class_name in enumerate(class_labels):

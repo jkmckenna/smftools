@@ -3,6 +3,7 @@
 from typing import Dict, Optional, Any, Union, Sequence
 from pathlib import Path
 
+
 def call_hmm_peaks(
     adata,
     feature_configs: Dict[str, Dict[str, Any]],
@@ -64,7 +65,9 @@ def call_hmm_peaks(
 
     # Build search pool = union of declared HMM layers and actual layers; exclude helper suffixes
     declared = list(adata.uns.get("hmm_appended_layers", []) or [])
-    search_pool = [l for l in declared if not any(s in l for s in ("_lengths", "_states", "_posterior"))]
+    search_pool = [
+        l for l in declared if not any(s in l for s in ("_lengths", "_states", "_posterior"))
+    ]
 
     all_peak_var_cols = []
 
@@ -78,7 +81,9 @@ def call_hmm_peaks(
         if index_col_suffix is not None:
             coord_col = f"{ref}_{index_col_suffix}"
             if coord_col not in adata.var:
-                raise KeyError(f"index_col_suffix='{index_col_suffix}' requested, missing var column '{coord_col}' for ref '{ref}'.")
+                raise KeyError(
+                    f"index_col_suffix='{index_col_suffix}' requested, missing var column '{coord_col}' for ref '{ref}'."
+                )
             coord_vals = adata.var[coord_col].values
             try:
                 coordinates = coord_vals.astype(int)
@@ -100,26 +105,32 @@ def call_hmm_peaks(
                 candidates = [feature_key]
 
             if not candidates:
-                print(f"[call_hmm_peaks] WARNING: no layers found matching '{feature_key}' in ref '{ref}'. Skipping.")
+                print(
+                    f"[call_hmm_peaks] WARNING: no layers found matching '{feature_key}' in ref '{ref}'. Skipping."
+                )
                 continue
 
             # Hyperparams (sanitized)
-            min_distance   = max(1, int(config.get("min_distance",   200)))
-            peak_width     = max(1, int(config.get("peak_width",     200)))
-            peak_prom      = float(config.get("peak_prominence", 0.2))
-            peak_threshold = float(config.get("peak_threshold",  0.8))
+            min_distance = max(1, int(config.get("min_distance", 200)))
+            peak_width = max(1, int(config.get("peak_width", 200)))
+            peak_prom = float(config.get("peak_prominence", 0.2))
+            peak_threshold = float(config.get("peak_threshold", 0.8))
             rolling_window = max(1, int(config.get("rolling_window", 1)))
 
             for layer_name in candidates:
                 if layer_name not in adata.layers:
-                    print(f"[call_hmm_peaks] WARNING: layer '{layer_name}' not in adata.layers; skipping.")
+                    print(
+                        f"[call_hmm_peaks] WARNING: layer '{layer_name}' not in adata.layers; skipping."
+                    )
                     continue
 
                 # Dense layer data
                 L = adata.layers[layer_name]
                 L = L.toarray() if issparse(L) else np.asarray(L)
                 if L.shape != (adata.n_obs, adata.n_vars):
-                    print(f"[call_hmm_peaks] WARNING: layer '{layer_name}' has shape {L.shape}, expected ({adata.n_obs}, {adata.n_vars}); skipping.")
+                    print(
+                        f"[call_hmm_peaks] WARNING: layer '{layer_name}' has shape {L.shape}, expected ({adata.n_obs}, {adata.n_vars}); skipping."
+                    )
                     continue
 
                 # Ref subset
@@ -137,7 +148,9 @@ def call_hmm_peaks(
                     peak_metric = means
 
                 # Peak detection
-                peak_indices, _ = find_peaks(peak_metric, prominence=peak_prom, distance=min_distance)
+                peak_indices, _ = find_peaks(
+                    peak_metric, prominence=peak_prom, distance=min_distance
+                )
                 if peak_indices.size == 0:
                     print(f"[call_hmm_peaks] No peaks for layer '{layer_name}' in ref '{ref}'.")
                     continue
@@ -153,12 +166,16 @@ def call_hmm_peaks(
                 ax.set_ylabel(f"Rolling Mean (win={rolling_window})")
                 for i, center in enumerate(peak_centers):
                     start = center - peak_width // 2
-                    end   = center + peak_width // 2
+                    end = center + peak_width // 2
                     height = peak_metric[peak_indices[i]]
                     ax.axvspan(start, end, alpha=0.2)
                     ax.axvline(center, linestyle="--", linewidth=0.8)
-                    x_text, ha = ((start, "right") if (not alternate_labels or i % 2 == 0) else (end, "left"))
-                    ax.text(x_text, height * 0.8, f"Peak {i}\n{center}", ha=ha, va="bottom", fontsize=8)
+                    x_text, ha = (
+                        (start, "right") if (not alternate_labels or i % 2 == 0) else (end, "left")
+                    )
+                    ax.text(
+                        x_text, height * 0.8, f"Peak {i}\n{center}", ha=ha, va="bottom", fontsize=8
+                    )
 
                 if save_plot and output_dir is not None:
                     tag = date_tag or "output"
@@ -178,7 +195,7 @@ def call_hmm_peaks(
 
                 for center in np.asarray(peak_centers).tolist():
                     start = center - peak_width // 2
-                    end   = center + peak_width // 2
+                    end = center + peak_width // 2
 
                     # var window mask
                     colname = f"{layer_name}_{ref}_peak_{center}"
@@ -190,8 +207,8 @@ def call_hmm_peaks(
                     # feature-layer summaries for reads in this ref
                     region = matrix[:, peak_mask]  # (n_ref, n_window)
 
-                    mean_col    = f"mean_{layer_name}_{ref}_around_{center}"
-                    sum_col     = f"sum_{layer_name}_{ref}_around_{center}"
+                    mean_col = f"mean_{layer_name}_{ref}_around_{center}"
+                    sum_col = f"sum_{layer_name}_{ref}_around_{center}"
                     present_col = f"{layer_name}_{ref}_present_at_{center}"
 
                     for nm, default, dt in (
@@ -204,14 +221,16 @@ def call_hmm_peaks(
 
                     if region.shape[1] > 0:
                         means_per_read = np.nanmean(region, axis=1)
-                        sums_per_read  = np.nansum(region, axis=1)
+                        sums_per_read = np.nansum(region, axis=1)
                     else:
                         means_per_read = np.full(matrix.shape[0], np.nan, dtype=float)
-                        sums_per_read  = np.zeros(matrix.shape[0], dtype=float)
+                        sums_per_read = np.zeros(matrix.shape[0], dtype=float)
 
-                    new_obs_cols[mean_col][ref_mask]    = means_per_read
-                    new_obs_cols[sum_col][ref_mask]     = sums_per_read
-                    new_obs_cols[present_col][ref_mask] = np.nan_to_num(means_per_read, nan=0.0) > peak_threshold
+                    new_obs_cols[mean_col][ref_mask] = means_per_read
+                    new_obs_cols[sum_col][ref_mask] = sums_per_read
+                    new_obs_cols[present_col][ref_mask] = (
+                        np.nan_to_num(means_per_read, nan=0.0) > peak_threshold
+                    )
 
                     # site-type summaries from adata.X, not an AnnData view
                     Xmat = adata.X
@@ -226,7 +245,7 @@ def call_hmm_peaks(
 
                         site_coords = coordinates[site_mask]
                         site_region_mask = (site_coords >= start) & (site_coords <= end)
-                        sum_site_col  = f"sum_{layer_name}_{site_type}_{ref}_around_{center}"
+                        sum_site_col = f"sum_{layer_name}_{site_type}_{ref}_around_{center}"
                         mean_site_col = f"mean_{layer_name}_{site_type}_{ref}_around_{center}"
 
                         if sum_site_col not in new_obs_cols:
@@ -248,12 +267,14 @@ def call_hmm_peaks(
                             site_region = Xnp[np.asarray(ref_mask), :][:, np.asarray(full_mask)]
 
                         if site_region.shape[1] > 0:
-                            new_obs_cols[sum_site_col][ref_mask]  = np.nansum(site_region, axis=1)
+                            new_obs_cols[sum_site_col][ref_mask] = np.nansum(site_region, axis=1)
                             new_obs_cols[mean_site_col][ref_mask] = np.nanmean(site_region, axis=1)
 
                 # one-shot assignment to avoid fragmentation
                 if new_obs_cols:
-                    adata.obs = adata.obs.assign(**{k: pd.Series(v, index=adata.obs.index) for k, v in new_obs_cols.items()})
+                    adata.obs = adata.obs.assign(
+                        **{k: pd.Series(v, index=adata.obs.index) for k, v in new_obs_cols.items()}
+                    )
 
                 # per (layer, ref) any-peak
                 any_col = f"is_in_any_{layer_name}_peak_{ref}"
@@ -262,7 +283,9 @@ def call_hmm_peaks(
                 else:
                     adata.var[any_col] = False
 
-                print(f"[call_hmm_peaks] Annotated {len(peak_centers)} peaks for layer '{layer_name}' in ref '{ref}'.")
+                print(
+                    f"[call_hmm_peaks] Annotated {len(peak_centers)} peaks for layer '{layer_name}' in ref '{ref}'."
+                )
 
     # global any-peak across all layers/refs
     if all_peak_var_cols:

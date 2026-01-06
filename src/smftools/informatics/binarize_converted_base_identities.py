@@ -1,4 +1,13 @@
-def binarize_converted_base_identities(base_identities, strand, modification_type, bam, device='cpu', deaminase_footprinting=False, mismatch_trend_per_read={}, on_missing="nan"):
+def binarize_converted_base_identities(
+    base_identities,
+    strand,
+    modification_type,
+    bam,
+    device="cpu",
+    deaminase_footprinting=False,
+    mismatch_trend_per_read={},
+    on_missing="nan",
+):
     """
     Efficiently binarizes conversion SMF data within a sequence string using NumPy arrays.
 
@@ -10,7 +19,7 @@ def binarize_converted_base_identities(base_identities, strand, modification_typ
         deaminase_footprinting (bool): Whether direct deaminase footprinting chemistry was used.
         mismatch_trend_per_read (dict): For deaminase footprinting, indicates the type of conversion relative to the top strand reference for each read. (C->T or G->A if bottom strand was converted)
         on_missing (str): Error handling if a read is missing
-        
+
     Returns:
         dict: A dictionary where 1 represents a methylated site, 0 represents an unmethylated site, and NaN represents a site without methylation info.
         If deaminase_footprinting, 1 represents deaminated sites, while 0 represents non-deaminated sites.
@@ -64,14 +73,16 @@ def binarize_converted_base_identities(base_identities, strand, modification_typ
 
     # Non-deaminase mapping (bisulfite-style for 5mC; 6mA mapping is protocol dependent)
     bin_maps = {
-        ("top", "5mC"):    {"C": 1.0, "T": 0.0},
+        ("top", "5mC"): {"C": 1.0, "T": 0.0},
         ("bottom", "5mC"): {"G": 1.0, "A": 0.0},
-        ("top", "6mA"):    {"A": 1.0, "G": 0.0},
+        ("top", "6mA"): {"A": 1.0, "G": 0.0},
         ("bottom", "6mA"): {"T": 1.0, "C": 0.0},
     }
     key = (strand, modification_type)
     if key not in bin_maps:
-        raise ValueError(f"Invalid combination of strand='{strand}' and modification_type='{modification_type}'")
+        raise ValueError(
+            f"Invalid combination of strand='{strand}' and modification_type='{modification_type}'"
+        )
 
     base_map = bin_maps[key]
 
@@ -110,7 +121,7 @@ def binarize_converted_base_identities(base_identities, strand, modification_typ
     #         binarized_base_identities[key] = binarized
 
     #     return binarized_base_identities
-    
+
     # else:
     #     binarization_maps = {
     #         ('top', '5mC'): {'C': 1, 'T': 0},
@@ -152,7 +163,7 @@ def binarize_converted_base_identities(base_identities, strand, modification_typ
 
     # # Fetch the appropriate mapping
     # base_map = binarization_maps[(strand, modification_type)]
-    
+
     # # Convert mapping to tensor
     # base_keys = list(base_map.keys())
     # base_values = torch.tensor(list(base_map.values()), dtype=torch.float32, device=device)

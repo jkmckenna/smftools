@@ -1,11 +1,12 @@
-def calculate_coverage(adata, 
-                       ref_column='Reference_strand', 
-                       position_nan_threshold=0.01, 
-                       smf_modality='deaminase',
-                       target_layer = 'binarized_methylation',
-                       uns_flag='calculate_coverage_performed',
-                       force_redo=False,
-                       ):
+def calculate_coverage(
+    adata,
+    ref_column="Reference_strand",
+    position_nan_threshold=0.01,
+    smf_modality="deaminase",
+    target_layer="binarized_methylation",
+    uns_flag="calculate_coverage_performed",
+    force_redo=False,
+):
     """
     Append position-level metadata regarding whether the position is informative within the given observation category.
 
@@ -28,13 +29,13 @@ def calculate_coverage(adata,
     if already and not force_redo:
         # QC already performed; nothing to do
         return
-    
+
     references = adata.obs[ref_column].cat.categories
     n_categories_with_position = np.zeros(adata.shape[1])
 
     # Loop over references
     for ref in references:
-        print(f'Assessing positional coverage across samples for {ref} reference')
+        print(f"Assessing positional coverage across samples for {ref} reference")
 
         # Subset to current category
         ref_mask = adata.obs[ref_column] == ref
@@ -50,17 +51,17 @@ def calculate_coverage(adata,
         ref_valid_fraction = ref_valid_coverage / temp_ref_adata.shape[0]  # Avoid extra computation
 
         # Store coverage stats
-        adata.var[f'{ref}_valid_count'] = pd.Series(ref_valid_coverage, index=adata.var.index)
-        adata.var[f'{ref}_valid_fraction'] = pd.Series(ref_valid_fraction, index=adata.var.index)
+        adata.var[f"{ref}_valid_count"] = pd.Series(ref_valid_coverage, index=adata.var.index)
+        adata.var[f"{ref}_valid_fraction"] = pd.Series(ref_valid_fraction, index=adata.var.index)
 
         # Assign whether the position is covered based on threshold
-        adata.var[f'position_in_{ref}'] = ref_valid_fraction >= position_nan_threshold
+        adata.var[f"position_in_{ref}"] = ref_valid_fraction >= position_nan_threshold
 
         # Sum the number of categories covering each position
-        n_categories_with_position += adata.var[f'position_in_{ref}'].values
+        n_categories_with_position += adata.var[f"position_in_{ref}"].values
 
     # Store final category count
-    adata.var[f'N_{ref_column}_with_position'] = n_categories_with_position.astype(int)
+    adata.var[f"N_{ref_column}_with_position"] = n_categories_with_position.astype(int)
 
     # mark as done
     adata.uns[uns_flag] = True

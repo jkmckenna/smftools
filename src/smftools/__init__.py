@@ -24,7 +24,7 @@ __all__ = [
     "pp",
     "tl",
     "pl",
-    "datasets"
+    "datasets",
     "safe_write_h5ad",
-    "safe_read_h5ad"
+    "safe_read_h5ad",
 ]

@@ -1,23 +1,30 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import (
-    roc_auc_score, precision_recall_curve, auc, f1_score, confusion_matrix, roc_curve
+    roc_auc_score,
+    precision_recall_curve,
+    auc,
+    f1_score,
+    confusion_matrix,
+    roc_curve,
 )
+
 
 class SklearnModelWrapper:
     """
     Unified sklearn wrapper matching TorchClassifierWrapper interface.
     """
+
     def __init__(
-        self, 
-        model, 
+        self,
+        model,
         label_col: str,
-        num_classes: int, 
-        class_names=None, 
-        focus_class: int=1,
-        enforce_eval_balance: bool=False,
-        target_eval_freq: float=0.3,
-        max_eval_positive=None
+        num_classes: int,
+        class_names=None,
+        focus_class: int = 1,
+        enforce_eval_balance: bool = False,
+        target_eval_freq: float = 0.3,
+        max_eval_positive=None,
     ):
         self.model = model
         self.label_col = label_col
@@ -37,7 +44,9 @@ class SklearnModelWrapper:
             if self.class_names is None:
                 raise ValueError("class_names must be provided if focus_class is a string.")
             if focus_class not in self.class_names:
-                raise ValueError(f"focus_class '{focus_class}' not found in class_names {self.class_names}.")
+                raise ValueError(
+                    f"focus_class '{focus_class}' not found in class_names {self.class_names}."
+                )
             return self.class_names.index(focus_class)
         else:
             raise ValueError(f"focus_class must be int or str, got {type(focus_class)}")
@@ -130,7 +139,7 @@ class SklearnModelWrapper:
             f"{prefix}_pr_auc": pr_auc,
             f"{prefix}_pr_auc_norm": pr_auc_norm,
             f"{prefix}_pos_freq": pos_freq,
-            f"{prefix}_num_pos": num_pos
+            f"{prefix}_num_pos": num_pos,
         }
 
         return self.metrics
@@ -166,7 +175,10 @@ class SklearnModelWrapper:
 
     def fit_from_datamodule(self, datamodule):
         datamodule.setup()
-        X_tensor, y_tensor = datamodule.train_set.dataset.X_tensor, datamodule.train_set.dataset.y_tensor
+        X_tensor, y_tensor = (
+            datamodule.train_set.dataset.X_tensor,
+            datamodule.train_set.dataset.y_tensor,
+        )
         indices = datamodule.train_set.indices
         X_train = X_tensor[indices].numpy()
         y_train = y_tensor[indices].numpy()
@@ -190,11 +202,11 @@ class SklearnModelWrapper:
         y_eval = y_tensor[indices].numpy()
 
         return self.evaluate(X_eval, y_eval, prefix=split)
-    
+
     def compute_shap(self, X, background=None, nsamples=100, target_class=None):
         """
         Compute SHAP values on input X, optionally for a specified target class.
-        
+
         Parameters
         ----------
         X : array-like
@@ -225,7 +237,7 @@ class SklearnModelWrapper:
             shap_values = explainer.shap_values(X)
         else:
             shap_values = explainer.shap_values(X, nsamples=nsamples)
-        
+
         if isinstance(shap_values, np.ndarray):
             if shap_values.ndim == 3:
                 if isinstance(target_class, int):
@@ -234,10 +246,7 @@ class SklearnModelWrapper:
                     # target_class is per-sample
                     if np.any(target_class >= shap_values.shape[2]):
                         raise ValueError(f"target_class values exceed {shap_values.shape[2]}")
-                    selected = np.array([
-                        shap_values[i, :, c]
-                        for i, c in enumerate(target_class)
-                    ])
+                    selected = np.array([shap_values[i, :, c] for i, c in enumerate(target_class)])
                     return selected
                 else:
                     # fallback to class 0
@@ -246,7 +255,15 @@ class SklearnModelWrapper:
                 # 2D shape (samples, features), no class dimension
                 return shap_values
 
-    def apply_shap_to_adata(self, dataloader, adata, background=None, adata_key="shap_values", target_class=None, normalize=True):
+    def apply_shap_to_adata(
+        self,
+        dataloader,
+        adata,
+        background=None,
+        adata_key="shap_values",
+        target_class=None,
+        normalize=True,
+    ):
         """
         Compute SHAP from a DataLoader and store in AnnData if provided.
         """

@@ -10,10 +10,12 @@ from .cli.hmm_adata import hmm_adata
 
 from .readwrite import safe_read_h5ad, safe_write_h5ad, concatenate_h5ads
 
+
 @click.group()
 def cli():
     """Command-line interface for smftools."""
     pass
+
 
 ####### Load anndata from raw data ###########
 @cli.command()
@@ -21,7 +23,10 @@ def cli():
 def load(config_path):
     """Load and process data from CONFIG_PATH."""
     load_adata(config_path)
+
+
 ##########################################
+
 
 ####### Preprocessing ###########
 @cli.command()
@@ -29,7 +34,10 @@ def load(config_path):
 def preprocess(config_path):
     """Preprocess data from CONFIG_PATH."""
     preprocess_adata(config_path)
+
+
 ##########################################
+
 
 ####### Spatial ###########
 @cli.command()
@@ -37,7 +45,10 @@ def preprocess(config_path):
 def spatial(config_path):
     """Process data from CONFIG_PATH."""
     spatial_adata(config_path)
+
+
 ##########################################
+
 
 ####### HMM ###########
 @cli.command()
@@ -45,7 +56,10 @@ def spatial(config_path):
 def hmm(config_path):
     """Process data from CONFIG_PATH."""
     hmm_adata(config_path)
+
+
 ##########################################
+
 
 ####### batch command ###########
 @cli.command()
@@ -125,7 +139,9 @@ def batch(task, config_table: Path, column: str, sep: str | None):
                     dtype=str,
                 )
             except Exception as e:
-                raise click.ClickException(f"Failed to read {config_table} as headerless list: {e}") from e
+                raise click.ClickException(
+                    f"Failed to read {config_table} as headerless list: {e}"
+                ) from e
 
             config_series = df[column]
         else:
@@ -136,12 +152,7 @@ def batch(task, config_table: Path, column: str, sep: str | None):
                 )
             config_series = df[column]
 
-        config_paths = (
-            config_series.dropna()
-            .map(str)
-            .map(lambda p: Path(p).expanduser())
-            .tolist()
-        )
+        config_paths = config_series.dropna().map(str).map(lambda p: Path(p).expanduser()).tolist()
 
     # ----------------------------
     # Validate config paths
@@ -162,9 +173,7 @@ def batch(task, config_table: Path, column: str, sep: str | None):
 
     func = task_funcs[task]
 
-    click.echo(
-        f"Running task '{task}' on {len(config_paths)} config paths from {config_table}"
-    )
+    click.echo(f"Running task '{task}' on {len(config_paths)} config paths from {config_table}")
 
     # ----------------------------
     # Loop over paths
@@ -177,12 +186,15 @@ def batch(task, config_table: Path, column: str, sep: str | None):
         click.echo(f"[{i}/{len(config_paths)}] {task} → {cfg}")
 
         try:
-            func(str(cfg))   # underlying functions take a string path
+            func(str(cfg))  # underlying functions take a string path
         except Exception as e:
             click.echo(f"  ERROR on {cfg}: {e}")
 
     click.echo("Batch processing complete.")
+
+
 ##########################################
+
 
 ####### concatenate command ###########
 @cli.command("concatenate")
@@ -269,6 +281,8 @@ def concatenate_cmd(
 
     except Exception as e:
         raise click.ClickException(str(e)) from e
+
+
 ##########################################
 
 ####### Merging existing anndatas from an experiment that used two different demultiplexing rules #######

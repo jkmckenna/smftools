@@ -1,16 +1,12 @@
 from ..data import AnnDataModule
 from ..models import SklearnModelWrapper
 
-def train_sklearn_model(
-    model_wrapper, 
-    datamodule, 
-    evaluate_test=True, 
-    evaluate_val=False
-):
+
+def train_sklearn_model(model_wrapper, datamodule, evaluate_test=True, evaluate_val=False):
     """
     Fits a SklearnModelWrapper on the train split from datamodule.
     Evaluates on test and/or val set.
-    
+
     Parameters:
         model_wrapper: SklearnModelWrapper instance
         datamodule: AnnDataModule instance (with setup() method)
@@ -39,6 +35,7 @@ def train_sklearn_model(
 
     return metrics
 
+
 def run_sliding_window_sklearn_training(
     adata,
     tensor_source,
@@ -58,7 +55,7 @@ def run_sliding_window_sklearn_training(
     enforce_eval_balance=False,
     target_eval_freq=0.3,
     max_eval_positive=None,
-    **model_kwargs
+    **model_kwargs,
 ):
     """
     Sliding window training for sklearn models using AnnData.
@@ -86,29 +83,26 @@ def run_sliding_window_sklearn_training(
             train_frac=train_frac,
             val_frac=val_frac,
             test_frac=test_frac,
-            random_seed=random_seed
+            random_seed=random_seed,
         )
         datamodule.setup()
 
         # Build model wrapper
         sklearn_model = model_class(**model_kwargs)
         wrapper = SklearnModelWrapper(
-            sklearn_model, 
+            sklearn_model,
             num_classes=num_classes,
             label_col=label_col,
             class_names=class_names,
             focus_class=focus_class,
             enforce_eval_balance=enforce_eval_balance,
             target_eval_freq=target_eval_freq,
-            max_eval_positive=max_eval_positive
+            max_eval_positive=max_eval_positive,
         )
 
         # Fit and evaluate
         metrics = train_sklearn_model(wrapper, datamodule, evaluate_test=True, evaluate_val=False)
 
-        results[center_varname] = {
-            "model": wrapper,
-            "metrics": metrics
-        }
+        results[center_varname] = {"model": wrapper, "metrics": metrics}
 
     return results

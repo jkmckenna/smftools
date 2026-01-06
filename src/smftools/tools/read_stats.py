@@ -1,9 +1,11 @@
 # ------------------------- Utilities -------------------------
 def random_fill_nans(X):
     import numpy as np
+
     nan_mask = np.isnan(X)
     X[nan_mask] = np.random.rand(*X[nan_mask].shape)
     return X
+
 
 def calculate_row_entropy(
     adata,
@@ -12,7 +14,8 @@ def calculate_row_entropy(
     site_config=None,
     ref_col="Reference_strand",
     encoding="signed",
-    max_threads=None):
+    max_threads=None,
+):
     """
     Adds an obs column to the adata that calculates entropy within each read from a given layer
     when looking at each site type passed in the site_config list.
@@ -60,7 +63,8 @@ def calculate_row_entropy(
             return entropy(probs, base=2)
 
         entropies = Parallel(n_jobs=max_threads)(
-            delayed(compute_entropy)(X_bin[i, :]) for i in tqdm(range(X_bin.shape[0]), desc=f"Entropy: {ref}")
+            delayed(compute_entropy)(X_bin[i, :])
+            for i in tqdm(range(X_bin.shape[0]), desc=f"Entropy: {ref}")
         )
 
         entropy_values.extend(entropies)
@@ -68,6 +72,7 @@ def calculate_row_entropy(
 
     entropy_key = f"{output_key}_entropy"
     adata.obs.loc[row_indices, entropy_key] = entropy_values
+
 
 def binary_autocorrelation_with_spacing(row, positions, max_lag=1000, assume_sorted=True):
     """
@@ -125,13 +130,13 @@ def binary_autocorrelation_with_spacing(row, positions, max_lag=1000, assume_sor
             j += 1
         # consider pairs (i, i+1...j-1)
         if j - i > 1:
-            diffs = pos[i+1:j] - pos[i]                 # 1..max_lag
-            contrib = xc[i] * xc[i+1:j]                 # contributions for each pair
+            diffs = pos[i + 1 : j] - pos[i]  # 1..max_lag
+            contrib = xc[i] * xc[i + 1 : j]  # contributions for each pair
             # accumulate weighted sums and counts per lag
-            lag_sums[:max_lag+1] += np.bincount(diffs, weights=contrib,
-                                                minlength=max_lag+1)[:max_lag+1]
-            lag_counts[:max_lag+1] += np.bincount(diffs,
-                                                  minlength=max_lag+1)[:max_lag+1]
+            lag_sums[: max_lag + 1] += np.bincount(diffs, weights=contrib, minlength=max_lag + 1)[
+                : max_lag + 1
+            ]
+            lag_counts[: max_lag + 1] += np.bincount(diffs, minlength=max_lag + 1)[: max_lag + 1]
 
     autocorr = np.full(max_lag + 1, np.nan, dtype=np.float64)
     nz = lag_counts > 0
@@ -139,6 +144,7 @@ def binary_autocorrelation_with_spacing(row, positions, max_lag=1000, assume_sor
     autocorr[0] = 1.0  # by definition
 
     return autocorr.astype(np.float32, copy=False)
+
 
 # def binary_autocorrelation_with_spacing(row, positions, max_lag=1000):
 #     """

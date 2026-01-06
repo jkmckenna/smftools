@@ -3,6 +3,7 @@ from pathlib import Path
 import anndata as ad
 from ..readwrite import safe_write_h5ad
 
+
 @dataclass
 class AdataPaths:
     raw: Path
@@ -40,6 +41,7 @@ def get_adata_paths(cfg) -> AdataPaths:
         spatial=spatial,
         hmm=hmm,
     )
+
 
 def write_gz_h5ad(adata: ad.AnnData, path: Path) -> Path:
     if path.suffix != ".gz":

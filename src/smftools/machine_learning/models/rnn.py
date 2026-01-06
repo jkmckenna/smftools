@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .base import BaseTorchModel
 
+
 class RNNClassifier(BaseTorchModel):
     def __init__(self, input_size, hidden_dim, num_classes, **kwargs):
         super().__init__(**kwargs)

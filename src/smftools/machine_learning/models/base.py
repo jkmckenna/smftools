@@ -3,15 +3,17 @@ import torch.nn as nn
 import numpy as np
 from ..utils.device import detect_device
 
+
 class BaseTorchModel(nn.Module):
     """
     Minimal base class for torch models that:
     - Stores device and dropout regularization
     """
+
     def __init__(self, dropout_rate=0.0):
         super().__init__()
-        self.device = detect_device() # detects available devices
-        self.dropout_rate = dropout_rate # default dropout rate to be used in regularization.
+        self.device = detect_device()  # detects available devices
+        self.dropout_rate = dropout_rate  # default dropout rate to be used in regularization.
 
     def compute_saliency(
         self,
@@ -21,11 +23,11 @@ class BaseTorchModel(nn.Module):
         smoothgrad=False,
         smooth_samples=25,
         smooth_noise=0.1,
-        signed=True
+        signed=True,
     ):
         """
         Compute vanilla saliency or SmoothGrad saliency.
-        
+
         Arguments:
         ----------
         x : torch.Tensor
@@ -43,7 +45,7 @@ class BaseTorchModel(nn.Module):
         """
         self.eval()
         x = x.clone().detach().requires_grad_(True)
-        
+
         if smoothgrad:
             saliency_accum = torch.zeros_like(x)
             for i in range(smooth_samples):
@@ -56,7 +58,7 @@ class BaseTorchModel(nn.Module):
                 if logits.shape[1] == 1:
                     scores = logits.squeeze(1)
                 else:
-                    scores = logits[torch.arange(x.shape[0]), target_class]                
+                    scores = logits[torch.arange(x.shape[0]), target_class]
                 scores.sum().backward()
                 saliency_accum += x_noisy.grad.detach()
             saliency = saliency_accum / smooth_samples
@@ -69,17 +71,17 @@ class BaseTorchModel(nn.Module):
                 scores = logits[torch.arange(x.shape[0]), target_class]
             scores.sum().backward()
             saliency = x.grad.detach()
-        
+
         if not signed:
             saliency = saliency.abs()
-    
+
         if reduction == "sum" and x.ndim == 3:
             return saliency.sum(dim=-1)
         elif reduction == "mean" and x.ndim == 3:
             return saliency.mean(dim=-1)
         else:
             return saliency
-        
+
     def compute_gradient_x_input(self, x, target_class=None):
         """
         Computes gradient × input attribution.
@@ -118,22 +120,11 @@ class BaseTorchModel(nn.Module):
             baseline = torch.zeros_like(x)
 
         attributions, delta = ig.attribute(
-            x,
-            baselines=baseline,
-            target=target_class,
-            n_steps=steps,
-            return_convergence_delta=True
+            x, baselines=baseline, target=target_class, n_steps=steps, return_convergence_delta=True
         )
         return attributions, delta
 
-    def compute_deeplift(
-        self,
-        x,
-        baseline=None,
-        target_class=None,
-        reduction="sum",
-        signed=True
-    ):
+    def compute_deeplift(self, x, baseline=None, target_class=None, reduction="sum", signed=True):
         """
         Compute DeepLIFT scores using captum.
 
@@ -158,21 +149,15 @@ class BaseTorchModel(nn.Module):
 
         if not signed:
             attr = attr.abs()
-        
+
         if reduction == "sum" and x.ndim == 3:
             return attr.sum(dim=-1)
         elif reduction == "mean" and x.ndim == 3:
             return attr.mean(dim=-1)
         else:
             return attr
-        
-    def compute_occlusion(
-        self,
-        x,
-        target_class=None,
-        window_size=5,
-        baseline=None
-    ):
+
+    def compute_occlusion(self, x, target_class=None, window_size=5, baseline=None):
         """
         Computes per-sample occlusion attribution.
         Supports 2D [B, S] or 3D [B, S, D] inputs.
@@ -208,9 +193,7 @@ class BaseTorchModel(nn.Module):
                     x_occluded[left:right, :] = baseline[left:right, :]
 
                 x_tensor = torch.tensor(
-                    x_occluded,
-                    device=self.device,
-                    dtype=torch.float32
+                    x_occluded, device=self.device, dtype=torch.float32
                 ).unsqueeze(0)
 
                 logits = self.forward(x_tensor)
@@ -235,7 +218,7 @@ class BaseTorchModel(nn.Module):
         device="cpu",
         target_class=None,
         normalize=True,
-        signed=True
+        signed=True,
     ):
         """
         Apply a chosen attribution method to a dataloader and store results in adata.
@@ -252,7 +235,9 @@ class BaseTorchModel(nn.Module):
                 attr = model.compute_saliency(x, target_class=target_class, signed=signed)
 
             elif method == "smoothgrad":
-                attr = model.compute_saliency(x, smoothgrad=True, target_class=target_class, signed=signed)
+                attr = model.compute_saliency(
+                    x, smoothgrad=True, target_class=target_class, signed=signed
+                )
 
             elif method == "IG":
                 attributions, delta = model.compute_integrated_gradients(
@@ -261,15 +246,15 @@ class BaseTorchModel(nn.Module):
                 attr = attributions
 
             elif method == "deeplift":
-                attr = model.compute_deeplift(x, baseline=baseline, target_class=target_class, signed=signed)
+                attr = model.compute_deeplift(
+                    x, baseline=baseline, target_class=target_class, signed=signed
+                )
 
             elif method == "gradxinput":
                 attr = model.compute_gradient_x_input(x, target_class=target_class)
 
             elif method == "occlusion":
-                attr = model.compute_occlusion(
-                    x, target_class=target_class, baseline=baseline
-                )
+                attr = model.compute_occlusion(x, target_class=target_class, baseline=baseline)
 
             else:
                 raise ValueError(f"Unknown method {method}")

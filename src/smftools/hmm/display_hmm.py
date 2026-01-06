@@ -1,5 +1,6 @@
 def display_hmm(hmm, state_labels=["Non-Methylated", "Methylated"], obs_labels=["0", "1"]):
     import torch
+
     print("\n**HMM Model Overview**")
     print(hmm)
 

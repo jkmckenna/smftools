@@ -20,13 +20,17 @@ from collections import defaultdict, Counter
 
 from ..readwrite import make_dirs, time_string, date_string
 
+
 def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, Path]) -> None:
     """
     Minimal BAM->FASTQ using pysam. Writes unmapped or unaligned reads as-is.
     """
     bam_path = str(bam_path)
     fastq_path = str(fastq_path)
-    with pysam.AlignmentFile(bam_path, "rb", check_sq=False) as bam, open(fastq_path, "w", encoding="utf-8") as fq:
+    with (
+        pysam.AlignmentFile(bam_path, "rb", check_sq=False) as bam,
+        open(fastq_path, "w", encoding="utf-8") as fq,
+    ):
         for r in bam.fetch(until_eof=True):
             # Optionally skip secondary/supplementary:
             # if r.is_secondary or r.is_supplementary:
@@ -45,20 +49,21 @@ def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, 
                 # q is an array/list of ints (Phred scores).
                 # Convert to FASTQ string with Phred+33 encoding,
                 # clamping to sane range [0, 93] to stay in printable ASCII.
-                qual_str = "".join(
-                    chr(min(max(int(qv), 0), 93) + 33)
-                    for qv in q
-                )
+                qual_str = "".join(chr(min(max(int(qv), 0), 93) + 33) for qv in q)
 
             fq.write(f"@{name}\n{seq}\n+\n{qual_str}\n")
 
-def _sort_bam_with_pysam(in_bam: Union[str, Path], out_bam: Union[str, Path], threads: Optional[int] = None) -> None:
+
+def _sort_bam_with_pysam(
+    in_bam: Union[str, Path], out_bam: Union[str, Path], threads: Optional[int] = None
+) -> None:
     in_bam, out_bam = str(in_bam), str(out_bam)
     args = []
     if threads:
         args += ["-@", str(threads)]
     args += ["-o", out_bam, in_bam]
     pysam.sort(*args)
+
 
 def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = None) -> None:
     bam_path = str(bam_path)
@@ -68,13 +73,15 @@ def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = N
     else:
         pysam.index(bam_path)
 
-def align_and_sort_BAM(fasta, 
-                       input, 
-                       cfg,
+
+def align_and_sort_BAM(
+    fasta,
+    input,
+    cfg,
 ):
     """
     A wrapper for running dorado aligner and samtools functions
-    
+
     Parameters:
         fasta (str): File path to the reference genome to align to.
         input (str): File path to the basecalled file to align. Works for .bam and .fastq files
@@ -86,58 +93,63 @@ def align_and_sort_BAM(fasta,
     """
     input_basename = input.name
     input_suffix = input.suffix
-    input_as_fastq = input.with_name(input.stem + '.fastq')
+    input_as_fastq = input.with_name(input.stem + ".fastq")
 
     output_path_minus_suffix = cfg.output_directory / input.stem
-    
+
     aligned_BAM = output_path_minus_suffix.with_name(output_path_minus_suffix.stem + "_aligned")
     aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
-    aligned_sorted_BAM =aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
+    aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
     aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
 
     if cfg.threads:
         threads = str(cfg.threads)
     else:
         threads = None
-    
-    if cfg.aligner == 'minimap2':
+
+    if cfg.aligner == "minimap2":
         if not cfg.align_from_bam:
             print(f"Converting BAM to FASTQ: {input}")
             _bam_to_fastq_with_pysam(input, input_as_fastq)
             print(f"Aligning FASTQ to Reference: {input_as_fastq}")
             mm_input = input_as_fastq
-        else: 
+        else:
             print(f"Aligning BAM to Reference: {input}")
             mm_input = input
 
         if threads:
-            minimap_command = ['minimap2'] + cfg.aligner_args + ['-t', threads, str(fasta), str(mm_input)]
+            minimap_command = (
+                ["minimap2"] + cfg.aligner_args + ["-t", threads, str(fasta), str(mm_input)]
+            )
         else:
-            minimap_command = ['minimap2'] + cfg.aligner_args + [str(fasta), str(mm_input)]
+            minimap_command = ["minimap2"] + cfg.aligner_args + [str(fasta), str(mm_input)]
         subprocess.run(minimap_command, stdout=open(aligned_output, "wb"))
 
         if not cfg.align_from_bam:
             os.remove(input_as_fastq)
 
-    elif cfg.aligner == 'dorado':
+    elif cfg.aligner == "dorado":
         # Run dorado aligner
         print(f"Aligning BAM to Reference: {input}")
         if threads:
-            alignment_command = ["dorado", "aligner", "-t", threads] + cfg.aligner_args + [str(fasta), str(input)]
+            alignment_command = (
+                ["dorado", "aligner", "-t", threads] + cfg.aligner_args + [str(fasta), str(input)]
+            )
         else:
             alignment_command = ["dorado", "aligner"] + cfg.aligner_args + [str(fasta), str(input)]
         subprocess.run(alignment_command, stdout=open(aligned_output, "wb"))
 
     else:
-        print(f'Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado')
+        print(f"Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado")
         return
-    
+
     # --- Sort & Index with pysam ---
     print(f"[pysam] Sorting: {aligned_output} -> {aligned_sorted_output}")
     _sort_bam_with_pysam(aligned_output, aligned_sorted_output, threads=threads)
 
     print(f"[pysam] Indexing: {aligned_sorted_output}")
     _index_bam_with_pysam(aligned_sorted_output, threads=threads)
+
 
 def bam_qc(
     bam_files: Iterable[str | Path],
@@ -159,6 +171,7 @@ def bam_qc(
     # Try to import pysam once
     try:
         import pysam
+
         HAVE_PYSAM = True
     except Exception:
         HAVE_PYSAM = False
@@ -194,7 +207,7 @@ def bam_qc(
         base = bam.stem  # filename without .bam
         out_stats = bam_qc_dir / f"{base}_stats.txt"
         out_flag = bam_qc_dir / f"{base}_flagstat.txt"
-        out_idx  = bam_qc_dir / f"{base}_idxstats.txt"
+        out_idx = bam_qc_dir / f"{base}_idxstats.txt"
 
         # Make sure index exists (samtools stats/flagstat don’t require, idxstats does)
         try:
@@ -281,6 +294,7 @@ def bam_qc(
 
     print("QC processing completed.")
 
+
 def concatenate_fastqs_to_bam(
     fastq_files: List[Union[str, Tuple[str, str], Path, Tuple[Path, Path]]],
     output_bam: Union[str, Path],
@@ -326,7 +340,16 @@ def concatenate_fastqs_to_bam(
         """
         name = p.name
         lowers = name.lower()
-        for ext in (".fastq.gz", ".fq.gz", ".fastq.bz2", ".fq.bz2", ".fastq.xz", ".fq.xz", ".fastq", ".fq"):
+        for ext in (
+            ".fastq.gz",
+            ".fq.gz",
+            ".fastq.bz2",
+            ".fq.bz2",
+            ".fastq.xz",
+            ".fq.xz",
+            ".fastq",
+            ".fq",
+        ):
             if lowers.endswith(ext):
                 return name[: -len(ext)]
         return p.stem  # fallback: remove last suffix only
@@ -342,8 +365,8 @@ def concatenate_fastqs_to_bam(
     def _classify_read_token(stem: str) -> Tuple[Optional[str], Optional[int]]:
         # return (prefix, readnum) if matches; else (None, None)
         patterns = [
-            r"(?i)(.*?)[._-]r?([12])$",        # prefix_R1 / prefix.r2 / prefix-1
-            r"(?i)(.*?)[._-]read[_-]?([12])$", # prefix_read1
+            r"(?i)(.*?)[._-]r?([12])$",  # prefix_R1 / prefix.r2 / prefix-1
+            r"(?i)(.*?)[._-]read[_-]?([12])$",  # prefix_read1
         ]
         for pat in patterns:
             m = re.match(pat, stem)
@@ -450,7 +473,10 @@ def concatenate_fastqs_to_bam(
     # ---------- BAM header ----------
     header = {"HD": {"VN": "1.6", "SO": "unknown"}, "SQ": []}
     if add_read_group:
-        header["RG"] = [{"ID": bc, **({"SM": rg_sample_field} if rg_sample_field else {})} for bc in barcodes_in_order]
+        header["RG"] = [
+            {"ID": bc, **({"SM": rg_sample_field} if rg_sample_field else {})}
+            for bc in barcodes_in_order
+        ]
     header.setdefault("PG", []).append(
         {"ID": "concat-fastq", "PN": "concatenate_fastqs_to_bam", "VN": "1"}
     )
@@ -476,6 +502,7 @@ def concatenate_fastqs_to_bam(
             it2 = _fastq_iter(r2_path)
 
             for rec1, rec2 in zip_longest(it1, it2, fillvalue=None):
+
                 def _clean(n: Optional[str]) -> Optional[str]:
                     if n is None:
                         return None
@@ -489,12 +516,16 @@ def concatenate_fastqs_to_bam(
                 )
 
                 if rec1 is not None:
-                    a1 = _make_unaligned_segment(name, rec1.sequence, rec1.quality, bc, read1=True, read2=False)
+                    a1 = _make_unaligned_segment(
+                        name, rec1.sequence, rec1.quality, bc, read1=True, read2=False
+                    )
                     bam_out.write(a1)
                     per_file_counts[r1_path] = per_file_counts.get(r1_path, 0) + 1
                     total_written += 1
                 if rec2 is not None:
-                    a2 = _make_unaligned_segment(name, rec2.sequence, rec2.quality, bc, read1=False, read2=True)
+                    a2 = _make_unaligned_segment(
+                        name, rec2.sequence, rec2.quality, bc, read1=False, read2=True
+                    )
                     bam_out.write(a2)
                     per_file_counts[r2_path] = per_file_counts.get(r2_path, 0) + 1
                     total_written += 1
@@ -516,7 +547,9 @@ def concatenate_fastqs_to_bam(
                 raise FileNotFoundError(pth)
             bc = per_path_barcode.get(pth, "barcode")
             for rec in _fastq_iter(pth):
-                a = _make_unaligned_segment(rec.name, rec.sequence, rec.quality, bc, read1=False, read2=False)
+                a = _make_unaligned_segment(
+                    rec.name, rec.sequence, rec.quality, bc, read1=False, read2=False
+                )
                 bam_out.write(a)
                 per_file_counts[pth] = per_file_counts.get(pth, 0) + 1
                 total_written += 1
@@ -530,20 +563,21 @@ def concatenate_fastqs_to_bam(
         "barcodes": barcodes_in_order,
     }
 
+
 def count_aligned_reads(bam_file):
     """
     Counts the number of aligned reads in a bam file that map to each reference record.
-    
+
     Parameters:
         bam_file (str): A string representing the path to an aligned BAM file.
-    
+
     Returns:
        aligned_reads_count (int): The total number or reads aligned in the BAM.
        unaligned_reads_count (int): The total number of reads not aligned in the BAM.
        record_counts (dict): A dictionary keyed by reference record instance that points toa tuple containing the total reads mapped to the record and the fraction of mapped reads which map to the record.
 
     """
-    print('{0}: Counting aligned reads in BAM > {1}'.format(time_string(), bam_file))
+    print("{0}: Counting aligned reads in BAM > {1}".format(time_string(), bam_file))
     aligned_reads_count = 0
     unaligned_reads_count = 0
     # Make a dictionary, keyed by the reference_name of reference chromosome that points to an integer number of read counts mapped to the chromosome, as well as the proportion of mapped reads in that chromosome
@@ -552,12 +586,14 @@ def count_aligned_reads(bam_file):
     with pysam.AlignmentFile(str(bam_file), "rb") as bam:
         total_reads = bam.mapped + bam.unmapped
         # Iterate over reads to get the total mapped read counts and the reads that map to each reference
-        for read in tqdm(bam, desc='Counting aligned reads in BAM', total=total_reads):
+        for read in tqdm(bam, desc="Counting aligned reads in BAM", total=total_reads):
             if read.is_unmapped:
                 unaligned_reads_count += 1
             else:
                 aligned_reads_count += 1
-                record_counts[read.reference_name] += 1  # Automatically increments if key exists, adds if not
+                record_counts[read.reference_name] += (
+                    1  # Automatically increments if key exists, adds if not
+                )
 
         # reformat the dictionary to contain read counts mapped to the reference, as well as the proportion of mapped reads in reference
         for reference in record_counts:
@@ -566,7 +602,10 @@ def count_aligned_reads(bam_file):
 
     return aligned_reads_count, unaligned_reads_count, dict(record_counts)
 
-def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, threads):
+
+def demux_and_index_BAM(
+    aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, threads
+):
     """
     A wrapper function for splitting BAMS and indexing them.
     Parameters:
@@ -577,7 +616,7 @@ def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, 
         barcode_both_ends (bool): Whether to require both ends to be barcoded.
         trim (bool): Whether to trim off barcodes after demultiplexing.
         threads (int): Number of threads to use.
-    
+
     Returns:
         bam_files (list): List of split BAM file path strings
             Splits an input BAM file on barcode value and makes a BAM index file.
@@ -594,25 +633,24 @@ def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, 
         pass
     command += ["--emit-summary", "--sort-bam", "--output-dir", str(split_dir)]
     command.append(str(input_bam))
-    command_string = ' '.join(command)
+    command_string = " ".join(command)
     print(f"Running: {command_string}")
     subprocess.run(command)
 
     bam_files = sorted(
-        p for p in split_dir.glob(f"*{bam_suffix}")
-        if p.is_file() and p.suffix == bam_suffix
+        p for p in split_dir.glob(f"*{bam_suffix}") if p.is_file() and p.suffix == bam_suffix
     )
 
     if not bam_files:
         raise FileNotFoundError(f"No BAM files found in {split_dir} with suffix {bam_suffix}")
-    
+
     # ---- Optional renaming with prefix ----
     renamed_bams = []
     prefix = "de" if barcode_both_ends else "se"
 
     for bam in bam_files:
         bam = Path(bam)
-        bai = bam.with_suffix(bam_suffix + ".bai")   # dorado’s sorting produces .bam.bai
+        bai = bam.with_suffix(bam_suffix + ".bai")  # dorado’s sorting produces .bam.bai
 
         if prefix:
             new_name = f"{prefix}_{bam.name}"
@@ -628,8 +666,9 @@ def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, 
             bai.rename(new_bai)
 
         renamed_bams.append(new_bam)
-    
+
     return renamed_bams
+
 
 def extract_base_identities(bam_file, chromosome, positions, max_reference_length, sequence):
     """
@@ -649,11 +688,11 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
 
     positions = set(positions)
-    fwd_base_identities = defaultdict(lambda: np.full(max_reference_length, 'N', dtype='<U1'))
-    rev_base_identities = defaultdict(lambda: np.full(max_reference_length, 'N', dtype='<U1'))
+    fwd_base_identities = defaultdict(lambda: np.full(max_reference_length, "N", dtype="<U1"))
+    rev_base_identities = defaultdict(lambda: np.full(max_reference_length, "N", dtype="<U1"))
     mismatch_counts_per_read = defaultdict(lambda: defaultdict(Counter))
 
-    #print(f"{timestamp} Reading reads from {chromosome} BAM file: {bam_file}")
+    # print(f"{timestamp} Reading reads from {chromosome} BAM file: {bam_file}")
     with pysam.AlignmentFile(str(bam_file), "rb") as bam:
         total_reads = bam.mapped
         ref_seq = sequence.upper()
@@ -676,7 +715,7 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
                     base_dict[read_name][reference_position] = read_base
 
                 # Track mismatches (excluding Ns)
-                if read_base != ref_base and read_base != 'N' and ref_base != 'N':
+                if read_base != ref_base and read_base != "N" and ref_base != "N":
                     mismatch_counts_per_read[read_name][ref_base][read_base] += 1
 
     # Determine C→T vs G→A dominance per read
@@ -694,7 +733,13 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
         else:
             mismatch_trend_per_read[read_name] = "none"
 
-    return dict(fwd_base_identities), dict(rev_base_identities), dict(mismatch_counts_per_read), mismatch_trend_per_read
+    return (
+        dict(fwd_base_identities),
+        dict(rev_base_identities),
+        dict(mismatch_counts_per_read),
+        mismatch_trend_per_read,
+    )
+
 
 def extract_read_features_from_bam(bam_file_path):
     """
@@ -705,7 +750,7 @@ def extract_read_features_from_bam(bam_file_path):
         read_metrics (dict)
     """
     # Open the BAM file
-    print(f'Extracting read features from BAM: {bam_file_path}')
+    print(f"Extracting read features from BAM: {bam_file_path}")
     with pysam.AlignmentFile(bam_file_path, "rb") as bam_file:
         read_metrics = {}
         reference_lengths = bam_file.lengths  # List of lengths for each reference (chromosome)
@@ -722,9 +767,16 @@ def extract_read_features_from_bam(bam_file_path):
             reference_length = reference_lengths[reference_index]
             mapped_length = sum(end - start for start, end in read.get_blocks())
             mapping_quality = read.mapping_quality  # Phred-scaled MAPQ
-            read_metrics[read.query_name] = [read.query_length, median_read_quality, reference_length, mapped_length, mapping_quality]
+            read_metrics[read.query_name] = [
+                read.query_length,
+                median_read_quality,
+                reference_length,
+                mapped_length,
+                mapping_quality,
+            ]
 
     return read_metrics
+
 
 def extract_readnames_from_bam(aligned_BAM):
     """
@@ -738,14 +790,18 @@ def extract_readnames_from_bam(aligned_BAM):
 
     """
     import subprocess
+
     # Make a text file of reads for the BAM
-    txt_output = aligned_BAM.split('.bam')[0] + '_read_names.txt'
+    txt_output = aligned_BAM.split(".bam")[0] + "_read_names.txt"
     samtools_view = subprocess.Popen(["samtools", "view", aligned_BAM], stdout=subprocess.PIPE)
     with open(txt_output, "w") as output_file:
-        cut_process = subprocess.Popen(["cut", "-f1"], stdin=samtools_view.stdout, stdout=output_file)   
+        cut_process = subprocess.Popen(
+            ["cut", "-f1"], stdin=samtools_view.stdout, stdout=output_file
+        )
     samtools_view.stdout.close()
     cut_process.wait()
     samtools_view.wait()
+
 
 def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
     """
@@ -756,7 +812,7 @@ def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
         output_prefix (str): A prefix to append to the output BAM.
         bam_suffix (str): A suffix to add to the bam file.
         split_dir (str): String indicating path to directory to split BAMs into
-    
+
     Returns:
         None
             Writes out split BAM files.
@@ -773,18 +829,23 @@ def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
             try:
                 # Get the barcode tag value
                 bc_tag = read.get_tag("BC", with_value_type=True)[0]
-                #bc_tag = read.get_tag("BC", with_value_type=True)[0].split('barcode')[1]
+                # bc_tag = read.get_tag("BC", with_value_type=True)[0].split('barcode')[1]
                 # Open the output BAM file corresponding to the barcode
                 if bc_tag not in output_files:
-                    output_path = split_dir / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
-                    output_files[bc_tag] = pysam.AlignmentFile(str(output_path), "wb", header=bam.header)
+                    output_path = (
+                        split_dir / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
+                    )
+                    output_files[bc_tag] = pysam.AlignmentFile(
+                        str(output_path), "wb", header=bam.header
+                    )
                 # Write the read to the corresponding output BAM file
                 output_files[bc_tag].write(read)
             except KeyError:
-                 print(f"BC tag not present for read: {read.query_name}")
+                print(f"BC tag not present for read: {read.query_name}")
     # Close all output BAM files
     for output_file in output_files.values():
         output_file.close()
+
 
 def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     """
@@ -793,7 +854,7 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
         aligned_sorted_BAM (str): A string representing the file path of the aligned_sorted BAM file.
         split_dir (str): A string representing the file path to the directory to split the BAMs into.
         bam_suffix (str): A suffix to add to the bam file.
-    
+
     Returns:
         None
             Splits an input BAM file on barcode value and makes a BAM index file.
@@ -802,9 +863,9 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     file_prefix = date_string()
     separate_bam_by_bc(aligned_sorted_output, file_prefix, bam_suffix, split_dir)
     # Make a BAM index file for the BAMs in that directory
-    bam_pattern = '*' + bam_suffix
+    bam_pattern = "*" + bam_suffix
     bam_files = glob.glob(split_dir / bam_pattern)
-    bam_files = [str(bam) for bam in bam_files if '.bai' not in str(bam)]
+    bam_files = [str(bam) for bam in bam_files if ".bai" not in str(bam)]
     for input_file in bam_files:
         pysam.index(input_file)
 

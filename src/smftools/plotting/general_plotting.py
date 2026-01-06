@@ -12,6 +12,7 @@ import pandas as pd
 from typing import Optional, Mapping, Sequence, Any, Dict, List, Tuple
 from pathlib import Path
 
+
 def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
     """
     Return indices for ~n_ticks evenly spaced labels across [0, n_positions-1].
@@ -24,6 +25,7 @@ def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
     # linspace gives fixed count
     pos = np.linspace(0, n_positions - 1, n_ticks)
     return np.unique(np.round(pos).astype(int))
+
 
 def _select_labels(subset, sites: np.ndarray, reference: str, index_col_suffix: str | None):
     """
@@ -65,10 +67,12 @@ def _select_labels(subset, sites: np.ndarray, reference: str, index_col_suffix: 
     labels = subset.var[colname].astype(str).values
     return labels[sites]
 
+
 def normalized_mean(matrix: np.ndarray) -> np.ndarray:
     mean = np.nanmean(matrix, axis=0)
     denom = (mean.max() - mean.min()) + 1e-9
     return (mean - mean.min()) / denom
+
 
 def methylation_fraction(matrix: np.ndarray) -> np.ndarray:
     """
@@ -84,14 +88,13 @@ def methylation_fraction(matrix: np.ndarray) -> np.ndarray:
     valid = valid_mask.sum(axis=0)
 
     return np.divide(
-        methylated, valid,
-        out=np.zeros_like(methylated, dtype=float),
-        where=valid != 0
+        methylated, valid, out=np.zeros_like(methylated, dtype=float), where=valid != 0
     )
+
 
 def clean_barplot(ax, mean_values, title):
     x = np.arange(len(mean_values))
-    ax.bar(x, mean_values, color="gray", width=1.0, align='edge')
+    ax.bar(x, mean_values, color="gray", width=1.0, align="edge")
     ax.set_xlim(0, len(mean_values))
     ax.set_ylim(0, 1)
     ax.set_yticks([0.0, 0.5, 1.0])
@@ -100,9 +103,10 @@ def clean_barplot(ax, mean_values, title):
 
     # Hide all spines except left
     for spine_name, spine in ax.spines.items():
-        spine.set_visible(spine_name == 'left')
+        spine.set_visible(spine_name == "left")
 
-    ax.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
+    ax.tick_params(axis="x", which="both", bottom=False, top=False, labelbottom=False)
+
 
 # def combined_hmm_raw_clustermap(
 #     adata,
@@ -145,7 +149,7 @@ def clean_barplot(ax, mean_values, title):
 #                     (adata.obs['read_length'] >= min_length) &
 #                     (adata.obs['mapped_length_to_reference_length_ratio'] > min_mapped_length_to_reference_length_ratio)
 #                 ]
-                
+
 #                 mask = subset.var[f"{ref}_valid_fraction"].astype(float) > float(min_position_valid_fraction)
 #                 subset = subset[:, mask]
 
@@ -257,7 +261,7 @@ def clean_barplot(ax, mean_values, title):
 #                         clean_barplot(axes_bar[1], mean_gpc, f"GpC Accessibility Signal")
 #                         clean_barplot(axes_bar[2], mean_cpg, f"CpG Accessibility Signal")
 #                         clean_barplot(axes_bar[3], mean_any_c, f"Any C Accessibility Signal")
-                        
+
 #                         hmm_labels = subset.var_names.astype(int)
 #                         hmm_label_spacing = 150
 #                         sns.heatmap(hmm_matrix, cmap=cmap_hmm, ax=axes_heat[0], xticklabels=hmm_labels[::hmm_label_spacing], yticklabels=False, cbar=False)
@@ -311,7 +315,7 @@ def clean_barplot(ax, mean_values, title):
 #                             "bin_boundaries": bin_boundaries,
 #                             "percentages": percentages
 #                         })
-                        
+
 #                         #adata.uns['clustermap_results'] = results
 
 #             except Exception as e:
@@ -319,48 +323,39 @@ def clean_barplot(ax, mean_values, title):
 #                 traceback.print_exc()
 #                 continue
 
+
 def combined_hmm_raw_clustermap(
     adata,
     sample_col: str = "Sample_Names",
     reference_col: str = "Reference_strand",
-
     hmm_feature_layer: str = "hmm_combined",
-
     layer_gpc: str = "nan0_0minus1",
     layer_cpg: str = "nan0_0minus1",
     layer_c: str = "nan0_0minus1",
     layer_a: str = "nan0_0minus1",
-
     cmap_hmm: str = "tab10",
     cmap_gpc: str = "coolwarm",
     cmap_cpg: str = "viridis",
     cmap_c: str = "coolwarm",
     cmap_a: str = "coolwarm",
-
     min_quality: int = 20,
     min_length: int = 200,
     min_mapped_length_to_reference_length_ratio: float = 0.8,
     min_position_valid_fraction: float = 0.5,
     demux_types: Sequence[str] = ("single", "double", "already"),
-
     sample_mapping: Optional[Mapping[str, str]] = None,
-
     save_path: str | Path | None = None,
     normalize_hmm: bool = False,
-
     sort_by: str = "gpc",
     bins: Optional[Dict[str, Any]] = None,
-
     deaminase: bool = False,
     min_signal: float = 0.0,
-
     # ---- fixed tick label controls (counts, not spacing)
     n_xticks_hmm: int = 10,
     n_xticks_any_c: int = 8,
     n_xticks_gpc: int = 8,
     n_xticks_cpg: int = 8,
     n_xticks_a: int = 8,
-
     index_col_suffix: str | None = None,
 ):
     """
@@ -372,13 +367,14 @@ def combined_hmm_raw_clustermap(
     sort_by options:
       'gpc', 'cpg', 'c', 'a', 'gpc_cpg', 'none', 'hmm', or 'obs:<col>'
     """
+
     def pick_xticks(labels: np.ndarray, n_ticks: int):
         if labels.size == 0:
             return [], []
         idx = np.linspace(0, len(labels) - 1, n_ticks).round().astype(int)
         idx = np.unique(idx)
         return idx.tolist(), labels[idx].tolist()
-    
+
     # Helper: build a True mask if filter is inactive or column missing
     def _mask_or_true(series_name: str, predicate):
         if series_name not in adata.obs:
@@ -389,7 +385,7 @@ def combined_hmm_raw_clustermap(
         except Exception:
             # Fallback: all True if bad dtype / predicate failure
             return pd.Series(True, index=adata.obs.index)
-    
+
     results = []
     signal_type = "deamination" if deaminase else "methylation"
 
@@ -400,29 +396,39 @@ def combined_hmm_raw_clustermap(
             # Row-level masks (obs)
             qmask = _mask_or_true(
                 "read_quality",
-                (lambda s: s >= float(min_quality)) if (min_quality is not None) else (lambda s: pd.Series(True, index=s.index)),
+                (lambda s: s >= float(min_quality))
+                if (min_quality is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
             )
             lm_mask = _mask_or_true(
                 "mapped_length",
-                (lambda s: s >= float(min_length)) if (min_length is not None) else (lambda s: pd.Series(True, index=s.index)),
+                (lambda s: s >= float(min_length))
+                if (min_length is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
             )
             lrr_mask = _mask_or_true(
                 "mapped_length_to_reference_length_ratio",
-                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio)) if (min_mapped_length_to_reference_length_ratio is not None) else (lambda s: pd.Series(True, index=s.index)),
+                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
+                if (min_mapped_length_to_reference_length_ratio is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
             )
 
             demux_mask = _mask_or_true(
                 "demux_type",
-                (lambda s: s.astype("string").isin(list(demux_types))) if (demux_types is not None) else (lambda s: pd.Series(True, index=s.index)),
+                (lambda s: s.astype("string").isin(list(demux_types)))
+                if (demux_types is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
             )
 
-            ref_mask = (adata.obs[reference_col] == ref)
-            sample_mask = (adata.obs[sample_col] == sample)
+            ref_mask = adata.obs[reference_col] == ref
+            sample_mask = adata.obs[sample_col] == sample
 
             row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
 
             if not bool(row_mask.any()):
-                print(f"No reads for {display_sample} - {ref} after read quality and length filtering")
+                print(
+                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
+                )
                 continue
 
             try:
@@ -430,7 +436,7 @@ def combined_hmm_raw_clustermap(
                 subset = adata[row_mask, :].copy()
 
                 # Column-level mask (var)
-                if (min_position_valid_fraction is not None):
+                if min_position_valid_fraction is not None:
                     valid_key = f"{ref}_valid_fraction"
                     if valid_key in subset.var:
                         v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
@@ -438,7 +444,9 @@ def combined_hmm_raw_clustermap(
                         if col_mask.any():
                             subset = subset[:, col_mask].copy()
                         else:
-                            print(f"No positions left after valid_fraction filter for {display_sample} - {ref}")
+                            print(
+                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
+                            )
                             continue
 
                 if subset.shape[0] == 0:
@@ -458,17 +466,17 @@ def combined_hmm_raw_clustermap(
                             return np.where(subset.var[k].values)[0]
                     return np.array([], dtype=int)
 
-                gpc_sites   = _sites(f"{ref}_GpC_site")
-                cpg_sites   = _sites(f"{ref}_CpG_site")
+                gpc_sites = _sites(f"{ref}_GpC_site")
+                cpg_sites = _sites(f"{ref}_CpG_site")
                 any_c_sites = _sites(f"{ref}_any_C_site", f"{ref}_C_site")
                 any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
 
                 # ---- labels via _select_labels ----
                 # HMM uses *all* columns
-                hmm_sites   = np.arange(subset.n_vars, dtype=int)
-                hmm_labels  = _select_labels(subset, hmm_sites,   ref, index_col_suffix)
-                gpc_labels  = _select_labels(subset, gpc_sites,   ref, index_col_suffix)
-                cpg_labels  = _select_labels(subset, cpg_sites,   ref, index_col_suffix)
+                hmm_sites = np.arange(subset.n_vars, dtype=int)
+                hmm_labels = _select_labels(subset, hmm_sites, ref, index_col_suffix)
+                gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
+                cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
                 any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
                 any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
 
@@ -518,9 +526,11 @@ def combined_hmm_raw_clustermap(
                     elif sort_by == "gpc_cpg" and gpc_sites.size and cpg_sites.size:
                         linkage = sch.linkage(sb.layers[layer_gpc], method="ward")
                         order = sch.leaves_list(linkage)
-                    
+
                     elif sort_by == "hmm" and hmm_sites.size:
-                        linkage = sch.linkage(sb[:, hmm_sites].layers[hmm_feature_layer], method="ward")
+                        linkage = sch.linkage(
+                            sb[:, hmm_sites].layers[hmm_feature_layer], method="ward"
+                        )
                         order = sch.leaves_list(linkage)
 
                     else:
@@ -546,46 +556,62 @@ def combined_hmm_raw_clustermap(
 
                 # ---------------- stack ----------------
                 hmm_matrix = np.vstack(stacked_hmm)
-                mean_hmm = normalized_mean(hmm_matrix) if normalize_hmm else np.nanmean(hmm_matrix, axis=0)
+                mean_hmm = (
+                    normalized_mean(hmm_matrix) if normalize_hmm else np.nanmean(hmm_matrix, axis=0)
+                )
 
                 panels = [
-                    (f"HMM - {hmm_feature_layer}", hmm_matrix, hmm_labels, cmap_hmm, mean_hmm, n_xticks_hmm),
+                    (
+                        f"HMM - {hmm_feature_layer}",
+                        hmm_matrix,
+                        hmm_labels,
+                        cmap_hmm,
+                        mean_hmm,
+                        n_xticks_hmm,
+                    ),
                 ]
 
                 if stacked_any_c:
                     m = np.vstack(stacked_any_c)
-                    panels.append(("C", m, any_c_labels, cmap_c, methylation_fraction(m), n_xticks_any_c))
+                    panels.append(
+                        ("C", m, any_c_labels, cmap_c, methylation_fraction(m), n_xticks_any_c)
+                    )
 
                 if stacked_gpc:
                     m = np.vstack(stacked_gpc)
-                    panels.append(("GpC", m, gpc_labels, cmap_gpc, methylation_fraction(m), n_xticks_gpc))
+                    panels.append(
+                        ("GpC", m, gpc_labels, cmap_gpc, methylation_fraction(m), n_xticks_gpc)
+                    )
 
                 if stacked_cpg:
                     m = np.vstack(stacked_cpg)
-                    panels.append(("CpG", m, cpg_labels, cmap_cpg, methylation_fraction(m), n_xticks_cpg))
+                    panels.append(
+                        ("CpG", m, cpg_labels, cmap_cpg, methylation_fraction(m), n_xticks_cpg)
+                    )
 
                 if stacked_any_a:
                     m = np.vstack(stacked_any_a)
-                    panels.append(("A", m, any_a_labels, cmap_a, methylation_fraction(m), n_xticks_a))
+                    panels.append(
+                        ("A", m, any_a_labels, cmap_a, methylation_fraction(m), n_xticks_a)
+                    )
 
                 # ---------------- plotting ----------------
                 n_panels = len(panels)
                 fig = plt.figure(figsize=(4.5 * n_panels, 10))
                 gs = gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
-                fig.suptitle(f"{sample} — {ref} — {total_reads} reads ({signal_type})",
-                             fontsize=14, y=0.98)
+                fig.suptitle(
+                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=14, y=0.98
+                )
 
                 axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
                 axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
 
                 for i, (name, matrix, labels, cmap, mean_vec, n_ticks) in enumerate(panels):
-
                     # ---- your clean barplot ----
                     clean_barplot(axes_bar[i], mean_vec, name)
 
                     # ---- heatmap ----
-                    sns.heatmap(matrix, cmap=cmap, ax=axes_heat[i],
-                                yticklabels=False, cbar=False)
+                    sns.heatmap(matrix, cmap=cmap, ax=axes_heat[i], yticklabels=False, cbar=False)
 
                     # ---- xticks ----
                     xtick_pos, xtick_labels = pick_xticks(np.asarray(labels), n_ticks)
@@ -609,6 +635,7 @@ def combined_hmm_raw_clustermap(
 
             except Exception:
                 import traceback
+
                 traceback.print_exc()
                 continue
 
@@ -728,7 +755,7 @@ def combined_hmm_raw_clustermap(
 #                             order = np.arange(num_reads)
 #                         elif sort_by == "any_a":
 #                             linkage = sch.linkage(subset_bin.layers[layer_a], method="ward")
-#                             order = sch.leaves_list(linkage)                            
+#                             order = sch.leaves_list(linkage)
 #                         else:
 #                             raise ValueError(f"Unsupported sort_by option: {sort_by}")
 
@@ -757,13 +784,13 @@ def combined_hmm_raw_clustermap(
 #                             order = np.arange(num_reads)
 #                         elif sort_by == "any_a":
 #                             linkage = sch.linkage(subset_bin.layers[layer_a], method="ward")
-#                             order = sch.leaves_list(linkage)                            
+#                             order = sch.leaves_list(linkage)
 #                         else:
 #                             raise ValueError(f"Unsupported sort_by option: {sort_by}")
-                        
+
 #                         stacked_any_a.append(subset_bin[order][:, any_a_sites].layers[layer_a])
-                        
-                        
+
+
 #                     row_labels.extend([bin_label] * num_reads)
 #                     bin_labels.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
 #                     last_idx += num_reads
@@ -786,7 +813,7 @@ def combined_hmm_raw_clustermap(
 #                     if any_a_matrix.size > 0:
 #                         mean_any_a = methylation_fraction(any_a_matrix)
 #                         gs_dim += 1
-                    
+
 
 #                 fig = plt.figure(figsize=(18, 12))
 #                 gs = gridspec.GridSpec(2, gs_dim, height_ratios=[1, 6], hspace=0.01)
@@ -818,8 +845,8 @@ def combined_hmm_raw_clustermap(
 #                         sns.heatmap(cpg_matrix, cmap=cmap_cpg, ax=axes_heat[2], xticklabels=cpg_labels, yticklabels=False, cbar=False)
 #                         axes_heat[current_ax].set_xticklabels(cpg_labels, rotation=90, fontsize=10)
 #                         for boundary in bin_boundaries[:-1]:
-#                             axes_heat[current_ax].axhline(y=boundary, color="black", linewidth=2)  
-#                         current_ax +=1  
+#                             axes_heat[current_ax].axhline(y=boundary, color="black", linewidth=2)
+#                         current_ax +=1
 
 #                         results.append({
 #                             "sample": sample,
@@ -831,7 +858,7 @@ def combined_hmm_raw_clustermap(
 #                             "bin_labels": bin_labels,
 #                             "bin_boundaries": bin_boundaries,
 #                             "percentages": percentages
-#                         })                    
+#                         })
 
 #                 if stacked_any_a:
 #                     if any_a_matrix.size > 0:
@@ -851,7 +878,7 @@ def combined_hmm_raw_clustermap(
 #                             "bin_labels": bin_labels,
 #                             "bin_boundaries": bin_boundaries,
 #                             "percentages": percentages
-#                         }) 
+#                         })
 
 #                 plt.tight_layout()
 
@@ -869,13 +896,14 @@ def combined_hmm_raw_clustermap(
 #                 print(f"Summary for {sample} - {ref}:")
 #                 for bin_label, percent in percentages.items():
 #                     print(f"  - {bin_label}: {percent:.1f}%")
-                
+
 #                 adata.uns['clustermap_results'] = results
 
 #             except Exception as e:
 #                 import traceback
 #                 traceback.print_exc()
 #                 continue
+
 
 def combined_raw_clustermap(
     adata,
@@ -925,6 +953,7 @@ def combined_raw_clustermap(
     results : list[dict]
         One entry per (sample, ref) plot with matrices + bin metadata.
     """
+
     # Helper: build a True mask if filter is inactive or column missing
     def _mask_or_true(series_name: str, predicate):
         if series_name not in adata.obs:
@@ -954,43 +983,52 @@ def combined_raw_clustermap(
 
     for ref in adata.obs[reference_col].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
-
             # Optionally remap sample label for display
             display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
 
             # Row-level masks (obs)
             qmask = _mask_or_true(
                 "read_quality",
-                (lambda s: s >= float(min_quality)) if (min_quality is not None) else (lambda s: pd.Series(True, index=s.index)),
+                (lambda s: s >= float(min_quality))
+                if (min_quality is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
             )
             lm_mask = _mask_or_true(
                 "mapped_length",
-                (lambda s: s >= float(min_length)) if (min_length is not None) else (lambda s: pd.Series(True, index=s.index)),
+                (lambda s: s >= float(min_length))
+                if (min_length is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
             )
             lrr_mask = _mask_or_true(
                 "mapped_length_to_reference_length_ratio",
-                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio)) if (min_mapped_length_to_reference_length_ratio is not None) else (lambda s: pd.Series(True, index=s.index)),
+                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
+                if (min_mapped_length_to_reference_length_ratio is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
             )
 
             demux_mask = _mask_or_true(
                 "demux_type",
-                (lambda s: s.astype("string").isin(list(demux_types))) if (demux_types is not None) else (lambda s: pd.Series(True, index=s.index)),
+                (lambda s: s.astype("string").isin(list(demux_types)))
+                if (demux_types is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
             )
 
-            ref_mask = (adata.obs[reference_col] == ref)
-            sample_mask = (adata.obs[sample_col] == sample)
+            ref_mask = adata.obs[reference_col] == ref
+            sample_mask = adata.obs[sample_col] == sample
 
             row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
 
             if not bool(row_mask.any()):
-                print(f"No reads for {display_sample} - {ref} after read quality and length filtering")
+                print(
+                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
+                )
                 continue
 
             try:
                 subset = adata[row_mask, :].copy()
 
                 # Column-level mask (var)
-                if (min_position_valid_fraction is not None):
+                if min_position_valid_fraction is not None:
                     valid_key = f"{ref}_valid_fraction"
                     if valid_key in subset.var:
                         v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
@@ -998,7 +1036,9 @@ def combined_raw_clustermap(
                         if col_mask.any():
                             subset = subset[:, col_mask].copy()
                         else:
-                            print(f"No positions left after valid_fraction filter for {display_sample} - {ref}")
+                            print(
+                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
+                            )
                             continue
 
                 if subset.shape[0] == 0:
@@ -1019,14 +1059,14 @@ def combined_raw_clustermap(
 
                 if include_any_c:
                     any_c_sites = np.where(subset.var.get(f"{ref}_C_site", False).values)[0]
-                    gpc_sites   = np.where(subset.var.get(f"{ref}_GpC_site", False).values)[0]
-                    cpg_sites   = np.where(subset.var.get(f"{ref}_CpG_site", False).values)[0]
+                    gpc_sites = np.where(subset.var.get(f"{ref}_GpC_site", False).values)[0]
+                    cpg_sites = np.where(subset.var.get(f"{ref}_CpG_site", False).values)[0]
 
                     num_any_c, num_gpc, num_cpg = len(any_c_sites), len(gpc_sites), len(cpg_sites)
 
                     any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
-                    gpc_labels   = _select_labels(subset, gpc_sites, ref, index_col_suffix)
-                    cpg_labels   = _select_labels(subset, cpg_sites, ref, index_col_suffix)
+                    gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
+                    cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
 
                 if include_any_a:
                     any_a_sites = np.where(subset.var.get(f"{ref}_A_site", False).values)[0]
@@ -1058,15 +1098,21 @@ def combined_raw_clustermap(
                         order = np.argsort(subset_bin.obs[colname].values)
 
                     elif sort_by == "gpc" and num_gpc > 0:
-                        linkage = sch.linkage(subset_bin[:, gpc_sites].layers[layer_gpc], method="ward")
+                        linkage = sch.linkage(
+                            subset_bin[:, gpc_sites].layers[layer_gpc], method="ward"
+                        )
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "cpg" and num_cpg > 0:
-                        linkage = sch.linkage(subset_bin[:, cpg_sites].layers[layer_cpg], method="ward")
+                        linkage = sch.linkage(
+                            subset_bin[:, cpg_sites].layers[layer_cpg], method="ward"
+                        )
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "c" and num_any_c > 0:
-                        linkage = sch.linkage(subset_bin[:, any_c_sites].layers[layer_c], method="ward")
+                        linkage = sch.linkage(
+                            subset_bin[:, any_c_sites].layers[layer_c], method="ward"
+                        )
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "gpc_cpg":
@@ -1074,7 +1120,9 @@ def combined_raw_clustermap(
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "a" and num_any_a > 0:
-                        linkage = sch.linkage(subset_bin[:, any_a_sites].layers[layer_a], method="ward")
+                        linkage = sch.linkage(
+                            subset_bin[:, any_a_sites].layers[layer_a], method="ward"
+                        )
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "none":
@@ -1107,57 +1155,65 @@ def combined_raw_clustermap(
 
                 if include_any_c and stacked_any_c:
                     any_c_matrix = np.vstack(stacked_any_c)
-                    gpc_matrix   = np.vstack(stacked_gpc) if stacked_gpc else np.empty((0, 0))
-                    cpg_matrix   = np.vstack(stacked_cpg) if stacked_cpg else np.empty((0, 0))
+                    gpc_matrix = np.vstack(stacked_gpc) if stacked_gpc else np.empty((0, 0))
+                    cpg_matrix = np.vstack(stacked_cpg) if stacked_cpg else np.empty((0, 0))
 
                     mean_any_c = methylation_fraction(any_c_matrix) if any_c_matrix.size else None
-                    mean_gpc   = methylation_fraction(gpc_matrix) if gpc_matrix.size else None
-                    mean_cpg   = methylation_fraction(cpg_matrix) if cpg_matrix.size else None
+                    mean_gpc = methylation_fraction(gpc_matrix) if gpc_matrix.size else None
+                    mean_cpg = methylation_fraction(cpg_matrix) if cpg_matrix.size else None
 
                     if any_c_matrix.size:
-                        blocks.append(dict(
-                            name="c",
-                            matrix=any_c_matrix,
-                            mean=mean_any_c,
-                            labels=any_c_labels,
-                            cmap=cmap_c,
-                            n_xticks=n_xticks_any_c,
-                            title="any C site Modification Signal"
-                        ))
+                        blocks.append(
+                            dict(
+                                name="c",
+                                matrix=any_c_matrix,
+                                mean=mean_any_c,
+                                labels=any_c_labels,
+                                cmap=cmap_c,
+                                n_xticks=n_xticks_any_c,
+                                title="any C site Modification Signal",
+                            )
+                        )
                     if gpc_matrix.size:
-                        blocks.append(dict(
-                            name="gpc",
-                            matrix=gpc_matrix,
-                            mean=mean_gpc,
-                            labels=gpc_labels,
-                            cmap=cmap_gpc,
-                            n_xticks=n_xticks_gpc,
-                            title="GpC Modification Signal"
-                        ))
+                        blocks.append(
+                            dict(
+                                name="gpc",
+                                matrix=gpc_matrix,
+                                mean=mean_gpc,
+                                labels=gpc_labels,
+                                cmap=cmap_gpc,
+                                n_xticks=n_xticks_gpc,
+                                title="GpC Modification Signal",
+                            )
+                        )
                     if cpg_matrix.size:
-                        blocks.append(dict(
-                            name="cpg",
-                            matrix=cpg_matrix,
-                            mean=mean_cpg,
-                            labels=cpg_labels,
-                            cmap=cmap_cpg,
-                            n_xticks=n_xticks_cpg,
-                            title="CpG Modification Signal"
-                        ))
+                        blocks.append(
+                            dict(
+                                name="cpg",
+                                matrix=cpg_matrix,
+                                mean=mean_cpg,
+                                labels=cpg_labels,
+                                cmap=cmap_cpg,
+                                n_xticks=n_xticks_cpg,
+                                title="CpG Modification Signal",
+                            )
+                        )
 
                 if include_any_a and stacked_any_a:
                     any_a_matrix = np.vstack(stacked_any_a)
                     mean_any_a = methylation_fraction(any_a_matrix) if any_a_matrix.size else None
                     if any_a_matrix.size:
-                        blocks.append(dict(
-                            name="a",
-                            matrix=any_a_matrix,
-                            mean=mean_any_a,
-                            labels=any_a_labels,
-                            cmap=cmap_a,
-                            n_xticks=n_xticks_any_a,
-                            title="any A site Modification Signal"
-                        ))
+                        blocks.append(
+                            dict(
+                                name="a",
+                                matrix=any_a_matrix,
+                                mean=mean_any_a,
+                                labels=any_a_labels,
+                                cmap=cmap_a,
+                                n_xticks=n_xticks_any_a,
+                                title="any A site Modification Signal",
+                            )
+                        )
 
                 if not blocks:
                     print(f"No matrices to plot for {display_sample} - {ref}")
@@ -1169,7 +1225,7 @@ def combined_raw_clustermap(
                 fig.suptitle(f"{display_sample} - {ref} - {total_reads} reads", fontsize=14, y=0.97)
 
                 axes_heat = [fig.add_subplot(gs[1, i]) for i in range(gs_dim)]
-                axes_bar  = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(gs_dim)]
+                axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(gs_dim)]
 
                 # ----------------------------
                 # plot blocks
@@ -1185,20 +1241,14 @@ def combined_raw_clustermap(
 
                     # heatmap
                     sns.heatmap(
-                        mat,
-                        cmap=blk["cmap"],
-                        ax=axes_heat[i],
-                        yticklabels=False,
-                        cbar=False
+                        mat, cmap=blk["cmap"], ax=axes_heat[i], yticklabels=False, cbar=False
                     )
 
                     # fixed tick labels
                     tick_pos = _fixed_tick_positions(len(labels), n_xticks)
                     axes_heat[i].set_xticks(tick_pos)
                     axes_heat[i].set_xticklabels(
-                        labels[tick_pos],
-                        rotation=xtick_rotation,
-                        fontsize=xtick_fontsize
+                        labels[tick_pos], rotation=xtick_rotation, fontsize=xtick_fontsize
                     )
 
                     # bin separators
@@ -1211,7 +1261,12 @@ def combined_raw_clustermap(
 
                 # save or show
                 if save_path is not None:
-                    safe_name = f"{ref}__{display_sample}".replace("=", "").replace("__", "_").replace(",", "_").replace(" ", "_")
+                    safe_name = (
+                        f"{ref}__{display_sample}".replace("=", "")
+                        .replace("__", "_")
+                        .replace(",", "_")
+                        .replace(" ", "_")
+                    )
                     out_file = save_path / f"{safe_name}.png"
                     fig.savefig(out_file, dpi=300)
                     plt.close(fig)
@@ -1239,10 +1294,12 @@ def combined_raw_clustermap(
 
             except Exception as e:
                 import traceback
+
                 traceback.print_exc()
                 continue
 
     return results
+
 
 def plot_hmm_layers_rolling_by_sample_ref(
     adata,
@@ -1310,7 +1367,9 @@ def plot_hmm_layers_rolling_by_sample_ref(
 
     # --- basic checks / defaults ---
     if sample_col not in adata.obs.columns or ref_col not in adata.obs.columns:
-        raise ValueError(f"sample_col '{sample_col}' and ref_col '{ref_col}' must exist in adata.obs")
+        raise ValueError(
+            f"sample_col '{sample_col}' and ref_col '{ref_col}' must exist in adata.obs"
+        )
 
     # canonicalize samples / refs
     if samples is None:
@@ -1333,7 +1392,9 @@ def plot_hmm_layers_rolling_by_sample_ref(
     if layers is None:
         layers = list(adata.layers.keys())
         if len(layers) == 0:
-            raise ValueError("No adata.layers found. Please pass `layers=[...]` of the HMM layers to plot.")
+            raise ValueError(
+                "No adata.layers found. Please pass `layers=[...]` of the HMM layers to plot."
+            )
     layers = list(layers)
 
     # x coordinates (positions)
@@ -1372,19 +1433,29 @@ def plot_hmm_layers_rolling_by_sample_ref(
 
         fig_w = figsize_per_cell[0] * ncols
         fig_h = figsize_per_cell[1] * nrows
-        fig, axes = plt.subplots(nrows=nrows, ncols=ncols,
-                                 figsize=(fig_w, fig_h), dpi=dpi,
-                                 squeeze=False)
+        fig, axes = plt.subplots(
+            nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False
+        )
 
         for r_idx, sample_name in enumerate(chunk):
             for c_idx, ref_name in enumerate(refs_all):
                 ax = axes[r_idx][c_idx]
 
                 # subset adata
-                mask = (adata.obs[sample_col].values == sample_name) & (adata.obs[ref_col].values == ref_name)
+                mask = (adata.obs[sample_col].values == sample_name) & (
+                    adata.obs[ref_col].values == ref_name
+                )
                 sub = adata[mask]
                 if sub.n_obs == 0:
-                    ax.text(0.5, 0.5, "No reads", ha="center", va="center", transform=ax.transAxes, color="gray")
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "No reads",
+                        ha="center",
+                        va="center",
+                        transform=ax.transAxes,
+                        color="gray",
+                    )
                     ax.set_xticks([])
                     ax.set_yticks([])
                     if r_idx == 0:
@@ -1434,7 +1505,11 @@ def plot_hmm_layers_rolling_by_sample_ref(
                         smoothed = col_mean
                     else:
                         ser = pd.Series(col_mean)
-                        smoothed = ser.rolling(window=window, min_periods=min_periods, center=center).mean().to_numpy()
+                        smoothed = (
+                            ser.rolling(window=window, min_periods=min_periods, center=center)
+                            .mean()
+                            .to_numpy()
+                        )
 
                     # x axis: x_coords (trim/pad to match length)
                     L = len(col_mean)
@@ -1444,7 +1519,15 @@ def plot_hmm_layers_rolling_by_sample_ref(
                     if show_raw:
                         ax.plot(x, col_mean[:L], linewidth=0.7, alpha=0.25, zorder=1)
 
-                    ax.plot(x, smoothed[:L], label=layer, color=colors[li], linewidth=1.2, alpha=0.95, zorder=2)
+                    ax.plot(
+                        x,
+                        smoothed[:L],
+                        label=layer,
+                        color=colors[li],
+                        linewidth=1.2,
+                        alpha=0.95,
+                        zorder=2,
+                    )
                     plotted_any = True
 
                 # labels / titles
@@ -1462,11 +1545,15 @@ def plot_hmm_layers_rolling_by_sample_ref(
 
                 ax.grid(True, alpha=0.2)
 
-        fig.suptitle(f"Rolling mean of layer positional means (window={window}) — page {page+1}/{total_pages}", fontsize=11, y=0.995)
+        fig.suptitle(
+            f"Rolling mean of layer positional means (window={window}) — page {page + 1}/{total_pages}",
+            fontsize=11,
+            y=0.995,
+        )
         fig.tight_layout(rect=[0, 0, 1, 0.97])
 
         if save:
-            fname = os.path.join(outdir, f"hmm_layers_rolling_page{page+1}.png")
+            fname = os.path.join(outdir, f"hmm_layers_rolling_page{page + 1}.png")
             plt.savefig(fname, bbox_inches="tight", dpi=dpi)
             saved_files.append(fname)
         else:
