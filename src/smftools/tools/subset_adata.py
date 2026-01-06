@@ -13,8 +13,6 @@ def subset_adata(adata, columns, cat_type="obs"):
     Returns:
         None
     """
-    import pandas as pd
-    import anndata as ad
 
     subgroup_name = "_".join(columns)
     if "obs" in cat_type:

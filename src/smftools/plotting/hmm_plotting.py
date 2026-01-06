@@ -1,7 +1,8 @@
 import math
-from typing import List, Optional, Tuple, Union
-import numpy as np
+from typing import Optional, Tuple, Union
+
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 
 

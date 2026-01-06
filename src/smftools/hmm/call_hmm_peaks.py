@@ -1,7 +1,7 @@
 # FILE: smftools/hmm/call_hmm_peaks.py
 
-from typing import Dict, Optional, Any, Union, Sequence
 from pathlib import Path
+from typing import Any, Dict, Optional, Sequence, Union
 
 
 def call_hmm_peaks(
@@ -31,9 +31,9 @@ def call_hmm_peaks(
       - adata.var["is_in_any_{layer}_peak_{ref}"]
       - adata.var["is_in_any_peak"] (global)
     """
+    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
-    import matplotlib.pyplot as plt
     from scipy.signal import find_peaks
     from scipy.sparse import issparse
 
@@ -66,7 +66,9 @@ def call_hmm_peaks(
     # Build search pool = union of declared HMM layers and actual layers; exclude helper suffixes
     declared = list(adata.uns.get("hmm_appended_layers", []) or [])
     search_pool = [
-        l for l in declared if not any(s in l for s in ("_lengths", "_states", "_posterior"))
+        layer
+        for layer in declared
+        if not any(s in layer for s in ("_lengths", "_states", "_posterior"))
     ]
 
     all_peak_var_cols = []

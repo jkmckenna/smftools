@@ -1,7 +1,8 @@
-from typing import Optional, Union, Sequence
+from typing import Optional, Sequence, Union
+
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
 
 
 def filter_reads_on_length_quality_mapping(

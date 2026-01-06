@@ -1,22 +1,16 @@
-from ..readwrite import make_dirs, time_string
-
-import os
-import subprocess
+import gzip
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-
-from typing import Union, List, Dict, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
-import gzip
-
-from Bio import SeqIO
-from Bio.SeqRecord import SeqRecord
-from Bio.Seq import Seq
-from pyfaidx import Fasta
 import pysam
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+from pyfaidx import Fasta
 
-from concurrent.futures import ProcessPoolExecutor
-from itertools import chain
+from ..readwrite import time_string
 
 
 def _convert_FASTA_record(record, modification_type, strand, unconverted):

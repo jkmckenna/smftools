@@ -1,6 +1,24 @@
 # ------------------------- Utilities -------------------------
-import pandas as pd
 import numpy as np
+import pandas as pd
+from numpy.fft import rfft, rfftfreq
+
+# optional parallel backend
+try:
+    from joblib import Parallel, delayed
+
+    _have_joblib = True
+except Exception:
+    _have_joblib = False
+
+
+# optionally use scipy for find_peaks (more robust)
+try:
+    from scipy.signal import find_peaks
+
+    _have_scipy = True
+except Exception:
+    _have_scipy = False
 
 
 def random_fill_nans(X):
@@ -113,17 +131,6 @@ def binary_autocorrelation_with_spacing(
     if return_counts:
         return autocorr.astype(np.float32, copy=False), lag_counts
     return autocorr.astype(np.float32, copy=False)
-
-
-from numpy.fft import rfft, rfftfreq
-
-# optionally use scipy for find_peaks (more robust)
-try:
-    from scipy.signal import find_peaks
-
-    _have_scipy = True
-except Exception:
-    _have_scipy = False
 
 
 # ---------- helpers ----------
@@ -334,15 +341,6 @@ def bootstrap_periodicity(autocorr_matrix, counts_matrix, lags, n_boot=200, **kw
     nrls = np.array([m.get("nrl_bp", np.nan) for m in metrics])
     xis = np.array([m.get("xi", np.nan) for m in metrics])
     return {"nrl_boot": nrls, "xi_boot": xis, "metrics": metrics}
-
-
-# optional parallel backend
-try:
-    from joblib import Parallel, delayed
-
-    _have_joblib = True
-except Exception:
-    _have_joblib = False
 
 
 def rolling_autocorr_metrics(

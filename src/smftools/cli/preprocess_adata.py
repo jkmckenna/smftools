@@ -30,8 +30,8 @@ def preprocess_adata(
         Path to preprocessed, duplicate-removed AnnData.
     """
     from ..readwrite import safe_read_h5ad
-    from .load_adata import load_adata
     from .helpers import get_adata_paths
+    from .load_adata import load_adata
 
     # 1) Ensure config is loaded and at least *some* AnnData stage exists
     loaded_adata, loaded_path, cfg = load_adata(config_path)
@@ -193,26 +193,24 @@ def preprocess_adata_core(
     """
     from pathlib import Path
 
-    import numpy as np
-
-    from .helpers import write_gz_h5ad
-    from ..readwrite import make_dirs
+    from ..plotting import plot_read_qc_histograms
     from ..preprocessing import (
-        load_sample_sheet,
-        filter_reads_on_length_quality_mapping,
-        clean_NaN,
-        calculate_coverage,
         append_base_context,
         append_binary_layer_by_base_context,
+        binarize_adata,
+        binarize_on_Youden,
+        calculate_complexity_II,
+        calculate_coverage,
+        calculate_position_Youden,
         calculate_read_modification_stats,
+        clean_NaN,
+        filter_reads_on_length_quality_mapping,
         filter_reads_on_modification_thresholds,
         flag_duplicate_reads,
-        calculate_complexity_II,
-        calculate_position_Youden,
-        binarize_on_Youden,
-        binarize_adata,
+        load_sample_sheet,
     )
-    from ..plotting import plot_read_qc_histograms
+    from ..readwrite import make_dirs
+    from .helpers import write_gz_h5ad
 
     ################################### 1) Load existing  ###################################
     # General config variable init - Necessary user passed inputs

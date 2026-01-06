@@ -1,24 +1,21 @@
 from __future__ import annotations
 
-from pathlib import Path
-import os
-import subprocess
 import glob
-import time
-from typing import Dict, List, Any, Tuple, Union, Optional, Iterable
+import os
 import re
+import subprocess
+import time
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import zip_longest
-import pysam
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import ProcessPoolExecutor
-
+import pysam
 from tqdm import tqdm
-from collections import defaultdict, Counter
 
-from ..readwrite import make_dirs, time_string, date_string
+from ..readwrite import date_string, time_string
 
 
 def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, Path]) -> None:
@@ -165,8 +162,8 @@ def bam_qc(
     Prefers pysam; falls back to `samtools` if needed.
     Runs BAMs in parallel (up to `threads`, default serial).
     """
-    import subprocess
     import shutil
+    import subprocess
 
     # Try to import pysam once
     try:

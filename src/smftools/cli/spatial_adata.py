@@ -27,10 +27,10 @@ def spatial_adata(
     spatial_adata_path : Path | None
         Path to the “current” spatial AnnData (or hmm AnnData if we skip to that).
     """
-    from ..readwrite import safe_read_h5ad, make_dirs, add_or_update_column_in_csv
+    from ..readwrite import add_or_update_column_in_csv, safe_read_h5ad
+    from .helpers import get_adata_paths
     from .load_adata import load_adata
     from .preprocess_adata import preprocess_adata
-    from .helpers import get_adata_paths
 
     # 1) Ensure config + basic paths via load_adata
     loaded_adata, loaded_path, cfg = load_adata(config_path)
@@ -62,8 +62,6 @@ def spatial_adata(
 
     # Helper to load from disk, reusing loaded_adata if it matches
     def _load(path: Path):
-        from ..readwrite import safe_read_h5ad
-
         if loaded_adata is not None and loaded_path == path:
             return loaded_adata
         adata, _ = safe_read_h5ad(path)
@@ -145,30 +143,29 @@ def spatial_adata_core(
     import pandas as pd
     import scanpy as sc
 
-    from ..readwrite import make_dirs, safe_read_h5ad
-    from .helpers import write_gz_h5ad
-
-    from ..preprocessing import (
-        load_sample_sheet,
-        invert_adata,
-        reindex_references_adata,
-    )
     from ..plotting import (
         combined_raw_clustermap,
         plot_rolling_grid,
         plot_spatial_autocorr_grid,
     )
-    from ..tools import calculate_umap
-    from ..tools.spatial_autocorrelation import (
-        binary_autocorrelation_with_spacing,
-        analyze_autocorr_matrix,
-        bootstrap_periodicity,
-        rolling_autocorr_metrics,
+    from ..preprocessing import (
+        invert_adata,
+        load_sample_sheet,
+        reindex_references_adata,
     )
+    from ..readwrite import make_dirs, safe_read_h5ad
+    from ..tools import calculate_umap
     from ..tools.position_stats import (
         compute_positionwise_statistics,
         plot_positionwise_matrices,
     )
+    from ..tools.spatial_autocorrelation import (
+        analyze_autocorr_matrix,
+        binary_autocorrelation_with_spacing,
+        bootstrap_periodicity,
+        rolling_autocorr_metrics,
+    )
+    from .helpers import write_gz_h5ad
 
     # -----------------------------
     # General setup

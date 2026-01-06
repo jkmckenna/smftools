@@ -1,17 +1,16 @@
 # duplicate_detection_with_hier_and_plots.py
 import copy
-import warnings
 import math
 import os
+import warnings
 from collections import defaultdict
-from typing import Dict, Any, Tuple, Union, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-import torch
 import anndata as ad
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from tqdm import tqdm
+import torch
 
 from ..readwrite import make_dirs
 
@@ -28,10 +27,10 @@ except Exception:
     SCIPY_AVAILABLE = False
 
 try:
+    from sklearn.cluster import DBSCAN, KMeans
     from sklearn.decomposition import PCA
-    from sklearn.cluster import KMeans, DBSCAN
-    from sklearn.mixture import GaussianMixture
     from sklearn.metrics import silhouette_score
+    from sklearn.mixture import GaussianMixture
 
     SKLEARN_AVAILABLE = True
 except Exception:
@@ -111,11 +110,10 @@ def flag_duplicate_reads(
     """
     import copy
     import warnings
+
+    import anndata as ad
     import numpy as np
     import pandas as pd
-    import torch
-    import anndata as ad
-    from ..readwrite import make_dirs
 
     # optional imports already guarded at module import time, but re-check
     try:
@@ -199,7 +197,7 @@ def flag_duplicate_reads(
     already = bool(adata.uns.get(uns_flag, False))
     if already and not force_redo:
         if "is_duplicate" in adata.obs.columns:
-            adata_unique = adata[adata.obs["is_duplicate"] == False].copy()
+            adata_unique = adata[~adata.obs["is_duplicate"]].copy()
             return adata_unique, adata
         else:
             return adata.copy(), adata.copy()
@@ -1419,7 +1417,9 @@ def plot_hamming_vs_metric_pages(
                                     )
                                 sorted_by_median = sorted(
                                     unique_nonnoise,
-                                    key=lambda l: (np.nan if np.isnan(medians[l]) else medians[l]),
+                                    key=lambda idx: (
+                                        np.nan if np.isnan(medians[idx]) else medians[idx]
+                                    ),
                                     reverse=True,
                                 )
                                 mapping = {old: new for new, old in enumerate(sorted_by_median)}
@@ -1526,9 +1526,9 @@ def _run_clustering(
     Labels follow sklearn conventions (noise -> -1 for DBSCAN/HDBSCAN).
     """
     try:
-        from sklearn.cluster import KMeans, DBSCAN
-        from sklearn.mixture import GaussianMixture
+        from sklearn.cluster import DBSCAN, KMeans
         from sklearn.metrics import silhouette_score
+        from sklearn.mixture import GaussianMixture
     except Exception:
         KMeans = DBSCAN = GaussianMixture = silhouette_score = None
 
@@ -1636,7 +1636,6 @@ def _overlay_clusters_on_ax(
     Labels == -1 are noise and drawn in grey.
     Also annotates cluster numbers near centroids (contiguous numbers starting at 0).
     """
-    import matplotlib.colors as mcolors
     from scipy.spatial import ConvexHull
 
     labels = np.asarray(labels)

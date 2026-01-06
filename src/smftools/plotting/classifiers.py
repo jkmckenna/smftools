@@ -1,11 +1,11 @@
-import numpy as np
-import matplotlib.pyplot as plt
-import torch
 import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
 
 def plot_model_performance(metrics, save_path=None):
-    import matplotlib.pyplot as plt
     import os
 
     for ref in metrics.keys():
@@ -67,10 +67,9 @@ def plot_feature_importances_or_saliency(
     save_path=None,
     shaded_regions=None,
 ):
-    import torch
-    import numpy as np
-    import matplotlib.pyplot as plt
     import os
+
+    import numpy as np
 
     # Select device for NN models
     device = (
@@ -231,12 +230,10 @@ def plot_model_curves_from_adata(
     ylim_roc=(0.0, 1.05),
     ylim_pr=(0.0, 1.05),
 ):
-    from sklearn.metrics import precision_recall_curve, roc_curve, auc
-    import matplotlib.pyplot as plt
-    import seaborn as sns
+    from sklearn.metrics import auc, precision_recall_curve, roc_curve
 
     if omit_training:
-        subset = adata[adata.obs["used_for_training"].astype(bool) == False]
+        subset = adata[~adata.obs["used_for_training"].astype(bool)]
 
     label = subset.obs[label_col].map({"Active": 1, "Silent": 0}).values
 
@@ -280,7 +277,7 @@ def plot_model_curves_from_adata(
 
     plt.tight_layout()
     if save_path:
-        save_name = f"ROC_PR_curves"
+        save_name = "ROC_PR_curves"
         os.makedirs(save_path, exist_ok=True)
         safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
         out_file = os.path.join(save_path, f"{safe_name}.png")
@@ -303,17 +300,16 @@ def plot_model_curves_from_adata_with_frequency_grid(
     show_f1_iso_curves=False,
     f1_levels=None,
 ):
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import seaborn as sns
     import os
-    from sklearn.metrics import precision_recall_curve, roc_curve, auc
+
+    import numpy as np
+    from sklearn.metrics import auc, precision_recall_curve, roc_curve
 
     if f1_levels is None:
         f1_levels = np.linspace(0.2, 0.9, 8)
 
     if omit_training:
-        subset = adata[adata.obs["used_for_training"].astype(bool) == False]
+        subset = adata[~adata.obs["used_for_training"].astype(bool)]
     else:
         subset = adata
 

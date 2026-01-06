@@ -20,9 +20,9 @@ def plot_volcano_relative_risk(
         xlim (tuple): Optional x-axis limit.
         ylim (tuple): Optional y-axis limit.
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
     import os
+
+    import matplotlib.pyplot as plt
 
     for ref, group_results in results_dict.items():
         for group_label, (results_df, _) in group_results.items():
@@ -122,9 +122,9 @@ def plot_bar_relative_risk(
         highlight_color (str): Color of shaded region.
         highlight_alpha (float): Transparency of shaded region.
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
     import os
+
+    import matplotlib.pyplot as plt
 
     for ref, group_data in results_dict.items():
         for group_label, (df, _) in group_data.items():
@@ -227,11 +227,12 @@ def plot_positionwise_matrix(
     Plots positionwise matrices stored in adata.uns[key], with an optional line plot
     for specified row(s) or column(s), and highlights them on the heatmap.
     """
+    import os
+
     import matplotlib.pyplot as plt
-    import seaborn as sns
     import numpy as np
     import pandas as pd
-    import os
+    import seaborn as sns
 
     def find_closest_index(index, target):
         index_vals = pd.to_numeric(index, errors="coerce")
@@ -386,13 +387,14 @@ def plot_positionwise_matrix_grid(
     parallel=False,
     max_threads=None,
 ):
+    import os
+
     import matplotlib.pyplot as plt
-    import seaborn as sns
     import numpy as np
     import pandas as pd
-    import os
-    from matplotlib.gridspec import GridSpec
+    import seaborn as sns
     from joblib import Parallel, delayed
+    from matplotlib.gridspec import GridSpec
 
     matrices = adata.uns[key]
     group_labels = list(matrices.keys())

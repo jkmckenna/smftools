@@ -11,8 +11,6 @@ def invert_adata(adata, uns_flag="invert_adata_performed", force_redo=False):
     Returns:
         AnnData: A new AnnData object with inverted column ordering.
     """
-    import numpy as np
-    import anndata as ad
 
     # Only run if not already performed
     already = bool(adata.uns.get(uns_flag, False))

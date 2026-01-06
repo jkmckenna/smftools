@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import ast
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
-import pandas as pd  # NEW: needed by apply_to_adata
-
 from scipy.sparse import issparse
 
 # =============================================================================
@@ -840,25 +837,25 @@ class BaseHMM(nn.Module):
         if key in ("c", "any_c", "anyc", "any-c"):
             for col in (f"{ref}_any_C_site", f"{ref}_C_site"):
                 if _has(col):
-                    return np.asarray(var[col] == True)
+                    return np.asarray(var[col])
             return None
 
         if key in ("gpc", "gpc_site", "gpc-site"):
             col = f"{ref}_GpC_site"
             if not _has(col):
                 return None
-            return np.asarray(var[col] == True)
+            return np.asarray(var[col])
 
         if key in ("cpg", "cpg_site", "cpg-site"):
             col = f"{ref}_CpG_site"
             if not _has(col):
                 return None
-            return np.asarray(var[col] == True)
+            return np.asarray(var[col])
 
         alt = f"{ref}_{methbase}_site"
         if not _has(alt):
             return None
-        return np.asarray(var[alt] == True)
+        return np.asarray(var[alt])
 
     def annotate_adata(
         self,

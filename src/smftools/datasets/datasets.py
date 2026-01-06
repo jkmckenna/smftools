@@ -6,7 +6,6 @@ def import_HERE():
     Imports HERE for loading datasets
     """
     from pathlib import Path
-    from .._settings import settings
 
     HERE = Path(__file__).parent
     return HERE

@@ -1,13 +1,12 @@
-from pathlib import Path
-import pandas as pd
-import numpy as np
-import scipy.sparse as sp
-from typing import Optional, List, Dict, Union
-
-import os
 import glob
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+from typing import Dict, List, Optional, Union
 
+import numpy as np
+import pandas as pd
+import scipy.sparse as sp
 from pod5 import Reader
 
 

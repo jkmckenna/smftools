@@ -1,2 +1,2 @@
-from .evaluators import ModelEvaluator, PostInferenceModelEvaluator
 from .eval_utils import flatten_sliding_window_results
+from .evaluators import ModelEvaluator, PostInferenceModelEvaluator

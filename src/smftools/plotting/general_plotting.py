@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
-import scipy.cluster.hierarchy as sch
-import matplotlib.gridspec as gridspec
-import os
 import math
-import pandas as pd
-
-from typing import Optional, Mapping, Sequence, Any, Dict, List, Tuple
+import os
 from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import scipy.cluster.hierarchy as sch
+import seaborn as sns
 
 
 def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
@@ -1292,7 +1292,7 @@ def combined_raw_clustermap(
                 for bin_label, percent in percentages.items():
                     print(f"  - {bin_label}: {percent:.1f}%")
 
-            except Exception as e:
+            except Exception:
                 import traceback
 
                 traceback.print_exc()

@@ -32,8 +32,8 @@ def calculate_row_entropy(
     """
     import numpy as np
     import pandas as pd
-    from scipy.stats import entropy
     from joblib import Parallel, delayed
+    from scipy.stats import entropy
     from tqdm import tqdm
 
     entropy_values = []

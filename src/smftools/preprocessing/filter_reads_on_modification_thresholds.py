@@ -1,9 +1,9 @@
-import math
 import gc
+from typing import List, Optional, Sequence
+
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
-from typing import Optional, Sequence, List
 
 
 def filter_reads_on_modification_thresholds(
@@ -52,10 +52,10 @@ def filter_reads_on_modification_thresholds(
     # helper: check whether obs columns exist for a particular mod type
     def obs_has_columns_for(mod_type):
         col_pref = {
-            "GpC": ("Fraction_GpC_site_modified", f"Valid_GpC_site_in_read_vs_reference"),
-            "CpG": ("Fraction_CpG_site_modified", f"Valid_CpG_site_in_read_vs_reference"),
-            "C": ("Fraction_C_site_modified", f"Valid_C_site_in_read_vs_reference"),
-            "A": ("Fraction_A_site_modified", f"Valid_A_site_in_read_vs_reference"),
+            "GpC": ("Fraction_GpC_site_modified", "Valid_GpC_site_in_read_vs_reference"),
+            "CpG": ("Fraction_CpG_site_modified", "Valid_CpG_site_in_read_vs_reference"),
+            "C": ("Fraction_C_site_modified", "Valid_C_site_in_read_vs_reference"),
+            "A": ("Fraction_A_site_modified", "Valid_A_site_in_read_vs_reference"),
         }.get(mod_type, (None, None))
         return (col_pref[0] in adata.obs.columns) and (col_pref[1] in adata.obs.columns)
 

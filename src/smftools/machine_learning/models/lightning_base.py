@@ -1,15 +1,15 @@
-import torch
-import pytorch_lightning as pl
 import matplotlib.pyplot as plt
+import numpy as np
+import pytorch_lightning as pl
+import torch
 from sklearn.metrics import (
-    roc_auc_score,
-    precision_recall_curve,
     auc,
-    f1_score,
     confusion_matrix,
+    f1_score,
+    precision_recall_curve,
+    roc_auc_score,
     roc_curve,
 )
-import numpy as np
 
 
 class TorchClassifierWrapper(pl.LightningModule):

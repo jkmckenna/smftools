@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
+
 import anndata as ad
+
 from ..readwrite import safe_write_h5ad
 
 

@@ -1,13 +1,12 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-
 from sklearn.metrics import (
-    roc_auc_score,
-    precision_recall_curve,
     auc,
-    f1_score,
     confusion_matrix,
+    f1_score,
+    precision_recall_curve,
+    roc_auc_score,
     roc_curve,
 )
 

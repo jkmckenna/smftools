@@ -1,14 +1,14 @@
 from .base import BaseTorchModel
-from .mlp import MLPClassifier
 from .cnn import CNNClassifier
+from .lightning_base import TorchClassifierWrapper
+from .mlp import MLPClassifier
+from .positional import PositionalEncoding
 from .rnn import RNNClassifier
+from .sklearn_models import SklearnModelWrapper
 from .transformer import (
     BaseTransformer,
-    TransformerClassifier,
     DANNTransformerClassifier,
     MaskedTransformerPretrainer,
+    TransformerClassifier,
 )
-from .positional import PositionalEncoding
 from .wrappers import ScaledModel
-from .lightning_base import TorchClassifierWrapper
-from .sklearn_models import SklearnModelWrapper

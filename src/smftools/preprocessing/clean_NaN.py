@@ -9,9 +9,7 @@ def clean_NaN(adata, layer=None, uns_flag="clean_NaN_performed", bypass=False, f
     Modifies:
         - Adds new layers to `adata.layers` with different NaN-filling strategies.
     """
-    import numpy as np
-    import pandas as pd
-    import anndata as ad
+
     from ..readwrite import adata_to_df
 
     # Only run if not already performed

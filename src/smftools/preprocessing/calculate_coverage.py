@@ -22,7 +22,6 @@ def calculate_coverage(
     """
     import numpy as np
     import pandas as pd
-    import anndata as ad
 
     # Only run if not already performed
     already = bool(adata.uns.get(uns_flag, False))
