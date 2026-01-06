@@ -7,7 +7,7 @@ def make_dirs(directories):
 
     Parameters:
         directories (list): A list of directories to make
-    
+
     Returns:
         None
     """

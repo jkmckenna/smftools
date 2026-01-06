@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.sparse as sp
 
+
 def append_binary_layer_by_base_context(
     adata,
     reference_column: str,
@@ -10,8 +11,7 @@ def append_binary_layer_by_base_context(
     bypass: bool = False,
     force_redo: bool = False,
     from_valid_sites_only: bool = False,
-    valid_site_col_suffix: str = "_valid_coverage"
-
+    valid_site_col_suffix: str = "_valid_coverage",
 ):
     """
     Build per-reference C/G-site masked layers:
@@ -54,11 +54,14 @@ def append_binary_layer_by_base_context(
     reference_to_gpc_column = {ref: f"{ref}_GpC_site{valid_site_col_suffix}" for ref in references}
     reference_to_cpg_column = {ref: f"{ref}_CpG_site{valid_site_col_suffix}" for ref in references}
     reference_to_c_column = {ref: f"{ref}_C_site{valid_site_col_suffix}" for ref in references}
-    reference_to_other_c_column = {ref: f"{ref}_other_C_site{valid_site_col_suffix}" for ref in references}
+    reference_to_other_c_column = {
+        ref: f"{ref}_other_C_site{valid_site_col_suffix}" for ref in references
+    }
     reference_to_a_column = {ref: f"{ref}_A_site{valid_site_col_suffix}" for ref in references}
 
     # verify var columns exist and build boolean masks per ref (len = n_vars)
     n_obs, n_vars = adata.shape
+
     def _col_mask_or_warn(colname):
         if colname not in adata.var.columns:
             if verbose:
@@ -73,8 +76,10 @@ def append_binary_layer_by_base_context(
 
     gpc_var_masks = {ref: _col_mask_or_warn(col) for ref, col in reference_to_gpc_column.items()}
     cpg_var_masks = {ref: _col_mask_or_warn(col) for ref, col in reference_to_cpg_column.items()}
-    c_var_masks =   {ref: _col_mask_or_warn(col) for ref, col in reference_to_c_column.items()}
-    other_c_var_masks = {ref: _col_mask_or_warn(col) for ref, col in reference_to_other_c_column.items()}
+    c_var_masks = {ref: _col_mask_or_warn(col) for ref, col in reference_to_c_column.items()}
+    other_c_var_masks = {
+        ref: _col_mask_or_warn(col) for ref, col in reference_to_other_c_column.items()
+    }
     a_var_masks = {ref: _col_mask_or_warn(col) for ref, col in reference_to_a_column.items()}
 
     # prepare X as dense float32 for layer filling (we leave adata.X untouched)
@@ -95,7 +100,7 @@ def append_binary_layer_by_base_context(
     # fill row-blocks per reference (this avoids creating a full row×var boolean mask)
     obs_ref_series = adata.obs[reference_column]
     for ref in references:
-        rows_mask = (obs_ref_series.values == ref)
+        rows_mask = obs_ref_series.values == ref
         if not rows_mask.any():
             continue
         row_idx = np.nonzero(rows_mask)[0]  # integer indices of rows for this ref
@@ -103,7 +108,7 @@ def append_binary_layer_by_base_context(
         # column masks for this ref
         gpc_cols = gpc_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
         cpg_cols = cpg_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
-        c_cols   = c_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
+        c_cols = c_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
         other_c_cols = other_c_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
         a_cols = a_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
 
@@ -132,16 +137,18 @@ def append_binary_layer_by_base_context(
     # combined_bool = (~gpc_nan & (masked_gpc != 0)) | (~cpg_nan & (masked_cpg != 0))
     # combined_layer = combined_bool.astype(np.float32)
 
-    adata.layers['GpC_site_binary'] = masked_gpc
-    adata.layers['CpG_site_binary'] = masked_cpg
-    adata.layers['GpC_CpG_combined_site_binary'] = combined_sum
-    adata.layers['C_site_binary'] = masked_any_c
-    adata.layers['other_C_site_binary'] = masked_other_c
-    adata.layers['A_site_binary'] = masked_a
+    adata.layers["GpC_site_binary"] = masked_gpc
+    adata.layers["CpG_site_binary"] = masked_cpg
+    adata.layers["GpC_CpG_combined_site_binary"] = combined_sum
+    adata.layers["C_site_binary"] = masked_any_c
+    adata.layers["other_C_site_binary"] = masked_other_c
+    adata.layers["A_site_binary"] = masked_a
 
     if verbose:
+
         def _filled_positions(arr):
             return int(np.sum(~np.isnan(arr)))
+
         print("Layer build summary (non-NaN cell counts):")
         print(f"  GpC: {_filled_positions(masked_gpc)}")
         print(f"  CpG: {_filled_positions(masked_cpg)}")
@@ -149,7 +156,6 @@ def append_binary_layer_by_base_context(
         print(f"  C: {_filled_positions(masked_any_c)}")
         print(f"  other_C: {_filled_positions(masked_other_c)}")
         print(f"  A: {_filled_positions(masked_a)}")
-
 
     # mark as done
     adata.uns[uns_flag] = True

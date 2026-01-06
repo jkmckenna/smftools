@@ -1,5 +1,6 @@
 from typing import Optional
 
+
 def plot_spatial_autocorr_grid(
     adata,
     out_dir: str,
@@ -36,7 +37,9 @@ def plot_spatial_autocorr_grid(
 
     # Try importing analyzer (used only as fallback)
     try:
-        from ..tools.spatial_autocorrelation import analyze_autocorr_matrix  # prefer packaged analyzer
+        from ..tools.spatial_autocorrelation import (
+            analyze_autocorr_matrix,
+        )  # prefer packaged analyzer
     except Exception:
         analyze_autocorr_matrix = globals().get("analyze_autocorr_matrix", None)
 
@@ -76,7 +79,12 @@ def plot_spatial_autocorr_grid(
         if counts_key in adata.obsm:
             counts_mat = np.asarray(adata.obsm[counts_key])
             counts = counts_mat[mask, :].astype(int)
-        return np.asarray(adata.uns[lags_key]), _rolling_1d(mean_per_lag, window), _rolling_1d(std_per_lag, window), counts
+        return (
+            np.asarray(adata.uns[lags_key]),
+            _rolling_1d(mean_per_lag, window),
+            _rolling_1d(std_per_lag, window),
+            counts,
+        )
 
     # samples meta
     if sample_col not in adata.obs:
@@ -117,7 +125,8 @@ def plot_spatial_autocorr_grid(
         nrows = len(chunk)
 
         fig, axes = plt.subplots(
-            nrows=nrows, ncols=ncols,
+            nrows=nrows,
+            ncols=ncols,
             figsize=(4.2 * ncols, 2.4 * nrows),
             dpi=dpi,
             squeeze=False,
@@ -142,9 +151,9 @@ def plot_spatial_autocorr_grid(
                     ax = axes[r, col_idx]
 
                     # compute mask
-                    sample_mask = (adata.obs[sample_col].values == sample_name)
+                    sample_mask = adata.obs[sample_col].values == sample_name
                     if col_kind == "ref":
-                        ref_mask = (adata.obs[reference_col].values == col_val)
+                        ref_mask = adata.obs[reference_col].values == col_val
                         mask = sample_mask & ref_mask
                     else:
                         mask = sample_mask
@@ -153,7 +162,9 @@ def plot_spatial_autocorr_grid(
                     n_reads_grp = int(mask.sum())
 
                     # group summary (mean/std and counts_block)
-                    lags_local, mean_curve, std_curve, counts_block = _compute_group_summary_for_mask(site, mask)
+                    lags_local, mean_curve, std_curve, counts_block = (
+                        _compute_group_summary_for_mask(site, mask)
+                    )
 
                     # plot title for top row
                     if r == 0:
@@ -165,10 +176,12 @@ def plot_spatial_autocorr_grid(
                         ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=8)
                         ax.set_xlim(0, 1)
                         ax.set_xlabel("Lag (bp)", fontsize=7)
-                        ax.set_ylabel(f"Autocorrelation {normalization_method} normalized", fontsize=7)
-                        ax.tick_params(axis='both', which='major', labelsize=6)
+                        ax.set_ylabel(
+                            f"Autocorrelation {normalization_method} normalized", fontsize=7
+                        )
+                        ax.tick_params(axis="both", which="major", labelsize=6)
                         ax.grid(True, alpha=0.22)
-                        #col_idx += 1
+                        # col_idx += 1
                         continue
 
                     # mask low-support lags if counts available
@@ -188,7 +201,13 @@ def plot_spatial_autocorr_grid(
 
                         # plot a faint grey line for the low-support regions (context only)
                         if low_support.any():
-                            ax.plot(lags_local[low_support], mean_curve_smooth[low_support], color="0.85", lw=0.6, label="_nolegend_")
+                            ax.plot(
+                                lags_local[low_support],
+                                mean_curve_smooth[low_support],
+                                color="0.85",
+                                lw=0.6,
+                                label="_nolegend_",
+                            )
 
                     # plot mean (high-support only) and +/- std (std is computed from all molecules)
                     ax.plot(lags_local, mean_plot, lw=1.1)
@@ -203,16 +222,25 @@ def plot_spatial_autocorr_grid(
                         # metrics_by_group_precomp can be dict-like
                         res = metrics_by_group_precomp.get(group_key, None)
 
-                    if res is None and annotate_periodicity and (analyze_autocorr_matrix is not None) and (ac_full is not None):
+                    if (
+                        res is None
+                        and annotate_periodicity
+                        and (analyze_autocorr_matrix is not None)
+                        and (ac_full is not None)
+                    ):
                         # fallback: run analyzer on the subset (warn + cache)
                         ac_sel = ac_full[mask, :]
                         cnt_sel = counts_full[mask, :] if counts_full is not None else None
                         if ac_sel.size:
-                            warnings.warn(f"Precomputed periodicity metrics for {site} {group_key} not found — running analyzer as fallback (slow).")
+                            warnings.warn(
+                                f"Precomputed periodicity metrics for {site} {group_key} not found — running analyzer as fallback (slow)."
+                            )
                             try:
                                 res = analyze_autocorr_matrix(
                                     ac_sel,
-                                    cnt_sel if cnt_sel is not None else np.zeros_like(ac_sel, dtype=int),
+                                    cnt_sel
+                                    if cnt_sel is not None
+                                    else np.zeros_like(ac_sel, dtype=int),
                                     lags_local,
                                     nrl_search_bp=(120, 260),
                                     pad_factor=4,
@@ -241,19 +269,38 @@ def plot_spatial_autocorr_grid(
 
                         # vertical NRL line & harmonics (safe check)
                         if (nrl is not None) and np.isfinite(nrl):
-                            ax.axvline(float(nrl), color="C3", linestyle="--", linewidth=1.0, alpha=0.9)
+                            ax.axvline(
+                                float(nrl), color="C3", linestyle="--", linewidth=1.0, alpha=0.9
+                            )
                             for m in range(2, 5):
-                                ax.axvline(float(nrl) * m, color="C3", linestyle=":", linewidth=0.7, alpha=0.6)
+                                ax.axvline(
+                                    float(nrl) * m,
+                                    color="C3",
+                                    linestyle=":",
+                                    linewidth=0.7,
+                                    alpha=0.6,
+                                )
 
                         # envelope points + fitted exponential
                         if sample_lags.size:
                             ax.scatter(sample_lags, envelope_heights, s=18, color="C2")
-                            if (xi_val is not None) and np.isfinite(xi_val) and np.isfinite(res.get("xi_A", np.nan)):
+                            if (
+                                (xi_val is not None)
+                                and np.isfinite(xi_val)
+                                and np.isfinite(res.get("xi_A", np.nan))
+                            ):
                                 A = float(res.get("xi_A", np.nan))
                                 xi_val = float(xi_val)
                                 env_x = np.linspace(np.min(sample_lags), np.max(sample_lags), 200)
                                 env_y = A * np.exp(-env_x / xi_val)
-                                ax.plot(env_x, env_y, linestyle="--", color="C2", linewidth=1.0, alpha=0.9)
+                                ax.plot(
+                                    env_x,
+                                    env_y,
+                                    linestyle="--",
+                                    color="C2",
+                                    linewidth=1.0,
+                                    alpha=0.9,
+                                )
 
                         # inset PSD plotted vs NRL (linear x-axis)
                         freqs = res.get("freqs", None)
@@ -268,7 +315,12 @@ def plot_spatial_autocorr_grid(
                                 nrl_vals = 1.0 / freqs[valid]  # convert freq -> NRL (bp)
                                 inset.plot(nrl_vals, power[valid], lw=0.7)
                                 if peak_f is not None and peak_f > 0:
-                                    inset.axvline(1.0 / float(peak_f), color="C3", linestyle="--", linewidth=0.8)
+                                    inset.axvline(
+                                        1.0 / float(peak_f),
+                                        color="C3",
+                                        linestyle="--",
+                                        linewidth=0.8,
+                                    )
                                 # choose a reasonable linear x-limits (prefer typical NRL range but fallback to data)
                                 default_xlim = (60, 400)
                                 data_xlim = (float(np.nanmin(nrl_vals)), 600)
@@ -280,18 +332,29 @@ def plot_spatial_autocorr_grid(
                                 inset.set_ylabel("power", fontsize=6)
                                 inset.tick_params(labelsize=6)
                                 if (snr is not None) and np.isfinite(snr):
-                                    inset.text(0.95, 0.95, f"SNR={float(snr):.1f}", transform=inset.transAxes,
-                                            ha="right", va="top", fontsize=6, bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"))
+                                    inset.text(
+                                        0.95,
+                                        0.95,
+                                        f"SNR={float(snr):.1f}",
+                                        transform=inset.transAxes,
+                                        ha="right",
+                                        va="top",
+                                        fontsize=6,
+                                        bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"),
+                                    )
 
                     # set x-limits based on finite lags
                     finite_mask = np.isfinite(lags_local)
                     if finite_mask.any():
-                        ax.set_xlim(float(np.nanmin(lags_local[finite_mask])), float(np.nanmax(lags_local[finite_mask])))
+                        ax.set_xlim(
+                            float(np.nanmin(lags_local[finite_mask])),
+                            float(np.nanmax(lags_local[finite_mask])),
+                        )
 
                     # small cosmetics
                     ax.set_xlabel("Lag (bp)", fontsize=7)
                     ax.set_ylabel(f"Autocorrelation {normalization_method} normalized", fontsize=7)
-                    ax.tick_params(axis='both', which='major', labelsize=6)
+                    ax.tick_params(axis="both", which="major", labelsize=6)
                     ax.grid(True, alpha=0.22)
 
                 col_idx += 1
@@ -304,9 +367,13 @@ def plot_spatial_autocorr_grid(
             ycenter = pos.y0 + pos.height / 2.0
             n_reads_grp = int((adata.obs[sample_col].values == sample_name).sum())
             label = f"{sample_name}\n(n={n_reads_grp})"
-            fig.text(0.02, ycenter, label, va='center', ha='left', rotation='vertical', fontsize=9)
+            fig.text(0.02, ycenter, label, va="center", ha="left", rotation="vertical", fontsize=9)
 
-        fig.suptitle(f"Spatial autocorrelation ({normalization_method}) by sample × (site_type × reference)", y=0.995, fontsize=11)
+        fig.suptitle(
+            f"Spatial autocorrelation ({normalization_method}) by sample × (site_type × reference)",
+            y=0.995,
+            fontsize=11,
+        )
 
         page_idx = start_idx // rows_per_fig + 1
         out_png = os.path.join(out_dir, f"{filename_prefix}_page{page_idx}.png")
@@ -384,15 +451,33 @@ def plot_spatial_autocorr_grid(
                     "site": site,
                     "sample": sample_name,
                     "reference": ref,
-                    "nrl_bp": _safe_float(entry.get("nrl_bp", float("nan"))) if entry is not None else float("nan"),
-                    "snr": _safe_float(entry.get("snr", float("nan"))) if entry is not None else float("nan"),
-                    "fwhm_bp": _safe_float(entry.get("fwhm_bp", float("nan"))) if entry is not None else float("nan"),
-                    "xi": _safe_float(entry.get("xi", float("nan"))) if entry is not None else float("nan"),
-                    "xi_A": _safe_float(entry.get("xi_A", float("nan"))) if entry is not None else float("nan"),
-                    "xi_r2": _safe_float(entry.get("xi_r2", float("nan"))) if entry is not None else float("nan"),
-                    "envelope_sample_lags": ";".join(map(str, env_lags_list)) if len(env_lags_list) else "",
-                    "envelope_heights": ";".join(map(str, env_heights_list)) if len(env_heights_list) else "",
-                    "analyzer_error": entry.get("error", entry.get("analyzer_error", None)) if entry is not None else "no_metrics",
+                    "nrl_bp": _safe_float(entry.get("nrl_bp", float("nan")))
+                    if entry is not None
+                    else float("nan"),
+                    "snr": _safe_float(entry.get("snr", float("nan")))
+                    if entry is not None
+                    else float("nan"),
+                    "fwhm_bp": _safe_float(entry.get("fwhm_bp", float("nan")))
+                    if entry is not None
+                    else float("nan"),
+                    "xi": _safe_float(entry.get("xi", float("nan")))
+                    if entry is not None
+                    else float("nan"),
+                    "xi_A": _safe_float(entry.get("xi_A", float("nan")))
+                    if entry is not None
+                    else float("nan"),
+                    "xi_r2": _safe_float(entry.get("xi_r2", float("nan")))
+                    if entry is not None
+                    else float("nan"),
+                    "envelope_sample_lags": ";".join(map(str, env_lags_list))
+                    if len(env_lags_list)
+                    else "",
+                    "envelope_heights": ";".join(map(str, env_heights_list))
+                    if len(env_heights_list)
+                    else "",
+                    "analyzer_error": entry.get("error", entry.get("analyzer_error", None))
+                    if entry is not None
+                    else "no_metrics",
                 }
                 rows.append(row)
                 combined_rows.append(row)
@@ -407,6 +492,7 @@ def plot_spatial_autocorr_grid(
             except Exception as e:
                 # don't fail the whole pipeline for a single write error; log and continue
                 import warnings
+
                 warnings.warn(f"Failed to write {out_csv}: {e}")
 
     # write the single combined CSV (one row per sample x ref x site)
@@ -416,9 +502,11 @@ def plot_spatial_autocorr_grid(
         combined_df.to_csv(combined_out, index=False)
     except Exception as e:
         import warnings
+
         warnings.warn(f"Failed to write combined CSV {combined_out}: {e}")
 
     return saved_pages
+
 
 def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=160, show=False):
     """
@@ -426,6 +514,7 @@ def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=16
     If out_png is None, returns the matplotlib Figure object; otherwise saves PNG and returns path.
     """
     import matplotlib.pyplot as plt
+
     # sort by center
     df2 = df.sort_values("center")
     x = df2["center"].values
@@ -450,15 +539,19 @@ def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=16
         fig.savefig(out_png, bbox_inches="tight")
         if not show:
             import matplotlib
+
             matplotlib.pyplot.close(fig)
         return out_png
     if not show:
         import matplotlib
+
         matplotlib.pyplot.close(fig)
     return fig
 
+
 import numpy as np
 import pandas as pd
+
 
 def plot_rolling_grid(
     rolling_dict,
@@ -523,7 +616,7 @@ def plot_rolling_grid(
 
     # normalize reference labels and keep mapping to original
     label_to_orig = {}
-    for (_sample, ref) in keys:
+    for _sample, ref in keys:
         label = "all" if (ref is None) else str(ref)
         if label not in label_to_orig:
             label_to_orig[label] = ref
@@ -535,7 +628,11 @@ def plot_rolling_grid(
     # reference labels ordering
     default_ref_labels = sorted(label_to_orig.keys(), key=lambda s: s)
     if reference_order is not None:
-        ref_labels = [("all" if r is None else str(r)) for r in reference_order if (("all" if r is None else str(r)) in label_to_orig)]
+        ref_labels = [
+            ("all" if r is None else str(r))
+            for r in reference_order
+            if (("all" if r is None else str(r)) in label_to_orig)
+        ]
     else:
         ref_labels = default_ref_labels
 
@@ -556,9 +653,11 @@ def plot_rolling_grid(
             nrows = len(page_samples)
 
             fig, axes = plt.subplots(
-                nrows=nrows, ncols=cols_per_page,
+                nrows=nrows,
+                ncols=cols_per_page,
                 figsize=(figsize_per_panel[0] * cols_per_page, figsize_per_panel[1] * nrows),
-                dpi=dpi, squeeze=False
+                dpi=dpi,
+                squeeze=False,
             )
 
             for i, sample in enumerate(page_samples):

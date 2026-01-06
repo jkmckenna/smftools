@@ -24,19 +24,21 @@ from .ohe import ohe_batching
 if __name__ == "__main__":
     multiprocessing.set_start_method("forkserver", force=True)
 
-def converted_BAM_to_adata(converted_FASTA, 
-                              split_dir,
-                              output_dir,
-                              input_already_demuxed,
-                              mapping_threshold, 
-                              experiment_name, 
-                              conversions, 
-                              bam_suffix, 
-                              device='cpu', 
-                              num_threads=8, 
-                              deaminase_footprinting=False,
-                              delete_intermediates=True,
-                              double_barcoded_path = None,
+
+def converted_BAM_to_adata(
+    converted_FASTA,
+    split_dir,
+    output_dir,
+    input_already_demuxed,
+    mapping_threshold,
+    experiment_name,
+    conversions,
+    bam_suffix,
+    device="cpu",
+    num_threads=8,
+    deaminase_footprinting=False,
+    delete_intermediates=True,
+    double_barcoded_path=None,
 ):
     """
     Converts BAM files into an AnnData object by binarizing modified base identities.
@@ -67,10 +69,10 @@ def converted_BAM_to_adata(converted_FASTA,
     print(f"Using device: {device}")
 
     ## Set Up Directories and File Paths
-    h5_dir = output_dir / 'h5ads'
-    tmp_dir = output_dir / 'tmp'
+    h5_dir = output_dir / "h5ads"
+    tmp_dir = output_dir / "tmp"
     final_adata = None
-    final_adata_path = h5_dir / f'{experiment_name}.h5ad.gz'
+    final_adata_path = h5_dir / f"{experiment_name}.h5ad.gz"
 
     if final_adata_path.exists():
         print(f"{final_adata_path} already exists. Using existing AnnData object.")
@@ -79,54 +81,71 @@ def converted_BAM_to_adata(converted_FASTA,
     make_dirs([h5_dir, tmp_dir])
 
     bam_files = sorted(
-        p for p in split_dir.iterdir()
-        if p.is_file()
-        and p.suffix == ".bam"
-        and "unclassified" not in p.name
+        p
+        for p in split_dir.iterdir()
+        if p.is_file() and p.suffix == ".bam" and "unclassified" not in p.name
     )
 
     bam_path_list = [split_dir / f for f in bam_files]
     print(f"Found {len(bam_files)} BAM files: {bam_files}")
 
     ## Process Conversion Sites
-    max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(converted_FASTA, conversions, deaminase_footprinting)
+    max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(
+        converted_FASTA, conversions, deaminase_footprinting
+    )
 
     ## Filter BAM Files by Mapping Threshold
-    records_to_analyze = filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold)
+    records_to_analyze = filter_bams_by_mapping_threshold(
+        bam_path_list, bam_files, mapping_threshold
+    )
 
     ## Process BAMs in Parallel
-    final_adata = process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, h5_dir, num_threads, max_reference_length, device, deaminase_footprinting)
+    final_adata = process_bams_parallel(
+        bam_path_list,
+        records_to_analyze,
+        record_FASTA_dict,
+        chromosome_FASTA_dict,
+        tmp_dir,
+        h5_dir,
+        num_threads,
+        max_reference_length,
+        device,
+        deaminase_footprinting,
+    )
 
-    final_adata.uns['References'] = {}
+    final_adata.uns["References"] = {}
     for chromosome, [seq, comp] in chromosome_FASTA_dict.items():
-        final_adata.var[f'{chromosome}_top_strand_FASTA_base'] = list(seq)
-        final_adata.var[f'{chromosome}_bottom_strand_FASTA_base'] = list(comp)
-        final_adata.uns[f'{chromosome}_FASTA_sequence'] = seq
-        final_adata.uns['References'][f'{chromosome}_FASTA_sequence'] = seq
+        final_adata.var[f"{chromosome}_top_strand_FASTA_base"] = list(seq)
+        final_adata.var[f"{chromosome}_bottom_strand_FASTA_base"] = list(comp)
+        final_adata.uns[f"{chromosome}_FASTA_sequence"] = seq
+        final_adata.uns["References"][f"{chromosome}_FASTA_sequence"] = seq
 
     final_adata.obs_names_make_unique()
     cols = final_adata.obs.columns
 
     # Make obs cols categorical
     for col in cols:
-        final_adata.obs[col] = final_adata.obs[col].astype('category')
+        final_adata.obs[col] = final_adata.obs[col].astype("category")
 
     if input_already_demuxed:
         final_adata.obs["demux_type"] = ["already"] * final_adata.shape[0]
         final_adata.obs["demux_type"] = final_adata.obs["demux_type"].astype("category")
     else:
         from .h5ad_functions import add_demux_type_annotation
+
         double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
         add_demux_type_annotation(final_adata, double_barcoded_reads)
 
     ## Delete intermediate h5ad files and temp directories
     if delete_intermediates:
         delete_intermediate_h5ads_and_tmpdir(h5_dir, tmp_dir)
-    
+
     return final_adata, final_adata_path
 
 
-def process_conversion_sites(converted_FASTA, conversions=['unconverted', '5mC'], deaminase_footprinting=False):
+def process_conversion_sites(
+    converted_FASTA, conversions=["unconverted", "5mC"], deaminase_footprinting=False
+):
     """
     Extracts conversion sites and determines the max reference length.
 
@@ -147,7 +166,9 @@ def process_conversion_sites(converted_FASTA, conversions=['unconverted', '5mC']
     conversion_types = conversions[1:]
 
     # Process the unconverted sequence once
-    modification_dict[unconverted] = find_conversion_sites(converted_FASTA, unconverted, conversions, deaminase_footprinting)
+    modification_dict[unconverted] = find_conversion_sites(
+        converted_FASTA, unconverted, conversions, deaminase_footprinting
+    )
     # Above points to record_dict[record.id] = [sequence_length, [], [], sequence, complement] with only unconverted record.id keys
 
     # Get **max sequence length** from unconverted records
@@ -166,15 +187,25 @@ def process_conversion_sites(converted_FASTA, conversions=['unconverted', '5mC']
         record_FASTA_dict[record] = [
             sequence + "N" * (max_reference_length - sequence_length),
             complement + "N" * (max_reference_length - sequence_length),
-            chromosome, record, sequence_length, max_reference_length - sequence_length, unconverted, "top"
+            chromosome,
+            record,
+            sequence_length,
+            max_reference_length - sequence_length,
+            unconverted,
+            "top",
         ]
 
         if chromosome not in chromosome_FASTA_dict:
-            chromosome_FASTA_dict[chromosome] = [sequence + "N" * (max_reference_length - sequence_length), complement + "N" * (max_reference_length - sequence_length)]
+            chromosome_FASTA_dict[chromosome] = [
+                sequence + "N" * (max_reference_length - sequence_length),
+                complement + "N" * (max_reference_length - sequence_length),
+            ]
 
     # Process converted records
     for conversion in conversion_types:
-        modification_dict[conversion] = find_conversion_sites(converted_FASTA, conversion, conversions, deaminase_footprinting)
+        modification_dict[conversion] = find_conversion_sites(
+            converted_FASTA, conversion, conversions, deaminase_footprinting
+        )
         # Above points to record_dict[record.id] = [sequence_length, top_strand_coordinates, bottom_strand_coordinates, sequence, complement] with only unconverted record.id keys
 
         for record, values in modification_dict[conversion].items():
@@ -193,8 +224,12 @@ def process_conversion_sites(converted_FASTA, conversions=['unconverted', '5mC']
                 record_FASTA_dict[converted_name] = [
                     sequence + "N" * (max_reference_length - sequence_length),
                     complement + "N" * (max_reference_length - sequence_length),
-                    chromosome, unconverted_name, sequence_length, 
-                    max_reference_length - sequence_length, conversion, strand
+                    chromosome,
+                    unconverted_name,
+                    sequence_length,
+                    max_reference_length - sequence_length,
+                    conversion,
+                    strand,
                 ]
 
     print("Updated record_FASTA_dict Keys:", list(record_FASTA_dict.keys()))
@@ -218,7 +253,17 @@ def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold
     return records_to_analyze
 
 
-def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, max_reference_length, device, deaminase_footprinting):
+def process_single_bam(
+    bam_index,
+    bam,
+    records_to_analyze,
+    record_FASTA_dict,
+    chromosome_FASTA_dict,
+    tmp_dir,
+    max_reference_length,
+    device,
+    deaminase_footprinting,
+):
     """Worker function to process a single BAM file (must be at top-level for multiprocessing)."""
     adata_list = []
 
@@ -230,34 +275,58 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
         sequence = chromosome_FASTA_dict[chromosome][0]
 
         # Extract Base Identities
-        fwd_bases, rev_bases, mismatch_counts_per_read, mismatch_trend_per_read = extract_base_identities(bam, record, range(current_length), max_reference_length, sequence)
+        fwd_bases, rev_bases, mismatch_counts_per_read, mismatch_trend_per_read = (
+            extract_base_identities(
+                bam, record, range(current_length), max_reference_length, sequence
+            )
+        )
         mismatch_trend_series = pd.Series(mismatch_trend_per_read)
 
         # Skip processing if both forward and reverse base identities are empty
         if not fwd_bases and not rev_bases:
-            print(f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No valid base identities for {record}.")
+            print(
+                f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No valid base identities for {record}."
+            )
             continue
 
         merged_bin = {}
 
         # Binarize the Base Identities if they exist
         if fwd_bases:
-            fwd_bin = binarize_converted_base_identities(fwd_bases, strand, mod_type, bam, device,deaminase_footprinting, mismatch_trend_per_read)
+            fwd_bin = binarize_converted_base_identities(
+                fwd_bases,
+                strand,
+                mod_type,
+                bam,
+                device,
+                deaminase_footprinting,
+                mismatch_trend_per_read,
+            )
             merged_bin.update(fwd_bin)
 
         if rev_bases:
-            rev_bin = binarize_converted_base_identities(rev_bases, strand, mod_type, bam, device, deaminase_footprinting, mismatch_trend_per_read)
+            rev_bin = binarize_converted_base_identities(
+                rev_bases,
+                strand,
+                mod_type,
+                bam,
+                device,
+                deaminase_footprinting,
+                mismatch_trend_per_read,
+            )
             merged_bin.update(rev_bin)
 
         # Skip if merged_bin is empty (no valid binarized data)
         if not merged_bin:
-            print(f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No valid binarized data for {record}.")
+            print(
+                f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No valid binarized data for {record}."
+            )
             continue
 
         # Convert to DataFrame
         # for key in merged_bin:
         #     merged_bin[key] = merged_bin[key].cpu().numpy()  # Move to CPU & convert to NumPy
-        bin_df = pd.DataFrame.from_dict(merged_bin, orient='index')
+        bin_df = pd.DataFrame.from_dict(merged_bin, orient="index")
         sorted_index = sorted(bin_df.index)
         bin_df = bin_df.reindex(sorted_index)
 
@@ -265,14 +334,18 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
         one_hot_reads = {}
 
         if fwd_bases:
-            fwd_ohe_files = ohe_batching(fwd_bases, tmp_dir, record, f"{bam_index}_fwd", batch_size=100000)
+            fwd_ohe_files = ohe_batching(
+                fwd_bases, tmp_dir, record, f"{bam_index}_fwd", batch_size=100000
+            )
             for ohe_file in fwd_ohe_files:
                 tmp_ohe_dict = ad.read_h5ad(ohe_file).uns
                 one_hot_reads.update(tmp_ohe_dict)
                 del tmp_ohe_dict
 
         if rev_bases:
-            rev_ohe_files = ohe_batching(rev_bases, tmp_dir, record, f"{bam_index}_rev", batch_size=100000)
+            rev_ohe_files = ohe_batching(
+                rev_bases, tmp_dir, record, f"{bam_index}_rev", batch_size=100000
+            )
             for ohe_file in rev_ohe_files:
                 tmp_ohe_dict = ad.read_h5ad(ohe_file).uns
                 one_hot_reads.update(tmp_ohe_dict)
@@ -280,7 +353,9 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
 
         # Skip if one_hot_reads is empty
         if not one_hot_reads:
-            print(f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No valid one-hot encoded data for {record}.")
+            print(
+                f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No valid one-hot encoded data for {record}."
+            )
             continue
 
         gc.collect()
@@ -291,11 +366,15 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
 
         # Skip if no read names exist
         if not read_names:
-            print(f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No reads found in one-hot encoded data for {record}.")
+            print(
+                f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No reads found in one-hot encoded data for {record}."
+            )
             continue
 
         sequence_length = one_hot_reads[read_names[0]].reshape(n_rows_OHE, -1).shape[1]
-        df_A, df_C, df_G, df_T, df_N = [np.zeros((len(sorted_index), sequence_length), dtype=int) for _ in range(5)]
+        df_A, df_C, df_G, df_T, df_N = [
+            np.zeros((len(sorted_index), sequence_length), dtype=int) for _ in range(5)
+        ]
 
         # Populate One-Hot Arrays
         for j, read_name in enumerate(sorted_index):
@@ -310,7 +389,7 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
         adata.var_names = bin_df.columns.astype(str)
         adata.obs["Sample"] = [sample] * len(adata)
         try:
-            barcode = sample.split('barcode')[1]
+            barcode = sample.split("barcode")[1]
         except:
             barcode = np.nan
         adata.obs["Barcode"] = [int(barcode)] * len(adata)
@@ -333,12 +412,25 @@ def process_single_bam(bam_index, bam, records_to_analyze, record_FASTA_dict, ch
 
     return ad.concat(adata_list, join="outer") if adata_list else None
 
+
 def timestamp():
     """Returns a formatted timestamp for logging."""
     return time.strftime("[%Y-%m-%d %H:%M:%S]")
 
 
-def worker_function(bam_index, bam, records_to_analyze, shared_record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, h5_dir, max_reference_length, device, deaminase_footprinting, progress_queue):
+def worker_function(
+    bam_index,
+    bam,
+    records_to_analyze,
+    shared_record_FASTA_dict,
+    chromosome_FASTA_dict,
+    tmp_dir,
+    h5_dir,
+    max_reference_length,
+    device,
+    deaminase_footprinting,
+    progress_queue,
+):
     """Worker function that processes a single BAM and writes the output to an H5AD file."""
     worker_id = current_process().pid  # Get worker process ID
     sample = bam.stem
@@ -353,15 +445,29 @@ def worker_function(bam_index, bam, records_to_analyze, shared_record_FASTA_dict
             return
 
         # Filter records specific to this BAM
-        bam_records_to_analyze = {record for record in records_to_analyze if record in shared_record_FASTA_dict}
+        bam_records_to_analyze = {
+            record for record in records_to_analyze if record in shared_record_FASTA_dict
+        }
 
         if not bam_records_to_analyze:
-            print(f"{timestamp()} [Worker {worker_id}] No valid records to analyze for {sample}. Skipping.")
+            print(
+                f"{timestamp()} [Worker {worker_id}] No valid records to analyze for {sample}. Skipping."
+            )
             progress_queue.put(sample)
             return
 
         # Process BAM
-        adata = process_single_bam(bam_index, bam, bam_records_to_analyze, shared_record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, max_reference_length, device, deaminase_footprinting)
+        adata = process_single_bam(
+            bam_index,
+            bam,
+            bam_records_to_analyze,
+            shared_record_FASTA_dict,
+            chromosome_FASTA_dict,
+            tmp_dir,
+            max_reference_length,
+            device,
+            deaminase_footprinting,
+        )
 
         if adata is not None:
             adata.write_h5ad(str(h5ad_path))
@@ -374,10 +480,24 @@ def worker_function(bam_index, bam, records_to_analyze, shared_record_FASTA_dict
         progress_queue.put(sample)
 
     except Exception as e:
-        print(f"{timestamp()} [Worker {worker_id}] ERROR while processing {sample}:\n{traceback.format_exc()}")
+        print(
+            f"{timestamp()} [Worker {worker_id}] ERROR while processing {sample}:\n{traceback.format_exc()}"
+        )
         progress_queue.put(sample)  # Still signal completion to prevent deadlock
 
-def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, h5_dir, num_threads, max_reference_length, device, deaminase_footprinting):
+
+def process_bams_parallel(
+    bam_path_list,
+    records_to_analyze,
+    record_FASTA_dict,
+    chromosome_FASTA_dict,
+    tmp_dir,
+    h5_dir,
+    num_threads,
+    max_reference_length,
+    device,
+    deaminase_footprinting,
+):
     """Processes BAM files in parallel, writes each H5AD to disk, and concatenates them at the end."""
     make_dirs(h5_dir)  # Ensure h5_dir exists
 
@@ -386,9 +506,12 @@ def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, 
     # Ensure macOS uses forkserver to avoid spawning issues
     try:
         import multiprocessing
+
         multiprocessing.set_start_method("forkserver", force=True)
     except RuntimeError:
-        print(f"{timestamp()} [WARNING] Multiprocessing context already set. Skipping set_start_method.")
+        print(
+            f"{timestamp()} [WARNING] Multiprocessing context already set. Skipping set_start_method."
+        )
 
     with Manager() as manager:
         progress_queue = manager.Queue()
@@ -396,7 +519,22 @@ def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, 
 
         with Pool(processes=num_threads) as pool:
             results = [
-                pool.apply_async(worker_function, (i, bam, records_to_analyze, shared_record_FASTA_dict, chromosome_FASTA_dict, tmp_dir, h5_dir, max_reference_length, device, deaminase_footprinting, progress_queue))
+                pool.apply_async(
+                    worker_function,
+                    (
+                        i,
+                        bam,
+                        records_to_analyze,
+                        shared_record_FASTA_dict,
+                        chromosome_FASTA_dict,
+                        tmp_dir,
+                        h5_dir,
+                        max_reference_length,
+                        device,
+                        deaminase_footprinting,
+                        progress_queue,
+                    ),
+                )
                 for i, bam in enumerate(bam_path_list)
             ]
 
@@ -409,7 +547,9 @@ def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, 
                     processed_bam = progress_queue.get(timeout=2400)  # Wait for a finished BAM
                     completed_bams.add(processed_bam)
                 except Exception as e:
-                    print(f"{timestamp()} [ERROR] Timeout waiting for worker process. Possible crash? {e}")
+                    print(
+                        f"{timestamp()} [ERROR] Timeout waiting for worker process. Possible crash? {e}"
+                    )
 
             pool.close()
             pool.join()  # Ensure all workers finish
@@ -426,6 +566,7 @@ def process_bams_parallel(bam_path_list, records_to_analyze, record_FASTA_dict, 
 
     print(f"{timestamp()} Successfully generated final AnnData object.")
     return final_adata
+
 
 def delete_intermediate_h5ads_and_tmpdir(
     h5_dir: Union[str, Path, Iterable[str], None],
@@ -450,6 +591,7 @@ def delete_intermediate_h5ads_and_tmpdir(
     verbose : bool
         Print progress / warnings.
     """
+
     # Helper: remove a single file path (Path-like or string)
     def _maybe_unlink(p: Path):
         if not p.exists():

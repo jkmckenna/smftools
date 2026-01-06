@@ -135,6 +135,7 @@ src = ["src", "tests"]
 exclude = [
     "docs/**",
     "**/*archived*/**",
+    "**/*.ipynb",
 ]
 
 [tool.ruff.format]

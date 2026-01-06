@@ -1,9 +1,11 @@
 # ------------------------- Utilities -------------------------
 def random_fill_nans(X):
     import numpy as np
+
     nan_mask = np.isnan(X)
     X[nan_mask] = np.random.rand(*X[nan_mask].shape)
     return X
+
 
 def calculate_relative_risk_on_activity(adata, sites, alpha=0.05, groupby=None):
     """
@@ -25,30 +27,32 @@ def calculate_relative_risk_on_activity(adata, sites, alpha=0.05, groupby=None):
     from statsmodels.stats.multitest import multipletests
 
     def compute_risk_df(ref, site_subset, positions_list, relative_risks, p_values):
-        p_adj = multipletests(p_values, method='fdr_bh')[1] if p_values else []
+        p_adj = multipletests(p_values, method="fdr_bh")[1] if p_values else []
 
         genomic_positions = np.array(site_subset.var_names)[positions_list]
         is_gpc_site = site_subset.var[f"{ref}_GpC_site"].values[positions_list]
         is_cpg_site = site_subset.var[f"{ref}_CpG_site"].values[positions_list]
 
-        results_df = pd.DataFrame({
-            'Feature_Index': positions_list,
-            'Genomic_Position': genomic_positions.astype(int),
-            'Relative_Risk': relative_risks,
-            'Adjusted_P_Value': p_adj,
-            'GpC_Site': is_gpc_site,
-            'CpG_Site': is_cpg_site
-        })
+        results_df = pd.DataFrame(
+            {
+                "Feature_Index": positions_list,
+                "Genomic_Position": genomic_positions.astype(int),
+                "Relative_Risk": relative_risks,
+                "Adjusted_P_Value": p_adj,
+                "GpC_Site": is_gpc_site,
+                "CpG_Site": is_cpg_site,
+            }
+        )
 
-        results_df['log2_Relative_Risk'] = np.log2(results_df['Relative_Risk'].replace(0, 1e-300))
-        results_df['-log10_Adj_P'] = -np.log10(results_df['Adjusted_P_Value'].replace(0, 1e-300))
-        sig_df = results_df[results_df['Adjusted_P_Value'] < alpha]
+        results_df["log2_Relative_Risk"] = np.log2(results_df["Relative_Risk"].replace(0, 1e-300))
+        results_df["-log10_Adj_P"] = -np.log10(results_df["Adjusted_P_Value"].replace(0, 1e-300))
+        sig_df = results_df[results_df["Adjusted_P_Value"] < alpha]
         return results_df, sig_df
 
     results_dict = {}
 
-    for ref in adata.obs['Reference_strand'].unique():
-        ref_subset = adata[adata.obs['Reference_strand'] == ref].copy()
+    for ref in adata.obs["Reference_strand"].unique():
+        ref_subset = adata[adata.obs["Reference_strand"] == ref].copy()
         if ref_subset.shape[0] == 0:
             continue
 
@@ -56,20 +60,21 @@ def calculate_relative_risk_on_activity(adata, sites, alpha=0.05, groupby=None):
         if groupby is not None:
             if isinstance(groupby, str):
                 groupby = [groupby]
+
             def format_group_label(row):
                 return ",".join([f"{col}={row[col]}" for col in groupby])
 
-            combined_label = '__'.join(groupby)
+            combined_label = "__".join(groupby)
             ref_subset.obs[combined_label] = ref_subset.obs.apply(format_group_label, axis=1)
             groups = ref_subset.obs[combined_label].unique()
         else:
             combined_label = None
-            groups = ['all']
+            groups = ["all"]
 
         results_dict[ref] = {}
 
         for group in groups:
-            if group == 'all':
+            if group == "all":
                 group_subset = ref_subset
             else:
                 group_subset = ref_subset[ref_subset.obs[combined_label] == group]
@@ -85,7 +90,7 @@ def calculate_relative_risk_on_activity(adata, sites, alpha=0.05, groupby=None):
 
             # Matrix and labels
             X = random_fill_nans(site_subset.X.copy())
-            y = site_subset.obs['activity_status'].map({'Active': 1, 'Silent': 0}).values
+            y = site_subset.obs["activity_status"].map({"Active": 1, "Silent": 0}).values
             P_active = np.mean(y)
 
             # Analysis
@@ -104,7 +109,9 @@ def calculate_relative_risk_on_activity(adata, sites, alpha=0.05, groupby=None):
                     continue
 
                 P_active_given_methylated = (P_methylated_given_active * P_active) / P_methylated
-                P_active_given_unmethylated = ((1 - P_methylated_given_active) * P_active) / (1 - P_methylated)
+                P_active_given_unmethylated = ((1 - P_methylated_given_active) * P_active) / (
+                    1 - P_methylated
+                )
                 RR = P_active_given_methylated / P_active_given_unmethylated
 
                 _, p_value = fisher_exact(table)
@@ -112,10 +119,13 @@ def calculate_relative_risk_on_activity(adata, sites, alpha=0.05, groupby=None):
                 relative_risks.append(RR)
                 p_values.append(p_value)
 
-            results_df, sig_df = compute_risk_df(ref, site_subset, positions_list, relative_risks, p_values)
+            results_df, sig_df = compute_risk_df(
+                ref, site_subset, positions_list, relative_risks, p_values
+            )
             results_dict[ref][group] = (results_df, sig_df)
 
     return results_dict
+
 
 import copy
 import warnings
@@ -128,12 +138,14 @@ import matplotlib.pyplot as plt
 # optional imports
 try:
     from joblib import Parallel, delayed
+
     JOBLIB_AVAILABLE = True
 except Exception:
     JOBLIB_AVAILABLE = False
 
 try:
     from scipy.stats import chi2_contingency
+
     SCIPY_STATS_AVAILABLE = True
 except Exception:
     SCIPY_STATS_AVAILABLE = False
@@ -202,7 +214,9 @@ def _chi2_row_job(i: int, X_bin: np.ndarray, min_count_for_pairwise: int) -> Tup
     return (i, row)
 
 
-def _relative_risk_row_job(i: int, X_bin: np.ndarray, min_count_for_pairwise: int) -> Tuple[int, np.ndarray]:
+def _relative_risk_row_job(
+    i: int, X_bin: np.ndarray, min_count_for_pairwise: int
+) -> Tuple[int, np.ndarray]:
     n_pos = X_bin.shape[1]
     row = np.full((n_pos,), np.nan, dtype=float)
     xi = X_bin[:, i]
@@ -225,6 +239,7 @@ def _relative_risk_row_job(i: int, X_bin: np.ndarray, min_count_for_pairwise: in
         except Exception:
             row[j] = np.nan
     return (i, row)
+
 
 def compute_positionwise_statistics(
     adata,
@@ -349,7 +364,10 @@ def compute_positionwise_statistics(
                             Xc = X_bin - col_mean  # nan preserved
                             Xc0 = np.nan_to_num(Xc, nan=0.0)
                             cov = Xc0.T @ Xc0
-                            denom = (np.sqrt((Xc0**2).sum(axis=0))[:, None] * np.sqrt((Xc0**2).sum(axis=0))[None, :])
+                            denom = (
+                                np.sqrt((Xc0**2).sum(axis=0))[:, None]
+                                * np.sqrt((Xc0**2).sum(axis=0))[None, :]
+                            )
                             with np.errstate(divide="ignore", invalid="ignore"):
                                 mat = np.where(denom != 0.0, cov / denom, np.nan)
                     elif m == "binary_covariance":
@@ -366,8 +384,12 @@ def compute_positionwise_statistics(
                         else:
                             worker = _relative_risk_row_job
                         out = np.full((n_pos, n_pos), np.nan, dtype=float)
-                        tasks = (delayed(worker)(i, X_bin, min_count_for_pairwise) for i in range(n_pos))
-                        pbar_rows = tqdm(total=n_pos, desc=f"{m}: rows ({sample}__{ref})", leave=False)
+                        tasks = (
+                            delayed(worker)(i, X_bin, min_count_for_pairwise) for i in range(n_pos)
+                        )
+                        pbar_rows = tqdm(
+                            total=n_pos, desc=f"{m}: rows ({sample}__{ref})", leave=False
+                        )
                         with tqdm_joblib(pbar_rows):
                             results = Parallel(n_jobs=n_jobs, prefer="processes")(tasks)
                         pbar_rows.close()
@@ -405,6 +427,7 @@ def compute_positionwise_statistics(
 # ---------------------------
 # Plotting function
 # ---------------------------
+
 
 def plot_positionwise_matrices(
     adata,
@@ -474,7 +497,12 @@ def plot_positionwise_matrices(
         # try stringified tuple keys (some callers store differently)
         for k in store.keys():
             try:
-                if isinstance(k, tuple) and len(k) == 2 and str(k[0]) == str(sample) and str(k[1]) == str(ref):
+                if (
+                    isinstance(k, tuple)
+                    and len(k) == 2
+                    and str(k[0]) == str(sample)
+                    and str(k[1]) == str(ref)
+                ):
                     return store[k]
                 if isinstance(k, str) and key_s == k:
                     return store[k]
@@ -486,7 +514,10 @@ def plot_positionwise_matrices(
         m = method.lower()
         method_store = adata.uns.get(output_key, {}).get(m, {})
         if not method_store:
-            warnings.warn(f"No results found for method '{method}' in adata.uns['{output_key}']. Skipping.", stacklevel=2)
+            warnings.warn(
+                f"No results found for method '{method}' in adata.uns['{output_key}']. Skipping.",
+                stacklevel=2,
+            )
             saved_files_by_method[method] = []
             continue
 
@@ -507,21 +538,41 @@ def plot_positionwise_matrices(
 
         # decide per-method defaults
         if m == "pearson":
-            vmn = -1.0 if (vmin is None or (isinstance(vmin, dict) and m not in vmin)) else (vmin.get(m) if isinstance(vmin, dict) else vmin)
-            vmx = 1.0 if (vmax is None or (isinstance(vmax, dict) and m not in vmax)) else (vmax.get(m) if isinstance(vmax, dict) else vmax)
+            vmn = (
+                -1.0
+                if (vmin is None or (isinstance(vmin, dict) and m not in vmin))
+                else (vmin.get(m) if isinstance(vmin, dict) else vmin)
+            )
+            vmx = (
+                1.0
+                if (vmax is None or (isinstance(vmax, dict) and m not in vmax))
+                else (vmax.get(m) if isinstance(vmax, dict) else vmax)
+            )
             vmn = -1.0 if vmn is None else vmn
             vmx = 1.0 if vmx is None else vmx
         elif m == "binary_covariance":
-            vmn = 0.0 if (vmin is None or (isinstance(vmin, dict) and m not in vmin)) else (vmin.get(m) if isinstance(vmin, dict) else vmin)
-            vmx = 1.0 if (vmax is None or (isinstance(vmax, dict) and m not in vmax)) else (vmax.get(m) if isinstance(vmax, dict) else vmax)
+            vmn = (
+                0.0
+                if (vmin is None or (isinstance(vmin, dict) and m not in vmin))
+                else (vmin.get(m) if isinstance(vmin, dict) else vmin)
+            )
+            vmx = (
+                1.0
+                if (vmax is None or (isinstance(vmax, dict) and m not in vmax))
+                else (vmax.get(m) if isinstance(vmax, dict) else vmax)
+            )
             vmn = 0.0 if vmn is None else vmn
             vmx = 1.0 if vmx is None else vmx
         else:
-            vmn = 0.0 if (vmin is None or (isinstance(vmin, dict) and m not in vmin)) else (vmin.get(m) if isinstance(vmin, dict) else vmin)
+            vmn = (
+                0.0
+                if (vmin is None or (isinstance(vmin, dict) and m not in vmin))
+                else (vmin.get(m) if isinstance(vmin, dict) else vmin)
+            )
             if (vmax is None) or (isinstance(vmax, dict) and m not in vmax):
                 vmx = float(np.nanpercentile(allvals, 99.0)) if allvals.size else 1.0
             else:
-                vmx = (vmax.get(m) if isinstance(vmax, dict) else vmax)
+                vmx = vmax.get(m) if isinstance(vmax, dict) else vmax
             vmn = 0.0 if vmn is None else vmn
             if vmx is None:
                 vmx = 1.0
@@ -536,7 +587,9 @@ def plot_positionwise_matrices(
             ncols = max(1, len(references))
             fig_w = ncols * figsize_per_cell[0]
             fig_h = nrows * figsize_per_cell[1]
-            fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False)
+            fig, axes = plt.subplots(
+                nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False
+            )
 
             # leave margin for rotated sample labels
             plt.subplots_adjust(left=0.12, right=0.88, top=0.95, bottom=0.05)
@@ -548,13 +601,24 @@ def plot_positionwise_matrices(
                     ax = axes[r_idx][c_idx]
                     df = _get_df_from_store(method_store, sample, ref)
                     if not isinstance(df, pd.DataFrame) or df.size == 0:
-                        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=10, color="gray")
+                        ax.text(
+                            0.5,
+                            0.5,
+                            "No data",
+                            ha="center",
+                            va="center",
+                            transform=ax.transAxes,
+                            fontsize=10,
+                            color="gray",
+                        )
                         ax.set_xticks([])
                         ax.set_yticks([])
                     else:
                         mat = df.values.astype(float)
                         origin = "upper" if flip_display_axes else "lower"
-                        im = ax.imshow(mat, origin=origin, aspect="auto", vmin=vmn, vmax=vmx, cmap=cmap)
+                        im = ax.imshow(
+                            mat, origin=origin, aspect="auto", vmin=vmn, vmax=vmx, cmap=cmap
+                        )
                         any_plotted = True
                         ax.set_xticks([])
                         ax.set_yticks([])
@@ -569,9 +633,21 @@ def plot_positionwise_matrices(
                 ax_y0, ax_y1 = ax0.get_position().y0, ax0.get_position().y1
                 y_center = 0.5 * (ax_y0 + ax_y1)
                 # place text at x=0.01 (just inside left margin); rotation controls orientation
-                fig.text(0.01, y_center, str(chunk[r_idx]), va="center", ha="left", rotation=sample_label_rotation, fontsize=9)
+                fig.text(
+                    0.01,
+                    y_center,
+                    str(chunk[r_idx]),
+                    va="center",
+                    ha="left",
+                    rotation=sample_label_rotation,
+                    fontsize=9,
+                )
 
-            fig.suptitle(f"{method} — per-sample x per-reference matrices (page {page_idx+1}/{n_pages})", fontsize=12, y=0.99)
+            fig.suptitle(
+                f"{method} — per-sample x per-reference matrices (page {page_idx + 1}/{n_pages})",
+                fontsize=12,
+                y=0.99,
+            )
             fig.tight_layout(rect=[0.05, 0.02, 0.9, 0.96])
 
             # colorbar (shared)
@@ -587,7 +663,7 @@ def plot_positionwise_matrices(
 
             # save or show
             if output_dir:
-                fname = f"positionwise_{method}_page{page_idx+1}.png"
+                fname = f"positionwise_{method}_page{page_idx + 1}.png"
                 outpath = os.path.join(output_dir, fname)
                 plt.savefig(outpath, bbox_inches="tight")
                 saved_files.append(outpath)

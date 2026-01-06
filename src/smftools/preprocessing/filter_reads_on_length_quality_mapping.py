@@ -3,17 +3,18 @@ import numpy as np
 import pandas as pd
 import anndata as ad
 
+
 def filter_reads_on_length_quality_mapping(
     adata: ad.AnnData,
     filter_on_coordinates: Union[bool, Sequence] = False,
     # New single-range params (preferred):
-    read_length: Optional[Sequence[float]] = None,          # e.g. [min, max]
-    length_ratio: Optional[Sequence[float]] = None,         # e.g. [min, max]
-    read_quality: Optional[Sequence[float]] = None,         # e.g. [min, max]  (commonly min only)
-    mapping_quality: Optional[Sequence[float]] = None,      # e.g. [min, max]  (commonly min only)
+    read_length: Optional[Sequence[float]] = None,  # e.g. [min, max]
+    length_ratio: Optional[Sequence[float]] = None,  # e.g. [min, max]
+    read_quality: Optional[Sequence[float]] = None,  # e.g. [min, max]  (commonly min only)
+    mapping_quality: Optional[Sequence[float]] = None,  # e.g. [min, max]  (commonly min only)
     uns_flag: str = "filter_reads_on_length_quality_mapping_performed",
     bypass: bool = False,
-    force_redo: bool = True
+    force_redo: bool = True,
 ) -> ad.AnnData:
     """
     Filter AnnData by coordinate window, read length, length ratios, read quality and mapping quality.
@@ -37,7 +38,9 @@ def filter_reads_on_length_quality_mapping(
         try:
             low, high = tuple(filter_on_coordinates)
         except Exception:
-            raise ValueError("filter_on_coordinates must be False or an iterable of two numbers (low, high).")
+            raise ValueError(
+                "filter_on_coordinates must be False or an iterable of two numbers (low, high)."
+            )
         try:
             var_coords = np.array([float(v) for v in adata_work.var_names])
             if low > high:
@@ -50,10 +53,14 @@ def filter_reads_on_length_quality_mapping(
                 selected_cols = list(adata_work.var_names[lo_idx : hi_idx + 1])
             else:
                 selected_cols = list(adata_work.var_names[col_mask_bool])
-            print(f"Subsetting adata to coordinates between {low} and {high}: keeping {len(selected_cols)} variables.")
+            print(
+                f"Subsetting adata to coordinates between {low} and {high}: keeping {len(selected_cols)} variables."
+            )
             adata_work = adata_work[:, selected_cols].copy()
         except Exception:
-            print("Warning: could not interpret adata.var_names as numeric coordinates — skipping coordinate filtering.")
+            print(
+                "Warning: could not interpret adata.var_names as numeric coordinates — skipping coordinate filtering."
+            )
 
     # --- helper to coerce range inputs ---
     def _coerce_range(range_arg):
@@ -90,9 +97,9 @@ def filter_reads_on_length_quality_mapping(
             vals = pd.to_numeric(adata_work.obs["mapped_length"], errors="coerce")
             mask = pd.Series(True, index=adata_work.obs.index)
             if rl_min is not None:
-                mask &= (vals >= rl_min)
+                mask &= vals >= rl_min
             if rl_max is not None:
-                mask &= (vals <= rl_max)
+                mask &= vals <= rl_max
             mask &= vals.notna()
             combined_mask &= mask
             print(f"Planned read_length filter: min={rl_min}, max={rl_max}")
@@ -100,14 +107,18 @@ def filter_reads_on_length_quality_mapping(
     # length ratio filter
     if (lr_min is not None) or (lr_max is not None):
         if "mapped_length_to_reference_length_ratio" not in adata_work.obs.columns:
-            print("Warning: 'mapped_length_to_reference_length_ratio' not found in adata.obs — skipping length_ratio filter.")
+            print(
+                "Warning: 'mapped_length_to_reference_length_ratio' not found in adata.obs — skipping length_ratio filter."
+            )
         else:
-            vals = pd.to_numeric(adata_work.obs["mapped_length_to_reference_length_ratio"], errors="coerce")
+            vals = pd.to_numeric(
+                adata_work.obs["mapped_length_to_reference_length_ratio"], errors="coerce"
+            )
             mask = pd.Series(True, index=adata_work.obs.index)
             if lr_min is not None:
-                mask &= (vals >= lr_min)
+                mask &= vals >= lr_min
             if lr_max is not None:
-                mask &= (vals <= lr_max)
+                mask &= vals <= lr_max
             mask &= vals.notna()
             combined_mask &= mask
             print(f"Planned length_ratio filter: min={lr_min}, max={lr_max}")
@@ -120,9 +131,9 @@ def filter_reads_on_length_quality_mapping(
             vals = pd.to_numeric(adata_work.obs["read_quality"], errors="coerce")
             mask = pd.Series(True, index=adata_work.obs.index)
             if rq_min is not None:
-                mask &= (vals >= rq_min)
+                mask &= vals >= rq_min
             if rq_max is not None:
-                mask &= (vals <= rq_max)
+                mask &= vals <= rq_max
             mask &= vals.notna()
             combined_mask &= mask
             print(f"Planned read_quality filter: min={rq_min}, max={rq_max}")
@@ -130,14 +141,16 @@ def filter_reads_on_length_quality_mapping(
     # mapping quality filter (supporting optional range but typically min only)
     if (mq_min is not None) or (mq_max is not None):
         if "mapping_quality" not in adata_work.obs.columns:
-            print("Warning: 'mapping_quality' not found in adata.obs — skipping mapping_quality filter.")
+            print(
+                "Warning: 'mapping_quality' not found in adata.obs — skipping mapping_quality filter."
+            )
         else:
             vals = pd.to_numeric(adata_work.obs["mapping_quality"], errors="coerce")
             mask = pd.Series(True, index=adata_work.obs.index)
             if mq_min is not None:
-                mask &= (vals >= mq_min)
+                mask &= vals >= mq_min
             if mq_max is not None:
-                mask &= (vals <= mq_max)
+                mask &= vals <= mq_max
             mask &= vals.notna()
             combined_mask &= mask
             print(f"Planned mapping_quality filter: min={mq_min}, max={mq_max}")

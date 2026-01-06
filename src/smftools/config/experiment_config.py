@@ -124,8 +124,8 @@ def resolve_aligner_args(
     """
     # builtin defaults (aligner -> args)
     builtin_defaults = {
-        "minimap2": ['-a', '-x', 'map-ont', '--MD', '-Y', '-y', '-N', '5', '--secondary=no'],
-        "dorado": ['--mm2-opts', '-N', '5'],
+        "minimap2": ["-a", "-x", "map-ont", "--MD", "-Y", "-y", "-N", "5", "--secondary=no"],
+        "dorado": ["--mm2-opts", "-N", "5"],
     }
     if default_by_aligner is None:
         default_by_aligner = builtin_defaults
@@ -367,12 +367,12 @@ class LoadExperimentConfig:
                 df = pd.read_csv(source, dtype=str, keep_default_na=False, na_values=[""])
         # normalize column names
         df.columns = [c.strip() for c in df.columns]
-        if 'variable' not in df.columns:
+        if "variable" not in df.columns:
             raise ValueError("Config CSV must contain a 'variable' column.")
-        if 'value' not in df.columns:
-            df['value'] = ''
-        if 'type' not in df.columns:
-            df['type'] = ''
+        if "value" not in df.columns:
+            df["value"] = ""
+        if "type" not in df.columns:
+            df["type"] = ""
         return df
 
     @staticmethod
@@ -391,9 +391,9 @@ class LoadExperimentConfig:
 
         def parse_bool(s: str):
             s2 = s.strip().lower()
-            if s2 in ('1', 'true', 't', 'yes', 'y', 'on'):
+            if s2 in ("1", "true", "t", "yes", "y", "on"):
                 return True
-            if s2 in ('0', 'false', 'f', 'no', 'n', 'off'):
+            if s2 in ("0", "false", "f", "no", "n", "off"):
                 return False
             raise ValueError(f"Cannot parse boolean from '{s}'")
 
@@ -413,18 +413,18 @@ class LoadExperimentConfig:
             except Exception:
                 pass
             # fallback split
-            parts = [p.strip() for p in s.strip("()[] ").split(',') if p.strip() != ""]
+            parts = [p.strip() for p in s.strip("()[] ").split(",") if p.strip() != ""]
             return parts
 
-        if hint in ('int', 'integer'):
+        if hint in ("int", "integer"):
             return int(v)
-        if hint in ('float', 'double'):
+        if hint in ("float", "double"):
             return float(v)
-        if hint in ('bool', 'boolean'):
+        if hint in ("bool", "boolean"):
             return parse_bool(v)
-        if hint in ('list', 'array'):
+        if hint in ("list", "array"):
             return parse_list_like(v)
-        if hint in ('string', 'str'):
+        if hint in ("string", "str"):
             return v
 
         # infer
@@ -450,27 +450,31 @@ class LoadExperimentConfig:
             return lit
         except Exception:
             pass
-        if (',' in v) and (not any(ch in v for ch in '{}[]()')):
-            return [p.strip() for p in v.split(',') if p.strip() != ""]
+        if ("," in v) and (not any(ch in v for ch in "{}[]()")):
+            return [p.strip() for p in v.split(",") if p.strip() != ""]
         return v
 
     def _parse_df(self, df: pd.DataFrame) -> Dict[str, Any]:
         parsed: Dict[str, Any] = {}
         for idx, row in df.iterrows():
-            name = str(row['variable']).strip()
+            name = str(row["variable"]).strip()
             if name == "":
                 continue
-            raw_val = row.get('value', "")
-            raw_type = row.get('type', "")
+            raw_val = row.get("value", "")
+            raw_type = row.get("type", "")
             if pd.isna(raw_val) or str(raw_val).strip() == "":
                 raw_val = None
             try:
                 parsed_val = self._parse_value_as_type(raw_val, raw_type)
             except Exception as e:
-                warnings.warn(f"Failed to parse config variable '{name}' (row {idx}): {e}. Storing raw value.")
+                warnings.warn(
+                    f"Failed to parse config variable '{name}' (row {idx}): {e}. Storing raw value."
+                )
                 parsed_val = None if raw_val is None else raw_val
             if name in parsed:
-                warnings.warn(f"Duplicate config variable '{name}' encountered (row {idx}). Overwriting previous value.")
+                warnings.warn(
+                    f"Duplicate config variable '{name}' encountered (row {idx}). Overwriting previous value."
+                )
             parsed[name] = parsed_val
         return parsed
 
@@ -478,7 +482,7 @@ class LoadExperimentConfig:
         """Return parsed config as a pandas DataFrame (variable, value)."""
         rows = []
         for k, v in self.var_dict.items():
-            rows.append({'variable': k, 'value': v})
+            rows.append({"variable": k, "value": v})
         return pd.DataFrame(rows)
 
 
@@ -656,7 +660,7 @@ class ExperimentConfig:
     conversions: List[str] = field(default_factory=lambda: ["unconverted"])
     fasta_regions_of_interest: Optional[str] = None
     sample_sheet_path: Optional[str] = None
-    sample_sheet_mapping_column: Optional[str] = 'Experiment_name_and_barcode'
+    sample_sheet_mapping_column: Optional[str] = "Experiment_name_and_barcode"
     experiment_name: Optional[str] = None
     input_already_demuxed: bool = False
     summary_file: Optional[Path] = None
@@ -701,44 +705,72 @@ class ExperimentConfig:
     m5C_threshold: float = 0.7
     hm5C_threshold: float = 0.7
     thresholds: List[float] = field(default_factory=list)
-    mod_list: List[str] = field(default_factory=lambda: ["5mC_5hmC", "6mA"]) # Dorado modified basecalling codes
-    mod_map: Dict[str, str] = field(default_factory=lambda: {'6mA': '6mA', '5mC_5hmC': '5mC'}) # Map from dorado modified basecalling codes to codes used in modkit_extract_to_adata function
+    mod_list: List[str] = field(
+        default_factory=lambda: ["5mC_5hmC", "6mA"]
+    )  # Dorado modified basecalling codes
+    mod_map: Dict[str, str] = field(
+        default_factory=lambda: {"6mA": "6mA", "5mC_5hmC": "5mC"}
+    )  # Map from dorado modified basecalling codes to codes used in modkit_extract_to_adata function
 
     # Alignment params
-    mapping_threshold: float = 0.01 # Min threshold for fraction of reads in a sample mapping to a reference in order to include the reference in the anndata
-    align_from_bam: bool = False # Whether minimap2 should align from a bam file as input. If False, aligns from FASTQ 
+    mapping_threshold: float = 0.01  # Min threshold for fraction of reads in a sample mapping to a reference in order to include the reference in the anndata
+    align_from_bam: bool = (
+        False  # Whether minimap2 should align from a bam file as input. If False, aligns from FASTQ
+    )
     aligner: str = "dorado"
     aligner_args: Optional[List[str]] = None
     make_bigwigs: bool = False
     make_beds: bool = False
 
     # Anndata structure
-    reference_column: Optional[str] = 'Reference_strand'
-    sample_column: Optional[str] = 'Barcode'
+    reference_column: Optional[str] = "Reference_strand"
+    sample_column: Optional[str] = "Barcode"
 
     # General Plotting
-    sample_name_col_for_plotting: Optional[str] = 'Barcode'
+    sample_name_col_for_plotting: Optional[str] = "Barcode"
     rows_per_qc_histogram_grid: int = 12
 
     # Preprocessing - Read length and quality filter params
     read_coord_filter: Optional[Sequence[float]] = field(default_factory=lambda: [None, None])
-    read_len_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [100, None])
-    read_len_to_ref_ratio_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [0.4, 1.5])
-    read_quality_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [15, None])
-    read_mapping_quality_filter_thresholds: Optional[Sequence[float]] = field(default_factory=lambda: [None, None])
+    read_len_filter_thresholds: Optional[Sequence[float]] = field(
+        default_factory=lambda: [100, None]
+    )
+    read_len_to_ref_ratio_filter_thresholds: Optional[Sequence[float]] = field(
+        default_factory=lambda: [0.4, 1.5]
+    )
+    read_quality_filter_thresholds: Optional[Sequence[float]] = field(
+        default_factory=lambda: [15, None]
+    )
+    read_mapping_quality_filter_thresholds: Optional[Sequence[float]] = field(
+        default_factory=lambda: [None, None]
+    )
 
     # Preprocessing - Optional reindexing params
     reindexing_offsets: Dict[str, int] = field(default_factory=dict)
     reindexed_var_suffix: Optional[str] = "reindexed"
 
     # Preprocessing - Direct mod detection binarization params
-    fit_position_methylation_thresholds: Optional[bool] = False # Whether to use Youden J-stat to determine position by positions thresholds for modification binarization.
-    binarize_on_fixed_methlyation_threshold: Optional[float] = 0.7 # The threshold used to binarize the anndata using a fixed value if fitting parameter above is False.
-    positive_control_sample_methylation_fitting: Optional[str] = None # A positive control Sample_name to use for fully modified template data
-    negative_control_sample_methylation_fitting: Optional[str] = None # A negative control Sample_name to use for fully unmodified template data
-    infer_on_percentile_sample_methylation_fitting: Optional[int] = 10 # If a positive/negative control are not provided and fitting the data is requested, use the indicated percentile windows from the top and bottom of the dataset.
-    inference_variable_sample_methylation_fitting: Optional[str] = "Raw_modification_signal" # The obs column value used for the percentile metric above.
-    fit_j_threshold: Optional[float] = 0.5 # The J-statistic threhold to use for determining which positions pass qc for mod detection thresholding
+    fit_position_methylation_thresholds: Optional[bool] = (
+        False  # Whether to use Youden J-stat to determine position by positions thresholds for modification binarization.
+    )
+    binarize_on_fixed_methlyation_threshold: Optional[float] = (
+        0.7  # The threshold used to binarize the anndata using a fixed value if fitting parameter above is False.
+    )
+    positive_control_sample_methylation_fitting: Optional[str] = (
+        None  # A positive control Sample_name to use for fully modified template data
+    )
+    negative_control_sample_methylation_fitting: Optional[str] = (
+        None  # A negative control Sample_name to use for fully unmodified template data
+    )
+    infer_on_percentile_sample_methylation_fitting: Optional[int] = (
+        10  # If a positive/negative control are not provided and fitting the data is requested, use the indicated percentile windows from the top and bottom of the dataset.
+    )
+    inference_variable_sample_methylation_fitting: Optional[str] = (
+        "Raw_modification_signal"  # The obs column value used for the percentile metric above.
+    )
+    fit_j_threshold: Optional[float] = (
+        0.5  # The J-statistic threhold to use for determining which positions pass qc for mod detection thresholding
+    )
     output_binary_layer_name: Optional[str] = "binarized_methylation"
 
     # Preprocessing - Read modification filter params
@@ -750,13 +782,25 @@ class ExperimentConfig:
     min_valid_fraction_positions_in_read_vs_ref: float = 0.2
 
     # Preprocessing - plotting params
-    obs_to_plot_pp_qc: List[str] = field(default_factory=lambda: ['read_length', 'mapped_length','read_quality', 'mapping_quality','mapped_length_to_reference_length_ratio', 'mapped_length_to_read_length_ratio', 'Raw_modification_signal'])
+    obs_to_plot_pp_qc: List[str] = field(
+        default_factory=lambda: [
+            "read_length",
+            "mapped_length",
+            "read_quality",
+            "mapping_quality",
+            "mapped_length_to_reference_length_ratio",
+            "mapped_length_to_read_length_ratio",
+            "Raw_modification_signal",
+        ]
+    )
 
     # Preprocessing - Duplicate detection params
-    duplicate_detection_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'ambiguous_GpC_CpG'])
+    duplicate_detection_site_types: List[str] = field(
+        default_factory=lambda: ["GpC", "CpG", "ambiguous_GpC_CpG"]
+    )
     duplicate_detection_distance_threshold: float = 0.07
-    hamming_vs_metric_keys: List[str] = field(default_factory=lambda: ['Fraction_C_site_modified'])
-    duplicate_detection_keep_best_metric: str ='read_quality'
+    hamming_vs_metric_keys: List[str] = field(default_factory=lambda: ["Fraction_C_site_modified"])
+    duplicate_detection_keep_best_metric: str = "read_quality"
     duplicate_detection_window_size_for_hamming_neighbors: int = 50
     duplicate_detection_min_overlapping_positions: int = 20
     duplicate_detection_do_hierarchical: bool = True
@@ -767,33 +811,37 @@ class ExperimentConfig:
     position_max_nan_threshold: float = 0.1
 
     # Spatial Analysis - Clustermap params
-    layer_for_clustermap_plotting: Optional[str] = 'nan0_0minus1'
-    clustermap_cmap_c: Optional[str] = 'coolwarm'
-    clustermap_cmap_gpc: Optional[str] = 'coolwarm'
-    clustermap_cmap_cpg: Optional[str] = 'coolwarm'
-    clustermap_cmap_a: Optional[str] = 'coolwarm'
-    spatial_clustermap_sortby: Optional[str] = 'gpc'
+    layer_for_clustermap_plotting: Optional[str] = "nan0_0minus1"
+    clustermap_cmap_c: Optional[str] = "coolwarm"
+    clustermap_cmap_gpc: Optional[str] = "coolwarm"
+    clustermap_cmap_cpg: Optional[str] = "coolwarm"
+    clustermap_cmap_a: Optional[str] = "coolwarm"
+    spatial_clustermap_sortby: Optional[str] = "gpc"
 
     # Spatial Analysis - UMAP/Leiden params
-    layer_for_umap_plotting: Optional[str] = 'nan_half'
-    umap_layers_to_plot: List[str] = field(default_factory=lambda: ["mapped_length", "Raw_modification_signal"]) 
+    layer_for_umap_plotting: Optional[str] = "nan_half"
+    umap_layers_to_plot: List[str] = field(
+        default_factory=lambda: ["mapped_length", "Raw_modification_signal"]
+    )
 
     # Spatial Analysis - Spatial Autocorrelation params
-    autocorr_normalization_method: str = 'pearson'
+    autocorr_normalization_method: str = "pearson"
     rows_per_qc_autocorr_grid: int = 12
     autocorr_rolling_window_size: int = 25
     autocorr_max_lag: int = 800
-    autocorr_site_types: List[str] = field(default_factory=lambda: ['GpC', 'CpG', 'C'])
+    autocorr_site_types: List[str] = field(default_factory=lambda: ["GpC", "CpG", "C"])
 
     # Spatial Analysis - Correlation Matrix params
-    correlation_matrix_types: List[str] = field(default_factory=lambda: ["pearson", "binary_covariance"]) 
-    correlation_matrix_cmaps: List[str] = field(default_factory=lambda: ["seismic", "viridis"]) 
-    correlation_matrix_site_types: List[str] = field(default_factory=lambda: ["GpC_site"]) 
+    correlation_matrix_types: List[str] = field(
+        default_factory=lambda: ["pearson", "binary_covariance"]
+    )
+    correlation_matrix_cmaps: List[str] = field(default_factory=lambda: ["seismic", "viridis"])
+    correlation_matrix_site_types: List[str] = field(default_factory=lambda: ["GpC_site"])
 
     # HMM params
     hmm_n_states: int = 2
-    hmm_init_emission_probs: List[list] = field(default_factory=lambda: [[0.8, 0.2], [0.2, 0.8]]) 
-    hmm_init_transition_probs: List[list] = field(default_factory=lambda: [[0.9, 0.1], [0.1, 0.9]]) 
+    hmm_init_emission_probs: List[list] = field(default_factory=lambda: [[0.8, 0.2], [0.2, 0.8]])
+    hmm_init_transition_probs: List[list] = field(default_factory=lambda: [[0.9, 0.1], [0.1, 0.9]])
     hmm_init_start_probs: List[float] = field(default_factory=lambda: [0.5, 0.5])
     hmm_eps: float = 1e-8
     hmm_dtype: str = "float64"
@@ -801,7 +849,9 @@ class ExperimentConfig:
     hmm_batch_size: int = 1024
     hmm_use_viterbi: bool = False
     hmm_device: Optional[str] = None
-    hmm_methbases: Optional[List[str]] = None  # if None, HMM.annotate_adata will fall back to mod_target_bases
+    hmm_methbases: Optional[List[str]] = (
+        None  # if None, HMM.annotate_adata will fall back to mod_target_bases
+    )
     # HMM fitting/application strategy
     hmm_fit_strategy: str = "per_group"  # "per_group" | "shared_transitions"
     hmm_shared_scope: List[str] = field(default_factory=lambda: ["reference", "methbase"])
@@ -816,9 +866,11 @@ class ExperimentConfig:
     cpg: Optional[bool] = False
     hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
     hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 60)])
-    clustermap_cmap_hmm: Optional[str] = 'coolwarm'
-    hmm_clustermap_feature_layers: List[str] = field(default_factory=lambda: ["all_accessible_features"]) 
-    hmm_clustermap_sortby: Optional[str] = 'hmm'
+    clustermap_cmap_hmm: Optional[str] = "coolwarm"
+    hmm_clustermap_feature_layers: List[str] = field(
+        default_factory=lambda: ["all_accessible_features"]
+    )
+    hmm_clustermap_sortby: Optional[str] = "hmm"
     hmm_peak_feature_configs: Dict[str, Any] = field(default_factory=dict)
 
     # Pipeline control flow - load adata
@@ -842,7 +894,7 @@ class ExperimentConfig:
     force_redo_filter_reads_on_modification_thresholds: bool = False
     bypass_flag_duplicate_reads: bool = False
     force_redo_flag_duplicate_reads: bool = False
-    bypass_complexity_analysis: bool = False 
+    bypass_complexity_analysis: bool = False
     force_redo_complexity_analysis: bool = False
 
     # Pipeline control flow - Spatial Analyses
@@ -922,7 +974,9 @@ class ExperimentConfig:
                 defaults_loaded = dict(defaults_map[modality] or {})
                 defaults_source_chain = [f"defaults_map['{modality}']"]
             elif defaults_dir is not None:
-                defaults_loaded, defaults_source_chain = load_defaults_with_inheritance(defaults_dir, modality)
+                defaults_loaded, defaults_source_chain = load_defaults_with_inheritance(
+                    defaults_dir, modality
+                )
 
         # If CSV asks to extend defaults, load those and merge
         merged = dict(defaults_loaded or {})
@@ -937,7 +991,11 @@ class ExperimentConfig:
                 else:
                     ext_list = []
                 for ext in ext_list:
-                    ext_defaults, ext_sources = (load_defaults_with_inheritance(defaults_dir, ext) if defaults_dir else ({}, []))
+                    ext_defaults, ext_sources = (
+                        load_defaults_with_inheritance(defaults_dir, ext)
+                        if defaults_dir
+                        else ({}, [])
+                    )
                     merged = deep_merge(merged, ext_defaults)
                     for s in ext_sources:
                         if s not in defaults_source_chain:
@@ -967,34 +1025,40 @@ class ExperimentConfig:
             merged["experiment_name"] = f"{date_str}_SMF_experiment"
 
         # Input file types and path handling
-        input_data_path = Path(merged['input_data_path'])
+        input_data_path = Path(merged["input_data_path"])
 
         # Detect the input filetype
         if input_data_path.is_file():
-                suffix = input_data_path.suffix.lower()
-                suffixes = [s.lower() for s in input_data_path.suffixes]  # handles multi-part extensions
+            suffix = input_data_path.suffix.lower()
+            suffixes = [
+                s.lower() for s in input_data_path.suffixes
+            ]  # handles multi-part extensions
 
-                # recognize multi-suffix cases like .fastq.gz or .fq.gz
-                if any(s in ['.pod5', '.p5'] for s in suffixes):
-                    input_type = "pod5"
-                    input_files = [Path(input_data_path)]
-                elif any(s in ['.fast5', '.f5'] for s in suffixes):
-                    input_type = "fast5"
-                    input_files = [Path(input_data_path)]
-                elif any(s in ['.fastq', '.fq'] for s in suffixes):
-                    input_type = "fastq"
-                    input_files = [Path(input_data_path)]
-                elif any(s in ['.bam'] for s in suffixes):
-                    input_type = "bam"
-                    input_files = [Path(input_data_path)]
-                elif any(s in ['.h5ad', ".h5"] for s in suffixes):
-                    input_type = "h5ad"
-                    input_files = [Path(input_data_path)]
-                else:
-                    print("Error detecting input file type")              
+            # recognize multi-suffix cases like .fastq.gz or .fq.gz
+            if any(s in [".pod5", ".p5"] for s in suffixes):
+                input_type = "pod5"
+                input_files = [Path(input_data_path)]
+            elif any(s in [".fast5", ".f5"] for s in suffixes):
+                input_type = "fast5"
+                input_files = [Path(input_data_path)]
+            elif any(s in [".fastq", ".fq"] for s in suffixes):
+                input_type = "fastq"
+                input_files = [Path(input_data_path)]
+            elif any(s in [".bam"] for s in suffixes):
+                input_type = "bam"
+                input_files = [Path(input_data_path)]
+            elif any(s in [".h5ad", ".h5"] for s in suffixes):
+                input_type = "h5ad"
+                input_files = [Path(input_data_path)]
+            else:
+                print("Error detecting input file type")
 
         elif input_data_path.is_dir():
-            found = discover_input_files(input_data_path, bam_suffix=merged["bam_suffix"], recursive=merged["recursive_input_search"])
+            found = discover_input_files(
+                input_data_path,
+                bam_suffix=merged["bam_suffix"],
+                recursive=merged["recursive_input_search"],
+            )
 
             if found["input_is_pod5"]:
                 input_type = "pod5"
@@ -1022,8 +1086,8 @@ class ExperimentConfig:
             )
 
         # summary file output path
-        output_dir = Path(merged['output_directory'])
-        summary_file_basename = merged["experiment_name"] + '_output_summary.csv'
+        output_dir = Path(merged["output_directory"])
+        summary_file_basename = merged["experiment_name"] + "_output_summary.csv"
         summary_file = output_dir / summary_file_basename
 
         # Demultiplexing output path
@@ -1051,7 +1115,14 @@ class ExperimentConfig:
             merged["hm5C_threshold"],
         ]
 
-        for bkey in ("barcode_both_ends", "trim", "input_already_demuxed", "make_bigwigs", "skip_unclassified", "delete_batch_hdfs"):
+        for bkey in (
+            "barcode_both_ends",
+            "trim",
+            "input_already_demuxed",
+            "make_bigwigs",
+            "skip_unclassified",
+            "delete_batch_hdfs",
+        ):
             if bkey in merged:
                 merged[bkey] = _parse_bool(merged[bkey])
 
@@ -1060,12 +1131,12 @@ class ExperimentConfig:
         if "threads" in merged:
             tval = _parse_numeric(merged.get("threads", None), None)
             merged["threads"] = None if tval is None else int(tval)
-                
+
         if "aligner_args" in merged and merged.get("aligner_args") is None:
             merged.pop("aligner_args", None)
 
         # --- Resolve aligner_args into concrete list for the chosen aligner ---
-        merged['aligner_args'] = resolve_aligner_args(merged)
+        merged["aligner_args"] = resolve_aligner_args(merged)
 
         if "mod_list" in merged:
             merged["mod_list"] = _parse_list(merged.get("mod_list"))
@@ -1080,11 +1151,22 @@ class ExperimentConfig:
             # allow older names (footprint_ranges, accessible_ranges, cpg_ranges) — optional:
             maybe_fs = {}
             if "footprint_ranges" in merged or "hmm_footprint_ranges" in merged:
-                maybe_fs["footprint"] = {"features": merged.get("hmm_footprint_ranges", merged.get("footprint_ranges")), "state": merged.get("hmm_footprint_state", "Non-Modified")}
+                maybe_fs["footprint"] = {
+                    "features": merged.get("hmm_footprint_ranges", merged.get("footprint_ranges")),
+                    "state": merged.get("hmm_footprint_state", "Non-Modified"),
+                }
             if "accessible_ranges" in merged or "hmm_accessible_ranges" in merged:
-                maybe_fs["accessible"] = {"features": merged.get("hmm_accessible_ranges", merged.get("accessible_ranges")), "state": merged.get("hmm_accessible_state", "Modified")}
+                maybe_fs["accessible"] = {
+                    "features": merged.get(
+                        "hmm_accessible_ranges", merged.get("accessible_ranges")
+                    ),
+                    "state": merged.get("hmm_accessible_state", "Modified"),
+                }
             if "cpg_ranges" in merged or "hmm_cpg_ranges" in merged:
-                maybe_fs["cpg"] = {"features": merged.get("hmm_cpg_ranges", merged.get("cpg_ranges")), "state": merged.get("hmm_cpg_state", "Modified")}
+                maybe_fs["cpg"] = {
+                    "features": merged.get("hmm_cpg_ranges", merged.get("cpg_ranges")),
+                    "state": merged.get("hmm_cpg_state", "Modified"),
+                }
             if maybe_fs:
                 merged.setdefault("hmm_feature_sets", {})
                 for k, v in maybe_fs.items():
@@ -1105,10 +1187,12 @@ class ExperimentConfig:
         if not hmm_methbases:  # None or []
             hmm_methbases = _parse_list(merged.get("mod_target_bases", None))
         if not hmm_methbases:
-            hmm_methbases = ['C']
+            hmm_methbases = ["C"]
         hmm_methbases = list(hmm_methbases)
         hmm_merge_layer_features = _parse_list(merged.get("hmm_merge_layer_features", None))
-        hmm_clustermap_feature_layers = _parse_list(merged.get("hmm_clustermap_feature_layers", "all_accessible_features"))
+        hmm_clustermap_feature_layers = _parse_list(
+            merged.get("hmm_clustermap_feature_layers", "all_accessible_features")
+        )
 
         hmm_fit_strategy = str(merged.get("hmm_fit_strategy", "per_group")).strip()
         hmm_shared_scope = _parse_list(merged.get("hmm_shared_scope", ["reference", "methbase"]))
@@ -1117,8 +1201,9 @@ class ExperimentConfig:
         hmm_adapt_emissions = _parse_bool(merged.get("hmm_adapt_emissions", True))
         hmm_adapt_startprobs = _parse_bool(merged.get("hmm_adapt_startprobs", True))
         hmm_emission_adapt_iters = int(_parse_numeric(merged.get("hmm_emission_adapt_iters", 5), 5))
-        hmm_emission_adapt_tol = float(_parse_numeric(merged.get("hmm_emission_adapt_tol", 1e-4), 1e-4))
-
+        hmm_emission_adapt_tol = float(
+            _parse_numeric(merged.get("hmm_emission_adapt_tol", 1e-4), 1e-4)
+        )
 
         # HMM peak feature configs (for call_hmm_peaks)
         merged["hmm_peak_feature_configs"] = normalize_peak_feature_configs(
@@ -1128,173 +1213,251 @@ class ExperimentConfig:
 
         # instantiate dataclass
         instance = cls(
-            smf_modality = merged.get("smf_modality"),
-            input_data_path = input_data_path,
-            recursive_input_search = merged.get("recursive_input_search"),
-            input_type = input_type,
-            input_files = input_files,
-            output_directory = output_dir,
-            summary_file = summary_file,
-            fasta = merged.get("fasta"),
-            sequencer = merged.get("sequencer"),
-            model_dir = merged.get("model_dir"),
-            barcode_kit = merged.get("barcode_kit"),
-            fastq_barcode_map = merged.get("fastq_barcode_map"),
-            fastq_auto_pairing = merged.get("fastq_auto_pairing"),
-            bam_suffix = merged.get("bam_suffix", ".bam"),
-            split_dir = split_dir,
-            split_path = split_path,
-            strands = merged.get("strands", ["bottom","top"]),
-            conversions = merged.get("conversions", ["unconverted"]),
-            fasta_regions_of_interest = merged.get("fasta_regions_of_interest"),
-            mapping_threshold = float(merged.get("mapping_threshold", 0.01)),
-            experiment_name = merged.get("experiment_name"),
-            model = merged.get("model", "hac"),
-            barcode_both_ends = merged.get("barcode_both_ends", False),
-            trim = merged.get("trim", False),
-            input_already_demuxed = merged.get("input_already_demuxed", False),
-            threads = merged.get("threads"),
-            sample_sheet_path = merged.get("sample_sheet_path"),
-            sample_sheet_mapping_column = merged.get("sample_sheet_mapping_column"),
-            delete_intermediate_bams = merged.get("delete_intermediate_bams", False),
-            delete_intermediate_tsvs = merged.get("delete_intermediate_tsvs", True),
-            align_from_bam = merged.get("align_from_bam", False),
-            aligner = merged.get("aligner", "minimap2"),
-            aligner_args = merged.get("aligner_args", None),
-            device = merged.get("device", "auto"),
-            make_bigwigs = merged.get("make_bigwigs", False),
-            make_beds = merged.get("make_beds", False),
-            delete_intermediate_hdfs = merged.get("delete_intermediate_hdfs", True),
-            mod_target_bases = merged.get("mod_target_bases", ["GpC","CpG"]),
-            enzyme_target_bases = merged.get("enzyme_target_bases", ["GpC"]), 
-            conversion_types = merged.get("conversions", ["unconverted"]) + merged.get("conversion_types", ["5mC"]),
-            filter_threshold = merged.get("filter_threshold", 0.8),
-            m6A_threshold = merged.get("m6A_threshold", 0.7),
-            m5C_threshold = merged.get("m5C_threshold", 0.7),
-            hm5C_threshold = merged.get("hm5C_threshold", 0.7),
-            thresholds = merged.get("thresholds", []),
-            mod_list = merged.get("mod_list", ["5mC_5hmC","6mA"]),
-            batch_size = merged.get("batch_size", 4),
-            skip_unclassified = merged.get("skip_unclassified", True),
-            delete_batch_hdfs = merged.get("delete_batch_hdfs", True),
-            reference_column = merged.get("reference_column", 'Reference_strand'),
-            sample_column = merged.get("sample_column", 'Barcode'),
-            sample_name_col_for_plotting = merged.get("sample_name_col_for_plotting", 'Barcode'),
-            obs_to_plot_pp_qc = obs_to_plot_pp_qc,
-            fit_position_methylation_thresholds = merged.get("fit_position_methylation_thresholds", False),
-            binarize_on_fixed_methlyation_threshold = merged.get("binarize_on_fixed_methlyation_threshold", 0.7),
-            positive_control_sample_methylation_fitting = merged.get("positive_control_sample_methylation_fitting", None),
-            negative_control_sample_methylation_fitting = merged.get("negative_control_sample_methylation_fitting", None),
-            infer_on_percentile_sample_methylation_fitting = merged.get("infer_on_percentile_sample_methylation_fitting", 10),
-            inference_variable_sample_methylation_fitting = merged.get("inference_variable_sample_methylation_fitting", "Raw_modification_signal"),
-            fit_j_threshold = merged.get("fit_j_threshold", 0.5),
-            output_binary_layer_name = merged.get("output_binary_layer_name", "binarized_methylation"),
-            reindexing_offsets = merged.get("reindexing_offsets", {None: None}),
-            reindexed_var_suffix = merged.get("reindexed_var_suffix", "reindexed"),
-            layer_for_clustermap_plotting = merged.get("layer_for_clustermap_plotting", 'nan0_0minus1'), 
-            clustermap_cmap_c = merged.get("clustermap_cmap_c", 'coolwarm'),
-            clustermap_cmap_gpc = merged.get("clustermap_cmap_gpc", 'coolwarm'),
-            clustermap_cmap_cpg = merged.get("clustermap_cmap_cpg", 'coolwarm'),
-            clustermap_cmap_a = merged.get("clustermap_cmap_a", 'coolwarm'),
-            spatial_clustermap_sortby = merged.get("spatial_clustermap_sortby", 'gpc'),
-            layer_for_umap_plotting = merged.get("layer_for_umap_plotting", 'nan_half'),
-            umap_layers_to_plot = merged.get("umap_layers_to_plot",["mapped_length", 'Raw_modification_signal']),
-            rows_per_qc_histogram_grid = merged.get("rows_per_qc_histogram_grid", 12),
-            rows_per_qc_autocorr_grid = merged.get("rows_per_qc_autocorr_grid", 12),
-            autocorr_normalization_method = merged.get("autocorr_normalization_method", "pearson"),
-            autocorr_rolling_window_size = merged.get("autocorr_rolling_window_size", 25),
-            autocorr_max_lag = merged.get("autocorr_max_lag", 800), 
-            autocorr_site_types = merged.get("autocorr_site_types", ['GpC', 'CpG', 'C']),
-            hmm_n_states = merged.get("hmm_n_states", 2), 
-            hmm_init_emission_probs = merged.get("hmm_init_emission_probs",[[0.8, 0.2], [0.2, 0.8]]),
-            hmm_init_transition_probs = merged.get("hmm_init_transition_probs",[[0.9, 0.1], [0.1, 0.9]]),
-            hmm_init_start_probs = merged.get("hmm_init_start_probs",[0.5, 0.5]),
-            hmm_eps = merged.get("hmm_eps", 1e-8),
-            hmm_fit_strategy = hmm_fit_strategy,
-            hmm_shared_scope = hmm_shared_scope,
-            hmm_groupby = hmm_groupby,
-            hmm_adapt_emissions = hmm_adapt_emissions,
-            hmm_adapt_startprobs = hmm_adapt_startprobs,
-            hmm_emission_adapt_iters = hmm_emission_adapt_iters,
-            hmm_emission_adapt_tol = hmm_emission_adapt_tol,
-            hmm_dtype = merged.get("hmm_dtype", "float64"),
-            hmm_feature_sets = hmm_feature_sets,
-            hmm_annotation_threshold = hmm_annotation_threshold,
-            hmm_batch_size = hmm_batch_size,
-            hmm_use_viterbi = hmm_use_viterbi,
-            hmm_methbases = hmm_methbases,
-            hmm_device = hmm_device,
-            hmm_merge_layer_features = hmm_merge_layer_features,
-            clustermap_cmap_hmm = merged.get("clustermap_cmap_hmm", 'coolwarm'),
-            hmm_clustermap_feature_layers = hmm_clustermap_feature_layers,
-            hmm_clustermap_sortby = merged.get("hmm_clustermap_sortby", 'hmm'),
-            hmm_peak_feature_configs = hmm_peak_feature_configs,
-            footprints = merged.get("footprints", None),
-            accessible_patches = merged.get("accessible_patches", None),
-            cpg = merged.get("cpg", None),
-            read_coord_filter = merged.get("read_coord_filter", [None, None]), 
-            read_len_filter_thresholds = merged.get("read_len_filter_thresholds", [100, None]),
-            read_len_to_ref_ratio_filter_thresholds = merged.get("read_len_to_ref_ratio_filter_thresholds", [0.3, None]),
-            read_quality_filter_thresholds = merged.get("read_quality_filter_thresholds", [15, None]),
-            read_mapping_quality_filter_thresholds = merged.get("read_mapping_quality_filter_thresholds", [None, None]),
-            read_mod_filtering_gpc_thresholds = merged.get("read_mod_filtering_gpc_thresholds", [0.025, 0.975]),
-            read_mod_filtering_cpg_thresholds = merged.get("read_mod_filtering_cpg_thresholds", [0.0, 1.0]),
-            read_mod_filtering_c_thresholds = merged.get("read_mod_filtering_c_thresholds", [0.025, 0.975]),
-            read_mod_filtering_a_thresholds = merged.get("read_mod_filtering_a_thresholds", [0.025, 0.975]),
-            read_mod_filtering_use_other_c_as_background = merged.get("read_mod_filtering_use_other_c_as_background", True),
-            min_valid_fraction_positions_in_read_vs_ref = merged.get("min_valid_fraction_positions_in_read_vs_ref", 0.2), 
-            duplicate_detection_site_types = merged.get("duplicate_detection_site_types", ['GpC', 'CpG', 'ambiguous_GpC_CpG']),
-            duplicate_detection_distance_threshold = merged.get("duplicate_detection_distance_threshold", 0.07),
-            duplicate_detection_keep_best_metric = merged.get("duplicate_detection_keep_best_metric", "read_quality"),
-            duplicate_detection_window_size_for_hamming_neighbors = merged.get("duplicate_detection_window_size_for_hamming_neighbors", 50),
-            duplicate_detection_min_overlapping_positions = merged.get("duplicate_detection_min_overlapping_positions", 20),
-            duplicate_detection_do_hierarchical = merged.get("duplicate_detection_do_hierarchical", True),
-            duplicate_detection_hierarchical_linkage = merged.get("duplicate_detection_hierarchical_linkage", "average"),
-            duplicate_detection_do_pca = merged.get("duplicate_detection_do_pca", False),
-            position_max_nan_threshold = merged.get("position_max_nan_threshold", 0.1),
-            correlation_matrix_types = merged.get("correlation_matrix_types", ["pearson", "binary_covariance"]),
-            correlation_matrix_cmaps = merged.get("correlation_matrix_cmaps", ["seismic", "viridis"]),
-            correlation_matrix_site_types = merged.get("correlation_matrix_site_types", ["GpC_site"]),
-            hamming_vs_metric_keys = merged.get("hamming_vs_metric_keys", ['Fraction_C_site_modified']),
-            force_redo_load_adata = merged.get("force_redo_load_adata", False), 
-            force_redo_preprocessing = merged.get("force_redo_preprocessing", False), 
-            force_reload_sample_sheet = merged.get("force_reload_sample_sheet", True),
-            bypass_add_read_length_and_mapping_qc = merged.get("bypass_add_read_length_and_mapping_qc", False),
-            force_redo_add_read_length_and_mapping_qc = merged.get("force_redo_add_read_length_and_mapping_qc", False),
-            bypass_clean_nan = merged.get("bypass_clean_nan", False),
-            force_redo_clean_nan = merged.get("force_redo_clean_nan", False),
-            bypass_append_base_context = merged.get("bypass_append_base_context", False),
-            force_redo_append_base_context = merged.get("force_redo_append_base_context", False),
-            invert_adata = merged.get("invert_adata", False),
-            bypass_append_binary_layer_by_base_context = merged.get("bypass_append_binary_layer_by_base_context", False),
-            force_redo_append_binary_layer_by_base_context = merged.get("force_redo_append_binary_layer_by_base_context", False),
-            bypass_calculate_read_modification_stats = merged.get("bypass_calculate_read_modification_stats", False),
-            force_redo_calculate_read_modification_stats = merged.get("force_redo_calculate_read_modification_stats", False),
-            bypass_filter_reads_on_modification_thresholds = merged.get("bypass_filter_reads_on_modification_thresholds", False),
-            force_redo_filter_reads_on_modification_thresholds = merged.get("force_redo_filter_reads_on_modification_thresholds", False),
-            bypass_flag_duplicate_reads = merged.get("bypass_flag_duplicate_reads", False),
-            force_redo_flag_duplicate_reads = merged.get("force_redo_flag_duplicate_reads", False),
-            bypass_complexity_analysis = merged.get("bypass_complexity_analysis", False),
-            force_redo_complexity_analysis = merged.get("force_redo_complexity_analysis", False),
-            force_redo_spatial_analyses = merged.get("force_redo_spatial_analyses", False),
-            bypass_basic_clustermaps = merged.get("bypass_basic_clustermaps", False),
-            force_redo_basic_clustermaps = merged.get("force_redo_basic_clustermaps", False),
-            bypass_basic_umap = merged.get("bypass_basic_umap", False),
-            force_redo_basic_umap = merged.get("force_redo_basic_umap", False),
-            bypass_spatial_autocorr_calculations = merged.get("bypass_spatial_autocorr_calculations", False),
-            force_redo_spatial_autocorr_calculations = merged.get("force_redo_spatial_autocorr_calculations", False),
-            bypass_spatial_autocorr_plotting = merged.get("bypass_spatial_autocorr_plotting", False),
-            force_redo_spatial_autocorr_plotting = merged.get("force_redo_spatial_autocorr_plotting", False),
-            bypass_matrix_corr_calculations = merged.get("bypass_matrix_corr_calculations", False),
-            force_redo_matrix_corr_calculations = merged.get("force_redo_matrix_corr_calculations", False),
-            bypass_matrix_corr_plotting = merged.get("bypass_matrix_corr_plotting", False),
-            force_redo_matrix_corr_plotting = merged.get("force_redo_matrix_corr_plotting", False),
-            bypass_hmm_fit = merged.get("bypass_hmm_fit", False),
-            force_redo_hmm_fit = merged.get("force_redo_hmm_fit", False),
-            bypass_hmm_apply = merged.get("bypass_hmm_apply", False),
-            force_redo_hmm_apply = merged.get("force_redo_hmm_apply", False),
-    
-            config_source = config_source or "<var_dict>",
+            smf_modality=merged.get("smf_modality"),
+            input_data_path=input_data_path,
+            recursive_input_search=merged.get("recursive_input_search"),
+            input_type=input_type,
+            input_files=input_files,
+            output_directory=output_dir,
+            summary_file=summary_file,
+            fasta=merged.get("fasta"),
+            sequencer=merged.get("sequencer"),
+            model_dir=merged.get("model_dir"),
+            barcode_kit=merged.get("barcode_kit"),
+            fastq_barcode_map=merged.get("fastq_barcode_map"),
+            fastq_auto_pairing=merged.get("fastq_auto_pairing"),
+            bam_suffix=merged.get("bam_suffix", ".bam"),
+            split_dir=split_dir,
+            split_path=split_path,
+            strands=merged.get("strands", ["bottom", "top"]),
+            conversions=merged.get("conversions", ["unconverted"]),
+            fasta_regions_of_interest=merged.get("fasta_regions_of_interest"),
+            mapping_threshold=float(merged.get("mapping_threshold", 0.01)),
+            experiment_name=merged.get("experiment_name"),
+            model=merged.get("model", "hac"),
+            barcode_both_ends=merged.get("barcode_both_ends", False),
+            trim=merged.get("trim", False),
+            input_already_demuxed=merged.get("input_already_demuxed", False),
+            threads=merged.get("threads"),
+            sample_sheet_path=merged.get("sample_sheet_path"),
+            sample_sheet_mapping_column=merged.get("sample_sheet_mapping_column"),
+            delete_intermediate_bams=merged.get("delete_intermediate_bams", False),
+            delete_intermediate_tsvs=merged.get("delete_intermediate_tsvs", True),
+            align_from_bam=merged.get("align_from_bam", False),
+            aligner=merged.get("aligner", "minimap2"),
+            aligner_args=merged.get("aligner_args", None),
+            device=merged.get("device", "auto"),
+            make_bigwigs=merged.get("make_bigwigs", False),
+            make_beds=merged.get("make_beds", False),
+            delete_intermediate_hdfs=merged.get("delete_intermediate_hdfs", True),
+            mod_target_bases=merged.get("mod_target_bases", ["GpC", "CpG"]),
+            enzyme_target_bases=merged.get("enzyme_target_bases", ["GpC"]),
+            conversion_types=merged.get("conversions", ["unconverted"])
+            + merged.get("conversion_types", ["5mC"]),
+            filter_threshold=merged.get("filter_threshold", 0.8),
+            m6A_threshold=merged.get("m6A_threshold", 0.7),
+            m5C_threshold=merged.get("m5C_threshold", 0.7),
+            hm5C_threshold=merged.get("hm5C_threshold", 0.7),
+            thresholds=merged.get("thresholds", []),
+            mod_list=merged.get("mod_list", ["5mC_5hmC", "6mA"]),
+            batch_size=merged.get("batch_size", 4),
+            skip_unclassified=merged.get("skip_unclassified", True),
+            delete_batch_hdfs=merged.get("delete_batch_hdfs", True),
+            reference_column=merged.get("reference_column", "Reference_strand"),
+            sample_column=merged.get("sample_column", "Barcode"),
+            sample_name_col_for_plotting=merged.get("sample_name_col_for_plotting", "Barcode"),
+            obs_to_plot_pp_qc=obs_to_plot_pp_qc,
+            fit_position_methylation_thresholds=merged.get(
+                "fit_position_methylation_thresholds", False
+            ),
+            binarize_on_fixed_methlyation_threshold=merged.get(
+                "binarize_on_fixed_methlyation_threshold", 0.7
+            ),
+            positive_control_sample_methylation_fitting=merged.get(
+                "positive_control_sample_methylation_fitting", None
+            ),
+            negative_control_sample_methylation_fitting=merged.get(
+                "negative_control_sample_methylation_fitting", None
+            ),
+            infer_on_percentile_sample_methylation_fitting=merged.get(
+                "infer_on_percentile_sample_methylation_fitting", 10
+            ),
+            inference_variable_sample_methylation_fitting=merged.get(
+                "inference_variable_sample_methylation_fitting", "Raw_modification_signal"
+            ),
+            fit_j_threshold=merged.get("fit_j_threshold", 0.5),
+            output_binary_layer_name=merged.get(
+                "output_binary_layer_name", "binarized_methylation"
+            ),
+            reindexing_offsets=merged.get("reindexing_offsets", {None: None}),
+            reindexed_var_suffix=merged.get("reindexed_var_suffix", "reindexed"),
+            layer_for_clustermap_plotting=merged.get(
+                "layer_for_clustermap_plotting", "nan0_0minus1"
+            ),
+            clustermap_cmap_c=merged.get("clustermap_cmap_c", "coolwarm"),
+            clustermap_cmap_gpc=merged.get("clustermap_cmap_gpc", "coolwarm"),
+            clustermap_cmap_cpg=merged.get("clustermap_cmap_cpg", "coolwarm"),
+            clustermap_cmap_a=merged.get("clustermap_cmap_a", "coolwarm"),
+            spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
+            layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
+            umap_layers_to_plot=merged.get(
+                "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]
+            ),
+            rows_per_qc_histogram_grid=merged.get("rows_per_qc_histogram_grid", 12),
+            rows_per_qc_autocorr_grid=merged.get("rows_per_qc_autocorr_grid", 12),
+            autocorr_normalization_method=merged.get("autocorr_normalization_method", "pearson"),
+            autocorr_rolling_window_size=merged.get("autocorr_rolling_window_size", 25),
+            autocorr_max_lag=merged.get("autocorr_max_lag", 800),
+            autocorr_site_types=merged.get("autocorr_site_types", ["GpC", "CpG", "C"]),
+            hmm_n_states=merged.get("hmm_n_states", 2),
+            hmm_init_emission_probs=merged.get("hmm_init_emission_probs", [[0.8, 0.2], [0.2, 0.8]]),
+            hmm_init_transition_probs=merged.get(
+                "hmm_init_transition_probs", [[0.9, 0.1], [0.1, 0.9]]
+            ),
+            hmm_init_start_probs=merged.get("hmm_init_start_probs", [0.5, 0.5]),
+            hmm_eps=merged.get("hmm_eps", 1e-8),
+            hmm_fit_strategy=hmm_fit_strategy,
+            hmm_shared_scope=hmm_shared_scope,
+            hmm_groupby=hmm_groupby,
+            hmm_adapt_emissions=hmm_adapt_emissions,
+            hmm_adapt_startprobs=hmm_adapt_startprobs,
+            hmm_emission_adapt_iters=hmm_emission_adapt_iters,
+            hmm_emission_adapt_tol=hmm_emission_adapt_tol,
+            hmm_dtype=merged.get("hmm_dtype", "float64"),
+            hmm_feature_sets=hmm_feature_sets,
+            hmm_annotation_threshold=hmm_annotation_threshold,
+            hmm_batch_size=hmm_batch_size,
+            hmm_use_viterbi=hmm_use_viterbi,
+            hmm_methbases=hmm_methbases,
+            hmm_device=hmm_device,
+            hmm_merge_layer_features=hmm_merge_layer_features,
+            clustermap_cmap_hmm=merged.get("clustermap_cmap_hmm", "coolwarm"),
+            hmm_clustermap_feature_layers=hmm_clustermap_feature_layers,
+            hmm_clustermap_sortby=merged.get("hmm_clustermap_sortby", "hmm"),
+            hmm_peak_feature_configs=hmm_peak_feature_configs,
+            footprints=merged.get("footprints", None),
+            accessible_patches=merged.get("accessible_patches", None),
+            cpg=merged.get("cpg", None),
+            read_coord_filter=merged.get("read_coord_filter", [None, None]),
+            read_len_filter_thresholds=merged.get("read_len_filter_thresholds", [100, None]),
+            read_len_to_ref_ratio_filter_thresholds=merged.get(
+                "read_len_to_ref_ratio_filter_thresholds", [0.3, None]
+            ),
+            read_quality_filter_thresholds=merged.get("read_quality_filter_thresholds", [15, None]),
+            read_mapping_quality_filter_thresholds=merged.get(
+                "read_mapping_quality_filter_thresholds", [None, None]
+            ),
+            read_mod_filtering_gpc_thresholds=merged.get(
+                "read_mod_filtering_gpc_thresholds", [0.025, 0.975]
+            ),
+            read_mod_filtering_cpg_thresholds=merged.get(
+                "read_mod_filtering_cpg_thresholds", [0.0, 1.0]
+            ),
+            read_mod_filtering_c_thresholds=merged.get(
+                "read_mod_filtering_c_thresholds", [0.025, 0.975]
+            ),
+            read_mod_filtering_a_thresholds=merged.get(
+                "read_mod_filtering_a_thresholds", [0.025, 0.975]
+            ),
+            read_mod_filtering_use_other_c_as_background=merged.get(
+                "read_mod_filtering_use_other_c_as_background", True
+            ),
+            min_valid_fraction_positions_in_read_vs_ref=merged.get(
+                "min_valid_fraction_positions_in_read_vs_ref", 0.2
+            ),
+            duplicate_detection_site_types=merged.get(
+                "duplicate_detection_site_types", ["GpC", "CpG", "ambiguous_GpC_CpG"]
+            ),
+            duplicate_detection_distance_threshold=merged.get(
+                "duplicate_detection_distance_threshold", 0.07
+            ),
+            duplicate_detection_keep_best_metric=merged.get(
+                "duplicate_detection_keep_best_metric", "read_quality"
+            ),
+            duplicate_detection_window_size_for_hamming_neighbors=merged.get(
+                "duplicate_detection_window_size_for_hamming_neighbors", 50
+            ),
+            duplicate_detection_min_overlapping_positions=merged.get(
+                "duplicate_detection_min_overlapping_positions", 20
+            ),
+            duplicate_detection_do_hierarchical=merged.get(
+                "duplicate_detection_do_hierarchical", True
+            ),
+            duplicate_detection_hierarchical_linkage=merged.get(
+                "duplicate_detection_hierarchical_linkage", "average"
+            ),
+            duplicate_detection_do_pca=merged.get("duplicate_detection_do_pca", False),
+            position_max_nan_threshold=merged.get("position_max_nan_threshold", 0.1),
+            correlation_matrix_types=merged.get(
+                "correlation_matrix_types", ["pearson", "binary_covariance"]
+            ),
+            correlation_matrix_cmaps=merged.get("correlation_matrix_cmaps", ["seismic", "viridis"]),
+            correlation_matrix_site_types=merged.get("correlation_matrix_site_types", ["GpC_site"]),
+            hamming_vs_metric_keys=merged.get(
+                "hamming_vs_metric_keys", ["Fraction_C_site_modified"]
+            ),
+            force_redo_load_adata=merged.get("force_redo_load_adata", False),
+            force_redo_preprocessing=merged.get("force_redo_preprocessing", False),
+            force_reload_sample_sheet=merged.get("force_reload_sample_sheet", True),
+            bypass_add_read_length_and_mapping_qc=merged.get(
+                "bypass_add_read_length_and_mapping_qc", False
+            ),
+            force_redo_add_read_length_and_mapping_qc=merged.get(
+                "force_redo_add_read_length_and_mapping_qc", False
+            ),
+            bypass_clean_nan=merged.get("bypass_clean_nan", False),
+            force_redo_clean_nan=merged.get("force_redo_clean_nan", False),
+            bypass_append_base_context=merged.get("bypass_append_base_context", False),
+            force_redo_append_base_context=merged.get("force_redo_append_base_context", False),
+            invert_adata=merged.get("invert_adata", False),
+            bypass_append_binary_layer_by_base_context=merged.get(
+                "bypass_append_binary_layer_by_base_context", False
+            ),
+            force_redo_append_binary_layer_by_base_context=merged.get(
+                "force_redo_append_binary_layer_by_base_context", False
+            ),
+            bypass_calculate_read_modification_stats=merged.get(
+                "bypass_calculate_read_modification_stats", False
+            ),
+            force_redo_calculate_read_modification_stats=merged.get(
+                "force_redo_calculate_read_modification_stats", False
+            ),
+            bypass_filter_reads_on_modification_thresholds=merged.get(
+                "bypass_filter_reads_on_modification_thresholds", False
+            ),
+            force_redo_filter_reads_on_modification_thresholds=merged.get(
+                "force_redo_filter_reads_on_modification_thresholds", False
+            ),
+            bypass_flag_duplicate_reads=merged.get("bypass_flag_duplicate_reads", False),
+            force_redo_flag_duplicate_reads=merged.get("force_redo_flag_duplicate_reads", False),
+            bypass_complexity_analysis=merged.get("bypass_complexity_analysis", False),
+            force_redo_complexity_analysis=merged.get("force_redo_complexity_analysis", False),
+            force_redo_spatial_analyses=merged.get("force_redo_spatial_analyses", False),
+            bypass_basic_clustermaps=merged.get("bypass_basic_clustermaps", False),
+            force_redo_basic_clustermaps=merged.get("force_redo_basic_clustermaps", False),
+            bypass_basic_umap=merged.get("bypass_basic_umap", False),
+            force_redo_basic_umap=merged.get("force_redo_basic_umap", False),
+            bypass_spatial_autocorr_calculations=merged.get(
+                "bypass_spatial_autocorr_calculations", False
+            ),
+            force_redo_spatial_autocorr_calculations=merged.get(
+                "force_redo_spatial_autocorr_calculations", False
+            ),
+            bypass_spatial_autocorr_plotting=merged.get("bypass_spatial_autocorr_plotting", False),
+            force_redo_spatial_autocorr_plotting=merged.get(
+                "force_redo_spatial_autocorr_plotting", False
+            ),
+            bypass_matrix_corr_calculations=merged.get("bypass_matrix_corr_calculations", False),
+            force_redo_matrix_corr_calculations=merged.get(
+                "force_redo_matrix_corr_calculations", False
+            ),
+            bypass_matrix_corr_plotting=merged.get("bypass_matrix_corr_plotting", False),
+            force_redo_matrix_corr_plotting=merged.get("force_redo_matrix_corr_plotting", False),
+            bypass_hmm_fit=merged.get("bypass_hmm_fit", False),
+            force_redo_hmm_fit=merged.get("force_redo_hmm_fit", False),
+            bypass_hmm_apply=merged.get("bypass_hmm_apply", False),
+            force_redo_hmm_apply=merged.get("force_redo_hmm_apply", False),
+            config_source=config_source or "<var_dict>",
         )
 
         report = {
@@ -1321,9 +1484,20 @@ class ExperimentConfig:
         Load CSV using LoadExperimentConfig (or accept DataFrame) and build ExperimentConfig.
         Additional kwargs passed to from_var_dict().
         """
-        loader = LoadExperimentConfig(csv_input) if not isinstance(csv_input, pd.DataFrame) else LoadExperimentConfig(pd.DataFrame(csv_input))
+        loader = (
+            LoadExperimentConfig(csv_input)
+            if not isinstance(csv_input, pd.DataFrame)
+            else LoadExperimentConfig(pd.DataFrame(csv_input))
+        )
         var_dict = loader.var_dict
-        return cls.from_var_dict(var_dict, date_str=date_str, config_source=config_source, defaults_dir=defaults_dir, defaults_map=defaults_map, **kwargs)
+        return cls.from_var_dict(
+            var_dict,
+            date_str=date_str,
+            config_source=config_source,
+            defaults_dir=defaults_dir,
+            defaults_map=defaults_map,
+            **kwargs,
+        )
 
     # -------------------------
     # validation & serialization
@@ -1336,7 +1510,9 @@ class ExperimentConfig:
             return errs
         for g, info in hfs.items():
             if not isinstance(info, dict):
-                errs.append(f"hmm_feature_sets['{g}'] must be a mapping with 'features' and 'state'.")
+                errs.append(
+                    f"hmm_feature_sets['{g}'] must be a mapping with 'features' and 'state'."
+                )
                 continue
             feats = info.get("features")
             if not isinstance(feats, dict) or len(feats) == 0:
@@ -1346,7 +1522,9 @@ class ExperimentConfig:
                 try:
                     lo, hi = float(rng[0]), float(rng[1])
                     if lo < 0 or hi <= lo:
-                        errs.append(f"Feature range for {g}:{fname} must satisfy 0 <= lo < hi; got {rng}.")
+                        errs.append(
+                            f"Feature range for {g}:{fname} must satisfy 0 <= lo < hi; got {rng}."
+                        )
                 except Exception:
                     errs.append(f"Feature range for {g}:{fname} is invalid: {rng}")
         return errs
@@ -1379,13 +1557,18 @@ class ExperimentConfig:
 
         if not (0.0 <= float(self.mapping_threshold) <= 1.0):
             errors.append("mapping_threshold must be in [0,1].")
-        for t in (self.filter_threshold, self.m6A_threshold, self.m5C_threshold, self.hm5C_threshold):
+        for t in (
+            self.filter_threshold,
+            self.m6A_threshold,
+            self.m5C_threshold,
+            self.hm5C_threshold,
+        ):
             if not (0.0 <= float(t) <= 1.0):
                 errors.append(f"threshold value {t} must be in [0,1].")
 
         if raise_on_error and errors:
             raise ValueError("ExperimentConfig validation failed:\n  " + "\n  ".join(errors))
-        
+
         errs = _validate_hmm_features_structure(self.hmm_feature_sets)
         errors.extend(errs)
 

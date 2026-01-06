@@ -1,6 +1,9 @@
 # calculate_consensus
 
-def calculate_consensus(adata, reference, sample=False, reference_column='Reference', sample_column='Sample'):
+
+def calculate_consensus(
+    adata, reference, sample=False, reference_column="Reference", sample_column="Sample"
+):
     """
     Takes an input AnnData object, the reference to subset on, and the sample name to subset on to calculate the consensus sequence of the read set.
 
@@ -13,7 +16,7 @@ def calculate_consensus(adata, reference, sample=False, reference_column='Refere
 
     Returns:
         None
-    
+
     """
     import numpy as np
 
@@ -25,11 +28,11 @@ def calculate_consensus(adata, reference, sample=False, reference_column='Refere
         pass
 
     # Grab layer names from the adata object that correspond to the binary encodings of the read sequences.
-    layers = [layer for layer in record_subset.layers if '_binary_' in layer]
+    layers = [layer for layer in record_subset.layers if "_binary_" in layer]
     layer_map, layer_counts = {}, []
     for i, layer in enumerate(layers):
         # Gives an integer mapping to access which sequence base the binary layer is encoding
-        layer_map[i] = layer.split('_')[0]
+        layer_map[i] = layer.split("_")[0]
         # Get the positional counts from all reads for the given base identity.
         layer_counts.append(np.sum(record_subset.layers[layer], axis=0))
     # Combine the positional counts array derived from each binary base layer into an ndarray
@@ -40,8 +43,8 @@ def calculate_consensus(adata, reference, sample=False, reference_column='Refere
     consensus_sequence_list = [layer_map[i] for i in nucleotide_indexes]
 
     if sample:
-        adata.var[f'{reference}_consensus_from_{sample}'] = consensus_sequence_list
+        adata.var[f"{reference}_consensus_from_{sample}"] = consensus_sequence_list
     else:
-        adata.var[f'{reference}_consensus_across_samples'] = consensus_sequence_list
+        adata.var[f"{reference}_consensus_across_samples"] = consensus_sequence_list
 
-    adata.uns[f'{reference}_consensus_sequence'] = consensus_sequence_list
+    adata.uns[f"{reference}_consensus_sequence"] = consensus_sequence_list

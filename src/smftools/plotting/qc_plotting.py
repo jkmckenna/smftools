@@ -83,7 +83,11 @@ def plot_read_qc_histograms(
     for key in valid_keys:
         if not is_numeric[key]:
             continue
-        s = pd.to_numeric(adata.obs[key], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        s = (
+            pd.to_numeric(adata.obs[key], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
         if s.size < min_non_nan:
             # still set something to avoid errors; just use min/max or (0,1)
             lo, hi = (0.0, 1.0) if s.size == 0 else (float(s.min()), float(s.max()))
@@ -107,17 +111,18 @@ def plot_read_qc_histograms(
     fig_h_unit = figsize_cell[1]
 
     for start in range(0, len(sample_levels), rows_per_fig):
-        chunk = sample_levels[start:start + rows_per_fig]
+        chunk = sample_levels[start : start + rows_per_fig]
         nrows = len(chunk)
         fig, axes = plt.subplots(
-            nrows=nrows, ncols=ncols,
+            nrows=nrows,
+            ncols=ncols,
             figsize=(fig_w, fig_h_unit * nrows),
             dpi=dpi,
             squeeze=False,
         )
 
         for r, sample_val in enumerate(chunk):
-            row_mask = (adata.obs[sample_key].values == sample_val)
+            row_mask = adata.obs[sample_key].values == sample_val
             n_in_row = int(row_mask.sum())
 
             for c, key in enumerate(valid_keys):
@@ -125,7 +130,11 @@ def plot_read_qc_histograms(
                 series = adata.obs.loc[row_mask, key]
 
                 if is_numeric[key]:
-                    x = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+                    x = (
+                        pd.to_numeric(series, errors="coerce")
+                        .replace([np.inf, -np.inf], np.nan)
+                        .dropna()
+                    )
                     if x.size < min_non_nan:
                         ax.text(0.5, 0.5, f"n={x.size} (<{min_non_nan})", ha="center", va="center")
                     else:
@@ -143,7 +152,9 @@ def plot_read_qc_histograms(
                 else:
                     vc = series.astype("category").value_counts(dropna=False)
                     if vc.sum() < min_non_nan:
-                        ax.text(0.5, 0.5, f"n={vc.sum()} (<{min_non_nan})", ha="center", va="center")
+                        ax.text(
+                            0.5, 0.5, f"n={vc.sum()} (<{min_non_nan})", ha="center", va="center"
+                        )
                     else:
                         vc_top = vc.iloc[:topn_categories][::-1]  # show top-N, reversed for barh
                         ax.barh(vc_top.index.astype(str), vc_top.values)

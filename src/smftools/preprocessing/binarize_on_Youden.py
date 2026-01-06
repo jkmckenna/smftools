@@ -16,7 +16,7 @@ def binarize_on_Youden(
     output_layer_name : str
         Layer in which to store the binarized matrix.
     mask_failed_positions : bool
-        If True (default): 
+        If True (default):
             Positions that failed Youden QC are set to NaN.
         If False:
             All positions are binarized regardless of QC status.
@@ -42,16 +42,14 @@ def binarize_on_Youden(
     for ref in references:
         print(f"Binarizing on Youden statistics for {ref}")
 
-        ref_mask = (ref_labels == ref)
+        ref_mask = ref_labels == ref
         if not np.any(ref_mask):
             continue
 
         X_block = X[ref_mask, :].astype(float, copy=True)
 
         # thresholds: list of (threshold, J)
-        youden_stats = adata.var[
-            f"{ref}_position_methylation_thresholding_Youden_stats"
-        ].to_numpy()
+        youden_stats = adata.var[f"{ref}_position_methylation_thresholding_Youden_stats"].to_numpy()
 
         thresholds = np.array(
             [t[0] if isinstance(t, (tuple, list)) else np.nan for t in youden_stats],
@@ -59,9 +57,7 @@ def binarize_on_Youden(
         )
 
         # QC mask
-        qc_mask = adata.var[
-            f"{ref}_position_passed_Youden_thresholding_QC"
-        ].to_numpy().astype(bool)
+        qc_mask = adata.var[f"{ref}_position_passed_Youden_thresholding_QC"].to_numpy().astype(bool)
 
         if mask_failed_positions:
             # Only binarize positions passing QC
@@ -94,8 +90,8 @@ def binarize_on_Youden(
     )
 
 
-# def binarize_on_Youden(adata, 
-#                        ref_column='Reference_strand', 
+# def binarize_on_Youden(adata,
+#                        ref_column='Reference_strand',
 #                        output_layer_name='binarized_methylation'):
 #     """
 #     Binarize SMF values based on position thresholds determined by calculate_position_Youden.
@@ -108,7 +104,7 @@ def binarize_on_Youden(
 #         Adds a new layer to `adata.layers['binarized_methylation']` containing the binarized methylation matrix.
 #     """
 #     import numpy as np
-#     import anndata as ad    
+#     import anndata as ad
 
 #     # Initialize an empty matrix to store the binarized methylation values
 #     binarized_methylation = np.full_like(adata.X, np.nan, dtype=float)  # Keeps same shape as adata.X

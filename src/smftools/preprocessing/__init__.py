@@ -24,15 +24,15 @@ __all__ = [
     "binarize_adata",
     "calculate_complexity_II",
     "calculate_read_modification_stats",
-    "calculate_coverage",    
+    "calculate_coverage",
     "calculate_position_Youden",
     "calculate_read_length_stats",
-    "clean_NaN",   
+    "clean_NaN",
     "filter_adata_by_nan_proportion",
     "filter_reads_on_modification_thresholds",
     "filter_reads_on_length_quality_mapping",
     "invert_adata",
     "load_sample_sheet",
     "flag_duplicate_reads",
-    "subsample_adata"
+    "subsample_adata",
 ]

@@ -4,7 +4,8 @@ import anndata as ad
 import os
 import concurrent.futures
 
-def one_hot_encode(sequence, device='auto'):
+
+def one_hot_encode(sequence, device="auto"):
     """
     One-hot encodes a DNA sequence.
 
@@ -14,7 +15,7 @@ def one_hot_encode(sequence, device='auto'):
     Returns:
         ndarray: Flattened one-hot encoded representation of the input sequence.
     """
-    mapping = np.array(['A', 'C', 'G', 'T', 'N'])
+    mapping = np.array(["A", "C", "G", "T", "N"])
 
     # Ensure input is a list of characters
     if not isinstance(sequence, list):
@@ -26,16 +27,17 @@ def one_hot_encode(sequence, device='auto'):
         return np.zeros(len(mapping))  # Return empty encoding instead of failing
 
     # Convert sequence to NumPy array
-    seq_array = np.array(sequence, dtype='<U1')
+    seq_array = np.array(sequence, dtype="<U1")
 
     # Replace invalid bases with 'N'
-    seq_array = np.where(np.isin(seq_array, mapping), seq_array, 'N')
+    seq_array = np.where(np.isin(seq_array, mapping), seq_array, "N")
 
     # Create one-hot encoding matrix
     one_hot_matrix = (seq_array[:, None] == mapping).astype(int)
 
     # Flatten and return
     return one_hot_matrix.flatten()
+
 
 def one_hot_decode(ohe_array):
     """
@@ -47,19 +49,20 @@ def one_hot_decode(ohe_array):
         sequence (str): Sequence string of the one hot encoded array
     """
     # Define the mapping of one-hot encoded indices to DNA bases
-    mapping = ['A', 'C', 'G', 'T', 'N']
-    
+    mapping = ["A", "C", "G", "T", "N"]
+
     # Reshape the flattened array into a 2D matrix with 5 columns (one for each base)
     one_hot_matrix = ohe_array.reshape(-1, 5)
-    
+
     # Get the index of the maximum value (which will be 1) in each row
     decoded_indices = np.argmax(one_hot_matrix, axis=1)
-    
+
     # Map the indices back to the corresponding bases
     sequence_list = [mapping[i] for i in decoded_indices]
-    sequence = ''.join(sequence_list)
-    
+    sequence = "".join(sequence_list)
+
     return sequence
+
 
 def ohe_layers_decode(adata, obs_names):
     """
@@ -72,7 +75,7 @@ def ohe_layers_decode(adata, obs_names):
         sequences (list of str): List of strings of the one hot encoded array
     """
     # Define the mapping of one-hot encoded indices to DNA bases
-    mapping = ['A', 'C', 'G', 'T', 'N']
+    mapping = ["A", "C", "G", "T", "N"]
 
     ohe_layers = [f"{base}_binary_encoding" for base in mapping]
     sequences = []
@@ -85,8 +88,9 @@ def ohe_layers_decode(adata, obs_names):
         ohe_array = np.array(ohe_list)
         sequence = one_hot_decode(ohe_array)
         sequences.append(sequence)
-        
+
     return sequences
+
 
 def _encode_sequence(args):
     """Parallel helper function for one-hot encoding."""
@@ -97,18 +101,29 @@ def _encode_sequence(args):
     except Exception:
         return None  # Skip invalid sequences
 
+
 def _encode_and_save_batch(batch_data, tmp_dir, prefix, record, batch_number):
     """Encodes a batch and writes to disk immediately."""
     batch = {read_name: matrix for read_name, matrix in batch_data if matrix is not None}
 
     if batch:
-        save_name = os.path.join(tmp_dir, f'tmp_{prefix}_{record}_{batch_number}.h5ad')
+        save_name = os.path.join(tmp_dir, f"tmp_{prefix}_{record}_{batch_number}.h5ad")
         tmp_ad = ad.AnnData(X=np.zeros((1, 1)), uns=batch)  # Placeholder X
         tmp_ad.write_h5ad(save_name)
         return save_name
     return None
 
-def ohe_batching(base_identities, tmp_dir, record, prefix='', batch_size=100000, progress_bar=None, device='auto', threads=None):
+
+def ohe_batching(
+    base_identities,
+    tmp_dir,
+    record,
+    prefix="",
+    batch_size=100000,
+    progress_bar=None,
+    device="auto",
+    threads=None,
+):
     """
     Efficient version of ohe_batching: one-hot encodes sequences in parallel and writes batches immediately.
 
@@ -131,7 +146,9 @@ def ohe_batching(base_identities, tmp_dir, record, prefix='', batch_size=100000,
     file_names = []
 
     # Step 1: Prepare Data for Parallel Encoding
-    encoding_args = [(read_name, seq, device) for read_name, seq in base_identities.items() if seq is not None]
+    encoding_args = [
+        (read_name, seq, device) for read_name, seq in base_identities.items() if seq is not None
+    ]
 
     # Step 2: Parallel One-Hot Encoding using threads (to avoid nested processes)
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
@@ -141,7 +158,9 @@ def ohe_batching(base_identities, tmp_dir, record, prefix='', batch_size=100000,
 
                 if len(batch_data) >= batch_size:
                     # Step 3: Process and Write Batch Immediately
-                    file_name = _encode_and_save_batch(batch_data.copy(), tmp_dir, prefix, record, batch_number)
+                    file_name = _encode_and_save_batch(
+                        batch_data.copy(), tmp_dir, prefix, record, batch_number
+                    )
                     if file_name:
                         file_names.append(file_name)
 

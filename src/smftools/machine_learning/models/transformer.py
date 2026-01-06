@@ -1,9 +1,10 @@
 import torch
 import torch.nn as nn
 from .base import BaseTorchModel
-from .positional import PositionalEncoding 
+from .positional import PositionalEncoding
 from ..utils.grl import grad_reverse
 import numpy as np
+
 
 class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
@@ -11,12 +12,14 @@ class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):
 
     def forward(self, src, src_mask=None, is_causal=False, src_key_padding_mask=None):
         self_attn_output, attn_weights = self.self_attn(
-            src, src, src,
+            src,
+            src,
+            src,
             attn_mask=src_mask,
             key_padding_mask=src_key_padding_mask,
             need_weights=True,
             average_attn_weights=False,  # preserve [B, num_heads, S, S]
-            is_causal=is_causal
+            is_causal=is_causal,
         )
         src = src + self.dropout1(self_attn_output)
         src = self.norm1(src)
@@ -27,18 +30,21 @@ class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):
         # Save attention weights to module
         self.attn_weights = attn_weights  # Save to layer
         return src
-    
+
+
 class BaseTransformer(BaseTorchModel):
-    def __init__(self, 
-                 input_dim=1, 
-                 model_dim=64, 
-                 num_heads=4, 
-                 num_layers=2, 
-                 dropout=0.2,
-                 seq_len=None, 
-                 use_learnable_pos=False, 
-                 use_cls_token=True,
-                 **kwargs):
+    def __init__(
+        self,
+        input_dim=1,
+        model_dim=64,
+        num_heads=4,
+        num_layers=2,
+        dropout=0.2,
+        seq_len=None,
+        use_learnable_pos=False,
+        use_cls_token=True,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         # Input FC layer to map D_input to D_model
         self.model_dim = model_dim
@@ -52,7 +58,9 @@ class BaseTransformer(BaseTorchModel):
 
         if use_learnable_pos:
             assert seq_len is not None, "Must provide seq_len if use_learnable_pos=True"
-            self.pos_embed = nn.Parameter(torch.randn(seq_len + (1 if use_cls_token else 0), model_dim))
+            self.pos_embed = nn.Parameter(
+                torch.randn(seq_len + (1 if use_cls_token else 0), model_dim)
+            )
             self.pos_encoder = None
         else:
             self.pos_encoder = PositionalEncoding(model_dim)
@@ -62,7 +70,13 @@ class BaseTransformer(BaseTorchModel):
             self.cls_token = nn.Parameter(torch.zeros(1, 1, model_dim))  # (1, 1, D)
 
         # Specify the transformer encoder structure
-        encoder_layer = TransformerEncoderLayerWithAttn(d_model=model_dim, nhead=num_heads, batch_first=True, dim_feedforward=self.ff_dim, dropout=self.dropout)
+        encoder_layer = TransformerEncoderLayerWithAttn(
+            d_model=model_dim,
+            nhead=num_heads,
+            batch_first=True,
+            dim_feedforward=self.ff_dim,
+            dropout=self.dropout,
+        )
         # Stack the transformer encoder layers
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
@@ -95,7 +109,7 @@ class BaseTransformer(BaseTorchModel):
             x = torch.cat([cls, x], dim=1)  # (B, S+1, D)
 
         if self.pos_embed is not None:
-            x = x + self.pos_embed.unsqueeze(0)[:, :x.shape[1], :]
+            x = x + self.pos_embed.unsqueeze(0)[:, : x.shape[1], :]
         elif self.pos_encoder is not None:
             x = self.pos_encoder(x)
 
@@ -106,8 +120,8 @@ class BaseTransformer(BaseTorchModel):
 
         encoded = self.transformer(x)
         return encoded
-    
-    def compute_attn_grad(self, reduction='mean'):
+
+    def compute_attn_grad(self, reduction="mean"):
         """
         Computes attention × gradient scores across layers.
         Returns: [B, S] tensor of importance scores
@@ -116,19 +130,19 @@ class BaseTransformer(BaseTorchModel):
         for attn, grad in zip(self.attn_weights, self.attn_grads):
             # attn: [B, H, S, S]
             # grad: [B, S, D]
-            attn = attn.mean(dim=1)            # [B, S, S]
-            grad_norm = grad.norm(dim=-1)      # [B, S]
+            attn = attn.mean(dim=1)  # [B, S, S]
+            grad_norm = grad.norm(dim=-1)  # [B, S]
             attn_grad_score = (attn * grad_norm.unsqueeze(1)).sum(dim=-1)  # [B, S]
             scores.append(attn_grad_score)
 
         # Combine across layers
         stacked = torch.stack(scores, dim=0)  # [L, B, S]
         if reduction == "mean":
-            return stacked.mean(dim=0)        # [B, S]
+            return stacked.mean(dim=0)  # [B, S]
         elif reduction == "sum":
-            return stacked.sum(dim=0)         # [B, S]
+            return stacked.sum(dim=0)  # [B, S]
         else:
-            return stacked                    # [L, B, S]
+            return stacked  # [L, B, S]
 
     def compute_rollout(self):
         """
@@ -143,9 +157,9 @@ class BaseTransformer(BaseTorchModel):
             attn_heads = attn_heads + torch.eye(S, device=device).unsqueeze(0)  # add residual
             attn_heads = attn_heads / attn_heads.sum(dim=-1, keepdim=True).clamp(min=1e-6)
             rollout = torch.bmm(attn_heads, rollout)  # [B, S, S]
-        
+
         return rollout  # [B, S, S]
-    
+
     def reset_attn_buffers(self):
         self.attn_weights = []
         self.attn_grads = []
@@ -158,11 +172,15 @@ class BaseTransformer(BaseTorchModel):
         if head_idx is not None:
             attn = attn[:, head_idx]  # [B, S, S]
         return attn
-    
-    def apply_attn_interpretations_to_adata(self, dataloader, adata, 
-                                            obsm_key_grad="attn_grad", 
-                                            obsm_key_rollout="attn_rollout",
-                                            device="cpu"):
+
+    def apply_attn_interpretations_to_adata(
+        self,
+        dataloader,
+        adata,
+        obsm_key_grad="attn_grad",
+        obsm_key_rollout="attn_rollout",
+        device="cpu",
+    ):
         self.to(device)
         self.eval()
         grad_maps = []
@@ -193,12 +211,10 @@ class BaseTransformer(BaseTorchModel):
         # add per-row normalized version
         grad_normed = grad_concat / (np.max(grad_concat, axis=1, keepdims=True) + 1e-8)
         adata.obsm[f"{obsm_key_grad}_normalized"] = grad_normed
-    
+
+
 class TransformerClassifier(BaseTransformer):
-    def __init__(self, 
-                 input_dim, 
-                 num_classes, 
-                 **kwargs):
+    def __init__(self, input_dim, num_classes, **kwargs):
         super().__init__(input_dim, **kwargs)
         # Classification head
         output_size = 1 if num_classes == 2 else num_classes
@@ -215,7 +231,7 @@ class TransformerClassifier(BaseTransformer):
             x = x.unsqueeze(0).unsqueeze(-1)  # just in case (S,) → (1, S, 1)
         else:
             pass
-        encoded = self.encode(x) # -> (B, S, D_model)
+        encoded = self.encode(x)  # -> (B, S, D_model)
         if self.use_cls_token:
             pooled = encoded[:, 0]  # (B, D)
         else:
@@ -223,14 +239,13 @@ class TransformerClassifier(BaseTransformer):
 
         out = self.cls_head(pooled)  # (B, C)
         return out
-    
+
+
 class DANNTransformerClassifier(TransformerClassifier):
     def __init__(self, input_dim, model_dim, num_classes, n_domains, **kwargs):
         super().__init__(input_dim, model_dim, num_classes, **kwargs)
         self.domain_classifier = nn.Sequential(
-            nn.Linear(model_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, n_domains)
+            nn.Linear(model_dim, 128), nn.ReLU(), nn.Linear(128, n_domains)
         )
 
     def forward(self, x, alpha=1.0):
@@ -241,6 +256,7 @@ class DANNTransformerClassifier(TransformerClassifier):
         domain_logits = self.domain_classifier(grad_reverse(pooled, alpha))
 
         return class_logits, domain_logits
+
 
 class MaskedTransformerPretrainer(BaseTransformer):
     def __init__(self, input_dim, model_dim, num_heads=4, num_layers=2, **kwargs):
@@ -254,12 +270,13 @@ class MaskedTransformerPretrainer(BaseTransformer):
         """
         if x.dim() == 2:
             x = x.unsqueeze(-1)
-        encoded = self.encode(x, mask=mask) # -> (B, S, D_model)
-        return self.decoder(encoded) # -> (B, D_input)
-    
+        encoded = self.encode(x, mask=mask)  # -> (B, S, D_model)
+        return self.decoder(encoded)  # -> (B, D_input)
+
+
 class DANNTransformer(BaseTransformer):
-    """
-    """
+    """ """
+
     def __init__(self, seq_len, model_dim, n_heads, n_layers, n_domains):
         super().__init__(
             input_dim=1,  # 1D scalar input per token
@@ -267,7 +284,7 @@ class DANNTransformer(BaseTransformer):
             num_heads=n_heads,
             num_layers=n_layers,
             seq_len=seq_len,
-            use_learnable_pos=True  # enables learnable pos_embed in base
+            use_learnable_pos=True,  # enables learnable pos_embed in base
         )
 
         # Reconstruction head
@@ -275,9 +292,7 @@ class DANNTransformer(BaseTransformer):
 
         # Domain classification head
         self.domain_classifier = nn.Sequential(
-            nn.Linear(model_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, n_domains)
+            nn.Linear(model_dim, 128), nn.ReLU(), nn.Linear(128, n_domains)
         )
 
     def forward(self, x, alpha=1.0):
@@ -300,4 +315,3 @@ class DANNTransformer(BaseTransformer):
         domain_logits = self.domain_classifier(rev)  # (B, n_batches)
 
         return recon, domain_logits
-    

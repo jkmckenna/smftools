@@ -1,19 +1,21 @@
 from typing import Optional
+
+
 def calculate_complexity_II(
     adata,
-    output_directory='',
-    sample_col='Sample_names',
-    ref_col: Optional[str] = 'Reference_strand',
-    cluster_col='sequence__merged_cluster_id',
+    output_directory="",
+    sample_col="Sample_names",
+    ref_col: Optional[str] = "Reference_strand",
+    cluster_col="sequence__merged_cluster_id",
     plot=True,
     save_plot=False,
     n_boot=30,
     n_depths=12,
     random_state=0,
     csv_summary=True,
-    uns_flag='calculate_complexity_II_performed',
+    uns_flag="calculate_complexity_II_performed",
     force_redo=False,
-    bypass=False
+    bypass=False,
 ):
     """
     Estimate and plot library complexity.
@@ -36,7 +38,7 @@ def calculate_complexity_II(
 
     # early exits
     already = bool(adata.uns.get(uns_flag, False))
-    if (already and not force_redo):
+    if already and not force_redo:
         return None
     if bypass:
         return None
@@ -77,7 +79,7 @@ def calculate_complexity_II(
         group_keys = []
         # iterate only pairs that exist in data to avoid empty processing
         for s in samples:
-            mask_s = (adata.obs[sample_col] == s)
+            mask_s = adata.obs[sample_col] == s
             # find references present for this sample
             ref_present = pd.Categorical(adata.obs.loc[mask_s, ref_col]).categories
             # Use intersection of known reference categories and those present for sample
@@ -109,7 +111,7 @@ def calculate_complexity_II(
                 "ci_high": np.array([], dtype=float),
             }
             # also store back-compat key
-            adata.uns[f'Library_complexity_{sanitize(group_label)}'] = results[g]
+            adata.uns[f"Library_complexity_{sanitize(group_label)}"] = results[g]
             continue
 
         # cluster ids array for this group
@@ -175,39 +177,45 @@ def calculate_complexity_II(
         }
 
         # save per-group in adata.uns for backward compatibility
-        adata.uns[f'Library_complexity_{sanitize(group_label)}'] = results[g]
+        adata.uns[f"Library_complexity_{sanitize(group_label)}"] = results[g]
 
         # prepare curve and fit records for CSV
-        fit_records.append({
-            "sample": sample,
-            "reference": ref if ref_col is not None else "",
-            "C0": float(C0),
-            "n_reads": int(n_reads),
-            "n_unique_observed": int(observed_unique),
-        })
+        fit_records.append(
+            {
+                "sample": sample,
+                "reference": ref if ref_col is not None else "",
+                "C0": float(C0),
+                "n_reads": int(n_reads),
+                "n_unique_observed": int(observed_unique),
+            }
+        )
 
         x_fit = np.linspace(0, max(n_reads, int(depths[-1]) if depths.size else n_reads), 200)
         y_fit = lw(x_fit, C0)
         for d, mu, lo, hi in zip(depths, mean_unique, lo_ci, hi_ci):
-            curve_records.append({
-                "sample": sample,
-                "reference": ref if ref_col is not None else "",
-                "type": "bootstrap",
-                "depth": int(d),
-                "mean_unique": float(mu),
-                "ci_low": float(lo),
-                "ci_high": float(hi),
-            })
+            curve_records.append(
+                {
+                    "sample": sample,
+                    "reference": ref if ref_col is not None else "",
+                    "type": "bootstrap",
+                    "depth": int(d),
+                    "mean_unique": float(mu),
+                    "ci_low": float(lo),
+                    "ci_high": float(hi),
+                }
+            )
         for xf, yf in zip(x_fit, y_fit):
-            curve_records.append({
-                "sample": sample,
-                "reference": ref if ref_col is not None else "",
-                "type": "fit",
-                "depth": float(xf),
-                "mean_unique": float(yf),
-                "ci_low": np.nan,
-                "ci_high": np.nan,
-            })
+            curve_records.append(
+                {
+                    "sample": sample,
+                    "reference": ref if ref_col is not None else "",
+                    "type": "fit",
+                    "depth": float(xf),
+                    "mean_unique": float(yf),
+                    "ci_low": np.nan,
+                    "ci_high": np.nan,
+                }
+            )
 
         # plotting for this group
         if plot:
@@ -226,7 +234,9 @@ def calculate_complexity_II(
 
             if save_plot:
                 fname = f"complexity_{sanitize(group_label)}.png"
-                plt.savefig(os.path.join(output_directory or ".", fname), dpi=160, bbox_inches="tight")
+                plt.savefig(
+                    os.path.join(output_directory or ".", fname), dpi=160, bbox_inches="tight"
+                )
                 plt.close()
             else:
                 plt.show()

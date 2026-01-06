@@ -18,19 +18,22 @@ import pysam
 from concurrent.futures import ProcessPoolExecutor
 from itertools import chain
 
+
 def _convert_FASTA_record(record, modification_type, strand, unconverted):
-    """ Converts a FASTA record based on modification type and strand. """
+    """Converts a FASTA record based on modification type and strand."""
     conversion_maps = {
-        ('5mC', 'top'): ('C', 'T'),
-        ('5mC', 'bottom'): ('G', 'A'),
-        ('6mA', 'top'): ('A', 'G'),
-        ('6mA', 'bottom'): ('T', 'C')
+        ("5mC", "top"): ("C", "T"),
+        ("5mC", "bottom"): ("G", "A"),
+        ("6mA", "top"): ("A", "G"),
+        ("6mA", "bottom"): ("T", "C"),
     }
 
     sequence = str(record.seq).upper()
 
     if modification_type == unconverted:
-        return SeqRecord(Seq(sequence), id=f"{record.id}_{modification_type}_top", description=record.description)
+        return SeqRecord(
+            Seq(sequence), id=f"{record.id}_{modification_type}_top", description=record.description
+        )
 
     if (modification_type, strand) not in conversion_maps:
         raise ValueError(f"Invalid combination: {modification_type}, {strand}")
@@ -38,7 +41,10 @@ def _convert_FASTA_record(record, modification_type, strand, unconverted):
     original_base, converted_base = conversion_maps[(modification_type, strand)]
     new_seq = sequence.replace(original_base, converted_base)
 
-    return SeqRecord(Seq(new_seq), id=f"{record.id}_{modification_type}_{strand}", description=record.description)
+    return SeqRecord(
+        Seq(new_seq), id=f"{record.id}_{modification_type}_{strand}", description=record.description
+    )
+
 
 def _process_fasta_record(args):
     """
@@ -50,17 +56,22 @@ def _process_fasta_record(args):
     """
     record, modification_types, strands, unconverted = args
     modified_records = []
-    
+
     for modification_type in modification_types:
         for i, strand in enumerate(strands):
             if i > 0 and modification_type == unconverted:
                 continue  # Ensure unconverted is added only once
 
-            modified_records.append(_convert_FASTA_record(record, modification_type, strand, unconverted))
+            modified_records.append(
+                _convert_FASTA_record(record, modification_type, strand, unconverted)
+            )
 
     return modified_records
 
-def generate_converted_FASTA(input_fasta, modification_types, strands, output_fasta, num_threads=4, chunk_size=500):
+
+def generate_converted_FASTA(
+    input_fasta, modification_types, strands, output_fasta, num_threads=4, chunk_size=500
+):
     """
     Converts an input FASTA file and writes a new converted FASTA file efficiently.
 
@@ -80,20 +91,26 @@ def generate_converted_FASTA(input_fasta, modification_types, strands, output_fa
     output_fasta = str(output_fasta)
 
     # Detect if input is gzipped
-    open_func = gzip.open if input_fasta.endswith('.gz') else open
-    file_mode = 'rt' if input_fasta.endswith('.gz') else 'r'
+    open_func = gzip.open if input_fasta.endswith(".gz") else open
+    file_mode = "rt" if input_fasta.endswith(".gz") else "r"
 
     def _fasta_record_generator():
-        """ Lazily yields FASTA records from file. """
+        """Lazily yields FASTA records from file."""
         with open_func(input_fasta, file_mode) as handle:
-            for record in SeqIO.parse(handle, 'fasta'):
+            for record in SeqIO.parse(handle, "fasta"):
                 yield record
 
-    with open(output_fasta, 'w') as output_handle, ProcessPoolExecutor(max_workers=num_threads) as executor:
+    with (
+        open(output_fasta, "w") as output_handle,
+        ProcessPoolExecutor(max_workers=num_threads) as executor,
+    ):
         # Process records in parallel using a named function (avoiding lambda)
         results = executor.map(
             _process_fasta_record,
-            ((record, modification_types, strands, unconverted) for record in _fasta_record_generator())
+            (
+                (record, modification_types, strands, unconverted)
+                for record in _fasta_record_generator()
+            ),
         )
 
         buffer = []
@@ -102,12 +119,13 @@ def generate_converted_FASTA(input_fasta, modification_types, strands, output_fa
 
             # Write out in chunks to save memory
             if len(buffer) >= chunk_size:
-                SeqIO.write(buffer, output_handle, 'fasta')
+                SeqIO.write(buffer, output_handle, "fasta")
                 buffer.clear()
 
         # Write any remaining records
         if buffer:
-            SeqIO.write(buffer, output_handle, 'fasta')
+            SeqIO.write(buffer, output_handle, "fasta")
+
 
 def index_fasta(fasta: str | Path, write_chrom_sizes: bool = True) -> Path:
     fasta = Path(fasta)
@@ -122,6 +140,7 @@ def index_fasta(fasta: str | Path, write_chrom_sizes: bool = True) -> Path:
                 out.write(f"{chrom}\t{size}\n")
         return chrom_sizes
     return fai
+
 
 def get_chromosome_lengths(fasta: str | Path) -> Path:
     """
@@ -143,6 +162,7 @@ def get_chromosome_lengths(fasta: str | Path) -> Path:
             out.write(f"{chrom}\t{size}\n")
     return chrom_sizes
 
+
 def get_native_references(fasta_file: str | Path) -> Dict[str, Tuple[int, str]]:
     """
     Return {record_id: (length, sequence)} from a FASTA.
@@ -157,6 +177,7 @@ def get_native_references(fasta_file: str | Path) -> Dict[str, Tuple[int, str]]:
             record_dict[rec.id] = (len(seq), seq)
     return record_dict
 
+
 def find_conversion_sites(fasta_file, modification_type, conversions, deaminase_footprinting=False):
     """
     Finds genomic coordinates of modified bases (5mC or 6mA) in a reference FASTA file.
@@ -167,7 +188,7 @@ def find_conversion_sites(fasta_file, modification_type, conversions, deaminase_
         conversions (list): List of conversion types. The first element is the unconverted record type.
         deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
 
-    Returns: 
+    Returns:
         dict: Dictionary where keys are **both unconverted & converted record names**.
               Values contain:
               [sequence length, top strand coordinates, bottom strand coordinates, sequence, complement sequence].
@@ -177,8 +198,8 @@ def find_conversion_sites(fasta_file, modification_type, conversions, deaminase_
 
     # Define base mapping based on modification type
     base_mappings = {
-        '5mC': ('C', 'G'),  # Cytosine and Guanine
-        '6mA': ('A', 'T')   # Adenine and Thymine
+        "5mC": ("C", "G"),  # Cytosine and Guanine
+        "6mA": ("A", "T"),  # Adenine and Thymine
     }
 
     # Read FASTA file and process records
@@ -200,18 +221,27 @@ def find_conversion_sites(fasta_file, modification_type, conversions, deaminase_
                     top_strand_coordinates = np.where(seq_array == top_base)[0].tolist()
                     bottom_strand_coordinates = np.where(seq_array == bottom_base)[0].tolist()
 
-                    record_dict[record.id] = [sequence_length, top_strand_coordinates, bottom_strand_coordinates, sequence, complement]
+                    record_dict[record.id] = [
+                        sequence_length,
+                        top_strand_coordinates,
+                        bottom_strand_coordinates,
+                        sequence,
+                        complement,
+                    ]
 
                 else:
-                    raise ValueError(f"Invalid modification_type: {modification_type}. Choose '5mC', '6mA', or 'unconverted'.")
+                    raise ValueError(
+                        f"Invalid modification_type: {modification_type}. Choose '5mC', '6mA', or 'unconverted'."
+                    )
 
     return record_dict
+
 
 def subsample_fasta_from_bed(
     input_FASTA: str | Path,
     input_bed: str | Path,
     output_directory: str | Path,
-    output_FASTA: str | Path
+    output_FASTA: str | Path,
 ) -> None:
     """
     Take a genome-wide FASTA file and a BED file containing
@@ -230,16 +260,16 @@ def subsample_fasta_from_bed(
     output_FASTA_path = output_directory / output_FASTA
 
     # Load the FASTA file using pyfaidx
-    fasta = Fasta(str(input_FASTA))   # pyfaidx requires string paths
+    fasta = Fasta(str(input_FASTA))  # pyfaidx requires string paths
 
     # Open BED + output FASTA
     with input_bed.open("r") as bed, output_FASTA_path.open("w") as out_fasta:
         for line in bed:
             fields = line.strip().split()
             chrom = fields[0]
-            start = int(fields[1]) # BED is 0-based
-            end   = int(fields[2]) # BED is 0-based and end is exclusive
-            desc  = " ".join(fields[3:]) if len(fields) > 3 else ""
+            start = int(fields[1])  # BED is 0-based
+            end = int(fields[2])  # BED is 0-based and end is exclusive
+            desc = " ".join(fields[3:]) if len(fields) > 3 else ""
 
             if chrom not in fasta:
                 print(f"Warning: {chrom} not found in FASTA")

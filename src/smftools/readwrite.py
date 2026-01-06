@@ -11,6 +11,7 @@ import warnings
 import pandas as pd
 import anndata as ad
 
+
 ######################################################################################################
 ## Datetime functionality
 def date_string():
@@ -18,19 +19,25 @@ def date_string():
     Each time this is called, it returns the current date string
     """
     from datetime import datetime
+
     current_date = datetime.now()
     date_string = current_date.strftime("%Y%m%d")
     date_string = date_string[2:]
     return date_string
+
 
 def time_string():
     """
     Each time this is called, it returns the current time string
     """
     from datetime import datetime
+
     current_time = datetime.now()
     return current_time.strftime("%H:%M:%S")
+
+
 ######################################################################################################
+
 
 ######################################################################################################
 ## General file and directory handling
@@ -57,10 +64,11 @@ def make_dirs(directories: Union[str, Path, Iterable[Union[str, Path]]]) -> None
         p = Path(d)
 
         # If someone passes in a file path, make its parent
-        if p.suffix:      # p.suffix != "" means it's a file
+        if p.suffix:  # p.suffix != "" means it's a file
             p = p.parent
 
         p.mkdir(parents=True, exist_ok=True)
+
 
 def add_or_update_column_in_csv(
     csv_path: str | Path,
@@ -117,18 +125,19 @@ def add_or_update_column_in_csv(
     # Sequence case: lengths must match
     if len(values) != len(df):
         raise ValueError(
-            f"Length mismatch: CSV has {len(df)} rows "
-            f"but values has {len(values)} entries."
+            f"Length mismatch: CSV has {len(df)} rows but values has {len(values)} entries."
         )
 
     df[column_name] = list(values)
     df.to_csv(csv_path, index=index)
     return df
 
+
 ######################################################################################################
 
 ######################################################################################################
 ## Numpy, Pandas, Anndata functionality
+
 
 def adata_to_df(adata, layer=None):
     """
@@ -153,20 +162,25 @@ def adata_to_df(adata, layer=None):
     data_matrix = adata.layers.get(layer, adata.X)
 
     # Ensure matrix is dense (handle sparse formats)
-    if hasattr(data_matrix, "toarray"):  
+    if hasattr(data_matrix, "toarray"):
         data_matrix = data_matrix.toarray()
 
     # Ensure obs and var have unique indices
     if adata.obs.index.duplicated().any():
-        raise ValueError("Duplicate values found in `adata.obs.index`. Ensure unique observation indices.")
-    
+        raise ValueError(
+            "Duplicate values found in `adata.obs.index`. Ensure unique observation indices."
+        )
+
     if adata.var.index.duplicated().any():
-        raise ValueError("Duplicate values found in `adata.var.index`. Ensure unique variable indices.")
+        raise ValueError(
+            "Duplicate values found in `adata.var.index`. Ensure unique variable indices."
+        )
 
     # Convert to DataFrame
     df = pd.DataFrame(data_matrix, index=adata.obs.index, columns=adata.var.index)
 
     return df
+
 
 def save_matrix(matrix, save_name):
     """
@@ -174,7 +188,8 @@ def save_matrix(matrix, save_name):
     Output: A txt file representation of the data matrix
     """
     import numpy as np
-    np.savetxt(f'{save_name}.txt', matrix)
+
+    np.savetxt(f"{save_name}.txt", matrix)
 
 
 def _harmonize_var_schema(adatas: List[ad.AnnData]) -> None:
@@ -186,6 +201,7 @@ def _harmonize_var_schema(adatas: List[ad.AnnData]) -> None:
           * objects -> try numeric->float64, else pandas 'string'
     """
     import numpy as np
+
     # 1) Union of all .var columns
     all_cols = set()
     for a in adatas:
@@ -222,6 +238,7 @@ def _harmonize_var_schema(adatas: List[ad.AnnData]) -> None:
     all_cols_sorted = sorted(all_cols)
     for a in adatas:
         a.var = a.var.reindex(columns=all_cols_sorted)
+
 
 def concatenate_h5ads(
     output_path: str | Path,
@@ -290,8 +307,7 @@ def concatenate_h5ads(
         # collect all *.h5ad / *.h5ad.gz (or whatever file_suffixes specify)
         suffixes_lower = tuple(s.lower() for s in file_suffixes)
         h5_paths = sorted(
-            p for p in input_dir.iterdir()
-            if p.is_file() and p.suffix.lower() in suffixes_lower
+            p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in suffixes_lower
         )
 
     else:
@@ -302,9 +318,7 @@ def concatenate_h5ads(
 
         df = pd.read_csv(csv_path, dtype=str)
         if csv_column not in df.columns:
-            raise ValueError(
-                f"CSV {csv_path} must contain column '{csv_column}' with .h5ad paths."
-            )
+            raise ValueError(f"CSV {csv_path} must contain column '{csv_column}' with .h5ad paths.")
         paths = df[csv_column].dropna().astype(str).tolist()
         if not paths:
             raise ValueError(f"No non-empty paths in column '{csv_column}' of {csv_path}.")
@@ -340,8 +354,8 @@ def concatenate_h5ads(
     print(f"{time_string()}: Concatenating {len(loaded)} AnnData objects")
     final_adata = ad.concat(
         loaded,
-        axis=0,              # stack observations
-        join="outer",        # keep union of variables
+        axis=0,  # stack observations
+        join="outer",  # keep union of variables
         merge="unique",
         uns_merge="unique",
         index_unique=None,
@@ -385,6 +399,7 @@ def concatenate_h5ads(
         print("Keeping input files.")
 
     return output_path
+
 
 def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=None, verbose=True):
     """
@@ -474,7 +489,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                             report["var_backed_up_columns"].append(col)
                     df[col] = ser.astype(str)
                     if verbose:
-                        print(f"  coerced categorical column '{which}.{col}' -> strings (backup={backup})")
+                        print(
+                            f"  coerced categorical column '{which}.{col}' -> strings (backup={backup})"
+                        )
                 continue
 
             # object dtype handling: try to coerce each element to string
@@ -495,7 +512,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                             report["var_backed_up_columns"].append(col)
                     df[col] = ser.values.astype(str)
                     if verbose:
-                        print(f"  converted object column '{which}.{col}' -> strings (backup={backup})")
+                        print(
+                            f"  converted object column '{which}.{col}' -> strings (backup={backup})"
+                        )
                     if which == "obs":
                         report["obs_converted_columns"].append(col)
                     else:
@@ -518,7 +537,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                                 report["var_backed_up_columns"].append(col)
                         df[col] = [json.dumps(v, default=str) for v in ser.values]
                         if verbose:
-                            print(f"  json-stringified object column '{which}.{col}' (backup={backup})")
+                            print(
+                                f"  json-stringified object column '{which}.{col}' (backup={backup})"
+                            )
                         if which == "obs":
                             report["obs_converted_columns"].append(col)
                         else:
@@ -533,7 +554,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                                 report["var_backed_up_columns"].append(col)
                         df[col] = ser.astype(str)
                         if verbose:
-                            print(f"  WARNING: column '{which}.{col}' was complex; coerced via str() (backed up).")
+                            print(
+                                f"  WARNING: column '{which}.{col}' was complex; coerced via str() (backed up)."
+                            )
                         if which == "obs":
                             report["obs_converted_columns"].append(col)
                         else:
@@ -560,7 +583,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                         _backup(v, f"uns_{k}_backup")
                     backed_up.append(k)
                     if verbose:
-                        print(f"  uns['{k}'] non-JSON -> stored '{k}_json' and backed up (backup={backup})")
+                        print(
+                            f"  uns['{k}'] non-JSON -> stored '{k}_json' and backed up (backup={backup})"
+                        )
                     report["uns_json_keys"].append(k)
                 except Exception:
                     try:
@@ -595,7 +620,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                         arr_f = arr.astype(float)
                         cleaned[k] = arr_f
                         report_key = f"{which}.{k}"
-                        report["layers_converted"].append(report_key) if which == "layers" else report["obsm_converted"].append(report_key)
+                        report["layers_converted"].append(
+                            report_key
+                        ) if which == "layers" else report["obsm_converted"].append(report_key)
                         if verbose:
                             print(f"  {which}.{k} object array coerced to float.")
                     except Exception:
@@ -603,7 +630,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                             arr_i = arr.astype(int)
                             cleaned[k] = arr_i
                             report_key = f"{which}.{k}"
-                            report["layers_converted"].append(report_key) if which == "layers" else report["obsm_converted"].append(report_key)
+                            report["layers_converted"].append(
+                                report_key
+                            ) if which == "layers" else report["obsm_converted"].append(report_key)
                             if verbose:
                                 print(f"  {which}.{k} object array coerced to int.")
                         except Exception:
@@ -614,7 +643,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                             else:
                                 report["obsm_skipped"].append(k)
                             if verbose:
-                                print(f"  SKIPPING {which}.{k} (object dtype not numeric). Backed up: {backup}")
+                                print(
+                                    f"  SKIPPING {which}.{k} (object dtype not numeric). Backed up: {backup}"
+                                )
                             continue
                 else:
                     cleaned[k] = arr
@@ -699,7 +730,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                 X_to_use = np.zeros_like(X_arr, dtype=float)
                 report["X_replaced_or_converted"] = "replaced_with_zeros_backup"
                 if verbose:
-                    print("adata.X had object dtype and couldn't be converted; replaced with zeros (backup set).")
+                    print(
+                        "adata.X had object dtype and couldn't be converted; replaced with zeros (backup set)."
+                    )
     except Exception as e:
         msg = f"Error handling adata.X: {e}"
         report["errors"].append(msg)
@@ -792,7 +825,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
             print(f"CSV outputs will be written to: {csv_dir}")
     except Exception as e:
         msg = f"Failed to create CSV output directory: {e}"
-        report['errors'].append(msg)
+        report["errors"].append(msg)
         if verbose:
             print(msg)
         csv_dir = path.parent  # fallback just in case
@@ -803,48 +836,58 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
 
         # obs columns
         for col in adata_copy.obs.columns:
-            meta_rows.append({
-                "kind": "obs",
-                "name": col,
-                "dtype": str(adata_copy.obs[col].dtype),
-            })
+            meta_rows.append(
+                {
+                    "kind": "obs",
+                    "name": col,
+                    "dtype": str(adata_copy.obs[col].dtype),
+                }
+            )
 
         # var columns
         for col in adata_copy.var.columns:
-            meta_rows.append({
-                "kind": "var",
-                "name": col,
-                "dtype": str(adata_copy.var[col].dtype),
-            })
+            meta_rows.append(
+                {
+                    "kind": "var",
+                    "name": col,
+                    "dtype": str(adata_copy.var[col].dtype),
+                }
+            )
 
         # layers
         for k, v in adata_copy.layers.items():
-            meta_rows.append({
-                "kind": "layer",
-                "name": k,
-                "dtype": str(np.asarray(v).dtype),
-            })
+            meta_rows.append(
+                {
+                    "kind": "layer",
+                    "name": k,
+                    "dtype": str(np.asarray(v).dtype),
+                }
+            )
 
         # obsm
         for k, v in adata_copy.obsm.items():
-            meta_rows.append({
-                "kind": "obsm",
-                "name": k,
-                "dtype": str(np.asarray(v).dtype),
-            })
+            meta_rows.append(
+                {
+                    "kind": "obsm",
+                    "name": k,
+                    "dtype": str(np.asarray(v).dtype),
+                }
+            )
 
         # uns
         for k, v in adata_copy.uns.items():
-            meta_rows.append({
-                "kind": "uns",
-                "name": k,
-                "dtype": type(v).__name__,
-            })
+            meta_rows.append(
+                {
+                    "kind": "uns",
+                    "name": k,
+                    "dtype": type(v).__name__,
+                }
+            )
 
         meta_df = pd.DataFrame(meta_rows)
 
         # same base name, inside csvs/
-        base = path.stem    # removes .h5ad
+        base = path.stem  # removes .h5ad
         meta_path = csv_dir / f"{base}.keys.csv"
 
         meta_df.to_csv(meta_path, index=False)
@@ -879,7 +922,15 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
 
     return report
 
-def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=True, categorical_threshold=100, verbose=True):
+
+def safe_read_h5ad(
+    path,
+    backup_dir=None,
+    restore_backups=True,
+    re_categorize=True,
+    categorical_threshold=100,
+    verbose=True,
+):
     """
     Safely load an AnnData saved by safe_write_h5ad and attempt to restore complex objects
     from the backup_dir produced during save.
@@ -992,7 +1043,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
                         if hasattr(val, "shape") and (len(val) == adata.shape[0]):
                             adata.obs[col] = pd.Series(val, index=adata.obs.index)
                         else:
-                            adata.obs[col] = pd.Series([val] * adata.shape[0], index=adata.obs.index)
+                            adata.obs[col] = pd.Series(
+                                [val] * adata.shape[0], index=adata.obs.index
+                            )
                         report["restored_obs_columns"].append((col, bname1))
                         restored = True
                         if verbose:
@@ -1007,7 +1060,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
             looks_like_json = False
             for sv in sample_vals:
                 svs = sv.strip()
-                if (svs.startswith("{") and svs.endswith("}")) or (svs.startswith("[") and svs.endswith("]")):
+                if (svs.startswith("{") and svs.endswith("}")) or (
+                    svs.startswith("[") and svs.endswith("]")
+                ):
                     looks_like_json = True
                     break
             if looks_like_json:
@@ -1025,7 +1080,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
                     report["restored_obs_columns"].append((col, "parsed_json"))
                     restored = True
                     if verbose:
-                        print(f"[safe_read_h5ad] parsed obs.{col} JSON strings back to Python objects")
+                        print(
+                            f"[safe_read_h5ad] parsed obs.{col} JSON strings back to Python objects"
+                        )
 
         # If still not restored and re_categorize=True, try to convert small unique string columns back to categorical
         if (not restored) and re_categorize and adata.obs[col].dtype == object:
@@ -1036,7 +1093,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
                     adata.obs[col] = adata.obs[col].astype(str).astype("category")
                     report["recategorized_obs"].append(col)
                     if verbose:
-                        print(f"[safe_read_h5ad] recast obs.{col} -> categorical (n_unique={nunique})")
+                        print(
+                            f"[safe_read_h5ad] recast obs.{col} -> categorical (n_unique={nunique})"
+                        )
             except Exception as e:
                 report["errors"].append(f"Failed to recategorize obs.{col}: {e}")
 
@@ -1068,7 +1127,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
                         if hasattr(val, "shape") and (len(val) == adata.shape[1]):
                             adata.var[col] = pd.Series(val, index=adata.var.index)
                         else:
-                            adata.var[col] = pd.Series([val] * adata.shape[1], index=adata.var.index)
+                            adata.var[col] = pd.Series(
+                                [val] * adata.shape[1], index=adata.var.index
+                            )
                         report["restored_var_columns"].append((col, bname1))
                         restored = True
                         if verbose:
@@ -1082,7 +1143,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
             looks_like_json = False
             for sv in sample_vals:
                 svs = sv.strip()
-                if (svs.startswith("{") and svs.endswith("}")) or (svs.startswith("[") and svs.endswith("]")):
+                if (svs.startswith("{") and svs.endswith("}")) or (
+                    svs.startswith("[") and svs.endswith("]")
+                ):
                     looks_like_json = True
                     break
             if looks_like_json:
@@ -1098,7 +1161,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
                     adata.var[col] = pd.Series(parsed, index=adata.var.index)
                     report["restored_var_columns"].append((col, "parsed_json"))
                     if verbose:
-                        print(f"[safe_read_h5ad] parsed var.{col} JSON strings back to Python objects")
+                        print(
+                            f"[safe_read_h5ad] parsed var.{col} JSON strings back to Python objects"
+                        )
 
         if (not restored) and re_categorize and adata.var[col].dtype == object:
             try:
@@ -1107,7 +1172,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
                     adata.var[col] = adata.var[col].astype(str).astype("category")
                     report["recategorized_var"].append(col)
                     if verbose:
-                        print(f"[safe_read_h5ad] recast var.{col} -> categorical (n_unique={nunique})")
+                        print(
+                            f"[safe_read_h5ad] recast var.{col} -> categorical (n_unique={nunique})"
+                        )
             except Exception as e:
                 report["errors"].append(f"Failed to recategorize var.{col}: {e}")
 
@@ -1139,7 +1206,7 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
         if not fname.startswith("uns_") or not fname.endswith("_backup.pkl"):
             continue
         # fname example: "uns_clustermap_results_backup.pkl" -> key name between 'uns_' and '_backup.pkl'
-        key = fname[len("uns_"):-len("_backup.pkl")]
+        key = fname[len("uns_") : -len("_backup.pkl")]
         full = os.path.join(backup_dir, fname)
         val = _load_pickle_if_exists(full)
         if val is not None:
@@ -1153,7 +1220,7 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
     if os.path.isdir(backup_dir):
         for fname in os.listdir(backup_dir):
             if fname.startswith("layers_") and fname.endswith("_backup.pkl"):
-                layer_name = fname[len("layers_"):-len("_backup.pkl")]
+                layer_name = fname[len("layers_") : -len("_backup.pkl")]
                 full = os.path.join(backup_dir, fname)
                 val = _load_pickle_if_exists(full)
                 if val is not None:
@@ -1163,10 +1230,12 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
                         if verbose:
                             print(f"[safe_read_h5ad] restored layers['{layer_name}'] from {full}")
                     except Exception as e:
-                        report["errors"].append(f"Failed to restore layers['{layer_name}'] from {full}: {e}")
+                        report["errors"].append(
+                            f"Failed to restore layers['{layer_name}'] from {full}: {e}"
+                        )
 
             if fname.startswith("obsm_") and fname.endswith("_backup.pkl"):
-                obsm_name = fname[len("obsm_"):-len("_backup.pkl")]
+                obsm_name = fname[len("obsm_") : -len("_backup.pkl")]
                 full = os.path.join(backup_dir, fname)
                 val = _load_pickle_if_exists(full)
                 if val is not None:
@@ -1176,7 +1245,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
                         if verbose:
                             print(f"[safe_read_h5ad] restored obsm['{obsm_name}'] from {full}")
                     except Exception as e:
-                        report["errors"].append(f"Failed to restore obsm['{obsm_name}'] from {full}: {e}")
+                        report["errors"].append(
+                            f"Failed to restore obsm['{obsm_name}'] from {full}: {e}"
+                        )
 
     # 6) If restore_backups True but some expected backups missing, note them
     if restore_backups and os.path.isdir(backup_dir):
@@ -1206,7 +1277,9 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
         if expected_missing and verbose:
             n = len(expected_missing)
             if verbose:
-                print(f"[safe_read_h5ad] note: {n} obs/var object columns may not have backups; check if their content is acceptable.")
+                print(
+                    f"[safe_read_h5ad] note: {n} obs/var object columns may not have backups; check if their content is acceptable."
+                )
             # add to report
             report["missing_backups"].extend(expected_missing)
 
@@ -1226,9 +1299,16 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
         if report["restored_obsm"]:
             print("Restored obsm:", report["restored_obsm"])
         if report["recategorized_obs"] or report["recategorized_var"]:
-            print("Recategorized columns (obs/var):", report["recategorized_obs"], report["recategorized_var"])
+            print(
+                "Recategorized columns (obs/var):",
+                report["recategorized_obs"],
+                report["recategorized_var"],
+            )
         if report["missing_backups"]:
-            print("Missing backups or object columns without backups (investigate):", report["missing_backups"])
+            print(
+                "Missing backups or object columns without backups (investigate):",
+                report["missing_backups"],
+            )
         if report["errors"]:
             print("Errors encountered (see report['errors']):")
             for e in report["errors"]:
@@ -1236,6 +1316,7 @@ def safe_read_h5ad(path, backup_dir=None, restore_backups=True, re_categorize=Tr
         print("=== end summary ===\n")
 
     return adata, report
+
 
 def merge_barcoded_anndatas_core(adata_single, adata_double):
     import numpy as np
@@ -1248,24 +1329,27 @@ def merge_barcoded_anndatas_core(adata_single, adata_double):
     adata_single_filtered = adata_single[~adata_single.obs_names.isin(overlap)].copy()
 
     # Step 3: Add source tag
-    adata_single_filtered.obs['source'] = 'single_barcode'
-    adata_double.obs['source'] = 'double_barcode'
+    adata_single_filtered.obs["source"] = "single_barcode"
+    adata_double.obs["source"] = "double_barcode"
 
     # Step 4: Concatenate all components
-    adata_merged = ad.concat([
-        adata_single_filtered,
-        adata_double
-    ], join='outer', merge='same')  # merge='same' preserves matching layers, obsm, etc.
+    adata_merged = ad.concat(
+        [adata_single_filtered, adata_double], join="outer", merge="same"
+    )  # merge='same' preserves matching layers, obsm, etc.
 
     # Step 5: Merge `.uns`
     adata_merged.uns = {**adata_single.uns, **adata_double.uns}
 
     return adata_merged
+
+
 ######################################################################################################
 
 ### File conversion misc ###
 import argparse
 from Bio import SeqIO
+
+
 def genbank_to_gff(genbank_file, output_file, record_id):
     with open(output_file, "w") as out:
         for record in SeqIO.parse(genbank_file, "genbank"):
@@ -1281,5 +1365,18 @@ def genbank_to_gff(genbank_file, output_file, record_id):
                 # Format attributes
                 attributes = ";".join(f"{k}={v}" for k, v in feature.qualifiers.items())
                 # Write GFF3 line
-                gff3_line = "\t".join(str(x) for x in [record_id, feature.type, feature_type, start, end, ".", strand, ".", attributes])
+                gff3_line = "\t".join(
+                    str(x)
+                    for x in [
+                        record_id,
+                        feature.type,
+                        feature_type,
+                        start,
+                        end,
+                        ".",
+                        strand,
+                        ".",
+                        attributes,
+                    ]
+                )
                 out.write(gff3_line + "\n")

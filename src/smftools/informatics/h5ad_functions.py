@@ -10,6 +10,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from pod5 import Reader
 
+
 def add_demux_type_annotation(
     adata,
     double_demux_source,
@@ -77,14 +78,15 @@ def add_demux_type_annotation(
 
     return adata
 
+
 def add_read_length_and_mapping_qc(
     adata,
     bam_files: Optional[List[str]] = None,
     read_metrics: Optional[Dict[str, Union[list, tuple]]] = None,
     uns_flag: str = "add_read_length_and_mapping_qc_performed",
-    extract_read_features_from_bam_callable = None,
+    extract_read_features_from_bam_callable=None,
     bypass: bool = False,
-    force_redo: bool = True
+    force_redo: bool = True,
 ):
     """
     Populate adata.obs with read/mapping QC columns.
@@ -119,9 +121,13 @@ def add_read_length_and_mapping_qc(
     if read_metrics is None:
         read_metrics = {}
         if bam_files:
-            extractor = extract_read_features_from_bam_callable or globals().get("extract_read_features_from_bam")
+            extractor = extract_read_features_from_bam_callable or globals().get(
+                "extract_read_features_from_bam"
+            )
             if extractor is None:
-                raise ValueError("No `read_metrics` provided and `extract_read_features_from_bam` not found.")
+                raise ValueError(
+                    "No `read_metrics` provided and `extract_read_features_from_bam` not found."
+                )
             for bam in bam_files:
                 bam_read_metrics = extractor(bam)
                 if not isinstance(bam_read_metrics, dict):
@@ -136,11 +142,11 @@ def add_read_length_and_mapping_qc(
     if len(read_metrics) == 0:
         # fill with NaNs
         n = adata.n_obs
-        adata.obs['read_length'] = np.full(n, np.nan)
-        adata.obs['mapped_length'] = np.full(n, np.nan)
-        adata.obs['reference_length'] = np.full(n, np.nan)
-        adata.obs['read_quality'] = np.full(n, np.nan)
-        adata.obs['mapping_quality'] = np.full(n, np.nan)
+        adata.obs["read_length"] = np.full(n, np.nan)
+        adata.obs["mapped_length"] = np.full(n, np.nan)
+        adata.obs["reference_length"] = np.full(n, np.nan)
+        adata.obs["read_quality"] = np.full(n, np.nan)
+        adata.obs["mapping_quality"] = np.full(n, np.nan)
     else:
         # Build DF robustly
         # Convert values to lists where possible, else to [val, val, val...]
@@ -157,35 +163,45 @@ def add_read_length_and_mapping_qc(
                 vals = vals + [np.nan] * (max_cols - len(vals))
             rows[k] = vals[:max_cols]
 
-        df = pd.DataFrame.from_dict(rows, orient='index', columns=[
-            'read_length', 'read_quality', 'reference_length', 'mapped_length', 'mapping_quality'
-        ])
+        df = pd.DataFrame.from_dict(
+            rows,
+            orient="index",
+            columns=[
+                "read_length",
+                "read_quality",
+                "reference_length",
+                "mapped_length",
+                "mapping_quality",
+            ],
+        )
 
         # Reindex to final_adata.obs_names so order matches adata
         # If obs_names are not present as keys in df, the results will be NaN
         df_reindexed = df.reindex(adata.obs_names).astype(float)
 
-        adata.obs['read_length'] = df_reindexed['read_length'].values
-        adata.obs['mapped_length'] = df_reindexed['mapped_length'].values
-        adata.obs['reference_length'] = df_reindexed['reference_length'].values
-        adata.obs['read_quality'] = df_reindexed['read_quality'].values
-        adata.obs['mapping_quality'] = df_reindexed['mapping_quality'].values
+        adata.obs["read_length"] = df_reindexed["read_length"].values
+        adata.obs["mapped_length"] = df_reindexed["mapped_length"].values
+        adata.obs["reference_length"] = df_reindexed["reference_length"].values
+        adata.obs["read_quality"] = df_reindexed["read_quality"].values
+        adata.obs["mapping_quality"] = df_reindexed["mapping_quality"].values
 
     # Compute ratio columns safely (avoid divide-by-zero and preserve NaN)
     # read_length_to_reference_length_ratio
-    rl = pd.to_numeric(adata.obs['read_length'], errors='coerce').to_numpy(dtype=float)
-    ref_len = pd.to_numeric(adata.obs['reference_length'], errors='coerce').to_numpy(dtype=float)
-    mapped_len = pd.to_numeric(adata.obs['mapped_length'], errors='coerce').to_numpy(dtype=float)
+    rl = pd.to_numeric(adata.obs["read_length"], errors="coerce").to_numpy(dtype=float)
+    ref_len = pd.to_numeric(adata.obs["reference_length"], errors="coerce").to_numpy(dtype=float)
+    mapped_len = pd.to_numeric(adata.obs["mapped_length"], errors="coerce").to_numpy(dtype=float)
 
     # safe divisions: use np.where to avoid warnings and replace inf with nan
-    with np.errstate(divide='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", invalid="ignore"):
         rl_to_ref = np.where((ref_len != 0) & np.isfinite(ref_len), rl / ref_len, np.nan)
-        mapped_to_ref = np.where((ref_len != 0) & np.isfinite(ref_len), mapped_len / ref_len, np.nan)
+        mapped_to_ref = np.where(
+            (ref_len != 0) & np.isfinite(ref_len), mapped_len / ref_len, np.nan
+        )
         mapped_to_read = np.where((rl != 0) & np.isfinite(rl), mapped_len / rl, np.nan)
 
-    adata.obs['read_length_to_reference_length_ratio'] = rl_to_ref
-    adata.obs['mapped_length_to_reference_length_ratio'] = mapped_to_ref
-    adata.obs['mapped_length_to_read_length_ratio'] = mapped_to_read
+    adata.obs["read_length_to_reference_length_ratio"] = rl_to_ref
+    adata.obs["mapped_length_to_reference_length_ratio"] = mapped_to_ref
+    adata.obs["mapped_length_to_read_length_ratio"] = mapped_to_read
 
     # Add read level raw modification signal: sum over X rows
     X = adata.X
@@ -195,12 +211,13 @@ def add_read_length_and_mapping_qc(
     else:
         raw_sig = np.asarray(X.sum(axis=1)).ravel()
 
-    adata.obs['Raw_modification_signal'] = raw_sig
+    adata.obs["Raw_modification_signal"] = raw_sig
 
     # mark as done
     adata.uns[uns_flag] = True
 
     return None
+
 
 def _collect_read_origins_from_pod5(pod5_path: str, target_ids: set[str]) -> dict[str, str]:
     """
@@ -218,6 +235,7 @@ def _collect_read_origins_from_pod5(pod5_path: str, target_ids: set[str]) -> dic
                 mapping[rid] = basename
 
     return mapping
+
 
 def annotate_pod5_origin(
     adata,
@@ -283,8 +301,7 @@ def annotate_pod5_origin(
             print(f"Running in PARALLEL mode with {n_jobs} workers.")
         with ProcessPoolExecutor(max_workers=n_jobs) as ex:
             futures = {
-                ex.submit(_collect_read_origins_from_pod5, f, target_ids): f
-                for f in pod5_files
+                ex.submit(_collect_read_origins_from_pod5, f, target_ids): f for f in pod5_files
             }
             for fut in as_completed(futures):
                 f = futures[fut]
@@ -295,8 +312,7 @@ def annotate_pod5_origin(
                     continue
                 global_mapping.update(part)
                 if verbose:
-                    print(f"  Finished {os.path.basename(f)} "
-                          f"({len(part)} matching reads)")
+                    print(f"  Finished {os.path.basename(f)} ({len(part)} matching reads)")
 
     if verbose:
         print(f"Total reads matched: {len(global_mapping)}")
@@ -317,10 +333,12 @@ def annotate_pod5_origin(
             print(f"Writing CSV mapping to: {csv_path}")
 
         # Create DataFrame in AnnData order for easier cross-referencing
-        df = pd.DataFrame({
-            "read_id": obs_names,
-            "pod5_origin": origin,
-        })
+        df = pd.DataFrame(
+            {
+                "read_id": obs_names,
+                "pod5_origin": origin,
+            }
+        )
         df.to_csv(csv_path, index=False)
 
         if verbose:

@@ -31,8 +31,8 @@ def plot_volcano_relative_risk(
                 continue
 
             # Split by site type
-            gpc_df = results_df[results_df['GpC_Site']]
-            cpg_df = results_df[results_df['CpG_Site']]
+            gpc_df = results_df[results_df["GpC_Site"]]
+            cpg_df = results_df[results_df["CpG_Site"]]
 
             fig, ax = plt.subplots(figsize=(12, 6))
 
@@ -43,29 +43,29 @@ def plot_volcano_relative_risk(
 
             # GpC as circles
             sc1 = ax.scatter(
-                gpc_df['Genomic_Position'],
-                gpc_df['log2_Relative_Risk'],
-                c=gpc_df['-log10_Adj_P'],
-                cmap='coolwarm',
-                edgecolor='k',
+                gpc_df["Genomic_Position"],
+                gpc_df["log2_Relative_Risk"],
+                c=gpc_df["-log10_Adj_P"],
+                cmap="coolwarm",
+                edgecolor="k",
                 s=40,
-                marker='o',
-                label='GpC'
+                marker="o",
+                label="GpC",
             )
 
             # CpG as stars
             sc2 = ax.scatter(
-                cpg_df['Genomic_Position'],
-                cpg_df['log2_Relative_Risk'],
-                c=cpg_df['-log10_Adj_P'],
-                cmap='coolwarm',
-                edgecolor='k',
+                cpg_df["Genomic_Position"],
+                cpg_df["log2_Relative_Risk"],
+                c=cpg_df["-log10_Adj_P"],
+                cmap="coolwarm",
+                edgecolor="k",
                 s=60,
-                marker='*',
-                label='CpG'
+                marker="*",
+                label="CpG",
             )
 
-            ax.axhline(y=0, color='gray', linestyle='--')
+            ax.axhline(y=0, color="gray", linestyle="--")
             ax.set_xlabel("Genomic Position")
             ax.set_ylabel("log2(Relative Risk)")
             ax.set_title(f"{ref} / {group_label} — Relative Risk vs Genomic Position")
@@ -75,8 +75,8 @@ def plot_volcano_relative_risk(
             if ylim:
                 ax.set_ylim(ylim)
 
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
 
             cbar = plt.colorbar(sc1, ax=ax)
             cbar.set_label("-log10(Adjusted P-Value)")
@@ -87,12 +87,18 @@ def plot_volcano_relative_risk(
             # Save if requested
             if save_path:
                 os.makedirs(save_path, exist_ok=True)
-                safe_name = f"{ref}_{group_label}".replace("=", "").replace("__", "_").replace(",", "_").replace(" ", "_")
+                safe_name = (
+                    f"{ref}_{group_label}".replace("=", "")
+                    .replace("__", "_")
+                    .replace(",", "_")
+                    .replace(" ", "_")
+                )
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
                 print(f"Saved: {out_file}")
 
             plt.show()
+
 
 def plot_bar_relative_risk(
     results_dict,
@@ -102,7 +108,7 @@ def plot_bar_relative_risk(
     save_path=None,
     highlight_regions=None,  # List of (start, end) tuples
     highlight_color="lightgray",
-    highlight_alpha=0.3
+    highlight_alpha=0.3,
 ):
     """
     Plot log2(Relative Risk) as a bar plot across genomic positions for each group within each reference.
@@ -127,14 +133,14 @@ def plot_bar_relative_risk(
                 continue
 
             df = df.copy()
-            df['Genomic_Position'] = df['Genomic_Position'].astype(int)
+            df["Genomic_Position"] = df["Genomic_Position"].astype(int)
 
             if sort_by_position:
-                df = df.sort_values('Genomic_Position')
+                df = df.sort_values("Genomic_Position")
 
-            gpc_mask = df['GpC_Site'] & ~df['CpG_Site']
-            cpg_mask = df['CpG_Site'] & ~df['GpC_Site']
-            both_mask = df['GpC_Site'] & df['CpG_Site']
+            gpc_mask = df["GpC_Site"] & ~df["CpG_Site"]
+            cpg_mask = df["CpG_Site"] & ~df["GpC_Site"]
+            both_mask = df["GpC_Site"] & df["CpG_Site"]
 
             fig, ax = plt.subplots(figsize=(14, 6))
 
@@ -145,36 +151,36 @@ def plot_bar_relative_risk(
 
             # Bar plots
             ax.bar(
-                df['Genomic_Position'][gpc_mask],
-                df['log2_Relative_Risk'][gpc_mask],
+                df["Genomic_Position"][gpc_mask],
+                df["log2_Relative_Risk"][gpc_mask],
                 width=10,
-                color='steelblue',
-                label='GpC Site',
-                edgecolor='black'
+                color="steelblue",
+                label="GpC Site",
+                edgecolor="black",
             )
 
             ax.bar(
-                df['Genomic_Position'][cpg_mask],
-                df['log2_Relative_Risk'][cpg_mask],
+                df["Genomic_Position"][cpg_mask],
+                df["log2_Relative_Risk"][cpg_mask],
                 width=10,
-                color='darkorange',
-                label='CpG Site',
-                edgecolor='black'
+                color="darkorange",
+                label="CpG Site",
+                edgecolor="black",
             )
 
             if both_mask.any():
                 ax.bar(
-                    df['Genomic_Position'][both_mask],
-                    df['log2_Relative_Risk'][both_mask],
+                    df["Genomic_Position"][both_mask],
+                    df["log2_Relative_Risk"][both_mask],
                     width=10,
-                    color='purple',
-                    label='GpC + CpG',
-                    edgecolor='black'
+                    color="purple",
+                    label="GpC + CpG",
+                    edgecolor="black",
                 )
 
-            ax.axhline(y=0, color='gray', linestyle='--')
-            ax.set_xlabel('Genomic Position')
-            ax.set_ylabel('log2(Relative Risk)')
+            ax.axhline(y=0, color="gray", linestyle="--")
+            ax.set_xlabel("Genomic Position")
+            ax.set_ylabel("log2(Relative Risk)")
             ax.set_title(f"{ref} — {group_label}")
             ax.legend()
 
@@ -183,19 +189,22 @@ def plot_bar_relative_risk(
             if ylim:
                 ax.set_ylim(ylim)
 
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
 
             plt.tight_layout()
 
             if save_path:
                 os.makedirs(save_path, exist_ok=True)
-                safe_name = f"{ref}_{group_label}".replace("=", "").replace("__", "_").replace(",", "_")
+                safe_name = (
+                    f"{ref}_{group_label}".replace("=", "").replace("__", "_").replace(",", "_")
+                )
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
                 print(f"📁 Saved: {out_file}")
 
             plt.show()
+
 
 def plot_positionwise_matrix(
     adata,
@@ -210,9 +219,9 @@ def plot_positionwise_matrix(
     xtick_step=10,
     ytick_step=10,
     save_path=None,
-    highlight_position=None,         # Can be a single int/float or list of them
-    highlight_axis="row",            # "row" or "column"
-    annotate_points=False             # ✅ New option
+    highlight_position=None,  # Can be a single int/float or list of them
+    highlight_axis="row",  # "row" or "column"
+    annotate_points=False,  # ✅ New option
 ):
     """
     Plots positionwise matrices stored in adata.uns[key], with an optional line plot
@@ -231,14 +240,16 @@ def plot_positionwise_matrix(
         return diffs.idxmin()
 
     # Ensure highlight_position is a list
-    if highlight_position is not None and not isinstance(highlight_position, (list, tuple, np.ndarray)):
+    if highlight_position is not None and not isinstance(
+        highlight_position, (list, tuple, np.ndarray)
+    ):
         highlight_position = [highlight_position]
 
     for group, mat_df in adata.uns[key].items():
         mat = mat_df.copy()
 
         if log_transform:
-            with np.errstate(divide='ignore', invalid='ignore'):
+            with np.errstate(divide="ignore", invalid="ignore"):
                 if log_base == "log1p":
                     mat = np.log1p(mat)
                 elif log_base == "log2":
@@ -276,7 +287,7 @@ def plot_positionwise_matrix(
             vmin=vmin,
             vmax=vmax,
             cbar_kws={"label": f"{key} ({log_base})" if log_transform else key},
-            ax=heat_ax
+            ax=heat_ax,
         )
 
         heat_ax.set_title(f"{key} — {group}", pad=20)
@@ -295,17 +306,27 @@ def plot_positionwise_matrix(
                         series = mat.loc[closest]
                         x_vals = pd.to_numeric(series.index, errors="coerce")
                         idx = mat.index.get_loc(closest)
-                        heat_ax.axhline(idx, color=colors[i % len(colors)], linestyle="--", linewidth=1)
+                        heat_ax.axhline(
+                            idx, color=colors[i % len(colors)], linestyle="--", linewidth=1
+                        )
                         label = f"Row {pos} → {closest}"
                     else:
                         closest = find_closest_index(mat.columns, pos)
                         series = mat[closest]
                         x_vals = pd.to_numeric(series.index, errors="coerce")
                         idx = mat.columns.get_loc(closest)
-                        heat_ax.axvline(idx, color=colors[i % len(colors)], linestyle="--", linewidth=1)
+                        heat_ax.axvline(
+                            idx, color=colors[i % len(colors)], linestyle="--", linewidth=1
+                        )
                         label = f"Col {pos} → {closest}"
 
-                    line = line_ax.plot(x_vals, series.values, marker='o', label=label, color=colors[i % len(colors)])
+                    line = line_ax.plot(
+                        x_vals,
+                        series.values,
+                        marker="o",
+                        label=label,
+                        color=colors[i % len(colors)],
+                    )
 
                     # Annotate each point
                     if annotate_points:
@@ -316,12 +337,18 @@ def plot_positionwise_matrix(
                                     xy=(x, y),
                                     textcoords="offset points",
                                     xytext=(0, 5),
-                                    ha='center',
-                                    fontsize=8
+                                    ha="center",
+                                    fontsize=8,
                                 )
                 except Exception as e:
-                    line_ax.text(0.5, 0.5, f"⚠️ Error plotting {highlight_axis} @ {pos}",
-                                 ha='center', va='center', fontsize=10)
+                    line_ax.text(
+                        0.5,
+                        0.5,
+                        f"⚠️ Error plotting {highlight_axis} @ {pos}",
+                        ha="center",
+                        va="center",
+                        fontsize=10,
+                    )
                     print(f"Error plotting line for {highlight_axis}={pos}: {e}")
 
             line_ax.set_title(f"{highlight_axis.capitalize()} Profile(s)")
@@ -342,6 +369,7 @@ def plot_positionwise_matrix(
 
         plt.show()
 
+
 def plot_positionwise_matrix_grid(
     adata,
     key,
@@ -356,7 +384,7 @@ def plot_positionwise_matrix_grid(
     xtick_step=10,
     ytick_step=10,
     parallel=False,
-    max_threads=None
+    max_threads=None,
 ):
     import matplotlib.pyplot as plt
     import seaborn as sns
@@ -369,19 +397,28 @@ def plot_positionwise_matrix_grid(
     matrices = adata.uns[key]
     group_labels = list(matrices.keys())
 
-    parsed_inner = pd.DataFrame([dict(zip(inner_keys, g.split("_")[-len(inner_keys):])) for g in group_labels])
-    parsed_outer = pd.Series(["_".join(g.split("_")[:-len(inner_keys)]) for g in group_labels], name="outer")
+    parsed_inner = pd.DataFrame(
+        [dict(zip(inner_keys, g.split("_")[-len(inner_keys) :])) for g in group_labels]
+    )
+    parsed_outer = pd.Series(
+        ["_".join(g.split("_")[: -len(inner_keys)]) for g in group_labels], name="outer"
+    )
     parsed = pd.concat([parsed_outer, parsed_inner], axis=1)
 
     def plot_one_grid(outer_label):
-        selected = parsed[parsed['outer'] == outer_label].copy()
-        selected["group_str"] = [f"{outer_label}_{row[inner_keys[0]]}_{row[inner_keys[1]]}" for _, row in selected.iterrows()]
+        selected = parsed[parsed["outer"] == outer_label].copy()
+        selected["group_str"] = [
+            f"{outer_label}_{row[inner_keys[0]]}_{row[inner_keys[1]]}"
+            for _, row in selected.iterrows()
+        ]
 
         row_vals = sorted(selected[inner_keys[0]].unique())
         col_vals = sorted(selected[inner_keys[1]].unique())
 
         fig = plt.figure(figsize=figsize)
-        gs = GridSpec(len(row_vals), len(col_vals) + 1, width_ratios=[1]*len(col_vals) + [0.05], wspace=0.3)
+        gs = GridSpec(
+            len(row_vals), len(col_vals) + 1, width_ratios=[1] * len(col_vals) + [0.05], wspace=0.3
+        )
         axes = np.empty((len(row_vals), len(col_vals)), dtype=object)
 
         local_vmin, local_vmax = vmin, vmax
@@ -397,10 +434,7 @@ def plot_positionwise_matrix_grid(
                 local_vmin = -vmax_auto if vmin is None else vmin
                 local_vmax = vmax_auto if vmax is None else vmax
 
-        cbar_label = {
-            "log2": "log2(Value)",
-            "log1p": "log1p(Value)"
-        }.get(log_transform, "Value")
+        cbar_label = {"log2": "log2(Value)", "log1p": "log1p(Value)"}.get(log_transform, "Value")
 
         cbar_ax = fig.add_subplot(gs[:, -1])
 
@@ -431,9 +465,11 @@ def plot_positionwise_matrix_grid(
                     vmax=local_vmax,
                     cbar=(i == 0 and j == 0),
                     cbar_ax=cbar_ax if (i == 0 and j == 0) else None,
-                    cbar_kws={"label": cbar_label if (i == 0 and j == 0) else ""}
+                    cbar_kws={"label": cbar_label if (i == 0 and j == 0) else ""},
                 )
-                ax.set_title(f"{inner_keys[0]}={row_val}, {inner_keys[1]}={col_val}", fontsize=9, pad=8)
+                ax.set_title(
+                    f"{inner_keys[0]}={row_val}, {inner_keys[1]}={col_val}", fontsize=9, pad=8
+                )
 
                 xticks = data.columns.astype(int)
                 yticks = data.index.astype(int)
@@ -448,15 +484,17 @@ def plot_positionwise_matrix_grid(
         if save_path:
             os.makedirs(save_path, exist_ok=True)
             fname = outer_label.replace("_", "").replace("=", "") + ".png"
-            plt.savefig(os.path.join(save_path, fname), dpi=300, bbox_inches='tight')
+            plt.savefig(os.path.join(save_path, fname), dpi=300, bbox_inches="tight")
             print(f"Saved {fname}")
 
         plt.close(fig)
 
     if parallel:
-        Parallel(n_jobs=max_threads)(delayed(plot_one_grid)(outer_label) for outer_label in parsed['outer'].unique())
+        Parallel(n_jobs=max_threads)(
+            delayed(plot_one_grid)(outer_label) for outer_label in parsed["outer"].unique()
+        )
     else:
-        for outer_label in parsed['outer'].unique():
+        for outer_label in parsed["outer"].unique():
             plot_one_grid(outer_label)
 
     print("Finished plotting all grids.")

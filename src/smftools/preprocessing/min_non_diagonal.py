@@ -1,5 +1,6 @@
 ## min_non_diagonal
 
+
 def min_non_diagonal(matrix):
     """
     Takes a matrix and returns the smallest value from each row with the diagonal masked.

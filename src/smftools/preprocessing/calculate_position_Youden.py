@@ -1,15 +1,17 @@
 ## calculate_position_Youden
 ## Calculating and applying position level thresholds for methylation calls to binarize the SMF data
-def calculate_position_Youden(adata, 
-                              positive_control_sample=None, 
-                              negative_control_sample=None, 
-                              J_threshold=0.5, 
-                              ref_column='Reference_strand', 
-                              sample_column='Sample_names',
-                              infer_on_percentile=True, 
-                              inference_variable='Raw_modification_signal', 
-                              save=False, 
-                              output_directory=''):
+def calculate_position_Youden(
+    adata,
+    positive_control_sample=None,
+    negative_control_sample=None,
+    J_threshold=0.5,
+    ref_column="Reference_strand",
+    sample_column="Sample_names",
+    infer_on_percentile=True,
+    inference_variable="Raw_modification_signal",
+    save=False,
+    output_directory="",
+):
     """
     Adds new variable metadata to each position indicating whether the position provides reliable SMF methylation calls. Also outputs plots of the positional ROC curves.
 
@@ -23,8 +25,8 @@ def calculate_position_Youden(adata,
         inference_variable (str): If infer_on_percentile has an integer value passed, use the AnnData observation column name passed by this string as the metric.
         save (bool): Whether to save the ROC plots.
         output_directory (str): String representing the path to the output directory to output the ROC curves.
-    
-    Returns: 
+
+    Returns:
         None
     """
     import numpy as np
@@ -34,7 +36,7 @@ def calculate_position_Youden(adata,
     from sklearn.metrics import roc_curve, roc_auc_score
 
     control_samples = [positive_control_sample, negative_control_sample]
-    references = adata.obs[ref_column].cat.categories 
+    references = adata.obs[ref_column].cat.categories
     # Iterate over each category in the specified obs_column
     for ref in references:
         print(f"Calculating position Youden statistics for {ref}")
@@ -43,22 +45,24 @@ def calculate_position_Youden(adata,
         # Iterate over positive and negative control samples
         for i, control in enumerate(control_samples):
             # Initialize a dictionary for the given control sample. This will be keyed by dataset and position to point to a tuple of coordinate position and an array of methylation probabilities
-            adata.uns[f'{ref}_position_methylation_dict_{control}'] = {}
+            adata.uns[f"{ref}_position_methylation_dict_{control}"] = {}
             # If controls are not passed and infer on percentile is True, infer thresholds based on top and bottom percentile windows for a given obs column metric.
             if infer_on_percentile and not control:
                 sorted_column = ref_subset.obs[inference_variable].sort_values(ascending=False)
                 if i == 0:
-                    control == 'positive'
+                    control == "positive"
                     positive_control_sample = control
                     threshold = np.percentile(sorted_column, 100 - infer_on_percentile)
                     control_subset = ref_subset[ref_subset.obs[inference_variable] >= threshold, :]
                 else:
-                    control == 'negative'
+                    control == "negative"
                     negative_control_sample = control
                     threshold = np.percentile(sorted_column, infer_on_percentile)
-                    control_subset = ref_subset[ref_subset.obs[inference_variable] <= threshold, :]   
+                    control_subset = ref_subset[ref_subset.obs[inference_variable] <= threshold, :]
             elif not infer_on_percentile and not control:
-                print("Can not threshold Anndata on Youden threshold. Need to either provide control samples or set infer_on_percentile to True")
+                print(
+                    "Can not threshold Anndata on Youden threshold. Need to either provide control samples or set infer_on_percentile to True"
+                )
                 return
             else:
                 # get the current control subset on the given category
@@ -79,29 +83,45 @@ def calculate_position_Youden(adata,
                 # Get fraction coverage
                 fraction_coverage = position_coverage / control_subset.shape[0]
                 # Save the position and the position methylation data for the control subset
-                adata.uns[f'{ref}_position_methylation_dict_{control}'][f'{position}'] = (position, position_data, fraction_coverage)
+                adata.uns[f"{ref}_position_methylation_dict_{control}"][f"{position}"] = (
+                    position,
+                    position_data,
+                    fraction_coverage,
+                )
 
     for ref in references:
         fig, ax = plt.subplots(figsize=(6, 4))
-        plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
-        plt.xlabel('False Positive Rate')
-        plt.ylabel('True Positive Rate')
-        ax.spines['right'].set_visible(False)
-        ax.spines['top'].set_visible(False)
+        plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
         n_passed_positions = 0
         n_total_positions = 0
         # Initialize a list that will hold the positional thresholds for the category
         probability_thresholding_list = [(np.nan, np.nan)] * adata.shape[1]
-        for i, key in enumerate(adata.uns[f'{ref}_position_methylation_dict_{positive_control_sample}'].keys()):
-            position = int(adata.uns[f'{ref}_position_methylation_dict_{positive_control_sample}'][key][0])
-            positive_position_array = adata.uns[f'{ref}_position_methylation_dict_{positive_control_sample}'][key][1]
-            fraction_coverage = adata.uns[f'{ref}_position_methylation_dict_{positive_control_sample}'][key][2]
+        for i, key in enumerate(
+            adata.uns[f"{ref}_position_methylation_dict_{positive_control_sample}"].keys()
+        ):
+            position = int(
+                adata.uns[f"{ref}_position_methylation_dict_{positive_control_sample}"][key][0]
+            )
+            positive_position_array = adata.uns[
+                f"{ref}_position_methylation_dict_{positive_control_sample}"
+            ][key][1]
+            fraction_coverage = adata.uns[
+                f"{ref}_position_methylation_dict_{positive_control_sample}"
+            ][key][2]
             if fraction_coverage > 0.2:
                 try:
-                    negative_position_array = adata.uns[f'{ref}_position_methylation_dict_{negative_control_sample}'][key][1] 
+                    negative_position_array = adata.uns[
+                        f"{ref}_position_methylation_dict_{negative_control_sample}"
+                    ][key][1]
                     # Combine the negative and positive control data
                     data = np.concatenate([negative_position_array, positive_position_array])
-                    labels = np.array([0] * len(negative_position_array) + [1] * len(positive_position_array))
+                    labels = np.array(
+                        [0] * len(negative_position_array) + [1] * len(positive_position_array)
+                    )
                     # Calculate the ROC curve
                     fpr, tpr, thresholds = roc_curve(labels, data)
                     # Calculate Youden's J statistic
@@ -114,20 +134,24 @@ def calculate_position_Youden(adata,
                     n_total_positions += 1
                     if max_J > J_threshold:
                         n_passed_positions += 1
-                        plt.plot(fpr, tpr, label='ROC curve')
+                        plt.plot(fpr, tpr, label="ROC curve")
                 except:
                     probability_thresholding_list[position] = (0.8, np.nan)
-        title = f'ROC Curve for {n_passed_positions} positions with J-stat greater than {J_threshold}\n out of {n_total_positions} total positions on {ref}'
+        title = f"ROC Curve for {n_passed_positions} positions with J-stat greater than {J_threshold}\n out of {n_total_positions} total positions on {ref}"
         plt.title(title)
         save_name = output_directory / f"{title}.png"
         if save:
             plt.savefig(save_name)
             plt.close()
         else:
-            plt.show()   
+            plt.show()
 
-        adata.var[f'{ref}_position_methylation_thresholding_Youden_stats'] = probability_thresholding_list
+        adata.var[f"{ref}_position_methylation_thresholding_Youden_stats"] = (
+            probability_thresholding_list
+        )
         J_max_list = [probability_thresholding_list[i][1] for i in range(adata.shape[1])]
-        adata.var[f'{ref}_position_passed_Youden_thresholding_QC'] = [True if i > J_threshold else False for i in J_max_list]
+        adata.var[f"{ref}_position_passed_Youden_thresholding_QC"] = [
+            True if i > J_threshold else False for i in J_max_list
+        ]
 
     print(f"Finished calculating position Youden statistics")

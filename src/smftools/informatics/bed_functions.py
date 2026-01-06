@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 
 from ..readwrite import make_dirs
 
+
 def _bed_to_bigwig(fasta: str, bed: str) -> str:
     """
     BED → bedGraph → bigWig
@@ -64,6 +65,7 @@ def _bed_to_bigwig(fasta: str, bed: str) -> str:
     print(f"BigWig written: {bigwig}")
     return str(bigwig)
 
+
 def _plot_bed_histograms(
     bed_file,
     plotting_directory,
@@ -71,9 +73,9 @@ def _plot_bed_histograms(
     *,
     bins=60,
     clip_quantiles=(0.0, 0.995),
-    cov_bin_size=1000,       # coverage bin size in bp
-    rows_per_fig=6,          # paginate if many chromosomes
-    include_mapq_quality=True,   # add MAPQ + avg read quality columns to grid
+    cov_bin_size=1000,  # coverage bin size in bp
+    rows_per_fig=6,  # paginate if many chromosomes
+    include_mapq_quality=True,  # add MAPQ + avg read quality columns to grid
     coordinate_mode="one_based",  # "one_based" (your BED-like) or "zero_based"
 ):
     """
@@ -116,14 +118,25 @@ def _plot_bed_histograms(
     print(f"[plot_bed_histograms] Loading: {bed_file}")
 
     # Load BED-like table
-    cols = ['chrom', 'start', 'end', 'read_len', 'qname', 'mapq', 'avg_q']
-    df = pd.read_csv(bed_file, sep="\t", header=None, names=cols, dtype={
-        'chrom': str, 'start': int, 'end': int, 'read_len': int, 'qname': str,
-        'mapq': float, 'avg_q': float
-    })
+    cols = ["chrom", "start", "end", "read_len", "qname", "mapq", "avg_q"]
+    df = pd.read_csv(
+        bed_file,
+        sep="\t",
+        header=None,
+        names=cols,
+        dtype={
+            "chrom": str,
+            "start": int,
+            "end": int,
+            "read_len": int,
+            "qname": str,
+            "mapq": float,
+            "avg_q": float,
+        },
+    )
 
     # Drop unaligned records (chrom == '*') if present
-    df = df[df['chrom'] != '*'].copy()
+    df = df[df["chrom"] != "*"].copy()
     if df.empty:
         print("[plot_bed_histograms] No aligned reads found; nothing to plot.")
         return
@@ -135,12 +148,12 @@ def _plot_bed_histograms(
 
     if coordinate_mode == "one_based":
         # convert to 0-based half-open [start0, end0)
-        start0 = df['start'].to_numpy() - 1
-        end0   = df['end'].to_numpy()   # inclusive in input -> +1 already handled by not subtracting
+        start0 = df["start"].to_numpy() - 1
+        end0 = df["end"].to_numpy()  # inclusive in input -> +1 already handled by not subtracting
     else:
         # already 0-based half-open (assumption)
-        start0 = df['start'].to_numpy()
-        end0   = df['end'].to_numpy()
+        start0 = df["start"].to_numpy()
+        end0 = df["end"].to_numpy()
 
     # Clip helper for hist tails
     def _clip_series(s, q=(0.0, 0.995)):
@@ -157,7 +170,7 @@ def _plot_bed_histograms(
         ref_lengths = dict(zip(ref_names, fa.lengths))
 
     # Keep only chroms present in FASTA and with at least one read
-    chroms = [c for c in df['chrom'].unique() if c in ref_lengths]
+    chroms = [c for c in df["chrom"].unique() if c in ref_lengths]
     # Order chromosomes by FASTA order
     chrom_order = [c for c in ref_names if c in chroms]
 
@@ -172,27 +185,24 @@ def _plot_bed_histograms(
     cols_per_fig = 4 if include_mapq_quality else 2
 
     for start_idx in range(0, len(chrom_order), rows_per_fig):
-        chunk = chrom_order[start_idx:start_idx + rows_per_fig]
+        chunk = chrom_order[start_idx : start_idx + rows_per_fig]
         nrows = len(chunk)
         ncols = cols_per_fig
 
         fig, axes = plt.subplots(
-            nrows=nrows, ncols=ncols,
-            figsize=(4.0 * ncols, 2.6 * nrows),
-            dpi=160,
-            squeeze=False
+            nrows=nrows, ncols=ncols, figsize=(4.0 * ncols, 2.6 * nrows), dpi=160, squeeze=False
         )
 
         for r, chrom in enumerate(chunk):
             chrom_len = ref_lengths[chrom]
-            mask = (df['chrom'].to_numpy() == chrom)
+            mask = df["chrom"].to_numpy() == chrom
 
             # Slice per-chrom arrays for speed
             s0 = start0[mask]
             e0 = end0[mask]
-            len_arr = df.loc[mask, 'read_len']
-            mapq_arr = df.loc[mask, 'mapq']
-            q_arr = df.loc[mask, 'avg_q']
+            len_arr = df.loc[mask, "read_len"]
+            mapq_arr = df.loc[mask, "mapq"]
+            q_arr = df.loc[mask, "avg_q"]
 
             # --- Col 1: Read length histogram (clipped) ---
             ax = axes[r, 0]
@@ -222,7 +232,7 @@ def _plot_bed_histograms(
 
             # Increment all bins in range; loop but at bin resolution (fast for reasonable cov_bin_size).
             for lo, hi in zip(b_lo, b_hi):
-                cov[lo:hi + 1] += 1
+                cov[lo : hi + 1] += 1
 
             x_mid = (edges[:-1] + edges[1:]) / 2.0
             ax.plot(x_mid, cov)
@@ -237,7 +247,12 @@ def _plot_bed_histograms(
                 # --- Col 3: MAPQ ---
                 ax = axes[r, 2]
                 # Clip MAPQ upper tail if needed (usually 60)
-                ax.hist(_clip_series(mapq_arr.fillna(0), clip_quantiles), bins=bins, edgecolor="black", alpha=0.7)
+                ax.hist(
+                    _clip_series(mapq_arr.fillna(0), clip_quantiles),
+                    bins=bins,
+                    edgecolor="black",
+                    alpha=0.7,
+                )
                 if r == 0:
                     ax.set_title("MAPQ")
                 ax.set_xlabel("MAPQ")
@@ -245,7 +260,12 @@ def _plot_bed_histograms(
 
                 # --- Col 4: Avg base quality ---
                 ax = axes[r, 3]
-                ax.hist(_clip_series(q_arr.fillna(np.nan), clip_quantiles), bins=bins, edgecolor="black", alpha=0.7)
+                ax.hist(
+                    _clip_series(q_arr.fillna(np.nan), clip_quantiles),
+                    bins=bins,
+                    edgecolor="black",
+                    alpha=0.7,
+                )
                 if r == 0:
                     ax.set_title("Avg base qual")
                 ax.set_xlabel("Phred")
@@ -254,7 +274,8 @@ def _plot_bed_histograms(
         fig.suptitle(
             f"{bed_basename} — per-chromosome QC "
             f"({'len,cov,MAPQ,qual' if include_mapq_quality else 'len,cov'})",
-            y=0.995, fontsize=11
+            y=0.995,
+            fontsize=11,
         )
         fig.tight_layout(rect=[0, 0, 1, 0.98])
 
@@ -264,6 +285,7 @@ def _plot_bed_histograms(
         plt.close(fig)
 
     print("[plot_bed_histograms] Done.")
+
 
 def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
     """
@@ -287,7 +309,7 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
     bed_dir = out_dir / "beds"
     make_dirs([plotting_dir, bed_dir])
 
-    bed_output = bed_dir /  str(aligned_BAM.name).replace(".bam", "_bed.bed")
+    bed_output = bed_dir / str(aligned_BAM.name).replace(".bam", "_bed.bed")
 
     print(f"Creating BED-like file from BAM (with MAPQ and avg base quality): {aligned_BAM}")
 
@@ -324,7 +346,11 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
         bed = str(bed)
         aligned = bed.replace(".bed", "_aligned.bed")
         unaligned = bed.replace(".bed", "_unaligned.bed")
-        with open(bed, "r") as infile, open(aligned, "w") as aligned_out, open(unaligned, "w") as unaligned_out:
+        with (
+            open(bed, "r") as infile,
+            open(aligned, "w") as aligned_out,
+            open(unaligned, "w") as unaligned_out,
+        ):
             for line in infile:
                 (unaligned_out if line.startswith("*\t") else aligned_out).write(line)
         os.remove(bed)
@@ -342,6 +368,7 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
 
     print("Processing completed successfully.")
 
+
 def extract_read_lengths_from_bed(file_path):
     """
     Load a dict of read names that points to the read length
@@ -352,15 +379,16 @@ def extract_read_lengths_from_bed(file_path):
         read_dict (dict)
     """
     import pandas as pd
-    columns = ['chrom', 'start', 'end', 'length', 'name']
-    df = pd.read_csv(file_path, sep='\t', header=None, names=columns, comment='#')
+
+    columns = ["chrom", "start", "end", "length", "name"]
+    df = pd.read_csv(file_path, sep="\t", header=None, names=columns, comment="#")
     read_dict = {}
     for _, row in df.iterrows():
-        chrom = row['chrom']
-        start = row['start']
-        end = row['end']
-        name = row['name']
-        length = row['length']
+        chrom = row["chrom"]
+        start = row["start"]
+        end = row["end"]
+        name = row["name"]
+        length = row["length"]
         read_dict[name] = length
 
     return read_dict

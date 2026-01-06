@@ -3,13 +3,20 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import (
-    roc_auc_score, precision_recall_curve, auc, f1_score, confusion_matrix, roc_curve
+    roc_auc_score,
+    precision_recall_curve,
+    auc,
+    f1_score,
+    confusion_matrix,
+    roc_curve,
 )
+
 
 class ModelEvaluator:
     """
     A model evaluator for consolidating Sklearn and Lightning model evaluation metrics on testing data
     """
+
     def __init__(self):
         self.results = []
         self.pos_freq = None
@@ -21,41 +28,45 @@ class ModelEvaluator:
         """
         if is_torch:
             entry = {
-                'name': name,
-                'f1': model.test_f1,
-                'auc': model.test_roc_auc,
-                'pr_auc': model.test_pr_auc,
-                'pr_auc_norm': model.test_pr_auc / model.test_pos_freq if model.test_pos_freq > 0 else np.nan,
-                'pr_curve': model.test_pr_curve,
-                'roc_curve': model.test_roc_curve,
-                'num_pos': model.test_num_pos,
-                'pos_freq': model.test_pos_freq
+                "name": name,
+                "f1": model.test_f1,
+                "auc": model.test_roc_auc,
+                "pr_auc": model.test_pr_auc,
+                "pr_auc_norm": model.test_pr_auc / model.test_pos_freq
+                if model.test_pos_freq > 0
+                else np.nan,
+                "pr_curve": model.test_pr_curve,
+                "roc_curve": model.test_roc_curve,
+                "num_pos": model.test_num_pos,
+                "pos_freq": model.test_pos_freq,
             }
         else:
             entry = {
-                'name': name,
-                'f1': model.test_f1,
-                'auc': model.test_roc_auc,
-                'pr_auc': model.test_pr_auc,
-                'pr_auc_norm': model.test_pr_auc / model.test_pos_freq if model.test_pos_freq > 0 else np.nan,
-                'pr_curve': model.test_pr_curve,
-                'roc_curve': model.test_roc_curve,
-                'num_pos': model.test_num_pos,
-                'pos_freq': model.test_pos_freq
+                "name": name,
+                "f1": model.test_f1,
+                "auc": model.test_roc_auc,
+                "pr_auc": model.test_pr_auc,
+                "pr_auc_norm": model.test_pr_auc / model.test_pos_freq
+                if model.test_pos_freq > 0
+                else np.nan,
+                "pr_curve": model.test_pr_curve,
+                "roc_curve": model.test_roc_curve,
+                "num_pos": model.test_num_pos,
+                "pos_freq": model.test_pos_freq,
             }
-        
+
         self.results.append(entry)
 
         if not self.pos_freq:
-            self.pos_freq = entry['pos_freq']
-            self.num_pos = entry['num_pos']
+            self.pos_freq = entry["pos_freq"]
+            self.num_pos = entry["num_pos"]
 
     def get_metrics_dataframe(self):
         """
         Return all metrics as pandas DataFrame.
         """
         df = pd.DataFrame(self.results)
-        return df[['name', 'f1', 'auc', 'pr_auc', 'pr_auc_norm', 'num_pos', 'pos_freq']]
+        return df[["name", "f1", "auc", "pr_auc", "pr_auc_norm", "num_pos", "pos_freq"]]
 
     def plot_all_curves(self):
         """
@@ -66,29 +77,30 @@ class ModelEvaluator:
         # ROC
         plt.subplot(1, 2, 1)
         for res in self.results:
-            fpr, tpr = res['roc_curve']
+            fpr, tpr = res["roc_curve"]
             plt.plot(fpr, tpr, label=f"{res['name']} (AUC={res['auc']:.3f})")
         plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
         plt.xlabel("False Positive Rate")
         plt.ylabel("True Positive Rate")
-        plt.ylim(0,1.05)
+        plt.ylim(0, 1.05)
         plt.title(f"ROC Curves - {self.num_pos} positive instances")
         plt.legend()
 
         # PR
         plt.subplot(1, 2, 2)
         for res in self.results:
-            rc, pr = res['pr_curve']
+            rc, pr = res["pr_curve"]
             plt.plot(rc, pr, label=f"{res['name']} (AUPRC={res['pr_auc']:.3f})")
         plt.xlabel("Recall")
         plt.ylabel("Precision")
-        plt.ylim(0,1.05)
-        plt.axhline(self.pos_freq, linestyle='--', color='grey')
+        plt.ylim(0, 1.05)
+        plt.axhline(self.pos_freq, linestyle="--", color="grey")
         plt.title(f"Precision-Recall Curves - {self.num_pos} positive instances")
         plt.legend()
 
         plt.tight_layout()
         plt.show()
+
 
 class PostInferenceModelEvaluator:
     def __init__(self, adata, models, target_eval_freq=None, max_eval_positive=None):
@@ -179,12 +191,14 @@ class PostInferenceModelEvaluator:
             "pos_freq": pos_freq,
             "confusion_matrix": cm,
             "pr_rc_curve": (pr, rc),
-            "roc_curve": (tpr, fpr)
+            "roc_curve": (tpr, fpr),
         }
 
         return metrics
-    
-    def _subsample_for_fixed_positive_frequency(self, binary_labels, target_freq=0.3, max_positive=None):
+
+    def _subsample_for_fixed_positive_frequency(
+        self, binary_labels, target_freq=0.3, max_positive=None
+    ):
         pos_idx = np.where(binary_labels == 1)[0]
         neg_idx = np.where(binary_labels == 0)[0]
 

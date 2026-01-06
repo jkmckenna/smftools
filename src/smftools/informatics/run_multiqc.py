@@ -11,6 +11,7 @@ def run_multiqc(input_dir, output_dir):
     """
     from ..readwrite import make_dirs
     import subprocess
+
     # Ensure the output directory exists
     make_dirs(output_dir)
 
@@ -21,11 +22,10 @@ def run_multiqc(input_dir, output_dir):
     command = ["multiqc", input_dir, "-o", output_dir]
 
     print(f"Running MultiQC on '{input_dir}' and saving results to '{output_dir}'...")
-    
+
     # Run MultiQC
     try:
         subprocess.run(command, check=True)
         print(f"MultiQC report generated successfully in: {output_dir}")
     except subprocess.CalledProcessError as e:
         print(f"Error running MultiQC: {e}")
-

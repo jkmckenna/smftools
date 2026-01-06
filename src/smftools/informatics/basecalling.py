@@ -1,7 +1,18 @@
 import subprocess
 from pathlib import Path
 
-def canoncall(model_dir, model, pod5_dir, barcode_kit, bam, bam_suffix, barcode_both_ends=True, trim=False, device='auto'):
+
+def canoncall(
+    model_dir,
+    model,
+    pod5_dir,
+    barcode_kit,
+    bam,
+    bam_suffix,
+    barcode_both_ends=True,
+    trim=False,
+    device="auto",
+):
     """
     Wrapper function for dorado canonical base calling.
 
@@ -15,13 +26,24 @@ def canoncall(model_dir, model, pod5_dir, barcode_kit, bam, bam_suffix, barcode_
         barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
         trim (bool): Whether to trim barcodes, adapters, and primers from read ends.
         device (str): The device to use. 'auto' is default, which can detect device to use. Can also specify metal, cpu, cuda.
-    
+
     Returns:
         None
             Outputs a BAM file holding the canonical base calls output by the dorado basecaller.
     """
     output = bam + bam_suffix
-    command = ["dorado", "basecaller", "--models-directory", model_dir, "--kit-name", barcode_kit, "--device", device, "--batchsize", "0"]
+    command = [
+        "dorado",
+        "basecaller",
+        "--models-directory",
+        model_dir,
+        "--kit-name",
+        barcode_kit,
+        "--device",
+        device,
+        "--batchsize",
+        "0",
+    ]
     if barcode_both_ends:
         command.append("--barcode-both-ends")
     if not trim:
@@ -32,7 +54,19 @@ def canoncall(model_dir, model, pod5_dir, barcode_kit, bam, bam_suffix, barcode_
     with open(output, "w") as outfile:
         subprocess.run(command, stdout=outfile)
 
-def modcall(model_dir, model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix, barcode_both_ends=True, trim=False, device='auto'):
+
+def modcall(
+    model_dir,
+    model,
+    pod5_dir,
+    barcode_kit,
+    mod_list,
+    bam,
+    bam_suffix,
+    barcode_both_ends=True,
+    trim=False,
+    device="auto",
+):
     """
     Wrapper function for dorado modified base calling.
 
@@ -47,14 +81,23 @@ def modcall(model_dir, model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix, 
         barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
         trim (bool): Whether to trim barcodes, adapters, and primers from read ends
         device (str): Device to use for basecalling. auto, metal, cpu, cuda.
-    
+
     Returns:
         None
             Outputs a BAM file holding the modified base calls output by the dorado basecaller.
     """
     import subprocess
+
     output = bam + bam_suffix
-    command = ["dorado", "basecaller", "--models-directory", model_dir, "--kit-name", barcode_kit, "--modified-bases"]
+    command = [
+        "dorado",
+        "basecaller",
+        "--models-directory",
+        model_dir,
+        "--kit-name",
+        barcode_kit,
+        "--modified-bases",
+    ]
     command += mod_list
     command += ["--device", device, "--batchsize", "0"]
     if barcode_both_ends:
@@ -62,6 +105,6 @@ def modcall(model_dir, model, pod5_dir, barcode_kit, mod_list, bam, bam_suffix, 
     if not trim:
         command.append("--no-trim")
     command += [model, pod5_dir]
-    print(f'Running: {" ".join(command)}')
+    print(f"Running: {' '.join(command)}")
     with open(output, "w") as outfile:
         subprocess.run(command, stdout=outfile)

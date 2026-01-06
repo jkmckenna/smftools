@@ -1,35 +1,42 @@
-
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import os
 
+
 def plot_model_performance(metrics, save_path=None):
     import matplotlib.pyplot as plt
     import os
+
     for ref in metrics.keys():
         plt.figure(figsize=(12, 5))
 
         # ROC Curve
         plt.subplot(1, 2, 1)
         for model_name, vals in metrics[ref].items():
-            model_type = model_name.split('_')[0]
+            model_type = model_name.split("_")[0]
             data_type = model_name.split(f"{model_type}_")[1]
-            plt.plot(vals['fpr'], vals['tpr'], label=f"{model_type.upper()} - AUC: {vals['auc']:.4f}")
-        plt.xlabel('False Positive Rate')
-        plt.ylabel('True Positive Rate')
-        plt.title(f'{data_type} ROC Curve ({ref})')
+            plt.plot(
+                vals["fpr"], vals["tpr"], label=f"{model_type.upper()} - AUC: {vals['auc']:.4f}"
+            )
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title(f"{data_type} ROC Curve ({ref})")
         plt.legend()
 
         # PR Curve
         plt.subplot(1, 2, 2)
         for model_name, vals in metrics[ref].items():
-            model_type = model_name.split('_')[0]
+            model_type = model_name.split("_")[0]
             data_type = model_name.split(f"{model_type}_")[1]
-            plt.plot(vals['recall'], vals['precision'], label=f"{model_type.upper()} - F1: {vals['f1']:.4f}")
-        plt.xlabel('Recall')
-        plt.ylabel('Precision')
-        plt.title(f'{data_type} Precision-Recall Curve ({ref})')
+            plt.plot(
+                vals["recall"],
+                vals["precision"],
+                label=f"{model_type.upper()} - F1: {vals['f1']:.4f}",
+            )
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.title(f"{data_type} Precision-Recall Curve ({ref})")
         plt.legend()
 
         plt.tight_layout()
@@ -42,12 +49,13 @@ def plot_model_performance(metrics, save_path=None):
             plt.savefig(out_file, dpi=300)
             print(f"📁 Saved: {out_file}")
         plt.show()
-        
+
         # Confusion Matrices
         for model_name, vals in metrics[ref].items():
             print(f"Confusion Matrix for {ref} - {model_name.upper()}:")
-            print(vals['confusion_matrix'])
+            print(vals["confusion_matrix"])
             print()
+
 
 def plot_feature_importances_or_saliency(
     models,
@@ -57,7 +65,7 @@ def plot_feature_importances_or_saliency(
     adata=None,
     layer_name=None,
     save_path=None,
-    shaded_regions=None
+    shaded_regions=None,
 ):
     import torch
     import numpy as np
@@ -66,9 +74,11 @@ def plot_feature_importances_or_saliency(
 
     # Select device for NN models
     device = (
-        torch.device('cuda') if torch.cuda.is_available() else
-        torch.device('mps') if torch.backends.mps.is_available() else
-        torch.device('cpu')
+        torch.device("cuda")
+        if torch.cuda.is_available()
+        else torch.device("mps")
+        if torch.backends.mps.is_available()
+        else torch.device("cpu")
     )
 
     for ref, model_dict in models.items():
@@ -90,7 +100,9 @@ def plot_feature_importances_or_saliency(
         other_sites = set()
 
         if adata is None:
-            print("⚠️ AnnData object is required to classify site types. Skipping site type markers.")
+            print(
+                "⚠️ AnnData object is required to classify site types. Skipping site type markers."
+            )
         else:
             gpc_col = f"{ref}_GpC_site"
             cpg_col = f"{ref}_CpG_site"
@@ -146,20 +158,46 @@ def plot_feature_importances_or_saliency(
             plt.figure(figsize=(12, 4))
             for pos, imp in zip(positions_sorted, importances_sorted):
                 if pos in cpg_sites:
-                    plt.plot(pos, imp, marker='*', color='black', markersize=10, linestyle='None',
-                             label='CpG site' if 'CpG site' not in plt.gca().get_legend_handles_labels()[1] else "")
+                    plt.plot(
+                        pos,
+                        imp,
+                        marker="*",
+                        color="black",
+                        markersize=10,
+                        linestyle="None",
+                        label="CpG site"
+                        if "CpG site" not in plt.gca().get_legend_handles_labels()[1]
+                        else "",
+                    )
                 elif pos in gpc_sites:
-                    plt.plot(pos, imp, marker='o', color='blue', markersize=6, linestyle='None',
-                             label='GpC site' if 'GpC site' not in plt.gca().get_legend_handles_labels()[1] else "")
+                    plt.plot(
+                        pos,
+                        imp,
+                        marker="o",
+                        color="blue",
+                        markersize=6,
+                        linestyle="None",
+                        label="GpC site"
+                        if "GpC site" not in plt.gca().get_legend_handles_labels()[1]
+                        else "",
+                    )
                 else:
-                    plt.plot(pos, imp, marker='.', color='gray', linestyle='None',
-                             label='Other' if 'Other' not in plt.gca().get_legend_handles_labels()[1] else "")
+                    plt.plot(
+                        pos,
+                        imp,
+                        marker=".",
+                        color="gray",
+                        linestyle="None",
+                        label="Other"
+                        if "Other" not in plt.gca().get_legend_handles_labels()[1]
+                        else "",
+                    )
 
-            plt.plot(positions_sorted, importances_sorted, linestyle='-', alpha=0.5, color='black')
+            plt.plot(positions_sorted, importances_sorted, linestyle="-", alpha=0.5, color="black")
 
             if shaded_regions:
-                for (start, end) in shaded_regions:
-                    plt.axvspan(start, end, color='gray', alpha=0.3)
+                for start, end in shaded_regions:
+                    plt.axvspan(start, end, color="gray", alpha=0.3)
 
             plt.xlabel("Genomic Position")
             plt.ylabel(y_label)
@@ -170,31 +208,37 @@ def plot_feature_importances_or_saliency(
 
             if save_path:
                 os.makedirs(save_path, exist_ok=True)
-                safe_name = plot_title.replace("=", "").replace("__", "_").replace(",", "_").replace(" ", "_")
+                safe_name = (
+                    plot_title.replace("=", "")
+                    .replace("__", "_")
+                    .replace(",", "_")
+                    .replace(" ", "_")
+                )
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
                 print(f"📁 Saved: {out_file}")
 
             plt.show()
 
-def plot_model_curves_from_adata(
-    adata, 
-    label_col='activity_status', 
-    model_names = ["cnn", "mlp", "rf"], 
-    suffix='GpC_site_CpG_site',
-    omit_training=True, 
-    save_path=None, 
-    ylim_roc=(0.0, 1.05), 
-    ylim_pr=(0.0, 1.05)):
 
+def plot_model_curves_from_adata(
+    adata,
+    label_col="activity_status",
+    model_names=["cnn", "mlp", "rf"],
+    suffix="GpC_site_CpG_site",
+    omit_training=True,
+    save_path=None,
+    ylim_roc=(0.0, 1.05),
+    ylim_pr=(0.0, 1.05),
+):
     from sklearn.metrics import precision_recall_curve, roc_curve, auc
     import matplotlib.pyplot as plt
-    import seaborn as sns    
+    import seaborn as sns
 
     if omit_training:
-        subset = adata[adata.obs['used_for_training'].astype(bool) == False]
+        subset = adata[adata.obs["used_for_training"].astype(bool) == False]
 
-    label = subset.obs[label_col].map({'Active': 1, 'Silent': 0}).values  
+    label = subset.obs[label_col].map({"Active": 1, "Silent": 0}).values
 
     positive_ratio = np.sum(label.astype(int)) / len(label)
 
@@ -210,7 +254,7 @@ def plot_model_curves_from_adata(
             roc_auc = auc(fpr, tpr)
             plt.plot(fpr, tpr, label=f"{model.upper()} (AUC={roc_auc:.4f})")
 
-    plt.plot([0, 1], [0, 1], 'k--', alpha=0.5)
+    plt.plot([0, 1], [0, 1], "k--", alpha=0.5)
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
     plt.title("ROC Curve")
@@ -230,7 +274,7 @@ def plot_model_curves_from_adata(
     plt.xlabel("Recall")
     plt.ylabel("Precision")
     plt.ylim(*ylim_pr)
-    plt.axhline(y=positive_ratio, linestyle='--', color='gray', label='Random Baseline')
+    plt.axhline(y=positive_ratio, linestyle="--", color="gray", label="Random Baseline")
     plt.title("Precision-Recall Curve")
     plt.legend()
 
@@ -244,11 +288,12 @@ def plot_model_curves_from_adata(
         print(f"📁 Saved: {out_file}")
     plt.show()
 
+
 def plot_model_curves_from_adata_with_frequency_grid(
     adata,
-    label_col='activity_status',
+    label_col="activity_status",
     model_names=["cnn", "mlp", "rf"],
-    suffix='GpC_site_CpG_site',
+    suffix="GpC_site_CpG_site",
     omit_training=True,
     save_path=None,
     ylim_roc=(0.0, 1.05),
@@ -256,22 +301,23 @@ def plot_model_curves_from_adata_with_frequency_grid(
     pos_sample_count=500,
     pos_freq_list=[0.01, 0.05, 0.1],
     show_f1_iso_curves=False,
-    f1_levels=None):
+    f1_levels=None,
+):
     import numpy as np
     import matplotlib.pyplot as plt
     import seaborn as sns
     import os
     from sklearn.metrics import precision_recall_curve, roc_curve, auc
-    
+
     if f1_levels is None:
         f1_levels = np.linspace(0.2, 0.9, 8)
-        
+
     if omit_training:
-        subset = adata[adata.obs['used_for_training'].astype(bool) == False]
+        subset = adata[adata.obs["used_for_training"].astype(bool) == False]
     else:
         subset = adata
 
-    label = subset.obs[label_col].map({'Active': 1, 'Silent': 0}).values
+    label = subset.obs[label_col].map({"Active": 1, "Silent": 0}).values
     subset = subset.copy()
     subset.obs["__label__"] = label
 
@@ -280,7 +326,7 @@ def plot_model_curves_from_adata_with_frequency_grid(
 
     n_rows = len(pos_freq_list)
     fig, axes = plt.subplots(n_rows, 2, figsize=(12, 5 * n_rows))
-    fig.suptitle(f'{suffix} Performance metrics')
+    fig.suptitle(f"{suffix} Performance metrics")
 
     for row_idx, pos_freq in enumerate(pos_freq_list):
         desired_total = int(pos_sample_count / pos_freq)
@@ -308,14 +354,14 @@ def plot_model_curves_from_adata_with_frequency_grid(
                 fpr, tpr, _ = roc_curve(y_true, probs)
                 roc_auc = auc(fpr, tpr)
                 ax_roc.plot(fpr, tpr, label=f"{model.upper()} (AUC={roc_auc:.4f})")
-        ax_roc.plot([0, 1], [0, 1], 'k--', alpha=0.5)
+        ax_roc.plot([0, 1], [0, 1], "k--", alpha=0.5)
         ax_roc.set_xlabel("False Positive Rate")
         ax_roc.set_ylabel("True Positive Rate")
         ax_roc.set_ylim(*ylim_roc)
         ax_roc.set_title(f"ROC Curve (Pos Freq: {pos_freq:.2%})")
         ax_roc.legend()
-        ax_roc.spines['top'].set_visible(False)
-        ax_roc.spines['right'].set_visible(False)
+        ax_roc.spines["top"].set_visible(False)
+        ax_roc.spines["right"].set_visible(False)
 
         # PR Curve
         for model in model_names:
@@ -325,26 +371,28 @@ def plot_model_curves_from_adata_with_frequency_grid(
                 precision, recall, _ = precision_recall_curve(y_true, probs)
                 pr_auc = auc(recall, precision)
                 ax_pr.plot(recall, precision, label=f"{model.upper()} (AUC={pr_auc:.4f})")
-        ax_pr.axhline(y=pos_freq, linestyle='--', color='gray', label='Random Baseline')
+        ax_pr.axhline(y=pos_freq, linestyle="--", color="gray", label="Random Baseline")
 
         if show_f1_iso_curves:
             recall_vals = np.linspace(0.01, 1, 500)
             for f1 in f1_levels:
                 precision_vals = (f1 * recall_vals) / (2 * recall_vals - f1)
                 precision_vals[precision_vals < 0] = np.nan  # Avoid plotting invalid values
-                ax_pr.plot(recall_vals, precision_vals, color='gray', linestyle=':', linewidth=1, alpha=0.6)
+                ax_pr.plot(
+                    recall_vals, precision_vals, color="gray", linestyle=":", linewidth=1, alpha=0.6
+                )
                 x_val = 0.9
                 y_val = (f1 * x_val) / (2 * x_val - f1)
                 if 0 < y_val < 1:
-                    ax_pr.text(x_val, y_val, f"F1={f1:.1f}", fontsize=8, color='gray')
+                    ax_pr.text(x_val, y_val, f"F1={f1:.1f}", fontsize=8, color="gray")
 
         ax_pr.set_xlabel("Recall")
         ax_pr.set_ylabel("Precision")
         ax_pr.set_ylim(*ylim_pr)
         ax_pr.set_title(f"PR Curve (Pos Freq: {pos_freq:.2%})")
         ax_pr.legend()
-        ax_pr.spines['top'].set_visible(False)
-        ax_pr.spines['right'].set_visible(False)
+        ax_pr.spines["top"].set_visible(False)
+        ax_pr.spines["right"].set_visible(False)
 
     plt.tight_layout(rect=[0, 0, 1, 0.97])
     if save_path:

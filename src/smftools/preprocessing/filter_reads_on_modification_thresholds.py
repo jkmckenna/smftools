@@ -5,6 +5,7 @@ import pandas as pd
 import anndata as ad
 from typing import Optional, Sequence, List
 
+
 def filter_reads_on_modification_thresholds(
     adata: ad.AnnData,
     smf_modality: str,
@@ -15,14 +16,14 @@ def filter_reads_on_modification_thresholds(
     a_thresholds: Optional[Sequence[float]] = None,
     use_other_c_as_background: bool = False,
     min_valid_fraction_positions_in_read_vs_ref: Optional[float] = None,
-    uns_flag: str = 'filter_reads_on_modification_thresholds_performed',
+    uns_flag: str = "filter_reads_on_modification_thresholds_performed",
     bypass: bool = False,
     force_redo: bool = False,
-    reference_column: str = 'Reference_strand',
+    reference_column: str = "Reference_strand",
     # memory-control options:
     batch_size: int = 200,
     compute_obs_if_missing: bool = True,
-    treat_zero_as_invalid: bool = False
+    treat_zero_as_invalid: bool = False,
 ) -> ad.AnnData:
     """
     Memory-efficient filtering by per-read modification thresholds.
@@ -60,7 +61,12 @@ def filter_reads_on_modification_thresholds(
 
     # if all required obs columns are present, use them directly (fast path)
     required_present = True
-    for mt, thr in (("GpC", gpc_thresholds), ("CpG", cpg_thresholds), ("C", any_c_thresholds), ("A", a_thresholds)):
+    for mt, thr in (
+        ("GpC", gpc_thresholds),
+        ("CpG", cpg_thresholds),
+        ("C", any_c_thresholds),
+        ("A", a_thresholds),
+    ):
         if thr is not None and mt in mod_target_bases:
             if not obs_has_columns_for(mt):
                 required_present = False
@@ -75,7 +81,7 @@ def filter_reads_on_modification_thresholds(
     # Build mapping from reference -> var column names (expected pattern)
     # e.g. var column names: "{ref}_GpC_site", "{ref}_CpG_site", "{ref}_any_C_site", "{ref}_other_C_site", "{ref}_A_site"
     # If your var column naming differs, adjust these suffixes.
-    refs = list(adata.obs[reference_column].astype('category').cat.categories)
+    refs = list(adata.obs[reference_column].astype("category").cat.categories)
 
     def _find_var_col_for(ref, suffix):
         name = f"{ref}_{suffix}"
@@ -121,7 +127,9 @@ def filter_reads_on_modification_thresholds(
                 var_mask_bool = np.asarray(adata.var[var_colname].values).astype(bool)
             except Exception:
                 # if var has values not boolean, attempt coercion
-                var_mask_bool = np.asarray(pd.to_numeric(adata.var[var_colname], errors='coerce').fillna(0).astype(bool))
+                var_mask_bool = np.asarray(
+                    pd.to_numeric(adata.var[var_colname], errors="coerce").fillna(0).astype(bool)
+                )
 
             if not var_mask_bool.any():
                 return
@@ -154,16 +162,20 @@ def filter_reads_on_modification_thresholds(
                         #   valid_count = (non-nan if float data else non-zero) per row
                         # For sparse, .data are only stored nonzeros, so (X_block > 0).sum is fine
                         modified_count = np.asarray((X_block > 0).sum(axis=1)).ravel()
-                        if np.isnan(X_block.data).any() if hasattr(X_block, 'data') else False:
+                        if np.isnan(X_block.data).any() if hasattr(X_block, "data") else False:
                             # if sparse with stored NaNs (!) handle differently - unlikely
-                            valid_count = np.asarray(~np.isnan(X_block.toarray()).sum(axis=1)).ravel()
+                            valid_count = np.asarray(
+                                ~np.isnan(X_block.toarray()).sum(axis=1)
+                            ).ravel()
                         else:
                             if treat_zero_as_invalid:
                                 # valid = number of non-zero entries
                                 valid_count = np.asarray((X_block != 0).sum(axis=1)).ravel()
                             else:
                                 # treat all positions as valid positions (they exist in reference) -> denominator = n_cols_for_ref
-                                valid_count = np.full_like(modified_count, n_cols_for_ref, dtype=float)
+                                valid_count = np.full_like(
+                                    modified_count, n_cols_for_ref, dtype=float
+                                )
                     else:
                         # dense numpy
                         Xb = np.asarray(X_block)
@@ -193,14 +205,18 @@ def filter_reads_on_modification_thresholds(
 
                 # fraction modified = modified_count / valid_count (guard divide-by-zero)
                 frac = np.zeros_like(modified_count, dtype=float)
-                mask_valid_nonzero = (valid_count > 0)
-                frac[mask_valid_nonzero] = modified_count[mask_valid_nonzero] / valid_count[mask_valid_nonzero]
+                mask_valid_nonzero = valid_count > 0
+                frac[mask_valid_nonzero] = (
+                    modified_count[mask_valid_nonzero] / valid_count[mask_valid_nonzero]
+                )
 
                 # write to out arrays
                 out_frac_arr[block_rows_idx] = frac
                 # valid fraction relative to reference = valid_count / n_cols_for_ref
                 out_valid_arr[block_rows_idx] = np.zeros_like(valid_count, dtype=float)
-                out_valid_arr[block_rows_idx][mask_valid_nonzero] = (valid_count[mask_valid_nonzero] / float(n_cols_for_ref))
+                out_valid_arr[block_rows_idx][mask_valid_nonzero] = valid_count[
+                    mask_valid_nonzero
+                ] / float(n_cols_for_ref)
 
                 # free block memory ASAP
                 del X_block, modified_count, valid_count, frac
@@ -210,29 +226,51 @@ def filter_reads_on_modification_thresholds(
         # GpC
         if "GpC" in mod_target_bases:
             for ref in refs:
-                _compute_for_ref_and_suffix(ref, "GpC_site", create_cols["Fraction_GpC_site_modified"], create_cols["Valid_GpC_site_in_read_vs_reference"])
+                _compute_for_ref_and_suffix(
+                    ref,
+                    "GpC_site",
+                    create_cols["Fraction_GpC_site_modified"],
+                    create_cols["Valid_GpC_site_in_read_vs_reference"],
+                )
         # other_C (for background)
         # We'll also compute 'other_C' per reference if it exists
         other_c_per_ref = {}
         for ref in refs:
             other_col = _find_var_col_for(ref, "other_C_site")
             if other_col:
-                other_c_per_ref[ref] = np.where(np.asarray(adata.var[other_col].values).astype(bool))[0]
+                other_c_per_ref[ref] = np.where(
+                    np.asarray(adata.var[other_col].values).astype(bool)
+                )[0]
 
         # CpG
         if "CpG" in mod_target_bases:
             for ref in refs:
-                _compute_for_ref_and_suffix(ref, "CpG_site", create_cols["Fraction_CpG_site_modified"], create_cols["Valid_CpG_site_in_read_vs_reference"])
+                _compute_for_ref_and_suffix(
+                    ref,
+                    "CpG_site",
+                    create_cols["Fraction_CpG_site_modified"],
+                    create_cols["Valid_CpG_site_in_read_vs_reference"],
+                )
 
         # any C
         if "C" in mod_target_bases:
             for ref in refs:
-                _compute_for_ref_and_suffix(ref, "C_site", create_cols["Fraction_C_site_modified"], create_cols["Valid_C_site_in_read_vs_reference"])
+                _compute_for_ref_and_suffix(
+                    ref,
+                    "C_site",
+                    create_cols["Fraction_C_site_modified"],
+                    create_cols["Valid_C_site_in_read_vs_reference"],
+                )
 
         # A
         if "A" in mod_target_bases:
             for ref in refs:
-                _compute_for_ref_and_suffix(ref, "A_site", create_cols["Fraction_A_site_modified"], create_cols["Valid_A_site_in_read_vs_reference"])
+                _compute_for_ref_and_suffix(
+                    ref,
+                    "A_site",
+                    create_cols["Fraction_A_site_modified"],
+                    create_cols["Valid_A_site_in_read_vs_reference"],
+                )
 
         # write created arrays into adata.obs
         for cname, arr in create_cols.items():
@@ -243,16 +281,20 @@ def filter_reads_on_modification_thresholds(
             # compute per-ref background ratio if both exist
             # Simplest approach: if 'Fraction_GpC_site_modified' and 'Fraction_other_C_site_modified' exist, compute ratio
             if "Fraction_other_C_site_modified" in adata.obs.columns:
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    ratio = adata.obs["Fraction_GpC_site_modified"].astype(float) / adata.obs["Fraction_other_C_site_modified"].astype(float)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    ratio = adata.obs["Fraction_GpC_site_modified"].astype(float) / adata.obs[
+                        "Fraction_other_C_site_modified"
+                    ].astype(float)
                 adata.obs["GpC_to_other_C_mod_ratio"] = ratio.fillna(0.0)
             else:
                 adata.obs["GpC_to_other_C_mod_ratio"] = np.nan
 
         if "CpG" in mod_target_bases and use_other_c_as_background:
             if "Fraction_other_C_site_modified" in adata.obs.columns:
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    ratio = adata.obs["Fraction_CpG_site_modified"].astype(float) / adata.obs["Fraction_other_C_site_modified"].astype(float)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    ratio = adata.obs["Fraction_CpG_site_modified"].astype(float) / adata.obs[
+                        "Fraction_other_C_site_modified"
+                    ].astype(float)
                 adata.obs["CpG_to_other_C_mod_ratio"] = ratio.fillna(0.0)
             else:
                 adata.obs["CpG_to_other_C_mod_ratio"] = np.nan
@@ -269,7 +311,10 @@ def filter_reads_on_modification_thresholds(
         if thr is None:
             return None, None
         try:
-            lo, hi = float(thr[0]) if thr[0] is not None else None, float(thr[1]) if thr[1] is not None else None
+            lo, hi = (
+                float(thr[0]) if thr[0] is not None else None,
+                float(thr[1]) if thr[1] is not None else None,
+            )
             if lo is not None and hi is not None and lo > hi:
                 lo, hi = hi, lo
             return lo, hi
@@ -277,9 +322,13 @@ def filter_reads_on_modification_thresholds(
             return None, None
 
     # GpC thresholds
-    if gpc_thresholds and 'GpC' in mod_target_bases:
+    if gpc_thresholds and "GpC" in mod_target_bases:
         lo, hi = _unpack_minmax(gpc_thresholds)
-        if use_other_c_as_background and smf_modality != 'deaminase' and "GpC_to_other_C_mod_ratio" in filtered.obs.columns:
+        if (
+            use_other_c_as_background
+            and smf_modality != "deaminase"
+            and "GpC_to_other_C_mod_ratio" in filtered.obs.columns
+        ):
             filtered = filtered[filtered.obs["GpC_to_other_C_mod_ratio"].astype(float) > 1]
         if lo is not None:
             s0 = filtered.n_obs
@@ -289,15 +338,26 @@ def filter_reads_on_modification_thresholds(
             s0 = filtered.n_obs
             filtered = filtered[filtered.obs["Fraction_GpC_site_modified"].astype(float) <= hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max GpC fraction {hi}")
-        if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_GpC_site_in_read_vs_reference" in filtered.obs.columns):
+        if (min_valid_fraction_positions_in_read_vs_ref is not None) and (
+            "Valid_GpC_site_in_read_vs_reference" in filtered.obs.columns
+        ):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_GpC_site_in_read_vs_reference"].astype(float) >= float(min_valid_fraction_positions_in_read_vs_ref)]
-            print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid GpC site fraction vs ref")
+            filtered = filtered[
+                filtered.obs["Valid_GpC_site_in_read_vs_reference"].astype(float)
+                >= float(min_valid_fraction_positions_in_read_vs_ref)
+            ]
+            print(
+                f"Removed {s0 - filtered.n_obs} reads with insufficient valid GpC site fraction vs ref"
+            )
 
     # CpG thresholds
-    if cpg_thresholds and 'CpG' in mod_target_bases:
+    if cpg_thresholds and "CpG" in mod_target_bases:
         lo, hi = _unpack_minmax(cpg_thresholds)
-        if use_other_c_as_background and smf_modality != 'deaminase' and "CpG_to_other_C_mod_ratio" in filtered.obs.columns:
+        if (
+            use_other_c_as_background
+            and smf_modality != "deaminase"
+            and "CpG_to_other_C_mod_ratio" in filtered.obs.columns
+        ):
             filtered = filtered[filtered.obs["CpG_to_other_C_mod_ratio"].astype(float) > 1]
         if lo is not None:
             s0 = filtered.n_obs
@@ -307,13 +367,20 @@ def filter_reads_on_modification_thresholds(
             s0 = filtered.n_obs
             filtered = filtered[filtered.obs["Fraction_CpG_site_modified"].astype(float) <= hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max CpG fraction {hi}")
-        if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_CpG_site_in_read_vs_reference" in filtered.obs.columns):
+        if (min_valid_fraction_positions_in_read_vs_ref is not None) and (
+            "Valid_CpG_site_in_read_vs_reference" in filtered.obs.columns
+        ):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_CpG_site_in_read_vs_reference"].astype(float) >= float(min_valid_fraction_positions_in_read_vs_ref)]
-            print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid CpG site fraction vs ref")
+            filtered = filtered[
+                filtered.obs["Valid_CpG_site_in_read_vs_reference"].astype(float)
+                >= float(min_valid_fraction_positions_in_read_vs_ref)
+            ]
+            print(
+                f"Removed {s0 - filtered.n_obs} reads with insufficient valid CpG site fraction vs ref"
+            )
 
     # any C thresholds
-    if any_c_thresholds and 'C' in mod_target_bases:
+    if any_c_thresholds and "C" in mod_target_bases:
         lo, hi = _unpack_minmax(any_c_thresholds)
         if lo is not None:
             s0 = filtered.n_obs
@@ -323,13 +390,20 @@ def filter_reads_on_modification_thresholds(
             s0 = filtered.n_obs
             filtered = filtered[filtered.obs["Fraction_C_site_modified"].astype(float) <= hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max any-C fraction {hi}")
-        if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_C_site_in_read_vs_reference" in filtered.obs.columns):
+        if (min_valid_fraction_positions_in_read_vs_ref is not None) and (
+            "Valid_C_site_in_read_vs_reference" in filtered.obs.columns
+        ):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_C_site_in_read_vs_reference"].astype(float) >= float(min_valid_fraction_positions_in_read_vs_ref)]
-            print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid any-C site fraction vs ref")
+            filtered = filtered[
+                filtered.obs["Valid_C_site_in_read_vs_reference"].astype(float)
+                >= float(min_valid_fraction_positions_in_read_vs_ref)
+            ]
+            print(
+                f"Removed {s0 - filtered.n_obs} reads with insufficient valid any-C site fraction vs ref"
+            )
 
     # A thresholds
-    if a_thresholds and 'A' in mod_target_bases:
+    if a_thresholds and "A" in mod_target_bases:
         lo, hi = _unpack_minmax(a_thresholds)
         if lo is not None:
             s0 = filtered.n_obs
@@ -339,10 +413,17 @@ def filter_reads_on_modification_thresholds(
             s0 = filtered.n_obs
             filtered = filtered[filtered.obs["Fraction_A_site_modified"].astype(float) <= hi]
             print(f"Removed {s0 - filtered.n_obs} reads above max A fraction {hi}")
-        if (min_valid_fraction_positions_in_read_vs_ref is not None) and ("Valid_A_site_in_read_vs_reference" in filtered.obs.columns):
+        if (min_valid_fraction_positions_in_read_vs_ref is not None) and (
+            "Valid_A_site_in_read_vs_reference" in filtered.obs.columns
+        ):
             s0 = filtered.n_obs
-            filtered = filtered[filtered.obs["Valid_A_site_in_read_vs_reference"].astype(float) >= float(min_valid_fraction_positions_in_read_vs_ref)]
-            print(f"Removed {s0 - filtered.n_obs} reads with insufficient valid A site fraction vs ref")
+            filtered = filtered[
+                filtered.obs["Valid_A_site_in_read_vs_reference"].astype(float)
+                >= float(min_valid_fraction_positions_in_read_vs_ref)
+            ]
+            print(
+                f"Removed {s0 - filtered.n_obs} reads with insufficient valid A site fraction vs ref"
+            )
 
     filtered = filtered.copy()
 

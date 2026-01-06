@@ -1,4 +1,12 @@
-def calculate_umap(adata, layer='nan_half', var_filters=None, n_pcs=15, knn_neighbors=100, overwrite=True, threads=8):
+def calculate_umap(
+    adata,
+    layer="nan_half",
+    var_filters=None,
+    n_pcs=15,
+    knn_neighbors=100,
+    overwrite=True,
+    threads=8,
+):
     import scanpy as sc
     import numpy as np
     import os
@@ -10,7 +18,9 @@ def calculate_umap(adata, layer='nan_half', var_filters=None, n_pcs=15, knn_neig
     if var_filters:
         subset_mask = np.logical_or.reduce([adata.var[f].values for f in var_filters])
         adata_subset = adata[:, subset_mask].copy()
-        print(f"Subsetting adata: Retained {adata_subset.shape[1]} features based on filters {var_filters}")
+        print(
+            f"Subsetting adata: Retained {adata_subset.shape[1]} features based on filters {var_filters}"
+        )
     else:
         adata_subset = adata.copy()
         print("No var filters provided. Using all features.")
@@ -26,16 +36,18 @@ def calculate_umap(adata, layer='nan_half', var_filters=None, n_pcs=15, knn_neig
             else:
                 print("No NaNs detected.")
         else:
-            print("Sparse matrix detected; skipping NaN check (sparse formats typically do not store NaNs).")
+            print(
+                "Sparse matrix detected; skipping NaN check (sparse formats typically do not store NaNs)."
+            )
 
     # Step 3: PCA + neighbors + UMAP on subset
     if "X_umap" not in adata_subset.obsm or overwrite:
         n_pcs = min(adata_subset.shape[1], n_pcs)
         print(f"Running PCA with n_pcs={n_pcs}")
         sc.pp.pca(adata_subset, layer=layer)
-        print('Running neighborhood graph')
+        print("Running neighborhood graph")
         sc.pp.neighbors(adata_subset, use_rep="X_pca", n_pcs=n_pcs, n_neighbors=knn_neighbors)
-        print('Running UMAP')
+        print("Running UMAP")
         sc.tl.umap(adata_subset)
 
     # Step 4: Store results in original adata
@@ -44,7 +56,6 @@ def calculate_umap(adata, layer='nan_half', var_filters=None, n_pcs=15, knn_neig
     adata.obsp["distances"] = adata_subset.obsp["distances"]
     adata.obsp["connectivities"] = adata_subset.obsp["connectivities"]
     adata.uns["neighbors"] = adata_subset.uns["neighbors"]
-
 
     # Fix varm["PCs"] shape mismatch
     pc_matrix = np.zeros((adata.shape[1], adata_subset.varm["PCs"].shape[1]))
@@ -55,7 +66,6 @@ def calculate_umap(adata, layer='nan_half', var_filters=None, n_pcs=15, knn_neig
         pc_matrix = adata_subset.varm["PCs"]  # No subsetting case
 
     adata.varm["PCs"] = pc_matrix
-
 
     print(f"Stored: adata.obsm['X_pca'] and adata.obsm['X_umap']")
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Any, Iterable, Union
 
+
 def discover_input_files(
     input_data_path: Union[str, Path],
     bam_suffix: str = ".bam",
@@ -30,10 +31,21 @@ def discover_input_files(
     bam_suffix = bam_suffix.lower()
 
     # Sets of canonical extension keys we’ll compare against
-    pod5_exts  = {".pod5", ".p5"}
+    pod5_exts = {".pod5", ".p5"}
     fast5_exts = {".fast5", ".f5"}
-    fastq_exts = {".fastq", ".fq", ".fastq.gz", ".fq.gz", ".fastq.bz2", ".fq.bz2", ".fastq.xz", ".fq.xz", ".fastq.zst", ".fq.zst"}
-    h5ad_exts  = {".h5ad", ".h5"}
+    fastq_exts = {
+        ".fastq",
+        ".fq",
+        ".fastq.gz",
+        ".fq.gz",
+        ".fastq.bz2",
+        ".fq.bz2",
+        ".fastq.xz",
+        ".fq.xz",
+        ".fastq.zst",
+        ".fq.zst",
+    }
+    h5ad_exts = {".h5ad", ".h5"}
     compressed_exts = {".gz", ".bz2", ".xz", ".zst"}
 
     def ext_key(pp: Path) -> str:

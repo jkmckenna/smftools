@@ -1,9 +1,9 @@
 def subsample_adata(adata, obs_columns=None, max_samples=2000, random_seed=42):
     """
-    Subsamples an AnnData object so that each unique combination of categories 
+    Subsamples an AnnData object so that each unique combination of categories
     in the given `obs_columns` has at most `max_samples` observations.
     If `obs_columns` is None or empty, the function randomly subsamples the entire dataset.
-    
+
     Parameters:
         adata (AnnData): The AnnData object to subsample.
         obs_columns (list of str, optional): List of observation column names to group by.
@@ -23,7 +23,7 @@ def subsample_adata(adata, obs_columns=None, max_samples=2000, random_seed=42):
             sampled_indices = np.random.choice(adata.obs.index, max_samples, replace=False)
         else:
             sampled_indices = adata.obs.index  # Keep all if fewer than max_samples
-        
+
         return adata[sampled_indices].copy()
 
     sampled_indices = []
@@ -34,7 +34,7 @@ def subsample_adata(adata, obs_columns=None, max_samples=2000, random_seed=42):
     for _, row in unique_combinations.iterrows():
         # Build filter condition dynamically for multiple columns
         condition = (adata.obs[obs_columns] == row.values).all(axis=1)
-        
+
         # Get indices for the current category combination
         subset_indices = adata.obs[condition].index.to_numpy()
 

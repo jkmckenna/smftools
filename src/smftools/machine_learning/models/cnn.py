@@ -3,6 +3,7 @@ import torch.nn as nn
 from .base import BaseTorchModel
 import numpy as np
 
+
 class CNNClassifier(BaseTorchModel):
     def __init__(
         self,
@@ -15,7 +16,7 @@ class CNNClassifier(BaseTorchModel):
         use_pooling=False,
         dropout=0.2,
         gradcam_layer_idx=-1,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(**kwargs)
         self.name = "CNNClassifier"
@@ -30,7 +31,9 @@ class CNNClassifier(BaseTorchModel):
 
         # Build conv layers
         for out_channels, ksize in zip(conv_channels, kernel_sizes):
-            layers.append(nn.Conv1d(in_channels, out_channels, kernel_size=ksize, padding=ksize // 2))
+            layers.append(
+                nn.Conv1d(in_channels, out_channels, kernel_size=ksize, padding=ksize // 2)
+            )
             if use_batchnorm:
                 layers.append(nn.BatchNorm1d(out_channels))
             layers.append(nn.ReLU())
@@ -76,7 +79,7 @@ class CNNClassifier(BaseTorchModel):
         x = self.conv(x)
         x = x.view(x.size(0), -1)
         return self.fc(x)
-    
+
     def _register_gradcam_hooks(self):
         def forward_hook(module, input, output):
             self.gradcam_activations = output.detach()
@@ -97,15 +100,15 @@ class CNNClassifier(BaseTorchModel):
         self.eval()  # disable dropout etc.
 
         output = self.forward(x)  # shape (B, C) or (B, 1)
-        
+
         if class_idx is None:
             class_idx = output.argmax(dim=1)
-        
+
         if output.shape[1] == 1:
             target = output.view(-1)  # shape (B,)
         else:
             target = output[torch.arange(output.shape[0]), class_idx]
-        
+
         target.sum().backward(retain_graph=True)
 
         # restore training mode
@@ -114,16 +117,16 @@ class CNNClassifier(BaseTorchModel):
 
         # get activations and gradients (set these via forward hook!)
         activations = self.gradcam_activations  # (B, C, L)
-        gradients = self.gradcam_gradients      # (B, C, L)
+        gradients = self.gradcam_gradients  # (B, C, L)
 
         weights = gradients.mean(dim=2, keepdim=True)  # (B, C, 1)
-        cam = (weights * activations).sum(dim=1)       # (B, L)
+        cam = (weights * activations).sum(dim=1)  # (B, L)
 
         cam = torch.relu(cam)
         cam = cam / (cam.max(dim=1, keepdim=True).values + 1e-6)
 
         return cam
-    
+
     def apply_gradcam_to_adata(self, dataloader, adata, obsm_key="gradcam", device="cpu"):
         self.to(device)
         self.eval()

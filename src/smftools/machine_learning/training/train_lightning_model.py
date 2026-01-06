@@ -4,6 +4,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from ..data import AnnDataModule
 from ..models import TorchClassifierWrapper
 
+
 def train_lightning_model(
     model,
     datamodule,
@@ -12,7 +13,7 @@ def train_lightning_model(
     monitor_metric="val_loss",
     checkpoint_path=None,
     evaluate_test=True,
-    devices=1
+    devices=1,
 ):
     """
     Takes a PyTorch Lightning Model and a Lightning DataLoader module to define a Lightning Trainer.
@@ -39,13 +40,15 @@ def train_lightning_model(
         EarlyStopping(monitor=monitor_metric, patience=patience, mode="min"),
     ]
     if checkpoint_path:
-        callbacks.append(ModelCheckpoint(
-            dirpath=checkpoint_path,
-            filename="{epoch}-{val_loss:.4f}",
-            monitor=monitor_metric,
-            save_top_k=1,
-            mode="min",
-        ))
+        callbacks.append(
+            ModelCheckpoint(
+                dirpath=checkpoint_path,
+                filename="{epoch}-{val_loss:.4f}",
+                monitor=monitor_metric,
+                save_top_k=1,
+                mode="min",
+            )
+        )
 
     # Trainer setup
     trainer = Trainer(
@@ -54,7 +57,7 @@ def train_lightning_model(
         accelerator=accelerator,
         devices=devices,
         log_every_n_steps=10,
-        enable_progress_bar=False
+        enable_progress_bar=False,
     )
 
     # Fit model with trainer
@@ -63,7 +66,7 @@ def train_lightning_model(
     # Test model (if applicable)
     if evaluate_test and hasattr(datamodule, "test_dataloader"):
         trainer.test(model, datamodule=datamodule)
-    
+
     # Return best checkpoint path
     best_ckpt = None
     for cb in callbacks:
@@ -71,6 +74,7 @@ def train_lightning_model(
             best_ckpt = cb.best_model_path
 
     return trainer, best_ckpt
+
 
 def run_sliding_window_lightning_training(
     adata,
@@ -86,13 +90,13 @@ def run_sliding_window_lightning_training(
     stride,
     max_epochs=30,
     patience=5,
-    enforce_eval_balance: bool=False,
-    target_eval_freq: float=0.3,
-    max_eval_positive: int=None
+    enforce_eval_balance: bool = False,
+    target_eval_freq: float = 0.3,
+    max_eval_positive: int = None,
 ):
     input_len = adata.shape[1]
     results = {}
-    
+
     for start in range(0, input_len - window_size + 1, stride):
         center_idx = start + window_size // 2
         center_varname = adata.var_names[center_idx]
@@ -106,18 +110,22 @@ def run_sliding_window_lightning_training(
             label_col=label_col,
             batch_size=64,
             window_start=start,
-            window_size=window_size
+            window_size=window_size,
         )
         datamodule.setup()
 
         # Build model for this window
         model = model_class(window_size, num_classes)
         wrapper = TorchClassifierWrapper(
-            model, label_col=label_col, num_classes=num_classes,
+            model,
+            label_col=label_col,
+            num_classes=num_classes,
             class_names=class_names,
             class_weights=class_weights,
-            focus_class=focus_class, enforce_eval_balance=enforce_eval_balance,
-            target_eval_freq=target_eval_freq, max_eval_positive=max_eval_positive
+            focus_class=focus_class,
+            enforce_eval_balance=enforce_eval_balance,
+            target_eval_freq=target_eval_freq,
+            max_eval_positive=max_eval_positive,
         )
 
         # Train model
@@ -129,7 +137,7 @@ def run_sliding_window_lightning_training(
             "model": wrapper,
             "trainer": trainer,
             "checkpoint": ckpt,
-            "metrics": trainer.callback_metrics
+            "metrics": trainer.callback_metrics,
         }
-    
+
     return results

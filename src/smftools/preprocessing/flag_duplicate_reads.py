@@ -19,6 +19,7 @@ from ..readwrite import make_dirs
 try:
     from scipy.cluster import hierarchy as sch
     from scipy.spatial.distance import pdist, squareform
+
     SCIPY_AVAILABLE = True
 except Exception:
     sch = None
@@ -31,6 +32,7 @@ try:
     from sklearn.cluster import KMeans, DBSCAN
     from sklearn.mixture import GaussianMixture
     from sklearn.metrics import silhouette_score
+
     SKLEARN_AVAILABLE = True
 except Exception:
     PCA = None
@@ -55,7 +57,7 @@ def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
         else:
             # present in both: compare quickly (best-effort)
             try:
-                equal = (out[k] == v)
+                equal = out[k] == v
             except Exception:
                 equal = False
             if equal:
@@ -69,6 +71,7 @@ def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
                 out[f"orig_uns__{k}"] = copy.deepcopy(v)
     return out
 
+
 def flag_duplicate_reads(
     adata,
     var_filters_sets,
@@ -81,7 +84,7 @@ def flag_duplicate_reads(
     uns_filtered_flag: str = "read_duplicates_removed",
     bypass: bool = False,
     force_redo: bool = False,
-    keep_best_metric: Optional[str] = 'read_quality',
+    keep_best_metric: Optional[str] = "read_quality",
     keep_best_higher: bool = True,
     window_size: int = 50,
     min_overlap_positions: int = 20,
@@ -118,6 +121,7 @@ def flag_duplicate_reads(
     try:
         from scipy.cluster import hierarchy as sch
         from scipy.spatial.distance import pdist
+
         SCIPY_AVAILABLE = True
     except Exception:
         sch = None
@@ -125,6 +129,7 @@ def flag_duplicate_reads(
         SCIPY_AVAILABLE = False
     try:
         from sklearn.decomposition import PCA
+
         SKLEARN_AVAILABLE = True
     except Exception:
         PCA = None
@@ -192,7 +197,7 @@ def flag_duplicate_reads(
 
     # -------- early exits --------
     already = bool(adata.uns.get(uns_flag, False))
-    if (already and not force_redo):
+    if already and not force_redo:
         if "is_duplicate" in adata.obs.columns:
             adata_unique = adata[adata.obs["is_duplicate"] == False].copy()
             return adata_unique, adata
@@ -208,13 +213,16 @@ def flag_duplicate_reads(
     class UnionFind:
         def __init__(self, size):
             self.parent = list(range(size))
+
         def find(self, x):
             while self.parent[x] != x:
                 self.parent[x] = self.parent[self.parent[x]]
                 x = self.parent[x]
             return x
+
         def union(self, x, y):
-            rx = self.find(x); ry = self.find(y)
+            rx = self.find(x)
+            ry = self.find(y)
             if rx != ry:
                 self.parent[ry] = rx
 
@@ -274,7 +282,9 @@ def flag_duplicate_reads(
             hierarchical_found_dists = []
 
             # Lexicographic windowed pass function
-            def cluster_pass(X_tensor_local, reverse=False, window=int(window_size), record_distances=False):
+            def cluster_pass(
+                X_tensor_local, reverse=False, window=int(window_size), record_distances=False
+            ):
                 N_local = X_tensor_local.shape[0]
                 X_sortable = X_tensor_local.clone().nan_to_num(-1.0)
                 sort_keys = [tuple(row.numpy().tolist()) for row in X_sortable]
@@ -295,10 +305,16 @@ def flag_duplicate_reads(
                     if enough_overlap.any():
                         diffs = (row_i_exp != block_rows) & valid_mask
                         hamming_counts = diffs.sum(dim=1).float()
-                        hamming_dists = torch.where(valid_counts > 0, hamming_counts / valid_counts, torch.tensor(float("nan")))
+                        hamming_dists = torch.where(
+                            valid_counts > 0,
+                            hamming_counts / valid_counts,
+                            torch.tensor(float("nan")),
+                        )
                         # record distances (legacy list of all local comparisons)
                         hamming_np = hamming_dists.cpu().numpy().tolist()
-                        local_hamming_dists.extend([float(x) for x in hamming_np if (not np.isnan(x))])
+                        local_hamming_dists.extend(
+                            [float(x) for x in hamming_np if (not np.isnan(x))]
+                        )
                         matches = (hamming_dists < distance_threshold) & (enough_overlap)
                         for offset_local, m in enumerate(matches):
                             if m:
@@ -310,10 +326,19 @@ def flag_duplicate_reads(
                             next_local_idx = i + 1
                             if next_local_idx < len(sorted_X):
                                 next_global = sorted_idx[next_local_idx]
-                                vm_pair = (~torch.isnan(row_i)) & (~torch.isnan(sorted_X[next_local_idx]))
+                                vm_pair = (~torch.isnan(row_i)) & (
+                                    ~torch.isnan(sorted_X[next_local_idx])
+                                )
                                 vc = vm_pair.sum().item()
                                 if vc >= min_overlap_positions:
-                                    d = float(((row_i[vm_pair] != sorted_X[next_local_idx][vm_pair]).sum().item()) / vc)
+                                    d = float(
+                                        (
+                                            (row_i[vm_pair] != sorted_X[next_local_idx][vm_pair])
+                                            .sum()
+                                            .item()
+                                        )
+                                        / vc
+                                    )
                                     if reverse:
                                         rev_hamming_to_prev[next_global] = d
                                     else:
@@ -331,7 +356,9 @@ def flag_duplicate_reads(
             if len(rev_idx_map) > 0:
                 reduced_tensor = X_tensor[rev_idx_map]
                 pairs_rev_local = cluster_pass(reduced_tensor, reverse=True, record_distances=True)
-                remapped_rev_pairs = [(int(rev_idx_map[i]), int(rev_idx_map[j])) for (i, j) in pairs_rev_local]
+                remapped_rev_pairs = [
+                    (int(rev_idx_map[i]), int(rev_idx_map[j])) for (i, j) in pairs_rev_local
+                ]
             else:
                 remapped_rev_pairs = []
 
@@ -391,8 +418,10 @@ def flag_duplicate_reads(
                 a = fwd_hamming_to_next[i]
                 b = rev_hamming_to_prev[i]
                 vals = []
-                if not np.isnan(a): vals.append(a)
-                if not np.isnan(b): vals.append(b)
+                if not np.isnan(a):
+                    vals.append(a)
+                if not np.isnan(b):
+                    vals.append(b)
                 if vals:
                     min_pair[i] = float(np.nanmin(vals))
 
@@ -420,7 +449,12 @@ def flag_duplicate_reads(
                         if n_comp <= 0:
                             reps_for_clustering = reps_arr
                         else:
-                            pca = PCA(n_components=n_comp, random_state=int(random_state), svd_solver="auto", copy=True)
+                            pca = PCA(
+                                n_components=n_comp,
+                                random_state=int(random_state),
+                                svd_solver="auto",
+                                copy=True,
+                            )
                             reps_for_clustering = pca.fit_transform(reps_arr)
                     else:
                         reps_for_clustering = reps_arr
@@ -431,7 +465,9 @@ def flag_duplicate_reads(
                         Z = sch.linkage(pdist_vec, method=hierarchical_linkage)
                         leaves = sch.leaves_list(Z)
                     except Exception as e:
-                        warnings.warn(f"hierarchical pass failed: {e}; skipping hierarchical stage.")
+                        warnings.warn(
+                            f"hierarchical pass failed: {e}; skipping hierarchical stage."
+                        )
                         leaves = np.arange(len(rep_global_indices), dtype=int)
 
                     # windowed hamming comparisons across ordered reps and union
@@ -460,7 +496,9 @@ def flag_duplicate_reads(
                 merged_cluster_after[i] = uf.find(i)
             unique_final = np.unique(merged_cluster_after)
             id_map_final = {old: new for new, old in enumerate(sorted(unique_final.tolist()))}
-            merged_cluster_mapped_final = np.array([id_map_final[int(x)] for x in merged_cluster_after], dtype=int)
+            merged_cluster_mapped_final = np.array(
+                [id_map_final[int(x)] for x in merged_cluster_after], dtype=int
+            )
 
             # compute final cluster members and choose final keeper per final cluster (demux-aware)
             cluster_sizes_final = np.zeros_like(merged_cluster_mapped_final)
@@ -500,7 +538,7 @@ def flag_duplicate_reads(
                             sequence_is_duplicate[m] = True
 
             # propagate hierarchical distances into hierarchical_min_pair for all cluster members
-            for (i_g, j_g, d) in hierarchical_pairs:
+            for i_g, j_g, d in hierarchical_pairs:
                 c_i = merged_cluster_mapped_final[int(i_g)]
                 c_j = merged_cluster_mapped_final[int(j_g)]
                 members_i = cluster_members_map.get(c_i, [int(i_g)])
@@ -534,13 +572,17 @@ def flag_duplicate_reads(
 
             adata_processed_list.append(adata_subset)
 
-            histograms.append({
-                "sample": sample,
-                "reference": ref,
-                "distances": local_hamming_dists,
-                "cluster_counts": [int(x) for x in np.unique(cluster_sizes_final[cluster_sizes_final > 0])],
-                "hierarchical_pairs": hierarchical_found_dists,
-            })
+            histograms.append(
+                {
+                    "sample": sample,
+                    "reference": ref,
+                    "distances": local_hamming_dists,
+                    "cluster_counts": [
+                        int(x) for x in np.unique(cluster_sizes_final[cluster_sizes_final > 0])
+                    ],
+                    "hierarchical_pairs": hierarchical_found_dists,
+                }
+            )
 
     # Merge annotated subsets back together BEFORE plotting
     _original_uns = copy.deepcopy(adata.uns)
@@ -548,6 +590,7 @@ def flag_duplicate_reads(
         return adata.copy(), adata.copy()
 
     adata_full = ad.concat(adata_processed_list, merge="same", join="outer", index_unique=None)
+
     # preserve uns (prefer original on conflicts)
     def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
         out = copy.deepcopy(new_uns) if new_uns is not None else {}
@@ -556,7 +599,7 @@ def flag_duplicate_reads(
                 out[k] = copy.deepcopy(v)
             else:
                 try:
-                    equal = (out[k] == v)
+                    equal = out[k] == v
                 except Exception:
                     equal = False
                 if equal:
@@ -566,45 +609,73 @@ def flag_duplicate_reads(
                 else:
                     out[f"orig_uns__{k}"] = copy.deepcopy(v)
         return out
+
     adata_full.uns = merge_uns_preserve(_original_uns, adata_full.uns, prefer="orig")
 
     # Ensure expected numeric columns exist (create if missing)
-    for col in ("fwd_hamming_to_next", "rev_hamming_to_prev", "sequence__min_hamming_to_pair", "sequence__hier_hamming_to_pair"):
+    for col in (
+        "fwd_hamming_to_next",
+        "rev_hamming_to_prev",
+        "sequence__min_hamming_to_pair",
+        "sequence__hier_hamming_to_pair",
+    ):
         if col not in adata_full.obs.columns:
             adata_full.obs[col] = np.nan
 
     # histograms
-    hist_outs = os.path.join(output_directory, "read_pair_hamming_distance_histograms") if output_directory else None
+    hist_outs = (
+        os.path.join(output_directory, "read_pair_hamming_distance_histograms")
+        if output_directory
+        else None
+    )
     if hist_outs:
         make_dirs([hist_outs])
-    plot_histogram_pages(histograms, 
-                         distance_threshold=distance_threshold, 
-                         adata=adata_full, 
-                         output_directory=hist_outs,
-                         distance_types=["min","fwd","rev","hier","lex_local"],
-                         sample_key=sample_col)
+    plot_histogram_pages(
+        histograms,
+        distance_threshold=distance_threshold,
+        adata=adata_full,
+        output_directory=hist_outs,
+        distance_types=["min", "fwd", "rev", "hier", "lex_local"],
+        sample_key=sample_col,
+    )
 
     # hamming vs metric scatter
-    scatter_outs = os.path.join(output_directory, "read_pair_hamming_distance_scatter_plots") if output_directory else None
+    scatter_outs = (
+        os.path.join(output_directory, "read_pair_hamming_distance_scatter_plots")
+        if output_directory
+        else None
+    )
     if scatter_outs:
         make_dirs([scatter_outs])
-    plot_hamming_vs_metric_pages(adata_full, 
-                                metric_keys=metric_keys, 
-                                output_dir=scatter_outs,
-                                hamming_col="sequence__min_hamming_to_pair",
-                                highlight_threshold=distance_threshold, 
-                                highlight_color="red",
-                                sample_col=sample_col)
+    plot_hamming_vs_metric_pages(
+        adata_full,
+        metric_keys=metric_keys,
+        output_dir=scatter_outs,
+        hamming_col="sequence__min_hamming_to_pair",
+        highlight_threshold=distance_threshold,
+        highlight_color="red",
+        sample_col=sample_col,
+    )
 
     # boolean columns from neighbor distances
-    fwd_vals = pd.to_numeric(adata_full.obs.get("fwd_hamming_to_next", pd.Series(np.nan, index=adata_full.obs.index)), errors="coerce")
-    rev_vals = pd.to_numeric(adata_full.obs.get("rev_hamming_to_prev", pd.Series(np.nan, index=adata_full.obs.index)), errors="coerce")
+    fwd_vals = pd.to_numeric(
+        adata_full.obs.get("fwd_hamming_to_next", pd.Series(np.nan, index=adata_full.obs.index)),
+        errors="coerce",
+    )
+    rev_vals = pd.to_numeric(
+        adata_full.obs.get("rev_hamming_to_prev", pd.Series(np.nan, index=adata_full.obs.index)),
+        errors="coerce",
+    )
     is_dup_dist = (fwd_vals < float(distance_threshold)) | (rev_vals < float(distance_threshold))
     is_dup_dist = is_dup_dist.fillna(False).astype(bool)
     adata_full.obs["is_duplicate_distance"] = is_dup_dist.values
 
     # combine with sequence flag and any clustering flags
-    seq_dup = adata_full.obs["sequence__is_duplicate"].astype(bool) if "sequence__is_duplicate" in adata_full.obs.columns else pd.Series(False, index=adata_full.obs.index)
+    seq_dup = (
+        adata_full.obs["sequence__is_duplicate"].astype(bool)
+        if "sequence__is_duplicate" in adata_full.obs.columns
+        else pd.Series(False, index=adata_full.obs.index)
+    )
     cluster_cols = [c for c in adata_full.obs.columns if c.startswith("hamming_cluster__")]
     if cluster_cols:
         cl_mask = pd.Series(False, index=adata_full.obs.index)
@@ -617,7 +688,11 @@ def flag_duplicate_reads(
     else:
         adata_full.obs["is_duplicate_clustering"] = False
 
-    final_dup = seq_dup | adata_full.obs["is_duplicate_distance"].astype(bool) | adata_full.obs["is_duplicate_clustering"].astype(bool)
+    final_dup = (
+        seq_dup
+        | adata_full.obs["is_duplicate_distance"].astype(bool)
+        | adata_full.obs["is_duplicate_clustering"].astype(bool)
+    )
     adata_full.obs["is_duplicate"] = final_dup.values
 
     # -------- Final keeper enforcement on adata_full (demux-aware) --------
@@ -628,7 +703,9 @@ def flag_duplicate_reads(
     name_to_pos = {name: i for i, name in enumerate(adata_full.obs.index)}
     obs_index_full = list(adata_full.obs.index)
 
-    lex_col = "sequence__lex_is_keeper" if "sequence__lex_is_keeper" in adata_full.obs.columns else None
+    lex_col = (
+        "sequence__lex_is_keeper" if "sequence__lex_is_keeper" in adata_full.obs.columns else None
+    )
 
     for cid, sub in adata_full.obs.groupby("sequence__merged_cluster_id", dropna=False):
         members_names = sub.index.to_list()
@@ -673,6 +750,7 @@ def flag_duplicate_reads(
         if bool(row.get("sequence__is_duplicate", False)):
             reasons.append("sequence_cluster")
         return ";".join(reasons) if reasons else ""
+
     try:
         reasons = adata_full.obs.apply(_dup_reason_row, axis=1)
         adata_full.obs["is_duplicate_reason"] = reasons.values
@@ -692,6 +770,7 @@ def flag_duplicate_reads(
 # ---------------------------
 # Plot helpers (use adata_full as input)
 # ---------------------------
+
 
 def plot_histogram_pages(
     histograms,
@@ -768,7 +847,9 @@ def plot_histogram_pages(
                 if "rev" in distance_types and "rev_hamming_to_prev" in group.columns:
                     grid[(s, r)]["rev"].extend(clean_array(group["rev_hamming_to_prev"].to_numpy()))
                 if "hier" in distance_types and "sequence__hier_hamming_to_pair" in group.columns:
-                    grid[(s, r)]["hier"].extend(clean_array(group["sequence__hier_hamming_to_pair"].to_numpy()))
+                    grid[(s, r)]["hier"].extend(
+                        clean_array(group["sequence__hier_hamming_to_pair"].to_numpy())
+                    )
         else:
             for (s, r), group in grouped:
                 if "min" in distance_types and distance_key in group.columns:
@@ -778,7 +859,9 @@ def plot_histogram_pages(
                 if "rev" in distance_types and "rev_hamming_to_prev" in group.columns:
                     grid[(s, r)]["rev"].extend(clean_array(group["rev_hamming_to_prev"].to_numpy()))
                 if "hier" in distance_types and "sequence__hier_hamming_to_pair" in group.columns:
-                    grid[(s, r)]["hier"].extend(clean_array(group["sequence__hier_hamming_to_pair"].to_numpy()))
+                    grid[(s, r)]["hier"].extend(
+                        clean_array(group["sequence__hier_hamming_to_pair"].to_numpy())
+                    )
 
     # legacy histograms fallback
     if histograms:
@@ -814,9 +897,17 @@ def plot_histogram_pages(
 
     # counts (for labels)
     if use_adata:
-        counts = {(s, r): int(((adata.obs[sample_key] == s) & (adata.obs[ref_key] == r)).sum()) for s in samples for r in references}
+        counts = {
+            (s, r): int(((adata.obs[sample_key] == s) & (adata.obs[ref_key] == r)).sum())
+            for s in samples
+            for r in references
+        }
     else:
-        counts = {(s, r): sum(len(grid[(s, r)][dt]) for dt in distance_types) for s in samples for r in references}
+        counts = {
+            (s, r): sum(len(grid[(s, r)][dt]) for dt in distance_types)
+            for s in samples
+            for r in references
+        }
 
     distance_pages = []
     cluster_size_pages = []
@@ -834,7 +925,9 @@ def plot_histogram_pages(
         # Distance histogram page
         fig_w = figsize_per_cell[0] * ncols
         fig_h = figsize_per_cell[1] * nrows
-        fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False)
+        fig, axes = plt.subplots(
+            nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False
+        )
 
         for r_idx, sample_name in enumerate(chunk):
             for c_idx, ref_name in enumerate(references):
@@ -850,17 +943,37 @@ def plot_histogram_pages(
                         vals = vals[(vals >= 0.0) & (vals <= ref_vmax)]
                     if vals.size > 0:
                         any_data = True
-                        ax.hist(vals, bins=bins_edges, alpha=0.5, label=dtype, density=False, stacked=False,
-                                color=dtype_colors.get(dtype, None))
+                        ax.hist(
+                            vals,
+                            bins=bins_edges,
+                            alpha=0.5,
+                            label=dtype,
+                            density=False,
+                            stacked=False,
+                            color=dtype_colors.get(dtype, None),
+                        )
                 if not any_data:
-                    ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes, fontsize=10, color="gray")
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "No data",
+                        ha="center",
+                        va="center",
+                        transform=ax.transAxes,
+                        fontsize=10,
+                        color="gray",
+                    )
                 # threshold line (make sure it is within axis)
                 ax.axvline(distance_threshold, color="red", linestyle="--", linewidth=1)
 
                 if r_idx == 0:
                     ax.set_title(str(ref_name), fontsize=10)
                 if c_idx == 0:
-                    total_reads = sum(counts.get((sample_name, ref), 0) for ref in references) if not use_adata else int((adata.obs[sample_key] == sample_name).sum())
+                    total_reads = (
+                        sum(counts.get((sample_name, ref), 0) for ref in references)
+                        if not use_adata
+                        else int((adata.obs[sample_key] == sample_name).sum())
+                    )
                     ax.set_ylabel(f"{sample_name}\n(n={total_reads})", fontsize=9)
                 if r_idx == nrows - 1:
                     ax.set_xlabel("Hamming Distance", fontsize=9)
@@ -872,12 +985,16 @@ def plot_histogram_pages(
                 if r_idx == 0 and c_idx == 0:
                     ax.legend(fontsize=7, loc="upper right")
 
-        fig.suptitle(f"Hamming distance histograms (rows=samples, cols=references) — page {page+1}/{n_pages}", fontsize=12, y=0.995)
+        fig.suptitle(
+            f"Hamming distance histograms (rows=samples, cols=references) — page {page + 1}/{n_pages}",
+            fontsize=12,
+            y=0.995,
+        )
         fig.tight_layout(rect=[0, 0, 1, 0.96])
 
         if output_directory:
             os.makedirs(output_directory, exist_ok=True)
-            fname = os.path.join(output_directory, f"hamming_histograms_page_{page+1}.png")
+            fname = os.path.join(output_directory, f"hamming_histograms_page_{page + 1}.png")
             plt.savefig(fname, bbox_inches="tight")
             distance_pages.append(fname)
         else:
@@ -887,22 +1004,43 @@ def plot_histogram_pages(
         # Cluster-size histogram page (unchanged except it uses adata-derived sizes per cluster if available)
         fig_w = figsize_per_cell[0] * ncols
         fig_h = figsize_per_cell[1] * nrows
-        fig2, axes2 = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False)
+        fig2, axes2 = plt.subplots(
+            nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False
+        )
 
         for r_idx, sample_name in enumerate(chunk):
             for c_idx, ref_name in enumerate(references):
                 ax = axes2[r_idx][c_idx]
                 sizes = []
-                if use_adata and ("sequence__merged_cluster_id" in adata.obs.columns and "sequence__cluster_size" in adata.obs.columns):
-                    sub = adata.obs[(adata.obs[sample_key] == sample_name) & (adata.obs[ref_key] == ref_name)]
+                if use_adata and (
+                    "sequence__merged_cluster_id" in adata.obs.columns
+                    and "sequence__cluster_size" in adata.obs.columns
+                ):
+                    sub = adata.obs[
+                        (adata.obs[sample_key] == sample_name) & (adata.obs[ref_key] == ref_name)
+                    ]
                     if not sub.empty:
                         try:
-                            grp = sub.groupby("sequence__merged_cluster_id")["sequence__cluster_size"].first()
-                            sizes = [int(x) for x in grp.to_numpy().tolist() if (pd.notna(x) and np.isfinite(x))]
+                            grp = sub.groupby("sequence__merged_cluster_id")[
+                                "sequence__cluster_size"
+                            ].first()
+                            sizes = [
+                                int(x)
+                                for x in grp.to_numpy().tolist()
+                                if (pd.notna(x) and np.isfinite(x))
+                            ]
                         except Exception:
                             try:
-                                unique_pairs = sub[["sequence__merged_cluster_id", "sequence__cluster_size"]].drop_duplicates()
-                                sizes = [int(x) for x in unique_pairs["sequence__cluster_size"].dropna().astype(int).tolist()]
+                                unique_pairs = sub[
+                                    ["sequence__merged_cluster_id", "sequence__cluster_size"]
+                                ].drop_duplicates()
+                                sizes = [
+                                    int(x)
+                                    for x in unique_pairs["sequence__cluster_size"]
+                                    .dropna()
+                                    .astype(int)
+                                    .tolist()
+                                ]
                             except Exception:
                                 sizes = []
                 if (not sizes) and histograms:
@@ -916,23 +1054,38 @@ def plot_histogram_pages(
                     ax.set_xlabel("Cluster size")
                     ax.set_ylabel("Count")
                 else:
-                    ax.text(0.5, 0.5, "No clusters", ha="center", va="center", transform=ax.transAxes, fontsize=10, color="gray")
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "No clusters",
+                        ha="center",
+                        va="center",
+                        transform=ax.transAxes,
+                        fontsize=10,
+                        color="gray",
+                    )
 
                 if r_idx == 0:
                     ax.set_title(str(ref_name), fontsize=10)
                 if c_idx == 0:
-                    total_reads = sum(counts.get((sample_name, ref), 0) for ref in references) if not use_adata else int((adata.obs[sample_key] == sample_name).sum())
+                    total_reads = (
+                        sum(counts.get((sample_name, ref), 0) for ref in references)
+                        if not use_adata
+                        else int((adata.obs[sample_key] == sample_name).sum())
+                    )
                     ax.set_ylabel(f"{sample_name}\n(n={total_reads})", fontsize=9)
                 if r_idx != nrows - 1:
                     ax.set_xticklabels([])
 
                 ax.grid(True, alpha=0.25)
 
-        fig2.suptitle(f"Union-find cluster size histograms — page {page+1}/{n_pages}", fontsize=12, y=0.995)
+        fig2.suptitle(
+            f"Union-find cluster size histograms — page {page + 1}/{n_pages}", fontsize=12, y=0.995
+        )
         fig2.tight_layout(rect=[0, 0, 1, 0.96])
 
         if output_directory:
-            fname2 = os.path.join(output_directory, f"cluster_size_histograms_page_{page+1}.png")
+            fname2 = os.path.join(output_directory, f"cluster_size_histograms_page_{page + 1}.png")
             plt.savefig(fname2, bbox_inches="tight")
             cluster_size_pages.append(fname2)
         else:
@@ -984,7 +1137,9 @@ def plot_hamming_vs_metric_pages(
 
     obs = adata.obs
     if sample_col not in obs.columns or ref_col not in obs.columns:
-        raise ValueError(f"sample_col '{sample_col}' and ref_col '{ref_col}' must exist in adata.obs")
+        raise ValueError(
+            f"sample_col '{sample_col}' and ref_col '{ref_col}' must exist in adata.obs"
+        )
 
     # canonicalize samples and refs
     if samples is None:
@@ -1025,14 +1180,24 @@ def plot_hamming_vs_metric_pages(
             sY = pd.to_numeric(obs[hamming_col], errors="coerce") if hamming_present else None
 
             if (sX is not None) and (sY is not None):
-                valid_both = sX.notna() & sY.notna() & np.isfinite(sX.values) & np.isfinite(sY.values)
+                valid_both = (
+                    sX.notna() & sY.notna() & np.isfinite(sX.values) & np.isfinite(sY.values)
+                )
                 if valid_both.any():
                     xvals = sX[valid_both].to_numpy(dtype=float)
                     yvals = sY[valid_both].to_numpy(dtype=float)
                     xmin, xmax = float(np.nanmin(xvals)), float(np.nanmax(xvals))
                     ymin, ymax = float(np.nanmin(yvals)), float(np.nanmax(yvals))
-                    xpad = max(1e-6, (xmax - xmin) * 0.05) if xmax > xmin else max(1e-3, abs(xmin) * 0.05 + 1e-3)
-                    ypad = max(1e-6, (ymax - ymin) * 0.05) if ymax > ymin else max(1e-3, abs(ymin) * 0.05 + 1e-3)
+                    xpad = (
+                        max(1e-6, (xmax - xmin) * 0.05)
+                        if xmax > xmin
+                        else max(1e-3, abs(xmin) * 0.05 + 1e-3)
+                    )
+                    ypad = (
+                        max(1e-6, (ymax - ymin) * 0.05)
+                        if ymax > ymin
+                        else max(1e-3, abs(ymin) * 0.05 + 1e-3)
+                    )
                     global_xlim = (xmin - xpad, xmax + xpad)
                     global_ylim = (ymin - ypad, ymax + ypad)
                 else:
@@ -1040,23 +1205,39 @@ def plot_hamming_vs_metric_pages(
                     sY_finite = sY[np.isfinite(sY)]
                     if sX_finite.size > 0:
                         xmin, xmax = float(np.nanmin(sX_finite)), float(np.nanmax(sX_finite))
-                        xpad = max(1e-6, (xmax - xmin) * 0.05) if xmax > xmin else max(1e-3, abs(xmin) * 0.05 + 1e-3)
+                        xpad = (
+                            max(1e-6, (xmax - xmin) * 0.05)
+                            if xmax > xmin
+                            else max(1e-3, abs(xmin) * 0.05 + 1e-3)
+                        )
                         global_xlim = (xmin - xpad, xmax + xpad)
                     if sY_finite.size > 0:
                         ymin, ymax = float(np.nanmin(sY_finite)), float(np.nanmax(sY_finite))
-                        ypad = max(1e-6, (ymax - ymin) * 0.05) if ymax > ymin else max(1e-3, abs(ymin) * 0.05 + 1e-3)
+                        ypad = (
+                            max(1e-6, (ymax - ymin) * 0.05)
+                            if ymax > ymin
+                            else max(1e-3, abs(ymin) * 0.05 + 1e-3)
+                        )
                         global_ylim = (ymin - ypad, ymax + ypad)
             elif sX is not None:
                 sX_finite = sX[np.isfinite(sX)]
                 if sX_finite.size > 0:
                     xmin, xmax = float(np.nanmin(sX_finite)), float(np.nanmax(sX_finite))
-                    xpad = max(1e-6, (xmax - xmin) * 0.05) if xmax > xmin else max(1e-3, abs(xmin) * 0.05 + 1e-3)
+                    xpad = (
+                        max(1e-6, (xmax - xmin) * 0.05)
+                        if xmax > xmin
+                        else max(1e-3, abs(xmin) * 0.05 + 1e-3)
+                    )
                     global_xlim = (xmin - xpad, xmax + xpad)
             elif sY is not None:
                 sY_finite = sY[np.isfinite(sY)]
                 if sY_finite.size > 0:
                     ymin, ymax = float(np.nanmin(sY_finite)), float(np.nanmax(sY_finite))
-                    ypad = max(1e-6, (ymax - ymin) * 0.05) if ymax > ymin else max(1e-3, abs(ymin) * 0.05 + 1e-3)
+                    ypad = (
+                        max(1e-6, (ymax - ymin) * 0.05)
+                        if ymax > ymin
+                        else max(1e-3, abs(ymin) * 0.05 + 1e-3)
+                    )
                     global_ylim = (ymin - ypad, ymax + ypad)
 
         # pagination
@@ -1066,15 +1247,19 @@ def plot_hamming_vs_metric_pages(
             ncols = len(cols)
             fig_w = ncols * figsize_per_cell[0]
             fig_h = nrows * figsize_per_cell[1]
-            fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False)
+            fig, axes = plt.subplots(
+                nrows=nrows, ncols=ncols, figsize=(fig_w, fig_h), dpi=dpi, squeeze=False
+            )
 
             for r_idx, sample_name in enumerate(chunk):
                 for c_idx, ref_name in enumerate(cols):
                     ax = axes[r_idx][c_idx]
                     if ref_name == extra_col:
-                        mask = (obs[sample_col].values == sample_name)
+                        mask = obs[sample_col].values == sample_name
                     else:
-                        mask = (obs[sample_col].values == sample_name) & (obs[ref_col].values == ref_name)
+                        mask = (obs[sample_col].values == sample_name) & (
+                            obs[ref_col].values == ref_name
+                        )
 
                     sub = obs[mask]
 
@@ -1083,7 +1268,9 @@ def plot_hamming_vs_metric_pages(
                     else:
                         x_all = np.array([], dtype=float)
                     if hamming_col in sub.columns:
-                        y_all = pd.to_numeric(sub[hamming_col], errors="coerce").to_numpy(dtype=float)
+                        y_all = pd.to_numeric(sub[hamming_col], errors="coerce").to_numpy(
+                            dtype=float
+                        )
                     else:
                         y_all = np.array([], dtype=float)
 
@@ -1101,32 +1288,67 @@ def plot_hamming_vs_metric_pages(
                         idxs_valid = np.array([], dtype=int)
 
                     if x.size == 0:
-                        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+                        ax.text(
+                            0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes
+                        )
                         clusters_info[(sample_name, ref_name)] = {"diag": None, "n_points": 0}
                     else:
                         # Decide color mapping
-                        if color_by_duplicate and duplicate_col in adata.obs.columns and idxs_valid.size > 0:
+                        if (
+                            color_by_duplicate
+                            and duplicate_col in adata.obs.columns
+                            and idxs_valid.size > 0
+                        ):
                             # get boolean series aligned to idxs_valid
                             try:
-                                dup_flags = adata.obs.loc[idxs_valid, duplicate_col].astype(bool).to_numpy()
+                                dup_flags = (
+                                    adata.obs.loc[idxs_valid, duplicate_col].astype(bool).to_numpy()
+                                )
                             except Exception:
                                 dup_flags = np.zeros(len(idxs_valid), dtype=bool)
                             mask_dup = dup_flags
                             mask_nondup = ~mask_dup
                             # plot non-duplicates first in gray, duplicates in highlight color
                             if mask_nondup.any():
-                                ax.scatter(x[mask_nondup], y[mask_nondup], s=12, alpha=0.6, rasterized=True, c="lightgray")
+                                ax.scatter(
+                                    x[mask_nondup],
+                                    y[mask_nondup],
+                                    s=12,
+                                    alpha=0.6,
+                                    rasterized=True,
+                                    c="lightgray",
+                                )
                             if mask_dup.any():
-                                ax.scatter(x[mask_dup], y[mask_dup], s=20, alpha=0.9, rasterized=True, c=highlight_color, edgecolors="k", linewidths=0.3)
+                                ax.scatter(
+                                    x[mask_dup],
+                                    y[mask_dup],
+                                    s=20,
+                                    alpha=0.9,
+                                    rasterized=True,
+                                    c=highlight_color,
+                                    edgecolors="k",
+                                    linewidths=0.3,
+                                )
                         else:
                             # old behavior: highlight by threshold if requested
                             if highlight_threshold is not None and y.size:
                                 mask_low = (y < float(highlight_threshold)) & np.isfinite(y)
                                 mask_high = ~mask_low
                                 if mask_high.any():
-                                    ax.scatter(x[mask_high], y[mask_high], s=12, alpha=0.6, rasterized=True)
+                                    ax.scatter(
+                                        x[mask_high], y[mask_high], s=12, alpha=0.6, rasterized=True
+                                    )
                                 if mask_low.any():
-                                    ax.scatter(x[mask_low], y[mask_low], s=18, alpha=0.9, rasterized=True, c=highlight_color, edgecolors="k", linewidths=0.3)
+                                    ax.scatter(
+                                        x[mask_low],
+                                        y[mask_low],
+                                        s=18,
+                                        alpha=0.9,
+                                        rasterized=True,
+                                        c=highlight_color,
+                                        edgecolors="k",
+                                        linewidths=0.3,
+                                    )
                             else:
                                 ax.scatter(x, y, s=12, alpha=0.6, rasterized=True)
 
@@ -1142,7 +1364,9 @@ def plot_hamming_vs_metric_pages(
                                     zi = gaussian_kde(np.vstack([x, y]))(coords).reshape(xi_g.shape)
                                     ax.contourf(xi_g, yi_g, zi, levels=8, alpha=0.35, cmap="Blues")
                                 else:
-                                    ax.scatter(x, y, c=kde2, s=16, cmap="viridis", alpha=0.7, linewidths=0)
+                                    ax.scatter(
+                                        x, y, c=kde2, s=16, cmap="viridis", alpha=0.7, linewidths=0
+                                    )
                             except Exception:
                                 pass
 
@@ -1151,16 +1375,29 @@ def plot_hamming_vs_metric_pages(
                                 a, b = np.polyfit(x, y, 1)
                                 xs = np.linspace(np.nanmin(x), np.nanmax(x), 100)
                                 ys = a * xs + b
-                                ax.plot(xs, ys, linestyle="--", linewidth=1.2, alpha=0.9, color="red")
+                                ax.plot(
+                                    xs, ys, linestyle="--", linewidth=1.2, alpha=0.9, color="red"
+                                )
                                 r = np.corrcoef(x, y)[0, 1]
-                                ax.text(0.98, 0.02, f"r={float(r):.3f}", ha="right", va="bottom", transform=ax.transAxes, fontsize=8,
-                                        bbox=dict(facecolor="white", alpha=0.6, boxstyle="round,pad=0.2"))
+                                ax.text(
+                                    0.98,
+                                    0.02,
+                                    f"r={float(r):.3f}",
+                                    ha="right",
+                                    va="bottom",
+                                    transform=ax.transAxes,
+                                    fontsize=8,
+                                    bbox=dict(
+                                        facecolor="white", alpha=0.6, boxstyle="round,pad=0.2"
+                                    ),
+                                )
                             except Exception:
                                 pass
 
                         if clustering:
                             cl_labels, diag = _run_clustering(
-                                x, y,
+                                x,
+                                y,
                                 method=clustering.get("method", "dbscan"),
                                 n_clusters=clustering.get("n_clusters", 2),
                                 dbscan_eps=clustering.get("dbscan_eps", 0.05),
@@ -1174,32 +1411,57 @@ def plot_hamming_vs_metric_pages(
                             if len(unique_nonnoise) > 0:
                                 medians = {}
                                 for lab in unique_nonnoise:
-                                    mask_lab = (cl_labels == lab)
-                                    medians[lab] = float(np.median(y[mask_lab])) if mask_lab.any() else float("nan")
-                                sorted_by_median = sorted(unique_nonnoise, key=lambda l: (np.nan if np.isnan(medians[l]) else medians[l]), reverse=True)
+                                    mask_lab = cl_labels == lab
+                                    medians[lab] = (
+                                        float(np.median(y[mask_lab]))
+                                        if mask_lab.any()
+                                        else float("nan")
+                                    )
+                                sorted_by_median = sorted(
+                                    unique_nonnoise,
+                                    key=lambda l: (np.nan if np.isnan(medians[l]) else medians[l]),
+                                    reverse=True,
+                                )
                                 mapping = {old: new for new, old in enumerate(sorted_by_median)}
                                 for i_lab in range(len(remapped_labels)):
                                     if remapped_labels[i_lab] != -1:
-                                        remapped_labels[i_lab] = mapping.get(remapped_labels[i_lab], -1)
+                                        remapped_labels[i_lab] = mapping.get(
+                                            remapped_labels[i_lab], -1
+                                        )
                                 diag = diag or {}
-                                diag["cluster_median_hamming"] = {int(old): medians[old] for old in medians}
-                                diag["cluster_old_to_new_map"] = {int(old): int(new) for old, new in mapping.items()}
+                                diag["cluster_median_hamming"] = {
+                                    int(old): medians[old] for old in medians
+                                }
+                                diag["cluster_old_to_new_map"] = {
+                                    int(old): int(new) for old, new in mapping.items()
+                                }
                             else:
                                 remapped_labels = cl_labels.copy()
                                 diag = diag or {}
                                 diag["cluster_median_hamming"] = {}
                                 diag["cluster_old_to_new_map"] = {}
 
-                            _overlay_clusters_on_ax(ax, x, y, remapped_labels, diag,
-                                                    cmap=clustering.get("cmap", "tab10"),
-                                                    hull=clustering.get("hull", True),
-                                                    show_cluster_labels=True)
+                            _overlay_clusters_on_ax(
+                                ax,
+                                x,
+                                y,
+                                remapped_labels,
+                                diag,
+                                cmap=clustering.get("cmap", "tab10"),
+                                hull=clustering.get("hull", True),
+                                show_cluster_labels=True,
+                            )
 
-                            clusters_info[(sample_name, ref_name)] = {"diag": diag, "n_points": len(x)}
+                            clusters_info[(sample_name, ref_name)] = {
+                                "diag": diag,
+                                "n_points": len(x),
+                            }
 
                             if write_clusters_to_adata and idxs_valid.size > 0:
-                                colname_safe_ref = (ref_name if ref_name != extra_col else "ALLREFS")
-                                colname = f"hamming_cluster__{metric}__{sample_name}__{colname_safe_ref}"
+                                colname_safe_ref = ref_name if ref_name != extra_col else "ALLREFS"
+                                colname = (
+                                    f"hamming_cluster__{metric}__{sample_name}__{colname_safe_ref}"
+                                )
                                 if colname not in adata.obs.columns:
                                     adata.obs[colname] = np.nan
                                 lab_arr = remapped_labels.astype(float)
@@ -1239,7 +1501,11 @@ def plot_hamming_vs_metric_pages(
                 plt.show()
             plt.close(fig)
 
-        saved_map[metric] = {"files": files, "clusters_info": clusters_info, "written_cols": written_cols}
+        saved_map[metric] = {
+            "files": files,
+            "clusters_info": clusters_info,
+            "written_cols": written_cols,
+        }
 
     return saved_map
 
@@ -1248,7 +1514,7 @@ def _run_clustering(
     x: np.ndarray,
     y: np.ndarray,
     *,
-    method: str = "kmeans",   # "kmeans", "dbscan", "gmm", "hdbscan"
+    method: str = "kmeans",  # "kmeans", "dbscan", "gmm", "hdbscan"
     n_clusters: int = 2,
     dbscan_eps: float = 0.05,
     dbscan_min_samples: int = 5,
@@ -1331,7 +1597,11 @@ def _run_clustering(
 
     # compute silhouette if suitable
     try:
-        if diagnostics.get("n_clusters_found", 0) >= 2 and len(x) >= 3 and silhouette_score is not None:
+        if (
+            diagnostics.get("n_clusters_found", 0) >= 2
+            and len(x) >= 3
+            and silhouette_score is not None
+        ):
             diagnostics["silhouette"] = float(silhouette_score(pts, labels))
         else:
             diagnostics["silhouette"] = None
@@ -1384,19 +1654,47 @@ def _overlay_clusters_on_ax(
         if not mask.any():
             continue
         col = (0.6, 0.6, 0.6, 0.6) if lab == -1 else colors[idx % ncolors]
-        ax.scatter(x[mask], y[mask], s=20, c=[col], alpha=alpha_pts, marker=marker, linewidths=0.2, edgecolors="none", rasterized=True)
+        ax.scatter(
+            x[mask],
+            y[mask],
+            s=20,
+            c=[col],
+            alpha=alpha_pts,
+            marker=marker,
+            linewidths=0.2,
+            edgecolors="none",
+            rasterized=True,
+        )
 
         if lab != -1:
             # centroid
             if plot_centroids:
                 cx = float(np.mean(x[mask]))
                 cy = float(np.mean(y[mask]))
-                ax.scatter([cx], [cy], s=centroid_size, marker=centroid_marker, c=[col], edgecolor="k", linewidth=0.6, zorder=10)
+                ax.scatter(
+                    [cx],
+                    [cy],
+                    s=centroid_size,
+                    marker=centroid_marker,
+                    c=[col],
+                    edgecolor="k",
+                    linewidth=0.6,
+                    zorder=10,
+                )
 
                 if show_cluster_labels:
-                    ax.text(cx, cy, str(int(lab)), color="white", fontsize=cluster_label_fontsize,
-                            ha="center", va="center", weight="bold", zorder=12,
-                            bbox=dict(facecolor=(0,0,0,0.5), pad=0.3, boxstyle="round"))
+                    ax.text(
+                        cx,
+                        cy,
+                        str(int(lab)),
+                        color="white",
+                        fontsize=cluster_label_fontsize,
+                        ha="center",
+                        va="center",
+                        weight="bold",
+                        zorder=12,
+                        bbox=dict(facecolor=(0, 0, 0, 0.5), pad=0.3, boxstyle="round"),
+                    )
 
             # hull
             if hull and np.sum(mask) >= 3:
@@ -1404,9 +1702,16 @@ def _overlay_clusters_on_ax(
                     ch_pts = pts[mask]
                     hull_idx = ConvexHull(ch_pts).vertices
                     hull_poly = ch_pts[hull_idx]
-                    ax.fill(hull_poly[:, 0], hull_poly[:, 1], alpha=hull_alpha, facecolor=col, edgecolor=hull_edgecolor, linewidth=0.6, zorder=5)
+                    ax.fill(
+                        hull_poly[:, 0],
+                        hull_poly[:, 1],
+                        alpha=hull_alpha,
+                        facecolor=col,
+                        edgecolor=hull_edgecolor,
+                        linewidth=0.6,
+                        zorder=5,
+                    )
                 except Exception:
                     pass
 
     return None
-

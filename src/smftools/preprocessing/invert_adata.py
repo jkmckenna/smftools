@@ -1,6 +1,7 @@
 ## invert_adata
 
-def invert_adata(adata, uns_flag='invert_adata_performed', force_redo=False):
+
+def invert_adata(adata, uns_flag="invert_adata_performed", force_redo=False):
     """
     Inverts the AnnData object along the column (variable) axis.
 
@@ -15,7 +16,7 @@ def invert_adata(adata, uns_flag='invert_adata_performed', force_redo=False):
 
     # Only run if not already performed
     already = bool(adata.uns.get(uns_flag, False))
-    if (already and not force_redo):
+    if already and not force_redo:
         # QC already performed; nothing to do
         return adata
 

@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def binarize_adata(adata, source="X", target_layer="binary", threshold=0.8):
     """
     Binarize a dense matrix and preserve NaN.

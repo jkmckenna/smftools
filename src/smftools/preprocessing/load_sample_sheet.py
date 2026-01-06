@@ -1,10 +1,11 @@
-def load_sample_sheet(adata, 
-                      sample_sheet_path, 
-                      mapping_key_column='obs_names',
-                      as_category=True,
-                      uns_flag='load_sample_sheet_performed',
-                      force_reload=True
-                        ):
+def load_sample_sheet(
+    adata,
+    sample_sheet_path,
+    mapping_key_column="obs_names",
+    as_category=True,
+    uns_flag="load_sample_sheet_performed",
+    force_reload=True,
+):
     """
     Loads a sample sheet CSV and maps metadata into the AnnData object as categorical columns.
 
@@ -25,29 +26,33 @@ def load_sample_sheet(adata,
         # QC already performed; nothing to do
         return
 
-    print('Loading sample sheet...')
+    print("Loading sample sheet...")
     df = pd.read_csv(sample_sheet_path)
     df[mapping_key_column] = df[mapping_key_column].astype(str)
-    
+
     # If matching against obs_names directly
-    if mapping_key_column == 'obs_names':
+    if mapping_key_column == "obs_names":
         key_series = adata.obs_names.astype(str)
     else:
         key_series = adata.obs[mapping_key_column].astype(str)
 
     value_columns = [col for col in df.columns if col != mapping_key_column]
-    
-    print(f'Appending metadata columns: {value_columns}')
+
+    print(f"Appending metadata columns: {value_columns}")
     df = df.set_index(mapping_key_column)
 
     for col in value_columns:
         mapped = key_series.map(df[col])
         if as_category:
-            mapped = mapped.astype('category')
+            mapped = mapped.astype("category")
         adata.obs[col] = mapped
 
     # mark as done
     adata.uns[uns_flag] = True
 
-    print('Sample sheet metadata successfully added as categories.' if as_category else 'Metadata added.')
+    print(
+        "Sample sheet metadata successfully added as categories."
+        if as_category
+        else "Metadata added."
+    )
     return adata
