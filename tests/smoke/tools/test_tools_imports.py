@@ -17,5 +17,6 @@ MODULES = [
 
 
 @pytest.mark.parametrize("module_name", MODULES)
+@pytest.mark.smoke
 def test_imports(module_name: str) -> None:
     import_module_or_skip(module_name)
