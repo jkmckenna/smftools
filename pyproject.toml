@@ -123,8 +123,9 @@ pythonpath = ["src"]
 xfail_strict = true
 markers = [
     "smoke: rapid, runtime and import tests",
-    "unit: fast, function tests",
-    "integration: slower, workflow level tests"
+    "unit: fast, function tests without external dependencies",
+    "integration: slower, fucntional tests with external dependencies",
+    "e2e: slowest, end-to-end workflow testing"
 ]
 
 [tool.coverage.run]
