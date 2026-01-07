@@ -6,7 +6,7 @@ import pytest
 
 from smftools.config.experiment_config import LoadExperimentConfig
 
-csv_resource = files("smftools.tests._test_inputs").joinpath("test_experiment_config_direct_I.csv")
+csv_resource = files("tests._test_inputs").joinpath("test_experiment_config_direct_I.csv")
 
 
 @pytest.fixture
