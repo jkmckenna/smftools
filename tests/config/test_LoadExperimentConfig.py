@@ -16,5 +16,5 @@ def config():
 
 
 def test_var_dict(config):
-    assert isinstance(config.sef.var_dict, dict)
-    assert all(isinstance(k, str) for k in config.sef.var_dict.keys())
+    assert isinstance(config.var_dict, dict)
+    assert all(isinstance(k, str) for k in config.var_dict.keys())
