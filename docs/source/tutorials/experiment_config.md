@@ -18,7 +18,7 @@ The configuration CSV is a table with the following columns:
 
 A shortened example looks like:
 
-```csv
+```text
 variable,value,help,options,type
 smf_modality,conversion,Modality of SMF. Can either be conversion or direct.,"conversion, direct",str
 input_data_path,/path_to_POD5_directory,Path to directory/file containing input sequencing data,,str
