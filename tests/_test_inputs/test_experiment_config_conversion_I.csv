@@ -1,0 +1,13 @@
+﻿variable,value,help,options,type
+smf_modality,conversion,Modality of SMF. Can either be conversion or direct.,"conversion, direct",str 
+input_data_path,tests/_test_inputs/_test_pod5_I.pod5,Path to directory/file containing input sequencing data,,str 
+fasta,tests/_test_inputs/_test_fasta_I.fa,Path to initial FASTA file,,str 
+fasta_regions_of_interest,tests/_test_inputs/_test_bed_I.bed,Path to a bed file to subsample the fasta on.,,str 
+output_directory,tests/_test_outputs_conversion_I,Directory to act as root for all analysis outputs,,str 
+experiment_name,tests_conversion_I,An experiment name for the final h5ad file,,str 
+model,hac,The dorado basecalling model to use,,str 
+barcode_kit,SQK-NBD114-24,The barcoding kit used for the experiment,,str 
+mod_list,"[6mA,5mC_5hmC]",Modified base names for Dorado,"""6mA"", ""5mC_5hmC""",list
+batch_size,4,number of samples to analyze at a time,,int
+conversion_types,"[6mA,5mC]",Types of modification types to use in conversion SMF,"5mC', '6mA'",list
+model_dir,tests/_test_inputs/dorado_models/,The dorado basecalling model directory to use,,str 

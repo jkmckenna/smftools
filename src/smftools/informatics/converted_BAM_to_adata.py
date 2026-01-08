@@ -83,7 +83,7 @@ def converted_BAM_to_adata(
         if p.is_file() and p.suffix == ".bam" and "unclassified" not in p.name
     )
 
-    bam_path_list = [split_dir / f for f in bam_files]
+    bam_path_list = bam_files
     print(f"Found {len(bam_files)} BAM files: {bam_files}")
 
     ## Process Conversion Sites
@@ -552,7 +552,7 @@ def process_bams_parallel(
             pool.join()  # Ensure all workers finish
 
     # Final Concatenation Step
-    h5ad_files = [h5_dir / f for f in h5_dir.iterdir() if f.suffix == ".h5ad"]
+    h5ad_files = [f for f in h5_dir.iterdir() if f.suffix == ".h5ad"]
 
     if not h5ad_files:
         print(f"{timestamp()} No valid H5AD files generated. Exiting.")

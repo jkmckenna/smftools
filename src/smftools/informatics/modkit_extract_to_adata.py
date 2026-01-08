@@ -548,8 +548,8 @@ def modkit_extract_to_adata(
         and ".bai" not in p.name
     )
 
-    tsv_path_list = [mod_tsv_dir / tsv for tsv in tsvs]
-    bam_path_list = [bam_dir / bam for bam in bams]
+    tsv_path_list = [tsv for tsv in tsvs]
+    bam_path_list = [bam for bam in bams]
     print(f"{len(tsvs)} sample tsv files found: {tsvs}")
     print(f"{len(bams)} sample bams found: {bams}")
 
@@ -1261,7 +1261,7 @@ def modkit_extract_to_adata(
     # Sort file list by names and print the list of file names
     hdfs.sort()
     print("{0} sample files found: {1}".format(len(hdfs), hdfs))
-    hdf_paths = [h5_dir / hd5 for hd5 in hdfs]
+    hdf_paths = [hd5 for hd5 in hdfs]
     final_adata = None
     for hdf_index, hdf in enumerate(hdf_paths):
         print("{0}: Reading in {1} hdf5 file".format(readwrite.time_string(), hdfs[hdf_index]))

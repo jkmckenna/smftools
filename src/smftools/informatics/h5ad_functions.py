@@ -238,7 +238,7 @@ def _collect_read_origins_from_pod5(pod5_path: str, target_ids: set[str]) -> dic
 
 def annotate_pod5_origin(
     adata,
-    pod5_dir: str,
+    pod5_path_or_dir: str | Path,
     pattern: str = "*.pod5",
     n_jobs: int | None = None,
     fill_value: str | None = "unknown",
@@ -253,8 +253,8 @@ def annotate_pod5_origin(
     ----------
     adata
         AnnData with obs_names == read_ids (as strings).
-    pod5_dir
-        Directory containing POD5 files.
+    pod5_path_or_dir
+        Directory containing POD5 files or path to a single POD5 file.
     pattern
         Glob pattern for POD5 files inside `pod5_dir`.
     n_jobs
@@ -271,9 +271,21 @@ def annotate_pod5_origin(
     -------
     None (modifies `adata` in-place).
     """
-    pod5_files = sorted(glob.glob(os.path.join(pod5_dir, pattern)))
-    if not pod5_files:
-        raise FileNotFoundError(f"No POD5 files matching {pattern!r} in {pod5_dir!r}")
+    pod5_path_or_dir = Path(pod5_path_or_dir)
+
+    # --- Resolve input into a list of pod5 files ---
+    if pod5_path_or_dir.is_dir():
+        pod5_files = sorted(str(p) for p in pod5_path_or_dir.glob(pattern))
+        if not pod5_files:
+            raise FileNotFoundError(
+                f"No POD5 files matching {pattern!r} in {str(pod5_path_or_dir)!r}"
+            )
+    elif pod5_path_or_dir.is_file():
+        if pod5_path_or_dir.suffix.lower() != ".pod5":
+            raise ValueError(f"Expected a .pod5 file, got: {pod5_path_or_dir}")
+        pod5_files = [str(pod5_path_or_dir)]
+    else:
+        raise FileNotFoundError(f"Path does not exist: {pod5_path_or_dir}")
 
     # Make sure obs_names are strings
     obs_names = adata.obs_names.astype(str)

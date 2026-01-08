@@ -273,25 +273,23 @@ def load_adata_core(cfg, paths: AdataPaths):
 
     # If fasta_regions_of_interest bed is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
     if cfg.fasta_regions_of_interest and ".bed" in cfg.fasta_regions_of_interest:
-        fasta_basename = cfg.fasta.parent / cfg.fasta.stem
-        bed_basename_minus_suffix = Path(cfg.fasta_regions_of_interest).stem
-        output_FASTA = fasta_basename.with_name(
-            fasta_basename.name + "_subsampled_by_" + bed_basename_minus_suffix + ".fasta"
-        )
+        fasta_stem = cfg.fasta.stem
+        bed_stem = Path(cfg.fasta_regions_of_interest).stem
+        output_FASTA = cfg.output_directory / f"{fasta_stem}_subsampled_by_{bed_stem}.fasta"
+
         subsample_fasta_from_bed(
             cfg.fasta, cfg.fasta_regions_of_interest, cfg.output_directory, output_FASTA
         )
-        fasta = cfg.output_directory / output_FASTA
+        fasta = output_FASTA
     else:
         fasta = cfg.fasta
 
     # For conversion style SMF, make a converted reference FASTA
     if cfg.smf_modality == "conversion":
-        fasta_basename = fasta.parent / fasta.stem
-        converted_FASTA_basename = fasta_basename.with_name(
-            fasta_basename.name + "_converted.fasta"
-        )
+        fasta_stem = fasta.stem
+        converted_FASTA_basename = f"{fasta_stem}_converted.fasta"
         converted_FASTA = cfg.output_directory / converted_FASTA_basename
+
         if "converted.fa" in fasta.name:
             print(f"{fasta} is already converted. Using existing converted FASTA.")
             converted_FASTA = fasta
