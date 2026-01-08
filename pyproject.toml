@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "smftools"
 description = "Single Molecule Footprinting Analysis in Python."
-requires-python = ">=3.10,<3.15"
+requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
     {name = "Joseph McKenna"}
@@ -80,12 +80,8 @@ Documentation = "https://smftools.readthedocs.io/"
 smftools = "smftools.cli_entry:cli"
 
 [project.optional-dependencies]
-tests = [
-    "pytest",
-    "pytest-cov"
-]
 
-dev = ["ruff", "pre-commit"]
+dev = ["ruff", "pre-commit", "pytest", "pytest-cov"]
 
 docs = [
     "sphinx>=7",
