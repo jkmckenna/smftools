@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import IO, Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from smftools.constants import BAM_SUFFIX, MOD_LIST, MOD_MAP, SPLIT_DIR
+from smftools.constants import BAM_SUFFIX, BARCODE_BOTH_ENDS, CONVERSIONS, MOD_LIST, MOD_MAP, REF_COL, SAMPLE_COL, SPLIT_DIR, STRANDS, TRIM
 
 from .discover_input_files import discover_input_files
 
@@ -660,8 +660,8 @@ class ExperimentConfig:
     input_files: Optional[List[Path]] = None
     split_dir: str = SPLIT_DIR
     split_path: Optional[str] = None
-    strands: List[str] = field(default_factory=lambda: ["bottom", "top"])
-    conversions: List[str] = field(default_factory=lambda: ["unconverted"])
+    strands: List[str] = field(default_factory=lambda: STRANDS)
+    conversions: List[str] = field(default_factory=lambda: CONVERSIONS)
     fasta_regions_of_interest: Optional[str] = None
     sample_sheet_path: Optional[str] = None
     sample_sheet_mapping_column: Optional[str] = "Experiment_name_and_barcode"
@@ -700,8 +700,8 @@ class ExperimentConfig:
     model_dir: Optional[str] = None
     barcode_kit: Optional[str] = None
     model: str = "hac"
-    barcode_both_ends: bool = False
-    trim: bool = False
+    barcode_both_ends: bool = BARCODE_BOTH_ENDS
+    trim: bool = TRIM
     # General basecalling params
     filter_threshold: float = 0.8
     # Modified basecalling specific params
@@ -709,26 +709,20 @@ class ExperimentConfig:
     m5C_threshold: float = 0.7
     hm5C_threshold: float = 0.7
     thresholds: List[float] = field(default_factory=list)
-    mod_list: List[str] = field(
-        default_factory=lambda: list(MOD_LIST)
-    )  # Dorado modified basecalling codes
-    mod_map: Dict[str, str] = field(
-        default_factory=lambda: dict(MOD_MAP)
-    )  # Map from dorado modified basecalling codes to codes used in modkit_extract_to_adata function
+    mod_list: List[str] = field(default_factory=lambda: list(MOD_LIST))  # Dorado modified basecalling codes
+    mod_map: Dict[str, str] = field(default_factory=lambda: dict(MOD_MAP))  # Map from dorado modified basecalling codes to codes used in modkit_extract_to_adata function
 
     # Alignment params
     mapping_threshold: float = 0.01  # Min threshold for fraction of reads in a sample mapping to a reference in order to include the reference in the anndata
-    align_from_bam: bool = (
-        False  # Whether minimap2 should align from a bam file as input. If False, aligns from FASTQ
-    )
+    align_from_bam: bool = False  # Whether minimap2 should align from a bam file as input. If False, aligns from FASTQ
     aligner: str = "dorado"
     aligner_args: Optional[List[str]] = None
     make_bigwigs: bool = False
     make_beds: bool = False
 
     # Anndata structure
-    reference_column: Optional[str] = "Reference_strand"
-    sample_column: Optional[str] = "Barcode"
+    reference_column: Optional[str] = REF_COL
+    sample_column: Optional[str] = SAMPLE_COL
 
     # General Plotting
     sample_name_col_for_plotting: Optional[str] = "Barcode"
@@ -1233,14 +1227,14 @@ class ExperimentConfig:
             bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
             split_dir=split_dir,
             split_path=split_path,
-            strands=merged.get("strands", ["bottom", "top"]),
-            conversions=merged.get("conversions", ["unconverted"]),
+            strands=merged.get("strands", STRANDS),
+            conversions=merged.get("conversions", CONVERSIONS),
             fasta_regions_of_interest=merged.get("fasta_regions_of_interest"),
             mapping_threshold=float(merged.get("mapping_threshold", 0.01)),
             experiment_name=merged.get("experiment_name"),
             model=merged.get("model", "hac"),
-            barcode_both_ends=merged.get("barcode_both_ends", False),
-            trim=merged.get("trim", False),
+            barcode_both_ends=merged.get("barcode_both_ends", BARCODE_BOTH_ENDS),
+            trim=merged.get("trim", TRIM),
             input_already_demuxed=merged.get("input_already_demuxed", False),
             threads=merged.get("threads"),
             sample_sheet_path=merged.get("sample_sheet_path"),
@@ -1256,8 +1250,7 @@ class ExperimentConfig:
             delete_intermediate_hdfs=merged.get("delete_intermediate_hdfs", True),
             mod_target_bases=merged.get("mod_target_bases", ["GpC", "CpG"]),
             enzyme_target_bases=merged.get("enzyme_target_bases", ["GpC"]),
-            conversion_types=merged.get("conversions", ["unconverted"])
-            + merged.get("conversion_types", ["5mC"]),
+            conversion_types=merged.get("conversions", ["unconverted"]) + merged.get("conversion_types", ["5mC"]),
             filter_threshold=merged.get("filter_threshold", 0.8),
             m6A_threshold=merged.get("m6A_threshold", 0.7),
             m5C_threshold=merged.get("m5C_threshold", 0.7),
@@ -1268,8 +1261,8 @@ class ExperimentConfig:
             batch_size=merged.get("batch_size", 4),
             skip_unclassified=merged.get("skip_unclassified", True),
             delete_batch_hdfs=merged.get("delete_batch_hdfs", True),
-            reference_column=merged.get("reference_column", "Reference_strand"),
-            sample_column=merged.get("sample_column", "Barcode"),
+            reference_column=merged.get("reference_column", REF_COL),
+            sample_column=merged.get("sample_column", SAMPLE_COL),
             sample_name_col_for_plotting=merged.get("sample_name_col_for_plotting", "Barcode"),
             obs_to_plot_pp_qc=obs_to_plot_pp_qc,
             fit_position_methylation_thresholds=merged.get(
