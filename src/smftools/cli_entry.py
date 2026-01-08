@@ -5,11 +5,11 @@ from typing import Sequence
 import click
 import pandas as pd
 
-from .logging_utils import setup_logging
 from .cli.hmm_adata import hmm_adata
 from .cli.load_adata import load_adata
 from .cli.preprocess_adata import preprocess_adata
 from .cli.spatial_adata import spatial_adata
+from .logging_utils import setup_logging
 from .readwrite import concatenate_h5ads
 
 
@@ -31,6 +31,7 @@ def cli(log_file: Path | None, log_level: str):
     """Command-line interface for smftools."""
     level = getattr(logging, log_level.upper(), logging.INFO)
     setup_logging(level=level, log_file=log_file)
+
 
 ####### Load anndata from raw data ###########
 @cli.command()
