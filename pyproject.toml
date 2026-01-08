@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "smftools"
 description = "Single Molecule Footprinting Analysis in Python."
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.10,<3.15"
 license = { file = "LICENSE" }
 authors = [
     {name = "Joseph McKenna"}
