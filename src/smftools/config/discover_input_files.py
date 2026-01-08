@@ -3,10 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
+from smftools.constants import BAM_SUFFIX
+
 
 def discover_input_files(
     input_data_path: Union[str, Path],
-    bam_suffix: str = ".bam",
+    bam_suffix: str = BAM_SUFFIX,
     recursive: bool = False,
     follow_symlinks: bool = False,
 ) -> Dict[str, Any]:

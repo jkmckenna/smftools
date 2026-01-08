@@ -10,6 +10,8 @@ from typing import IO, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from .discover_input_files import discover_input_files
 
+from smftools.constants import BAM_SUFFIX, MOD_LIST, MOD_MAP, SPLIT_DIR
+
 # Optional dependency for YAML handling
 try:
     import yaml
@@ -652,11 +654,11 @@ class ExperimentConfig:
     input_data_path: Optional[str] = None
     output_directory: Optional[str] = None
     fasta: Optional[str] = None
-    bam_suffix: str = ".bam"
+    bam_suffix: str = BAM_SUFFIX
     recursive_input_search: bool = True
     input_type: Optional[str] = None
     input_files: Optional[List[Path]] = None
-    split_dir: str = "demultiplexed_BAMs"
+    split_dir: str = SPLIT_DIR
     split_path: Optional[str] = None
     strands: List[str] = field(default_factory=lambda: ["bottom", "top"])
     conversions: List[str] = field(default_factory=lambda: ["unconverted"])
@@ -707,12 +709,8 @@ class ExperimentConfig:
     m5C_threshold: float = 0.7
     hm5C_threshold: float = 0.7
     thresholds: List[float] = field(default_factory=list)
-    mod_list: List[str] = field(
-        default_factory=lambda: ["5mC_5hmC", "6mA"]
-    )  # Dorado modified basecalling codes
-    mod_map: Dict[str, str] = field(
-        default_factory=lambda: {"6mA": "6mA", "5mC_5hmC": "5mC"}
-    )  # Map from dorado modified basecalling codes to codes used in modkit_extract_to_adata function
+    mod_list: List[str] = field(default_factory=lambda: list(MOD_LIST)) # Dorado modified basecalling codes
+    mod_map: Dict[str, str] = field(default_factory=lambda: dict(MOD_MAP)) # Map from dorado modified basecalling codes to codes used in modkit_extract_to_adata function
 
     # Alignment params
     mapping_threshold: float = 0.01  # Min threshold for fraction of reads in a sample mapping to a reference in order to include the reference in the anndata
@@ -1058,7 +1056,7 @@ class ExperimentConfig:
         elif input_data_path.is_dir():
             found = discover_input_files(
                 input_data_path,
-                bam_suffix=merged["bam_suffix"],
+                bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
                 recursive=merged["recursive_input_search"],
             )
 
@@ -1093,7 +1091,7 @@ class ExperimentConfig:
         summary_file = output_dir / summary_file_basename
 
         # Demultiplexing output path
-        split_dir = merged.get("split_dir", "demultiplexed_BAMs")
+        split_dir = merged.get("split_dir", SPLIT_DIR)
         split_path = output_dir / split_dir
 
         # final normalization
@@ -1228,7 +1226,7 @@ class ExperimentConfig:
             barcode_kit=merged.get("barcode_kit"),
             fastq_barcode_map=merged.get("fastq_barcode_map"),
             fastq_auto_pairing=merged.get("fastq_auto_pairing"),
-            bam_suffix=merged.get("bam_suffix", ".bam"),
+            bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
             split_dir=split_dir,
             split_path=split_path,
             strands=merged.get("strands", ["bottom", "top"]),
@@ -1261,7 +1259,8 @@ class ExperimentConfig:
             m5C_threshold=merged.get("m5C_threshold", 0.7),
             hm5C_threshold=merged.get("hm5C_threshold", 0.7),
             thresholds=merged.get("thresholds", []),
-            mod_list=merged.get("mod_list", ["5mC_5hmC", "6mA"]),
+            mod_list=merged.get("mod_list", list(MOD_LIST)),
+            mod_map=merged.get("mod_map", list(MOD_MAP)),
             batch_size=merged.get("batch_size", 4),
             skip_unclassified=merged.get("skip_unclassified", True),
             delete_batch_hdfs=merged.get("delete_batch_hdfs", True),

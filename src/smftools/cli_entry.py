@@ -1,9 +1,11 @@
+import logging
 from pathlib import Path
 from typing import Sequence
 
 import click
 import pandas as pd
 
+from .logging_utils import setup_logging
 from .cli.hmm_adata import hmm_adata
 from .cli.load_adata import load_adata
 from .cli.preprocess_adata import preprocess_adata
@@ -12,10 +14,23 @@ from .readwrite import concatenate_h5ads
 
 
 @click.group()
-def cli():
+@click.option(
+    "--log-file",
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    default=None,
+    help="Optional file path to write smftools logs.",
+)
+@click.option(
+    "--log-level",
+    type=click.Choice(["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"], case_sensitive=False),
+    default="INFO",
+    show_default=True,
+    help="Logging level for smftools output.",
+)
+def cli(log_file: Path | None, log_level: str):
     """Command-line interface for smftools."""
-    pass
-
+    level = getattr(logging, log_level.upper(), logging.INFO)
+    setup_logging(level=level, log_file=log_file)
 
 ####### Load anndata from raw data ###########
 @cli.command()

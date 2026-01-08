@@ -9,9 +9,7 @@ device: "auto"
 
 ######## smftools load params #########
 # Generic i/o
-bam_suffix: ".bam"
 recursive_input_search: True
-split_dir: "demultiplexed_BAMs"
 strands:
   - bottom
   - top
