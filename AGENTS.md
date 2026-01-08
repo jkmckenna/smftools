@@ -20,7 +20,10 @@ This file tells coding agents (including OpenAI Codex) how to work in this repo.
   - `pip install -e ".[dev]"`
 
 ## How to run checks
-- Unit tests: `pytest -q`
+- Smoke tests: `pytest -m smoke -q`
+- Unit tests: `pytest -m unit -q`
+- Integration tests: `pytest -m integration -q`
+- E2E tests: `pytest -m e2e -q`
 - Coverage (if configured): `pytest --cov`
 - Lint: `ruff check .`
 - Format: `ruff format .`

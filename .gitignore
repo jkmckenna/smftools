@@ -22,6 +22,8 @@ venvs/
 # Tests
 /tests/_test_inputs/dorado_models
 /tests/_test_outputs/
+/tests/_test_outputs*/
+
 
 # OS
 .DS_Store

@@ -251,13 +251,11 @@ def subsample_fasta_from_bed(
     # Ensure output directory exists
     output_directory.mkdir(parents=True, exist_ok=True)
 
-    output_FASTA_path = output_directory / output_FASTA
-
     # Load the FASTA file using pyfaidx
     fasta = Fasta(str(input_FASTA))  # pyfaidx requires string paths
 
     # Open BED + output FASTA
-    with input_bed.open("r") as bed, output_FASTA_path.open("w") as out_fasta:
+    with input_bed.open("r") as bed, output_FASTA.open("w") as out_fasta:
         for line in bed:
             fields = line.strip().split()
             chrom = fields[0]
