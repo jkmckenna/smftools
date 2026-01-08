@@ -8,15 +8,17 @@ import sys
 import types
 from importlib.machinery import ModuleSpec
 from pathlib import Path
-from smftools.cli.spatial_adata import spatial_adata
 
 import pytest
+
+from smftools.cli.spatial_adata import spatial_adata
 
 CONFIGS = [
     Path("tests/_test_inputs/test_experiment_config_direct_I.csv"),
     Path("tests/_test_inputs/test_experiment_config_deaminase_I.csv"),
     Path("tests/_test_inputs/test_experiment_config_conversion_I.csv"),
 ]
+
 
 @pytest.mark.e2e
 @pytest.mark.parametrize("config_path", CONFIGS, ids=lambda p: p.name)

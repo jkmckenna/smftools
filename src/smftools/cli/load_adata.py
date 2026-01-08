@@ -276,7 +276,7 @@ def load_adata_core(cfg, paths: AdataPaths):
         fasta_stem = cfg.fasta.stem
         bed_stem = Path(cfg.fasta_regions_of_interest).stem
         output_FASTA = cfg.output_directory / f"{fasta_stem}_subsampled_by_{bed_stem}.fasta"
-        
+
         subsample_fasta_from_bed(
             cfg.fasta, cfg.fasta_regions_of_interest, cfg.output_directory, output_FASTA
         )
