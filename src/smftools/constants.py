@@ -20,5 +20,8 @@ def _deep_freeze(obj: Any) -> Any:
 BAM_SUFFIX: Final[str] = ".bam"
 SPLIT_DIR: Final[str] = "demultiplexed_BAMs"
 
+_private_mod_list = ("5mC_5hmC", "6mA")
+MOD_LIST: Final[tuple[str, ...]] = _deep_freeze(_private_mod_list)
+
 _private_mod_map: Dict[str, str] = {"6mA": "6mA", "5mC_5hmC": "5mC"}
 MOD_MAP: Final[Mapping[str, str]] = _deep_freeze(_private_mod_map)
