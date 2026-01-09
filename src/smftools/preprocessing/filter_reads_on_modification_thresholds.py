@@ -9,6 +9,7 @@ from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+
 def filter_reads_on_modification_thresholds(
     adata: ad.AnnData,
     smf_modality: str,

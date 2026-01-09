@@ -4,6 +4,7 @@ from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+
 ## Conversion SMF Specific
 def binary_layers_to_ohe(adata, binary_layers, stack="hstack"):
     """

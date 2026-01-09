@@ -4,6 +4,7 @@ from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+
 # Read length QC
 def calculate_read_length_stats(adata, reference_column="", sample_names_col=""):
     """

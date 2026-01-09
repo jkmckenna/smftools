@@ -8,6 +8,7 @@ from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+
 def filter_reads_on_length_quality_mapping(
     adata: ad.AnnData,
     filter_on_coordinates: Union[bool, Sequence] = False,
@@ -99,9 +100,7 @@ def filter_reads_on_length_quality_mapping(
     # read length filter
     if (rl_min is not None) or (rl_max is not None):
         if "mapped_length" not in adata_work.obs.columns:
-            logger.warning(
-                "'mapped_length' not found in adata.obs — skipping read_length filter."
-            )
+            logger.warning("'mapped_length' not found in adata.obs — skipping read_length filter.")
         else:
             vals = pd.to_numeric(adata_work.obs["mapped_length"], errors="coerce")
             mask = pd.Series(True, index=adata_work.obs.index)

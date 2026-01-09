@@ -4,6 +4,7 @@ from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+
 # General
 def make_dirs(directories):
     """
