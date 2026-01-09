@@ -606,7 +606,7 @@ def modkit_extract_to_adata(
             max_reference_length = reference_dict[record][0]
     logger.info(f"Max reference length in dataset: {max_reference_length}")
     batches = math.ceil(len(tsvs) / batch_size)  # Number of batches to process
-    logger.info("Processing input tsvs in {1} batches of {2} tsvs ".format(batches, batch_size))
+    logger.info("Processing input tsvs in {0} batches of {1} tsvs ".format(batches, batch_size))
     ##########################################################################################
 
     ##########################################################################################
@@ -679,7 +679,7 @@ def modkit_extract_to_adata(
     ###################################################
     # Begin iterating over batches
     for batch in range(batches):
-        logger.info("Processing tsvs for batch {1} ".format(batch))
+        logger.info("Processing tsvs for batch {0} ".format(batch))
         # For the final batch, just take the remaining tsv and bam files
         if batch == batches - 1:
             tsv_batch = tsv_path_list
@@ -690,7 +690,7 @@ def modkit_extract_to_adata(
             bam_batch = bam_path_list[:batch_size]
             tsv_path_list = tsv_path_list[batch_size:]
             bam_path_list = bam_path_list[batch_size:]
-        logger.info("tsvs in batch {1} ".format(tsv_batch))
+        logger.info("tsvs in batch {0} ".format(tsv_batch))
 
         batch_already_processed = sum([1 for h5 in existing_h5s if f"_{batch}_" in h5.name])
         ###################################################
@@ -1210,7 +1210,7 @@ def modkit_extract_to_adata(
 
                     try:
                         logger.info(
-                            "Writing {1} anndata out as a hdf5 file".format(
+                            "Writing {0} anndata out as a hdf5 file".format(
                                 sample_types[dict_index]
                             )
                         )

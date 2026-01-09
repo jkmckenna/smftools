@@ -4,6 +4,10 @@ import os
 import anndata as ad
 import numpy as np
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def one_hot_encode(sequence, device="auto"):
     """
@@ -23,7 +27,7 @@ def one_hot_encode(sequence, device="auto"):
 
     # Handle empty sequences
     if len(sequence) == 0:
-        print("Warning: Empty sequence encountered in one_hot_encode()")
+        logger.warning("Empty sequence encountered in one_hot_encode()")
         return np.zeros(len(mapping))  # Return empty encoding instead of failing
 
     # Convert sequence to NumPy array

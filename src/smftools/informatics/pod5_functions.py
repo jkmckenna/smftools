@@ -5,9 +5,13 @@ from typing import List, Union
 
 import pod5 as p5
 
+from smftools.logging_utils import get_logger
+
 from ..config import LoadExperimentConfig
 from ..informatics.basecalling import canoncall, modcall
 from ..readwrite import make_dirs
+
+logger = get_logger(__name__)
 
 
 def basecall_pod5s(config_path):
@@ -71,7 +75,7 @@ def basecall_pod5s(config_path):
     if input_is_fast5 and not input_is_pod5:
         # take the input directory of fast5 files and write out a single pod5 file into the output directory.
         output_pod5 = output_directory / "FAST5s_to_POD5.pod5"
-        print(
+        logger.info(
             f"Input directory contains fast5 files, converting them and concatenating into a single pod5 file in the {output_pod5}"
         )
         fast5_to_pod5(input_data_path, output_pod5)
@@ -162,14 +166,14 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
         files = os.listdir(pod5_path)
         pod5_files = [os.path.join(pod5_path, file) for file in files if ".pod5" in file]
         pod5_files.sort()
-        print(f"Found input pod5s: {pod5_files}")
+        logger.info(f"Found input pod5s: {pod5_files}")
 
     elif os.path.exists(pod5_path):
         pod5_path_is_dir = False
         input_pod5_base = os.path.basename(pod5_path)
 
     else:
-        print("Error: pod5_path passed does not exist")
+        logger.error("pod5_path passed does not exist")
         return None
 
     if type(read_name_path) is str:
@@ -185,7 +189,7 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
         with open(read_name_path, "r") as file:
             read_names = [line.strip() for line in file]
 
-        print(f"Looking for read_ids: {read_names}")
+        logger.info(f"Looking for read_ids: {read_names}")
         read_records = []
 
         if pod5_path_is_dir:
@@ -194,17 +198,17 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
                     try:
                         for read_record in reader.reads(selection=read_names, missing_ok=True):
                             read_records.append(read_record.to_read())
-                            print(f"Found read in {input_pod5}: {read_record.read_id}")
+                            logger.info(f"Found read in {input_pod5}: {read_record.read_id}")
                     except Exception:
-                        print("Skipping pod5, could not find reads")
+                        logger.warning("Skipping pod5, could not find reads")
         else:
             with p5.Reader(pod5_path) as reader:
                 try:
                     for read_record in reader.reads(selection=read_names):
                         read_records.append(read_record.to_read())
-                        print(f"Found read in {input_pod5}: {read_record}")
+                        logger.info(f"Found read in {input_pod5}: {read_record}")
                 except Exception:
-                    print("Could not find reads")
+                    logger.warning("Could not find reads")
 
     elif type(read_name_path) is int:
         import random
@@ -219,7 +223,7 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
             random.shuffle(pod5_files)
             for input_pod5 in pod5_files:
                 # iterate over the input pod5s
-                print(f"Opening pod5 file {input_pod5}")
+                logger.info(f"Opening pod5 file {input_pod5}")
                 with p5.Reader(pod5_path) as reader:
                     for read_record in reader.reads():
                         all_read_records.append(read_record.to_read())
@@ -230,7 +234,7 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
             if read_name_path <= len(all_read_records):
                 read_records = random.sample(all_read_records, read_name_path)
             else:
-                print(
+                logger.info(
                     "Trying to sample more reads than are contained in the input pod5s, taking all reads"
                 )
                 read_records = all_read_records
@@ -244,7 +248,7 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
                 # if the subsampling amount is less than the record amount in the file, randomly subsample the reads
                 read_records = random.sample(all_read_records, read_name_path)
             else:
-                print(
+                logger.info(
                     "Trying to sample more reads than are contained in the input pod5s, taking all reads"
                 )
                 read_records = all_read_records
