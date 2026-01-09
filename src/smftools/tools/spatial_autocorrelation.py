@@ -3,6 +3,10 @@ import numpy as np
 import pandas as pd
 from numpy.fft import rfft, rfftfreq
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 # optional parallel backend
 try:
     from joblib import Parallel, delayed
@@ -411,8 +415,11 @@ def rolling_autocorr_metrics(
         window_starts = list(range(start, end - window_size + 1, step))
 
     if verbose:
-        print(
-            f"Rolling windows: {len(window_starts)} windows, window_size={window_size}, step={step}"
+        logger.info(
+            "Rolling windows: %s windows, window_size=%s, step=%s",
+            len(window_starts),
+            window_size,
+            step,
         )
 
     # helper to extract row to dense 1D np array (supports sparse rows)

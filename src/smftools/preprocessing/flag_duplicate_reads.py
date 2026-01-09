@@ -12,7 +12,11 @@ import numpy as np
 import pandas as pd
 import torch
 
+from smftools.logging_utils import get_logger
+
 from ..readwrite import make_dirs
+
+logger = get_logger(__name__)
 
 # optional imports for clustering / PCA / KDE
 try:
@@ -232,14 +236,14 @@ def flag_duplicate_reads(
 
     for sample in samples:
         for ref in references:
-            print(f"Processing sample={sample} ref={ref}")
+            logger.info("Processing sample=%s ref=%s", sample, ref)
             sample_mask = adata.obs[sample_col] == sample
             ref_mask = adata.obs[obs_reference_col] == ref
             subset_mask = sample_mask & ref_mask
             adata_subset = adata[subset_mask].copy()
 
             if adata_subset.n_obs < 2:
-                print(f"  Skipping {sample}_{ref} (too few reads)")
+                logger.info("  Skipping %s_%s (too few reads)", sample, ref)
                 continue
 
             N = adata_subset.shape[0]
@@ -255,7 +259,12 @@ def flag_duplicate_reads(
 
             selected_cols = adata.var.index[combined_mask.tolist()].to_list()
             col_indices = [adata.var.index.get_loc(c) for c in selected_cols]
-            print(f"  Selected {len(col_indices)} columns out of {adata.var.shape[0]} for {ref}")
+            logger.info(
+                "  Selected %s columns out of %s for %s",
+                len(col_indices),
+                adata.var.shape[0],
+                ref,
+            )
 
             # Extract data matrix (dense numpy) for the subset
             X = adata_subset.X
@@ -812,7 +821,7 @@ def plot_histogram_pages(
         use_adata = False
 
     if len(samples) == 0 or len(references) == 0:
-        print("No histogram data to plot.")
+        logger.info("No histogram data to plot.")
         return {"distance_pages": [], "cluster_size_pages": []}
 
     def clean_array(arr):

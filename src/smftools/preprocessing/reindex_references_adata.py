@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def reindex_references_adata(
     adata,
     reference_col: str = "Reference_strand",
@@ -21,7 +26,7 @@ def reindex_references_adata(
     # ============================================================
     already = bool(adata.uns.get(uns_flag, False))
     if already and not force_redo:
-        print(f"{uns_flag} already set; skipping. Use force_redo=True to recompute.")
+        logger.info("%s already set; skipping. Use force_redo=True to recompute.", uns_flag)
         return None
 
     # Normalize offsets
@@ -54,7 +59,7 @@ def reindex_references_adata(
 
         # Case 1: No offset provided → identity mapping
         if ref not in offsets:
-            print(f"[info] No offset for ref={ref!r}; using identity positions.")
+            logger.info("No offset for ref=%r; using identity positions.", ref)
             adata.var[colname] = var_coords
             continue
 
@@ -62,7 +67,7 @@ def reindex_references_adata(
 
         # Case 2: offset explicitly None → identity mapping
         if offset_value is None:
-            print(f"[info] Offset for ref={ref!r} is None; using identity positions.")
+            logger.info("Offset for ref=%r is None; using identity positions.", ref)
             adata.var[colname] = var_coords
             continue
 
@@ -73,12 +78,12 @@ def reindex_references_adata(
             )
 
         adata.var[colname] = var_coords + offset_value
-        print(f"[ok] Added reindexed column '{colname}' (offset={offset_value}).")
+        logger.info("Added reindexed column '%s' (offset=%s).", colname, offset_value)
 
     # ============================================================
     # 5. Mark complete
     # ============================================================
     adata.uns[uns_flag] = True
-    print("Reindexing complete!")
+    logger.info("Reindexing complete!")
 
     return None

@@ -1,6 +1,10 @@
 import numpy as np
 import scipy.sparse as sp
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def append_binary_layer_by_base_context(
     adata,
@@ -65,7 +69,10 @@ def append_binary_layer_by_base_context(
     def _col_mask_or_warn(colname):
         if colname not in adata.var.columns:
             if verbose:
-                print(f"Warning: var column '{colname}' not found; treating as all-False mask.")
+                logger.warning(
+                    "Var column '%s' not found; treating as all-False mask.",
+                    colname,
+                )
             return np.zeros(n_vars, dtype=bool)
         vals = adata.var[colname].values
         # coerce truthiness
@@ -86,7 +93,7 @@ def append_binary_layer_by_base_context(
     X = adata.X
     if sp.issparse(X):
         if verbose:
-            print("Converting sparse X to dense array for layer construction (temporary).")
+            logger.info("Converting sparse X to dense array for layer construction (temporary).")
         X = X.toarray()
     X = np.asarray(X, dtype=np.float32)
 
@@ -149,13 +156,13 @@ def append_binary_layer_by_base_context(
         def _filled_positions(arr):
             return int(np.sum(~np.isnan(arr)))
 
-        print("Layer build summary (non-NaN cell counts):")
-        print(f"  GpC: {_filled_positions(masked_gpc)}")
-        print(f"  CpG: {_filled_positions(masked_cpg)}")
-        print(f"  GpC+CpG combined: {_filled_positions(combined_sum)}")
-        print(f"  C: {_filled_positions(masked_any_c)}")
-        print(f"  other_C: {_filled_positions(masked_other_c)}")
-        print(f"  A: {_filled_positions(masked_a)}")
+        logger.info("Layer build summary (non-NaN cell counts):")
+        logger.info("  GpC: %s", _filled_positions(masked_gpc))
+        logger.info("  CpG: %s", _filled_positions(masked_cpg))
+        logger.info("  GpC+CpG combined: %s", _filled_positions(combined_sum))
+        logger.info("  C: %s", _filled_positions(masked_any_c))
+        logger.info("  other_C: %s", _filled_positions(masked_other_c))
+        logger.info("  A: %s", _filled_positions(masked_a))
 
     # mark as done
     adata.uns[uns_flag] = True
