@@ -37,7 +37,7 @@ def extract_mods(
     )
     if skip_unclassified:
         bam_files = [p for p in bam_files if "unclassified" not in p.name]
-    print(f"Running modkit extract for the following bam files: {bam_files}")
+    logger.info(f"Running modkit extract for the following bam files: {bam_files}")
 
     if threads:
         threads = str(threads)
@@ -45,14 +45,14 @@ def extract_mods(
         pass
 
     for input_file in bam_files:
-        print(input_file)
+        logger.debug(input_file)
         # Construct the output TSV file path
         output_tsv = mod_tsv_dir / (input_file.stem + "_extract.tsv")
         output_tsv_gz = output_tsv.parent / (output_tsv.name + ".gz")
         if output_tsv_gz.exists():
-            print(f"{output_tsv_gz} already exists, skipping modkit extract")
+            logger.debug(f"{output_tsv_gz} already exists, skipping modkit extract")
         else:
-            print(f"Extracting modification data from {input_file}")
+            logger.info(f"Extracting modification data from {input_file}")
             if modkit_summary:
                 # Run modkit summary
                 subprocess.run(["modkit", "summary", str(input_file)])
@@ -97,7 +97,7 @@ def extract_mods(
                 ]
             subprocess.run(extract_command)
             # Zip the output TSV
-            print(f"zipping {output_tsv}")
+            logger.info(f"zipping {output_tsv}")
             if threads:
                 zip_command = ["pigz", "-f", "-p", threads, str(output_tsv)]
             else:
