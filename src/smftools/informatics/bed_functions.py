@@ -10,7 +10,11 @@ import pybedtools
 import pyBigWig
 import pysam
 
+from smftools.logging_utils import get_logger
+
 from ..readwrite import make_dirs
+
+logger = get_logger(__name__)
 
 
 def _bed_to_bigwig(fasta: str, bed: str) -> str:
@@ -31,14 +35,14 @@ def _bed_to_bigwig(fasta: str, bed: str) -> str:
     bigwig = parent / f"{stem}.bw"
 
     # 1) Compute coverage → bedGraph
-    print(f"[pybedtools] generating coverage bedgraph from {bed}")
+    logger.debug(f"[pybedtools] generating coverage bedgraph from {bed}")
     bt = pybedtools.BedTool(str(bed))
     # bedtools genomecov -bg
     coverage = bt.genome_coverage(bg=True, genome=str(fai))
     coverage.saveas(str(bedgraph))
 
     # 2) Convert bedGraph → BigWig via pyBigWig
-    print(f"[pyBigWig] converting bedgraph → bigwig: {bigwig}")
+    logger.debug(f"[pyBigWig] converting bedgraph → bigwig: {bigwig}")
 
     # read chrom sizes from the FASTA .fai index
     chrom_sizes = {}
@@ -59,7 +63,7 @@ def _bed_to_bigwig(fasta: str, bed: str) -> str:
 
     bw.close()
 
-    print(f"BigWig written: {bigwig}")
+    logger.debug(f"BigWig written: {bigwig}")
     return str(bigwig)
 
 
@@ -112,7 +116,7 @@ def _plot_bed_histograms(
     os.makedirs(plotting_directory, exist_ok=True)
 
     bed_basename = os.path.basename(bed_file).rsplit(".bed", 1)[0]
-    print(f"[plot_bed_histograms] Loading: {bed_file}")
+    logger.debug(f"[plot_bed_histograms] Loading: {bed_file}")
 
     # Load BED-like table
     cols = ["chrom", "start", "end", "read_len", "qname", "mapq", "avg_q"]
@@ -135,7 +139,7 @@ def _plot_bed_histograms(
     # Drop unaligned records (chrom == '*') if present
     df = df[df["chrom"] != "*"].copy()
     if df.empty:
-        print("[plot_bed_histograms] No aligned reads found; nothing to plot.")
+        logger.debug("[plot_bed_histograms] No aligned reads found; nothing to plot.")
         return
 
     # Ensure coordinate mode consistent; convert to 0-based half-open for bin math internally
@@ -172,7 +176,9 @@ def _plot_bed_histograms(
     chrom_order = [c for c in ref_names if c in chroms]
 
     if not chrom_order:
-        print("[plot_bed_histograms] No chromosomes from BED are present in FASTA; aborting.")
+        logger.debug(
+            "[plot_bed_histograms] No chromosomes from BED are present in FASTA; aborting."
+        )
         return
 
     # Pagination
@@ -281,7 +287,7 @@ def _plot_bed_histograms(
         plt.savefig(out_png, bbox_inches="tight")
         plt.close(fig)
 
-    print("[plot_bed_histograms] Done.")
+    logger.debug("[plot_bed_histograms] Done.")
 
 
 def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
@@ -308,7 +314,7 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
 
     bed_output = bed_dir / str(aligned_BAM.name).replace(".bam", "_bed.bed")
 
-    print(f"Creating BED-like file from BAM (with MAPQ and avg base quality): {aligned_BAM}")
+    logger.debug(f"Creating BED-like file from BAM (with MAPQ and avg base quality): {aligned_BAM}")
 
     with pysam.AlignmentFile(aligned_BAM, "rb") as bam, open(bed_output, "w") as out:
         for read in bam.fetch(until_eof=True):
@@ -336,7 +342,7 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
 
             out.write(f"{chrom}\t{start1}\t{end1}\t{rl}\t{qname}\t{mapq}\t{avg_q:.3f}\n")
 
-    print(f"BED-like file created: {bed_output}")
+    logger.debug(f"BED-like file created: {bed_output}")
 
     def split_bed(bed):
         """Splits into aligned and unaligned reads (chrom == '*')."""
@@ -353,7 +359,7 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
         os.remove(bed)
         return aligned
 
-    print(f"Splitting: {bed_output}")
+    logger.debug(f"Splitting: {bed_output}")
     aligned_bed = split_bed(bed_output)
 
     with ProcessPoolExecutor() as executor:
@@ -363,7 +369,7 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
             futures.append(executor.submit(_bed_to_bigwig, fasta, aligned_bed))
         concurrent.futures.wait(futures)
 
-    print("Processing completed successfully.")
+    logger.debug("Processing completed successfully.")
 
 
 def extract_read_lengths_from_bed(file_path):

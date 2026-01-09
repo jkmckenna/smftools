@@ -9,6 +9,10 @@ import pandas as pd
 import scipy.sparse as sp
 from pod5 import Reader
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def add_demux_type_annotation(
     adata,
@@ -292,8 +296,8 @@ def annotate_pod5_origin(
     target_ids = set(obs_names)  # only these are interesting
 
     if verbose:
-        print(f"Found {len(pod5_files)} POD5 files.")
-        print(f"Tracking {len(target_ids)} read IDs from AnnData.")
+        logger.info(f"Found {len(pod5_files)} POD5 files.")
+        logger.info(f"Tracking {len(target_ids)} read IDs from AnnData.")
 
     # --- Collect mappings (possibly multiprocessed) ---
     global_mapping: dict[str, str] = {}
@@ -301,15 +305,15 @@ def annotate_pod5_origin(
     if n_jobs is None or n_jobs <= 1:
         # Serial version (less overhead, useful for debugging)
         if verbose:
-            print("Running in SERIAL mode.")
+            logger.debug("Running in SERIAL mode.")
         for f in pod5_files:
             if verbose:
-                print(f"  Scanning {os.path.basename(f)} ...")
+                logger.debug(f"  Scanning {os.path.basename(f)} ...")
             part = _collect_read_origins_from_pod5(f, target_ids)
             global_mapping.update(part)
     else:
         if verbose:
-            print(f"Running in PARALLEL mode with {n_jobs} workers.")
+            logger.debug(f"Running in PARALLEL mode with {n_jobs} workers.")
         with ProcessPoolExecutor(max_workers=n_jobs) as ex:
             futures = {
                 ex.submit(_collect_read_origins_from_pod5, f, target_ids): f for f in pod5_files
@@ -319,14 +323,14 @@ def annotate_pod5_origin(
                 try:
                     part = fut.result()
                 except Exception as e:
-                    print(f"Error while processing {f}: {e}")
+                    logger.warning(f"Error while processing {f}: {e}")
                     continue
                 global_mapping.update(part)
                 if verbose:
-                    print(f"  Finished {os.path.basename(f)} ({len(part)} matching reads)")
+                    logger.info(f"  Finished {os.path.basename(f)} ({len(part)} matching reads)")
 
     if verbose:
-        print(f"Total reads matched: {len(global_mapping)}")
+        logger.info(f"Total reads matched: {len(global_mapping)}")
 
     # --- Populate obs['pod5_origin'] in AnnData order, memory-efficiently ---
     origin = np.empty(adata.n_obs, dtype=object)
@@ -336,12 +340,12 @@ def annotate_pod5_origin(
 
     adata.obs["pod5_origin"] = origin
     if verbose:
-        print("Assigned `pod5_origin` to adata.obs.")
+        logger.info("Assigned `pod5_origin` to adata.obs.")
 
     # --- Optionally write a CSV ---
     if csv_path is not None:
         if verbose:
-            print(f"Writing CSV mapping to: {csv_path}")
+            logger.info(f"Writing CSV mapping to: {csv_path}")
 
         # Create DataFrame in AnnData order for easier cross-referencing
         df = pd.DataFrame(
@@ -353,6 +357,6 @@ def annotate_pod5_origin(
         df.to_csv(csv_path, index=False)
 
         if verbose:
-            print("CSV saved.")
+            logger.info("CSV saved.")
 
     return global_mapping

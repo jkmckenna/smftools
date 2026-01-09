@@ -8,8 +8,12 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import torch
 
+from smftools.logging_utils import get_logger
+
 # FIX: import _to_dense_np to avoid NameError
 from ..hmm.HMM import _safe_int_coords, _to_dense_np, create_hmm, normalize_hmm_feature_sets
+
+logger = get_logger(__name__)
 
 # =============================================================================
 # Helpers: extracting training arrays
@@ -775,7 +779,7 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
                 for layer in hmm_layers
                 if not any(s in layer for s in ("_lengths", "_states", "_posterior"))
             ]
-            print(f"HMM appended layers: {hmm_layers}")
+            logger.info(f"HMM appended layers: {hmm_layers}")
 
     # ---------------------------- HMM peak calling stage ----------------------------
     hmm_dir = pp_dir / "11_hmm_peak_calling"
@@ -796,7 +800,7 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
 
     ## Save HMM annotated adata
     if not paths.hmm.exists():
-        print("Saving hmm analyzed AnnData (post preprocessing and duplicate removal).")
+        logger.info("Saving hmm analyzed AnnData (post preprocessing and duplicate removal).")
         write_gz_h5ad(adata, paths.hmm)
 
     ########################################################################################################################
@@ -863,7 +867,7 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
     hmm_dir = pp_dir / "13_hmm_bulk_traces"
 
     if hmm_dir.is_dir():
-        print(f"{hmm_dir} already exists.")
+        logger.debug(f"{hmm_dir} already exists.")
     else:
         make_dirs([pp_dir, hmm_dir])
         from ..plotting import plot_hmm_layers_rolling_by_sample_ref
@@ -889,7 +893,7 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
     hmm_dir = pp_dir / "14_hmm_fragment_distributions"
 
     if hmm_dir.is_dir():
-        print(f"{hmm_dir} already exists.")
+        logger.debug(f"{hmm_dir} already exists.")
     else:
         make_dirs([pp_dir, hmm_dir])
         from ..plotting import plot_hmm_size_contours

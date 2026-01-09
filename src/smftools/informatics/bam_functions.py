@@ -5,7 +5,7 @@ import os
 import re
 import subprocess
 import time
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import zip_longest
 from pathlib import Path
@@ -15,7 +15,35 @@ import numpy as np
 import pysam
 from tqdm import tqdm
 
+from smftools.logging_utils import get_logger
+
 from ..readwrite import date_string, time_string
+
+logger = get_logger(__name__)
+
+_PROGRESS_RE = re.compile(r"Output records written:\s*(\d+)")
+_EMPTY_RE = re.compile(r"^\s*$")
+
+
+def _stream_dorado_logs(stderr_iter) -> None:
+    last_n: int | None = None
+
+    for raw in stderr_iter:
+        line = raw.rstrip("\n")
+        if _EMPTY_RE.match(line):
+            continue
+
+        m = _PROGRESS_RE.search(line)
+        if m:
+            n = int(m.group(1))
+            logger.debug("[dorado] Output records written: %d", n)
+            last_n = n
+            continue
+
+        logger.info("[dorado] %s", line)
+
+    if last_n is not None:
+        logger.info("[dorado] Final output records written: %d", last_n)
 
 
 def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, Path]) -> None:
@@ -24,6 +52,9 @@ def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, 
     """
     bam_path = str(bam_path)
     fastq_path = str(fastq_path)
+
+    logger.debug(f"Converting BAM to FASTQ using _bam_to_fastq_with_pysam")
+
     with (
         pysam.AlignmentFile(bam_path, "rb", check_sq=False) as bam,
         open(fastq_path, "w", encoding="utf-8") as fq,
@@ -54,6 +85,7 @@ def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, 
 def _sort_bam_with_pysam(
     in_bam: Union[str, Path], out_bam: Union[str, Path], threads: Optional[int] = None
 ) -> None:
+    logger.debug(f"Sorting BAM using _sort_bam_with_pysam")
     in_bam, out_bam = str(in_bam), str(out_bam)
     args = []
     if threads:
@@ -64,6 +96,7 @@ def _sort_bam_with_pysam(
 
 def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = None) -> None:
     bam_path = str(bam_path)
+    logger.debug(f"Indexing BAM using _index_bam_with_pysam")
     # pysam.index supports samtools-style args
     if threads:
         pysam.index("-@", str(threads), bam_path)
@@ -88,6 +121,7 @@ def align_and_sort_BAM(
         None
             The function writes out files for: 1) An aligned BAM, 2) and aligned_sorted BAM, 3) an index file for the aligned_sorted BAM, 4) A bed file for the aligned_sorted BAM, 5) A text file containing read names in the aligned_sorted BAM
     """
+    logger.debug("Aligning and sorting BAM using align_and_sort_BAM")
     input_basename = input.name
     input_suffix = input.suffix
     input_as_fastq = input.with_name(input.stem + ".fastq")
@@ -106,12 +140,12 @@ def align_and_sort_BAM(
 
     if cfg.aligner == "minimap2":
         if not cfg.align_from_bam:
-            print(f"Converting BAM to FASTQ: {input}")
+            logger.debug(f"Converting BAM to FASTQ: {input}")
             _bam_to_fastq_with_pysam(input, input_as_fastq)
-            print(f"Aligning FASTQ to Reference: {input_as_fastq}")
+            logger.debug(f"Aligning FASTQ to Reference: {input_as_fastq}")
             mm_input = input_as_fastq
         else:
-            print(f"Aligning BAM to Reference: {input}")
+            logger.debug(f"Aligning BAM to Reference: {input}")
             mm_input = input
 
         if threads:
@@ -120,7 +154,22 @@ def align_and_sort_BAM(
             )
         else:
             minimap_command = ["minimap2"] + cfg.aligner_args + [str(fasta), str(mm_input)]
-        subprocess.run(minimap_command, stdout=open(aligned_output, "wb"))
+
+        with open(aligned_output, "wb") as out:
+            proc = subprocess.Popen(
+                minimap_command,
+                stdout=out,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                logger.info("[minimap2] %s", line.rstrip())
+
+            ret = proc.wait()
+            if ret != 0:
+                raise RuntimeError(f"minimap2 failed with exit code {ret}")
 
         if not cfg.align_from_bam:
             os.remove(input_as_fastq)
@@ -134,17 +183,30 @@ def align_and_sort_BAM(
             )
         else:
             alignment_command = ["dorado", "aligner"] + cfg.aligner_args + [str(fasta), str(input)]
-        subprocess.run(alignment_command, stdout=open(aligned_output, "wb"))
 
+        with open(aligned_output, "wb") as out:
+            proc = subprocess.Popen(
+                alignment_command,
+                stdout=out,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            assert proc.stderr is not None
+            _stream_dorado_logs(proc.stderr)
+            ret = proc.wait()
+
+            if ret != 0:
+                raise RuntimeError(f"dorado failed with exit code {ret}")
     else:
-        print(f"Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado")
+        logger.error(f"Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado")
         return
 
     # --- Sort & Index with pysam ---
-    print(f"[pysam] Sorting: {aligned_output} -> {aligned_sorted_output}")
+    logger.debug(f"Sorting: {aligned_output} -> {aligned_sorted_output}")
     _sort_bam_with_pysam(aligned_output, aligned_sorted_output, threads=threads)
 
-    print(f"[pysam] Indexing: {aligned_sorted_output}")
+    logger.debug(f"Indexing: {aligned_sorted_output}")
     _index_bam_with_pysam(aligned_sorted_output, threads=threads)
 
 
@@ -165,131 +227,140 @@ def bam_qc(
     import shutil
     import subprocess
 
+    logger.debug("Performing BAM QC using bam_qc")
+
     # Try to import pysam once
     try:
-        import pysam
+        import pysam  # type: ignore
 
-        HAVE_PYSAM = True
+        have_pysam = True
     except Exception:
-        HAVE_PYSAM = False
+        pysam = None  # type: ignore
+        have_pysam = False
 
     bam_qc_dir = Path(bam_qc_dir)
     bam_qc_dir.mkdir(parents=True, exist_ok=True)
 
-    bam_files = [Path(b) for b in bam_files]
+    bam_paths = [Path(b) for b in bam_files]
 
     def _has_index(p: Path) -> bool:
-        if p.suffix.lower() == ".bam":
-            bai = p.with_suffix(p.suffix + ".bai")
-            bai_alt = Path(str(p) + ".bai")
-            return bai.exists() or bai_alt.exists()
-        if p.suffix.lower() == ".cram":
-            crai = Path(str(p) + ".crai")
-            return crai.exists()
+        suf = p.suffix.lower()
+        if suf == ".bam":
+            return p.with_suffix(p.suffix + ".bai").exists() or Path(str(p) + ".bai").exists()
+        if suf == ".cram":
+            return Path(str(p) + ".crai").exists()
         return False
 
     def _ensure_index(p: Path) -> None:
         if _has_index(p):
             return
-        if HAVE_PYSAM:
-            # pysam.index supports both BAM & CRAM
-            pysam.index(str(p))
+        if have_pysam:
+            assert pysam is not None
+            pysam.index(str(p))  # supports BAM & CRAM
         else:
+            if not shutil.which("samtools"):
+                raise RuntimeError("Neither pysam nor samtools is available in PATH.")
             cmd = ["samtools", "index", str(p)]
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # capture text so errors are readable; raise on failure
+            cp = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            if cp.returncode != 0:
+                raise RuntimeError(f"samtools index failed (exit {cp.returncode}):\n{cp.stderr}")
 
-    def _run_one(bam: Path) -> Tuple[Path, List[Tuple[str, int]]]:
-        # outputs + return (file, [(task_name, returncode)])
-        results: List[Tuple[str, int]] = []
-        base = bam.stem  # filename without .bam
+    def _run_samtools_to_file(cmd: list[str], out_path: Path, bam: Path, tag: str) -> int:
+        """
+        Stream stderr to logger; write stdout to out_path; return rc; raise with stderr tail on failure.
+        """
+        last_err = deque(maxlen=80)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(out_path, "w") as fh:
+            proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.PIPE, text=True)
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                line = line.rstrip()
+                if line:
+                    last_err.append(line)
+                    logger.info("[%s][%s] %s", tag, bam.name, line)
+            rc = proc.wait()
+
+        if rc != 0:
+            tail = "\n".join(last_err)
+            raise RuntimeError(f"{tag} failed for {bam} (exit {rc}). Stderr tail:\n{tail}")
+        return rc
+
+    def _run_one(bam: Path) -> tuple[Path, list[tuple[str, int]]]:
+        import subprocess
+
+        results: list[tuple[str, int]] = []
+        base = bam.stem  # e.g. sample.bam -> sample
         out_stats = bam_qc_dir / f"{base}_stats.txt"
         out_flag = bam_qc_dir / f"{base}_flagstat.txt"
         out_idx = bam_qc_dir / f"{base}_idxstats.txt"
 
-        # Make sure index exists (samtools stats/flagstat don’t require, idxstats does)
+        # Make sure index exists (idxstats requires; stats/flagstat usually don't, but indexing is cheap/useful)
         try:
             _ensure_index(bam)
         except Exception as e:
-            # Still attempt stats/flagstat if requested
-            print(f"[warn] Indexing failed for {bam}: {e}")
+            # Still attempt stats/flagstat if requested; idxstats may fail later if index is required.
+            logger.warning("Indexing failed for %s: %s", bam, e)
 
-        # Choose runner per task
-        def run_stats():
-            if not stats:
-                return
-            if HAVE_PYSAM and hasattr(pysam, "stats"):
+        if not have_pysam:
+            import shutil
+
+            if not shutil.which("samtools"):
+                raise RuntimeError("Neither pysam nor samtools is available in PATH.")
+
+        # --- stats ---
+        if stats:
+            if have_pysam and pysam is not None and hasattr(pysam, "stats"):
                 txt = pysam.stats(str(bam))
                 out_stats.write_text(txt)
                 results.append(("stats(pysam)", 0))
             else:
                 cmd = ["samtools", "stats", str(bam)]
-                with open(out_stats, "w") as fh:
-                    cp = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE)
-                results.append(("stats(samtools)", cp.returncode))
-                if cp.returncode != 0:
-                    raise RuntimeError(cp.stderr.decode(errors="replace"))
+                rc = _run_samtools_to_file(cmd, out_stats, bam, "samtools stats")
+                results.append(("stats(samtools)", rc))
 
-        def run_flagstat():
-            if not flagstats:
-                return
-            if HAVE_PYSAM and hasattr(pysam, "flagstat"):
+        # --- flagstat ---
+        if flagstats:
+            if have_pysam and pysam is not None and hasattr(pysam, "flagstat"):
                 txt = pysam.flagstat(str(bam))
                 out_flag.write_text(txt)
                 results.append(("flagstat(pysam)", 0))
             else:
                 cmd = ["samtools", "flagstat", str(bam)]
-                with open(out_flag, "w") as fh:
-                    cp = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE)
-                results.append(("flagstat(samtools)", cp.returncode))
-                if cp.returncode != 0:
-                    raise RuntimeError(cp.stderr.decode(errors="replace"))
+                rc = _run_samtools_to_file(cmd, out_flag, bam, "samtools flagstat")
+                results.append(("flagstat(samtools)", rc))
 
-        def run_idxstats():
-            if not idxstats:
-                return
-            if HAVE_PYSAM and hasattr(pysam, "idxstats"):
+        # --- idxstats ---
+        if idxstats:
+            if have_pysam and pysam is not None and hasattr(pysam, "idxstats"):
                 txt = pysam.idxstats(str(bam))
                 out_idx.write_text(txt)
                 results.append(("idxstats(pysam)", 0))
             else:
                 cmd = ["samtools", "idxstats", str(bam)]
-                with open(out_idx, "w") as fh:
-                    cp = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE)
-                results.append(("idxstats(samtools)", cp.returncode))
-                if cp.returncode != 0:
-                    raise RuntimeError(cp.stderr.decode(errors="replace"))
+                rc = _run_samtools_to_file(cmd, out_idx, bam, "samtools idxstats")
+                results.append(("idxstats(samtools)", rc))
 
-        # Sanity: ensure samtools exists if pysam missing
-        if not HAVE_PYSAM:
-            if not shutil.which("samtools"):
-                raise RuntimeError("Neither pysam nor samtools is available in PATH.")
-
-        # Execute tasks (serial per file; parallelized across files)
-        run_stats()
-        run_flagstat()
-        run_idxstats()
         return bam, results
 
-    # Parallel across BAMs
     max_workers = int(threads) if threads and int(threads) > 0 else 1
-    futures = []
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for b in bam_files:
-            futures.append(ex.submit(_run_one, b))
 
-        for fut in as_completed(futures):
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = [ex.submit(_run_one, b) for b in bam_paths]
+        for fut in as_completed(futs):
             try:
                 bam, res = fut.result()
                 summary = ", ".join(f"{name}:{rc}" for name, rc in res) or "no-op"
-                print(f"[qc] {bam.name}: {summary}")
+                logger.info("[qc] %s: %s", bam.name, summary)
             except Exception as e:
-                print(f"[error] QC failed: {e}")
+                logger.exception("QC failed: %s", e)
 
-    # Placeholders to keep your signature stable
-    if modality not in {"conversion", "direct"}:
-        print(f"[warn] Unknown modality '{modality}', continuing.")
+    if modality not in {"conversion", "direct", "deaminase"}:
+        logger.warning("Unknown modality '%s', continuing.", modality)
 
-    print("QC processing completed.")
+    logger.info("QC processing completed.")
 
 
 def concatenate_fastqs_to_bam(
@@ -618,6 +689,7 @@ def demux_and_index_BAM(
         bam_files (list): List of split BAM file path strings
             Splits an input BAM file on barcode value and makes a BAM index file.
     """
+
     input_bam = aligned_sorted_BAM.with_suffix(bam_suffix)
     command = ["dorado", "demux", "--kit-name", barcode_kit]
     if barcode_both_ends:
@@ -631,8 +703,21 @@ def demux_and_index_BAM(
     command += ["--emit-summary", "--sort-bam", "--output-dir", str(split_dir)]
     command.append(str(input_bam))
     command_string = " ".join(command)
-    print(f"Running: {command_string}")
-    subprocess.run(command)
+    logger.info("Running dorado demux: %s", " ".join(command))
+
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    assert proc.stderr is not None
+    _stream_dorado_logs(proc.stderr)
+    rc = proc.wait()
+
+    if rc != 0:
+        raise RuntimeError(f"dorado demux failed with exit code {rc}")
 
     bam_files = sorted(
         p for p in split_dir.glob(f"*{bam_suffix}") if p.is_file() and p.suffix == bam_suffix
@@ -682,6 +767,7 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
         dict: Base identities from forward mapped reads.
         dict: Base identities from reverse mapped reads.
     """
+    logger.debug("Extracting nucleotide identities for each read using extract_base_identities")
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
 
     positions = set(positions)
@@ -747,7 +833,9 @@ def extract_read_features_from_bam(bam_file_path):
         read_metrics (dict)
     """
     # Open the BAM file
-    print(f"Extracting read features from BAM: {bam_file_path}")
+    logger.debug(
+        f"Extracting read metrics from BAM using extract_read_features_from_bam: {bam_file_path}"
+    )
     with pysam.AlignmentFile(bam_file_path, "rb") as bam_file:
         read_metrics = {}
         reference_lengths = bam_file.lengths  # List of lengths for each reference (chromosome)
@@ -814,6 +902,7 @@ def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
         None
             Writes out split BAM files.
     """
+    logger.debug("Demultiplexing BAM based on the BC tag")
     bam_base = input_bam.name
     bam_base_minus_suffix = input_bam.stem
 
@@ -838,7 +927,7 @@ def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
                 # Write the read to the corresponding output BAM file
                 output_files[bc_tag].write(read)
             except KeyError:
-                print(f"BC tag not present for read: {read.query_name}")
+                logger.warning(f"BC tag not present for read: {read.query_name}")
     # Close all output BAM files
     for output_file in output_files.values():
         output_file.close()
@@ -856,6 +945,7 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
         None
             Splits an input BAM file on barcode value and makes a BAM index file.
     """
+    logger.debug("Demultiplexing and indexing BAMS based on BC tag using split_and_index_BAM")
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     file_prefix = date_string()
     separate_bam_by_bc(aligned_sorted_output, file_prefix, bam_suffix, split_dir)

@@ -9,7 +9,11 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from smftools.logging_utils import get_logger
+
 from .bam_functions import count_aligned_reads
+
+logger = get_logger(__name__)
 
 
 def filter_bam_records(bam, mapping_threshold):
@@ -18,11 +22,11 @@ def filter_bam_records(bam, mapping_threshold):
 
     total_reads = aligned_reads_count + unaligned_reads_count
     percent_aligned = (aligned_reads_count * 100 / total_reads) if total_reads > 0 else 0
-    print(f"{percent_aligned:.2f}% of reads in {bam} aligned successfully")
+    logger.info(f"{percent_aligned:.2f}% of reads in {bam} aligned successfully")
 
     records = []
     for record, (count, percentage) in record_counts_dict.items():
-        print(
+        logger.info(
             f"{count} reads mapped to reference {record}. This is {percentage * 100:.2f}% of all mapped reads in {bam}"
         )
         if percentage >= mapping_threshold:
@@ -44,7 +48,7 @@ def parallel_filter_bams(bam_path_list, mapping_threshold):
     for result in results:
         records_to_analyze.update(result)
 
-    print(f"Records to analyze: {records_to_analyze}")
+    logger.info(f"Records to analyze: {records_to_analyze}")
     return records_to_analyze
 
 
@@ -403,21 +407,21 @@ def delete_intermediate_h5ads_and_tmpdir(
     def _maybe_unlink(p: Path):
         if not p.exists():
             if verbose:
-                print(f"[skip] not found: {p}")
+                logger.debug(f"[skip] not found: {p}")
             return
         if not p.is_file():
             if verbose:
-                print(f"[skip] not a file: {p}")
+                logger.debug(f"[skip] not a file: {p}")
             return
         if dry_run:
-            print(f"[dry-run] would remove file: {p}")
+            logger.debug(f"[dry-run] would remove file: {p}")
             return
         try:
             p.unlink()
             if verbose:
-                print(f"Removed file: {p}")
+                logger.info(f"Removed file: {p}")
         except Exception as e:
-            print(f"[error] failed to remove file {p}: {e}")
+            logger.warning(f"[error] failed to remove file {p}: {e}")
 
     # Handle h5_dir input (directory OR iterable of file paths)
     if h5_dir is not None:
@@ -432,7 +436,7 @@ def delete_intermediate_h5ads_and_tmpdir(
                 else:
                     if verbose:
                         # optional: comment this out if too noisy
-                        print(f"[skip] not matching pattern: {p.name}")
+                        logger.debug(f"[skip] not matching pattern: {p.name}")
         else:
             # treat as iterable of file paths
             for f in h5_dir:
@@ -442,28 +446,28 @@ def delete_intermediate_h5ads_and_tmpdir(
                     _maybe_unlink(p)
                 else:
                     if verbose:
-                        print(f"[skip] not matching pattern or not a file: {p}")
+                        logger.debug(f"[skip] not matching pattern or not a file: {p}")
 
     # Remove tmp_dir recursively (if provided)
     if tmp_dir is not None:
         td = Path(tmp_dir)
         if not td.exists():
             if verbose:
-                print(f"[skip] tmp_dir not found: {td}")
+                logger.debug(f"[skip] tmp_dir not found: {td}")
         else:
             if not td.is_dir():
                 if verbose:
-                    print(f"[skip] tmp_dir is not a directory: {td}")
+                    logger.debug(f"[skip] tmp_dir is not a directory: {td}")
             else:
                 if dry_run:
-                    print(f"[dry-run] would remove directory tree: {td}")
+                    logger.debug(f"[dry-run] would remove directory tree: {td}")
                 else:
                     try:
                         shutil.rmtree(td)
                         if verbose:
-                            print(f"Removed directory tree: {td}")
+                            logger.info(f"Removed directory tree: {td}")
                     except Exception as e:
-                        print(f"[error] failed to remove tmp dir {td}: {e}")
+                        logger.warning(f"[error] failed to remove tmp dir {td}: {e}")
 
 
 def modkit_extract_to_adata(
@@ -530,7 +534,7 @@ def modkit_extract_to_adata(
     final_adata = None
 
     if final_adata_path.exists():
-        print(f"{final_adata_path} already exists. Using existing adata")
+        logger.debug(f"{final_adata_path} already exists. Using existing adata")
         return final_adata, final_adata_path
 
     # List all files in the directory
@@ -550,8 +554,8 @@ def modkit_extract_to_adata(
 
     tsv_path_list = [tsv for tsv in tsvs]
     bam_path_list = [bam for bam in bams]
-    print(f"{len(tsvs)} sample tsv files found: {tsvs}")
-    print(f"{len(bams)} sample bams found: {bams}")
+    logger.info(f"{len(tsvs)} sample tsv files found: {tsvs}")
+    logger.info(f"{len(bams)} sample bams found: {bams}")
 
     # Map global sample index (bami / final_sample_index) -> sample name / barcode
     sample_name_map = {}
@@ -600,13 +604,9 @@ def modkit_extract_to_adata(
     for record in records_to_analyze:
         if reference_dict[record][0] > max_reference_length:
             max_reference_length = reference_dict[record][0]
-    print(f"{readwrite.time_string()}: Max reference length in dataset: {max_reference_length}")
+    logger.info(f"Max reference length in dataset: {max_reference_length}")
     batches = math.ceil(len(tsvs) / batch_size)  # Number of batches to process
-    print(
-        "{0}: Processing input tsvs in {1} batches of {2} tsvs ".format(
-            readwrite.time_string(), batches, batch_size
-        )
-    )
+    logger.info("Processing input tsvs in {1} batches of {2} tsvs ".format(batches, batch_size))
     ##########################################################################################
 
     ##########################################################################################
@@ -619,7 +619,7 @@ def modkit_extract_to_adata(
     # If this step has already been performed, read in the tmp_dile_dict
     if bam_record_save.exists():
         bam_record_ohe_files = ad.read_h5ad(bam_record_save).uns
-        print("Found existing OHE reads, using these")
+        logger.debug("Found existing OHE reads, using these")
     else:
         # Iterate over split bams
         for bami, bam in enumerate(bam_path_list):
@@ -679,7 +679,7 @@ def modkit_extract_to_adata(
     ###################################################
     # Begin iterating over batches
     for batch in range(batches):
-        print("{0}: Processing tsvs for batch {1} ".format(readwrite.time_string(), batch))
+        logger.info("Processing tsvs for batch {1} ".format(batch))
         # For the final batch, just take the remaining tsv and bam files
         if batch == batches - 1:
             tsv_batch = tsv_path_list
@@ -690,12 +690,12 @@ def modkit_extract_to_adata(
             bam_batch = bam_path_list[:batch_size]
             tsv_path_list = tsv_path_list[batch_size:]
             bam_path_list = bam_path_list[batch_size:]
-        print("{0}: tsvs in batch {1} ".format(readwrite.time_string(), tsv_batch))
+        logger.info("tsvs in batch {1} ".format(tsv_batch))
 
         batch_already_processed = sum([1 for h5 in existing_h5s if f"_{batch}_" in h5.name])
         ###################################################
         if batch_already_processed:
-            print(
+            logger.debug(
                 f"Batch {batch} has already been processed into h5ads. Skipping batch and using existing files"
             )
         else:
@@ -792,30 +792,28 @@ def modkit_extract_to_adata(
                         dict_a[record][sample_index] = dict_total[record][sample_index][
                             dict_total[record][sample_index]["modified_primary_base"] == "A"
                         ]
-                        print(
-                            "{}: Successfully loaded a methyl-adenine dictionary for ".format(
-                                readwrite.time_string()
+                        logger.debug(
+                            "Successfully loaded a methyl-adenine dictionary for {}".format(
+                                str(sample_index)
                             )
-                            + str(sample_index)
                         )
+
                         # Stratify the adenine dictionary into two strand specific dictionaries.
                         dict_a_bottom[record][sample_index] = dict_a[record][sample_index][
                             dict_a[record][sample_index]["ref_strand"] == "-"
                         ]
-                        print(
-                            "{}: Successfully loaded a minus strand methyl-adenine dictionary for ".format(
-                                readwrite.time_string()
+                        logger.debug(
+                            "Successfully loaded a minus strand methyl-adenine dictionary for {}".format(
+                                str(sample_index)
                             )
-                            + str(sample_index)
                         )
                         dict_a_top[record][sample_index] = dict_a[record][sample_index][
                             dict_a[record][sample_index]["ref_strand"] == "+"
                         ]
-                        print(
-                            "{}: Successfully loaded a plus strand methyl-adenine dictionary for ".format(
-                                readwrite.time_string()
+                        logger.debug(
+                            "Successfully loaded a plus strand methyl-adenine dictionary for ".format(
+                                str(sample_index)
                             )
-                            + str(sample_index)
                         )
 
                         # Reassign pointer for dict_a to None and delete the original value that it pointed to in order to decrease memory usage.
@@ -837,30 +835,27 @@ def modkit_extract_to_adata(
                         dict_c[record][sample_index] = dict_total[record][sample_index][
                             dict_total[record][sample_index]["modified_primary_base"] == "C"
                         ]
-                        print(
-                            "{}: Successfully loaded a methyl-cytosine dictionary for ".format(
-                                readwrite.time_string()
+                        logger.debug(
+                            "Successfully loaded a methyl-cytosine dictionary for {}".format(
+                                str(sample_index)
                             )
-                            + str(sample_index)
                         )
                         # Stratify the cytosine dictionary into two strand specific dictionaries.
                         dict_c_bottom[record][sample_index] = dict_c[record][sample_index][
                             dict_c[record][sample_index]["ref_strand"] == "-"
                         ]
-                        print(
-                            "{}: Successfully loaded a minus strand methyl-cytosine dictionary for ".format(
-                                readwrite.time_string()
+                        logger.debug(
+                            "Successfully loaded a minus strand methyl-cytosine dictionary for {}".format(
+                                str(sample_index)
                             )
-                            + str(sample_index)
                         )
                         dict_c_top[record][sample_index] = dict_c[record][sample_index][
                             dict_c[record][sample_index]["ref_strand"] == "+"
                         ]
-                        print(
-                            "{}: Successfully loaded a plus strand methyl-cytosine dictionary for ".format(
-                                readwrite.time_string()
+                        logger.debug(
+                            "Successfully loaded a plus strand methyl-cytosine dictionary for {}".format(
+                                str(sample_index)
                             )
-                            + str(sample_index)
                         )
                         # Reassign pointer for dict_c to None and delete the original value that it pointed to in order to decrease memory usage.
                         dict_c[record][sample_index] = None
@@ -877,18 +872,16 @@ def modkit_extract_to_adata(
                         ):
                             dict_combined_bottom[record], dict_combined_top[record] = {}, {}
 
-                        print(
-                            "{}: Successfully created a minus strand combined methylation dictionary for ".format(
-                                readwrite.time_string()
+                        logger.debug(
+                            "Successfully created a minus strand combined methylation dictionary for {}".format(
+                                str(sample_index)
                             )
-                            + str(sample_index)
                         )
                         dict_combined_bottom[record][sample_index] = []
-                        print(
-                            "{}: Successfully created a plus strand combined methylation dictionary for ".format(
-                                readwrite.time_string()
+                        logger.debug(
+                            "Successfully created a plus strand combined methylation dictionary for {}".format(
+                                str(sample_index)
                             )
-                            + str(sample_index)
                         )
                         dict_combined_top[record][sample_index] = []
 
@@ -900,18 +893,16 @@ def modkit_extract_to_adata(
             for dict_index, dict_type in enumerate(dict_list):
                 # Only iterate over stranded dictionaries
                 if dict_index not in dict_to_skip:
-                    print(
-                        "{0}: Extracting methylation states for {1} dictionary".format(
-                            readwrite.time_string(), sample_types[dict_index]
+                    logger.debug(
+                        "Extracting methylation states for {} dictionary".format(
+                            sample_types[dict_index]
                         )
                     )
                     for record in dict_type.keys():
                         # Get the dictionary for the modification type of interest from the reference mapping of interest
                         mod_strand_record_sample_dict = dict_type[record]
-                        print(
-                            "{0}: Extracting methylation states for {1} dictionary".format(
-                                readwrite.time_string(), record
-                            )
+                        logger.debug(
+                            "Extracting methylation states for {} dictionary".format(record)
                         )
                         # For each sample in a stranded dictionary
                         n_samples = len(mod_strand_record_sample_dict.keys())
@@ -1020,39 +1011,32 @@ def modkit_extract_to_adata(
                                     mod_strand_record_sample_dict[sample][read][pos] = prob
 
             # Save the sample files in the batch as gzipped hdf5 files
-            print(
-                "{0}: Converting batch {1} dictionaries to anndata objects".format(
-                    readwrite.time_string(), batch
-                )
-            )
+            logger.info("Converting batch {} dictionaries to anndata objects".format(batch))
             for dict_index, dict_type in enumerate(dict_list):
                 if dict_index not in dict_to_skip:
                     # Initialize an hdf5 file for the current modified strand
                     adata = None
-                    print(
-                        "{0}: Converting {1} dictionary to an anndata object".format(
-                            readwrite.time_string(), sample_types[dict_index]
+                    logger.info(
+                        "Converting {} dictionary to an anndata object".format(
+                            sample_types[dict_index]
                         )
                     )
                     for record in dict_type.keys():
                         # Get the dictionary for the modification type of interest from the reference mapping of interest
                         mod_strand_record_sample_dict = dict_type[record]
                         for sample in mod_strand_record_sample_dict.keys():
-                            print(
-                                "{0}: Converting {1} dictionary for sample {2} to an anndata object".format(
-                                    readwrite.time_string(), sample_types[dict_index], sample
+                            logger.info(
+                                "Converting {0} dictionary for sample {1} to an anndata object".format(
+                                    sample_types[dict_index], sample
                                 )
                             )
                             sample = int(sample)
                             final_sample_index = sample + (batch * batch_size)
-                            print(
-                                "{0}: Final sample index for sample: {1}".format(
-                                    readwrite.time_string(), final_sample_index
-                                )
+                            logger.info(
+                                "Final sample index for sample: {}".format(final_sample_index)
                             )
-                            print(
-                                "{0}: Converting {1} dictionary for sample {2} to a dataframe".format(
-                                    readwrite.time_string(),
+                            logger.debug(
+                                "Converting {0} dictionary for sample {1} to a dataframe".format(
                                     sample_types[dict_index],
                                     final_sample_index,
                                 )
@@ -1068,18 +1052,16 @@ def modkit_extract_to_adata(
                             X = temp_df.values
                             dataset, strand = sample_types[dict_index].split("_")[:2]
 
-                            print(
-                                "{0}: Loading {1} dataframe for sample {2} into a temp anndata object".format(
-                                    readwrite.time_string(),
+                            logger.info(
+                                "Loading {0} dataframe for sample {1} into a temp anndata object".format(
                                     sample_types[dict_index],
                                     final_sample_index,
                                 )
                             )
                             temp_adata = ad.AnnData(X)
                             if temp_adata.shape[0] > 0:
-                                print(
-                                    "{0}: Adding read names and position ids to {1} anndata for sample {2}".format(
-                                        readwrite.time_string(),
+                                logger.info(
+                                    "Adding read names and position ids to {0} anndata for sample {1}".format(
                                         sample_types[dict_index],
                                         final_sample_index,
                                     )
@@ -1088,9 +1070,8 @@ def modkit_extract_to_adata(
                                 temp_adata.obs_names = temp_adata.obs_names.astype(str)
                                 temp_adata.var_names = temp_df.columns
                                 temp_adata.var_names = temp_adata.var_names.astype(str)
-                                print(
-                                    "{0}: Adding {1} anndata for sample {2}".format(
-                                        readwrite.time_string(),
+                                logger.info(
+                                    "Adding {0} anndata for sample {1}".format(
                                         sample_types[dict_index],
                                         final_sample_index,
                                     )
@@ -1115,7 +1096,7 @@ def modkit_extract_to_adata(
                                 one_hot_reads = {}
                                 n_rows_OHE = 5
                                 ohe_files = bam_record_ohe_files[f"{final_sample_index}_{record}"]
-                                print(f"Loading OHEs from {ohe_files}")
+                                logger.info(f"Loading OHEs from {ohe_files}")
                                 fwd_mapped_reads = set()
                                 rev_mapped_reads = set()
                                 for ohe_file in ohe_files:
@@ -1193,9 +1174,8 @@ def modkit_extract_to_adata(
                                 # If final adata object already has a sample loaded, concatenate the current sample into the existing adata object
                                 if adata:
                                     if temp_adata.shape[0] > 0:
-                                        print(
-                                            "{0}: Concatenating {1} anndata object for sample {2}".format(
-                                                readwrite.time_string(),
+                                        logger.info(
+                                            "Concatenating {0} anndata object for sample {1}".format(
                                                 sample_types[dict_index],
                                                 final_sample_index,
                                             )
@@ -1205,34 +1185,33 @@ def modkit_extract_to_adata(
                                         )
                                         del temp_adata
                                     else:
-                                        print(
+                                        logger.warning(
                                             f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata"
                                         )
                                 else:
                                     if temp_adata.shape[0] > 0:
-                                        print(
-                                            "{0}: Initializing {1} anndata object for sample {2}".format(
-                                                readwrite.time_string(),
+                                        logger.info(
+                                            "Initializing {0} anndata object for sample {1}".format(
                                                 sample_types[dict_index],
                                                 final_sample_index,
                                             )
                                         )
                                         adata = temp_adata
                                     else:
-                                        print(
+                                        logger.warning(
                                             f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata"
                                         )
 
                                 gc.collect()
                             else:
-                                print(
+                                logger.warning(
                                     f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata. Skipping sample."
                                 )
 
                     try:
-                        print(
-                            "{0}: Writing {1} anndata out as a hdf5 file".format(
-                                readwrite.time_string(), sample_types[dict_index]
+                        logger.info(
+                            "Writing {1} anndata out as a hdf5 file".format(
+                                sample_types[dict_index]
                             )
                         )
                         adata.write_h5ad(
@@ -1243,7 +1222,7 @@ def modkit_extract_to_adata(
                             compression="gzip",
                         )
                     except Exception:
-                        print("Skipping writing anndata for sample")
+                        logger.debug("Skipping writing anndata for sample")
 
             # Delete the batch dictionaries from memory
             del dict_list, adata
@@ -1260,25 +1239,19 @@ def modkit_extract_to_adata(
         pass
     # Sort file list by names and print the list of file names
     hdfs.sort()
-    print("{0} sample files found: {1}".format(len(hdfs), hdfs))
+    logger.info("{0} sample files found: {1}".format(len(hdfs), hdfs))
     hdf_paths = [hd5 for hd5 in hdfs]
     final_adata = None
     for hdf_index, hdf in enumerate(hdf_paths):
-        print("{0}: Reading in {1} hdf5 file".format(readwrite.time_string(), hdfs[hdf_index]))
+        logger.info("Reading in {} hdf5 file".format(hdfs[hdf_index]))
         temp_adata = ad.read_h5ad(hdf)
         if final_adata:
-            print(
-                "{0}: Concatenating final adata object with {1} hdf5 file".format(
-                    readwrite.time_string(), hdfs[hdf_index]
-                )
+            logger.info(
+                "Concatenating final adata object with {} hdf5 file".format(hdfs[hdf_index])
             )
             final_adata = ad.concat([final_adata, temp_adata], join="outer", index_unique=None)
         else:
-            print(
-                "{0}: Initializing final adata object with {1} hdf5 file".format(
-                    readwrite.time_string(), hdfs[hdf_index]
-                )
-            )
+            logger.info("Initializing final adata object with {} hdf5 file".format(hdfs[hdf_index]))
             final_adata = temp_adata
         del temp_adata
 

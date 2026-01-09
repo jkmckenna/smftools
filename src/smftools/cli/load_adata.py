@@ -2,7 +2,11 @@ import shutil
 from pathlib import Path
 from typing import Iterable, Union
 
+from smftools.logging_utils import get_logger
+
 from .helpers import AdataPaths
+
+logger = get_logger(__name__)
 
 
 def check_executable_exists(cmd: str) -> bool:
@@ -34,42 +38,42 @@ def delete_tsvs(
     def _maybe_unlink(p: Path):
         if not p.exists():
             if verbose:
-                print(f"[skip] not found: {p}")
+                logger.info(f"[skip] not found: {p}")
             return
         if not p.is_file():
             if verbose:
-                print(f"[skip] not a file: {p}")
+                logger.info(f"[skip] not a file: {p}")
             return
         if dry_run:
-            print(f"[dry-run] would remove file: {p}")
+            logger.info(f"[dry-run] would remove file: {p}")
             return
         try:
             p.unlink()
             if verbose:
-                print(f"Removed file: {p}")
+                logger.info(f"Removed file: {p}")
         except Exception as e:
-            print(f"[error] failed to remove file {p}: {e}")
+            logger.warning(f"Failed to remove file {p}: {e}")
 
     # Remove tmp_dir recursively (if provided)
     if tsv_dir is not None:
         td = Path(tsv_dir)
         if not td.exists():
             if verbose:
-                print(f"[skip] tsv_dir not found: {td}")
+                logger.info(f"[skip] tsv_dir not found: {td}")
         else:
             if not td.is_dir():
                 if verbose:
-                    print(f"[skip] tsv_dir is not a directory: {td}")
+                    logger.info(f"[skip] tsv_dir is not a directory: {td}")
             else:
                 if dry_run:
-                    print(f"[dry-run] would remove directory tree: {td}")
+                    logger.info(f"[dry-run] would remove directory tree: {td}")
                 else:
                     try:
                         shutil.rmtree(td)
                         if verbose:
-                            print(f"Removed directory tree: {td}")
+                            logger.info(f"Removed directory tree: {td}")
                     except Exception as e:
-                        print(f"[error] failed to remove tmp dir {td}: {e}")
+                        logger.warning(f"[error] failed to remove tmp dir {td}: {e}")
 
 
 def load_adata_core(cfg, paths: AdataPaths):
@@ -189,7 +193,7 @@ def load_adata_core(cfg, paths: AdataPaths):
         if output_pod5.exists():
             pass
         else:
-            print(
+            logger.info(
                 f"Input directory contains fast5 files, converting them and concatenating into a single pod5 file in the {output_pod5}"
             )
             fast5_to_pod5(cfg.input_data_path, output_pod5)
@@ -201,8 +205,9 @@ def load_adata_core(cfg, paths: AdataPaths):
         # Output file for FASTQ concatenation.
         output_bam = cfg.output_directory / "canonical_basecalls.bam"
         if output_bam.exists():
-            pass
+            logger.debug("Output BAM already exists")
         else:
+            logger.info("Concatenating FASTQ files into a single BAM file")
             summary = concatenate_fastqs_to_bam(
                 cfg.input_files,
                 output_bam,
@@ -215,7 +220,7 @@ def load_adata_core(cfg, paths: AdataPaths):
                 auto_pair=cfg.fastq_auto_pairing,
             )
 
-            print(f"Found the following barcodes: {summary['barcodes']}")
+            logger.info(f"Found the following barcodes in FASTQ inputs: {summary['barcodes']}")
 
         # Set the input data path to the concatenated BAM.
         cfg.input_data_path = output_bam
@@ -229,13 +234,13 @@ def load_adata_core(cfg, paths: AdataPaths):
 
     # Determine if the input data needs to be basecalled
     if cfg.input_type == "pod5":
-        print(f"Detected pod5 inputs: {cfg.input_files}")
+        logger.info(f"Detected pod5 inputs: {cfg.input_files}")
         basecall = True
     elif cfg.input_type in ["bam"]:
-        print(f"Detected bam input: {cfg.input_files}")
+        logger.info(f"Detected bam input: {cfg.input_files}")
         basecall = False
     else:
-        print("Error, can not find input bam or pod5")
+        logger.info("Error, can not find input bam or pod5")
 
     # Generate the base name of the unaligned bam without the .bam suffix
     if basecall:
@@ -269,7 +274,7 @@ def load_adata_core(cfg, paths: AdataPaths):
     try:
         cfg.fasta = Path(cfg.fasta)
     except Exception:
-        print("Need to provide an input FASTA path to proceed with smftools load")
+        logger.warning("Need to provide an input FASTA path to proceed with smftools load")
 
     # If fasta_regions_of_interest bed is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
     if cfg.fasta_regions_of_interest and ".bed" in cfg.fasta_regions_of_interest:
@@ -277,11 +282,13 @@ def load_adata_core(cfg, paths: AdataPaths):
         bed_stem = Path(cfg.fasta_regions_of_interest).stem
         output_FASTA = cfg.output_directory / f"{fasta_stem}_subsampled_by_{bed_stem}.fasta"
 
+        logger.info("Subsampling FASTA records using the provided BED file")
         subsample_fasta_from_bed(
             cfg.fasta, cfg.fasta_regions_of_interest, cfg.output_directory, output_FASTA
         )
         fasta = output_FASTA
     else:
+        logger.info("Using the full FASTA file")
         fasta = cfg.fasta
 
     # For conversion style SMF, make a converted reference FASTA
@@ -291,11 +298,12 @@ def load_adata_core(cfg, paths: AdataPaths):
         converted_FASTA = cfg.output_directory / converted_FASTA_basename
 
         if "converted.fa" in fasta.name:
-            print(f"{fasta} is already converted. Using existing converted FASTA.")
+            logger.info(f"{fasta} is already converted. Using existing converted FASTA.")
             converted_FASTA = fasta
         elif converted_FASTA.exists():
-            print(f"{converted_FASTA} already exists. Using existing converted FASTA.")
+            logger.info(f"{converted_FASTA} already exists. Using existing converted FASTA.")
         else:
+            logger.info(f"Converting FASTA base sequences")
             generate_converted_FASTA(fasta, cfg.conversion_types, cfg.strands, converted_FASTA)
         fasta = converted_FASTA
 
@@ -312,16 +320,17 @@ def load_adata_core(cfg, paths: AdataPaths):
         try:
             cfg.model_dir = Path(cfg.model_dir)
         except Exception:
-            print(
+            logger.warning(
                 "Need to provide a valid path to a dorado model directory to use dorado basecalling"
             )
         if aligned_sorted_output.exists():
-            print(
+            logger.info(
                 f"{aligned_sorted_output} already exists. Using existing basecalled, aligned, sorted BAM."
             )
         elif unaligned_output.exists():
-            print(f"{unaligned_output} already exists. Using existing basecalled BAM.")
+            logger.info(f"{unaligned_output} already exists. Using existing basecalled BAM.")
         elif cfg.smf_modality != "direct":
+            logger.info("Running canonical basecalling using dorado")
             canoncall(
                 str(cfg.model_dir),
                 cfg.model,
@@ -334,6 +343,7 @@ def load_adata_core(cfg, paths: AdataPaths):
                 cfg.device,
             )
         else:
+            logger.info("Running modified basecalling using dorado")
             modcall(
                 str(cfg.model_dir),
                 cfg.model,
@@ -347,7 +357,7 @@ def load_adata_core(cfg, paths: AdataPaths):
                 cfg.device,
             )
     elif basecall:
-        print("Basecalling is currently only supported for ont sequencers and not pacbio.")
+        logger.error("Basecalling is currently only supported for ont sequencers and not pacbio.")
     else:
         pass
     ########################################################################################################################
@@ -356,8 +366,9 @@ def load_adata_core(cfg, paths: AdataPaths):
 
     # 3) Align the BAM to the reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
     if aligned_sorted_output.exists():
-        print(f"{aligned_sorted_output} already exists. Using existing aligned/sorted BAM.")
+        logger.debug(f"{aligned_sorted_output} already exists. Using existing aligned/sorted BAM.")
     else:
+        logger.info(f"Aligning and sorting reads")
         align_and_sort_BAM(fasta, unaligned_output, cfg)
         # Deleted the unsorted aligned output
         aligned_output.unlink()
@@ -366,10 +377,11 @@ def load_adata_core(cfg, paths: AdataPaths):
         # Make beds and provide basic histograms
         bed_dir = cfg.output_directory / "beds"
         if bed_dir.is_dir():
-            print(
+            logger.debug(
                 f"{bed_dir} already exists. Skipping BAM -> BED conversion for {aligned_sorted_output}"
             )
         else:
+            logger.info("Making bed files from the aligned and sorted BAM file")
             aligned_BAM_to_bed(
                 aligned_sorted_output, cfg.output_directory, fasta, cfg.make_bigwigs, cfg.threads
             )
@@ -380,7 +392,7 @@ def load_adata_core(cfg, paths: AdataPaths):
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     if cfg.input_already_demuxed:
         if cfg.split_path.is_dir():
-            print(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
+            logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
 
             all_bam_files = sorted(
                 p for p in cfg.split_path.iterdir() if p.is_file() and p.suffix == cfg.bam_suffix
@@ -390,6 +402,7 @@ def load_adata_core(cfg, paths: AdataPaths):
 
         else:
             make_dirs([cfg.split_path])
+            logger.info("Demultiplexing samples into individual aligned/sorted BAM files")
             all_bam_files = split_and_index_BAM(aligned_sorted_BAM, cfg.split_path, cfg.bam_suffix)
 
             unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
@@ -400,7 +413,7 @@ def load_adata_core(cfg, paths: AdataPaths):
 
     else:
         if single_barcoded_path.is_dir():
-            print(
+            logger.debug(
                 f"{single_barcoded_path} already exists. Using existing single ended demultiplexed BAMs."
             )
 
@@ -413,6 +426,9 @@ def load_adata_core(cfg, paths: AdataPaths):
             se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
         else:
             make_dirs([cfg.split_path, single_barcoded_path])
+            logger.info(
+                "Demultiplexing samples into individual aligned/sorted BAM files based on single end barcode status with Dorado"
+            )
             all_se_bam_files = demux_and_index_BAM(
                 aligned_sorted_BAM,
                 single_barcoded_path,
@@ -427,7 +443,7 @@ def load_adata_core(cfg, paths: AdataPaths):
             se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
 
         if double_barcoded_path.is_dir():
-            print(
+            logger.debug(
                 f"{double_barcoded_path} already exists. Using existing double ended demultiplexed BAMs."
             )
 
@@ -440,6 +456,9 @@ def load_adata_core(cfg, paths: AdataPaths):
             de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
         else:
             make_dirs([cfg.split_path, double_barcoded_path])
+            logger.info(
+                "Demultiplexing samples into individual aligned/sorted BAM files based on double end barcode status with Dorado"
+            )
             all_de_bam_files = demux_and_index_BAM(
                 aligned_sorted_BAM,
                 double_barcoded_path,
@@ -463,10 +482,11 @@ def load_adata_core(cfg, paths: AdataPaths):
         # Make beds and provide basic histograms
         bed_dir = cfg.split_path / "beds"
         if bed_dir.is_dir():
-            print(
+            logger.debug(
                 f"{bed_dir} already exists. Skipping BAM -> BED conversion for demultiplexed bams"
             )
         else:
+            logger.info("Making BED files from BAM files for each sample")
             for bam in bam_files:
                 aligned_BAM_to_bed(bam, cfg.split_path, fasta, cfg.make_bigwigs, cfg.threads)
     ########################################################################################################################
@@ -476,9 +496,10 @@ def load_adata_core(cfg, paths: AdataPaths):
     # 5) Samtools QC metrics on split BAM files
     bam_qc_dir = cfg.split_path / "bam_qc"
     if bam_qc_dir.is_dir():
-        print(f"{bam_qc_dir} already exists. Using existing BAM QC calculations.")
+        logger.debug(f"{bam_qc_dir} already exists. Using existing BAM QC calculations.")
     else:
         make_dirs([bam_qc_dir])
+        logger.info("Performing BAM QC")
         bam_qc(bam_files, bam_qc_dir, cfg.threads, modality=cfg.smf_modality)
     ########################################################################################################################
 
@@ -491,6 +512,8 @@ def load_adata_core(cfg, paths: AdataPaths):
             deaminase_footprinting = True
         else:
             deaminase_footprinting = False
+
+        logger.info(f"Loading Anndata from BAM files for {cfg.smf_modality} footprinting")
         raw_adata, raw_adata_path = converted_BAM_to_adata(
             fasta,
             bam_dir,
@@ -508,13 +531,17 @@ def load_adata_core(cfg, paths: AdataPaths):
         )
     else:
         if mod_bed_dir.is_dir():
-            print(f"{mod_bed_dir} already exists, skipping making modbeds")
+            logger.debug(f"{mod_bed_dir} already exists, skipping making modbeds")
         else:
             from ..informatics.modkit_functions import make_modbed, modQC
 
             make_dirs([mod_bed_dir])
 
+            logger.info("Performing modQC for direct footprinting samples")
+
             modQC(aligned_sorted_output, cfg.thresholds)  # get QC metrics for mod calls
+
+            logger.info("Making modified BED files for direct footprinting samples")
 
             make_modbed(
                 aligned_sorted_output, cfg.thresholds, mod_bed_dir
@@ -523,6 +550,10 @@ def load_adata_core(cfg, paths: AdataPaths):
         from ..informatics.modkit_functions import extract_mods
 
         make_dirs([mod_tsv_dir])
+
+        logger.info(
+            "Extracting single read modification states into TSVs for direct footprinting samples"
+        )
 
         extract_mods(
             cfg.thresholds,
@@ -535,6 +566,8 @@ def load_adata_core(cfg, paths: AdataPaths):
         )  # Extract methylations calls for split BAM files into split TSV files
 
         from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
+
+        logger.info("Making Anndata for direct modification detection SMF samples")
 
         # 6 Load the modification data from TSVs into an adata object
         raw_adata, raw_adata_path = modkit_extract_to_adata(
@@ -563,6 +596,7 @@ def load_adata_core(cfg, paths: AdataPaths):
 
     ############################################### Add basic read length, read quality, mapping quality stats ###############################################
 
+    logger.info("Adding read length, mapping quality, and modification signal to Anndata")
     add_read_length_and_mapping_qc(
         raw_adata,
         se_bam_files,
@@ -578,6 +612,7 @@ def load_adata_core(cfg, paths: AdataPaths):
     from ..informatics.h5ad_functions import annotate_pod5_origin
 
     if cfg.input_type == "pod5":
+        logger.info("Adding the POD5 origin file to each read into Anndata")
         annotate_pod5_origin(
             raw_adata,
             cfg.input_data_path,
@@ -587,7 +622,7 @@ def load_adata_core(cfg, paths: AdataPaths):
     ########################################################################################################################
 
     ############################################### Save final adata ###############################################
-    print(f"Saving AnnData to {raw_adata_path}")
+    logger.info(f"Saving AnnData to {raw_adata_path}")
     write_gz_h5ad(raw_adata, raw_adata_path)
     ########################################################################################################################
 
@@ -596,13 +631,15 @@ def load_adata_core(cfg, paths: AdataPaths):
     # multiqc ###
     mqc_dir = cfg.split_path / "multiqc"
     if mqc_dir.is_dir():
-        print(f"{mqc_dir} already exists, skipping multiqc")
+        logger.debug(f"{mqc_dir} already exists, skipping multiqc")
     else:
+        logger.info("Running multiqc")
         run_multiqc(cfg.split_path, mqc_dir)
     ########################################################################################################################
 
     ############################################### delete intermediate BAM files ###############################################
     if cfg.delete_intermediate_bams:
+        logger.info("Deleting intermediate BAM files")
         # delete aligned and sorted bam
         aligned_sorted_output.unlink()
         bai = aligned_sorted_output.parent / (aligned_sorted_output.name + ".bai")
@@ -616,6 +653,7 @@ def load_adata_core(cfg, paths: AdataPaths):
             bai = bam.parent / (bam.name + ".bai")
             bam.unlink()
             bai.unlink()
+        logger.info("Finished deleting intermediate BAM files")
     ########################################################################################################################
 
     return raw_adata, raw_adata_path, cfg
@@ -685,22 +723,22 @@ def load_adata(config_path: str):
     # -----------------------------
     if not getattr(cfg, "force_redo_load_adata", False):
         if paths.hmm.exists():
-            print(f"HMM AnnData already exists: {paths.hmm}\nSkipping smftools load")
+            logger.debug(f"HMM AnnData already exists: {paths.hmm}\nSkipping smftools load")
             return None, paths.hmm, cfg
         if paths.spatial.exists():
-            print(f"Spatial AnnData already exists: {paths.spatial}\nSkipping smftools load")
+            logger.debug(f"Spatial AnnData already exists: {paths.spatial}\nSkipping smftools load")
             return None, paths.spatial, cfg
         if paths.pp_dedup.exists():
-            print(
+            logger.debug(
                 f"Preprocessed deduplicated AnnData already exists: {paths.pp_dedup}\n"
                 f"Skipping smftools load"
             )
             return None, paths.pp_dedup, cfg
         if paths.pp.exists():
-            print(f"Preprocessed AnnData already exists: {paths.pp}\nSkipping smftools load")
+            logger.debug(f"Preprocessed AnnData already exists: {paths.pp}\nSkipping smftools load")
             return None, paths.pp, cfg
         if paths.raw.exists():
-            print(
+            logger.debug(
                 f"Raw AnnData from smftools load already exists: {paths.raw}\nSkipping smftools load"
             )
             return None, paths.raw, cfg

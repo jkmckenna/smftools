@@ -1,5 +1,9 @@
 import subprocess
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def extract_mods(
     thresholds,

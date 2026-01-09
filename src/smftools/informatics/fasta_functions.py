@@ -10,7 +10,11 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from pyfaidx import Fasta
 
+from smftools.logging_utils import get_logger
+
 from ..readwrite import time_string
+
+logger = get_logger(__name__)
 
 
 def _convert_FASTA_record(record, modification_type, strand, unconverted):
@@ -146,7 +150,7 @@ def get_chromosome_lengths(fasta: str | Path) -> Path:
         index_fasta(fasta, write_chrom_sizes=True)  # will also create .chrom.sizes
     chrom_sizes = fasta.with_suffix(".chrom.sizes")
     if chrom_sizes.exists():
-        print(f"Using existing chrom length file: {chrom_sizes}")
+        logger.debug(f"Using existing chrom length file: {chrom_sizes}")
         return chrom_sizes
 
     # Build chrom.sizes from .fai
@@ -264,7 +268,7 @@ def subsample_fasta_from_bed(
             desc = " ".join(fields[3:]) if len(fields) > 3 else ""
 
             if chrom not in fasta:
-                print(f"Warning: {chrom} not found in FASTA")
+                logger.warning(f"{chrom} not found in FASTA")
                 continue
 
             # pyfaidx is 1-based indexing internally, but [start:end] works with BED coords
