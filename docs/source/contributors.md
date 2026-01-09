@@ -2,7 +2,7 @@
 
 ## Current
 
-- Joseph Mckenna, lead developer (2024)
+- Joseph Mckenna, lead developer (since 2024)
 
 ## Acknowledgments
 
