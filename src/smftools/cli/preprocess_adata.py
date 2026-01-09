@@ -3,6 +3,10 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def preprocess_adata(
     config_path: str,
@@ -61,7 +65,7 @@ def preprocess_adata(
     # Case A: full redo of preprocessing
     # -----------------------------
     if getattr(cfg, "force_redo_preprocessing", False):
-        print(
+        logger.info(
             "Forcing full redo of preprocessing workflow, starting from latest stage AnnData available."
         )
 
@@ -76,7 +80,7 @@ def preprocess_adata(
         elif raw_exists:
             adata = _load(raw_path)
         else:
-            print("Cannot redo preprocessing: no AnnData available at any stage.")
+            logger.error("Cannot redo preprocessing: no AnnData available at any stage.")
             return (None, None, None, None)
 
         pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
@@ -91,7 +95,7 @@ def preprocess_adata(
     # Case B: redo duplicate detection only
     # -----------------------------
     if getattr(cfg, "force_redo_flag_duplicate_reads", False):
-        print(
+        logger.info(
             "Forcing redo of duplicate detection workflow, starting from the preprocessed AnnData "
             "if available. Otherwise, will use the raw AnnData."
         )
@@ -100,7 +104,7 @@ def preprocess_adata(
         elif raw_exists:
             adata = _load(raw_path)
         else:
-            print(
+            logger.error(
                 "Cannot redo duplicate detection: no compatible AnnData available "
                 "(need at least raw or preprocessed)."
             )
@@ -120,22 +124,24 @@ def preprocess_adata(
 
     # If HMM exists, preprocessing is considered “done enough”
     if hmm_exists:
-        print(f"Skipping preprocessing. HMM AnnData found: {hmm_path}")
+        logger.debug(f"Skipping preprocessing. HMM AnnData found: {hmm_path}")
         return (None, None, None, None)
 
     # If spatial exists, also skip re-preprocessing by default
     if spatial_exists:
-        print(f"Skipping preprocessing. Spatial AnnData found: {spatial_path}")
+        logger.debug(f"Skipping preprocessing. Spatial AnnData found: {spatial_path}")
         return (None, None, None, None)
 
     # If pp_dedup exists, just return paths (no recomputation)
     if pp_dedup_exists:
-        print(f"Skipping preprocessing. Preprocessed deduplicated AnnData found: {pp_dedup_path}")
+        logger.debug(
+            f"Skipping preprocessing. Preprocessed deduplicated AnnData found: {pp_dedup_path}"
+        )
         return (None, pp_path, None, pp_dedup_path)
 
     # If pp exists but pp_dedup does not, load pp and run core
     if pp_exists:
-        print(f"Preprocessed AnnData found: {pp_path}")
+        logger.debug(f"Preprocessed AnnData found: {pp_path}")
         adata = _load(pp_path)
         pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
             adata=adata,
@@ -156,7 +162,7 @@ def preprocess_adata(
         )
         return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
-    print("No AnnData available at any stage for preprocessing.")
+    logger.error("No AnnData available at any stage for preprocessing.")
     return (None, None, None, None)
 
 
@@ -239,7 +245,7 @@ def preprocess_adata_core(
     pp_length_qc_dir = pp_dir / "01_Read_length_and_quality_QC_metrics"
 
     if pp_length_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
-        print(f"{pp_length_qc_dir} already exists. Skipping read level QC plotting.")
+        logger.debug(f"{pp_length_qc_dir} already exists. Skipping read level QC plotting.")
     else:
         make_dirs([pp_dir, pp_length_qc_dir])
         plot_read_qc_histograms(
@@ -267,7 +273,7 @@ def preprocess_adata_core(
     pp_length_qc_dir = pp_dir / "02_Read_length_and_quality_QC_metrics_post_filtering"
 
     if pp_length_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
-        print(f"{pp_length_qc_dir} already exists. Skipping read level QC plotting.")
+        logger.debug(f"{pp_length_qc_dir} already exists. Skipping read level QC plotting.")
     else:
         make_dirs([pp_dir, pp_length_qc_dir])
         plot_read_qc_histograms(
@@ -356,7 +362,9 @@ def preprocess_adata_core(
     pp_meth_qc_dir = pp_dir / "03_read_modification_QC_metrics"
 
     if pp_meth_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
-        print(f"{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting.")
+        logger.debug(
+            f"{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting."
+        )
     else:
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ["Raw_modification_signal"]
@@ -395,7 +403,9 @@ def preprocess_adata_core(
     pp_meth_qc_dir = pp_dir / "04_read_modification_QC_metrics_post_filtering"
 
     if pp_meth_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
-        print(f"{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting.")
+        logger.debug(
+            f"{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting."
+        )
     else:
         make_dirs([pp_dir, pp_meth_qc_dir])
         obs_to_plot = ["Raw_modification_signal"]
@@ -511,11 +521,11 @@ def preprocess_adata_core(
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
-        print("Saving preprocessed adata.")
+        logger.info("Saving preprocessed adata.")
         write_gz_h5ad(adata, pp_adata_path)
 
     if not pp_dup_rem_adata_path.exists() or cfg.force_redo_preprocessing:
-        print("Saving preprocessed adata with duplicates removed.")
+        logger.info("Saving preprocessed adata with duplicates removed.")
         write_gz_h5ad(adata_unique, pp_dup_rem_adata_path)
 
     ########################################################################################################################

@@ -3,6 +3,10 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def spatial_adata(
     config_path: str,
@@ -46,12 +50,12 @@ def spatial_adata(
     if not getattr(cfg, "force_redo_spatial_analyses", False):
         # If HMM exists, it's the most processed stage — reuse it.
         if hmm_path.exists():
-            print(f"HMM AnnData found: {hmm_path}\nSkipping smftools spatial")
+            logger.info(f"HMM AnnData found: {hmm_path}\nSkipping smftools spatial")
             return None, hmm_path
 
         # If spatial exists, we consider spatial analyses already done.
         if spatial_path.exists():
-            print(f"Spatial AnnData found: {spatial_path}\nSkipping smftools spatial")
+            logger.info(f"Spatial AnnData found: {spatial_path}\nSkipping smftools spatial")
             return None, spatial_path
 
     # 2) Ensure preprocessing has been run
@@ -79,7 +83,7 @@ def spatial_adata(
         elif raw_path.exists():
             start_adata = _load(raw_path)
         else:
-            print("No suitable AnnData found for spatial analyses (need at least raw).")
+            logger.warning("No suitable AnnData found for spatial analyses (need at least raw).")
             return None, None
 
     # 4) Run the spatial core
@@ -229,7 +233,7 @@ def spatial_adata_core(
             if pp_clustermap_dir.is_dir() and not getattr(
                 cfg, "force_redo_spatial_analyses", False
             ):
-                print(
+                logger.debug(
                     f"{pp_clustermap_dir} already exists. Skipping clustermap plotting for preprocessed AnnData."
                 )
             else:
@@ -305,7 +309,7 @@ def spatial_adata_core(
 
     # Clustermaps on deduplicated adata
     if pp_clustermap_dir_dedup.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        print(
+        logger.debug(
             f"{pp_clustermap_dir_dedup} already exists. Skipping clustermap plotting for deduplicated AnnData."
         )
     else:
@@ -340,7 +344,7 @@ def spatial_adata_core(
 
     # UMAP / Leiden
     if pp_umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        print(f"{pp_umap_dir} already exists. Skipping UMAP plotting.")
+        logger.debug(f"{pp_umap_dir} already exists. Skipping UMAP plotting.")
     else:
         make_dirs([pp_umap_dir])
 
@@ -378,7 +382,7 @@ def spatial_adata_core(
     pp_autocorr_dir = pp_dir_dedup / "08_autocorrelations"
 
     if pp_autocorr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        print(f"{pp_autocorr_dir} already exists. Skipping autocorrelation plotting.")
+        logger.debug(f"{pp_autocorr_dir} already exists. Skipping autocorrelation plotting.")
     else:
         positions = adata.var_names.astype(int).values
         lags = np.arange(cfg.autocorr_max_lag + 1)
@@ -399,12 +403,12 @@ def spatial_adata_core(
         for site_type in cfg.autocorr_site_types:
             layer_key = f"{site_type}_site_binary"
             if layer_key not in adata.layers:
-                print(f"Layer {layer_key} not found in adata.layers — skipping {site_type}.")
+                logger.debug(f"Layer {layer_key} not found in adata.layers — skipping {site_type}.")
                 continue
 
             X = adata.layers[layer_key]
             if getattr(X, "shape", (0,))[0] == 0:
-                print(f"Layer {layer_key} empty — skipping {site_type}.")
+                logger.debug(f"Layer {layer_key} empty — skipping {site_type}.")
                 continue
 
             rows = []
@@ -612,14 +616,14 @@ def spatial_adata_core(
                             fixed_nrl_bp=global_nrl,
                         )
                     except Exception as e:
-                        warnings.warn(
+                        logger.warning(
                             f"rolling_autocorr_metrics failed for {site_type} "
                             f"{sample_name} {ref_label}: {e}"
                         )
                         continue
 
                     if "center" not in df_roll.columns:
-                        warnings.warn(
+                        logger.warning(
                             f"rolling_autocorr_metrics returned unexpected schema "
                             f"for {site_type} {sample_name} {ref_label}"
                         )
@@ -644,7 +648,7 @@ def spatial_adata_core(
                         try:
                             compact_df.to_csv(out_csv, index=False)
                         except Exception as e:
-                            warnings.warn(f"Failed to write rolling CSV {out_csv}: {e}")
+                            logger.warning(f"Failed to write rolling CSV {out_csv}: {e}")
 
                     if write_plots:
                         try:
@@ -666,7 +670,7 @@ def spatial_adata_core(
                                     show=False,
                                 )
                             except Exception as e:
-                                warnings.warn(
+                                logger.warning(
                                     f"Failed to create rolling plot for {site_type} "
                                     f"{sample_name} {ref_label}: {e}"
                                 )
@@ -688,7 +692,7 @@ def spatial_adata_core(
                 try:
                     combined_df_site.to_csv(combined_out_csv, index=False)
                 except Exception as e:
-                    warnings.warn(f"Failed to write combined rolling CSV for {site_type}: {e}")
+                    logger.warning(f"Failed to write combined rolling CSV for {site_type}: {e}")
 
             rolling_dict = adata.uns[f"{site_type}_rolling_metrics_by_group"]
             plot_out_dir = os.path.join(pp_autocorr_dir, "rolling_plots")
@@ -721,7 +725,7 @@ def spatial_adata_core(
     pp_corr_dir = pp_dir_dedup / "09_correlation_matrices"
 
     if pp_corr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        print(f"{pp_corr_dir} already exists. Skipping correlation matrix plotting.")
+        logger.debug(f"{pp_corr_dir} already exists. Skipping correlation matrix plotting.")
     else:
         compute_positionwise_statistics(
             adata,
@@ -754,7 +758,7 @@ def spatial_adata_core(
     # 5) Save spatial AnnData
     # ============================================================
     if (not spatial_adata_path.exists()) or getattr(cfg, "force_redo_spatial_analyses", False):
-        print("Saving spatial analyzed AnnData (post preprocessing and duplicate removal).")
+        logger.info("Saving spatial analyzed AnnData (post preprocessing and duplicate removal).")
         write_gz_h5ad(adata, spatial_adata_path)
 
     return adata, spatial_adata_path

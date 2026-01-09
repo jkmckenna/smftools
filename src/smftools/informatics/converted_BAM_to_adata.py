@@ -12,11 +12,15 @@ import numpy as np
 import pandas as pd
 import torch
 
+from smftools.logging_utils import get_logger
+
 from ..readwrite import make_dirs
 from .bam_functions import count_aligned_reads, extract_base_identities
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .fasta_functions import find_conversion_sites
 from .ohe import ohe_batching
+
+logger = get_logger(__name__)
 
 if __name__ == "__main__":
     multiprocessing.set_start_method("forkserver", force=True)
@@ -63,7 +67,7 @@ def converted_BAM_to_adata(
     else:
         device = torch.device("cpu")
 
-    print(f"Using device: {device}")
+    logger.debug(f"Using device: {device}")
 
     ## Set Up Directories and File Paths
     h5_dir = output_dir / "h5ads"
@@ -72,7 +76,7 @@ def converted_BAM_to_adata(
     final_adata_path = h5_dir / f"{experiment_name}.h5ad.gz"
 
     if final_adata_path.exists():
-        print(f"{final_adata_path} already exists. Using existing AnnData object.")
+        logger.debug(f"{final_adata_path} already exists. Using existing AnnData object.")
         return final_adata, final_adata_path
 
     make_dirs([h5_dir, tmp_dir])
@@ -84,7 +88,7 @@ def converted_BAM_to_adata(
     )
 
     bam_path_list = bam_files
-    print(f"Found {len(bam_files)} BAM files: {bam_files}")
+    logger.info(f"Found {len(bam_files)} BAM files: {bam_files}")
 
     ## Process Conversion Sites
     max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(
@@ -131,10 +135,12 @@ def converted_BAM_to_adata(
         from .h5ad_functions import add_demux_type_annotation
 
         double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
+        logger.info("Adding demux type to each read")
         add_demux_type_annotation(final_adata, double_barcoded_reads)
 
     ## Delete intermediate h5ad files and temp directories
     if delete_intermediates:
+        logger.info("Deleting intermediate h5ad files")
         delete_intermediate_h5ads_and_tmpdir(h5_dir, tmp_dir)
 
     return final_adata, final_adata_path
@@ -229,7 +235,7 @@ def process_conversion_sites(
                     strand,
                 ]
 
-    print("Updated record_FASTA_dict Keys:", list(record_FASTA_dict.keys()))
+    logger.debug("Updated record_FASTA_dict Keys:", list(record_FASTA_dict.keys()))
     return max_reference_length, record_FASTA_dict, chromosome_FASTA_dict
 
 
@@ -246,7 +252,7 @@ def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold
             if percent >= mapping_threshold:
                 records_to_analyze.add(record)
 
-    print(f"Analyzing the following FASTA records: {records_to_analyze}")
+    logger.info(f"Analyzing the following FASTA records: {records_to_analyze}")
     return records_to_analyze
 
 
@@ -281,8 +287,8 @@ def process_single_bam(
 
         # Skip processing if both forward and reverse base identities are empty
         if not fwd_bases and not rev_bases:
-            print(
-                f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No valid base identities for {record}."
+            logger.debug(
+                f"[Worker {current_process().pid}] Skipping {sample} - No valid base identities for {record}."
             )
             continue
 
@@ -315,8 +321,8 @@ def process_single_bam(
 
         # Skip if merged_bin is empty (no valid binarized data)
         if not merged_bin:
-            print(
-                f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No valid binarized data for {record}."
+            logger.debug(
+                f"[Worker {current_process().pid}] Skipping {sample} - No valid binarized data for {record}."
             )
             continue
 
@@ -350,8 +356,8 @@ def process_single_bam(
 
         # Skip if one_hot_reads is empty
         if not one_hot_reads:
-            print(
-                f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No valid one-hot encoded data for {record}."
+            logger.debug(
+                f"[Worker {current_process().pid}] Skipping {sample} - No valid one-hot encoded data for {record}."
             )
             continue
 
@@ -363,8 +369,8 @@ def process_single_bam(
 
         # Skip if no read names exist
         if not read_names:
-            print(
-                f"{timestamp()} [Worker {current_process().pid}] Skipping {sample} - No reads found in one-hot encoded data for {record}."
+            logger.debug(
+                f"[Worker {current_process().pid}] Skipping {sample} - No reads found in one-hot encoded data for {record}."
             )
             continue
 
@@ -433,11 +439,11 @@ def worker_function(
     sample = bam.stem
 
     try:
-        print(f"{timestamp()} [Worker {worker_id}] Processing BAM: {sample}")
+        logger.info(f"[Worker {worker_id}] Processing BAM: {sample}")
 
         h5ad_path = h5_dir / bam.with_suffix(".h5ad").name
         if h5ad_path.exists():
-            print(f"{timestamp()} [Worker {worker_id}] Skipping {sample}: Already processed.")
+            logger.debug(f"[Worker {worker_id}] Skipping {sample}: Already processed.")
             progress_queue.put(sample)
             return
 
@@ -447,8 +453,8 @@ def worker_function(
         }
 
         if not bam_records_to_analyze:
-            print(
-                f"{timestamp()} [Worker {worker_id}] No valid records to analyze for {sample}. Skipping."
+            logger.debug(
+                f"[Worker {worker_id}] No valid records to analyze for {sample}. Skipping."
             )
             progress_queue.put(sample)
             return
@@ -468,7 +474,7 @@ def worker_function(
 
         if adata is not None:
             adata.write_h5ad(str(h5ad_path))
-            print(f"{timestamp()} [Worker {worker_id}] Completed processing for BAM: {sample}")
+            logger.info(f"[Worker {worker_id}] Completed processing for BAM: {sample}")
 
             # Free memory
             del adata
@@ -477,8 +483,8 @@ def worker_function(
         progress_queue.put(sample)
 
     except Exception:
-        print(
-            f"{timestamp()} [Worker {worker_id}] ERROR while processing {sample}:\n{traceback.format_exc()}"
+        logger.warning(
+            f"[Worker {worker_id}] ERROR while processing {sample}:\n{traceback.format_exc()}"
         )
         progress_queue.put(sample)  # Still signal completion to prevent deadlock
 
@@ -498,7 +504,7 @@ def process_bams_parallel(
     """Processes BAM files in parallel, writes each H5AD to disk, and concatenates them at the end."""
     make_dirs(h5_dir)  # Ensure h5_dir exists
 
-    print(f"{timestamp()} Starting parallel BAM processing with {num_threads} threads...")
+    logger.info(f"Starting parallel BAM processing with {num_threads} threads...")
 
     # Ensure macOS uses forkserver to avoid spawning issues
     try:
@@ -506,9 +512,7 @@ def process_bams_parallel(
 
         multiprocessing.set_start_method("forkserver", force=True)
     except RuntimeError:
-        print(
-            f"{timestamp()} [WARNING] Multiprocessing context already set. Skipping set_start_method."
-        )
+        logger.warning(f"Multiprocessing context already set. Skipping set_start_method.")
 
     with Manager() as manager:
         progress_queue = manager.Queue()
@@ -535,7 +539,7 @@ def process_bams_parallel(
                 for i, bam in enumerate(bam_path_list)
             ]
 
-            print(f"{timestamp()} Submitted {len(bam_path_list)} BAMs for processing.")
+            logger.info(f"Submitted {len(bam_path_list)} BAMs for processing.")
 
             # Track completed BAMs
             completed_bams = set()
@@ -544,9 +548,7 @@ def process_bams_parallel(
                     processed_bam = progress_queue.get(timeout=2400)  # Wait for a finished BAM
                     completed_bams.add(processed_bam)
                 except Exception as e:
-                    print(
-                        f"{timestamp()} [ERROR] Timeout waiting for worker process. Possible crash? {e}"
-                    )
+                    logger.error(f"Timeout waiting for worker process. Possible crash? {e}")
 
             pool.close()
             pool.join()  # Ensure all workers finish
@@ -555,13 +557,13 @@ def process_bams_parallel(
     h5ad_files = [f for f in h5_dir.iterdir() if f.suffix == ".h5ad"]
 
     if not h5ad_files:
-        print(f"{timestamp()} No valid H5AD files generated. Exiting.")
+        logger.debug(f"No valid H5AD files generated. Exiting.")
         return None
 
-    print(f"{timestamp()} Concatenating {len(h5ad_files)} H5AD files into final output...")
+    logger.info(f"Concatenating {len(h5ad_files)} H5AD files into final output...")
     final_adata = ad.concat([ad.read_h5ad(f) for f in h5ad_files], join="outer")
 
-    print(f"{timestamp()} Successfully generated final AnnData object.")
+    logger.info(f"Successfully generated final AnnData object.")
     return final_adata
 
 
@@ -593,21 +595,21 @@ def delete_intermediate_h5ads_and_tmpdir(
     def _maybe_unlink(p: Path):
         if not p.exists():
             if verbose:
-                print(f"[skip] not found: {p}")
+                logger.debug(f"[skip] not found: {p}")
             return
         if not p.is_file():
             if verbose:
-                print(f"[skip] not a file: {p}")
+                logger.debug(f"[skip] not a file: {p}")
             return
         if dry_run:
-            print(f"[dry-run] would remove file: {p}")
+            logger.debug(f"[dry-run] would remove file: {p}")
             return
         try:
             p.unlink()
             if verbose:
-                print(f"Removed file: {p}")
+                logger.info(f"Removed file: {p}")
         except Exception as e:
-            print(f"[error] failed to remove file {p}: {e}")
+            logger.warning(f"[error] failed to remove file {p}: {e}")
 
     # Handle h5_dir input (directory OR iterable of file paths)
     if h5_dir is not None:
@@ -622,7 +624,7 @@ def delete_intermediate_h5ads_and_tmpdir(
                 else:
                     if verbose:
                         # optional: comment this out if too noisy
-                        print(f"[skip] not matching pattern: {p.name}")
+                        logger.debug(f"[skip] not matching pattern: {p.name}")
         else:
             # treat as iterable of file paths
             for f in h5_dir:
@@ -632,25 +634,25 @@ def delete_intermediate_h5ads_and_tmpdir(
                     _maybe_unlink(p)
                 else:
                     if verbose:
-                        print(f"[skip] not matching pattern or not a file: {p}")
+                        logger.debug(f"[skip] not matching pattern or not a file: {p}")
 
     # Remove tmp_dir recursively (if provided)
     if tmp_dir is not None:
         td = Path(tmp_dir)
         if not td.exists():
             if verbose:
-                print(f"[skip] tmp_dir not found: {td}")
+                logger.debug(f"[skip] tmp_dir not found: {td}")
         else:
             if not td.is_dir():
                 if verbose:
-                    print(f"[skip] tmp_dir is not a directory: {td}")
+                    logger.debug(f"[skip] tmp_dir is not a directory: {td}")
             else:
                 if dry_run:
-                    print(f"[dry-run] would remove directory tree: {td}")
+                    logger.debug(f"[dry-run] would remove directory tree: {td}")
                 else:
                     try:
                         shutil.rmtree(td)
                         if verbose:
-                            print(f"Removed directory tree: {td}")
+                            logger.info(f"Removed directory tree: {td}")
                     except Exception as e:
-                        print(f"[error] failed to remove tmp dir {td}: {e}")
+                        logger.warning(f"[error] failed to remove tmp dir {td}: {e}")

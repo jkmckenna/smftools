@@ -8,7 +8,18 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import IO, Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from smftools.constants import BAM_SUFFIX, BARCODE_BOTH_ENDS, CONVERSIONS, MOD_LIST, MOD_MAP, REF_COL, SAMPLE_COL, SPLIT_DIR, STRANDS, TRIM
+from smftools.constants import (
+    BAM_SUFFIX,
+    BARCODE_BOTH_ENDS,
+    CONVERSIONS,
+    MOD_LIST,
+    MOD_MAP,
+    REF_COL,
+    SAMPLE_COL,
+    SPLIT_DIR,
+    STRANDS,
+    TRIM,
+)
 
 from .discover_input_files import discover_input_files
 
@@ -709,12 +720,18 @@ class ExperimentConfig:
     m5C_threshold: float = 0.7
     hm5C_threshold: float = 0.7
     thresholds: List[float] = field(default_factory=list)
-    mod_list: List[str] = field(default_factory=lambda: list(MOD_LIST))  # Dorado modified basecalling codes
-    mod_map: Dict[str, str] = field(default_factory=lambda: dict(MOD_MAP))  # Map from dorado modified basecalling codes to codes used in modkit_extract_to_adata function
+    mod_list: List[str] = field(
+        default_factory=lambda: list(MOD_LIST)
+    )  # Dorado modified basecalling codes
+    mod_map: Dict[str, str] = field(
+        default_factory=lambda: dict(MOD_MAP)
+    )  # Map from dorado modified basecalling codes to codes used in modkit_extract_to_adata function
 
     # Alignment params
     mapping_threshold: float = 0.01  # Min threshold for fraction of reads in a sample mapping to a reference in order to include the reference in the anndata
-    align_from_bam: bool = False  # Whether minimap2 should align from a bam file as input. If False, aligns from FASTQ
+    align_from_bam: bool = (
+        False  # Whether minimap2 should align from a bam file as input. If False, aligns from FASTQ
+    )
     aligner: str = "dorado"
     aligner_args: Optional[List[str]] = None
     make_bigwigs: bool = False
@@ -1250,7 +1267,8 @@ class ExperimentConfig:
             delete_intermediate_hdfs=merged.get("delete_intermediate_hdfs", True),
             mod_target_bases=merged.get("mod_target_bases", ["GpC", "CpG"]),
             enzyme_target_bases=merged.get("enzyme_target_bases", ["GpC"]),
-            conversion_types=merged.get("conversions", ["unconverted"]) + merged.get("conversion_types", ["5mC"]),
+            conversion_types=merged.get("conversions", ["unconverted"])
+            + merged.get("conversion_types", ["5mC"]),
             filter_threshold=merged.get("filter_threshold", 0.8),
             m6A_threshold=merged.get("m6A_threshold", 0.7),
             m5C_threshold=merged.get("m5C_threshold", 0.7),
