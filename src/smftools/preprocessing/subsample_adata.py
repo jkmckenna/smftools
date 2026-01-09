@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def subsample_adata(adata, obs_columns=None, max_samples=2000, random_seed=42):
     """
     Subsamples an AnnData object so that each unique combination of categories
@@ -47,7 +52,7 @@ def subsample_adata(adata, obs_columns=None, max_samples=2000, random_seed=42):
 
     # ⚠ Handle backed mode detection
     if adata.isbacked:
-        print("⚠ Detected backed mode. Subset will be loaded fully into memory.")
+        logger.warning("Detected backed mode. Subset will be loaded fully into memory.")
         subset = adata[sampled_indices]
         subset = subset.to_memory()
     else:

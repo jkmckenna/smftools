@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def append_base_context(
     adata,
     ref_column="Reference_strand",
@@ -30,7 +35,7 @@ def append_base_context(
         # QC already performed; nothing to do
         return
 
-    print("Adding base context based on reference FASTA sequence for sample")
+    logger.info("Adding base context based on reference FASTA sequence for sample")
     references = adata.obs[ref_column].cat.categories
     site_types = []
 
@@ -95,8 +100,8 @@ def append_base_context(
                         elif sequence[i - 1] != "C" and sequence[i + 1] != "C":
                             boolean_dict[f"{ref}_other_C_site"][i] = True
             else:
-                print(
-                    "Error: top or bottom strand of conversion could not be determined. Ensure this value is in the Reference name."
+                logger.error(
+                    "Top or bottom strand of conversion could not be determined. Ensure this value is in the Reference name."
                 )
 
         if "A" in mod_target_bases:
@@ -111,8 +116,8 @@ def append_base_context(
                     if sequence[i] == "T":
                         boolean_dict[f"{ref}_A_site"][i] = True
             else:
-                print(
-                    "Error: top or bottom strand of conversion could not be determined. Ensure this value is in the Reference name."
+                logger.error(
+                    "Top or bottom strand of conversion could not be determined. Ensure this value is in the Reference name."
                 )
 
         for site_type in site_types:

@@ -1,5 +1,8 @@
 ## calculate_position_Youden
 ## Calculating and applying position level thresholds for methylation calls to binarize the SMF data
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
 def calculate_position_Youden(
     adata,
     positive_control_sample=None,
@@ -37,7 +40,7 @@ def calculate_position_Youden(
     references = adata.obs[ref_column].cat.categories
     # Iterate over each category in the specified obs_column
     for ref in references:
-        print(f"Calculating position Youden statistics for {ref}")
+        logger.info("Calculating position Youden statistics for %s", ref)
         # Subset to keep only reads associated with the category
         ref_subset = adata[adata.obs[ref_column] == ref]
         # Iterate over positive and negative control samples
@@ -58,7 +61,7 @@ def calculate_position_Youden(
                     threshold = np.percentile(sorted_column, infer_on_percentile)
                     control_subset = ref_subset[ref_subset.obs[inference_variable] <= threshold, :]
             elif not infer_on_percentile and not control:
-                print(
+                logger.error(
                     "Can not threshold Anndata on Youden threshold. Need to either provide control samples or set infer_on_percentile to True"
                 )
                 return
@@ -152,4 +155,4 @@ def calculate_position_Youden(
             True if i > J_threshold else False for i in J_max_list
         ]
 
-    print("Finished calculating position Youden statistics")
+    logger.info("Finished calculating position Youden statistics")

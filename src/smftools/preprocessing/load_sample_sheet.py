@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def load_sample_sheet(
     adata,
     sample_sheet_path,
@@ -26,7 +31,7 @@ def load_sample_sheet(
         # QC already performed; nothing to do
         return
 
-    print("Loading sample sheet...")
+    logger.info("Loading sample sheet...")
     df = pd.read_csv(sample_sheet_path)
     df[mapping_key_column] = df[mapping_key_column].astype(str)
 
@@ -38,7 +43,7 @@ def load_sample_sheet(
 
     value_columns = [col for col in df.columns if col != mapping_key_column]
 
-    print(f"Appending metadata columns: {value_columns}")
+    logger.info("Appending metadata columns: %s", value_columns)
     df = df.set_index(mapping_key_column)
 
     for col in value_columns:
@@ -50,9 +55,8 @@ def load_sample_sheet(
     # mark as done
     adata.uns[uns_flag] = True
 
-    print(
-        "Sample sheet metadata successfully added as categories."
-        if as_category
-        else "Metadata added."
-    )
+    if as_category:
+        logger.info("Sample sheet metadata successfully added as categories.")
+    else:
+        logger.info("Metadata added.")
     return adata

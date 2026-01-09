@@ -1,5 +1,9 @@
 ## invert_adata
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def invert_adata(adata, uns_flag="invert_adata_performed", force_redo=False):
     """
@@ -18,7 +22,7 @@ def invert_adata(adata, uns_flag="invert_adata_performed", force_redo=False):
         # QC already performed; nothing to do
         return adata
 
-    print("Inverting AnnData along the column axis...")
+    logger.info("Inverting AnnData along the column axis...")
 
     # Reverse the order of columns (variables)
     inverted_adata = adata[:, ::-1].copy()
@@ -32,5 +36,5 @@ def invert_adata(adata, uns_flag="invert_adata_performed", force_redo=False):
     # mark as done
     inverted_adata.uns[uns_flag] = True
 
-    print("Inversion complete!")
+    logger.info("Inversion complete!")
     return inverted_adata

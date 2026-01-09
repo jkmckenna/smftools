@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def calculate_read_modification_stats(
     adata,
     reference_column,
@@ -40,7 +45,7 @@ def calculate_read_modification_stats(
         # QC already performed; nothing to do
         return
 
-    print("Calculating read level Modification statistics")
+    logger.info("Calculating read level Modification statistics")
 
     references = set(adata.obs[reference_column])
     sample_names = set(adata.obs[sample_names_col])
@@ -68,7 +73,7 @@ def calculate_read_modification_stats(
     for ref in references:
         ref_subset = adata[adata.obs[reference_column] == ref]
         for site_type in site_types:
-            print(f"Iterating over {ref}_{site_type}")
+            logger.info("Iterating over %s_%s", ref, site_type)
             observation_matrix = ref_subset.obsm[f"{ref}_{site_type}{valid_site_suffix}"]
             total_positions_in_read = np.nansum(~np.isnan(observation_matrix), axis=1)
             total_positions_in_reference = observation_matrix.shape[1]

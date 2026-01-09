@@ -1,5 +1,9 @@
 # cluster_adata_on_methylation
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def cluster_adata_on_methylation(
     adata,
@@ -94,8 +98,12 @@ def cluster_adata_on_methylation(
                     )
                     adata.obs.update(temp_obs_data)
                 except Exception:
-                    print(
-                        f"Error found in {subgroup} of {site_type}_{layer}_hierarchical_clustering_index_within_{subgroup_name}"
+                    logger.exception(
+                        "Error found in %s of %s_%s_hierarchical_clustering_index_within_%s",
+                        subgroup,
+                        site_type,
+                        layer,
+                        subgroup_name,
                     )
             elif method == "kmeans":
                 try:
@@ -136,8 +144,12 @@ def cluster_adata_on_methylation(
                     )
                     adata.obs.update(temp_obs_data)
                 except Exception:
-                    print(
-                        f"Error found in {subgroup} of {site_type}_{layer}_kmeans_clustering_index_within_{subgroup_name}"
+                    logger.exception(
+                        "Error found in %s of %s_%s_kmeans_clustering_index_within_%s",
+                        subgroup,
+                        site_type,
+                        layer,
+                        subgroup_name,
                     )
 
     if method == "hierarchical":

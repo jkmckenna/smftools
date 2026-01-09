@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def binarize_on_Youden(
     adata,
     ref_column: str = "Reference_strand",
@@ -40,7 +45,7 @@ def binarize_on_Youden(
     ref_labels = adata.obs[ref_column].to_numpy()
 
     for ref in references:
-        print(f"Binarizing on Youden statistics for {ref}")
+        logger.info("Binarizing on Youden statistics for %s", ref)
 
         ref_mask = ref_labels == ref
         if not np.any(ref_mask):
@@ -84,9 +89,10 @@ def binarize_on_Youden(
         binarized[ref_mask, :] = block_out
 
     adata.layers[output_layer_name] = binarized
-    print(
-        f"Finished binarization → stored in adata.layers['{output_layer_name}'] "
-        f"(mask_failed_positions={mask_failed_positions})"
+    logger.info(
+        "Finished binarization → stored in adata.layers['%s'] (mask_failed_positions=%s)",
+        output_layer_name,
+        mask_failed_positions,
     )
 
 

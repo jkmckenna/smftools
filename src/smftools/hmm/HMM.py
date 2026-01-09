@@ -10,6 +10,9 @@ import torch
 import torch.nn as nn
 from scipy.sparse import issparse
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
 # =============================================================================
 # Registry / Factory
 # =============================================================================
@@ -1228,7 +1231,11 @@ class SingleBernoulliHMM(BaseHMM):
             self._normalize_emission()
 
             if verbose:
-                print(f"[SingleBernoulliHMM.fit] iter={it} ll_proxy={hist[-1]:.6f}")
+                logger.info(
+                    "[SingleBernoulliHMM.fit] iter=%s ll_proxy=%.6f",
+                    it,
+                    hist[-1],
+                )
 
             if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol):
                 break
@@ -1450,7 +1457,11 @@ class MultiBernoulliHMM(BaseHMM):
             self._normalize_emission()
 
             if verbose:
-                print(f"[MultiBernoulliHMM.fit] iter={it} ll_proxy={hist[-1]:.6f}")
+                logger.info(
+                    "[MultiBernoulliHMM.fit] iter=%s ll_proxy=%.6f",
+                    it,
+                    hist[-1],
+                )
 
             if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol):
                 break
@@ -1783,7 +1794,11 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
             self._normalize_trans_by_bin()
 
             if verbose:
-                print(f"[DistanceBinnedSingle.fit] iter={it} ll_proxy={hist[-1]:.6f}")
+                logger.info(
+                    "[DistanceBinnedSingle.fit] iter=%s ll_proxy=%.6f",
+                    it,
+                    hist[-1],
+                )
 
             if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol):
                 break

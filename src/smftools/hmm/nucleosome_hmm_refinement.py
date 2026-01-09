@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def refine_nucleosome_calls(
     adata,
     layer_name,
@@ -71,7 +76,7 @@ def refine_nucleosome_calls(
     adata.layers[f"{layer_name}_hexamers"] = hexamer_layer
     adata.layers[f"{layer_name}_octamers"] = octamer_layer
 
-    print(f"Added layers: {layer_name}_hexamers and {layer_name}_octamers")
+    logger.info("Added layers: %s_hexamers and %s_octamers", layer_name, layer_name)
     return adata
 
 
@@ -154,5 +159,5 @@ def infer_nucleosomes_in_large_bound(
                         pos_cursor += 1
 
     adata.layers[f"{large_bound_layer}_phased_nucleosomes"] = inferred_layer
-    print(f"Added layer: {large_bound_layer}_phased_nucleosomes")
+    logger.info("Added layer: %s_phased_nucleosomes", large_bound_layer)
     return adata

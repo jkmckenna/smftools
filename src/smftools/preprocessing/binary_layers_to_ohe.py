@@ -1,5 +1,9 @@
 ## binary_layers_to_ohe
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 ## Conversion SMF Specific
 def binary_layers_to_ohe(adata, binary_layers, stack="hstack"):
     """
@@ -23,7 +27,7 @@ def binary_layers_to_ohe(adata, binary_layers, stack="hstack"):
     N_binary_layer = [layer for layer in binary_layers if layer == "N_binary_encoding"]
     # Add the N_binary_encoding layer to the end of the list of binary layers
     all_binary_layers = ACGT_binary_layers + N_binary_layer
-    print(f"Found {all_binary_layers} layers in adata")
+    logger.info("Found %s layers in adata", all_binary_layers)
 
     # Extract the layers
     layers = [adata.layers[layer_name] for layer_name in all_binary_layers]

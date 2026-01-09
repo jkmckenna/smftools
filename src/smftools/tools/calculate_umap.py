@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def calculate_umap(
     adata,
     layer="nan_half",
@@ -19,36 +24,38 @@ def calculate_umap(
     if var_filters:
         subset_mask = np.logical_or.reduce([adata.var[f].values for f in var_filters])
         adata_subset = adata[:, subset_mask].copy()
-        print(
-            f"Subsetting adata: Retained {adata_subset.shape[1]} features based on filters {var_filters}"
+        logger.info(
+            "Subsetting adata: retained %s features based on filters %s",
+            adata_subset.shape[1],
+            var_filters,
         )
     else:
         adata_subset = adata.copy()
-        print("No var filters provided. Using all features.")
+        logger.info("No var filters provided. Using all features.")
 
     # Step 2: NaN handling inside layer
     if layer:
         data = adata_subset.layers[layer]
         if not issparse(data):
             if np.isnan(data).any():
-                print("⚠ NaNs detected, filling with 0.5 before PCA + neighbors.")
+                logger.warning("NaNs detected, filling with 0.5 before PCA + neighbors.")
                 data = np.nan_to_num(data, nan=0.5)
                 adata_subset.layers[layer] = data
             else:
-                print("No NaNs detected.")
+                logger.info("No NaNs detected.")
         else:
-            print(
+            logger.info(
                 "Sparse matrix detected; skipping NaN check (sparse formats typically do not store NaNs)."
             )
 
     # Step 3: PCA + neighbors + UMAP on subset
     if "X_umap" not in adata_subset.obsm or overwrite:
         n_pcs = min(adata_subset.shape[1], n_pcs)
-        print(f"Running PCA with n_pcs={n_pcs}")
+        logger.info("Running PCA with n_pcs=%s", n_pcs)
         sc.pp.pca(adata_subset, layer=layer)
-        print("Running neighborhood graph")
+        logger.info("Running neighborhood graph")
         sc.pp.neighbors(adata_subset, use_rep="X_pca", n_pcs=n_pcs, n_neighbors=knn_neighbors)
-        print("Running UMAP")
+        logger.info("Running UMAP")
         sc.tl.umap(adata_subset)
 
     # Step 4: Store results in original adata
@@ -68,6 +75,6 @@ def calculate_umap(
 
     adata.varm["PCs"] = pc_matrix
 
-    print("Stored: adata.obsm['X_pca'] and adata.obsm['X_umap']")
+    logger.info("Stored: adata.obsm['X_pca'] and adata.obsm['X_umap']")
 
     return adata
