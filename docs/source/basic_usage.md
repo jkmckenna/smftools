@@ -13,7 +13,7 @@ This command takes a user passed config file handling:
     - Experiment info (SMF modality, sequencer type, barcoding kit if nanopore, sample sheet with metadata mapping)
     - Options to override default workflow parameters from smftools/config. Params are handled from default.yaml -> modality_type.yaml -> user passed config.csv.
 
-![](docs/source/_static/smftools_informatics_diagram.png)
+![](_static/smftools_informatics_diagram.png)
 
 ## Preprocess Usage
 
@@ -23,7 +23,7 @@ This command performs preprocessing on the anndata object. It automatically runs
 smftools preprocess "/Path_to_experiment_config.csv"
 ```
 
-![](docs/source/_static/smftools_preprocessing_diagram.png)
+![](_static/smftools_preprocessing_diagram.png)
 
 ## Spatial Usage
 

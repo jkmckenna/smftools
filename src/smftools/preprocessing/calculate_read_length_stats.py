@@ -1,5 +1,10 @@
 ## calculate_read_length_stats
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 # Read length QC
 def calculate_read_length_stats(adata, reference_column="", sample_names_col=""):
     """
@@ -17,13 +22,13 @@ def calculate_read_length_stats(adata, reference_column="", sample_names_col="")
     import numpy as np
     import pandas as pd
 
-    print("Calculating read length statistics")
+    logger.info("Calculating read length statistics")
 
     references = set(adata.obs[reference_column])
     sample_names = set(adata.obs[sample_names_col])
 
     ## Add basic observation-level (read-level) metadata to the object: first valid position in a read and last valid position in the read. From this determine the read length. Save two new variable which hold the first and last valid positions in the entire dataset
-    print("calculating read length stats")
+    logger.info("Calculating read length stats")
     # Add some basic observation-level (read-level) metadata to the anndata object
     read_first_valid_position = np.array(
         [int(adata.var_names[i]) for i in np.argmax(~np.isnan(adata.X), axis=1)]

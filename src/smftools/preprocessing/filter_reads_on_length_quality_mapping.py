@@ -4,6 +4,10 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def filter_reads_on_length_quality_mapping(
     adata: ad.AnnData,
@@ -54,13 +58,16 @@ def filter_reads_on_length_quality_mapping(
                 selected_cols = list(adata_work.var_names[lo_idx : hi_idx + 1])
             else:
                 selected_cols = list(adata_work.var_names[col_mask_bool])
-            print(
-                f"Subsetting adata to coordinates between {low} and {high}: keeping {len(selected_cols)} variables."
+            logger.info(
+                "Subsetting adata to coordinates between %s and %s: keeping %s variables.",
+                low,
+                high,
+                len(selected_cols),
             )
             adata_work = adata_work[:, selected_cols].copy()
         except Exception:
-            print(
-                "Warning: could not interpret adata.var_names as numeric coordinates — skipping coordinate filtering."
+            logger.warning(
+                "Could not interpret adata.var_names as numeric coordinates — skipping coordinate filtering."
             )
 
     # --- helper to coerce range inputs ---
@@ -93,7 +100,7 @@ def filter_reads_on_length_quality_mapping(
     # read length filter
     if (rl_min is not None) or (rl_max is not None):
         if "mapped_length" not in adata_work.obs.columns:
-            print("Warning: 'mapped_length' not found in adata.obs — skipping read_length filter.")
+            logger.warning("'mapped_length' not found in adata.obs — skipping read_length filter.")
         else:
             vals = pd.to_numeric(adata_work.obs["mapped_length"], errors="coerce")
             mask = pd.Series(True, index=adata_work.obs.index)
@@ -103,13 +110,13 @@ def filter_reads_on_length_quality_mapping(
                 mask &= vals <= rl_max
             mask &= vals.notna()
             combined_mask &= mask
-            print(f"Planned read_length filter: min={rl_min}, max={rl_max}")
+            logger.info("Planned read_length filter: min=%s, max=%s", rl_min, rl_max)
 
     # length ratio filter
     if (lr_min is not None) or (lr_max is not None):
         if "mapped_length_to_reference_length_ratio" not in adata_work.obs.columns:
-            print(
-                "Warning: 'mapped_length_to_reference_length_ratio' not found in adata.obs — skipping length_ratio filter."
+            logger.warning(
+                "'mapped_length_to_reference_length_ratio' not found in adata.obs — skipping length_ratio filter."
             )
         else:
             vals = pd.to_numeric(
@@ -122,12 +129,12 @@ def filter_reads_on_length_quality_mapping(
                 mask &= vals <= lr_max
             mask &= vals.notna()
             combined_mask &= mask
-            print(f"Planned length_ratio filter: min={lr_min}, max={lr_max}")
+            logger.info("Planned length_ratio filter: min=%s, max=%s", lr_min, lr_max)
 
     # read quality filter (supporting optional range but typically min only)
     if (rq_min is not None) or (rq_max is not None):
         if "read_quality" not in adata_work.obs.columns:
-            print("Warning: 'read_quality' not found in adata.obs — skipping read_quality filter.")
+            logger.warning("'read_quality' not found in adata.obs — skipping read_quality filter.")
         else:
             vals = pd.to_numeric(adata_work.obs["read_quality"], errors="coerce")
             mask = pd.Series(True, index=adata_work.obs.index)
@@ -137,13 +144,13 @@ def filter_reads_on_length_quality_mapping(
                 mask &= vals <= rq_max
             mask &= vals.notna()
             combined_mask &= mask
-            print(f"Planned read_quality filter: min={rq_min}, max={rq_max}")
+            logger.info("Planned read_quality filter: min=%s, max=%s", rq_min, rq_max)
 
     # mapping quality filter (supporting optional range but typically min only)
     if (mq_min is not None) or (mq_max is not None):
         if "mapping_quality" not in adata_work.obs.columns:
-            print(
-                "Warning: 'mapping_quality' not found in adata.obs — skipping mapping_quality filter."
+            logger.warning(
+                "'mapping_quality' not found in adata.obs — skipping mapping_quality filter."
             )
         else:
             vals = pd.to_numeric(adata_work.obs["mapping_quality"], errors="coerce")
@@ -154,17 +161,22 @@ def filter_reads_on_length_quality_mapping(
                 mask &= vals <= mq_max
             mask &= vals.notna()
             combined_mask &= mask
-            print(f"Planned mapping_quality filter: min={mq_min}, max={mq_max}")
+            logger.info("Planned mapping_quality filter: min=%s, max=%s", mq_min, mq_max)
 
     # Apply combined mask and report
     s0 = adata_work.n_obs
     combined_mask_bool = combined_mask.astype(bool).values
     adata_work = adata_work[combined_mask_bool].copy()
     s1 = adata_work.n_obs
-    print(f"Combined filters applied: kept {s1} / {s0} reads (removed {s0 - s1})")
+    logger.info("Combined filters applied: kept %s / %s reads (removed %s)", s1, s0, s0 - s1)
 
     final_n = adata_work.n_obs
-    print(f"Filtering complete: start={start_n}, final={final_n}, removed={start_n - final_n}")
+    logger.info(
+        "Filtering complete: start=%s, final=%s, removed=%s",
+        start_n,
+        final_n,
+        start_n - final_n,
+    )
 
     # mark as done
     adata_work.uns[uns_flag] = True

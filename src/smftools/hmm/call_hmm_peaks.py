@@ -3,6 +3,10 @@
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Union
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 def call_hmm_peaks(
     adata,
@@ -107,8 +111,10 @@ def call_hmm_peaks(
                 candidates = [feature_key]
 
             if not candidates:
-                print(
-                    f"[call_hmm_peaks] WARNING: no layers found matching '{feature_key}' in ref '{ref}'. Skipping."
+                logger.warning(
+                    "[call_hmm_peaks] No layers found matching '%s' in ref '%s'. Skipping.",
+                    feature_key,
+                    ref,
                 )
                 continue
 
@@ -121,8 +127,9 @@ def call_hmm_peaks(
 
             for layer_name in candidates:
                 if layer_name not in adata.layers:
-                    print(
-                        f"[call_hmm_peaks] WARNING: layer '{layer_name}' not in adata.layers; skipping."
+                    logger.warning(
+                        "[call_hmm_peaks] Layer '%s' not in adata.layers; skipping.",
+                        layer_name,
                     )
                     continue
 
@@ -130,8 +137,12 @@ def call_hmm_peaks(
                 L = adata.layers[layer_name]
                 L = L.toarray() if issparse(L) else np.asarray(L)
                 if L.shape != (adata.n_obs, adata.n_vars):
-                    print(
-                        f"[call_hmm_peaks] WARNING: layer '{layer_name}' has shape {L.shape}, expected ({adata.n_obs}, {adata.n_vars}); skipping."
+                    logger.warning(
+                        "[call_hmm_peaks] Layer '%s' has shape %s, expected (%s, %s); skipping.",
+                        layer_name,
+                        L.shape,
+                        adata.n_obs,
+                        adata.n_vars,
                     )
                     continue
 
@@ -154,7 +165,11 @@ def call_hmm_peaks(
                     peak_metric, prominence=peak_prom, distance=min_distance
                 )
                 if peak_indices.size == 0:
-                    print(f"[call_hmm_peaks] No peaks for layer '{layer_name}' in ref '{ref}'.")
+                    logger.info(
+                        "[call_hmm_peaks] No peaks for layer '%s' in ref '%s'.",
+                        layer_name,
+                        ref,
+                    )
                     continue
 
                 peak_centers = coordinates[peak_indices]
@@ -185,7 +200,7 @@ def call_hmm_peaks(
                     safe_layer = str(layer_name).replace("/", "_")
                     fname = output_dir / f"{tag}_{safe_layer}_{safe_ref}_peaks.png"
                     fig.savefig(fname, bbox_inches="tight", dpi=200)
-                    print(f"[call_hmm_peaks] Saved plot to {fname}")
+                    logger.info("[call_hmm_peaks] Saved plot to %s", fname)
                     plt.close(fig)
                 else:
                     fig.tight_layout()
@@ -285,8 +300,11 @@ def call_hmm_peaks(
                 else:
                     adata.var[any_col] = False
 
-                print(
-                    f"[call_hmm_peaks] Annotated {len(peak_centers)} peaks for layer '{layer_name}' in ref '{ref}'."
+                logger.info(
+                    "[call_hmm_peaks] Annotated %s peaks for layer '%s' in ref '%s'.",
+                    len(peak_centers),
+                    layer_name,
+                    ref,
                 )
 
     # global any-peak across all layers/refs

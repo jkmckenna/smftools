@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def create_nan_mask_from_X(adata, new_layer_name="nan_mask"):
     """
     Generates a nan mask where 1 = NaN in adata.X and 0 = valid value.
@@ -6,7 +11,7 @@ def create_nan_mask_from_X(adata, new_layer_name="nan_mask"):
 
     nan_mask = np.isnan(adata.X).astype(int)
     adata.layers[new_layer_name] = nan_mask
-    print(f"Created '{new_layer_name}' layer based on NaNs in adata.X")
+    logger.info("Created '%s' layer based on NaNs in adata.X", new_layer_name)
     return adata
 
 
@@ -24,8 +29,10 @@ def create_nan_or_non_gpc_mask(adata, obs_column, new_layer_name="nan_or_non_gpc
     mask = np.maximum(nan_mask, combined_mask)
     adata.layers[new_layer_name] = mask
 
-    print(
-        f"Created '{new_layer_name}' layer based on NaNs in adata.X and non-GpC regions using {obs_column}"
+    logger.info(
+        "Created '%s' layer based on NaNs in adata.X and non-GpC regions using %s",
+        new_layer_name,
+        obs_column,
     )
     return adata
 
@@ -72,8 +79,10 @@ def combine_layers(
         combined[mask == 0] = 0
 
     adata.layers[output_layer] = combined
-    print(
-        f"Combined layers into {output_layer} {'(binary)' if binary_mode else f'with values {values}'}"
+    logger.info(
+        "Combined layers into %s %s",
+        output_layer,
+        "(binary)" if binary_mode else f"with values {values}",
     )
 
     return adata

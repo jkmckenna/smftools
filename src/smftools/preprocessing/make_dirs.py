@@ -1,5 +1,10 @@
 ## make_dirs
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 # General
 def make_dirs(directories):
     """
@@ -16,6 +21,6 @@ def make_dirs(directories):
     for directory in directories:
         if not os.path.isdir(directory):
             os.mkdir(directory)
-            print(f"Directory '{directory}' created successfully.")
+            logger.info("Directory '%s' created successfully.", directory)
         else:
-            print(f"Directory '{directory}' already exists.")
+            logger.info("Directory '%s' already exists.", directory)

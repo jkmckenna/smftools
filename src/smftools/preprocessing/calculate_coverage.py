@@ -1,3 +1,8 @@
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
 def calculate_coverage(
     adata,
     ref_column="Reference_strand",
@@ -34,7 +39,7 @@ def calculate_coverage(
 
     # Loop over references
     for ref in references:
-        print(f"Assessing positional coverage across samples for {ref} reference")
+        logger.info("Assessing positional coverage across samples for %s reference", ref)
 
         # Subset to current category
         ref_mask = adata.obs[ref_column] == ref
