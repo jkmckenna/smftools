@@ -1,7 +1,14 @@
 # ------------------------- Utilities -------------------------
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 from numpy.fft import rfft, rfftfreq
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 from smftools.logging_utils import get_logger
 
@@ -25,48 +32,41 @@ except Exception:
     _have_scipy = False
 
 
-def random_fill_nans(X):
+def random_fill_nans(X: NDArray[np.floating]) -> NDArray[np.floating]:
+    """Fill NaNs with random values in-place.
+
+    Args:
+        X: Input array containing NaNs.
+
+    Returns:
+        numpy.ndarray: Array with NaNs replaced by random values.
+    """
     nan_mask = np.isnan(X)
     X[nan_mask] = np.random.rand(*X[nan_mask].shape)
     return X
 
 
 def binary_autocorrelation_with_spacing(
-    row,
-    positions,
-    max_lag=1000,
-    assume_sorted=True,
+    row: NDArray[np.floating],
+    positions: NDArray[np.integer],
+    max_lag: int = 1000,
+    assume_sorted: bool = True,
     normalize: str = "sum",
     return_counts: bool = False,
 ):
-    """
-    Fast autocorrelation over real genomic spacing.
+    """Compute autocorrelation over genomic spacing.
 
-    Parameters
-    ----------
-    row : 1D array (float)
-        Values per position (NaN = missing). Works for binary or real-valued.
-    positions : 1D array (int)
-        Genomic coordinates for each column of `row`.
-    max_lag : int
-        Max genomic lag (inclusive).
-    assume_sorted : bool
-        If True, assumes `positions` are strictly non-decreasing.
-    normalize : {"sum", "pearson"}
-        "sum": autocorr[l] = sum_{pairs at lag l} (xc_i * xc_j) / sum(xc^2)
-               (fast; comparable across lags and molecules).
-        "pearson": autocorr[l] = (mean_{pairs at lag l} (xc_i * xc_j)) / (mean(xc^2))
-                   i.e., an estimate of Pearson-like correlation at that lag.
-    return_counts : bool
-        If True, return (autocorr, lag_counts). Otherwise just autocorr.
+    Args:
+        row: Values per position (NaN = missing).
+        positions: Genomic coordinates for each column of ``row``.
+        max_lag: Max genomic lag (inclusive).
+        assume_sorted: Whether ``positions`` are sorted.
+        normalize: ``"sum"`` or ``"pearson"`` normalization.
+        return_counts: Whether to return lag counts alongside autocorrelation.
 
-    Returns
-    -------
-    autocorr : 1D array, shape (max_lag+1,)
-        Normalized autocorrelation; autocorr[0] = 1.0.
-        Lags with no valid pairs are NaN.
-    (optionally) lag_counts : 1D array, shape (max_lag+1,)
-        Number of pairs contributing to each lag.
+    Returns:
+        numpy.ndarray | tuple[numpy.ndarray, numpy.ndarray]: Autocorrelation values and
+        optionally counts per lag.
     """
 
     # mask valid entries
@@ -139,9 +139,15 @@ def binary_autocorrelation_with_spacing(
 
 # ---------- helpers ----------
 def weighted_mean_autocorr(ac_matrix, counts_matrix, min_count=20):
-    """
-    Weighted mean across molecules: sum(ac * counts) / sum(counts) per lag.
-    Mask lags with total counts < min_count (set NaN).
+    """Compute weighted mean autocorrelation per lag.
+
+    Args:
+        ac_matrix: Autocorrelation matrix per molecule.
+        counts_matrix: Pair counts per lag.
+        min_count: Minimum total count required to keep a lag.
+
+    Returns:
+        tuple[numpy.ndarray, numpy.ndarray]: Mean autocorrelation and total counts.
     """
     counts_total = counts_matrix.sum(axis=0)
     # replace NaNs in ac_matrix with 0 for weighted sum
@@ -154,7 +160,21 @@ def weighted_mean_autocorr(ac_matrix, counts_matrix, min_count=20):
     return mean_ac, counts_total
 
 
-def psd_from_autocorr(mean_ac, lags, pad_factor=4):
+def psd_from_autocorr(
+    mean_ac: NDArray[np.floating],
+    lags: NDArray[np.floating],
+    pad_factor: int = 4,
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Compute a power spectral density from autocorrelation.
+
+    Args:
+        mean_ac: Mean autocorrelation values.
+        lags: Lag values in base pairs.
+        pad_factor: Padding factor for FFT resolution.
+
+    Returns:
+        tuple[numpy.ndarray, numpy.ndarray]: Frequencies and power values.
+    """
     n = len(mean_ac)
     pad_n = int(max(2**10, pad_factor * n))  # pad to at least some min to stabilize FFT res
     ac_padded = np.zeros(pad_n, dtype=np.float64)
@@ -166,7 +186,23 @@ def psd_from_autocorr(mean_ac, lags, pad_factor=4):
     return freqs, power
 
 
-def find_peak_in_nrl_band(freqs, power, nrl_search_bp=(120, 260), prominence_frac=0.05):
+def find_peak_in_nrl_band(
+    freqs: NDArray[np.floating],
+    power: NDArray[np.floating],
+    nrl_search_bp: tuple[int, int] = (120, 260),
+    prominence_frac: float = 0.05,
+) -> tuple[float | None, int | None]:
+    """Find the peak frequency in the nucleosome repeat length band.
+
+    Args:
+        freqs: Frequency bins.
+        power: Power values.
+        nrl_search_bp: Search band in base pairs.
+        prominence_frac: Fraction of peak power for prominence.
+
+    Returns:
+        tuple[float | None, int | None]: Peak frequency and index, or ``(None, None)``.
+    """
     fmin = 1.0 / nrl_search_bp[1]
     fmax = 1.0 / nrl_search_bp[0]
     band_mask = (freqs >= fmin) & (freqs <= fmax)
@@ -188,7 +224,21 @@ def find_peak_in_nrl_band(freqs, power, nrl_search_bp=(120, 260), prominence_fra
     return freqs[idx], idx
 
 
-def fwhm_freq_to_bp(freqs, power, peak_idx):
+def fwhm_freq_to_bp(
+    freqs: NDArray[np.floating],
+    power: NDArray[np.floating],
+    peak_idx: int,
+) -> tuple[float, float, float]:
+    """Estimate FWHM in base pairs for a spectral peak.
+
+    Args:
+        freqs: Frequency bins.
+        power: Power values.
+        peak_idx: Index of the peak.
+
+    Returns:
+        tuple[float, float, float]: FWHM in bp and left/right frequencies.
+    """
     # find half power
     pk = power[peak_idx]
     half = pk / 2.0
@@ -220,7 +270,21 @@ def fwhm_freq_to_bp(freqs, power, peak_idx):
     return fwhm_bp, left_f, right_f
 
 
-def estimate_snr(power, peak_idx, exclude_bins=5):
+def estimate_snr(
+    power: NDArray[np.floating],
+    peak_idx: int,
+    exclude_bins: int = 5,
+) -> tuple[float, float, float]:
+    """Estimate signal-to-noise ratio around a spectral peak.
+
+    Args:
+        power: Power values.
+        peak_idx: Index of the peak.
+        exclude_bins: Bins to exclude around the peak when estimating background.
+
+    Returns:
+        tuple[float, float, float]: SNR, peak power, and background median.
+    """
     pk = power[peak_idx]
     mask = np.ones_like(power, dtype=bool)
     lo = max(0, peak_idx - exclude_bins)
@@ -231,7 +295,23 @@ def estimate_snr(power, peak_idx, exclude_bins=5):
     return pk / (bg_med if bg_med > 0 else np.finfo(float).eps), pk, bg_med
 
 
-def sample_autocorr_at_harmonics(mean_ac, lags, nrl_bp, max_harmonics=6):
+def sample_autocorr_at_harmonics(
+    mean_ac: NDArray[np.floating],
+    lags: NDArray[np.floating],
+    nrl_bp: float,
+    max_harmonics: int = 6,
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Sample autocorrelation heights at NRL harmonics.
+
+    Args:
+        mean_ac: Mean autocorrelation values.
+        lags: Lag values in base pairs.
+        nrl_bp: NRL in base pairs.
+        max_harmonics: Maximum harmonics to sample.
+
+    Returns:
+        tuple[numpy.ndarray, numpy.ndarray]: Sampled lags and heights.
+    """
     sample_lags = []
     heights = []
     for m in range(1, max_harmonics + 1):
@@ -248,7 +328,21 @@ def sample_autocorr_at_harmonics(mean_ac, lags, nrl_bp, max_harmonics=6):
     return np.array(sample_lags), np.array(heights)
 
 
-def fit_exponential_envelope(sample_lags, heights, counts=None):
+def fit_exponential_envelope(
+    sample_lags: NDArray[np.floating],
+    heights: NDArray[np.floating],
+    counts: NDArray[np.floating] | None = None,
+) -> tuple[float, float, float, float]:
+    """Fit an exponential envelope to sampled autocorrelation peaks.
+
+    Args:
+        sample_lags: Sampled lag values.
+        heights: Sampled autocorrelation heights.
+        counts: Optional weights per sample.
+
+    Returns:
+        tuple[float, float, float, float]: ``(xi, A, slope, r2)``.
+    """
     # heights ~ A * exp(-lag / xi)
     mask = (heights > 0) & np.isfinite(heights)
     if mask.sum() < 2:
@@ -282,16 +376,27 @@ def fit_exponential_envelope(sample_lags, heights, counts=None):
 
 # ---------- main analysis per site_type ----------
 def analyze_autocorr_matrix(
-    autocorr_matrix,
-    counts_matrix,
-    lags,
-    nrl_search_bp=(120, 260),
-    pad_factor=4,
-    min_count=20,
-    max_harmonics=6,
+    autocorr_matrix: NDArray[np.floating],
+    counts_matrix: NDArray[np.integer],
+    lags: NDArray[np.floating],
+    nrl_search_bp: tuple[int, int] = (120, 260),
+    pad_factor: int = 4,
+    min_count: int = 20,
+    max_harmonics: int = 6,
 ):
-    """
-    Return dict: nrl_bp, peak_power, fwhm_bp, snr, xi, envelope points, freqs, power, mean_ac
+    """Analyze autocorrelation matrix and extract periodicity metrics.
+
+    Args:
+        autocorr_matrix: Autocorrelation values per molecule.
+        counts_matrix: Pair counts per lag.
+        lags: Lag values in base pairs.
+        nrl_search_bp: NRL search band in base pairs.
+        pad_factor: Padding factor for FFT.
+        min_count: Minimum total count to retain a lag.
+        max_harmonics: Maximum harmonics to sample.
+
+    Returns:
+        dict: Metrics including NRL, SNR, and PSD summaries.
     """
     mean_ac, counts_total = weighted_mean_autocorr(
         autocorr_matrix, counts_matrix, min_count=min_count
@@ -331,7 +436,25 @@ def analyze_autocorr_matrix(
 
 
 # ---------- bootstrap wrapper ----------
-def bootstrap_periodicity(autocorr_matrix, counts_matrix, lags, n_boot=200, **kwargs):
+def bootstrap_periodicity(
+    autocorr_matrix: NDArray[np.floating],
+    counts_matrix: NDArray[np.integer],
+    lags: NDArray[np.floating],
+    n_boot: int = 200,
+    **kwargs,
+) -> dict:
+    """Bootstrap periodicity metrics from autocorrelation matrices.
+
+    Args:
+        autocorr_matrix: Autocorrelation matrix per molecule.
+        counts_matrix: Pair counts per lag.
+        lags: Lag values in base pairs.
+        n_boot: Number of bootstrap samples.
+        **kwargs: Additional arguments for ``analyze_autocorr_matrix``.
+
+    Returns:
+        dict: Bootstrapped metric arrays and per-iteration metrics.
+    """
     rng = np.random.default_rng()
     metrics = []
     n = autocorr_matrix.shape[0]
@@ -348,56 +471,44 @@ def bootstrap_periodicity(autocorr_matrix, counts_matrix, lags, n_boot=200, **kw
 
 
 def rolling_autocorr_metrics(
-    X,
-    positions,
-    site_label: str = None,
+    X: NDArray[np.floating],
+    positions: NDArray[np.integer],
+    site_label: str | None = None,
     window_size: int = 2000,
     step: int = 500,
     max_lag: int = 800,
     min_molecules_per_window: int = 10,
-    nrl_search_bp: tuple = (120, 260),
+    nrl_search_bp: tuple[int, int] = (120, 260),
     pad_factor: int = 4,
     min_count_for_mean: int = 20,
     max_harmonics: int = 6,
     n_jobs: int = 1,
     verbose: bool = False,
     return_window_results: bool = False,
-    fixed_nrl_bp: float = None,
+    fixed_nrl_bp: float | None = None,
 ):
-    """
-    Slide a genomic window across `positions` and compute periodicity metrics per window.
+    """Slide a genomic window across positions and compute periodicity metrics.
 
-    Parameters
-    ----------
-    X : array-like or sparse, shape (n_molecules, n_positions)
-        Binary site matrix for a group (sample × reference × site_type).
-    positions : 1D array-like of ints
-        Genomic coordinates for columns of X (same length as X.shape[1]).
-    site_label : optional str
-        Label for the site type (used in returned dicts/df).
-    window_size : int
-        Window width in bp.
-    step : int
-        Slide step in bp.
-    max_lag : int
-        Max lag (bp) to compute autocorr out to.
-    min_molecules_per_window : int
-        Minimum molecules required to compute metrics for a window; otherwise metrics = NaN.
-    nrl_search_bp, pad_factor, min_count_for_mean, max_harmonics : forwarded to analyze_autocorr_matrix
-    n_jobs : int
-        Number of parallel jobs (uses joblib if available).
-    verbose : bool
-        Print progress messages.
-    return_window_results : bool
-        If True, return also the per-window raw `analyze_autocorr_matrix` outputs.
+    Args:
+        X: Binary site matrix for a group (sample × reference × site_type).
+        positions: Genomic coordinates for columns of ``X``.
+        site_label: Label for the site type.
+        window_size: Window width in bp.
+        step: Slide step in bp.
+        max_lag: Max lag (bp) to compute autocorr out to.
+        min_molecules_per_window: Minimum molecules required per window.
+        nrl_search_bp: NRL search band in base pairs.
+        pad_factor: Padding factor for FFT.
+        min_count_for_mean: Minimum count for mean autocorrelation.
+        max_harmonics: Maximum harmonics to sample.
+        n_jobs: Number of parallel jobs (joblib if available).
+        verbose: Whether to log progress.
+        return_window_results: Whether to return per-window analyzer outputs.
+        fixed_nrl_bp: If provided, use a fixed NRL in bp for analysis.
 
-    Returns
-    -------
-    df : pandas.DataFrame
-        One row per window with columns:
-          ['site', 'window_start', 'window_end', 'center', 'n_molecules',
-           'nrl_bp', 'snr', 'peak_power', 'fwhm_bp', 'xi', 'xi_A', 'xi_r2']
-    (optionally) window_results : list of dicts (same order as df rows) when return_window_results=True
+    Returns:
+        pandas.DataFrame | tuple[pandas.DataFrame, list[dict]]: Window-level metrics,
+        with optional raw analyzer outputs.
     """
 
     # normalize inputs
