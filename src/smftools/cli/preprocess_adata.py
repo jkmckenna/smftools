@@ -348,7 +348,7 @@ def preprocess_adata_core(
         force_redo=cfg.force_redo_append_base_context,
     )
 
-    ############### Calculate read methylation/deamination statistics for specific base contexts defined above ###############
+    ############### Calculate read methylation/deamination statistics for specific base contexts defined by append_base_context ###############
     calculate_read_modification_stats(
         adata,
         cfg.reference_column,
