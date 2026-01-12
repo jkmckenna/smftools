@@ -1,22 +1,35 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Sequence
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
-def subsample_adata(adata, obs_columns=None, max_samples=2000, random_seed=42):
-    """
-    Subsamples an AnnData object so that each unique combination of categories
-    in the given `obs_columns` has at most `max_samples` observations.
-    If `obs_columns` is None or empty, the function randomly subsamples the entire dataset.
+def subsample_adata(
+    adata: "ad.AnnData",
+    obs_columns: Sequence[str] | None = None,
+    max_samples: int = 2000,
+    random_seed: int = 42,
+) -> "ad.AnnData":
+    """Subsample an AnnData object by observation categories.
 
-    Parameters:
-        adata (AnnData): The AnnData object to subsample.
-        obs_columns (list of str, optional): List of observation column names to group by.
-        max_samples (int): The maximum number of observations per category combination.
-        random_seed (int): Random seed for reproducibility.
+    Each unique combination of categories in ``obs_columns`` is capped at
+    ``max_samples`` observations. If ``obs_columns`` is ``None``, the function
+    randomly subsamples the entire dataset.
+
+    Args:
+        adata: AnnData object to subsample.
+        obs_columns: Observation column names to group by.
+        max_samples: Maximum observations per category combination.
+        random_seed: Random seed for reproducibility.
 
     Returns:
-        AnnData: A new AnnData object with subsampled observations.
+        anndata.AnnData: Subsampled AnnData object.
     """
     import numpy as np
 

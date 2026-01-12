@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import gzip
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Iterable, Tuple
 
 import numpy as np
 import pysam
@@ -17,8 +19,26 @@ from ..readwrite import time_string
 logger = get_logger(__name__)
 
 
-def _convert_FASTA_record(record, modification_type, strand, unconverted):
-    """Converts a FASTA record based on modification type and strand."""
+def _convert_FASTA_record(
+    record: SeqRecord,
+    modification_type: str,
+    strand: str,
+    unconverted: str,
+) -> SeqRecord:
+    """Convert a FASTA record based on modification type and strand.
+
+    Args:
+        record: Input FASTA record.
+        modification_type: Modification type (e.g., ``5mC`` or ``6mA``).
+        strand: Strand label (``top`` or ``bottom``).
+        unconverted: Label for the unconverted record type.
+
+    Returns:
+        Bio.SeqRecord.SeqRecord: Converted FASTA record.
+
+    Raises:
+        ValueError: If the modification type/strand combination is invalid.
+    """
     conversion_maps = {
         ("5mC", "top"): ("C", "T"),
         ("5mC", "bottom"): ("G", "A"),
@@ -44,13 +64,16 @@ def _convert_FASTA_record(record, modification_type, strand, unconverted):
     )
 
 
-def _process_fasta_record(args):
-    """
-    Processes a single FASTA record for parallel execution.
+def _process_fasta_record(
+    args: tuple[SeqRecord, Iterable[str], Iterable[str], str],
+) -> list[SeqRecord]:
+    """Process a single FASTA record for parallel conversion.
+
     Args:
-        args (tuple): (record, modification_types, strands, unconverted)
+        args: Tuple containing ``(record, modification_types, strands, unconverted)``.
+
     Returns:
-        list of modified SeqRecord objects.
+        list[Bio.SeqRecord.SeqRecord]: Converted FASTA records.
     """
     record, modification_types, strands, unconverted = args
     modified_records = []
@@ -68,21 +91,22 @@ def _process_fasta_record(args):
 
 
 def generate_converted_FASTA(
-    input_fasta, modification_types, strands, output_fasta, num_threads=4, chunk_size=500
-):
-    """
-    Converts an input FASTA file and writes a new converted FASTA file efficiently.
+    input_fasta: str | Path,
+    modification_types: list[str],
+    strands: list[str],
+    output_fasta: str | Path,
+    num_threads: int = 4,
+    chunk_size: int = 500,
+) -> None:
+    """Convert a FASTA file and write converted records to disk.
 
-    Parameters:
-        input_fasta (str): Path to the unconverted FASTA file.
-        modification_types (list): List of modification types ('5mC', '6mA', or unconverted).
-        strands (list): List of strands ('top', 'bottom').
-        output_fasta (str): Path to the converted FASTA output file.
-        num_threads (int): Number of parallel threads to use.
-        chunk_size (int): Number of records to process per write batch.
-
-    Returns:
-        None (Writes the converted FASTA file).
+    Args:
+        input_fasta: Path to the unconverted FASTA file.
+        modification_types: List of modification types (``5mC``, ``6mA``, or unconverted).
+        strands: List of strands (``top``, ``bottom``).
+        output_fasta: Path to the converted FASTA output file.
+        num_threads: Number of parallel workers to use.
+        chunk_size: Number of records to process per write batch.
     """
     unconverted = modification_types[0]
     input_fasta = str(input_fasta)
@@ -126,6 +150,15 @@ def generate_converted_FASTA(
 
 
 def index_fasta(fasta: str | Path, write_chrom_sizes: bool = True) -> Path:
+    """Index a FASTA file and optionally write chromosome sizes.
+
+    Args:
+        fasta: Path to the FASTA file.
+        write_chrom_sizes: Whether to write a ``.chrom.sizes`` file.
+
+    Returns:
+        Path: Path to the index file or chromosome sizes file.
+    """
     fasta = Path(fasta)
     pysam.faidx(str(fasta))  # creates <fasta>.fai
 
@@ -141,8 +174,13 @@ def index_fasta(fasta: str | Path, write_chrom_sizes: bool = True) -> Path:
 
 
 def get_chromosome_lengths(fasta: str | Path) -> Path:
-    """
-    Create (or reuse) <fasta>.chrom.sizes, derived from the FASTA index.
+    """Create or reuse ``<fasta>.chrom.sizes`` derived from the FASTA index.
+
+    Args:
+        fasta: Path to the FASTA file.
+
+    Returns:
+        Path: Path to the chromosome sizes file.
     """
     fasta = Path(fasta)
     fai = fasta.with_suffix(fasta.suffix + ".fai")
@@ -162,9 +200,13 @@ def get_chromosome_lengths(fasta: str | Path) -> Path:
 
 
 def get_native_references(fasta_file: str | Path) -> Dict[str, Tuple[int, str]]:
-    """
-    Return {record_id: (length, sequence)} from a FASTA.
-    Direct methylation specific
+    """Return record lengths and sequences from a FASTA file.
+
+    Args:
+        fasta_file: Path to the FASTA file.
+
+    Returns:
+        dict[str, tuple[int, str]]: Mapping of record ID to ``(length, sequence)``.
     """
     fasta_file = Path(fasta_file)
     print(f"{time_string()}: Opening FASTA file {fasta_file}")
@@ -176,20 +218,26 @@ def get_native_references(fasta_file: str | Path) -> Dict[str, Tuple[int, str]]:
     return record_dict
 
 
-def find_conversion_sites(fasta_file, modification_type, conversions, deaminase_footprinting=False):
-    """
-    Finds genomic coordinates of modified bases (5mC or 6mA) in a reference FASTA file.
+def find_conversion_sites(
+    fasta_file: str | Path,
+    modification_type: str,
+    conversions: list[str],
+    deaminase_footprinting: bool = False,
+) -> dict[str, list]:
+    """Find genomic coordinates of modified bases in a reference FASTA.
 
-    Parameters:
-        fasta_file (str): Path to the converted reference FASTA.
-        modification_type (str): Modification type ('5mC' or '6mA') or 'unconverted'.
-        conversions (list): List of conversion types. The first element is the unconverted record type.
-        deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
+    Args:
+        fasta_file: Path to the converted reference FASTA.
+        modification_type: Modification type (``5mC``, ``6mA``, or ``unconverted``).
+        conversions: List of conversion types (first entry is the unconverted record type).
+        deaminase_footprinting: Whether the footprinting used direct deamination chemistry.
 
     Returns:
-        dict: Dictionary where keys are **both unconverted & converted record names**.
-              Values contain:
-              [sequence length, top strand coordinates, bottom strand coordinates, sequence, complement sequence].
+        dict[str, list]: Mapping of record name to
+        ``[sequence length, top strand coordinates, bottom strand coordinates, sequence, complement]``.
+
+    Raises:
+        ValueError: If the modification type is invalid.
     """
     unconverted = conversions[0]
     record_dict = {}
@@ -241,9 +289,13 @@ def subsample_fasta_from_bed(
     output_directory: str | Path,
     output_FASTA: str | Path,
 ) -> None:
-    """
-    Take a genome-wide FASTA file and a BED file containing
-    coordinate windows of interest. Outputs a subsampled FASTA.
+    """Subsample a FASTA using BED coordinates.
+
+    Args:
+        input_FASTA: Genome-wide FASTA path.
+        input_bed: BED file path containing coordinate windows of interest.
+        output_directory: Directory to write the subsampled FASTA.
+        output_FASTA: Output FASTA path.
     """
 
     # Normalize everything to Path

@@ -1,31 +1,38 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 def calculate_read_modification_stats(
-    adata,
-    reference_column,
-    sample_names_col,
-    mod_target_bases,
-    uns_flag="calculate_read_modification_stats_performed",
-    bypass=False,
-    force_redo=False,
-    valid_sites_only=False,
-    valid_site_suffix="_valid_coverage",
-):
-    """
-    Adds methylation/deamination statistics for each read.
-    Indicates the read GpC and CpG methylation ratio to other_C methylation (background false positive metric for Cytosine MTase SMF).
+    adata: "ad.AnnData",
+    reference_column: str,
+    sample_names_col: str,
+    mod_target_bases: list[str],
+    uns_flag: str = "calculate_read_modification_stats_performed",
+    bypass: bool = False,
+    force_redo: bool = False,
+    valid_sites_only: bool = False,
+    valid_site_suffix: str = "_valid_coverage",
+) -> None:
+    """Add methylation/deamination statistics for each read.
 
-    Parameters:
-        adata (AnnData): An adata object
-        reference_column (str): String representing the name of the Reference column to use
-        sample_names_col (str): String representing the name of the sample name column to use
-        mod_target_bases:
-
-    Returns:
-        None
+    Args:
+        adata: AnnData object.
+        reference_column: Obs column containing reference identifiers.
+        sample_names_col: Obs column containing sample identifiers.
+        mod_target_bases: List of target base contexts (e.g., ``["GpC", "CpG"]``).
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        bypass: Whether to skip processing.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
+        valid_sites_only: Whether to restrict to valid coverage sites.
+        valid_site_suffix: Suffix used for valid-site matrices.
     """
     import numpy as np
     import pandas as pd

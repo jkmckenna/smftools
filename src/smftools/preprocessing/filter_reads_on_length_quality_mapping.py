@@ -21,14 +21,21 @@ def filter_reads_on_length_quality_mapping(
     bypass: bool = False,
     force_redo: bool = True,
 ) -> ad.AnnData:
-    """
-    Filter AnnData by coordinate window, read length, length ratios, read quality and mapping quality.
+    """Filter AnnData by coordinates, read length, quality, and mapping metrics.
 
-    New: you may pass `read_length=[min, max]` (or tuple) to set both min/max in one argument.
-    If `read_length` is given it overrides scalar min/max variants (which are not present in this signature).
-    Same behavior supported for `length_ratio`, `read_quality`, `mapping_quality`.
+    Args:
+        adata: AnnData object to filter.
+        filter_on_coordinates: Optional coordinate window as a two-value sequence.
+        read_length: Read length range as ``[min, max]``.
+        length_ratio: Length ratio range as ``[min, max]``.
+        read_quality: Read quality range as ``[min, max]``.
+        mapping_quality: Mapping quality range as ``[min, max]``.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        bypass: Whether to skip processing.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
 
-    Returns a filtered copy of the input AnnData and marks adata.uns[uns_flag] = True.
+    Returns:
+        anndata.AnnData: Filtered copy of the input AnnData.
     """
     # early exit
     already = bool(adata.uns.get(uns_flag, False))

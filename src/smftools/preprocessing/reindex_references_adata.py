@@ -1,22 +1,36 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 def reindex_references_adata(
-    adata,
+    adata: "ad.AnnData",
     reference_col: str = "Reference_strand",
     offsets: dict | None = None,
     new_col: str = "reindexed",
     uns_flag: str = "reindex_references_adata_performed",
     force_redo: bool = False,
-):
-    """
-    Reindex genomic coordinates by adding per-reference offsets.
+) -> None:
+    """Reindex genomic coordinates by adding per-reference offsets.
 
-    BEHAVIOR:
-      - If offsets is None or empty, or a reference is missing from offsets,
-        create a reindex column for that reference that simply copies var_names.
+    Args:
+        adata: AnnData object.
+        reference_col: Obs column containing reference identifiers.
+        offsets: Mapping of reference to integer offset.
+        new_col: Suffix for generated reindexed columns.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
+
+    Notes:
+        If ``offsets`` is ``None`` or missing a reference, the new column mirrors
+        the existing ``var_names`` values.
     """
 
     import numpy as np
