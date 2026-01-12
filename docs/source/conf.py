@@ -64,11 +64,17 @@ extensions = [
 # Generate the API documentation when building
 autosummary_generate = True
 autodoc_member_order = "bysource"
+autodoc_default_options = {
+    "members": True,
+    "undoc-members": True,
+    "show-inheritance": True,
+}
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 napoleon_include_init_with_doc = False
-napoleon_use_rtype = True  # having a separate entry generally helps readability
+napoleon_use_rtype = True
 napoleon_use_param = True
+napoleon_preprocess_types = True
 napoleon_custom_sections = [("Params", "Parameters")]
 todo_include_todos = False
 api_dir = HERE / "api" 

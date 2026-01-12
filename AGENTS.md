@@ -36,6 +36,7 @@ This file tells coding agents (including OpenAI Codex) how to work in this repo.
 - Keep public APIs backward compatible unless explicitly changing them.
 - Python:
   - Use type hints for new/modified functions where reasonable.
+  - Use Google style docstring format.
   - Avoid heavy dependencies unless necessary.
 
 ## Testing expectations

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # cluster_adata_on_methylation
-
 from typing import TYPE_CHECKING, Sequence
 
 from smftools.logging_utils import get_logger
