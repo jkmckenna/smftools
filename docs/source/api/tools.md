@@ -1,20 +1,16 @@
 ## Tools: `tl`
 
 ```{eval-rst}
-.. currentmodule:: smftools.tl
-```
-
-```{eval-rst}
 .. autosummary::
    :toctree: generated/tools
    
-   calculate_umap
-   cluster_adata_on_methylation
-   general_tools
-   position_stats
-   read_stats
-   spatial_autocorrelation
-   subset_adata
+   smftools.tools.calculate_umap
+   smftools.tools.cluster_adata_on_methylation
+   smftools.tools.general_tools
+   smftools.tools.position_stats
+   smftools.tools.read_stats
+   smftools.tools.spatial_autocorrelation
+   smftools.tools.subset_adata
 ```
 
 ```{eval-rst}
