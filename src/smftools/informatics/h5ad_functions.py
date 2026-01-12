@@ -109,6 +109,7 @@ def add_read_length_and_mapping_qc(
         Optional callable(bam_path) -> dict mapping read_name -> list/tuple of metrics.
         If not provided and bam_files is given, function will attempt to call `extract_read_features_from_bam`
         from the global namespace (your existing helper).
+        
     Returns
     -------
     None (mutates final_adata in-place)

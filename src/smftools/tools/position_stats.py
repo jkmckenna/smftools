@@ -468,9 +468,10 @@ def plot_positionwise_matrices(
     """
     Plot grids of matrices for each method with pagination and rotated sample-row labels.
 
-    New args:
+    Args:
       - rows_per_page: how many sample rows per page/figure (pagination)
       - sample_label_rotation: rotation angle (deg) for the sample labels placed in the left margin.
+
     Returns:
       dict mapping method -> list of saved filenames (empty list if figures were shown).
     """
