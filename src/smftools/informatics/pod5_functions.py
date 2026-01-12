@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import os
 import subprocess
 from pathlib import Path
-from typing import List, Union
+from typing import Iterable
 
 import pod5 as p5
 
@@ -14,15 +16,11 @@ from ..readwrite import make_dirs
 logger = get_logger(__name__)
 
 
-def basecall_pod5s(config_path):
-    """
-    Basecall from pod5s given a config file.
+def basecall_pod5s(config_path: str | Path) -> None:
+    """Basecall POD5 inputs using a configuration file.
 
-    Parameters:
-        config_path (str): File path to the basecall configuration file
-
-    Returns:
-        None
+    Args:
+        config_path: Path to the basecall configuration file.
     """
     # Default params
     bam_suffix = ".bam"  # If different, change from here.
@@ -107,12 +105,17 @@ def basecall_pod5s(config_path):
 
 
 def fast5_to_pod5(
-    fast5_dir: Union[str, Path, List[Union[str, Path]]],
-    output_pod5: Union[str, Path] = "FAST5s_to_POD5.pod5",
+    fast5_dir: str | Path | Iterable[str | Path],
+    output_pod5: str | Path = "FAST5s_to_POD5.pod5",
 ) -> None:
-    """
-    Convert Nanopore FAST5 files (single file, list of files, or directory)
-    into a single .pod5 output using the 'pod5 convert fast5' CLI tool.
+    """Convert FAST5 inputs into a single POD5 file.
+
+    Args:
+        fast5_dir: FAST5 file path, directory, or iterable of file paths to convert.
+        output_pod5: Output POD5 file path.
+
+    Raises:
+        FileNotFoundError: If no FAST5 files are found or the input path is invalid.
     """
 
     output_pod5 = str(output_pod5)  # ensure string
@@ -146,18 +149,18 @@ def fast5_to_pod5(
     raise FileNotFoundError(f"Input path invalid: {fast5_dir}")
 
 
-def subsample_pod5(pod5_path, read_name_path, output_directory):
-    """
-    Takes a POD5 file and a text file containing read names of interest and writes out a subsampled POD5 for just those reads.
-    This is a useful function when you have a list of read names that mapped to a region of interest that you want to reanalyze from the pod5 level.
+def subsample_pod5(
+    pod5_path: str | Path,
+    read_name_path: str | int,
+    output_directory: str | Path,
+) -> None:
+    """Write a subsampled POD5 containing selected reads.
 
-    Parameters:
-        pod5_path (str): File path to the POD5 file (or directory of multiple pod5 files) to subsample.
-        read_name_path (str | int): File path to a text file of read names. One read name per line. If an int value is passed, a random subset of that many reads will occur
-        output_directory (str): A file path to the directory to output the file.
-
-    Returns:
-        None
+    Args:
+        pod5_path: POD5 file path or directory of POD5 files to subsample.
+        read_name_path: Path to a text file of read names (one per line) or an integer
+            specifying a random subset size.
+        output_directory: Directory to write the subsampled POD5 file.
     """
 
     if os.path.isdir(pod5_path):

@@ -1,19 +1,31 @@
 ## invert_adata
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
-def invert_adata(adata, uns_flag="invert_adata_performed", force_redo=False):
-    """
-    Inverts the AnnData object along the column (variable) axis.
+def invert_adata(
+    adata: "ad.AnnData",
+    uns_flag: str = "invert_adata_performed",
+    force_redo: bool = False,
+) -> "ad.AnnData":
+    """Invert the AnnData object along the column axis.
 
-    Parameters:
-        adata (AnnData): An AnnData object.
+    Args:
+        adata: AnnData object.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
 
     Returns:
-        AnnData: A new AnnData object with inverted column ordering.
+        anndata.AnnData: New AnnData object with inverted column ordering.
     """
 
     # Only run if not already performed

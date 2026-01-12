@@ -1,11 +1,24 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Sequence
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
-def create_nan_mask_from_X(adata, new_layer_name="nan_mask"):
-    """
-    Generates a nan mask where 1 = NaN in adata.X and 0 = valid value.
+def create_nan_mask_from_X(adata: "ad.AnnData", new_layer_name: str = "nan_mask") -> "ad.AnnData":
+    """Generate a NaN mask layer from ``adata.X``.
+
+    Args:
+        adata: AnnData object.
+        new_layer_name: Name of the output mask layer.
+
+    Returns:
+        anndata.AnnData: Updated AnnData object.
     """
     import numpy as np
 
@@ -15,7 +28,21 @@ def create_nan_mask_from_X(adata, new_layer_name="nan_mask"):
     return adata
 
 
-def create_nan_or_non_gpc_mask(adata, obs_column, new_layer_name="nan_or_non_gpc_mask"):
+def create_nan_or_non_gpc_mask(
+    adata: "ad.AnnData",
+    obs_column: str,
+    new_layer_name: str = "nan_or_non_gpc_mask",
+) -> "ad.AnnData":
+    """Generate a mask layer combining NaNs and non-GpC positions.
+
+    Args:
+        adata: AnnData object.
+        obs_column: Obs column used to derive reference-specific GpC masks.
+        new_layer_name: Name of the output mask layer.
+
+    Returns:
+        anndata.AnnData: Updated AnnData object.
+    """
     import numpy as np
 
     nan_mask = np.isnan(adata.X).astype(int)
@@ -38,26 +65,25 @@ def create_nan_or_non_gpc_mask(adata, obs_column, new_layer_name="nan_or_non_gpc
 
 
 def combine_layers(
-    adata, input_layers, output_layer, negative_mask=None, values=None, binary_mode=False
-):
-    """
-    Combines layers into a single layer with specific coding:
-        - Background stays 0
-        - If binary_mode=True: any overlap = 1
-        - If binary_mode=False:
-            - Defaults to [1, 2, 3, ...] if values=None
-            - Later layers take precedence in overlaps
+    adata: "ad.AnnData",
+    input_layers: Sequence[str],
+    output_layer: str,
+    negative_mask: str | None = None,
+    values: Sequence[int] | None = None,
+    binary_mode: bool = False,
+) -> "ad.AnnData":
+    """Combine layers into a single coded layer.
 
-    Parameters:
-        adata: AnnData object
-        input_layers: list of str
-        output_layer: str, name of the output layer
-        negative_mask: str (optional), binary mask to enforce 0s
-        values: list of ints (optional), values to assign to each input layer
-        binary_mode: bool, if True, creates a simple 0/1 mask regardless of values
+    Args:
+        adata: AnnData object.
+        input_layers: Input layer names.
+        output_layer: Name of the output layer.
+        negative_mask: Optional binary mask layer to enforce zeros.
+        values: Values assigned to each input layer when ``binary_mode`` is ``False``.
+        binary_mode: Whether to build a simple 0/1 mask.
 
     Returns:
-        Updated AnnData with new layer.
+        anndata.AnnData: Updated AnnData object.
     """
     import numpy as np
 

@@ -1,16 +1,28 @@
 ## filter_adata_by_nan_proportion
 
+from __future__ import annotations
 
-def filter_adata_by_nan_proportion(adata, threshold, axis="obs"):
-    """
-    Filters an anndata object on a nan proportion threshold in a given matrix axis.
+from typing import TYPE_CHECKING
 
-    Parameters:
-        adata (AnnData):
-        threshold (float): The max np.nan content to allow in the given axis.
-        axis (str): Whether to filter the adata based on obs or var np.nan content
+if TYPE_CHECKING:
+    import anndata as ad
+
+
+def filter_adata_by_nan_proportion(
+    adata: "ad.AnnData", threshold: float, axis: str = "obs"
+) -> "ad.AnnData":
+    """Filter an AnnData object on NaN proportion in a matrix axis.
+
+    Args:
+        adata: AnnData object to filter.
+        threshold: Maximum allowed NaN proportion.
+        axis: Whether to filter based on ``"obs"`` or ``"var"`` NaN content.
+
     Returns:
-        filtered_adata
+        anndata.AnnData: Filtered AnnData object.
+
+    Raises:
+        ValueError: If ``axis`` is not ``"obs"`` or ``"var"``.
     """
     import numpy as np
 

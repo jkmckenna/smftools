@@ -1,33 +1,48 @@
-from typing import Optional
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 
 def calculate_complexity_II(
-    adata,
-    output_directory="",
-    sample_col="Sample_names",
+    adata: "ad.AnnData",
+    output_directory: str | Path = "",
+    sample_col: str = "Sample_names",
     ref_col: Optional[str] = "Reference_strand",
-    cluster_col="sequence__merged_cluster_id",
-    plot=True,
-    save_plot=False,
-    n_boot=30,
-    n_depths=12,
-    random_state=0,
-    csv_summary=True,
-    uns_flag="calculate_complexity_II_performed",
-    force_redo=False,
-    bypass=False,
-):
-    """
-    Estimate and plot library complexity.
+    cluster_col: str = "sequence__merged_cluster_id",
+    plot: bool = True,
+    save_plot: bool = False,
+    n_boot: int = 30,
+    n_depths: int = 12,
+    random_state: int = 0,
+    csv_summary: bool = True,
+    uns_flag: str = "calculate_complexity_II_performed",
+    force_redo: bool = False,
+    bypass: bool = False,
+) -> None:
+    """Estimate and optionally plot library complexity.
 
-    If ref_col is None (default), behaves as before: one calculation per sample.
-    If ref_col is provided, computes complexity for each (sample, ref) pair.
+    If ``ref_col`` is ``None``, the calculation is performed per sample. If provided,
+    complexity is computed for each ``(sample, reference)`` pair.
 
-    Results:
-      - adata.uns['Library_complexity_results'] : dict keyed by (sample,) or (sample, ref) -> dict with fields
-          C0, n_reads, n_unique, depths, mean_unique, ci_low, ci_high
-      - Also stores per-entity record in adata.uns[f'Library_complexity_{sanitized_name}'] (backwards compatible)
-      - Optionally saves PNGs and CSVs (curve points + fit summary)
+    Args:
+        adata: AnnData object containing read metadata.
+        output_directory: Directory for output plots/CSVs.
+        sample_col: Obs column containing sample names.
+        ref_col: Obs column with reference/strand categories, or ``None``.
+        cluster_col: Obs column with merged cluster IDs.
+        plot: Whether to generate plots.
+        save_plot: Whether to save plots to disk.
+        n_boot: Number of bootstrap iterations per depth.
+        n_depths: Number of subsampling depths to evaluate.
+        random_state: Random seed for bootstrapping.
+        csv_summary: Whether to write CSV summary files.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        force_redo: Whether to rerun even if ``uns_flag`` is present.
+        bypass: Whether to skip processing.
     """
     import os
 

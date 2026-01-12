@@ -1,31 +1,36 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 def append_base_context(
-    adata,
-    ref_column="Reference_strand",
-    use_consensus=False,
-    native=False,
-    mod_target_bases=["GpC", "CpG"],
-    bypass=False,
-    force_redo=False,
-    uns_flag="append_base_context_performed",
-):
-    """
-    Adds nucleobase context to the position within the given category. When use_consensus is True, it uses the consensus sequence, otherwise it defaults to the FASTA sequence.
-    This needs to be performed prior to AnnData inversion step.
+    adata: "ad.AnnData",
+    ref_column: str = "Reference_strand",
+    use_consensus: bool = False,
+    native: bool = False,
+    mod_target_bases: list[str] = ["GpC", "CpG"],
+    bypass: bool = False,
+    force_redo: bool = False,
+    uns_flag: str = "append_base_context_performed",
+) -> None:
+    """Append base context annotations to ``adata``.
 
-    Parameters:
-        adata (AnnData): The input adata object.
-        ref_column (str): The observation column in which to stratify on. Default is 'Reference_strand', which should not be changed for most purposes.
-        use_consensus (bool): A truth statement indicating whether to use the consensus sequence from the reads mapped to the reference. If False, the reference FASTA is used instead.
-        native (bool): If False, perform conversion SMF assumptions. If True, perform native SMF assumptions
-        mod_target_bases (list): Base contexts that may be modified.
-
-    Returns:
-        None
+    Args:
+        adata: AnnData object.
+        ref_column: Obs column used to stratify references.
+        use_consensus: Whether to use consensus sequences rather than FASTA references.
+        native: If ``True``, use native SMF assumptions; otherwise use conversion assumptions.
+        mod_target_bases: Base contexts that may be modified.
+        bypass: Whether to skip processing.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
     """
     import numpy as np
 

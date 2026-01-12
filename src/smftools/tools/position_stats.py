@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import warnings
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -34,7 +39,15 @@ from tqdm import tqdm
 
 
 # ------------------------- Utilities -------------------------
-def random_fill_nans(X):
+def random_fill_nans(X: np.ndarray) -> np.ndarray:
+    """Fill NaNs with random values in-place.
+
+    Args:
+        X: Input array with NaNs.
+
+    Returns:
+        numpy.ndarray: Array with NaNs replaced by random values.
+    """
     import numpy as np
 
     nan_mask = np.isnan(X)
@@ -42,19 +55,22 @@ def random_fill_nans(X):
     return X
 
 
-def calculate_relative_risk_on_activity(adata, sites, alpha=0.05, groupby=None):
-    """
-    Perform Bayesian-style methylation vs activity analysis independently within each group.
+def calculate_relative_risk_on_activity(
+    adata: "ad.AnnData",
+    sites: Sequence[str],
+    alpha: float = 0.05,
+    groupby: str | Sequence[str] | None = None,
+) -> dict:
+    """Perform methylation vs. activity analysis within each group.
 
-    Parameters:
-        adata (AnnData): Annotated data matrix.
-        sites (list of str): List of site keys (e.g., ['GpC_site', 'CpG_site']).
-        alpha (float): FDR threshold for significance.
-        groupby (str or list of str): Column(s) in adata.obs to group by.
+    Args:
+        adata: Annotated data matrix.
+        sites: Site keys (e.g., ``["GpC_site", "CpG_site"]``).
+        alpha: FDR threshold for significance.
+        groupby: Obs column(s) to group by.
 
     Returns:
-        results_dict (dict): Dictionary with structure:
-            results_dict[ref][group_label] = (results_df, sig_df)
+        dict: Mapping of reference -> group label -> ``(results_df, sig_df)``.
     """
     import numpy as np
     import pandas as pd
@@ -236,7 +252,7 @@ def _relative_risk_row_job(
 
 
 def compute_positionwise_statistics(
-    adata,
+    adata: "ad.AnnData",
     layer: str,
     methods: Sequence[str] = ("pearson",),
     sample_col: str = "Barcode",
@@ -247,13 +263,21 @@ def compute_positionwise_statistics(
     min_count_for_pairwise: int = 10,
     max_threads: Optional[int] = None,
     reverse_indices_on_store: bool = False,
-):
-    """
-    Compute per-(sample,ref) positionwise matrices for methods in `methods`.
+) -> None:
+    """Compute per-(sample, ref) positionwise matrices for selected methods.
 
-    Results stored at:
-      adata.uns[output_key][method][ (sample, ref) ] = DataFrame
-      adata.uns[output_key + "_n"][method][ (sample, ref) ] = int(n_reads)
+    Args:
+        adata: AnnData object to analyze.
+        layer: Layer name to use for statistics.
+        methods: Methods to compute (e.g., ``"pearson"``).
+        sample_col: Obs column containing sample identifiers.
+        ref_col: Obs column containing reference identifiers.
+        site_types: Optional site types to subset positions.
+        encoding: ``"signed"`` or ``"binary"`` encoding.
+        output_key: Key prefix for results stored in ``adata.uns``.
+        min_count_for_pairwise: Minimum counts for pairwise comparisons.
+        max_threads: Maximum number of threads.
+        reverse_indices_on_store: Whether to reverse indices on output storage.
     """
     if isinstance(methods, str):
         methods = [methods]

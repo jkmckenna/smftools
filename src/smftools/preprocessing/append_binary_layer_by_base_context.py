@@ -1,13 +1,20 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
 import scipy.sparse as sp
 
 from smftools.logging_utils import get_logger
 
+if TYPE_CHECKING:
+    import anndata as ad
+
 logger = get_logger(__name__)
 
 
 def append_binary_layer_by_base_context(
-    adata,
+    adata: "ad.AnnData",
     reference_column: str,
     smf_modality: str = "conversion",
     verbose: bool = True,
@@ -16,20 +23,22 @@ def append_binary_layer_by_base_context(
     force_redo: bool = False,
     from_valid_sites_only: bool = False,
     valid_site_col_suffix: str = "_valid_coverage",
-):
-    """
-    Build per-reference C/G-site masked layers:
-      - GpC_site_binary
-      - CpG_site_binary
-      - GpC_CpG_combined_site_binary (numeric sum where present; NaN where neither present)
-      - C_site_binary
-      - other_C_site_binary
+) -> "ad.AnnData":
+    """Build per-reference masked layers for base-context sites.
 
-    Behavior:
-      - If X is sparse it will be converted to dense for these layers (keeps original adata.X untouched).
-      - Missing var columns are warned about but do not crash.
-      - Masked positions are filled with np.nan to make masked vs unmasked explicit.
-      - Requires append_base_context to be run first
+    Args:
+        adata: AnnData object to annotate.
+        reference_column: Obs column containing reference identifiers.
+        smf_modality: SMF modality identifier.
+        verbose: Whether to log layer summary information.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        bypass: Whether to skip processing.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
+        from_valid_sites_only: Whether to use valid-coverage site masks only.
+        valid_site_col_suffix: Suffix for valid-coverage site columns.
+
+    Returns:
+        anndata.AnnData: AnnData object with new masked layers.
     """
     if not from_valid_sites_only:
         valid_site_col_suffix = ""

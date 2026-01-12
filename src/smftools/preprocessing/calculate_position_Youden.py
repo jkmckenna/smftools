@@ -1,38 +1,44 @@
 ## calculate_position_Youden
 ## Calculating and applying position level thresholds for methylation calls to binarize the SMF data
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 def calculate_position_Youden(
-    adata,
-    positive_control_sample=None,
-    negative_control_sample=None,
-    J_threshold=0.5,
-    ref_column="Reference_strand",
-    sample_column="Sample_names",
-    infer_on_percentile=True,
-    inference_variable="Raw_modification_signal",
-    save=False,
-    output_directory="",
-):
-    """
-    Adds new variable metadata to each position indicating whether the position provides reliable SMF methylation calls. Also outputs plots of the positional ROC curves.
+    adata: "ad.AnnData",
+    positive_control_sample: str | None = None,
+    negative_control_sample: str | None = None,
+    J_threshold: float = 0.5,
+    ref_column: str = "Reference_strand",
+    sample_column: str = "Sample_names",
+    infer_on_percentile: bool | int = True,
+    inference_variable: str = "Raw_modification_signal",
+    save: bool = False,
+    output_directory: str | Path = "",
+) -> None:
+    """Add position-level Youden thresholds and optional ROC plots.
 
-    Parameters:
-        adata (AnnData): An AnnData object.
-        positive_control_sample (str): string representing the sample name corresponding to the Plus MTase control sample.
-        negative_control_sample (str): string representing the sample name corresponding to the Minus MTase control sample.
-        J_threshold (float): A float indicating the J-statistic used to indicate whether a position passes QC for methylation calls.
-        obs_column (str): The category to iterate over.
-        infer_on_perdentile (bool | int): If False, use defined postive and negative control samples. If an int (0 < int < 100) is passed, this uses the top and bottom int percentile of methylated reads based on metric in inference_variable column.
-        inference_variable (str): If infer_on_percentile has an integer value passed, use the AnnData observation column name passed by this string as the metric.
-        save (bool): Whether to save the ROC plots.
-        output_directory (str): String representing the path to the output directory to output the ROC curves.
-
-    Returns:
-        None
+    Args:
+        adata: AnnData object.
+        positive_control_sample: Sample name for the plus MTase control.
+        negative_control_sample: Sample name for the minus MTase control.
+        J_threshold: J-statistic threshold for QC.
+        ref_column: Obs column for reference/strand categories.
+        sample_column: Obs column for sample identifiers.
+        infer_on_percentile: If ``False``, use provided controls. If an int in ``(0, 100)``,
+            use percentile-based inference from ``inference_variable``.
+        inference_variable: Obs column used for percentile inference.
+        save: Whether to save ROC plots to disk.
+        output_directory: Output directory for ROC plots.
     """
     import matplotlib.pyplot as plt
     import numpy as np

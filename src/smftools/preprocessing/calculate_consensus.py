@@ -1,22 +1,28 @@
 # calculate_consensus
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import anndata as ad
+
 
 def calculate_consensus(
-    adata, reference, sample=False, reference_column="Reference", sample_column="Sample"
-):
-    """
-    Takes an input AnnData object, the reference to subset on, and the sample name to subset on to calculate the consensus sequence of the read set.
+    adata: "ad.AnnData",
+    reference: str,
+    sample: str | bool = False,
+    reference_column: str = "Reference",
+    sample_column: str = "Sample",
+) -> None:
+    """Calculate a consensus sequence for a reference (and optional sample).
 
-    Parameters:
-        adata (AnnData): The input adata to append consensus metadata to.
-        reference (str): The name of the reference to subset the adata on.
-        sample (bool | str): If False, uses all samples. If a string is passed, the adata is further subsetted to only analyze that sample.
-        reference_column (str): The name of the reference column (Default is 'Reference')
-        sample_column (str): The name of the sample column (Default is 'Sample)
-
-    Returns:
-        None
-
+    Args:
+        adata: AnnData object to append consensus metadata to.
+        reference: Reference name to subset on.
+        sample: If ``False``, uses all samples. If a string is passed, subsets to that sample.
+        reference_column: Obs column with reference names.
+        sample_column: Obs column with sample names.
     """
     import numpy as np
 

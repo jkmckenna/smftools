@@ -1,29 +1,34 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 def calculate_coverage(
-    adata,
-    ref_column="Reference_strand",
-    position_nan_threshold=0.01,
-    smf_modality="deaminase",
-    target_layer="binarized_methylation",
-    uns_flag="calculate_coverage_performed",
-    force_redo=False,
-):
-    """
-    Append position-level metadata regarding whether the position is informative within the given observation category.
+    adata: "ad.AnnData",
+    ref_column: str = "Reference_strand",
+    position_nan_threshold: float = 0.01,
+    smf_modality: str = "deaminase",
+    target_layer: str = "binarized_methylation",
+    uns_flag: str = "calculate_coverage_performed",
+    force_redo: bool = False,
+) -> None:
+    """Append position-level coverage metadata per reference category.
 
-    Parameters:
-        adata (AnnData): An AnnData object
-        obs_column (str): Observation column value to subset on prior to calculating position statistics for that category.
-        position_nan_threshold (float): A minimal fractional threshold of coverage within the obs_column category to call the position as valid.
-        smf_modality (str): The smfmodality. For conversion/deaminase, use the adata.X. For direct, use the target_layer
-        target_layer (str): The layer to use for direct smf coverage calculations
-
-    Modifies:
-        - Adds new columns to `adata.var` containing coverage statistics.
+    Args:
+        adata: AnnData object.
+        ref_column: Obs column used to define reference/strand categories.
+        position_nan_threshold: Minimum fraction of coverage to mark a position as valid.
+        smf_modality: SMF modality. Use ``adata.X`` for conversion/deaminase or ``target_layer`` for direct.
+        target_layer: Layer used for direct SMF coverage calculations.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
     """
     import numpy as np
     import pandas as pd
