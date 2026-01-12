@@ -4,7 +4,7 @@
 .. autosummary::
    :toctree: generated/datasets
 
-   smftool.datasets.datasets
+   smftools.datasets.datasets
 ```
 
 ```{eval-rst}
