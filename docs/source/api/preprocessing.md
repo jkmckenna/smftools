@@ -8,7 +8,7 @@
 ```{eval-rst}
 .. autosummary::
    :toctree: generated/preprocessing
-
+   
    smftools.preprocessing.append_base_context
    smftools.preprocessing.append_binary_layer_by_base_context
    smftools.preprocessing.binarize
@@ -34,4 +34,10 @@
    smftools.preprocessing.recipes
    smftools.preprocessing.reindex_references_adata
    smftools.preprocessing.subsample_adata
+```
+
+```{eval-rst}
+.. automodule:: smftools.preprocessing
+   :no-members:
+   :show-inheritance:
 ```

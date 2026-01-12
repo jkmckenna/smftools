@@ -28,8 +28,7 @@ Processes raw sequencing data to load an adata object.
 
 ```{eval-rst}
 .. automodule:: smftools.informatics
-   :members:
-   :undoc-members:
+   :no-members:
    :show-inheritance:
 ```
 

@@ -15,7 +15,6 @@
 
 ```{eval-rst}
 .. automodule:: smftools.tools
-   :members:
-   :undoc-members:
+   :no-members:
    :show-inheritance:
 ```

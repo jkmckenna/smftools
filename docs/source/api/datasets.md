@@ -4,12 +4,11 @@
 .. autosummary::
    :toctree: generated/datasets
 
-   smftools.datasets.datasets
+   smftool.datasets.datasets
 ```
 
 ```{eval-rst}
 .. automodule:: smftools.datasets
-   :members:
-   :undoc-members:
+   :no-members:
    :show-inheritance:
 ```
