@@ -5,29 +5,25 @@
 :width: 1000px
 ```
 
-```{eval-rst}
-.. currentmodule:: smftools.inform
-```
-
 Processes raw sequencing data to load an adata object.
 
 ```{eval-rst}
 .. autosummary::
    :toctree: generated/informatics
    
-   bam_functions
-   basecalling
-   bed_functions
-   binarize_converted_base_identities
-   complement_base_list
-   converted_BAM_to_adata
-   fasta_functions
-   h5ad_functions
-   modkit_extract_to_adata
-   modkit_functions
-   ohe
-   pod5_functions
-   run_multiqc
+   smftools.informatics.bam_functions
+   smftools.informatics.basecalling
+   smftools.informatics.bed_functions
+   smftools.informatics.binarize_converted_base_identities
+   smftools.informatics.complement_base_list
+   smftools.informatics.converted_BAM_to_adata
+   smftools.informatics.fasta_functions
+   smftools.informatics.h5ad_functions
+   smftools.informatics.modkit_extract_to_adata
+   smftools.informatics.modkit_functions
+   smftools.informatics.ohe
+   smftools.informatics.pod5_functions
+   smftools.informatics.run_multiqc
 ```
 
 ```{eval-rst}
