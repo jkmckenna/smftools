@@ -48,10 +48,16 @@ except Exception:
     gaussian_kde = None
 
 
-def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
-    """
-    Merge two .uns dicts. prefer='orig' will keep orig_uns values on conflict,
-    prefer='new' will keep new_uns values on conflict. Conflicts are reported.
+def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer: str = "orig") -> dict:
+    """Merge two ``.uns`` dictionaries while preserving preferred values.
+
+    Args:
+        orig_uns: Original ``.uns`` dictionary.
+        new_uns: New ``.uns`` dictionary to merge.
+        prefer: Which dictionary to prefer on conflict (``"orig"`` or ``"new"``).
+
+    Returns:
+        dict: Merged dictionary.
     """
     out = copy.deepcopy(new_uns) if new_uns is not None else {}
     for k, v in (orig_uns or {}).items():
@@ -76,8 +82,8 @@ def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
 
 
 def flag_duplicate_reads(
-    adata,
-    var_filters_sets,
+    adata: ad.AnnData,
+    var_filters_sets: Sequence[dict[str, Any]],
     distance_threshold: float = 0.07,
     obs_reference_col: str = "Reference_strand",
     sample_col: str = "Barcode",
@@ -101,16 +107,44 @@ def flag_duplicate_reads(
     random_state: int = 0,
     demux_types: Optional[Sequence[str]] = None,
     demux_col: str = "demux_type",
-):
-    """
-    Duplicate-flagging pipeline with demux-aware keeper preference.
+) -> ad.AnnData:
+    """Flag duplicate reads with demux-aware keeper preference.
 
     Behavior:
-      - All reads are processed (no masking by demux).
-      - At each keeper decision (lex rep, final in-subset, final enforcement),
-        we prefer a keeper whose `demux_col` value ∈ `demux_types` (if any exist
-        in the cluster). Among those candidates, we choose by keep_best_metric.
-        If no demux-preferred candidates exist, fallback to metric/lex/first.
+        - All reads are processed (no masking by demux).
+        - At each keeper decision, prefer reads whose ``demux_col`` value is in
+          ``demux_types`` when present. Among candidates, choose by
+          ``keep_best_metric``.
+
+    Args:
+        adata: AnnData object to process.
+        var_filters_sets: Sequence of variable filter definitions.
+        distance_threshold: Distance threshold for duplicate detection.
+        obs_reference_col: Obs column containing reference identifiers.
+        sample_col: Obs column containing sample identifiers.
+        output_directory: Directory for output plots and artifacts.
+        metric_keys: Metric key(s) used in processing.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        uns_filtered_flag: Flag to mark read duplicates removal.
+        bypass: Whether to skip processing.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
+        keep_best_metric: Obs column used to select best read within duplicates.
+        keep_best_higher: Whether higher values in ``keep_best_metric`` are preferred.
+        window_size: Window size for local comparisons.
+        min_overlap_positions: Minimum overlapping positions required.
+        do_pca: Whether to run PCA before clustering.
+        pca_n_components: Number of PCA components.
+        pca_center: Whether to center data before PCA.
+        do_hierarchical: Whether to run hierarchical clustering.
+        hierarchical_linkage: Linkage method for hierarchical clustering.
+        hierarchical_metric: Distance metric for hierarchical clustering.
+        hierarchical_window: Window size for hierarchical clustering.
+        random_state: Random seed.
+        demux_types: Preferred demux types for keeper selection.
+        demux_col: Obs column containing demux type labels.
+
+    Returns:
+        anndata.AnnData: AnnData object with duplicate flags stored in ``adata.obs``.
     """
     import copy
     import warnings

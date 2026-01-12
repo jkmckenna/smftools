@@ -1,17 +1,20 @@
 # subset_adata
 
+from __future__ import annotations
 
-def subset_adata(adata, columns, cat_type="obs"):
-    """
-    Adds subset metadata to an AnnData object based on categorical values in specified .obs or .var columns.
+from typing import TYPE_CHECKING, Sequence
 
-    Parameters:
-        adata (AnnData): The AnnData object to add subset metadata to.
-        columns (list of str): List of .obs or .var column names to subset by. The order matters.
-        cat_type (str): obs or var. Default is obs
+if TYPE_CHECKING:
+    import anndata as ad
 
-    Returns:
-        None
+
+def subset_adata(adata: "ad.AnnData", columns: Sequence[str], cat_type: str = "obs") -> None:
+    """Add subset metadata based on categorical values in ``.obs`` or ``.var`` columns.
+
+    Args:
+        adata: AnnData object to annotate.
+        columns: Obs or var column names to subset by (order matters).
+        cat_type: ``"obs"`` or ``"var"``.
     """
 
     subgroup_name = "_".join(columns)

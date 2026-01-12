@@ -1,5 +1,22 @@
 # ------------------------- Utilities -------------------------
-def random_fill_nans(X):
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Sequence
+
+if TYPE_CHECKING:
+    import anndata as ad
+    import numpy as np
+
+
+def random_fill_nans(X: "np.ndarray") -> "np.ndarray":
+    """Fill NaNs with random values in-place.
+
+    Args:
+        X: Input array with NaNs.
+
+    Returns:
+        numpy.ndarray: Array with NaNs replaced by random values.
+    """
     import numpy as np
 
     nan_mask = np.isnan(X)
@@ -8,27 +25,24 @@ def random_fill_nans(X):
 
 
 def calculate_row_entropy(
-    adata,
-    layer,
-    output_key="entropy",
-    site_config=None,
-    ref_col="Reference_strand",
-    encoding="signed",
-    max_threads=None,
-):
-    """
-    Adds an obs column to the adata that calculates entropy within each read from a given layer
-    when looking at each site type passed in the site_config list.
+    adata: "ad.AnnData",
+    layer: str,
+    output_key: str = "entropy",
+    site_config: dict[str, Sequence[str]] | None = None,
+    ref_col: str = "Reference_strand",
+    encoding: str = "signed",
+    max_threads: int | None = None,
+) -> None:
+    """Add per-read entropy values to ``adata.obs``.
 
-    Parameters:
-        adata (AnnData): The annotated data matrix.
-        layer (str): Name of the layer to use for entropy calculation.
-        method (str): Unused currently. Placeholder for potential future methods.
-        output_key (str): Base name for the entropy column in adata.obs.
-        site_config (dict): {ref: [site_types]} for masking relevant sites.
-        ref_col (str): Column in adata.obs denoting reference strands.
-        encoding (str): 'signed' (1/-1/0) or 'binary' (1/0/NaN).
-        max_threads (int): Number of threads for parallel processing.
+    Args:
+        adata: Annotated data matrix.
+        layer: Layer name to use for entropy calculation.
+        output_key: Base name for the entropy column in ``adata.obs``.
+        site_config: Mapping of reference to site types for masking.
+        ref_col: Obs column containing reference strands.
+        encoding: ``"signed"`` (1/-1/0) or ``"binary"`` (1/0/NaN).
+        max_threads: Number of threads for parallel processing.
     """
     import numpy as np
     import pandas as pd

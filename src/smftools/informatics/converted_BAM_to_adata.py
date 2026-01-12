@@ -27,38 +27,39 @@ if __name__ == "__main__":
 
 
 def converted_BAM_to_adata(
-    converted_FASTA,
-    split_dir,
-    output_dir,
-    input_already_demuxed,
-    mapping_threshold,
-    experiment_name,
-    conversions,
-    bam_suffix,
-    device="cpu",
-    num_threads=8,
-    deaminase_footprinting=False,
-    delete_intermediates=True,
-    double_barcoded_path=None,
-):
-    """
-    Converts BAM files into an AnnData object by binarizing modified base identities.
+    converted_FASTA: str | Path,
+    split_dir: Path,
+    output_dir: Path,
+    input_already_demuxed: bool,
+    mapping_threshold: float,
+    experiment_name: str,
+    conversions: list[str],
+    bam_suffix: str,
+    device: str | torch.device = "cpu",
+    num_threads: int = 8,
+    deaminase_footprinting: bool = False,
+    delete_intermediates: bool = True,
+    double_barcoded_path: Path | None = None,
+) -> tuple[ad.AnnData | None, Path]:
+    """Convert BAM files into an AnnData object by binarizing modified base identities.
 
-    Parameters:
-        converted_FASTA (Path): Path to the converted FASTA reference.
-        split_dir (Path): Directory containing converted BAM files.
-        output_dir (Path): Directory of the output dir
-        input_already_demuxed (bool): Whether input reads were originally demuxed
-        mapping_threshold (float): Minimum fraction of aligned reads required for inclusion.
-        experiment_name (str): Name for the output AnnData object.
-        conversions (list): List of modification types (e.g., ['unconverted', '5mC', '6mA']).
-        bam_suffix (str): File suffix for BAM files.
-        num_threads (int): Number of parallel processing threads.
-        deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
-        double_barcoded_path (Path): Path to dorado demux summary file of double ended barcodes
+    Args:
+        converted_FASTA: Path to the converted FASTA reference.
+        split_dir: Directory containing converted BAM files.
+        output_dir: Output directory for intermediate and final files.
+        input_already_demuxed: Whether input reads were originally demultiplexed.
+        mapping_threshold: Minimum fraction of aligned reads required for inclusion.
+        experiment_name: Name for the output AnnData object.
+        conversions: List of modification types (e.g., ``["unconverted", "5mC", "6mA"]``).
+        bam_suffix: File suffix for BAM files.
+        device: Torch device or device string.
+        num_threads: Number of parallel processing threads.
+        deaminase_footprinting: Whether the footprinting used direct deamination chemistry.
+        delete_intermediates: Whether to remove intermediate files after processing.
+        double_barcoded_path: Path to dorado demux summary file of double-ended barcodes.
 
     Returns:
-        str: Path to the final AnnData object.
+        tuple[anndata.AnnData | None, Path]: The AnnData object (if generated) and its path.
     """
     if torch.cuda.is_available():
         device = torch.device("cuda")
