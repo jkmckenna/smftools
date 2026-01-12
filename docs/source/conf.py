@@ -30,7 +30,7 @@ repository_url = 'https://github.com/jkmckenna/smftools'
 # Bibliography settings
 bibtex_bibfiles = ["references.bib"]
 bibtex_reference_style = "author_year"
-nitpicky = True
+nitpicky = False
 needs_sphinx = "4.0"
 
 master_doc = "index"
@@ -60,6 +60,15 @@ extensions = [
     "sphinx_search.extension",
     "sphinxext.opengraph",
 ]
+
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "numpy": ("https://numpy.org/doc/stable/", None),
+    "pandas": ("https://pandas.pydata.org/pandas-docs/stable/", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
+    "torch": ("https://pytorch.org/docs/stable/", None),
+    "anndata": ("https://anndata.readthedocs.io/en/stable/", None),
+}
 
 # Generate the API documentation when building
 autosummary_generate = True

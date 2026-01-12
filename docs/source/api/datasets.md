@@ -1,19 +1,16 @@
 ## Datasets:
 
 ```{eval-rst}
-.. module:: smftools.datasets
-```
-
-```{eval-rst}
-.. currentmodule:: smftools
+.. currentmodule:: smftools.datasets
 ```
 
 ```{eval-rst}
 .. autosummary::
    :toctree: generated/datasets
-   :recursive:
 
-   smftools.datasets
+   datasets
+   dCas9_kinetics
+   Kissiov_and_McKenna_2025
 ```
 
 ```{eval-rst}
