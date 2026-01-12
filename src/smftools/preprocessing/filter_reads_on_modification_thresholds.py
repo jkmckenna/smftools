@@ -29,23 +29,31 @@ def filter_reads_on_modification_thresholds(
     compute_obs_if_missing: bool = True,
     treat_zero_as_invalid: bool = False,
 ) -> ad.AnnData:
-    """
-    Memory-efficient filtering by per-read modification thresholds.
+    """Filter reads based on per-read modification thresholds.
 
-    - If required obs columns exist, uses them directly (fast).
-    - Otherwise, computes the relevant per-read metrics per-reference in batches
-      and writes them into adata.obs before filtering.
+    If required obs columns exist, they are used directly. Otherwise, the function
+    computes the relevant per-read metrics in batches and stores them in ``adata.obs``.
 
-    Parameters of interest :
-      - gpc_thresholds, cpg_thresholds, any_c_thresholds, a_thresholds:
-          each should be [min, max] (floats 0..1) or None. Thresholds are inclusive.
-      - use_other_c_as_background: require GpC/CpG > other_C background (if present).
-      - min_valid_fraction_positions_in_read_vs_ref: minimum fraction of valid sites
-          in the read vs reference (0..1). If None, this check is skipped.
-      - compute_obs_if_missing: if True, compute Fraction_* and Valid_* obs columns
-          if they are not already present, using a low-memory per-ref strategy.
-      - treat_zero_as_invalid: if True, a zero in X counts as invalid (non-site).
-          If False, zeros are considered valid positions (adjust to your data semantics).
+    Args:
+        adata: AnnData object to filter.
+        smf_modality: SMF modality identifier.
+        mod_target_bases: List of target bases to evaluate.
+        gpc_thresholds: ``[min, max]`` thresholds for GpC (0..1) or ``None``.
+        cpg_thresholds: ``[min, max]`` thresholds for CpG (0..1) or ``None``.
+        any_c_thresholds: ``[min, max]`` thresholds for any C (0..1) or ``None``.
+        a_thresholds: ``[min, max]`` thresholds for A (0..1) or ``None``.
+        use_other_c_as_background: Require GpC/CpG > other_C background if present.
+        min_valid_fraction_positions_in_read_vs_ref: Minimum valid-site fraction per read.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        bypass: Whether to skip processing.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
+        reference_column: Obs column containing reference identifiers.
+        batch_size: Batch size for low-memory computation.
+        compute_obs_if_missing: Whether to compute missing obs summaries.
+        treat_zero_as_invalid: Whether zeros should be treated as invalid positions.
+
+    Returns:
+        anndata.AnnData: Filtered AnnData object.
     """
 
     # quick exit flags:

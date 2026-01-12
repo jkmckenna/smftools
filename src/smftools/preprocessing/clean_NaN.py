@@ -1,18 +1,30 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
-def clean_NaN(adata, layer=None, uns_flag="clean_NaN_performed", bypass=False, force_redo=True):
-    """
-    Append layers to adata that contain NaN cleaning strategies.
+def clean_NaN(
+    adata: "ad.AnnData",
+    layer: str | None = None,
+    uns_flag: str = "clean_NaN_performed",
+    bypass: bool = False,
+    force_redo: bool = True,
+) -> None:
+    """Append layers to ``adata`` that contain NaN-cleaning strategies.
 
-    Parameters:
-        adata (AnnData): an anndata object
-        layer (str, optional): Name of the layer to fill NaN values in. If None, uses adata.X.
-
-    Modifies:
-        - Adds new layers to `adata.layers` with different NaN-filling strategies.
+    Args:
+        adata: AnnData object.
+        layer: Layer to fill NaN values in. If ``None``, uses ``adata.X``.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        bypass: Whether to skip processing.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
     """
 
     from ..readwrite import adata_to_df

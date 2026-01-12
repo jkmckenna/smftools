@@ -15,6 +15,21 @@
 
 Processes raw sequencing data to load an adata object.
 
+```{eval-rst}
+.. autosummary::
+   :toctree: generated/informatics
+   :recursive:
+
+   smftools.informatics
+```
+
+```{eval-rst}
+.. automodule:: smftools.informatics
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
 
 ### Diagram of final steps of Direct SMF workflow
 ```{image} ../_static/modkit_extract_to_adata.png

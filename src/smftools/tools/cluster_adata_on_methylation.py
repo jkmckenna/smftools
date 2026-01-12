@@ -1,31 +1,34 @@
+from __future__ import annotations
+
 # cluster_adata_on_methylation
 
+from typing import TYPE_CHECKING, Sequence
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 def cluster_adata_on_methylation(
-    adata,
-    obs_columns,
-    method="hierarchical",
-    n_clusters=3,
-    layer=None,
-    site_types=["GpC_site", "CpG_site"],
-):
-    """
-    Adds cluster groups to the adata object as an observation column
+    adata: "ad.AnnData",
+    obs_columns: Sequence[str],
+    method: str = "hierarchical",
+    n_clusters: int = 3,
+    layer: str | None = None,
+    site_types: Sequence[str] = ("GpC_site", "CpG_site"),
+) -> None:
+    """Add clustering groups to ``adata.obs`` based on methylation patterns.
 
-    Parameters:
-        adata
-        obs_columns
-        method
-        n_clusters
-        layer
-        site_types
-
-    Returns:
-        None
+    Args:
+        adata: AnnData object to annotate.
+        obs_columns: Observation columns to define subgroups.
+        method: Clustering method (``"hierarchical"`` or ``"kmeans"``).
+        n_clusters: Number of clusters for k-means.
+        layer: Layer to use for clustering.
+        site_types: Site types to analyze.
     """
     import numpy as np
     import pandas as pd

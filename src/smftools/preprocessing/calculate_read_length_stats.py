@@ -1,23 +1,32 @@
 ## calculate_read_length_stats
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 # Read length QC
-def calculate_read_length_stats(adata, reference_column="", sample_names_col=""):
-    """
-    Append first valid position in a read and last valid position in the read. From this determine and append the read length.
+def calculate_read_length_stats(
+    adata: "ad.AnnData",
+    reference_column: str = "",
+    sample_names_col: str = "",
+) -> tuple[int, int]:
+    """Calculate per-read length statistics and store them in ``adata.obs``.
 
-    Parameters:
-        adata (AnnData): An adata object
-        reference_column (str): String representing the name of the Reference column to use
-        sample_names_col (str): String representing the name of the sample name column to use
+    Args:
+        adata: AnnData object.
+        reference_column: Obs column containing reference identifiers.
+        sample_names_col: Obs column containing sample identifiers.
 
     Returns:
-        upper_bound (int): last valid position in the dataset
-        lower_bound (int): first valid position in the dataset
+        tuple[int, int]: ``(upper_bound, lower_bound)`` for valid positions in the dataset.
     """
     import numpy as np
     import pandas as pd

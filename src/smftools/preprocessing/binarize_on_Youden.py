@@ -1,34 +1,29 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 def binarize_on_Youden(
-    adata,
+    adata: "ad.AnnData",
     ref_column: str = "Reference_strand",
     output_layer_name: str = "binarized_methylation",
     mask_failed_positions: bool = True,
-):
-    """
-    Binarize SMF values using thresholds from calculate_position_Youden.
+) -> None:
+    """Binarize SMF values using thresholds from ``calculate_position_Youden``.
 
-    Parameters
-    ----------
-    adata : AnnData
-        The AnnData object to binarize.
-    ref_column : str
-        obs column denoting reference/strand categories.
-    output_layer_name : str
-        Layer in which to store the binarized matrix.
-    mask_failed_positions : bool
-        If True (default):
-            Positions that failed Youden QC are set to NaN.
-        If False:
-            All positions are binarized regardless of QC status.
-
-    Stores
-    ------
-    adata.layers[output_layer_name] : np.ndarray
+    Args:
+        adata: AnnData object to binarize.
+        ref_column: Obs column denoting reference/strand categories.
+        output_layer_name: Layer in which to store the binarized matrix.
+        mask_failed_positions: If ``True``, positions that failed Youden QC are set to NaN;
+            otherwise all positions are binarized.
     """
 
     import numpy as np

@@ -1,27 +1,36 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 def load_sample_sheet(
-    adata,
-    sample_sheet_path,
-    mapping_key_column="obs_names",
-    as_category=True,
-    uns_flag="load_sample_sheet_performed",
-    force_reload=True,
-):
-    """
-    Loads a sample sheet CSV and maps metadata into the AnnData object as categorical columns.
+    adata: "ad.AnnData",
+    sample_sheet_path: str | Path,
+    mapping_key_column: str = "obs_names",
+    as_category: bool = True,
+    uns_flag: str = "load_sample_sheet_performed",
+    force_reload: bool = True,
+) -> "ad.AnnData":
+    """Load a sample sheet CSV and map metadata into ``adata.obs``.
 
-    Parameters:
-        adata (AnnData): The AnnData object to append sample information to.
-        sample_sheet_path (str): Path to the CSV file.
-        mapping_key_column (str): Column name in the CSV to map against adata.obs_names or an existing obs column.
-        as_category (bool): If True, added columns will be cast as pandas Categorical.
+    Args:
+        adata: AnnData object to append sample information to.
+        sample_sheet_path: Path to the CSV file.
+        mapping_key_column: Column name to map against ``adata.obs_names`` or an obs column.
+        as_category: Whether to cast added columns as pandas Categoricals.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        force_reload: Whether to reload even if ``uns_flag`` is set.
 
     Returns:
-        AnnData: Updated AnnData object.
+        anndata.AnnData: Updated AnnData object.
     """
     import pandas as pd
 

@@ -1,17 +1,38 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Sequence
+
 from smftools.logging_utils import get_logger
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 logger = get_logger(__name__)
 
 
 def calculate_umap(
-    adata,
-    layer="nan_half",
-    var_filters=None,
-    n_pcs=15,
-    knn_neighbors=100,
-    overwrite=True,
-    threads=8,
-):
+    adata: "ad.AnnData",
+    layer: str | None = "nan_half",
+    var_filters: Sequence[str] | None = None,
+    n_pcs: int = 15,
+    knn_neighbors: int = 100,
+    overwrite: bool = True,
+    threads: int = 8,
+) -> "ad.AnnData":
+    """Compute PCA, neighbors, and UMAP embeddings.
+
+    Args:
+        adata: AnnData object to update.
+        layer: Layer name to use for PCA/UMAP (``None`` uses ``adata.X``).
+        var_filters: Optional list of var masks to subset features.
+        n_pcs: Number of principal components.
+        knn_neighbors: Number of neighbors for the graph.
+        overwrite: Whether to recompute embeddings if they exist.
+        threads: Number of OMP threads for computation.
+
+    Returns:
+        anndata.AnnData: Updated AnnData object.
+    """
     import os
 
     import numpy as np

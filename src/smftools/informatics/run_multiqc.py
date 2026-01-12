@@ -1,18 +1,18 @@
+from __future__ import annotations
+
+from pathlib import Path
+
 from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
 
-def run_multiqc(input_dir, output_dir):
-    """
-    Runs MultiQC on a given directory and saves the report to the specified output directory.
+def run_multiqc(input_dir: str | Path, output_dir: str | Path) -> None:
+    """Run MultiQC on a directory and save the report to the output directory.
 
-    Parameters:
-    - input_dir (str): Path to the directory containing QC reports (e.g., FastQC, Samtools, bcftools outputs).
-    - output_dir (str): Path to the directory where MultiQC reports should be saved.
-
-    Returns:
-    - None: The function executes MultiQC and prints the status.
+    Args:
+        input_dir: Path to the directory containing QC reports (e.g., FastQC, Samtools outputs).
+        output_dir: Path to the directory where MultiQC reports should be saved.
     """
     import subprocess
 
