@@ -155,6 +155,7 @@ def spatial_adata_core(
     import pandas as pd
     import scanpy as sc
 
+    from ..metadata import record_smftools_metadata
     from ..plotting import (
         combined_raw_clustermap,
         plot_rolling_grid,

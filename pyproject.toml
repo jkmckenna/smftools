@@ -93,11 +93,13 @@ docs = [
     "readthedocs-sphinx-search",
     "sphinxext-opengraph",
     "sphinx-copybutton",
+    "sphinx-click",
     "nbsphinx>=0.9",
     "ipython>=7.20",
     "matplotlib!=3.6.1",
     "sphinxcontrib-bibtex",
-    "setuptools"
+    "setuptools",
+    "pyyaml"
 ]
 
 [tool.hatch.build]

@@ -488,6 +488,7 @@ def hmm_adata_core(
     import numpy as np
 
     from ..hmm import call_hmm_peaks
+    from ..metadata import record_smftools_metadata
     from ..plotting import (
         combined_hmm_raw_clustermap,
         plot_hmm_layers_rolling_by_sample_ref,

@@ -218,6 +218,7 @@ def preprocess_adata_core(
     """
     from pathlib import Path
 
+    from ..metadata import record_smftools_metadata
     from ..plotting import plot_read_qc_histograms
     from ..preprocessing import (
         append_base_context,

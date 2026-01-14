@@ -56,6 +56,7 @@ extensions = [
     "sphinxcontrib.bibtex",
     "matplotlib.sphinxext.plot_directive",
     "sphinx_autodoc_typehints",
+    "sphinx_click",
     "sphinx_design",
     "sphinx_search.extension",
     "sphinxext.opengraph",
@@ -100,6 +101,8 @@ myst_heading_anchors = 3
 nb_output_stderr = "remove"
 nb_execution_mode = "off"
 nb_merge_streams = True
+
+smartquotes = False
 
 suppress_warnings = [
     "myst.header"

@@ -43,6 +43,7 @@ smftools GitHub link
 
 installation
 basic_usage
+cli
 tutorials/index
 api/index
 schema/anndata_schema
