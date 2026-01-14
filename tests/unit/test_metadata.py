@@ -4,8 +4,9 @@ import anndata as ad
 import numpy as np
 
 from smftools.cli.helpers import write_gz_h5ad
+
 from smftools.config.experiment_config import ExperimentConfig
-from smftools.metadata import record_smftools_metadata
+from smftools.metadata import append_runtime_schema_entry, record_smftools_metadata
 
 
 def test_record_smftools_metadata(tmp_path):
@@ -17,6 +18,17 @@ def test_record_smftools_metadata(tmp_path):
     input_path = tmp_path / "input.h5ad"
     input_path.write_text("input", encoding="utf-8")
     output_path = tmp_path / "output.h5ad.gz"
+
+    adata.obs["example"] = [1, 2]
+    append_runtime_schema_entry(
+        adata,
+        stage="load",
+        location="obs",
+        key="example",
+        created_by="tests.unit.test_metadata",
+        used_structures=["X"],
+        notes="Example runtime schema entry.",
+    )
 
     output_path = write_gz_h5ad(adata, output_path)
     record_smftools_metadata(

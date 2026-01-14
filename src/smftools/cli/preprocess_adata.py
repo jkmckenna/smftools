@@ -235,6 +235,7 @@ def preprocess_adata_core(
         flag_duplicate_reads,
         load_sample_sheet,
     )
+    from ..metadata import record_smftools_metadata
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
