@@ -46,6 +46,7 @@ basic_usage
 cli
 tutorials/index
 api/index
+schema/anndata_schema
 release-notes/index
 dev/index
 contributors

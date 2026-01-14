@@ -3,6 +3,7 @@ from pathlib import Path
 
 import anndata as ad
 
+from ..metadata import write_runtime_schema_yaml
 from ..readwrite import safe_write_h5ad
 
 
@@ -49,4 +50,5 @@ def write_gz_h5ad(adata: ad.AnnData, path: Path) -> Path:
     if path.suffix != ".gz":
         path = path.with_name(path.name + ".gz")
     safe_write_h5ad(adata, path, compression="gzip", backup=True)
+    write_runtime_schema_yaml(adata, path, step_name="runtime")
     return path
