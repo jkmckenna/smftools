@@ -2,8 +2,8 @@
 #
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
-import sys
 import os
+import sys
 from pathlib import Path
 HERE = Path(__file__).parent
 PARENT_PARENT_HERE = HERE.parents[1]
@@ -131,3 +131,73 @@ html_theme_options = {
 }
 
 html_static_path = ['_static']
+
+
+def _generate_schema_tables() -> None:
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        print("PyYAML not installed; skipping schema table generation.")
+        return
+
+    try:
+        from smftools.schema import get_schema_registry_path
+    except Exception as exc:
+        print(f"Unable to import smftools schema registry: {exc}")
+        return
+
+    registry_path = get_schema_registry_path()
+    if not registry_path.exists():
+        print(f"Schema registry not found at {registry_path}; skipping.")
+        return
+
+    data = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+    output_path = HERE / "schema" / "_generated_schema_tables.md"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = []
+    version = data.get("schema_version", "unknown")
+    lines.append(f"Schema registry version: `{version}`\n")
+
+    stages = data.get("stages", {})
+    section_order = ["obs", "var", "obsm", "varm", "layers", "obsp", "uns"]
+
+    for stage_name, stage_data in stages.items():
+        lines.append(f"## {stage_name}\n")
+        stage_requires = ", ".join(stage_data.get("stage_requires", []) or [])
+        lines.append(f"Stage requires: {stage_requires or 'None'}\n")
+        for section in section_order:
+            entries = stage_data.get(section, {})
+            lines.append(f"### {section}\n")
+            if not entries:
+                lines.append("_No entries defined._\n")
+                continue
+            lines.append(
+                "| Key | Dtype | Created by | Modified by | Requires | Optional inputs | Notes |\n"
+                "| --- | --- | --- | --- | --- | --- | --- |\n"
+            )
+            for key, meta in entries.items():
+                dtype = meta.get("dtype", "")
+                created_by = meta.get("created_by", "")
+                modified_by = ", ".join(meta.get("modified_by", []) or [])
+                requires = meta.get("requires", []) or []
+                if requires and any(isinstance(item, list) for item in requires):
+                    groups = [
+                        " + ".join(group) if isinstance(group, list) else str(group)
+                        for group in requires
+                    ]
+                    requires_text = " OR ".join(groups)
+                else:
+                    requires_text = ", ".join(requires)
+                optional_inputs = ", ".join(meta.get("optional_inputs", []) or [])
+                notes = meta.get("notes", "")
+                lines.append(
+                    f"| `{key}` | `{dtype}` | `{created_by}` | `{modified_by}` | "
+                    f"{requires_text or 'None'} | {optional_inputs or 'None'} | {notes} |\n"
+                )
+            lines.append("\n")
+
+    output_path.write_text("".join(lines), encoding="utf-8")
+
+
+_generate_schema_tables()
