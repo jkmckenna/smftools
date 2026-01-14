@@ -1,0 +1,227 @@
+schema_version: "1"
+description: "smftools AnnData schema registry (v1)."
+stages:
+  raw:
+    stage_requires: []
+    obs:
+      Experiment_name:
+        dtype: "category"
+        created_by: "smftools.cli.load_adata"
+        modified_by: []
+        notes: "Experiment identifier applied to all reads."
+        requires: []
+        optional_inputs: []
+      Experiment_name_and_barcode:
+        dtype: "category"
+        created_by: "smftools.cli.load_adata"
+        modified_by: []
+        notes: "Concatenated experiment name and barcode."
+        requires: [["obs.Experiment_name", "obs.Barcode"]]
+        optional_inputs: []
+      Barcode:
+        dtype: "category"
+        created_by: "smftools.informatics.modkit_extract_to_adata"
+        modified_by: []
+        notes: "Barcode assigned during demultiplexing or extraction."
+        requires: []
+        optional_inputs: []
+      read_length:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "Read length in bases."
+        requires: []
+        optional_inputs: []
+      mapped_length:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "Aligned length in bases."
+        requires: []
+        optional_inputs: []
+      reference_length:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "Reference length for alignment target."
+        requires: []
+        optional_inputs: []
+      read_quality:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "Per-read quality score."
+        requires: []
+        optional_inputs: []
+      mapping_quality:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "Mapping quality score."
+        requires: []
+        optional_inputs: []
+      read_length_to_reference_length_ratio:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "Read length divided by reference length."
+        requires: [["obs.read_length", "obs.reference_length"]]
+        optional_inputs: []
+      mapped_length_to_reference_length_ratio:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "Mapped length divided by reference length."
+        requires: [["obs.mapped_length", "obs.reference_length"]]
+        optional_inputs: []
+      mapped_length_to_read_length_ratio:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "Mapped length divided by read length."
+        requires: [["obs.mapped_length", "obs.read_length"]]
+        optional_inputs: []
+      Raw_modification_signal:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by:
+          - "smftools.cli.load_adata"
+        notes: "Summed modification signal per read."
+        requires: [["X"], ["layers.raw_mods"]]
+        optional_inputs: []
+      pod5_origin:
+        dtype: "string"
+        created_by: "smftools.informatics.h5ad_functions.annotate_pod5_origin"
+        modified_by: []
+        notes: "POD5 filename source for each read."
+        requires: [["obs_names"]]
+        optional_inputs: []
+      demux_type:
+        dtype: "category"
+        created_by: "smftools.informatics.h5ad_functions.add_demux_type_annotation"
+        modified_by: []
+        notes: "Classification of demultiplexing status."
+        requires: [["obs_names"]]
+        optional_inputs: []
+    var:
+      reference_position:
+        dtype: "int"
+        created_by: "smftools.informatics.modkit_extract_to_adata"
+        modified_by: []
+        notes: "Reference coordinate for each column."
+        requires: []
+        optional_inputs: []
+      reference_id:
+        dtype: "category"
+        created_by: "smftools.informatics.modkit_extract_to_adata"
+        modified_by: []
+        notes: "Reference contig or sequence name."
+        requires: []
+        optional_inputs: []
+    layers:
+      raw_mods:
+        dtype: "float"
+        created_by: "smftools.informatics.modkit_extract_to_adata"
+        modified_by: []
+        notes: "Raw modification scores (modality-dependent)."
+        requires: []
+        optional_inputs: []
+    obsm: {}
+    varm: {}
+    obsp: {}
+    uns:
+      smftools:
+        dtype: "mapping"
+        created_by: "smftools.metadata.record_smftools_metadata"
+        modified_by: []
+        notes: "smftools metadata including history, environment, provenance, schema snapshot."
+        requires: []
+        optional_inputs: []
+  preprocess:
+    stage_requires: ["raw"]
+    obs:
+      sequence__merged_cluster_id:
+        dtype: "category"
+        created_by: "smftools.preprocessing.flag_duplicate_reads"
+        modified_by: []
+        notes: "Cluster identifier for duplicate detection."
+        requires: [["layers.nan0_0minus1"]]
+        optional_inputs: ["obs.demux_type"]
+    layers:
+      nan0_0minus1:
+        dtype: "float"
+        created_by: "smftools.preprocessing.binarize"
+        modified_by:
+          - "smftools.preprocessing.clean_NaN"
+        notes: "Binarized methylation matrix (nan=0, 0=-1)."
+        requires: [["X"]]
+        optional_inputs: []
+    obsm:
+      X_umap:
+        dtype: "float"
+        created_by: "smftools.tools.calculate_umap"
+        modified_by: []
+        notes: "UMAP embedding for preprocessed reads."
+        requires: [["X"]]
+        optional_inputs: []
+    varm: {}
+    obsp: {}
+    uns:
+      duplicate_read_groups:
+        dtype: "mapping"
+        created_by: "smftools.preprocessing.flag_duplicate_reads"
+        modified_by: []
+        notes: "Duplicate read group metadata."
+        requires: [["obs.sequence__merged_cluster_id"]]
+        optional_inputs: []
+  spatial:
+    stage_requires: ["raw", "preprocess"]
+    obs:
+      leiden:
+        dtype: "category"
+        created_by: "smftools.tools.calculate_umap"
+        modified_by: []
+        notes: "Leiden cluster assignments."
+        requires: [["obsm.X_umap"]]
+        optional_inputs: []
+    obsm:
+      X_umap:
+        dtype: "float"
+        created_by: "smftools.tools.calculate_umap"
+        modified_by: []
+        notes: "UMAP embedding for spatial analyses."
+        requires: [["X"]]
+        optional_inputs: []
+    layers: {}
+    varm: {}
+    obsp: {}
+    uns:
+      positionwise_result:
+        dtype: "mapping"
+        created_by: "smftools.tools.position_stats.compute_positionwise_statistics"
+        modified_by: []
+        notes: "Positionwise correlation statistics for spatial analyses."
+        requires: [["X"]]
+        optional_inputs: ["obs.reference_column"]
+  hmm:
+    stage_requires: ["raw", "preprocess", "spatial"]
+    layers:
+      hmm_state_calls:
+        dtype: "int"
+        created_by: "smftools.hmm.call_hmm_peaks"
+        modified_by: []
+        notes: "HMM-derived state calls per read/position."
+        requires: [["layers.nan0_0minus1"]]
+        optional_inputs: []
+    obsm: {}
+    varm: {}
+    obsp: {}
+    obs: {}
+    uns:
+      hmm_annotated:
+        dtype: "bool"
+        created_by: "smftools.cli.hmm_adata"
+        modified_by: []
+        notes: "Flag indicating HMM annotations are present."
+        requires: [["layers.hmm_state_calls"]]
+        optional_inputs: []

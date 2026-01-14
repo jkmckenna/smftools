@@ -45,6 +45,7 @@ installation
 basic_usage
 tutorials/index
 api/index
+schema/anndata_schema
 release-notes/index
 dev/index
 contributors

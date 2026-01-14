@@ -71,14 +71,19 @@ def preprocess_adata(
 
         if hmm_exists:
             adata = _load(hmm_path)
+            source_path = hmm_path
         elif spatial_exists:
             adata = _load(spatial_path)
+            source_path = spatial_path
         elif pp_dedup_exists:
             adata = _load(pp_dedup_path)
+            source_path = pp_dedup_path
         elif pp_exists:
             adata = _load(pp_path)
+            source_path = pp_path
         elif raw_exists:
             adata = _load(raw_path)
+            source_path = raw_path
         else:
             logger.error("Cannot redo preprocessing: no AnnData available at any stage.")
             return (None, None, None, None)
@@ -88,6 +93,8 @@ def preprocess_adata(
             cfg=cfg,
             pp_adata_path=pp_path,
             pp_dup_rem_adata_path=pp_dedup_path,
+            source_adata_path=source_path,
+            config_path=config_path,
         )
         return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
@@ -101,8 +108,10 @@ def preprocess_adata(
         )
         if pp_exists:
             adata = _load(pp_path)
+            source_path = pp_path
         elif raw_exists:
             adata = _load(raw_path)
+            source_path = raw_path
         else:
             logger.error(
                 "Cannot redo duplicate detection: no compatible AnnData available "
@@ -115,6 +124,8 @@ def preprocess_adata(
             cfg=cfg,
             pp_adata_path=pp_path,
             pp_dup_rem_adata_path=pp_dedup_path,
+            source_adata_path=source_path,
+            config_path=config_path,
         )
         return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
@@ -143,22 +154,28 @@ def preprocess_adata(
     if pp_exists:
         logger.debug(f"Preprocessed AnnData found: {pp_path}")
         adata = _load(pp_path)
+        source_path = pp_path
         pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
             pp_dup_rem_adata_path=pp_dedup_path,
+            source_adata_path=source_path,
+            config_path=config_path,
         )
         return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
     # Otherwise, fall back to raw (if available)
     if raw_exists:
         adata = _load(raw_path)
+        source_path = raw_path
         pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
             pp_dup_rem_adata_path=pp_dedup_path,
+            source_adata_path=source_path,
+            config_path=config_path,
         )
         return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
@@ -171,6 +188,8 @@ def preprocess_adata_core(
     cfg,
     pp_adata_path: Path,
     pp_dup_rem_adata_path: Path,
+    source_adata_path: Optional[Path] = None,
+    config_path: Optional[str] = None,
 ) -> Tuple[ad.AnnData, Path, ad.AnnData, Path]:
     """
     Core preprocessing pipeline.
@@ -215,6 +234,7 @@ def preprocess_adata_core(
         flag_duplicate_reads,
         load_sample_sheet,
     )
+    from ..metadata import record_smftools_metadata
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
@@ -522,10 +542,26 @@ def preprocess_adata_core(
     ############################################### Save preprocessed adata with duplicate detection ###############################################
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
         logger.info("Saving preprocessed adata.")
+        record_smftools_metadata(
+            adata,
+            step_name="preprocess",
+            cfg=cfg,
+            config_path=config_path,
+            input_paths=[source_adata_path] if source_adata_path else None,
+            output_path=pp_adata_path,
+        )
         write_gz_h5ad(adata, pp_adata_path)
 
     if not pp_dup_rem_adata_path.exists() or cfg.force_redo_preprocessing:
         logger.info("Saving preprocessed adata with duplicates removed.")
+        record_smftools_metadata(
+            adata_unique,
+            step_name="preprocess",
+            cfg=cfg,
+            config_path=config_path,
+            input_paths=[pp_adata_path],
+            output_path=pp_dup_rem_adata_path,
+        )
         write_gz_h5ad(adata_unique, pp_dup_rem_adata_path)
 
     ########################################################################################################################
