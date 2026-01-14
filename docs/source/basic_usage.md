@@ -58,10 +58,33 @@ smftools batch preprocess "/Path_to_experiment_config_path_list.csv"
 
 This command concatenates multiple h5ad files and saves them to a new output. The h5ads to concatenate are provided as a txt, tsv, or h5ad file of paths.
 ```shell
-smftools concatenate output.h5ad "/Path_to_h5ad_path_list.csv"
+smftools concatenate output.h5ad -c "/Path_to_h5ad_path_list.csv"
+```
+
+Alternatively, you can just concatenate all h5ads within a given directory.
+```shell
+smftools concatenate output.h5ad -d "/Path_to_h5ad_file_dir/"
 ```
 
 - Mainly used for combining multiple experiments into a single anndata object.
+
+## Subsample POD5 Usage
+
+This command subsamples a POD5 file or a directory of POD5 files. It can be done by passing a txt file of read names to use, or an integer number of reads.
+```shell
+smftools subsample-pod5 -r "/Path_to_read_name_list.txt" -o "/Path_to_output_directory" "/Path_to_input_POD5_dir_or_file"
+```
+
+```shell
+smftools subsample-pod5 -n 1000 -o "/Path_to_output_directory" "/Path_to_input_POD5_dir_or_file"
+```
+
+## Optional run logging
+
+If you want to maintain run log files of CLI processes, you can use the following syntax to any of the CLI commands. Here is an example using smftools load with logging performed on INFO level logging outputs and above.
+```shell
+smftools --log-file "/Path_to_output_log_file.log" --log-level INFO load "/Path_to_input_config.csv"
+```
 
 ## Reading AnnData objects created by smftools
 
