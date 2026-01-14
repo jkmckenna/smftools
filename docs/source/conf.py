@@ -56,6 +56,7 @@ extensions = [
     "sphinxcontrib.bibtex",
     "matplotlib.sphinxext.plot_directive",
     "sphinx_autodoc_typehints",
+    "sphinx_click",
     "sphinx_design",
     "sphinx_search.extension",
     "sphinxext.opengraph",
