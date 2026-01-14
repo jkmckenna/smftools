@@ -425,7 +425,7 @@ def hmm_adata(config_path: str):
 
     # 2) make sure upstream stages are run (they have their own skipping logic)
     preprocess_adata(config_path)
-    spatial_ad, _ = spatial_adata(config_path)
+    spatial_ad, spatial_path = spatial_adata(config_path)
 
     # 3) choose starting AnnData
     # Prefer:
@@ -438,25 +438,42 @@ def hmm_adata(config_path: str):
 
     if spatial_ad is not None:
         adata = spatial_ad
+        source_path = spatial_path
     elif paths.spatial.exists():
         adata, _ = safe_read_h5ad(paths.spatial)
+        source_path = paths.spatial
     elif paths.pp_dedup.exists():
         adata, _ = safe_read_h5ad(paths.pp_dedup)
+        source_path = paths.pp_dedup
     elif paths.pp.exists():
         adata, _ = safe_read_h5ad(paths.pp)
+        source_path = paths.pp
     elif paths.raw.exists():
         adata, _ = safe_read_h5ad(paths.raw)
+        source_path = paths.raw
     else:
         raise FileNotFoundError(
             "No AnnData available for HMM: expected at least raw or preprocessed h5ad."
         )
 
     # 4) delegate to core
-    adata, hmm_adata_path = hmm_adata_core(cfg, adata, paths)
+    adata, hmm_adata_path = hmm_adata_core(
+        cfg,
+        adata,
+        paths,
+        source_adata_path=source_path,
+        config_path=config_path,
+    )
     return adata, hmm_adata_path
 
 
-def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
+def hmm_adata_core(
+    cfg,
+    adata,
+    paths,
+    source_adata_path: Path | None = None,
+    config_path: str | None = None,
+) -> Tuple["anndata.AnnData", Path]:
     """
     Core HMM analysis pipeline.
 
@@ -476,6 +493,7 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
         plot_hmm_layers_rolling_by_sample_ref,
         plot_hmm_size_contours,
     )
+    from ..metadata import record_smftools_metadata
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
@@ -801,6 +819,14 @@ def hmm_adata_core(cfg, adata, paths) -> Tuple["anndata.AnnData", Path]:
     ## Save HMM annotated adata
     if not paths.hmm.exists():
         logger.info("Saving hmm analyzed AnnData (post preprocessing and duplicate removal).")
+        record_smftools_metadata(
+            adata,
+            step_name="hmm",
+            cfg=cfg,
+            config_path=config_path,
+            input_paths=[source_adata_path] if source_adata_path else None,
+            output_path=paths.hmm,
+        )
         write_gz_h5ad(adata, paths.hmm)
 
     ########################################################################################################################

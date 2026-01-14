@@ -76,7 +76,7 @@ def delete_tsvs(
                         logger.warning(f"[error] failed to remove tmp dir {td}: {e}")
 
 
-def load_adata_core(cfg, paths: AdataPaths):
+def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     """
     Core load pipeline.
 
@@ -130,6 +130,7 @@ def load_adata_core(cfg, paths: AdataPaths):
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
     from ..informatics.pod5_functions import fast5_to_pod5
     from ..informatics.run_multiqc import run_multiqc
+    from ..metadata import record_smftools_metadata
     from ..readwrite import add_or_update_column_in_csv, make_dirs
     from .helpers import write_gz_h5ad
 
@@ -623,6 +624,13 @@ def load_adata_core(cfg, paths: AdataPaths):
 
     ############################################### Save final adata ###############################################
     logger.info(f"Saving AnnData to {raw_adata_path}")
+    record_smftools_metadata(
+        raw_adata,
+        step_name="load",
+        cfg=cfg,
+        config_path=config_path,
+        output_path=raw_adata_path,
+    )
     write_gz_h5ad(raw_adata, raw_adata_path)
     ########################################################################################################################
 
@@ -744,6 +752,6 @@ def load_adata(config_path: str):
             return None, paths.raw, cfg
 
     # If we get here, we actually want to run the full load pipeline
-    adata, adata_path, cfg = load_adata_core(cfg, paths)
+    adata, adata_path, cfg = load_adata_core(cfg, paths, config_path=config_path)
 
     return adata, adata_path, cfg

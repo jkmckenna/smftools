@@ -75,13 +75,17 @@ def spatial_adata(
     # Prefer in-memory pp_dedup_adata when preprocess_adata just ran.
     if pp_dedup_adata is not None:
         start_adata = pp_dedup_adata
+        source_path = pp_dedup_adata_path_ret
     else:
         if pp_dedup_path.exists():
             start_adata = _load(pp_dedup_path)
+            source_path = pp_dedup_path
         elif pp_path.exists():
             start_adata = _load(pp_path)
+            source_path = pp_path
         elif raw_path.exists():
             start_adata = _load(raw_path)
+            source_path = raw_path
         else:
             logger.warning("No suitable AnnData found for spatial analyses (need at least raw).")
             return None, None
@@ -94,6 +98,8 @@ def spatial_adata(
         pp_adata_path=pp_path,
         pp_dup_rem_adata_path=pp_dedup_path,
         pp_adata_in_memory=pp_adata,
+        source_adata_path=source_path,
+        config_path=config_path,
     )
 
     # 5) Register spatial path in summary CSV
@@ -109,6 +115,8 @@ def spatial_adata_core(
     pp_adata_path: Path,
     pp_dup_rem_adata_path: Path,
     pp_adata_in_memory: Optional[ad.AnnData] = None,
+    source_adata_path: Optional[Path] = None,
+    config_path: Optional[str] = None,
 ) -> Tuple[ad.AnnData, Path]:
     """
     Core spatial analysis pipeline.
@@ -157,6 +165,7 @@ def spatial_adata_core(
         load_sample_sheet,
         reindex_references_adata,
     )
+    from ..metadata import record_smftools_metadata
     from ..readwrite import make_dirs, safe_read_h5ad
     from ..tools import calculate_umap
     from ..tools.position_stats import (
@@ -759,6 +768,14 @@ def spatial_adata_core(
     # ============================================================
     if (not spatial_adata_path.exists()) or getattr(cfg, "force_redo_spatial_analyses", False):
         logger.info("Saving spatial analyzed AnnData (post preprocessing and duplicate removal).")
+        record_smftools_metadata(
+            adata,
+            step_name="spatial",
+            cfg=cfg,
+            config_path=config_path,
+            input_paths=[source_adata_path] if source_adata_path else None,
+            output_path=spatial_adata_path,
+        )
         write_gz_h5ad(adata, spatial_adata_path)
 
     return adata, spatial_adata_path
