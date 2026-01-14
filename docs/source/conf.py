@@ -102,6 +102,8 @@ nb_output_stderr = "remove"
 nb_execution_mode = "off"
 nb_merge_streams = True
 
+smartquotes = False
+
 suppress_warnings = [
     "myst.header"
 ]
