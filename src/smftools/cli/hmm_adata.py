@@ -488,12 +488,12 @@ def hmm_adata_core(
     import numpy as np
 
     from ..hmm import call_hmm_peaks
+    from ..metadata import record_smftools_metadata
     from ..plotting import (
         combined_hmm_raw_clustermap,
         plot_hmm_layers_rolling_by_sample_ref,
         plot_hmm_size_contours,
     )
-    from ..metadata import record_smftools_metadata
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
