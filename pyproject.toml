@@ -98,7 +98,8 @@ docs = [
     "ipython>=7.20",
     "matplotlib!=3.6.1",
     "sphinxcontrib-bibtex",
-    "setuptools"
+    "setuptools",
+    "pyyaml"
 ]
 
 [tool.hatch.build]
