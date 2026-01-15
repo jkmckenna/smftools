@@ -30,12 +30,16 @@ def _get_training_matrix(
     Returns (X, layer_name_or_None) where X is dense float array.
     """
     sub = subset[:, cols_mask]
+
     if smf_modality == "direct":
         hmm_layer = getattr(cfg, "output_binary_layer_name", None)
         if hmm_layer is None or hmm_layer not in sub.layers:
             raise KeyError(f"Missing HMM training layer '{hmm_layer}' in subset.")
+        
+        logger.debug("Using direct modality HMM training layer: %s", hmm_layer)
         mat = sub.layers[hmm_layer]
     else:
+        logger.debug("Using .X for HMM training matrix")
         hmm_layer = None
         mat = sub.X
 
@@ -51,15 +55,19 @@ def _resolve_pos_mask_for_methbase(subset, ref: str, methbase: str) -> Optional[
     """
     key = str(methbase).strip().lower()
 
+    logger.debug("Resolving position mask for methbase=%s on ref=%s", key, ref)
+
     if key in ("a",):
         col = f"{ref}_A_site"
         if col not in subset.var:
             return None
-        return np.asarray(subset.var[col] == "A")
+        logger.debug("Using positions with A calls from column: %s", col)
+        return np.asarray(subset.var[col])
 
     if key in ("c", "any_c", "anyc", "any-c"):
         for col in (f"{ref}_any_C_site", f"{ref}_C_site"):
             if col in subset.var:
+                logger.debug("Using positions with C calls from column: %s", col)
                 return np.asarray(subset.var[col])
         return None
 
@@ -67,17 +75,21 @@ def _resolve_pos_mask_for_methbase(subset, ref: str, methbase: str) -> Optional[
         col = f"{ref}_GpC_site"
         if col not in subset.var:
             return None
+        logger.debug("Using positions with GpC calls from column: %s", col)
         return np.asarray(subset.var[col])
 
     if key in ("cpg", "cpg_site", "cpg-site"):
         col = f"{ref}_CpG_site"
         if col not in subset.var:
             return None
+        logger.debug("Using positions with CpG calls from column: %s", col)
         return np.asarray(subset.var[col])
 
     alt = f"{ref}_{methbase}_site"
     if alt not in subset.var:
         return None
+    
+    logger.debug("Using positions from column: %s", alt)
     return np.asarray(subset.var[alt])
 
 
@@ -90,10 +102,17 @@ def build_single_channel(
       coords (Lmb,) int coords from var_names
     """
     pm = _resolve_pos_mask_for_methbase(subset, ref, methbase)
+    logger.debug("Position mask for methbase=%s on ref=%s has %d sites", methbase, ref, int(np.sum(pm)) if pm is not None else 0)
+
     if pm is None or int(np.sum(pm)) == 0:
         raise ValueError(f"No columns for methbase={methbase} on ref={ref}")
+    
     X, _ = _get_training_matrix(subset, pm, smf_modality, cfg)
+    logger.debug("Training matrix for methbase=%s on ref=%s has shape %s", methbase, ref, X.shape)
+
     coords, _ = _safe_int_coords(subset[:, pm].var_names)
+    logger.debug("Coordinates for methbase=%s on ref=%s have length %d", methbase, ref, coords.shape[0])
+
     return X, coords
 
 
@@ -542,6 +561,7 @@ def hmm_adata_core(
             pass
 
         else:
+            logger.info("Starting HMM annotation over samples and references")
             for sample in samples:
                 for ref in references:
                     mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
@@ -558,6 +578,8 @@ def hmm_adata_core(
                     run_multi = bool(getattr(cfg, "hmm_run_multichannel", True))
                     run_cpg = bool(getattr(cfg, "cpg", False))
                     device = resolve_torch_device(cfg.device)
+
+                    logger.info("HMM processing sample=%s ref=%s", sample, ref)
 
                     # ---- split feature sets ----
                     feature_sets_all = normalize_hmm_feature_sets(
@@ -576,6 +598,8 @@ def hmm_adata_core(
                     # 1) Single-channel accessibility (per methbase)
                     # =========================
                     for mb in methbases:
+                        logger.info("HMM single-channel for methbase=%s", mb)
+
                         try:
                             X, coords = build_single_channel(
                                 subset,
@@ -585,9 +609,13 @@ def hmm_adata_core(
                                 cfg=cfg,
                             )
                         except Exception:
+                            logger.warning(
+                                "Skipping HMM single-channel for methbase=%s due to data error", mb)
                             continue
 
                         arch = trainer.choose_arch(multichannel=False)
+
+                        logger.info("HMM fitting/loading for methbase=%s", mb)
                         hmm = trainer.fit_or_load(
                             sample=str(sample),
                             ref=str(ref),
@@ -599,6 +627,7 @@ def hmm_adata_core(
                         )
 
                         if not bypass_apply:
+                            logger.info("HMM applying for methbase=%s", mb)
                             pm = _resolve_pos_mask_for_methbase(subset, str(ref), str(mb))
                             hmm.annotate_adata(
                                 subset,
@@ -623,6 +652,7 @@ def hmm_adata_core(
                                 getattr(cfg, "hmm_merge_layer_features", []) or []
                             ):
                                 base_layer = f"{mb}_{core_layer}"
+                                logger.info("Merging intervals for layer=%s", base_layer)
                                 if base_layer in subset.layers:
                                     merged_base = hmm.merge_intervals_to_new_layer(
                                         subset,
@@ -648,6 +678,7 @@ def hmm_adata_core(
                     # 2) Multi-channel accessibility (Combined)
                     # =========================
                     if run_multi and len(methbases) >= 2:
+                        logger.info("HMM multi-channel for methbases=%s", ",".join(methbases))
                         try:
                             X3, coords_u, used_mbs = build_multi_channel_union(
                                 subset,
@@ -658,6 +689,9 @@ def hmm_adata_core(
                             )
                         except Exception:
                             X3, coords_u, used_mbs = None, None, []
+                            logger.warning(
+                                "Skipping HMM multi-channel due to data error or insufficient methbases"
+                            )
 
                         if X3 is not None and len(used_mbs) >= 2:
                             union_mask = None
@@ -666,6 +700,8 @@ def hmm_adata_core(
                                 union_mask = pm if union_mask is None else (union_mask | pm)
 
                             arch = trainer.choose_arch(multichannel=True)
+
+                            logger.info("HMM fitting/loading for multi-channel")
                             hmmc = trainer.fit_or_load(
                                 sample=str(sample),
                                 ref=str(ref),
@@ -677,6 +713,7 @@ def hmm_adata_core(
                             )
 
                             if not bypass_apply:
+                                logger.info("HMM applying for multi-channel")
                                 hmmc.annotate_adata(
                                     subset,
                                     prefix="Combined",
@@ -723,6 +760,7 @@ def hmm_adata_core(
                     # 3) CpG-only single-channel task
                     # =========================
                     if run_cpg:
+                        logger.info("HMM single-channel for CpG")
                         try:
                             Xcpg, coordscpg = build_single_channel(
                                 subset,
@@ -733,9 +771,14 @@ def hmm_adata_core(
                             )
                         except Exception:
                             Xcpg, coordscpg = None, None
+                            logger.warning(
+                                "Skipping HMM single-channel for CpG due to data error"
+                            )
 
                         if Xcpg is not None and Xcpg.size and feature_sets_cpg:
                             arch = trainer.choose_arch(multichannel=False)
+
+                            logger.info("HMM fitting/loading for CpG")
                             hmmg = trainer.fit_or_load(
                                 sample=str(sample),
                                 ref=str(ref),
@@ -747,6 +790,7 @@ def hmm_adata_core(
                             )
 
                             if not bypass_apply:
+                                logger.info("HMM applying for CpG")
                                 pm = _resolve_pos_mask_for_methbase(subset, str(ref), "CpG")
                                 hmmg.annotate_adata(
                                     subset,

@@ -1,7 +1,7 @@
 # General
 sample_sheet_path: null # path to sample_sheet to load metadata into anndata.
-sample_sheet_mapping_column: 'Barcode' # The column in the sample sheet and current anndata to use for mapping metadata.
-sample_name_col_for_plotting: 'Barcode'
+sample_sheet_mapping_column: 'Experiment_name_and_barcode' # The column in the sample sheet and current anndata to use for mapping metadata.
+sample_name_col_for_plotting: 'Experiment_name_and_barcode'
 
 # Compute params
 threads: 4
@@ -51,7 +51,6 @@ aligner_args:
       - '-y'
       - '-N'
       - '5'
-      - '--secondary=no' 
     pacbio:
       - '-a'
       - '-x'
@@ -61,7 +60,6 @@ aligner_args:
       - '-y'
       - '-N'
       - '5'
-      - '--secondary=no' 
     illumina:
       - '-a'
       - '-x'
@@ -71,7 +69,6 @@ aligner_args:
       - '-y'
       - '-N'
       - '5'
-      - '--secondary=no'     
   dorado:
     ont:
       - "--mm2-opts"
@@ -88,7 +85,7 @@ trim: False # dorado adapter and barcode removal during demultiplexing
 # Anndata structure
 mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
 reference_column: 'Reference_strand'
-sample_column: 'Barcode'
+sample_column: 'Experiment_name_and_barcode'
 
 ######## smftools preprocess params #########
 # Read length, quality, and mapping filtering params

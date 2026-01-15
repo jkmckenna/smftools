@@ -1224,8 +1224,11 @@ def modkit_extract_to_adata(
                     except Exception:
                         logger.debug("Skipping writing anndata for sample")
 
-            # Delete the batch dictionaries from memory
-            del dict_list, adata
+            try:
+                # Delete the batch dictionaries from memory
+                del dict_list, adata
+            except Exception:
+                pass
             gc.collect()
 
     # Iterate over all of the batched hdf5 files and concatenate them.
