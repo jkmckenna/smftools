@@ -166,7 +166,6 @@ def spatial_adata_core(
         load_sample_sheet,
         reindex_references_adata,
     )
-    from ..metadata import record_smftools_metadata
     from ..readwrite import make_dirs, safe_read_h5ad
     from ..tools import calculate_umap
     from ..tools.position_stats import (

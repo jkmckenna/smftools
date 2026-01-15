@@ -4,7 +4,6 @@ import anndata as ad
 import numpy as np
 
 from smftools.cli.helpers import write_gz_h5ad
-
 from smftools.config.experiment_config import ExperimentConfig
 from smftools.metadata import append_runtime_schema_entry, record_smftools_metadata
 
