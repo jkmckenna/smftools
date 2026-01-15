@@ -1,4 +1,5 @@
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 logger = get_logger(__name__)
 
@@ -11,7 +12,7 @@ def display_hmm(hmm, state_labels=["Non-Methylated", "Methylated"], obs_labels=[
         state_labels: Optional labels for states.
         obs_labels: Optional labels for observations.
     """
-    import torch
+    torch = require("torch", extra="ml", purpose="HMM display")
 
     logger.info("**HMM Model Overview**")
     logger.info("%s", hmm)

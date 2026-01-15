@@ -14,7 +14,9 @@ def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
         None
             Writes out split BAM files.
     """
-    import pysam
+    from smftools.optional_imports import require
+
+    pysam = require("pysam", extra="informatics", purpose="archived BAM separation")
     from pathlib import Path
     import os
 

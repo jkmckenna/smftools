@@ -5,6 +5,8 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterable, Optional, Tuple, List
 
+from smftools.optional_imports import require
+
 def bam_qc(
     bam_files: Iterable[str | Path],
     bam_qc_dir: str | Path,
@@ -24,9 +26,10 @@ def bam_qc(
 
     # Try to import pysam once
     try:
-        import pysam
+        pysam = require("pysam", extra="informatics", purpose="archived BAM QC")
         HAVE_PYSAM = True
-    except Exception:
+    except ModuleNotFoundError:
+        pysam = None
         HAVE_PYSAM = False
 
     bam_qc_dir = Path(bam_qc_dir)

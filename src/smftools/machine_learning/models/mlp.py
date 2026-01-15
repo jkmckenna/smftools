@@ -1,4 +1,6 @@
-import torch.nn as nn
+from smftools.optional_imports import require
+
+nn = require("torch", extra="ml", purpose="MLP models").nn
 
 from .base import BaseTorchModel
 

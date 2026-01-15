@@ -1,6 +1,8 @@
 import numpy as np
-import torch
-import torch.nn as nn
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="CNN models")
+nn = torch.nn
 
 from .base import BaseTorchModel
 

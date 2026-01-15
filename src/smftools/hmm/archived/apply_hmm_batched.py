@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="archived HMM batch apply")
 from tqdm import tqdm    
 
 def apply_hmm_batched(adata, model, obs_column, layer=None, footprints=True, accessible_patches=False, cpg=False, methbases=["GpC", "CpG", "A", "C"], device="cpu", threshold=0.7, deaminase_footprinting=False):

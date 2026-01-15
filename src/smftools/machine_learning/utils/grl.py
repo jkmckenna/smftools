@@ -1,4 +1,6 @@
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="gradient reversal layer")
 
 
 class GradReverse(torch.autograd.Function):

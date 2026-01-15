@@ -8,7 +8,9 @@ def extract_read_features_from_bam(bam_file_path):
     Returns:
         read_metrics (dict)
     """
-    import pysam
+    from smftools.optional_imports import require
+
+    pysam = require("pysam", extra="informatics", purpose="archived BAM feature extraction")
     import numpy as np
     # Open the BAM file
     print(f'Extracting read features from BAM: {bam_file_path}')

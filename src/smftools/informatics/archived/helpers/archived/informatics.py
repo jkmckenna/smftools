@@ -4,7 +4,9 @@ from .. import readwrite
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Seq import Seq
-import pysam
+from smftools.optional_imports import require
+
+pysam = require("pysam", extra="informatics", purpose="archived informatics")
 
 ######################################################################################################
 ## FASTA functionality

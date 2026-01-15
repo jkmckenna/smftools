@@ -1,5 +1,7 @@
 # plot_bed_histograms
 
+from smftools.optional_imports import require
+
 def plot_bed_histograms(
     bed_file,
     plotting_directory,
@@ -50,7 +52,7 @@ def plot_bed_histograms(
     import numpy as np
     import pandas as pd
     import matplotlib.pyplot as plt
-    import pysam
+    pysam = require("pysam", extra="informatics", purpose="archived bed histograms")
 
     os.makedirs(plotting_directory, exist_ok=True)
 

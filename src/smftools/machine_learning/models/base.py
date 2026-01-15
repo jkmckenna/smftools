@@ -1,6 +1,8 @@
 import numpy as np
-import torch
-import torch.nn as nn
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="base torch models")
+nn = torch.nn
 
 from ..utils.device import detect_device
 

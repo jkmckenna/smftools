@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import torch
-import torch.nn as nn
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="HMM models")
+nn = torch.nn
 from scipy.sparse import issparse
 
 from smftools.logging_utils import get_logger

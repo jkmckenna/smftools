@@ -1,5 +1,8 @@
 # subsample_pod5
 
+from smftools.optional_imports import require
+
+
 def subsample_pod5(pod5_path, read_name_path, output_directory):
     """
     Takes a POD5 file and a text file containing read names of interest and writes out a subsampled POD5 for just those reads.
@@ -13,7 +16,7 @@ def subsample_pod5(pod5_path, read_name_path, output_directory):
     Returns:
         None
     """
-    import pod5 as p5
+    p5 = require("pod5", extra="ont", purpose="archived POD5 subsampling")
     import os
 
     if os.path.isdir(pod5_path):

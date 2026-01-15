@@ -1,3 +1,6 @@
+from smftools.optional_imports import require
+
+
 def train_hmm(
     data,
     emission_probs=[[0.8, 0.2], [0.2, 0.8]],
@@ -28,7 +31,7 @@ def train_hmm(
     Returns:
         hmm: Trained DenseHMM model
     """
-    import torch
+    torch = require("torch", extra="ml", purpose="archived HMM training")
     from pomegranate.hmm import DenseHMM
     from pomegranate.distributions import Categorical
     import numpy as np

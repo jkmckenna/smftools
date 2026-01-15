@@ -10,7 +10,9 @@ from typing import Iterable, Optional, Union
 import anndata as ad
 import numpy as np
 import pandas as pd
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="BAM conversion")
 
 from smftools.logging_utils import get_logger
 

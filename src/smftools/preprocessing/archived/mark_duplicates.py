@@ -20,7 +20,9 @@ def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_na
     import pandas as pd
     import matplotlib.pyplot as plt
     from scipy.signal import find_peaks
-    import networkx as nx
+    from smftools.optional_imports import require
+
+    nx = require("networkx", extra="misc", purpose="archived duplicate marking")
     from .binary_layers_to_ohe import binary_layers_to_ohe
     from .calculate_pairwise_differences import calculate_pairwise_differences
     from .min_non_diagonal import min_non_diagonal

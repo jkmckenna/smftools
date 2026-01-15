@@ -6,9 +6,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pybedtools
-import pyBigWig
-import pysam
+from smftools.optional_imports import require
+
+pybedtools = require("pybedtools", extra="informatics", purpose="BED utilities")
+pyBigWig = require("pyBigWig", extra="informatics", purpose="BigWig utilities")
+pysam = require("pysam", extra="informatics", purpose="BAM/FASTA utilities")
 
 from smftools.logging_utils import get_logger
 

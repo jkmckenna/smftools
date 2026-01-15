@@ -5,7 +5,9 @@ from typing import Dict, List, Any, Tuple, Union, Optional
 import re
 from itertools import zip_longest
 
-import pysam
+from smftools.optional_imports import require
+
+pysam = require("pysam", extra="informatics", purpose="archived fastq to BAM")
 from tqdm import tqdm
 
 

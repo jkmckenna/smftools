@@ -1,6 +1,8 @@
 import numpy as np
-import torch
-import torch.nn as nn
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="transformer models")
+nn = torch.nn
 
 from ..utils.grl import grad_reverse
 from .base import BaseTorchModel

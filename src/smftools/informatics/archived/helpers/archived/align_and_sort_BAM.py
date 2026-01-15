@@ -2,7 +2,9 @@ from pathlib import Path
 import os
 import subprocess
 from typing import List, Optional, Union
-import pysam
+from smftools.optional_imports import require
+
+pysam = require("pysam", extra="informatics", purpose="archived BAM alignment")
 
 def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, Path]) -> None:
     """

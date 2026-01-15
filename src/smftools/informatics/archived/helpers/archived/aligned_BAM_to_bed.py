@@ -16,7 +16,9 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
     import subprocess
     import os
     from pathlib import Path
-    import pysam
+    from smftools.optional_imports import require
+
+    pysam = require("pysam", extra="informatics", purpose="archived BAM to BED")
     import numpy as np
     import concurrent.futures
     from concurrent.futures import ProcessPoolExecutor

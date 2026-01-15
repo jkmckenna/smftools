@@ -43,32 +43,13 @@ classifiers = [
 dependencies = [
     "anndata>=0.10.0",
     "biopython>=1.79",
-    "captum",
     "click",
-    "fastcluster",
-    "hydra-core",
-    "igraph",
-    "leidenalg",
-    "lightning",
-    "multiqc",
-    "networkx>=3.2",
     "numpy>=1.22.0,<2",
-    "omegaconf",
     "pandas>=1.4.2",
-    "pod5>=0.1.21",
     "pyfaidx>=0.8.0",
-    "pybedtools>=0.12.0",
-    "pyBigWig>=0.3.24",
-    "pysam>=0.19.1",
-    "scanpy>=1.9",
-    "scikit-learn>=1.0.2",
     "scipy>=1.7.3",
-    "shap",
     "seaborn>=0.11",
-    "torch>=1.9.0",
     "tqdm",
-    "upsetplot",
-    "wandb"
 ]
 dynamic = ["version"]
 
@@ -82,6 +63,46 @@ smftools = "smftools.cli_entry:cli"
 [project.optional-dependencies]
 
 dev = ["ruff", "pre-commit", "pytest", "pytest-cov"]
+
+cluster = [
+    "fastcluster",
+    "leidenalg",
+]
+
+informatics = [
+    "pybedtools>=0.12.0",
+    "pyBigWig>=0.3.24",
+    "pysam>=0.19.1",
+]
+
+misc = [
+    "networkx>=3.2",
+    "upsetplot",
+]
+
+ont = [
+    "pod5>=0.1.21",
+]
+
+ml = [
+    "captum",
+    "hydra-core",
+    "lightning",
+    "omegaconf",
+    "scikit-learn>=1.0.2",
+    "shap",
+    "torch>=1.9.0",
+    "wandb",
+]
+
+omics = [
+    "igraph",
+    "scanpy>=1.9",
+]
+
+qc = [
+    "multiqc",
+]
 
 docs = [
     "sphinx>=7",

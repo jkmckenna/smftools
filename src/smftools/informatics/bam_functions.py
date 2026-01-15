@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
-import pysam
+from smftools.optional_imports import require
+
+pysam = require("pysam", extra="informatics", purpose="BAM utilities")
 from tqdm import tqdm
 
 from smftools.logging_utils import get_logger
@@ -249,10 +251,9 @@ def bam_qc(
 
     # Try to import pysam once
     try:
-        import pysam  # type: ignore
-
+        pysam = require("pysam", extra="informatics", purpose="BAM QC")
         have_pysam = True
-    except Exception:
+    except ModuleNotFoundError:
         pysam = None  # type: ignore
         have_pysam = False
 

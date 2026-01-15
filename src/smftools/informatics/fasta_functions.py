@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Dict, Iterable, Tuple
 
 import numpy as np
-import pysam
+from smftools.optional_imports import require
+
+pysam = require("pysam", extra="informatics", purpose="FASTA utilities")
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord

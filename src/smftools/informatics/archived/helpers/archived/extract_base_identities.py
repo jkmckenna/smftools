@@ -13,7 +13,9 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
         dict: Base identities from forward mapped reads.
         dict: Base identities from reverse mapped reads.
     """
-    import pysam
+    from smftools.optional_imports import require
+
+    pysam = require("pysam", extra="informatics", purpose="archived base identity extraction")
     import numpy as np
     from collections import defaultdict
     import time

@@ -15,7 +15,9 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     from ...readwrite import date_string, make_dirs
     from pathlib import Path
     import os
-    import pysam
+    from smftools.optional_imports import require
+
+    pysam = require("pysam", extra="informatics", purpose="archived BAM splitting")
     import glob
     from .separate_bam_by_bc import separate_bam_by_bc
 

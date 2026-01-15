@@ -21,7 +21,9 @@ def flow_I(config_path):
     import numpy as np
     import pandas as pd
     import anndata as ad
-    import scanpy as sc
+    from smftools.optional_imports import require
+
+    sc = require("scanpy", extra="omics", purpose="archived CLI workflows")
 
     import os
     from importlib import resources

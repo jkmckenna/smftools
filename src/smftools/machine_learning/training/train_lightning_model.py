@@ -1,4 +1,6 @@
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="lightning training")
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 

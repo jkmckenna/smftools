@@ -1,6 +1,8 @@
 from pathlib import Path
-import pybedtools
-import pyBigWig
+from smftools.optional_imports import require
+
+pybedtools = require("pybedtools", extra="informatics", purpose="archived bed to bigwig")
+pyBigWig = require("pyBigWig", extra="informatics", purpose="archived bed to bigwig")
 
 def bed_to_bigwig(fasta: str, bed: str) -> str:
     """

@@ -15,7 +15,9 @@ def count_aligned_reads(bam_file):
 
     """
     from ... import readwrite
-    import pysam
+    from smftools.optional_imports import require
+
+    pysam = require("pysam", extra="informatics", purpose="archived BAM counting")
     from tqdm import tqdm
     from collections import defaultdict
 

@@ -36,7 +36,9 @@ def calculate_umap(
     import os
 
     import numpy as np
-    import scanpy as sc
+    from smftools.optional_imports import require
+
+    sc = require("scanpy", extra="omics", purpose="UMAP calculation")
     from scipy.sparse import issparse
 
     os.environ["OMP_NUM_THREADS"] = str(threads)

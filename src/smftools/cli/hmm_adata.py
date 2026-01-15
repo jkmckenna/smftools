@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="HMM CLI")
 
 from smftools.logging_utils import get_logger
 

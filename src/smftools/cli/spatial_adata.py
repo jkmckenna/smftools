@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 import anndata as ad
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 logger = get_logger(__name__)
 
@@ -153,7 +154,7 @@ def spatial_adata_core(
 
     import numpy as np
     import pandas as pd
-    import scanpy as sc
+    sc = require("scanpy", extra="omics", purpose="spatial analysis")
 
     from ..metadata import record_smftools_metadata
     from ..plotting import (

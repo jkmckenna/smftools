@@ -6,7 +6,9 @@ from sklearn.metrics import roc_curve, roc_auc_score
 from scipy.optimize import curve_fit
 from scipy.spatial.distance import pdist, squareform
 from scipy.spatial.distance import hamming
-import networkx as nx
+from smftools.optional_imports import require
+
+nx = require("networkx", extra="misc", purpose="archived preprocessing")
 
 # Signal processing
 from scipy.signal import find_peaks

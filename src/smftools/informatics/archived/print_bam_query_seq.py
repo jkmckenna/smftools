@@ -1,4 +1,6 @@
-import pysam
+from smftools.optional_imports import require
+
+pysam = require("pysam", extra="informatics", purpose="archived BAM query")
 import sys
 
 def extract_reads(bam_file_path, num_reads=10):

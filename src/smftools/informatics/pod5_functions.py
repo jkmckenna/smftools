@@ -5,9 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
-import pod5 as p5
-
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 from ..config import LoadExperimentConfig
 from ..informatics.basecalling import canoncall, modcall
@@ -162,6 +161,8 @@ def subsample_pod5(
             specifying a random subset size.
         output_directory: Directory to write the subsampled POD5 file.
     """
+
+    p5 = require("pod5", extra="ont", purpose="POD5 IO")
 
     if os.path.isdir(pod5_path):
         pod5_path_is_dir = True

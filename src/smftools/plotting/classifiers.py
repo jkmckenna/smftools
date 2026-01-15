@@ -2,7 +2,9 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="plotting classifiers")
 
 
 def plot_model_performance(metrics, save_path=None):

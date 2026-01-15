@@ -1,7 +1,9 @@
 ## Train CNN, RNN, Random Forest models on double barcoded, low contamination datasets
-import torch
-import torch.nn as nn
-import torch.optim as optim
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="archived classifiers")
+nn = torch.nn
+optim = torch.optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.naive_bayes import GaussianNB

@@ -1,7 +1,9 @@
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="anndata data module")
 from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader, Dataset, Subset
 

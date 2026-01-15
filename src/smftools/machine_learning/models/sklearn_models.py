@@ -1,13 +1,15 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import (
-    auc,
-    confusion_matrix,
-    f1_score,
-    precision_recall_curve,
-    roc_auc_score,
-    roc_curve,
-)
+
+from smftools.optional_imports import require
+
+metrics = require("sklearn.metrics", extra="ml", purpose="sklearn models")
+auc = metrics.auc
+confusion_matrix = metrics.confusion_matrix
+f1_score = metrics.f1_score
+precision_recall_curve = metrics.precision_recall_curve
+roc_auc_score = metrics.roc_auc_score
+roc_curve = metrics.roc_curve
 
 
 class SklearnModelWrapper:
@@ -218,7 +220,7 @@ class SklearnModelWrapper:
         target_class : int, optional
             If None, uses model predicted class
         """
-        import shap
+        shap = require("shap", extra="ml", purpose="SHAP explanations")
 
         # choose explainer
         if hasattr(self.model, "tree_") or hasattr(self.model, "estimators_"):

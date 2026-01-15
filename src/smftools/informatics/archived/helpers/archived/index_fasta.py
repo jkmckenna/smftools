@@ -1,4 +1,6 @@
-import pysam
+from smftools.optional_imports import require
+
+pysam = require("pysam", extra="informatics", purpose="archived FASTA indexing")
 from pathlib import Path
 
 def index_fasta(fasta: str | Path, write_chrom_sizes: bool = True) -> Path:

@@ -10,7 +10,9 @@ import anndata as ad
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="duplicate read filtering")
 
 from smftools.logging_utils import get_logger
 
@@ -31,10 +33,18 @@ except Exception:
     SCIPY_AVAILABLE = False
 
 try:
-    from sklearn.cluster import DBSCAN, KMeans
-    from sklearn.decomposition import PCA
-    from sklearn.metrics import silhouette_score
-    from sklearn.mixture import GaussianMixture
+    sklearn_cluster = require("sklearn.cluster", extra="ml", purpose="duplicate read filtering")
+    sklearn_decomposition = require(
+        "sklearn.decomposition", extra="ml", purpose="duplicate read filtering"
+    )
+    sklearn_metrics = require("sklearn.metrics", extra="ml", purpose="duplicate read filtering")
+    sklearn_mixture = require("sklearn.mixture", extra="ml", purpose="duplicate read filtering")
+
+    DBSCAN = sklearn_cluster.DBSCAN
+    KMeans = sklearn_cluster.KMeans
+    PCA = sklearn_decomposition.PCA
+    silhouette_score = sklearn_metrics.silhouette_score
+    GaussianMixture = sklearn_mixture.GaussianMixture
 
     SKLEARN_AVAILABLE = True
 except Exception:

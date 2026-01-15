@@ -1,7 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pytorch_lightning as pl
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="lightning base models")
 from sklearn.metrics import (
     auc,
     confusion_matrix,

@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
-import torch
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml", purpose="lightning inference")
 
 from .inference_utils import annotate_split_column
 
