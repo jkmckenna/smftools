@@ -535,6 +535,7 @@ def rolling_autocorr_metrics(
 
     # helper to extract row to dense 1D np array (supports sparse rows)
     def _row_to_arr(row):
+        """Convert a matrix row (dense or sparse) to a 1D NumPy array."""
         # handle scipy sparse row
         try:
             import scipy.sparse as sp
@@ -547,6 +548,7 @@ def rolling_autocorr_metrics(
 
     # function to process one window
     def _process_window(ws):
+        """Compute rolling-window autocorrelation metrics for a window start."""
         we = ws + window_size
         mask_pos = (pos >= ws) & (pos < we)
         if mask_pos.sum() < 2:

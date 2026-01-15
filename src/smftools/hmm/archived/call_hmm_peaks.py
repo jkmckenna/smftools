@@ -8,6 +8,21 @@ def call_hmm_peaks(
     date_tag=None,
     inplace=False
 ):
+    """Call peaks from HMM feature layers and annotate AnnData.
+
+    Args:
+        adata: AnnData containing feature layers.
+        feature_configs: Mapping of layer name to peak config.
+        obs_column: Obs column for reference categories.
+        site_types: Site types to summarize around peaks.
+        save_plot: Whether to save peak plots.
+        output_dir: Output directory for plots.
+        date_tag: Optional tag for plot filenames.
+        inplace: Whether to modify AnnData in place.
+
+    Returns:
+        Annotated AnnData with peak masks and summary columns.
+    """
     import numpy as np
     import pandas as pd
     import matplotlib.pyplot as plt

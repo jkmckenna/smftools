@@ -158,6 +158,7 @@ def _plot_bed_histograms(
 
     # Clip helper for hist tails
     def _clip_series(s, q=(0.0, 0.995)):
+        """Clip a Series to quantile bounds for plotting."""
         if q is None:
             return s.to_numpy()
         lo = s.quantile(q[0]) if q[0] is not None else s.min()
@@ -183,6 +184,7 @@ def _plot_bed_histograms(
 
     # Pagination
     def _sanitize(name: str) -> str:
+        """Sanitize a string for use in filenames."""
         return "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in name)
 
     cols_per_fig = 4 if include_mapq_quality else 2

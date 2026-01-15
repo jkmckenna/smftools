@@ -4,6 +4,13 @@ logger = get_logger(__name__)
 
 
 def display_hmm(hmm, state_labels=["Non-Methylated", "Methylated"], obs_labels=["0", "1"]):
+    """Log a summary of HMM transition and emission parameters.
+
+    Args:
+        hmm: HMM object with edges and distributions.
+        state_labels: Optional labels for states.
+        obs_labels: Optional labels for observations.
+    """
     import torch
 
     logger.info("**HMM Model Overview**")

@@ -78,6 +78,18 @@ def calculate_relative_risk_on_activity(
     from statsmodels.stats.multitest import multipletests
 
     def compute_risk_df(ref, site_subset, positions_list, relative_risks, p_values):
+        """Build result and significant-data DataFrames for a reference.
+
+        Args:
+            ref: Reference name.
+            site_subset: AnnData subset restricted to sites.
+            positions_list: Positions tested.
+            relative_risks: Relative risk values.
+            p_values: Raw p-values.
+
+        Returns:
+            Tuple of (results_df, sig_df).
+        """
         p_adj = multipletests(p_values, method="fdr_bh")[1] if p_values else []
 
         genomic_positions = np.array(site_subset.var_names)[positions_list]
@@ -113,6 +125,7 @@ def calculate_relative_risk_on_activity(
                 groupby = [groupby]
 
             def format_group_label(row):
+                """Format a group label string from obs row values."""
                 return ",".join([f"{col}={row[col]}" for col in groupby])
 
             combined_label = "__".join(groupby)
@@ -187,7 +200,10 @@ def tqdm_joblib(tqdm_object: tqdm):
     old = joblib.parallel.BatchCompletionCallBack
 
     class TqdmBatchCompletionCallback(old):  # type: ignore
+        """Joblib callback that updates a tqdm progress bar."""
+
         def __call__(self, *args, **kwargs):
+            """Update the progress bar when a batch completes."""
             try:
                 tqdm_object.update(n=self.batch_size)
             except Exception:
@@ -205,6 +221,16 @@ def tqdm_joblib(tqdm_object: tqdm):
 # row workers (upper-triangle only)
 # ---------------------------
 def _chi2_row_job(i: int, X_bin: np.ndarray, min_count_for_pairwise: int) -> Tuple[int, np.ndarray]:
+    """Compute chi-squared statistics for one row of a pairwise matrix.
+
+    Args:
+        i: Row index.
+        X_bin: Binary matrix.
+        min_count_for_pairwise: Minimum count for valid comparison.
+
+    Returns:
+        Tuple of (row_index, row_values).
+    """
     n_pos = X_bin.shape[1]
     row = np.full((n_pos,), np.nan, dtype=float)
     xi = X_bin[:, i]
@@ -227,6 +253,16 @@ def _chi2_row_job(i: int, X_bin: np.ndarray, min_count_for_pairwise: int) -> Tup
 def _relative_risk_row_job(
     i: int, X_bin: np.ndarray, min_count_for_pairwise: int
 ) -> Tuple[int, np.ndarray]:
+    """Compute relative-risk values for one row of a pairwise matrix.
+
+    Args:
+        i: Row index.
+        X_bin: Binary matrix.
+        min_count_for_pairwise: Minimum count for valid comparison.
+
+    Returns:
+        Tuple of (row_index, row_values).
+    """
     n_pos = X_bin.shape[1]
     row = np.full((n_pos,), np.nan, dtype=float)
     xi = X_bin[:, i]

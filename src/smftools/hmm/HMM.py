@@ -24,6 +24,7 @@ def register_hmm(name: str):
     """Decorator to register an HMM backend under a string key."""
 
     def deco(cls):
+        """Register the provided class in the HMM registry."""
         _HMM_REGISTRY[name] = cls
         cls.hmm_name = name
         return cls
@@ -60,6 +61,14 @@ def _coerce_dtype_for_device(
 
 
 def _try_json_or_literal(x: Any) -> Any:
+    """Parse a string value as JSON or a Python literal when possible.
+
+    Args:
+        x: Value to parse.
+
+    Returns:
+        The parsed value if possible, otherwise the original value.
+    """
     if x is None:
         return None
     if not isinstance(x, str):
@@ -78,6 +87,14 @@ def _try_json_or_literal(x: Any) -> Any:
 
 
 def _coerce_bool(x: Any) -> bool:
+    """Coerce a value into a boolean using common truthy strings.
+
+    Args:
+        x: Value to coerce.
+
+    Returns:
+        Boolean interpretation of the input.
+    """
     if x is None:
         return False
     if isinstance(x, bool):
@@ -89,6 +106,14 @@ def _coerce_bool(x: Any) -> bool:
 
 
 def _resolve_dtype(dtype_entry: Any) -> torch.dtype:
+    """Resolve a torch dtype from a config entry.
+
+    Args:
+        dtype_entry: Config value (string or torch.dtype).
+
+    Returns:
+        Resolved torch dtype.
+    """
     if dtype_entry is None:
         return torch.float64
     if isinstance(dtype_entry, torch.dtype):
@@ -114,6 +139,15 @@ def _safe_int_coords(var_names) -> Tuple[np.ndarray, bool]:
 
 
 def _logsumexp(x: torch.Tensor, dim: int) -> torch.Tensor:
+    """Compute log-sum-exp in a numerically stable way.
+
+    Args:
+        x: Input tensor.
+        dim: Dimension to reduce.
+
+    Returns:
+        Reduced tensor.
+    """
     return torch.logsumexp(x, dim=dim)
 
 
@@ -147,6 +181,14 @@ def _assign_back_obs(final_adata, sub_adata, cols: List[str]):
 
 
 def _to_dense_np(x):
+    """Convert sparse or array-like input to a dense NumPy array.
+
+    Args:
+        x: Input array or sparse matrix.
+
+    Returns:
+        Dense NumPy array or None.
+    """
     if x is None:
         return None
     if issparse(x):
@@ -155,6 +197,14 @@ def _to_dense_np(x):
 
 
 def _ensure_2d_np(x):
+    """Ensure an array is 2D, reshaping 1D inputs.
+
+    Args:
+        x: Input array-like.
+
+    Returns:
+        2D NumPy array.
+    """
     x = _to_dense_np(x)
     if x.ndim == 1:
         x = x.reshape(1, -1)
@@ -183,6 +233,14 @@ def normalize_hmm_feature_sets(raw: Any) -> Dict[str, Dict[str, Any]]:
         return {}
 
     def _coerce_bound(v):
+        """Coerce a bound value into a float or sentinel.
+
+        Args:
+            v: Bound value.
+
+        Returns:
+            Float, np.inf, or None.
+        """
         if v is None:
             return None
         if isinstance(v, (int, float)):
@@ -198,6 +256,14 @@ def normalize_hmm_feature_sets(raw: Any) -> Dict[str, Dict[str, Any]]:
             return None
 
     def _coerce_map(feats):
+        """Coerce feature ranges into (lo, hi) tuples.
+
+        Args:
+            feats: Mapping of feature names to ranges.
+
+        Returns:
+            Mapping of feature names to numeric bounds.
+        """
         out = {}
         if not isinstance(feats, dict):
             return out
@@ -248,6 +314,13 @@ class BaseHMM(nn.Module):
     """
 
     def __init__(self, n_states: int = 2, eps: float = 1e-8, dtype: torch.dtype = torch.float64):
+        """Initialize the base HMM with shared parameters.
+
+        Args:
+            n_states: Number of hidden states.
+            eps: Smoothing epsilon for probabilities.
+            dtype: Torch dtype for parameters.
+        """
         super().__init__()
         if n_states < 2:
             raise ValueError("n_states must be >= 2")
@@ -269,6 +342,16 @@ class BaseHMM(nn.Module):
     def from_config(
         cls, cfg: Union[dict, Any, None], *, override: Optional[dict] = None, device=None
     ):
+        """Create a model from config with optional overrides.
+
+        Args:
+            cfg: Configuration mapping or object.
+            override: Override values to apply.
+            device: Device specifier.
+
+        Returns:
+            Initialized HMM instance.
+        """
         merged = cls._cfg_to_dict(cfg)
         if override:
             merged.update(override)
@@ -286,6 +369,14 @@ class BaseHMM(nn.Module):
 
     @staticmethod
     def _cfg_to_dict(cfg: Union[dict, Any, None]) -> dict:
+        """Normalize a config object into a dictionary.
+
+        Args:
+            cfg: Config mapping or object.
+
+        Returns:
+            Dictionary of HMM-related config values.
+        """
         if cfg is None:
             return {}
         if isinstance(cfg, dict):
@@ -304,6 +395,7 @@ class BaseHMM(nn.Module):
     # ------------------------- params -------------------------
 
     def _normalize_params(self):
+        """Normalize start and transition probabilities in-place."""
         with torch.no_grad():
             K = self.n_states
 
@@ -326,6 +418,14 @@ class BaseHMM(nn.Module):
     def _ensure_device_dtype(
         self, device: Optional[Union[str, torch.device]] = None
     ) -> torch.device:
+        """Move parameters to the requested device/dtype.
+
+        Args:
+            device: Device specifier or None to use current device.
+
+        Returns:
+            Resolved torch device.
+        """
         if device is None:
             device = next(self.parameters()).device
         device = torch.device(device) if isinstance(device, str) else device
@@ -340,6 +440,7 @@ class BaseHMM(nn.Module):
         raise NotImplementedError
 
     def modified_state_index(self) -> int:
+        """Return the index of the most modified/accessible state."""
         scores = self._state_modified_score()
         return int(torch.argmax(scores).item())
 
@@ -462,6 +563,17 @@ class BaseHMM(nn.Module):
         decode: str = "marginal",
         device: Optional[Union[str, torch.device]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """Decode observations into state calls and posterior probabilities.
+
+        Args:
+            X: Observations array (N, L) or (N, L, C).
+            coords: Optional coordinates aligned to L.
+            decode: Decoding strategy ("marginal" or "viterbi").
+            device: Device specifier.
+
+        Returns:
+            Tuple of (states, posterior probabilities).
+        """
         device = self._ensure_device_dtype(device)
 
         X = np.asarray(X, dtype=float)
@@ -508,6 +620,23 @@ class BaseHMM(nn.Module):
         verbose: bool = False,
         **kwargs,
     ) -> List[float]:
+        """Fit HMM parameters using EM.
+
+        Args:
+            X: Observations array.
+            coords: Optional coordinate array.
+            max_iter: Maximum EM iterations.
+            tol: Convergence tolerance.
+            device: Device specifier.
+            update_start: Whether to update start probabilities.
+            update_trans: Whether to update transition probabilities.
+            update_emission: Whether to update emission parameters.
+            verbose: Whether to log progress.
+            **kwargs: Additional implementation-specific kwargs.
+
+        Returns:
+            List of log-likelihood values across iterations.
+        """
         X = np.asarray(X, dtype=float)
         if X.ndim not in (2, 3):
             raise ValueError(f"X must be 2D or 3D; got {X.shape}")
@@ -543,8 +672,20 @@ class BaseHMM(nn.Module):
         verbose: bool = False,
         **kwargs,
     ) -> List[float]:
-        """
-        Emission-only adaptation (global -> sample adapt).
+        """Adapt emission parameters while keeping shared structure fixed.
+
+        Args:
+            X: Observations array.
+            coords: Coordinate array aligned to X.
+            iters: Number of EM iterations.
+            device: Device specifier.
+            freeze_start: Whether to freeze start probabilities.
+            freeze_trans: Whether to freeze transitions.
+            verbose: Whether to log progress.
+            **kwargs: Additional implementation-specific kwargs.
+
+        Returns:
+            List of log-likelihood values across iterations.
         """
         return self.fit(
             X,
@@ -573,17 +714,46 @@ class BaseHMM(nn.Module):
         verbose: bool,
         **kwargs,
     ) -> List[float]:
+        """Run the core EM update loop (subclasses implement).
+
+        Args:
+            X: Observations array.
+            coords: Coordinate array aligned to X.
+            device: Torch device.
+            max_iter: Maximum iterations.
+            tol: Convergence tolerance.
+            update_start: Whether to update start probabilities.
+            update_trans: Whether to update transitions.
+            update_emission: Whether to update emission parameters.
+            verbose: Whether to log progress.
+            **kwargs: Additional subclass-specific kwargs.
+
+        Returns:
+            List of log-likelihood values across iterations.
+        """
         raise NotImplementedError
 
     # ------------------------- save/load -------------------------
 
     def _extra_save_payload(self) -> dict:
+        """Return extra model state to include when saving."""
         return {}
 
     def _load_extra_payload(self, payload: dict, *, device: torch.device):
+        """Load extra model state saved by subclasses.
+
+        Args:
+            payload: Serialized model payload.
+            device: Torch device for tensors.
+        """
         return
 
     def save(self, path: Union[str, Path]) -> None:
+        """Serialize the model to disk.
+
+        Args:
+            path: Output path for the serialized model.
+        """
         path = str(path)
         payload = {
             "hmm_name": getattr(self, "hmm_name", self.__class__.__name__),
@@ -599,6 +769,15 @@ class BaseHMM(nn.Module):
 
     @classmethod
     def load(cls, path: Union[str, Path], device: Optional[Union[str, torch.device]] = None):
+        """Load a serialized model from disk.
+
+        Args:
+            path: Path to the serialized model.
+            device: Optional device specifier.
+
+        Returns:
+            Loaded HMM instance.
+        """
         payload = torch.load(str(path), map_location="cpu")
         hmm_name = payload.get("hmm_name", None)
         klass = _HMM_REGISTRY.get(hmm_name, cls)
@@ -829,6 +1008,7 @@ class BaseHMM(nn.Module):
         var = subset.var
 
         def _has(col: str) -> bool:
+            """Return True when a column exists on subset.var."""
             return col in var.columns
 
         if key in ("a",):
@@ -881,6 +1061,30 @@ class BaseHMM(nn.Module):
         device: Optional[Union[str, torch.device]] = None,
         **kwargs,
     ):
+        """Decode and annotate an AnnData object with HMM-derived layers.
+
+        Args:
+            adata: AnnData to annotate.
+            prefix: Prefix for newly written layers.
+            X: Observations array for decoding.
+            coords: Coordinate array aligned to X.
+            var_mask: Boolean mask for positions in adata.var.
+            span_fill: Whether to fill missing spans.
+            config: Optional config for naming and state selection.
+            decode: Decode method ("marginal" or "viterbi").
+            write_posterior: Whether to write posterior probabilities.
+            posterior_state: State label to write posterior for.
+            feature_sets: Optional feature set definition for size classes.
+            prob_threshold: Posterior probability threshold for binary calls.
+            uns_key: .uns key to track appended layers.
+            uns_flag: .uns flag to mark annotations.
+            force_redo: Whether to overwrite existing layers.
+            device: Device specifier.
+            **kwargs: Additional parameters for specialized workflows.
+
+        Returns:
+            List of created layer names or None if skipped.
+        """
         # skip logic
         if bool(adata.uns.get(uns_flag, False)) and not force_redo:
             return None
@@ -1081,6 +1285,14 @@ class SingleBernoulliHMM(BaseHMM):
         eps: float = 1e-8,
         dtype: torch.dtype = torch.float64,
     ):
+        """Initialize a single-channel Bernoulli HMM.
+
+        Args:
+            n_states: Number of hidden states.
+            init_emission: Initial emission probabilities per state.
+            eps: Smoothing epsilon for probabilities.
+            dtype: Torch dtype for parameters.
+        """
         super().__init__(n_states=n_states, eps=eps, dtype=dtype)
         if init_emission is None:
             em = np.full((self.n_states,), 0.5, dtype=float)
@@ -1094,6 +1306,16 @@ class SingleBernoulliHMM(BaseHMM):
 
     @classmethod
     def from_config(cls, cfg, *, override=None, device=None):
+        """Create a single-channel Bernoulli HMM from config.
+
+        Args:
+            cfg: Configuration mapping or object.
+            override: Override values to apply.
+            device: Optional device specifier.
+
+        Returns:
+            Initialized SingleBernoulliHMM instance.
+        """
         merged = cls._cfg_to_dict(cfg)
         if override:
             merged.update(override)
@@ -1109,6 +1331,7 @@ class SingleBernoulliHMM(BaseHMM):
         return model
 
     def _normalize_emission(self):
+        """Normalize and clamp emission probabilities in-place."""
         with torch.no_grad():
             self.emission.data = self.emission.data.reshape(-1)
             if self.emission.data.numel() != self.n_states:
@@ -1118,11 +1341,13 @@ class SingleBernoulliHMM(BaseHMM):
             self.emission.data = self.emission.data.clamp(min=self.eps, max=1.0 - self.eps)
 
     def _ensure_device_dtype(self, device=None) -> torch.device:
+        """Move emission parameters to the requested device/dtype."""
         device = super()._ensure_device_dtype(device)
         self.emission.data = self.emission.data.to(device=device, dtype=self.dtype)
         return device
 
     def _state_modified_score(self) -> torch.Tensor:
+        """Return per-state modified scores for ranking."""
         return self.emission.detach()
 
     def _log_emission(self, obs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -1139,9 +1364,16 @@ class SingleBernoulliHMM(BaseHMM):
         return logB
 
     def _extra_save_payload(self) -> dict:
+        """Return extra payload data for serialization."""
         return {"emission": self.emission.detach().cpu()}
 
     def _load_extra_payload(self, payload: dict, *, device: torch.device):
+        """Load serialized emission parameters.
+
+        Args:
+            payload: Serialized payload dictionary.
+            device: Target torch device.
+        """
         with torch.no_grad():
             self.emission.data = payload["emission"].to(device=device, dtype=self.dtype)
         self._normalize_emission()
@@ -1160,6 +1392,23 @@ class SingleBernoulliHMM(BaseHMM):
         verbose: bool,
         **kwargs,
     ) -> List[float]:
+        """Run EM updates for a single-channel Bernoulli HMM.
+
+        Args:
+            X: Observations array (N, L).
+            coords: Coordinate array aligned to X.
+            device: Torch device.
+            max_iter: Maximum iterations.
+            tol: Convergence tolerance.
+            update_start: Whether to update start probabilities.
+            update_trans: Whether to update transitions.
+            update_emission: Whether to update emission parameters.
+            verbose: Whether to log progress.
+            **kwargs: Additional implementation-specific kwargs.
+
+        Returns:
+            List of log-likelihood proxy values.
+        """
         X = np.asarray(X, dtype=float)
         if X.ndim != 2:
             raise ValueError("SingleBernoulliHMM expects X shape (N,L).")
@@ -1253,6 +1502,20 @@ class SingleBernoulliHMM(BaseHMM):
         verbose: bool = False,
         **kwargs,
     ):
+        """Adapt emissions with legacy parameter names.
+
+        Args:
+            X: Observations array.
+            coords: Optional coordinate array.
+            device: Device specifier.
+            iters: Number of iterations.
+            max_iter: Alias for iters.
+            verbose: Whether to log progress.
+            **kwargs: Additional kwargs forwarded to BaseHMM.adapt_emissions.
+
+        Returns:
+            List of log-likelihood values.
+        """
         if iters is None:
             iters = int(max_iter) if max_iter is not None else int(kwargs.pop("iters", 5))
         return super().adapt_emissions(
@@ -1285,6 +1548,15 @@ class MultiBernoulliHMM(BaseHMM):
         eps: float = 1e-8,
         dtype: torch.dtype = torch.float64,
     ):
+        """Initialize a multi-channel Bernoulli HMM.
+
+        Args:
+            n_states: Number of hidden states.
+            n_channels: Number of observed channels.
+            init_emission: Initial emission probabilities.
+            eps: Smoothing epsilon for probabilities.
+            dtype: Torch dtype for parameters.
+        """
         super().__init__(n_states=n_states, eps=eps, dtype=dtype)
         self.n_channels = int(n_channels)
         if self.n_channels < 1:
@@ -1307,6 +1579,16 @@ class MultiBernoulliHMM(BaseHMM):
 
     @classmethod
     def from_config(cls, cfg, *, override=None, device=None):
+        """Create a multi-channel Bernoulli HMM from config.
+
+        Args:
+            cfg: Configuration mapping or object.
+            override: Override values to apply.
+            device: Optional device specifier.
+
+        Returns:
+            Initialized MultiBernoulliHMM instance.
+        """
         merged = cls._cfg_to_dict(cfg)
         if override:
             merged.update(override)
@@ -1325,16 +1607,19 @@ class MultiBernoulliHMM(BaseHMM):
         return model
 
     def _normalize_emission(self):
+        """Normalize and clamp emission probabilities in-place."""
         with torch.no_grad():
             self.emission.data = self.emission.data.reshape(self.n_states, self.n_channels)
             self.emission.data = self.emission.data.clamp(min=self.eps, max=1.0 - self.eps)
 
     def _ensure_device_dtype(self, device=None) -> torch.device:
+        """Move emission parameters to the requested device/dtype."""
         device = super()._ensure_device_dtype(device)
         self.emission.data = self.emission.data.to(device=device, dtype=self.dtype)
         return device
 
     def _state_modified_score(self) -> torch.Tensor:
+        """Return per-state modified scores for ranking."""
         # more “modified” = higher mean P(1) across channels
         return self.emission.detach().mean(dim=1)
 
@@ -1357,9 +1642,16 @@ class MultiBernoulliHMM(BaseHMM):
         return logBC.sum(dim=3)  # sum channels -> (N,L,K)
 
     def _extra_save_payload(self) -> dict:
+        """Return extra payload data for serialization."""
         return {"n_channels": int(self.n_channels), "emission": self.emission.detach().cpu()}
 
     def _load_extra_payload(self, payload: dict, *, device: torch.device):
+        """Load serialized emission parameters.
+
+        Args:
+            payload: Serialized payload dictionary.
+            device: Target torch device.
+        """
         self.n_channels = int(payload.get("n_channels", self.n_channels))
         with torch.no_grad():
             self.emission.data = payload["emission"].to(device=device, dtype=self.dtype)
@@ -1379,6 +1671,23 @@ class MultiBernoulliHMM(BaseHMM):
         verbose: bool,
         **kwargs,
     ) -> List[float]:
+        """Run EM updates for a multi-channel Bernoulli HMM.
+
+        Args:
+            X: Observations array (N, L, C).
+            coords: Coordinate array aligned to X.
+            device: Torch device.
+            max_iter: Maximum iterations.
+            tol: Convergence tolerance.
+            update_start: Whether to update start probabilities.
+            update_trans: Whether to update transitions.
+            update_emission: Whether to update emission parameters.
+            verbose: Whether to log progress.
+            **kwargs: Additional implementation-specific kwargs.
+
+        Returns:
+            List of log-likelihood proxy values.
+        """
         X = np.asarray(X, dtype=float)
         if X.ndim != 3:
             raise ValueError("MultiBernoulliHMM expects X shape (N,L,C).")
@@ -1479,6 +1788,20 @@ class MultiBernoulliHMM(BaseHMM):
         verbose: bool = False,
         **kwargs,
     ):
+        """Adapt emissions with legacy parameter names.
+
+        Args:
+            X: Observations array.
+            coords: Optional coordinate array.
+            device: Device specifier.
+            iters: Number of iterations.
+            max_iter: Alias for iters.
+            verbose: Whether to log progress.
+            **kwargs: Additional kwargs forwarded to BaseHMM.adapt_emissions.
+
+        Returns:
+            List of log-likelihood values.
+        """
         if iters is None:
             iters = int(max_iter) if max_iter is not None else int(kwargs.pop("iters", 5))
         return super().adapt_emissions(
@@ -1490,6 +1813,12 @@ class MultiBernoulliHMM(BaseHMM):
         )
 
     def _ensure_n_channels(self, C: int, device: torch.device):
+        """Expand emission parameters when channel count changes.
+
+        Args:
+            C: Target channel count.
+            device: Torch device for the new parameters.
+        """
         C = int(C)
         if C == self.n_channels:
             return
@@ -1533,6 +1862,16 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         eps: float = 1e-8,
         dtype: torch.dtype = torch.float64,
     ):
+        """Initialize a distance-binned transition HMM.
+
+        Args:
+            n_states: Number of hidden states.
+            init_emission: Initial emission probabilities per state.
+            distance_bins: Distance bin edges in base pairs.
+            init_trans_by_bin: Initial transition matrices per bin.
+            eps: Smoothing epsilon for probabilities.
+            dtype: Torch dtype for parameters.
+        """
         super().__init__(n_states=n_states, init_emission=init_emission, eps=eps, dtype=dtype)
 
         self.distance_bins = np.asarray(
@@ -1554,6 +1893,16 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
 
     @classmethod
     def from_config(cls, cfg, *, override=None, device=None):
+        """Create a distance-binned HMM from config.
+
+        Args:
+            cfg: Configuration mapping or object.
+            override: Override values to apply.
+            device: Optional device specifier.
+
+        Returns:
+            Initialized DistanceBinnedSingleBernoulliHMM instance.
+        """
         merged = cls._cfg_to_dict(cfg)
         if override:
             merged.update(override)
@@ -1581,11 +1930,13 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         return model
 
     def _ensure_device_dtype(self, device=None) -> torch.device:
+        """Move transition-by-bin parameters to the requested device/dtype."""
         device = super()._ensure_device_dtype(device)
         self.trans_by_bin.data = self.trans_by_bin.data.to(device=device, dtype=self.dtype)
         return device
 
     def _normalize_trans_by_bin(self):
+        """Normalize transition matrices per distance bin in-place."""
         with torch.no_grad():
             tb = self.trans_by_bin.data.reshape(self.n_bins, self.n_states, self.n_states)
             tb = tb + self.eps
@@ -1594,6 +1945,7 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
             self.trans_by_bin.data = tb / rs
 
     def _extra_save_payload(self) -> dict:
+        """Return extra payload data for serialization."""
         p = super()._extra_save_payload()
         p.update(
             {
@@ -1604,6 +1956,12 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         return p
 
     def _load_extra_payload(self, payload: dict, *, device: torch.device):
+        """Load serialized distance-bin parameters.
+
+        Args:
+            payload: Serialized payload dictionary.
+            device: Target torch device.
+        """
         super()._load_extra_payload(payload, device=device)
         self.distance_bins = (
             payload.get("distance_bins", torch.tensor([1, 5, 10, 25, 50, 100]))
@@ -1617,12 +1975,30 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         self._normalize_trans_by_bin()
 
     def _bin_index(self, coords: np.ndarray) -> np.ndarray:
+        """Return per-step distance bin indices for coordinates.
+
+        Args:
+            coords: Coordinate array.
+
+        Returns:
+            Array of bin indices (length L-1).
+        """
         d = np.diff(np.asarray(coords, dtype=int))
         return np.digitize(d, self.distance_bins, right=True)  # length L-1
 
     def _forward_backward(
         self, obs: torch.Tensor, mask: torch.Tensor, *, coords: Optional[np.ndarray] = None
     ) -> torch.Tensor:
+        """Run forward-backward using distance-binned transitions.
+
+        Args:
+            obs: Observation tensor.
+            mask: Observation mask.
+            coords: Coordinate array.
+
+        Returns:
+            Posterior probabilities (gamma).
+        """
         if coords is None:
             raise ValueError("Distance-binned HMM requires coords.")
         device = obs.device
@@ -1661,6 +2037,16 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
     def _viterbi(
         self, obs: torch.Tensor, mask: torch.Tensor, *, coords: Optional[np.ndarray] = None
     ) -> torch.Tensor:
+        """Run Viterbi decoding using distance-binned transitions.
+
+        Args:
+            obs: Observation tensor.
+            mask: Observation mask.
+            coords: Coordinate array.
+
+        Returns:
+            Decoded state sequence tensor.
+        """
         if coords is None:
             raise ValueError("Distance-binned HMM requires coords.")
         device = obs.device
@@ -1710,6 +2096,23 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         verbose: bool,
         **kwargs,
     ) -> List[float]:
+        """Run EM updates for distance-binned transitions.
+
+        Args:
+            X: Observations array (N, L).
+            coords: Coordinate array aligned to X.
+            device: Torch device.
+            max_iter: Maximum iterations.
+            tol: Convergence tolerance.
+            update_start: Whether to update start probabilities.
+            update_trans: Whether to update transitions.
+            update_emission: Whether to update emission parameters.
+            verbose: Whether to log progress.
+            **kwargs: Additional implementation-specific kwargs.
+
+        Returns:
+            List of log-likelihood proxy values.
+        """
         # Keep this simple: use gamma for emissions; transitions-by-bin updated via xi (same pattern).
         X = np.asarray(X, dtype=float)
         if X.ndim != 2:
@@ -1816,6 +2219,20 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         verbose: bool = False,
         **kwargs,
     ):
+        """Adapt emissions with legacy parameter names.
+
+        Args:
+            X: Observations array.
+            coords: Optional coordinate array.
+            device: Device specifier.
+            iters: Number of iterations.
+            max_iter: Alias for iters.
+            verbose: Whether to log progress.
+            **kwargs: Additional kwargs forwarded to BaseHMM.adapt_emissions.
+
+        Returns:
+            List of log-likelihood values.
+        """
         if iters is None:
             iters = int(max_iter) if max_iter is not None else int(kwargs.pop("iters", 5))
         return super().adapt_emissions(
@@ -1843,8 +2260,27 @@ class HMM:
 
     @staticmethod
     def from_config(cfg, arch: Optional[str] = None, **kwargs) -> BaseHMM:
+        """Create an HMM instance from configuration.
+
+        Args:
+            cfg: Configuration mapping or object.
+            arch: Optional HMM architecture name.
+            **kwargs: Additional parameters passed to the factory.
+
+        Returns:
+            Initialized HMM instance.
+        """
         return create_hmm(cfg, arch=arch, **kwargs)
 
     @staticmethod
     def load(path: Union[str, Path], device: Optional[Union[str, torch.device]] = None) -> BaseHMM:
+        """Load an HMM instance from disk.
+
+        Args:
+            path: Path to the serialized model.
+            device: Optional device specifier.
+
+        Returns:
+            Loaded HMM instance.
+        """
         return BaseHMM.load(path, device=device)

@@ -14,6 +14,17 @@ def subset_adata(adata, columns, cat_type='obs'):
     """
 
     def subset_recursive(adata_subset, columns, cat_type, key_prefix=()):
+        """Recursively subset AnnData by categorical columns.
+
+        Args:
+            adata_subset: AnnData subset to split.
+            columns: Remaining columns to split on.
+            cat_type: Whether to use obs or var categories.
+            key_prefix: Tuple of previous category keys.
+
+        Returns:
+            Dictionary mapping category tuples to AnnData subsets.
+        """
         # Returns when the bottom of the stack is reached
         if not columns:
             # If there's only one column, return the key as a single value, not a tuple

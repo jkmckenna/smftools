@@ -21,13 +21,29 @@ device = (
 
 # ------------------------- Utilities -------------------------
 def random_fill_nans(X):
+    """Replace NaNs in an array with random values.
+
+    Args:
+        X: Input NumPy array.
+
+    Returns:
+        NumPy array with NaNs replaced.
+    """
     nan_mask = np.isnan(X)
     X[nan_mask] = np.random.rand(*X[nan_mask].shape)
     return X
 
 # ------------------------- Model Definitions -------------------------
 class CNNClassifier(nn.Module):
+    """Simple 1D CNN classifier for fixed-length inputs."""
+
     def __init__(self, input_size, num_classes):
+        """Initialize CNN classifier layers.
+
+        Args:
+            input_size: Length of the 1D input.
+            num_classes: Number of output classes.
+        """
         super().__init__()
         self.conv1 = nn.Conv1d(1, 16, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(16, 32, kernel_size=3, padding=1)
@@ -39,11 +55,13 @@ class CNNClassifier(nn.Module):
         self.fc2 = nn.Linear(64, num_classes)
 
     def _forward_conv(self, x):
+        """Apply convolutional layers and activation."""
         x = self.relu(self.conv1(x))
         x = self.relu(self.conv2(x))
         return x
 
     def forward(self, x):
+        """Run the forward pass."""
         x = x.unsqueeze(1)
         x = self._forward_conv(x)
         x = x.view(x.size(0), -1)
@@ -51,7 +69,15 @@ class CNNClassifier(nn.Module):
         return self.fc2(x)
     
 class MLPClassifier(nn.Module):
+    """Simple MLP classifier."""
+
     def __init__(self, input_dim, num_classes):
+        """Initialize MLP layers.
+
+        Args:
+            input_dim: Input feature dimension.
+            num_classes: Number of output classes.
+        """
         super().__init__()
         self.model = nn.Sequential(
             nn.Linear(input_dim, 128),
@@ -64,10 +90,20 @@ class MLPClassifier(nn.Module):
         )
 
     def forward(self, x):
+        """Run the forward pass."""
         return self.model(x)
 
 class RNNClassifier(nn.Module):
+    """LSTM-based classifier for sequential inputs."""
+
     def __init__(self, input_size, hidden_dim, num_classes):
+        """Initialize RNN classifier layers.
+
+        Args:
+            input_size: Input feature dimension.
+            hidden_dim: Hidden state dimension.
+            num_classes: Number of output classes.
+        """
         super().__init__()
         # Define LSTM layer
         self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_dim, batch_first=True)
@@ -75,18 +111,29 @@ class RNNClassifier(nn.Module):
         self.fc = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, x):
+        """Run the forward pass."""
         x = x.unsqueeze(1)
         _, (h_n, _) = self.lstm(x)
         return self.fc(h_n.squeeze(0))
     
 class AttentionRNNClassifier(nn.Module):
+    """LSTM classifier with simple attention."""
+
     def __init__(self, input_size, hidden_dim, num_classes):
+        """Initialize attention-based RNN layers.
+
+        Args:
+            input_size: Input feature dimension.
+            hidden_dim: Hidden state dimension.
+            num_classes: Number of output classes.
+        """
         super().__init__()
         self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_dim, batch_first=True)
         self.attn = nn.Linear(hidden_dim, 1)  # Simple attention scores
         self.fc = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, x):
+        """Run the forward pass."""
         x = x.unsqueeze(1)  # shape: (batch, 1, seq_len)
         lstm_out, _ = self.lstm(x)  # shape: (batch, 1, hidden_dim)
         attn_weights = torch.softmax(self.attn(lstm_out), dim=1)  # (batch, 1, 1)
@@ -94,7 +141,15 @@ class AttentionRNNClassifier(nn.Module):
         return self.fc(context)
     
 class PositionalEncoding(nn.Module):
+    """Positional encoding module for transformer models."""
+
     def __init__(self, d_model, max_len=5000):
+        """Initialize positional encoding buffer.
+
+        Args:
+            d_model: Model embedding dimension.
+            max_len: Maximum sequence length.
+        """
         super().__init__()
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len).unsqueeze(1).float()
@@ -104,11 +159,23 @@ class PositionalEncoding(nn.Module):
         self.pe = pe.unsqueeze(0)  # (1, max_len, d_model)
 
     def forward(self, x):
+        """Add positional encoding to inputs."""
         x = x + self.pe[:, :x.size(1)].to(x.device)
         return x
     
 class TransformerClassifier(nn.Module):
+    """Transformer encoder-based classifier."""
+
     def __init__(self, input_dim, model_dim, num_classes, num_heads=4, num_layers=2):
+        """Initialize transformer classifier layers.
+
+        Args:
+            input_dim: Input feature dimension.
+            model_dim: Transformer model dimension.
+            num_classes: Number of output classes.
+            num_heads: Number of attention heads.
+            num_layers: Number of encoder layers.
+        """
         super().__init__()
         self.input_fc = nn.Linear(input_dim, model_dim)
         self.pos_encoder = PositionalEncoding(model_dim)
@@ -119,6 +186,7 @@ class TransformerClassifier(nn.Module):
         self.cls_head = nn.Linear(model_dim, num_classes)
 
     def forward(self, x):
+        """Run the forward pass."""
         # x: [batch_size, input_dim]
         x = self.input_fc(x).unsqueeze(1)  # -> [batch_size, 1, model_dim]
         x = self.pos_encoder(x)
@@ -128,6 +196,19 @@ class TransformerClassifier(nn.Module):
         return self.cls_head(pooled)
 
 def train_model(model, loader, optimizer, criterion, device, ref_name="", model_name="", epochs=20, patience=5):
+    """Train a model with early stopping.
+
+    Args:
+        model: PyTorch model.
+        loader: DataLoader for training data.
+        optimizer: Optimizer instance.
+        criterion: Loss function.
+        device: Torch device.
+        ref_name: Reference label for logging.
+        model_name: Model label for logging.
+        epochs: Maximum epochs.
+        patience: Early-stopping patience.
+    """
     model.train()
     best_loss = float('inf')
     trigger_times = 0
@@ -154,6 +235,17 @@ def train_model(model, loader, optimizer, criterion, device, ref_name="", model_
                 break
 
 def evaluate_model(model, X_tensor, y_encoded, device):
+    """Evaluate a trained model and compute metrics.
+
+    Args:
+        model: Trained model.
+        X_tensor: Input tensor.
+        y_encoded: Encoded labels.
+        device: Torch device.
+
+    Returns:
+        Tuple of metrics dict, predicted labels, and probabilities.
+    """
     model.eval()
     with torch.no_grad():
         outputs = model(X_tensor.to(device))
@@ -176,6 +268,18 @@ def evaluate_model(model, X_tensor, y_encoded, device):
     }, preds, probs
 
 def train_rf(X_tensor, y_tensor, train_indices, test_indices, n_estimators=500):
+    """Train a random forest classifier.
+
+    Args:
+        X_tensor: Input tensor.
+        y_tensor: Label tensor.
+        train_indices: Indices for training.
+        test_indices: Indices for testing.
+        n_estimators: Number of trees.
+
+    Returns:
+        Tuple of (model, preds, probs).
+    """
     model = RandomForestClassifier(n_estimators=n_estimators, random_state=42, class_weight='balanced')
     model.fit(X_tensor[train_indices].numpy(), y_tensor[train_indices].numpy())
     probs = model.predict_proba(X_tensor[test_indices].cpu().numpy())[:, 1]
@@ -186,6 +290,25 @@ def train_rf(X_tensor, y_tensor, train_indices, test_indices, n_estimators=500):
 def run_training_loop(adata, site_config, layer_name=None,
                        mlp=False, cnn=False, rnn=False, arnn=False, transformer=False, rf=False, nb=False, rr_bayes=False,
                        max_epochs=10, max_patience=5, n_estimators=500, training_split=0.5):
+    """Train one or more classifier types on AnnData.
+
+    Args:
+        adata: AnnData object containing data and labels.
+        site_config: Mapping of reference to site list.
+        layer_name: Optional layer to use as input.
+        mlp: Whether to train an MLP model.
+        cnn: Whether to train a CNN model.
+        rnn: Whether to train an RNN model.
+        arnn: Whether to train an attention RNN model.
+        transformer: Whether to train a transformer model.
+        rf: Whether to train a random forest model.
+        nb: Whether to train a Naive Bayes model.
+        rr_bayes: Whether to train a ridge regression model.
+        max_epochs: Maximum training epochs.
+        max_patience: Early stopping patience.
+        n_estimators: Random forest estimator count.
+        training_split: Fraction of data used for training.
+    """
     device = (
     torch.device('cuda') if torch.cuda.is_available() else
     torch.device('mps') if torch.backends.mps.is_available() else
@@ -701,6 +824,20 @@ def evaluate_model_by_subgroups(
     label_col="activity_status",
     min_samples=10,
     exclude_training_data=True):
+    """Evaluate predictions within categorical subgroups.
+
+    Args:
+        adata: AnnData with prediction columns.
+        model_prefix: Prediction column prefix.
+        suffix: Prediction column suffix.
+        groupby_cols: Columns to group by.
+        label_col: Ground-truth label column.
+        min_samples: Minimum samples per group.
+        exclude_training_data: Whether to exclude training rows.
+
+    Returns:
+        DataFrame of subgroup-level metrics.
+    """
     import pandas as pd
     from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
@@ -745,6 +882,18 @@ def evaluate_model_by_subgroups(
     return pd.DataFrame(results)
 
 def evaluate_models_by_subgroup(adata, model_prefixes, groupby_cols, label_col, exclude_training_data=True):
+    """Evaluate multiple model prefixes across subgroups.
+
+    Args:
+        adata: AnnData with prediction columns.
+        model_prefixes: Iterable of model prefixes.
+        groupby_cols: Columns to group by.
+        label_col: Ground-truth label column.
+        exclude_training_data: Whether to exclude training rows.
+
+    Returns:
+        Concatenated DataFrame of subgroup-level metrics.
+    """
     import pandas as pd
     all_metrics = []
     for model_prefix in model_prefixes:
@@ -758,6 +907,20 @@ def evaluate_models_by_subgroup(adata, model_prefixes, groupby_cols, label_col, 
     return final_df
 
 def prepare_melted_model_data(adata, outkey='melted_model_df', groupby=['Enhancer_Open', 'Promoter_Open'], label_col='activity_status', model_names = ['cnn', 'mlp', 'rf'], suffix='GpC_site_CpG_site', omit_training=True):
+    """Prepare a long-format DataFrame for model performance plots.
+
+    Args:
+        adata: AnnData with prediction columns.
+        outkey: Key to store the melted DataFrame in ``adata.uns``.
+        groupby: Grouping columns to include.
+        label_col: Ground-truth label column.
+        model_names: Model prefixes to include.
+        suffix: Prediction column suffix.
+        omit_training: Whether to exclude training rows.
+
+    Returns:
+        Melted DataFrame of predictions.
+    """
     import pandas as pd
     import seaborn as sns
     import matplotlib.pyplot as plt

@@ -247,16 +247,21 @@ def flag_duplicate_reads(
 
     # local UnionFind
     class UnionFind:
+        """Disjoint-set union-find helper for clustering indices."""
+
         def __init__(self, size):
+            """Initialize parent pointers for the union-find."""
             self.parent = list(range(size))
 
         def find(self, x):
+            """Find the root for a member with path compression."""
             while self.parent[x] != x:
                 self.parent[x] = self.parent[self.parent[x]]
                 x = self.parent[x]
             return x
 
         def union(self, x, y):
+            """Union the sets that contain x and y."""
             rx = self.find(x)
             ry = self.find(y)
             if rx != ry:
@@ -326,6 +331,7 @@ def flag_duplicate_reads(
             def cluster_pass(
                 X_tensor_local, reverse=False, window=int(window_size), record_distances=False
             ):
+                """Perform a lexicographic windowed clustering pass."""
                 N_local = X_tensor_local.shape[0]
                 X_sortable = X_tensor_local.clone().nan_to_num(-1.0)
                 sort_keys = [tuple(row.numpy().tolist()) for row in X_sortable]
@@ -634,6 +640,7 @@ def flag_duplicate_reads(
 
     # preserve uns (prefer original on conflicts)
     def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer="orig") -> dict:
+        """Merge .uns dictionaries while preserving original on conflicts."""
         out = copy.deepcopy(new_uns) if new_uns is not None else {}
         for k, v in (orig_uns or {}).items():
             if k not in out:
@@ -783,6 +790,7 @@ def flag_duplicate_reads(
 
     # reason column
     def _dup_reason_row(row):
+        """Build a semi-colon delimited duplicate reason string."""
         reasons = []
         if row.get("is_duplicate_distance", False):
             reasons.append("distance_thresh")
@@ -859,6 +867,7 @@ def plot_histogram_pages(
         return {"distance_pages": [], "cluster_size_pages": []}
 
     def clean_array(arr):
+        """Filter array values to finite [0, 1] range for plotting."""
         if arr is None or len(arr) == 0:
             return np.array([], dtype=float)
         a = np.asarray(arr, dtype=float)

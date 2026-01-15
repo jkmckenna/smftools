@@ -35,6 +35,7 @@ def bam_qc(
     bam_files = [Path(b) for b in bam_files]
 
     def _has_index(p: Path) -> bool:
+        """Return True if a BAM/CRAM index exists for the path."""
         if p.suffix.lower() == ".bam":
             bai = p.with_suffix(p.suffix + ".bai")
             bai_alt = Path(str(p) + ".bai")
@@ -45,6 +46,7 @@ def bam_qc(
         return False
 
     def _ensure_index(p: Path) -> None:
+        """Ensure a BAM/CRAM index exists, creating one if needed."""
         if _has_index(p):
             return
         if HAVE_PYSAM:
@@ -55,6 +57,14 @@ def bam_qc(
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def _run_one(bam: Path) -> Tuple[Path, List[Tuple[str, int]]]:
+        """Run QC tasks for a single BAM file.
+
+        Args:
+            bam: Path to the BAM file.
+
+        Returns:
+            Tuple of (bam_path, list of (task_name, return_code)).
+        """
         # outputs + return (file, [(task_name, returncode)])
         results: List[Tuple[str, int]] = []
         base = bam.stem  # filename without .bam
@@ -71,6 +81,7 @@ def bam_qc(
 
         # Choose runner per task
         def run_stats():
+            """Run stats collection for a BAM file."""
             if not stats:
                 return
             if HAVE_PYSAM and hasattr(pysam, "stats"):
@@ -86,6 +97,7 @@ def bam_qc(
                     raise RuntimeError(cp.stderr.decode(errors="replace"))
 
         def run_flagstat():
+            """Run flagstat collection for a BAM file."""
             if not flagstats:
                 return
             if HAVE_PYSAM and hasattr(pysam, "flagstat"):
@@ -101,6 +113,7 @@ def bam_qc(
                     raise RuntimeError(cp.stderr.decode(errors="replace"))
 
         def run_idxstats():
+            """Run idxstats collection for a BAM file."""
             if not idxstats:
                 return
             if HAVE_PYSAM and hasattr(pysam, "idxstats"):

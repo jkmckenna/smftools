@@ -7,16 +7,11 @@ import sys
 from pathlib import Path
 HERE = Path(__file__).parent
 PARENT_PARENT_HERE = HERE.parents[1]
-SRC_PATH = PARENT_PARENT_HERE / 'src'
+SRC_PATH = PARENT_PARENT_HERE / "src"
 sys.path.insert(0, str(SRC_PATH))
 for x in os.walk(str(SRC_PATH)):
   sys.path.insert(0, x[0])
 print(sys.path)
-try:
-    import smftools
-    print("smftools imported successfully.")
-except ImportError:
-    print("smftools is not imported.")
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
@@ -79,6 +74,35 @@ autodoc_default_options = {
     "undoc-members": True,
     "show-inheritance": True,
 }
+autodoc_mock_imports = [
+    "anndata",
+    "Bio",
+    "captum",
+    "fastcluster",
+    "hydra",
+    "igraph",
+    "leidenalg",
+    "lightning",
+    "multiqc",
+    "networkx",
+    "numpy",
+    "omegaconf",
+    "pandas",
+    "pod5",
+    "pybedtools",
+    "pyBigWig",
+    "pyfaidx",
+    "pysam",
+    "scanpy",
+    "sklearn",
+    "scipy",
+    "seaborn",
+    "shap",
+    "torch",
+    "tqdm",
+    "upsetplot",
+    "wandb",
+]
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 napoleon_include_init_with_doc = False
