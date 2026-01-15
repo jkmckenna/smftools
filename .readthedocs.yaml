@@ -8,6 +8,8 @@ sphinx:
   fail_on_warning: true
 python:
   install:
+    - method: pip
+      path: .
     - requirements: docs/source/requirements.txt
 submodules:
   include: all
