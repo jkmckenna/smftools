@@ -53,7 +53,6 @@ def calculate_position_Youden(
         ref_subset = adata[adata.obs[ref_column] == ref]
         # Iterate over positive and negative control samples
         for i, control in enumerate(control_samples):
-
             # If controls are not passed and infer on percentile is True, infer thresholds based on top and bottom percentile windows for a given obs column metric.
             if infer_on_percentile and not control:
                 logger.info(

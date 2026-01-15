@@ -12,7 +12,6 @@ from typing import Any, Iterable, Optional
 from ._version import __version__
 from .schema import SCHEMA_REGISTRY_RESOURCE, SCHEMA_REGISTRY_VERSION
 
-
 _DEPENDENCIES = ("anndata", "numpy", "pandas", "scanpy", "torch")
 
 
@@ -120,9 +119,7 @@ def _normalize_paths(paths: Optional[Iterable[Path | str]]) -> list[Path]:
 
 
 def _environment_snapshot() -> dict[str, Any]:
-    dependencies = {
-        name: version for name in _DEPENDENCIES if (version := _safe_version(name))
-    }
+    dependencies = {name: version for name in _DEPENDENCIES if (version := _safe_version(name))}
     return {
         "smftools_version": __version__,
         "python_version": platform.python_version(),

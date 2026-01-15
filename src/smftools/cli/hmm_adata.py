@@ -35,7 +35,7 @@ def _get_training_matrix(
         hmm_layer = getattr(cfg, "output_binary_layer_name", None)
         if hmm_layer is None or hmm_layer not in sub.layers:
             raise KeyError(f"Missing HMM training layer '{hmm_layer}' in subset.")
-        
+
         logger.debug("Using direct modality HMM training layer: %s", hmm_layer)
         mat = sub.layers[hmm_layer]
     else:
@@ -88,7 +88,7 @@ def _resolve_pos_mask_for_methbase(subset, ref: str, methbase: str) -> Optional[
     alt = f"{ref}_{methbase}_site"
     if alt not in subset.var:
         return None
-    
+
     logger.debug("Using positions from column: %s", alt)
     return np.asarray(subset.var[alt])
 
@@ -102,16 +102,23 @@ def build_single_channel(
       coords (Lmb,) int coords from var_names
     """
     pm = _resolve_pos_mask_for_methbase(subset, ref, methbase)
-    logger.debug("Position mask for methbase=%s on ref=%s has %d sites", methbase, ref, int(np.sum(pm)) if pm is not None else 0)
+    logger.debug(
+        "Position mask for methbase=%s on ref=%s has %d sites",
+        methbase,
+        ref,
+        int(np.sum(pm)) if pm is not None else 0,
+    )
 
     if pm is None or int(np.sum(pm)) == 0:
         raise ValueError(f"No columns for methbase={methbase} on ref={ref}")
-    
+
     X, _ = _get_training_matrix(subset, pm, smf_modality, cfg)
     logger.debug("Training matrix for methbase=%s on ref=%s has shape %s", methbase, ref, X.shape)
 
     coords, _ = _safe_int_coords(subset[:, pm].var_names)
-    logger.debug("Coordinates for methbase=%s on ref=%s have length %d", methbase, ref, coords.shape[0])
+    logger.debug(
+        "Coordinates for methbase=%s on ref=%s have length %d", methbase, ref, coords.shape[0]
+    )
 
     return X, coords
 
@@ -513,7 +520,6 @@ def hmm_adata_core(
         plot_hmm_layers_rolling_by_sample_ref,
         plot_hmm_size_contours,
     )
-    from ..metadata import record_smftools_metadata
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
@@ -611,7 +617,8 @@ def hmm_adata_core(
                             )
                         except Exception:
                             logger.warning(
-                                "Skipping HMM single-channel for methbase=%s due to data error", mb)
+                                "Skipping HMM single-channel for methbase=%s due to data error", mb
+                            )
                             continue
 
                         arch = trainer.choose_arch(multichannel=False)
@@ -772,9 +779,7 @@ def hmm_adata_core(
                             )
                         except Exception:
                             Xcpg, coordscpg = None, None
-                            logger.warning(
-                                "Skipping HMM single-channel for CpG due to data error"
-                            )
+                            logger.warning("Skipping HMM single-channel for CpG due to data error")
 
                         if Xcpg is not None and Xcpg.size and feature_sets_cpg:
                             arch = trainer.choose_arch(multichannel=False)
