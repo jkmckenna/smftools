@@ -99,6 +99,7 @@ def plot_read_qc_histograms(
         global_ranges[key] = (lo, hi)
 
     def _sanitize(name: str) -> str:
+        """Sanitize a string for use in filenames."""
         return "".join(c if c.isalnum() or c in "-._" else "_" for c in str(name))
 
     ncols = len(valid_keys)

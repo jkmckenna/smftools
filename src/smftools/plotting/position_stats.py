@@ -235,6 +235,7 @@ def plot_positionwise_matrix(
     import seaborn as sns
 
     def find_closest_index(index, target):
+        """Find the index value closest to a target value."""
         index_vals = pd.to_numeric(index, errors="coerce")
         target_val = pd.to_numeric([target], errors="coerce")[0]
         diffs = pd.Series(np.abs(index_vals - target_val), index=index)
@@ -387,6 +388,24 @@ def plot_positionwise_matrix_grid(
     parallel=False,
     max_threads=None,
 ):
+    """Plot a grid of positionwise matrices grouped by metadata.
+
+    Args:
+        adata: AnnData containing matrices in ``adata.uns``.
+        key: Key for positionwise matrices.
+        outer_keys: Keys for outer grouping.
+        inner_keys: Keys for inner grouping.
+        log_transform: Optional log transform (``log2`` or ``log1p``).
+        vmin: Minimum color scale value.
+        vmax: Maximum color scale value.
+        cmap: Matplotlib colormap.
+        save_path: Optional path to save plots.
+        figsize: Figure size.
+        xtick_step: X-axis tick step.
+        ytick_step: Y-axis tick step.
+        parallel: Whether to plot in parallel.
+        max_threads: Max thread count for parallel plotting.
+    """
     import os
 
     import matplotlib.pyplot as plt
@@ -408,6 +427,7 @@ def plot_positionwise_matrix_grid(
     parsed = pd.concat([parsed_outer, parsed_inner], axis=1)
 
     def plot_one_grid(outer_label):
+        """Plot one grid for a specific outer label."""
         selected = parsed[parsed["outer"] == outer_label].copy()
         selected["group_str"] = [
             f"{outer_label}_{row[inner_keys[0]]}_{row[inner_keys[1]]}"

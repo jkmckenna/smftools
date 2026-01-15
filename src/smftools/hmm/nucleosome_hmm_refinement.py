@@ -12,6 +12,20 @@ def refine_nucleosome_calls(
     max_wiggle=40,
     device="cpu",
 ):
+    """Refine nucleosome calls into hexamer/octamer layers.
+
+    Args:
+        adata: AnnData with nucleosome calls.
+        layer_name: Layer containing initial nucleosome calls.
+        nan_mask_layer: Layer indicating NaN regions.
+        hexamer_size: Size for hexamer placement.
+        octamer_size: Size for octamer placement.
+        max_wiggle: Max boundary expansion into NaNs.
+        device: Device specifier (unused; kept for API parity).
+
+    Returns:
+        Updated AnnData with hexamer/octamer layers.
+    """
     import numpy as np
 
     nucleosome_layer = adata.layers[layer_name]
@@ -90,6 +104,21 @@ def infer_nucleosomes_in_large_bound(
     exclusion_buffer=30,
     device="cpu",
 ):
+    """Infer nucleosomes in large-bound regions while respecting exclusions.
+
+    Args:
+        adata: AnnData with bound regions and existing nucleosomes.
+        large_bound_layer: Layer marking large-bound segments.
+        combined_nuc_layer: Layer with existing nucleosome calls.
+        nan_mask_layer: Layer indicating NaN regions.
+        nuc_size: Nucleosome size in bp.
+        linker_size: Minimum linker spacing.
+        exclusion_buffer: Buffer to avoid nearby existing nucleosomes.
+        device: Device specifier (unused; kept for API parity).
+
+    Returns:
+        Updated AnnData with inferred nucleosome layer.
+    """
     import numpy as np
 
     large_bound = adata.layers[large_bound_layer]

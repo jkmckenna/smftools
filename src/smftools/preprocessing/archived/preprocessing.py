@@ -322,12 +322,14 @@ def min_non_diagonal(matrix):
         min_values.append(np.min(row))
     return min_values
 
-def lander_waterman(x, C0):
-    return C0 * (1 - np.exp(-x / C0))
+    def lander_waterman(x, C0):
+        """Lander-Waterman curve for complexity estimation."""
+        return C0 * (1 - np.exp(-x / C0))
 
-def count_unique_reads(reads, depth):
-    subsample = np.random.choice(reads, depth, replace=False)
-    return len(np.unique(subsample))
+    def count_unique_reads(reads, depth):
+        """Count unique reads in a subsample of the given depth."""
+        subsample = np.random.choice(reads, depth, replace=False)
+        return len(np.unique(subsample))
 
 def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_names'):
     """

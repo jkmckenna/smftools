@@ -2,6 +2,12 @@ import pysam
 import sys
 
 def extract_reads(bam_file_path, num_reads=10):
+    """Print sequences for the first N reads in a BAM file.
+
+    Args:
+        bam_file_path: Path to BAM file.
+        num_reads: Number of reads to print.
+    """
     # Open the BAM file
     bam_file = pysam.AlignmentFile(bam_file_path, "rb")
     

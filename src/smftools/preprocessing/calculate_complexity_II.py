@@ -61,9 +61,11 @@ def calculate_complexity_II(
     rng = np.random.default_rng(random_state)
 
     def lw(x, C0):
+        """Lander-Waterman curve for complexity estimation."""
         return C0 * (1.0 - np.exp(-x / C0))
 
     def sanitize(name: str) -> str:
+        """Sanitize a string for safe filenames."""
         return "".join(c if c.isalnum() or c in "-._" else "_" for c in str(name))
 
     # checks

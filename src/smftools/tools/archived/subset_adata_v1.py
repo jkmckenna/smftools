@@ -13,6 +13,15 @@ def subset_adata(adata, obs_columns):
     """
 
     def subset_recursive(adata_subset, columns):
+        """Recursively subset AnnData by categorical columns.
+
+        Args:
+            adata_subset: AnnData subset to split.
+            columns: Remaining columns to split on.
+
+        Returns:
+            Dictionary mapping category tuples to AnnData subsets.
+        """
         if not columns:
             return {(): adata_subset}
         
