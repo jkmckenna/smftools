@@ -53,18 +53,27 @@ def calculate_position_Youden(
         ref_subset = adata[adata.obs[ref_column] == ref]
         # Iterate over positive and negative control samples
         for i, control in enumerate(control_samples):
-            # Initialize a dictionary for the given control sample. This will be keyed by dataset and position to point to a tuple of coordinate position and an array of methylation probabilities
-            adata.uns[f"{ref}_position_methylation_dict_{control}"] = {}
+
             # If controls are not passed and infer on percentile is True, infer thresholds based on top and bottom percentile windows for a given obs column metric.
             if infer_on_percentile and not control:
+                logger.info(
+                    "Inferring methylation control reads for %s based on %s percentiles of %s",
+                    ref,
+                    infer_on_percentile,
+                    inference_variable,
+                )
                 sorted_column = ref_subset.obs[inference_variable].sort_values(ascending=False)
                 if i == 0:
-                    control == "positive"
+                    logger.info("Using top %s percentile for positive control", infer_on_percentile)
+                    control = "positive"
                     positive_control_sample = control
                     threshold = np.percentile(sorted_column, 100 - infer_on_percentile)
                     control_subset = ref_subset[ref_subset.obs[inference_variable] >= threshold, :]
                 else:
-                    control == "negative"
+                    logger.info(
+                        "Using bottom %s percentile for negative control", infer_on_percentile
+                    )
+                    control = "negative"
                     negative_control_sample = control
                     threshold = np.percentile(sorted_column, infer_on_percentile)
                     control_subset = ref_subset[ref_subset.obs[inference_variable] <= threshold, :]
@@ -74,9 +83,14 @@ def calculate_position_Youden(
                 )
                 return
             else:
+                logger.info("Using provided control sample: %s", control)
                 # get the current control subset on the given category
                 filtered_obs = ref_subset.obs[ref_subset.obs[sample_column] == control]
                 control_subset = ref_subset[filtered_obs.index]
+
+            # Initialize a dictionary for the given control sample. This will be keyed by dataset and position to point to a tuple of coordinate position and an array of methylation probabilities
+            adata.uns[f"{ref}_position_methylation_dict_{control}"] = {}
+
             # Iterate through every position in the control subset
             for position in range(control_subset.shape[1]):
                 # Get the coordinate name associated with that position

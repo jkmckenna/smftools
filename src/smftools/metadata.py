@@ -12,6 +12,7 @@ from typing import Any, Iterable, Optional
 from ._version import __version__
 from .schema import SCHEMA_REGISTRY_RESOURCE, SCHEMA_REGISTRY_VERSION
 
+
 _DEPENDENCIES = ("anndata", "numpy", "pandas", "scanpy", "torch")
 
 
@@ -119,7 +120,9 @@ def _normalize_paths(paths: Optional[Iterable[Path | str]]) -> list[Path]:
 
 
 def _environment_snapshot() -> dict[str, Any]:
-    dependencies = {name: version for name in _DEPENDENCIES if (version := _safe_version(name))}
+    dependencies = {
+        name: version for name in _DEPENDENCIES if (version := _safe_version(name))
+    }
     return {
         "smftools_version": __version__,
         "python_version": platform.python_version(),
@@ -204,6 +207,66 @@ def _runtime_schema_dict(adata, step_name: str, output_path: Optional[Path] = No
     }
 
 
+def append_runtime_schema_entry(
+    adata,
+    *,
+    stage: str,
+    location: str,
+    key: str,
+    created_by: str,
+    used_structures: Optional[list[str]] = None,
+    notes: Optional[str] = None,
+) -> None:
+    """Append a runtime schema entry describing a newly created structure.
+
+    Args:
+        adata: AnnData object to annotate.
+        stage: Pipeline stage name (e.g. "load", "preprocess").
+        location: AnnData slot ("obs", "var", "layers", "obsm", "varm", "obsp", "uns").
+        key: Name of the structure within the slot.
+        created_by: Function or module responsible for creating the structure.
+        used_structures: List of structures consumed to create this structure.
+        notes: Optional notes (e.g., first line of a docstring).
+    """
+    smftools_uns = adata.uns.setdefault("smftools", {})
+    runtime_schema = smftools_uns.setdefault(
+        "runtime_schema",
+        {
+            "schema_version": "runtime-1",
+            "description": "Runtime AnnData schema annotations (recorded during execution).",
+            "generated_at": _iso_timestamp(),
+            "stages": {},
+        },
+    )
+    stages = runtime_schema.setdefault("stages", {})
+    stage_block = stages.setdefault(stage, {})
+    slot_block = stage_block.setdefault(location, {})
+
+    value = None
+    if location == "obs" and key in adata.obs:
+        value = adata.obs[key]
+    elif location == "var" and key in adata.var:
+        value = adata.var[key]
+    elif location == "layers" and key in adata.layers:
+        value = adata.layers[key]
+    elif location == "obsm" and key in adata.obsm:
+        value = adata.obsm[key]
+    elif location == "varm" and key in adata.varm:
+        value = adata.varm[key]
+    elif location == "obsp" and key in adata.obsp:
+        value = adata.obsp[key]
+    elif location == "uns" and key in adata.uns:
+        value = adata.uns[key]
+
+    slot_block[key] = {
+        "dtype": _infer_dtype(value) if value is not None else "unknown",
+        "created_by": created_by,
+        "used_structures": used_structures or [],
+        "notes": notes or "",
+        "recorded_at": _iso_timestamp(),
+    }
+
+
 def _format_yaml_value(value: Any) -> str:
     if value is None:
         return "null"
@@ -252,7 +315,17 @@ def _schema_sidecar_path(output_path: Path) -> Path:
 
 
 def write_runtime_schema_yaml(adata, output_path: Path, step_name: str) -> Path:
-    schema_dict = _runtime_schema_dict(adata, step_name, output_path=output_path)
+    runtime_schema = adata.uns.get("smftools", {}).get("runtime_schema")
+    if isinstance(runtime_schema, dict):
+        schema_dict = dict(runtime_schema)
+        schema_dict.setdefault("output_path", str(output_path))
+        schema_dict.setdefault("generated_at", _iso_timestamp())
+        schema_dict.setdefault("schema_version", "runtime-1")
+        schema_dict.setdefault(
+            "description", "Runtime AnnData schema annotations (recorded during execution)."
+        )
+    else:
+        schema_dict = _runtime_schema_dict(adata, step_name, output_path=output_path)
     yaml_text = _dump_yaml(schema_dict)
     schema_path = _schema_sidecar_path(output_path)
     schema_path.write_text(yaml_text + "\n", encoding="utf-8")
