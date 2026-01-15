@@ -76,6 +76,7 @@ def append_binary_layer_by_base_context(
     n_obs, n_vars = adata.shape
 
     def _col_mask_or_warn(colname):
+        """Return a boolean mask for a var column, or all-False if missing."""
         if colname not in adata.var.columns:
             if verbose:
                 logger.warning(
@@ -163,6 +164,7 @@ def append_binary_layer_by_base_context(
     if verbose:
 
         def _filled_positions(arr):
+            """Count the number of non-NaN positions in an array."""
             return int(np.sum(~np.isnan(arr)))
 
         logger.info("Layer build summary (non-NaN cell counts):")

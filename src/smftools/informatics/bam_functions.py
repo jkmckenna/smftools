@@ -26,6 +26,11 @@ _EMPTY_RE = re.compile(r"^\s*$")
 
 
 def _stream_dorado_logs(stderr_iter) -> None:
+    """Stream dorado stderr and emit structured log messages.
+
+    Args:
+        stderr_iter: Iterable of stderr lines.
+    """
     last_n: int | None = None
 
     for raw in stderr_iter:
@@ -85,6 +90,13 @@ def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, 
 def _sort_bam_with_pysam(
     in_bam: Union[str, Path], out_bam: Union[str, Path], threads: Optional[int] = None
 ) -> None:
+    """Sort a BAM file using pysam.
+
+    Args:
+        in_bam: Input BAM path.
+        out_bam: Output BAM path.
+        threads: Optional thread count.
+    """
     logger.debug(f"Sorting BAM using _sort_bam_with_pysam")
     in_bam, out_bam = str(in_bam), str(out_bam)
     args = []
@@ -95,6 +107,12 @@ def _sort_bam_with_pysam(
 
 
 def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = None) -> None:
+    """Index a BAM file using pysam.
+
+    Args:
+        bam_path: BAM path to index.
+        threads: Optional thread count.
+    """
     bam_path = str(bam_path)
     logger.debug(f"Indexing BAM using _index_bam_with_pysam")
     # pysam.index supports samtools-style args
@@ -244,6 +262,7 @@ def bam_qc(
     bam_paths = [Path(b) for b in bam_files]
 
     def _has_index(p: Path) -> bool:
+        """Return True if a BAM/CRAM index exists for the path."""
         suf = p.suffix.lower()
         if suf == ".bam":
             return p.with_suffix(p.suffix + ".bai").exists() or Path(str(p) + ".bai").exists()
@@ -252,6 +271,7 @@ def bam_qc(
         return False
 
     def _ensure_index(p: Path) -> None:
+        """Ensure a BAM/CRAM index exists, creating one if needed."""
         if _has_index(p):
             return
         if have_pysam:
@@ -289,6 +309,14 @@ def bam_qc(
         return rc
 
     def _run_one(bam: Path) -> tuple[Path, list[tuple[str, int]]]:
+        """Run stats/flagstat/idxstats for a single BAM.
+
+        Args:
+            bam: Path to the BAM file.
+
+        Returns:
+            Tuple of (bam_path, list of (stage, return_code)).
+        """
         import subprocess
 
         results: list[tuple[str, int]] = []
@@ -423,6 +451,14 @@ def concatenate_fastqs_to_bam(
         return p.stem  # fallback: remove last suffix only
 
     def _extract_barcode_from_filename(p: Path) -> str:
+        """Extract a barcode token from a FASTQ filename.
+
+        Args:
+            p: FASTQ path.
+
+        Returns:
+            Barcode token string.
+        """
         stem = _strip_fastq_ext(p)
         if "_" in stem:
             token = stem.split("_")[-1]
@@ -431,6 +467,14 @@ def concatenate_fastqs_to_bam(
         return stem
 
     def _classify_read_token(stem: str) -> Tuple[Optional[str], Optional[int]]:
+        """Classify a FASTQ filename stem into (prefix, read_number).
+
+        Args:
+            stem: Filename stem.
+
+        Returns:
+            Tuple of (prefix, read_number) or (None, None) if not matched.
+        """
         # return (prefix, readnum) if matches; else (None, None)
         patterns = [
             r"(?i)(.*?)[._-]r?([12])$",  # prefix_R1 / prefix.r2 / prefix-1
@@ -443,6 +487,14 @@ def concatenate_fastqs_to_bam(
         return None, None
 
     def _pair_by_filename(paths: List[Path]) -> Tuple[List[Tuple[Path, Path]], List[Path]]:
+        """Pair FASTQ files based on filename conventions.
+
+        Args:
+            paths: FASTQ paths to pair.
+
+        Returns:
+            Tuple of (paired list, leftover list).
+        """
         pref_map: Dict[str, Dict[int, Path]] = {}
         unpaired: List[Path] = []
         for pth in paths:
@@ -464,6 +516,14 @@ def concatenate_fastqs_to_bam(
         return pairs, leftovers
 
     def _fastq_iter(p: Path):
+        """Yield FASTQ records using pysam.FastxFile.
+
+        Args:
+            p: FASTQ path.
+
+        Yields:
+            Pysam Fastx records.
+        """
         # pysam.FastxFile handles compressed extensions transparently
         with pysam.FastxFile(str(p)) as fx:
             for rec in fx:
@@ -477,6 +537,19 @@ def concatenate_fastqs_to_bam(
         read1: bool,
         read2: bool,
     ) -> pysam.AlignedSegment:
+        """Construct an unaligned pysam.AlignedSegment.
+
+        Args:
+            name: Read name.
+            seq: Read sequence.
+            qual: FASTQ quality string.
+            bc: Barcode string.
+            read1: Whether this is read 1.
+            read2: Whether this is read 2.
+
+        Returns:
+            Unaligned pysam.AlignedSegment.
+        """
         a = pysam.AlignedSegment()
         a.query_name = name
         a.query_sequence = seq
@@ -499,6 +572,7 @@ def concatenate_fastqs_to_bam(
 
     # ---------- normalize inputs to Path ----------
     def _to_path_pair(x) -> Tuple[Path, Path]:
+        """Convert a tuple of path-like objects to Path instances."""
         a, b = x
         return Path(a), Path(b)
 
@@ -572,6 +646,7 @@ def concatenate_fastqs_to_bam(
             for rec1, rec2 in zip_longest(it1, it2, fillvalue=None):
 
                 def _clean(n: Optional[str]) -> Optional[str]:
+                    """Normalize FASTQ read names by trimming read suffixes."""
                     if n is None:
                         return None
                     return re.sub(r"(?:/1$|/2$|\s[12]$)", "", n)

@@ -69,6 +69,14 @@ def _select_labels(subset, sites: np.ndarray, reference: str, index_col_suffix: 
 
 
 def normalized_mean(matrix: np.ndarray) -> np.ndarray:
+    """Compute normalized column means for a matrix.
+
+    Args:
+        matrix: Input matrix.
+
+    Returns:
+        1D array of normalized means.
+    """
     mean = np.nanmean(matrix, axis=0)
     denom = (mean.max() - mean.min()) + 1e-9
     return (mean - mean.min()) / denom
@@ -93,6 +101,13 @@ def methylation_fraction(matrix: np.ndarray) -> np.ndarray:
 
 
 def clean_barplot(ax, mean_values, title):
+    """Format a barplot with consistent axes and labels.
+
+    Args:
+        ax: Matplotlib axes.
+        mean_values: Values to plot.
+        title: Plot title.
+    """
     x = np.arange(len(mean_values))
     ax.bar(x, mean_values, color="gray", width=1.0, align="edge")
     ax.set_xlim(0, len(mean_values))
@@ -369,6 +384,7 @@ def combined_hmm_raw_clustermap(
     """
 
     def pick_xticks(labels: np.ndarray, n_ticks: int):
+        """Pick tick indices/labels from an array."""
         if labels.size == 0:
             return [], []
         idx = np.linspace(0, len(labels) - 1, n_ticks).round().astype(int)
@@ -377,6 +393,7 @@ def combined_hmm_raw_clustermap(
 
     # Helper: build a True mask if filter is inactive or column missing
     def _mask_or_true(series_name: str, predicate):
+        """Return a mask from predicate or an all-True mask."""
         if series_name not in adata.obs:
             return pd.Series(True, index=adata.obs.index)
         s = adata.obs[series_name]
@@ -461,6 +478,7 @@ def combined_hmm_raw_clustermap(
 
                 # ---- site masks (robust) ----
                 def _sites(*keys):
+                    """Return indices for the first matching site key."""
                     for k in keys:
                         if k in subset.var:
                             return np.where(subset.var[k].values)[0]
@@ -956,6 +974,7 @@ def combined_raw_clustermap(
 
     # Helper: build a True mask if filter is inactive or column missing
     def _mask_or_true(series_name: str, predicate):
+        """Return a mask from predicate or an all-True mask."""
         if series_name not in adata.obs:
             return pd.Series(True, index=adata.obs.index)
         s = adata.obs[series_name]

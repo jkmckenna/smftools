@@ -14,6 +14,12 @@ def load_hmm(model_path, device="cpu"):
 
 
 def save_hmm(model, model_path):
+    """Save a pretrained HMM to disk.
+
+    Args:
+        model: HMM model instance.
+        model_path: Output path for the model.
+    """
     import torch
 
     torch.save(model, model_path)

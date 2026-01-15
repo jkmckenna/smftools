@@ -6,6 +6,12 @@ import torch
 
 
 def plot_model_performance(metrics, save_path=None):
+    """Plot ROC and precision-recall curves for model metrics.
+
+    Args:
+        metrics: Dictionary of model metrics by reference.
+        save_path: Optional path to save plots.
+    """
     import os
 
     for ref in metrics.keys():
@@ -67,6 +73,18 @@ def plot_feature_importances_or_saliency(
     save_path=None,
     shaded_regions=None,
 ):
+    """Plot feature importances or saliency for trained models.
+
+    Args:
+        models: Mapping of trained models.
+        positions: Mapping of positions per reference.
+        tensors: Mapping of input tensors per reference.
+        site_config: Site configuration mapping.
+        adata: Optional AnnData object.
+        layer_name: Optional layer name for plotting.
+        save_path: Optional path to save plots.
+        shaded_regions: Optional list of regions to highlight.
+    """
     import os
 
     import numpy as np
@@ -230,6 +248,18 @@ def plot_model_curves_from_adata(
     ylim_roc=(0.0, 1.05),
     ylim_pr=(0.0, 1.05),
 ):
+    """Plot ROC and PR curves using AnnData model outputs.
+
+    Args:
+        adata: AnnData containing model outputs.
+        label_col: Ground-truth label column.
+        model_names: Model name prefixes.
+        suffix: Prediction column suffix.
+        omit_training: Whether to omit training rows.
+        save_path: Optional path to save the plot.
+        ylim_roc: Y-axis limits for ROC curve.
+        ylim_pr: Y-axis limits for PR curve.
+    """
     from sklearn.metrics import auc, precision_recall_curve, roc_curve
 
     if omit_training:
@@ -300,6 +330,22 @@ def plot_model_curves_from_adata_with_frequency_grid(
     show_f1_iso_curves=False,
     f1_levels=None,
 ):
+    """Plot ROC/PR curves with frequency grid overlays.
+
+    Args:
+        adata: AnnData containing model outputs.
+        label_col: Ground-truth label column.
+        model_names: Model name prefixes.
+        suffix: Prediction column suffix.
+        omit_training: Whether to omit training rows.
+        save_path: Optional path to save the plot.
+        ylim_roc: Y-axis limits for ROC curve.
+        ylim_pr: Y-axis limits for PR curve.
+        pos_sample_count: Sample count for positive baseline.
+        pos_freq_list: List of positive class frequencies to plot.
+        show_f1_iso_curves: Whether to show F1 iso-curves.
+        f1_levels: F1 levels to plot if enabled.
+    """
     import os
 
     import numpy as np

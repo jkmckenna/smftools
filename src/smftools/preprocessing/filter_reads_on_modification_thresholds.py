@@ -63,6 +63,7 @@ def filter_reads_on_modification_thresholds(
 
     # helper: check whether obs columns exist for a particular mod type
     def obs_has_columns_for(mod_type):
+        """Return True if per-read summary columns exist for a mod type."""
         col_pref = {
             "GpC": ("Fraction_GpC_site_modified", "Valid_GpC_site_in_read_vs_reference"),
             "CpG": ("Fraction_CpG_site_modified", "Valid_CpG_site_in_read_vs_reference"),
@@ -96,6 +97,7 @@ def filter_reads_on_modification_thresholds(
     refs = list(adata.obs[reference_column].astype("category").cat.categories)
 
     def _find_var_col_for(ref, suffix):
+        """Resolve a var column name for a reference/suffix pair."""
         name = f"{ref}_{suffix}"
         if name in adata.var.columns:
             return name
@@ -320,6 +322,7 @@ def filter_reads_on_modification_thresholds(
 
     # helper to get min/max from param like [min, max] or tuple(None,..)
     def _unpack_minmax(thr):
+        """Normalize a threshold pair to ordered (min, max) floats."""
         if thr is None:
             return None, None
         try:

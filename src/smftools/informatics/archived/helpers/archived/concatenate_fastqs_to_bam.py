@@ -60,6 +60,7 @@ def concatenate_fastqs_to_bam(
         return p.stem  # fallback: remove last suffix only
 
     def _extract_barcode_from_filename(p: Path) -> str:
+        """Extract a barcode token from a FASTQ filename."""
         stem = _strip_fastq_ext(p)
         if "_" in stem:
             token = stem.split("_")[-1]
@@ -68,6 +69,7 @@ def concatenate_fastqs_to_bam(
         return stem
 
     def _classify_read_token(stem: str) -> Tuple[Optional[str], Optional[int]]:
+        """Classify a FASTQ filename stem into (prefix, read_number)."""
         # return (prefix, readnum) if matches; else (None, None)
         patterns = [
             r"(?i)(.*?)[._-]r?([12])$",        # prefix_R1 / prefix.r2 / prefix-1
@@ -80,6 +82,7 @@ def concatenate_fastqs_to_bam(
         return None, None
 
     def _pair_by_filename(paths: List[Path]) -> Tuple[List[Tuple[Path, Path]], List[Path]]:
+        """Pair FASTQ files based on filename conventions."""
         pref_map: Dict[str, Dict[int, Path]] = {}
         unpaired: List[Path] = []
         for pth in paths:
@@ -101,6 +104,7 @@ def concatenate_fastqs_to_bam(
         return pairs, leftovers
 
     def _fastq_iter(p: Path):
+        """Yield FASTQ records using pysam.FastxFile."""
         # pysam.FastxFile handles compressed extensions transparently
         with pysam.FastxFile(str(p)) as fx:
             for rec in fx:
@@ -114,6 +118,7 @@ def concatenate_fastqs_to_bam(
         read1: bool,
         read2: bool,
     ) -> pysam.AlignedSegment:
+        """Construct an unaligned pysam.AlignedSegment."""
         a = pysam.AlignedSegment()
         a.query_name = name
         a.query_sequence = seq
@@ -136,6 +141,7 @@ def concatenate_fastqs_to_bam(
 
     # ---------- normalize inputs to Path ----------
     def _to_path_pair(x) -> Tuple[Path, Path]:
+        """Convert a tuple of path-like objects to Path instances."""
         a, b = x
         return Path(a), Path(b)
 
@@ -205,6 +211,7 @@ def concatenate_fastqs_to_bam(
 
             for rec1, rec2 in zip_longest(it1, it2, fillvalue=None):
                 def _clean(n: Optional[str]) -> Optional[str]:
+                    """Normalize FASTQ read names by trimming read suffixes."""
                     if n is None:
                         return None
                     return re.sub(r"(?:/1$|/2$|\s[12]$)", "", n)

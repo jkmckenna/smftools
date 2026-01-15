@@ -21,9 +21,11 @@ def calculate_complexity(adata, output_directory='', obs_column='Reference', sam
     from scipy.optimize import curve_fit
 
     def lander_waterman(x, C0):
+        """Lander-Waterman curve for complexity estimation."""
         return C0 * (1 - np.exp(-x / C0))
 
     def count_unique_reads(reads, depth):
+        """Count unique reads in a subsample of the given depth."""
         subsample = np.random.choice(reads, depth, replace=False)
         return len(np.unique(subsample))
 

@@ -72,6 +72,7 @@ def calculate_row_entropy(
             X_bin = np.where(X == 1, 1, np.where(X == 0, 0, np.nan))
 
         def compute_entropy(row):
+            """Compute Shannon entropy for a row with NaNs ignored."""
             counts = pd.Series(row).value_counts(dropna=True).sort_index()
             probs = counts / counts.sum()
             return entropy(probs, base=2)

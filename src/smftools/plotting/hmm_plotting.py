@@ -41,6 +41,7 @@ def plot_hmm_size_contours(
 
     # --- helper: gaussian smoothing (scipy fallback -> numpy separable conv) ---
     def _gaussian_1d_kernel(sigma: float, eps: float = 1e-12):
+        """Build a normalized 1D Gaussian kernel."""
         if sigma <= 0 or sigma is None:
             return np.array([1.0], dtype=float)
         # choose kernel size = odd ~ 6*sigma (covers +/-3 sigma)
@@ -56,6 +57,7 @@ def plot_hmm_size_contours(
     def _smooth_with_numpy_separable(
         Z: np.ndarray, sigma_len: float, sigma_pos: float
     ) -> np.ndarray:
+        """Apply separable Gaussian smoothing with NumPy."""
         # Z shape: (n_lengths, n_positions)
         out = Z.copy()
         # smooth along length axis (axis=0)
@@ -84,6 +86,7 @@ def plot_hmm_size_contours(
             _have_scipy = False
 
     def _smooth_Z(Z: np.ndarray, sigma_len: float, sigma_pos: float) -> np.ndarray:
+        """Smooth a matrix using scipy if available or NumPy fallback."""
         if (sigma_len is None or sigma_len == 0) and (sigma_pos is None or sigma_pos == 0):
             return Z
         if _have_scipy:
@@ -120,6 +123,7 @@ def plot_hmm_size_contours(
 
     # helper to get dense layer array for subset
     def _get_layer_array(layer):
+        """Convert a layer to a dense NumPy array."""
         arr = layer
         # sparse -> toarray
         if hasattr(arr, "toarray"):

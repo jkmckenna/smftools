@@ -1,12 +1,12 @@
 # load_adata
 ######################################################################################################
-import .utils
+# Archived helper; legacy imports removed for syntax compatibility.
 # File I/O
 import subprocess
 import gc
 
 # bioinformatic operations
-import .informatics_module
+# import .informatics_module
 
 # User interface
 from tqdm import tqdm

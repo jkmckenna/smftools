@@ -20,6 +20,13 @@ def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, 
             fq.write(f"@{name}\n{seq}\n+\n{qual}\n")
 
 def _sort_bam_with_pysam(in_bam: Union[str, Path], out_bam: Union[str, Path], threads: Optional[int] = None) -> None:
+    """Sort a BAM file using pysam.
+
+    Args:
+        in_bam: Input BAM path.
+        out_bam: Output BAM path.
+        threads: Optional thread count.
+    """
     in_bam, out_bam = str(in_bam), str(out_bam)
     args = []
     if threads:
@@ -28,6 +35,12 @@ def _sort_bam_with_pysam(in_bam: Union[str, Path], out_bam: Union[str, Path], th
     pysam.sort(*args)
 
 def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = None) -> None:
+    """Index a BAM file using pysam.
+
+    Args:
+        bam_path: BAM path to index.
+        threads: Optional thread count.
+    """
     bam_path = str(bam_path)
     # pysam.index supports samtools-style args
     if threads:

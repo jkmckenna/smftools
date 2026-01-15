@@ -405,6 +405,7 @@ def delete_intermediate_h5ads_and_tmpdir(
 
     # Helper: remove a single file path (Path-like or string)
     def _maybe_unlink(p: Path):
+        """Remove a file path if it exists and is a file."""
         if not p.exists():
             if verbose:
                 logger.debug(f"[skip] not found: {p}")

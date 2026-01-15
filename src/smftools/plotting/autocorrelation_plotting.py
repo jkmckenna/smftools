@@ -50,6 +50,7 @@ def plot_spatial_autocorr_grid(
 
     # small rolling average helper for smoother visualization
     def _rolling_1d(arr: np.ndarray, win: int) -> np.ndarray:
+        """Compute a rolling mean with NaN-aware normalization."""
         if win <= 1:
             return arr
         valid = np.isfinite(arr).astype(float)
@@ -64,6 +65,7 @@ def plot_spatial_autocorr_grid(
 
     # group summary extractor: returns (lags, mean_curve_smoothed, std_curve_smoothed, counts_block_or_None)
     def _compute_group_summary_for_mask(site: str, mask: np.ndarray):
+        """Extract summary curves for a site and mask."""
         obsm_key = f"{site}_spatial_autocorr"
         lags_key = f"{site}_spatial_autocorr_lags"
         counts_key = f"{site}_spatial_autocorr{counts_key_suffix}"
@@ -437,6 +439,7 @@ def plot_spatial_autocorr_grid(
                     return arr.tolist()
 
                 def _safe_float(x):
+                    """Coerce a value to float, returning NaN on failure."""
                     try:
                         return float(x)
                     except Exception:
