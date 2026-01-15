@@ -12,6 +12,10 @@ sys.path.insert(0, str(SRC_PATH))
 for x in os.walk(str(SRC_PATH)):
   sys.path.insert(0, x[0])
 print(sys.path)
+try:
+    import smftools
+except ModuleNotFoundError:
+    print("Error loading smftools package. Make sure to install the package in editable mode.")
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
