@@ -45,9 +45,7 @@ dependencies = [
     "click",
     "numpy>=1.22.0,<2",
     "pandas>=1.4.2",
-    "pyfaidx>=0.8.0",
     "scipy>=1.7.3",
-    "seaborn>=0.11",
     "tqdm",
 ]
 dynamic = ["version"]
@@ -91,12 +89,6 @@ cluster = [
     "leidenalg",
 ]
 
-informatics = [
-    "pybedtools>=0.12.0",
-    "pyBigWig>=0.3.24",
-    "pysam>=0.19.1",
-]
-
 misc = [
     "networkx>=3.2",
     "upsetplot",
@@ -104,6 +96,24 @@ misc = [
 
 ont = [
     "pod5>=0.1.21",
+]
+
+plotting = [
+    "matplotlib>=3.6.2",
+    "seaborn>=0.11",
+]
+
+pybedtools = [
+    "pybedtools>=0.12.0",
+]
+
+pybigwig = [
+    "pyBigWig>=0.3.24",
+]
+
+pysam = [
+    "pysam>=0.19.1",
+    "pyfaidx>=0.8.0",
 ]
 
 ml = [
@@ -117,7 +127,7 @@ ml = [
     "wandb",
 ]
 
-omics = [
+scanpy = [
     "igraph",
     "scanpy>=1.9",
 ]
