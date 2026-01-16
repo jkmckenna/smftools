@@ -57,26 +57,22 @@ def _require_pysam() -> "pysam_types":
     return require("pysam", extra="pysam", purpose="FASTA indexing")
 
 
-def _resolve_backend(
-    backend: str | None, *, tool: str, python_available: bool, cli_name: str
-) -> str:
+def _resolve_backend(backend: str | None, *, tool: str, python_available: bool, cli_name: str) -> str:
     choice = (backend or "auto").strip().lower()
     if choice not in {"auto", "python", "cli"}:
         raise ValueError(f"{tool}_backend must be one of: auto, python, cli")
     if choice == "python":
         if not python_available:
-            raise RuntimeError(
-                f"{tool}_backend=python requires the Python package to be installed."
-            )
+            raise RuntimeError(f"{tool}_backend=python requires the Python package to be installed.")
         return "python"
     if choice == "cli":
         if not shutil.which(cli_name):
             raise RuntimeError(f"{tool}_backend=cli requires {cli_name} in PATH.")
         return "cli"
-    if python_available:
-        return "python"
     if shutil.which(cli_name):
         return "cli"
+    if python_available:
+        return "python"
     raise RuntimeError(f"Neither Python nor CLI backend is available for {tool}.")
 
 
@@ -93,10 +89,6 @@ def _ensure_fasta_index(fasta: Path) -> Path:
     fai = fasta.with_suffix(fasta.suffix + ".fai")
     if fai.exists():
         return fai
-    if pysam is not None:
-        pysam_mod = _require_pysam()
-        pysam_mod.faidx(str(fasta))
-        return fai
     if shutil.which("samtools"):
         cp = subprocess.run(
             ["samtools", "faidx", str(fasta)],
@@ -106,6 +98,10 @@ def _ensure_fasta_index(fasta: Path) -> Path:
         )
         if cp.returncode != 0:
             raise RuntimeError(f"samtools faidx failed (exit {cp.returncode}):\n{cp.stderr}")
+        return fai
+    if pysam is not None:
+        pysam_mod = _require_pysam()
+        pysam_mod.faidx(str(fasta))
         return fai
     raise RuntimeError("FASTA indexing requires pysam or samtools in PATH.")
 
@@ -146,10 +142,7 @@ def _bed_to_bigwig(
 
     # 1) Compute coverage → bedGraph
     bedtools_choice = _resolve_backend(
-        bedtools_backend,
-        tool="bedtools",
-        python_available=pybedtools is not None,
-        cli_name="bedtools",
+        bedtools_backend, tool="bedtools", python_available=pybedtools is not None, cli_name="bedtools"
     )
     if bedtools_choice == "python":
         logger.debug(f"[pybedtools] generating coverage bedgraph from {bed}")
@@ -178,10 +171,7 @@ def _bed_to_bigwig(
 
     # 2) Convert bedGraph → BigWig via pyBigWig
     bigwig_choice = _resolve_backend(
-        bigwig_backend,
-        tool="bigwig",
-        python_available=pyBigWig is not None,
-        cli_name="bedGraphToBigWig",
+        bigwig_backend, tool="bigwig", python_available=pyBigWig is not None, cli_name="bedGraphToBigWig"
     )
     if bigwig_choice == "python":
         logger.debug(f"[pyBigWig] converting bedgraph → bigwig: {bigwig}")

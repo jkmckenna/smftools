@@ -31,10 +31,10 @@ except Exception:  # pragma: no cover - stdlib
 
 def _resolve_fasta_backend() -> str:
     """Resolve the backend to use for FASTA access."""
-    if pysam is not None:
-        return "python"
     if shutil is not None and shutil.which("samtools"):
         return "cli"
+    if pysam is not None:
+        return "python"
     raise RuntimeError("FASTA access requires pysam or samtools in PATH.")
 
 
@@ -42,10 +42,10 @@ def _ensure_fasta_index(fasta: Path) -> None:
     fai = fasta.with_suffix(fasta.suffix + ".fai")
     if fai.exists():
         return
-    if pysam is not None:
-        pysam.faidx(str(fasta))
-        return
     if subprocess is None or shutil is None or not shutil.which("samtools"):
+        if pysam is not None:
+            pysam.faidx(str(fasta))
+            return
         raise RuntimeError("FASTA indexing requires pysam or samtools in PATH.")
     cp = subprocess.run(
         ["samtools", "faidx", str(fasta)],

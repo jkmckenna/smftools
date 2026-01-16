@@ -220,6 +220,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 rg_sample_field=None,
                 progress=False,
                 auto_pair=cfg.fastq_auto_pairing,
+                samtools_backend=cfg.samtools_backend,
             )
 
             logger.info(f"Found the following barcodes in FASTQ inputs: {summary['barcodes']}")
@@ -411,7 +412,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         else:
             make_dirs([cfg.split_path])
             logger.info("Demultiplexing samples into individual aligned/sorted BAM files")
-            all_bam_files = split_and_index_BAM(aligned_sorted_BAM, cfg.split_path, cfg.bam_suffix)
+            all_bam_files = split_and_index_BAM(
+                aligned_sorted_BAM,
+                cfg.split_path,
+                cfg.bam_suffix,
+                samtools_backend=cfg.samtools_backend,
+            )
 
             unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
             bam_files = sorted(p for p in all_bam_files if "unclassified" not in p.name)
