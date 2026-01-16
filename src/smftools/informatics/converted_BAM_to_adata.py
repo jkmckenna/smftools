@@ -25,12 +25,9 @@ from .ohe import ohe_batching
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    import torch as torch_types
+    import torch
 
 torch = require("torch", extra="torch", purpose="converted BAM processing")
-
-if __name__ == "__main__":
-    multiprocessing.set_start_method("forkserver", force=True)
 
 
 def converted_BAM_to_adata(
@@ -96,7 +93,9 @@ def converted_BAM_to_adata(
     )
 
     bam_path_list = bam_files
-    logger.info(f"Found {len(bam_files)} BAM files: {bam_files}")
+
+    bam_names = [bam.name for bam in bam_files]
+    logger.info(f"Found {len(bam_files)} BAM files within {split_dir}: {bam_names}")
 
     ## Process Conversion Sites
     max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(
@@ -254,7 +253,7 @@ def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold
     for i, bam in enumerate(bam_path_list):
         aligned_reads, unaligned_reads, record_counts = count_aligned_reads(bam)
         aligned_percent = aligned_reads * 100 / (aligned_reads + unaligned_reads)
-        print(f"{aligned_percent:.2f}% of reads in {bam_files[i]} aligned successfully.")
+        logger.info(f"{aligned_percent:.2f}% of reads in {bam_files[i].name} aligned successfully.")
 
         for record, (count, percent) in record_counts.items():
             if percent >= mapping_threshold:
@@ -446,6 +445,8 @@ def worker_function(
     worker_id = current_process().pid  # Get worker process ID
     sample = bam.stem
 
+    logger.info(f"Testing {worker_id}")
+
     try:
         logger.info(f"[Worker {worker_id}] Processing BAM: {sample}")
 
@@ -514,14 +515,6 @@ def process_bams_parallel(
 
     logger.info(f"Starting parallel BAM processing with {num_threads} threads...")
 
-    # Ensure macOS uses forkserver to avoid spawning issues
-    try:
-        import multiprocessing
-
-        multiprocessing.set_start_method("forkserver", force=True)
-    except RuntimeError:
-        logger.warning(f"Multiprocessing context already set. Skipping set_start_method.")
-
     with Manager() as manager:
         progress_queue = manager.Queue()
         shared_record_FASTA_dict = manager.dict(record_FASTA_dict)
@@ -547,13 +540,14 @@ def process_bams_parallel(
                 for i, bam in enumerate(bam_path_list)
             ]
 
-            logger.info(f"Submitted {len(bam_path_list)} BAMs for processing.")
+            logger.info(f"Submitting {len(results)} BAMs for processing.")
 
             # Track completed BAMs
             completed_bams = set()
             while len(completed_bams) < len(bam_path_list):
                 try:
                     processed_bam = progress_queue.get(timeout=2400)  # Wait for a finished BAM
+                    logger.info(f"Finished processing {processed_bam} - adding to completed set")
                     completed_bams.add(processed_bam)
                 except Exception as e:
                     logger.error(f"Timeout waiting for worker process. Possible crash? {e}")

@@ -439,7 +439,7 @@ def bam_qc(
                 line = line.rstrip()
                 if line:
                     last_err.append(line)
-                    logger.info("[%s][%s] %s", tag, bam.name, line)
+                    logger.debug("[%s][%s] %s", tag, bam.name, line)
             rc = proc.wait()
 
         if rc != 0:
@@ -1047,7 +1047,7 @@ def count_aligned_reads(bam_file, samtools_backend: str | None = "auto"):
        record_counts (dict): A dictionary keyed by reference record instance that points toa tuple containing the total reads mapped to the record and the fraction of mapped reads which map to the record.
 
     """
-    print("{0}: Counting aligned reads in BAM > {1}".format(time_string(), bam_file))
+    logger.info("Counting aligned reads in BAM > {}".format(bam_file.name))
     backend_choice = _resolve_samtools_backend(samtools_backend)
     aligned_reads_count = 0
     unaligned_reads_count = 0
