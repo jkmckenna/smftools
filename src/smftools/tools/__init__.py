@@ -1,10 +1,26 @@
-from .calculate_umap import calculate_umap
-from .cluster_adata_on_methylation import cluster_adata_on_methylation
-from .general_tools import combine_layers, create_nan_mask_from_X, create_nan_or_non_gpc_mask
-from .position_stats import calculate_relative_risk_on_activity, compute_positionwise_statistics
-from .read_stats import calculate_row_entropy
-from .spatial_autocorrelation import *
-from .subset_adata import subset_adata
+from importlib import import_module
+
+_LAZY_ATTRS = {
+    "calculate_umap": "smftools.tools.calculate_umap",
+    "cluster_adata_on_methylation": "smftools.tools.cluster_adata_on_methylation",
+    "combine_layers": "smftools.tools.general_tools",
+    "create_nan_mask_from_X": "smftools.tools.general_tools",
+    "create_nan_or_non_gpc_mask": "smftools.tools.general_tools",
+    "calculate_relative_risk_on_activity": "smftools.tools.position_stats",
+    "compute_positionwise_statistics": "smftools.tools.position_stats",
+    "calculate_row_entropy": "smftools.tools.read_stats",
+    "subset_adata": "smftools.tools.subset_adata",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_ATTRS:
+        module = import_module(_LAZY_ATTRS[name])
+        attr = getattr(module, name)
+        globals()[name] = attr
+        return attr
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 __all__ = [
     "compute_positionwise_statistics",

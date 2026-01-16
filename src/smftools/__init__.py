@@ -2,18 +2,34 @@
 
 import logging
 import warnings
+from importlib import import_module
 from importlib.metadata import version
 
-from . import cli, config, datasets, hmm
-from . import informatics as inform
-from . import machine_learning as ml
-from . import plotting as pl
-from . import preprocessing as pp
-from . import tools as tl
 from .readwrite import adata_to_df, merge_barcoded_anndatas_core, safe_read_h5ad, safe_write_h5ad
 
 package_name = "smftools"
 __version__ = version(package_name)
+
+_LAZY_MODULES = {
+    "cli": "smftools.cli",
+    "config": "smftools.config",
+    "datasets": "smftools.datasets",
+    "hmm": "smftools.hmm",
+    "inform": "smftools.informatics",
+    "ml": "smftools.machine_learning",
+    "pl": "smftools.plotting",
+    "pp": "smftools.preprocessing",
+    "tl": "smftools.tools",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_MODULES:
+        module = import_module(_LAZY_MODULES[name])
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 __all__ = [
     "adata_to_df",
