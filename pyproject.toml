@@ -116,15 +116,22 @@ pysam = [
     "pyfaidx>=0.8.0",
 ]
 
-ml = [
+ml-base = [
+    "scikit-learn>=1.0.2",
+    "torch>=1.9.0",
+]
+
+ml-extended = [
     "captum",
     "hydra-core",
     "lightning",
     "omegaconf",
-    "scikit-learn>=1.0.2",
     "shap",
-    "torch>=1.9.0",
     "wandb",
+]
+
+qc = [
+    "multiqc",
 ]
 
 scanpy = [
@@ -132,8 +139,8 @@ scanpy = [
     "scanpy>=1.9",
 ]
 
-qc = [
-    "multiqc",
+torch = [
+    "torch>=1.9.0",
 ]
 
 all = [
