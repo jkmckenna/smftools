@@ -77,6 +77,9 @@ aligner_args:
 # Sorted BAM and BED specific handling
 make_bigwigs: False # Whether to make coverage bigwigs
 make_beds: False # Whether to make beds from the aligned bams
+samtools_backend: auto # auto|python|cli for samtools-compatible operations
+bedtools_backend: auto # auto|python|cli for bedtools-compatible operations
+bigwig_backend: auto # auto|python|cli for bedGraphToBigWig conversion
 
 # Nanopore specific demultiplexing
 barcode_both_ends: False # dorado demultiplexing

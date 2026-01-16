@@ -386,7 +386,13 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         else:
             logger.info("Making bed files from the aligned and sorted BAM file")
             aligned_BAM_to_bed(
-                aligned_sorted_output, cfg.output_directory, fasta, cfg.make_bigwigs, cfg.threads
+                aligned_sorted_output,
+                cfg.output_directory,
+                fasta,
+                cfg.make_bigwigs,
+                cfg.threads,
+                bedtools_backend=cfg.bedtools_backend,
+                bigwig_backend=cfg.bigwig_backend,
             )
     ########################################################################################################################
 
@@ -491,7 +497,15 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         else:
             logger.info("Making BED files from BAM files for each sample")
             for bam in bam_files:
-                aligned_BAM_to_bed(bam, cfg.split_path, fasta, cfg.make_bigwigs, cfg.threads)
+                aligned_BAM_to_bed(
+                    bam,
+                    cfg.split_path,
+                    fasta,
+                    cfg.make_bigwigs,
+                    cfg.threads,
+                    bedtools_backend=cfg.bedtools_backend,
+                    bigwig_backend=cfg.bigwig_backend,
+                )
     ########################################################################################################################
 
     ################################### 6) SAMTools based BAM QC ######################################################################
@@ -503,7 +517,13 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     else:
         make_dirs([bam_qc_dir])
         logger.info("Performing BAM QC")
-        bam_qc(bam_files, bam_qc_dir, cfg.threads, modality=cfg.smf_modality)
+        bam_qc(
+            bam_files,
+            bam_qc_dir,
+            cfg.threads,
+            modality=cfg.smf_modality,
+            samtools_backend=cfg.samtools_backend,
+        )
     ########################################################################################################################
 
     ################################### 7) AnnData loading ######################################################################
