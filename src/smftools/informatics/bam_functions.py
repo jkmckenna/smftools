@@ -881,7 +881,8 @@ def concatenate_fastqs_to_bam(
                 rg_fields = [f"ID:{bc}"]
                 if rg_sample_field:
                     rg_fields.append(f"SM:{rg_sample_field}")
-                header_lines.append(f"@RG\t{'\t'.join(rg_fields)}")
+                rg_body = "\t".join(rg_fields)
+                header_lines.append(f"@RG\t{rg_body}")
         header_lines.append("@PG\tID:concat-fastq\tPN:concatenate_fastqs_to_bam\tVN:1")
         bam_out_ctx.stdin.write("\n".join(header_lines) + "\n")
 

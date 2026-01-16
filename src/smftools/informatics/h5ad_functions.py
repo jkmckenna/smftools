@@ -9,11 +9,14 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
-from pod5 import Reader
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 logger = get_logger(__name__)
+
+p5 = require("pod5", extra="ont", purpose="POD5 metadata")
+Reader = p5.Reader
 
 
 def add_demux_type_annotation(

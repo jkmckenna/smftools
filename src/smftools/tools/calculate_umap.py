@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Sequence
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -36,7 +37,7 @@ def calculate_umap(
     import os
 
     import numpy as np
-    import scanpy as sc
+    sc = require("scanpy", extra="scanpy", purpose="UMAP calculation")
     from scipy.sparse import issparse
 
     os.environ["OMP_NUM_THREADS"] = str(threads)

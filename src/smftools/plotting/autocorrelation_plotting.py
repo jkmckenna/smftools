@@ -5,6 +5,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from smftools.optional_imports import require
+
 
 def plot_spatial_autocorr_grid(
     adata,
@@ -37,7 +39,7 @@ def plot_spatial_autocorr_grid(
     import os
     import warnings
 
-    import matplotlib.pyplot as plt
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="autocorrelation plots")
 
     # Try importing analyzer (used only as fallback)
     try:
@@ -520,7 +522,7 @@ def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=16
     Plot NRL and SNR vs window center from the dataframe returned by rolling_autocorr_metrics.
     If out_png is None, returns the matplotlib Figure object; otherwise saves PNG and returns path.
     """
-    import matplotlib.pyplot as plt
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="autocorrelation plots")
 
     # sort by center
     df2 = df.sort_values("center")
@@ -545,12 +547,12 @@ def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=16
     if out_png:
         fig.savefig(out_png, bbox_inches="tight")
         if not show:
-            import matplotlib
+            matplotlib = require("matplotlib", extra="plotting", purpose="autocorrelation plots")
 
             matplotlib.pyplot.close(fig)
         return out_png
     if not show:
-        import matplotlib
+        matplotlib = require("matplotlib", extra="plotting", purpose="autocorrelation plots")
 
         matplotlib.pyplot.close(fig)
     return fig
@@ -602,7 +604,7 @@ def plot_rolling_grid(
     """
     import os
 
-    import matplotlib.pyplot as plt
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="autocorrelation plots")
 
     if per_metric_ylim is None:
         per_metric_ylim = {}

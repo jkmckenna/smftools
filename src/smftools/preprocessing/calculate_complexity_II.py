@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from smftools.optional_imports import require
+
 if TYPE_CHECKING:
     import anndata as ad
 
@@ -46,10 +48,11 @@ def calculate_complexity_II(
     """
     import os
 
-    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
     from scipy.optimize import curve_fit
+
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="complexity plots")
 
     # early exits
     already = bool(adata.uns.get(uns_flag, False))

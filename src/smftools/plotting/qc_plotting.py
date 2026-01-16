@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from smftools.optional_imports import require
+
+plt = require("matplotlib.pyplot", extra="plotting", purpose="QC plots")
 
 def plot_read_qc_histograms(
     adata,

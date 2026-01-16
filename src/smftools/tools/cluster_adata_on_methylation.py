@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Sequence
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -109,7 +110,12 @@ def cluster_adata_on_methylation(
                     )
             elif method == "kmeans":
                 try:
-                    from sklearn.cluster import KMeans
+                    sklearn_cluster = require(
+                        "sklearn.cluster",
+                        extra="ml-base",
+                        purpose="k-means clustering",
+                    )
+                    KMeans = sklearn_cluster.KMeans
 
                     kmeans = KMeans(n_clusters=n_clusters)
                     kmeans.fit(site_subset.layers[layer])

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import torch
-import torch.nn as nn
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml-base", purpose="model wrappers")
+nn = torch.nn
 
 
 class ScaledModel(nn.Module):
