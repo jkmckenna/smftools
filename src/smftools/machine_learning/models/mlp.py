@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from smftools.optional_imports import require
 
-nn = require("torch.nn", extra="ml-base", purpose="MLP models")
-
 from .base import BaseTorchModel
+
+nn = require("torch.nn", extra="ml-base", purpose="MLP models")
 
 
 class MLPClassifier(BaseTorchModel):

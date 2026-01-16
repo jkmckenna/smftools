@@ -5,9 +5,9 @@ import pandas as pd
 
 from smftools.optional_imports import require
 
-torch = require("torch", extra="ml-base", purpose="Lightning inference")
-
 from .inference_utils import annotate_split_column
+
+torch = require("torch", extra="ml-base", purpose="Lightning inference")
 
 
 def run_lightning_inference(adata, model, datamodule, trainer, prefix="model", devices=1):

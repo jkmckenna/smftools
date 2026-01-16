@@ -4,10 +4,10 @@ import numpy as np
 
 from smftools.optional_imports import require
 
+from ..utils.device import detect_device
+
 torch = require("torch", extra="ml-base", purpose="ML base models")
 nn = torch.nn
-
-from ..utils.device import detect_device
 
 
 class BaseTorchModel(nn.Module):

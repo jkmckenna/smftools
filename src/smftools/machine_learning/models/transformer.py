@@ -4,12 +4,12 @@ import numpy as np
 
 from smftools.optional_imports import require
 
-torch = require("torch", extra="ml-base", purpose="Transformer models")
-nn = torch.nn
-
 from ..utils.grl import grad_reverse
 from .base import BaseTorchModel
 from .positional import PositionalEncoding
+
+torch = require("torch", extra="ml-base", purpose="Transformer models")
+nn = torch.nn
 
 
 class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):

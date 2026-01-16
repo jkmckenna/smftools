@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import warnings
+from contextlib import contextmanager
+from itertools import cycle
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -18,9 +21,6 @@ plt = require("matplotlib.pyplot", extra="plotting", purpose="position stats plo
 # -----------------------------
 # Compute positionwise statistic (multi-method + simple site_types)
 # -----------------------------
-import os
-from contextlib import contextmanager
-from itertools import cycle
 
 
 # ------------------------- Utilities -------------------------

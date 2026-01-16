@@ -5,6 +5,8 @@ import pandas as pd
 
 from smftools.optional_imports import require
 
+from .preprocessing import random_fill_nans
+
 pl = require("pytorch_lightning", extra="ml-extended", purpose="Lightning data modules")
 torch = require("torch", extra="ml-base", purpose="ML data loading")
 sklearn_class_weight = require(
@@ -18,8 +20,6 @@ compute_class_weight = sklearn_class_weight.compute_class_weight
 DataLoader = torch_utils_data.DataLoader
 Dataset = torch_utils_data.Dataset
 Subset = torch_utils_data.Subset
-
-from .preprocessing import random_fill_nans
 
 
 class AnnDataDataset(Dataset):

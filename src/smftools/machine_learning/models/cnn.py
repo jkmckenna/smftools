@@ -4,10 +4,10 @@ import numpy as np
 
 from smftools.optional_imports import require
 
+from .base import BaseTorchModel
+
 torch = require("torch", extra="ml-base", purpose="CNN models")
 nn = torch.nn
-
-from .base import BaseTorchModel
 
 
 class CNNClassifier(BaseTorchModel):

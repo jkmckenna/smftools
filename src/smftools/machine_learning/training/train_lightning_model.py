@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from smftools.optional_imports import require
 
+from ..data import AnnDataModule
+from ..models import TorchClassifierWrapper
+
 torch = require("torch", extra="ml-base", purpose="Lightning training")
 pytorch_lightning = require("pytorch_lightning", extra="ml-extended", purpose="Lightning training")
 pl_callbacks = require(
@@ -11,9 +14,6 @@ pl_callbacks = require(
 Trainer = pytorch_lightning.Trainer
 EarlyStopping = pl_callbacks.EarlyStopping
 ModelCheckpoint = pl_callbacks.ModelCheckpoint
-
-from ..data import AnnDataModule
-from ..models import TorchClassifierWrapper
 
 
 def train_lightning_model(
