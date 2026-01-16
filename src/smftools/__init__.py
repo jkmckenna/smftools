@@ -7,7 +7,7 @@ from importlib import import_module
 from importlib.metadata import version
 from typing import TYPE_CHECKING
 
-from .readwrite import adata_to_df, merge_barcoded_anndatas_core, safe_read_h5ad, safe_write_h5ad
+from .readwrite import adata_to_df, safe_read_h5ad, safe_write_h5ad
 
 package_name = "smftools"
 __version__ = version(package_name)

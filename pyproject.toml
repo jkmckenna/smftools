@@ -113,7 +113,6 @@ pybigwig = [
 
 pysam = [
     "pysam>=0.19.1",
-    "pyfaidx>=0.8.0",
 ]
 
 ml-base = [
@@ -144,38 +143,42 @@ torch = [
 ]
 
 all = [
-  # cluster
-  "fastcluster",
-  "leidenalg",
+    # cluster
+    "fastcluster",
+    "leidenalg",
 
-  # informatics
-  "pybedtools>=0.12.0",
-  "pyBigWig>=0.3.24",
-  "pysam>=0.19.1",
+    # informatics
+    "pybedtools>=0.12.0",
+    "pyBigWig>=0.3.24",
+    "pysam>=0.19.1",
 
-  # misc
-  "networkx>=3.2",
-  "upsetplot",
+    # misc
+    "networkx>=3.2",
+    "upsetplot",
 
-  # ont
-  "pod5>=0.1.21",
+    # ont
+    "pod5>=0.1.21",
 
-  # ml
-  "captum",
-  "hydra-core",
-  "lightning",
-  "omegaconf",
-  "scikit-learn>=1.0.2",
-  "shap",
-  "torch>=1.9.0",
-  "wandb",
+    # plotting
+    "matplotlib>=3.6.2",
+    "seaborn>=0.11",
 
-  # omics
-  "igraph",
-  "scanpy>=1.9",
+    # ml
+    "captum",
+    "hydra-core",
+    "lightning",
+    "omegaconf",
+    "scikit-learn>=1.0.2",
+    "shap",
+    "torch>=1.9.0",
+    "wandb",
 
-  # qc
-  "multiqc",
+    # scanpy
+    "igraph",
+    "scanpy>=1.9",
+
+    # qc
+    "multiqc",
 ]
 
 [tool.hatch.build]

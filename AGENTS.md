@@ -19,6 +19,7 @@ This file tells coding agents (including OpenAI Codex) how to work in this repo.
     - Optional functional modules of the package (ont, plotting, ml-base, ml-extended, scanpy, qc)
     - If a Python version of a CLI tool is preferred (Such as for Samtools, Bedtools, BedGraphToBigWig).
     - For potential performance boosts in computation (torch)
+    - All dependencies can be installed with `pip install -e ".[all]"`
 
 ## Setup
 - Create env (pick one):
