@@ -3,14 +3,14 @@ from __future__ import annotations
 import glob
 import os
 import re
+import shutil
 import subprocess
 import time
 from collections import Counter, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import zip_longest
 from pathlib import Path
-import shutil
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 from tqdm import tqdm
@@ -173,9 +173,7 @@ def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = N
         pysam_mod.index(bam_path)
 
 
-def _bam_to_fastq_with_samtools(
-    bam_path: Union[str, Path], fastq_path: Union[str, Path]
-) -> None:
+def _bam_to_fastq_with_samtools(bam_path: Union[str, Path], fastq_path: Union[str, Path]) -> None:
     """Convert BAM to FASTQ using samtools."""
     if not shutil.which("samtools"):
         raise RuntimeError("samtools is required but not available in PATH.")

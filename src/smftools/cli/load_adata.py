@@ -4,6 +4,8 @@ import shutil
 from pathlib import Path
 from typing import Iterable, Union
 
+import numpy as np
+
 from smftools.logging_utils import get_logger
 
 from .helpers import AdataPaths
@@ -107,9 +109,6 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     cfg : ExperimentConfig
         (Same object, possibly with some fields updated, e.g. fasta path.)
     """
-    from pathlib import Path
-
-    import numpy as np
 
     from ..informatics.bam_functions import (
         align_and_sort_BAM,

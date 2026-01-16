@@ -1,4 +1,5 @@
 """smftools"""
+
 from __future__ import annotations
 
 import logging
@@ -13,8 +14,17 @@ package_name = "smftools"
 __version__ = version(package_name)
 
 if TYPE_CHECKING:
-    from smftools import cli, config, datasets, hmm, informatics, machine_learning, plotting
-    from smftools import preprocessing, tools
+    from smftools import (
+        cli,
+        config,
+        datasets,
+        hmm,
+        informatics,
+        machine_learning,
+        plotting,
+        preprocessing,
+        tools,
+    )
 
 _LAZY_MODULES = {
     "cli": "smftools.cli",

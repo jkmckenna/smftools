@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # FILE: smftools/hmm/call_hmm_peaks.py
-
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Union
 
