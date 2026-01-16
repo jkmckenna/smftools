@@ -1369,7 +1369,8 @@ def extract_readnames_from_bam(aligned_BAM, samtools_backend: str | None = "auto
         for line in samtools_view.stdout:
             if not line.strip():
                 continue
-            output_file.write(f"{line.split('\\t', 1)[0]}\n")
+            qname = line.split("\t", 1)[0]
+            output_file.write(f"{qname}\n")    
     rc = samtools_view.wait()
     if rc != 0:
         stderr = samtools_view.stderr.read() if samtools_view.stderr else ""
