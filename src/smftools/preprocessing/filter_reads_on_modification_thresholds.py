@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import gc
 from typing import List, Optional, Sequence
 

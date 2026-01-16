@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # from .align_and_sort_BAM import align_and_sort_BAM
 # from .aligned_BAM_to_bed import aligned_BAM_to_bed
 # from .bam_qc import bam_qc

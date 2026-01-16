@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def train_hmm(
     data,
     emission_probs=[[0.8, 0.2], [0.2, 0.8]],

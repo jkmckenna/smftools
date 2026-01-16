@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def call_hmm_peaks(
     adata,
     feature_configs,

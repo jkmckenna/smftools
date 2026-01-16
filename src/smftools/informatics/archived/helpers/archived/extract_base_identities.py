@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def extract_base_identities(bam_file, chromosome, positions, max_reference_length, sequence):
     """
     Efficiently extracts base identities from mapped reads with reference coordinates.

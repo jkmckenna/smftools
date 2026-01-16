@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def flow_I(config_path):
     """
     High-level function to call for converting raw sequencing data to an adata object. 

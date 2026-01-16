@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
     """
     Takes an aligned BAM as input and writes a BED file of reads as output.

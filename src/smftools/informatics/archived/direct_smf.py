@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## direct_smf
 
 def direct_smf(fasta, output_directory, mod_list, model_dir, model, thresholds, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, batch_size, basecall, barcode_both_ends, trim, device, make_bigwigs, skip_unclassified, delete_batch_hdfs, threads):

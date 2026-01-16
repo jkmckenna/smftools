@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 def plot_volcano_relative_risk(
     results_dict,
     save_path=None,

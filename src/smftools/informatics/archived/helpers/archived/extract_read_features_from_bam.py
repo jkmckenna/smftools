@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # extract_read_features_from_bam
 
 def extract_read_features_from_bam(bam_file_path):

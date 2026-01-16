@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## separate_bam_by_bc
 
 def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):

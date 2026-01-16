@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import concurrent.futures
 import os
 import shutil
@@ -6,7 +8,6 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -243,6 +244,8 @@ def _plot_bed_histograms(
     coordinate_mode : {"one_based","zero_based"}
         One-based, inclusive (your file) vs BED-standard zero-based, half-open.
     """
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="plotting BED histograms")
+
     os.makedirs(plotting_directory, exist_ok=True)
 
     bed_basename = os.path.basename(bed_file).rsplit(".bed", 1)[0]

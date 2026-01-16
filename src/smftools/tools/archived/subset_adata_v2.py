@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # subset_adata
 
 def subset_adata(adata, columns, cat_type='obs'):

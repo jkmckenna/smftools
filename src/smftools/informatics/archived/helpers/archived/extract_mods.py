@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## extract_mods
 
 def extract_mods(thresholds, mod_tsv_dir, split_dir, bam_suffix, skip_unclassified=True, modkit_summary=False, threads=None):

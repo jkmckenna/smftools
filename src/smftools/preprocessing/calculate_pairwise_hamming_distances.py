@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 ## calculate_pairwise_hamming_distances
+
 
 ## Conversion SMF Specific
 def calculate_pairwise_hamming_distances(arrays):
