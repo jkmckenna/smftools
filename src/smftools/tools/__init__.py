@@ -24,14 +24,4 @@ def __getattr__(name: str):
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
-__all__ = [
-    "compute_positionwise_statistics",
-    "calculate_row_entropy",
-    "calculate_umap",
-    "calculate_relative_risk_on_activity",
-    "cluster_adata_on_methylation",
-    "create_nan_mask_from_X",
-    "create_nan_or_non_gpc_mask",
-    "combine_layers",
-    "subset_adata",
-]
+__all__ = list(_LAZY_ATTRS.keys())

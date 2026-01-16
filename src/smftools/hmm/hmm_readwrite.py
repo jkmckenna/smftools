@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from smftools.optional_imports import require
+
 
 def load_hmm(model_path, device="cpu"):
     """
@@ -8,7 +10,7 @@ def load_hmm(model_path, device="cpu"):
     Parameters:
         model_path (str): Path to a pretrained HMM
     """
-    import torch
+    torch = require("torch", extra="torch", purpose="HMM read/write")
 
     # Load model using PyTorch
     hmm = torch.load(model_path)
@@ -23,6 +25,6 @@ def save_hmm(model, model_path):
         model: HMM model instance.
         model_path: Output path for the model.
     """
-    import torch
+    torch = require("torch", extra="torch", purpose="HMM read/write")
 
     torch.save(model, model_path)

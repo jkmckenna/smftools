@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 
-import matplotlib.pyplot as plt
 import numpy as np
-import torch
 
+from smftools.optional_imports import require
+
+plt = require("matplotlib.pyplot", extra="plotting", purpose="model plots")
+torch = require("torch", extra="ml-base", purpose="model saliency plots")
 
 def plot_model_performance(metrics, save_path=None):
     """Plot ROC and precision-recall curves for model metrics.
@@ -262,7 +264,10 @@ def plot_model_curves_from_adata(
         ylim_roc: Y-axis limits for ROC curve.
         ylim_pr: Y-axis limits for PR curve.
     """
-    from sklearn.metrics import auc, precision_recall_curve, roc_curve
+    sklearn_metrics = require("sklearn.metrics", extra="ml-base", purpose="model curves")
+    auc = sklearn_metrics.auc
+    precision_recall_curve = sklearn_metrics.precision_recall_curve
+    roc_curve = sklearn_metrics.roc_curve
 
     if omit_training:
         subset = adata[~adata.obs["used_for_training"].astype(bool)]
@@ -351,7 +356,10 @@ def plot_model_curves_from_adata_with_frequency_grid(
     import os
 
     import numpy as np
-    from sklearn.metrics import auc, precision_recall_curve, roc_curve
+    sklearn_metrics = require("sklearn.metrics", extra="ml-base", purpose="model curves")
+    auc = sklearn_metrics.auc
+    precision_recall_curve = sklearn_metrics.precision_recall_curve
+    roc_curve = sklearn_metrics.roc_curve
 
     if f1_levels is None:
         f1_levels = np.linspace(0.2, 0.9, 8)

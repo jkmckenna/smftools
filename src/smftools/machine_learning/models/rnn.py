@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import torch.nn as nn
+from smftools.optional_imports import require
+
+nn = require("torch.nn", extra="ml-base", purpose="RNN models")
 
 from .base import BaseTorchModel
 

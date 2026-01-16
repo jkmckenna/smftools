@@ -7,14 +7,13 @@ import time
 import traceback
 from multiprocessing import Manager, Pool, current_process
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Iterable, Optional, Union, TYPE_CHECKING
 
 import anndata as ad
 import numpy as np
 import pandas as pd
-import torch
-
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 from ..readwrite import make_dirs
 from .bam_functions import count_aligned_reads, extract_base_identities
@@ -23,6 +22,11 @@ from .fasta_functions import find_conversion_sites
 from .ohe import ohe_batching
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    import torch as torch_types
+
+torch = require("torch", extra="torch", purpose="converted BAM processing")
 
 if __name__ == "__main__":
     multiprocessing.set_start_method("forkserver", force=True)

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import (
-    auc,
-    confusion_matrix,
-    f1_score,
-    precision_recall_curve,
-    roc_auc_score,
-    roc_curve,
-)
+
+from smftools.optional_imports import require
+
+plt = require("matplotlib.pyplot", extra="plotting", purpose="model evaluation plots")
+sklearn_metrics = require("sklearn.metrics", extra="ml-base", purpose="model evaluation")
+
+auc = sklearn_metrics.auc
+confusion_matrix = sklearn_metrics.confusion_matrix
+f1_score = sklearn_metrics.f1_score
+precision_recall_curve = sklearn_metrics.precision_recall_curve
+roc_auc_score = sklearn_metrics.roc_auc_score
+roc_curve = sklearn_metrics.roc_curve
 
 
 class SklearnModelWrapper:

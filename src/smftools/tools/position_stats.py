@@ -3,27 +3,25 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
+import pandas as pd
+from scipy.stats import chi2_contingency
+from tqdm import tqdm
+
+from smftools.optional_imports import require
+
 if TYPE_CHECKING:
     import anndata as ad
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+plt = require("matplotlib.pyplot", extra="plotting", purpose="position stats plots")
+joblib = require("joblib", extra="ml-base", purpose="parallel position statistics")
 
-# optional imports
-try:
-    from joblib import Parallel, delayed
+Parallel = joblib.Parallel
+cpu_count = joblib.cpu_count
+delayed = joblib.delayed
 
-    JOBLIB_AVAILABLE = True
-except Exception:
-    JOBLIB_AVAILABLE = False
-
-try:
-    from scipy.stats import chi2_contingency
-
-    SCIPY_STATS_AVAILABLE = True
-except Exception:
-    SCIPY_STATS_AVAILABLE = False
+JOBLIB_AVAILABLE = True
+SCIPY_STATS_AVAILABLE = True
 
 # -----------------------------
 # Compute positionwise statistic (multi-method + simple site_types)
@@ -31,11 +29,6 @@ except Exception:
 import os
 from contextlib import contextmanager
 from itertools import cycle
-
-import joblib
-from joblib import Parallel, cpu_count, delayed
-from scipy.stats import chi2_contingency
-from tqdm import tqdm
 
 
 # ------------------------- Utilities -------------------------
