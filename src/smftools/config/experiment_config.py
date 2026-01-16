@@ -736,6 +736,9 @@ class ExperimentConfig:
     aligner_args: Optional[List[str]] = None
     make_bigwigs: bool = False
     make_beds: bool = False
+    samtools_backend: str = "auto"
+    bedtools_backend: str = "auto"
+    bigwig_backend: str = "auto"
 
     # Anndata structure
     reference_column: Optional[str] = REF_COL
@@ -1264,6 +1267,9 @@ class ExperimentConfig:
             device=merged.get("device", "auto"),
             make_bigwigs=merged.get("make_bigwigs", False),
             make_beds=merged.get("make_beds", False),
+            samtools_backend=merged.get("samtools_backend", "auto"),
+            bedtools_backend=merged.get("bedtools_backend", "auto"),
+            bigwig_backend=merged.get("bigwig_backend", "auto"),
             delete_intermediate_hdfs=merged.get("delete_intermediate_hdfs", True),
             mod_target_bases=merged.get("mod_target_bases", ["GpC", "CpG"]),
             enzyme_target_bases=merged.get("enzyme_target_bases", ["GpC"]),

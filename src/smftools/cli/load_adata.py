@@ -219,6 +219,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 rg_sample_field=None,
                 progress=False,
                 auto_pair=cfg.fastq_auto_pairing,
+                samtools_backend=cfg.samtools_backend,
             )
 
             logger.info(f"Found the following barcodes in FASTQ inputs: {summary['barcodes']}")
@@ -384,7 +385,13 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         else:
             logger.info("Making bed files from the aligned and sorted BAM file")
             aligned_BAM_to_bed(
-                aligned_sorted_output, cfg.output_directory, fasta, cfg.make_bigwigs, cfg.threads
+                aligned_sorted_output,
+                cfg.output_directory,
+                fasta,
+                cfg.make_bigwigs,
+                cfg.threads,
+                bedtools_backend=cfg.bedtools_backend,
+                bigwig_backend=cfg.bigwig_backend,
             )
     ########################################################################################################################
 
@@ -404,7 +411,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         else:
             make_dirs([cfg.split_path])
             logger.info("Demultiplexing samples into individual aligned/sorted BAM files")
-            all_bam_files = split_and_index_BAM(aligned_sorted_BAM, cfg.split_path, cfg.bam_suffix)
+            all_bam_files = split_and_index_BAM(
+                aligned_sorted_BAM,
+                cfg.split_path,
+                cfg.bam_suffix,
+                samtools_backend=cfg.samtools_backend,
+            )
 
             unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
             bam_files = sorted(p for p in all_bam_files if "unclassified" not in p.name)
@@ -489,7 +501,15 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         else:
             logger.info("Making BED files from BAM files for each sample")
             for bam in bam_files:
-                aligned_BAM_to_bed(bam, cfg.split_path, fasta, cfg.make_bigwigs, cfg.threads)
+                aligned_BAM_to_bed(
+                    bam,
+                    cfg.split_path,
+                    fasta,
+                    cfg.make_bigwigs,
+                    cfg.threads,
+                    bedtools_backend=cfg.bedtools_backend,
+                    bigwig_backend=cfg.bigwig_backend,
+                )
     ########################################################################################################################
 
     ################################### 6) SAMTools based BAM QC ######################################################################
@@ -501,7 +521,13 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     else:
         make_dirs([bam_qc_dir])
         logger.info("Performing BAM QC")
-        bam_qc(bam_files, bam_qc_dir, cfg.threads, modality=cfg.smf_modality)
+        bam_qc(
+            bam_files,
+            bam_qc_dir,
+            cfg.threads,
+            modality=cfg.smf_modality,
+            samtools_backend=cfg.samtools_backend,
+        )
     ########################################################################################################################
 
     ################################### 7) AnnData loading ######################################################################
