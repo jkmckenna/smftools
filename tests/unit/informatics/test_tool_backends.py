@@ -95,3 +95,76 @@ def test_extract_readnames_from_bam_python_backend(tmp_path, monkeypatch):
     bam_functions.extract_readnames_from_bam(str(bam_path), samtools_backend="python")
     output_path = tmp_path / "sample_read_names.txt"
     assert output_path.read_text().splitlines() == ["read1", "read2"]
+
+
+def test_extract_read_features_from_bam_python_backend(monkeypatch, tmp_path):
+    class FakeRead:
+        def __init__(self):
+            self.is_unmapped = False
+            self.query_qualities = [10, 20, 30, 40]
+            self.reference_name = "chr1"
+            self.mapping_quality = 60
+            self.query_length = 4
+            self.query_name = "read1"
+
+        def get_blocks(self):
+            return [(0, 2), (2, 4)]
+
+    class FakeAlignmentFile:
+        def __init__(self, *args, **kwargs):
+            self.references = ["chr1"]
+            self.lengths = [100]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter([FakeRead()])
+
+    monkeypatch.setattr(
+        bam_functions,
+        "pysam",
+        type("FakePysam", (), {"AlignmentFile": FakeAlignmentFile})(),
+    )
+
+    bam_path = tmp_path / "sample.bam"
+    bam_path.write_text("stub")
+    metrics = bam_functions.extract_read_features_from_bam(
+        bam_path, samtools_backend="python"
+    )
+    assert metrics["read1"] == [4.0, 25.0, 100.0, 4.0, 60.0]
+
+
+def test_extract_read_features_from_bam_cli_backend(monkeypatch, tmp_path):
+    bam_path = tmp_path / "sample.bam"
+    bam_path.write_text("stub")
+
+    header_text = "@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:100\n"
+    view_text = "read1\t0\tchr1\t1\t60\t10M\t*\t0\t0\tACGTACGTAA\tIIIIIIIIII\n"
+
+    def fake_run(cmd, stdout, stderr, text, check):
+        assert cmd[:3] == ["samtools", "view", "-H"]
+        return type(
+            "CP",
+            (),
+            {"returncode": 0, "stdout": header_text, "stderr": ""},
+        )()
+
+    class FakePopen:
+        def __init__(self, cmd, stdout, stderr, text):
+            assert cmd[:2] == ["samtools", "view"]
+            self.stdout = iter(view_text.splitlines(True))
+            self.stderr = None
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(bam_functions.subprocess, "run", fake_run)
+    monkeypatch.setattr(bam_functions.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(bam_functions.shutil, "which", lambda name: "/usr/bin/samtools")
+
+    metrics = bam_functions.extract_read_features_from_bam(bam_path, samtools_backend="cli")
+    assert metrics["read1"] == [10.0, 40.0, 100.0, 10.0, 60.0]

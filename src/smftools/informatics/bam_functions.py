@@ -1299,41 +1299,132 @@ def extract_base_identities(
     )
 
 
-def extract_read_features_from_bam(bam_file_path):
-    """
-    Make a dict of reads from a bam that points to a list of read metrics: read length, read median Q-score, reference length, mapped length, mapping quality
-    Params:
-        bam_file_path (str):
+def extract_read_features_from_bam(
+    bam_file_path: str | Path, samtools_backend: str | None = "auto"
+) -> Dict[str, List[float]]:
+    """Extract read metrics from a BAM file.
+
+    Args:
+        bam_file_path: Path to the BAM file.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
     Returns:
-        read_metrics (dict)
+        Mapping of read name to [read_length, read_median_qscore, reference_length,
+        mapped_length, mapping_quality].
     """
-    # Open the BAM file
     logger.debug(
-        f"Extracting read metrics from BAM using extract_read_features_from_bam: {bam_file_path}"
+        "Extracting read metrics from BAM using extract_read_features_from_bam: %s",
+        bam_file_path,
     )
-    with pysam.AlignmentFile(bam_file_path, "rb") as bam_file:
-        read_metrics = {}
-        reference_lengths = bam_file.lengths  # List of lengths for each reference (chromosome)
-        for read in bam_file:
-            # Skip unmapped reads
-            if read.is_unmapped:
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    read_metrics: Dict[str, List[float]] = {}
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(bam_file_path), "rb") as bam_file:
+            reference_lengths = dict(zip(bam_file.references, bam_file.lengths))
+            for read in bam_file:
+                if read.is_unmapped:
+                    continue
+                read_quality = read.query_qualities
+                if read_quality is None:
+                    median_read_quality = float("nan")
+                else:
+                    median_read_quality = float(np.median(read_quality))
+                reference_length = reference_lengths.get(read.reference_name, float("nan"))
+                mapped_length = sum(end - start for start, end in read.get_blocks())
+                mapping_quality = float(read.mapping_quality)
+                read_metrics[read.query_name] = [
+                    float(read.query_length),
+                    median_read_quality,
+                    float(reference_length),
+                    float(mapped_length),
+                    mapping_quality,
+                ]
+        return read_metrics
+
+    bam_path = Path(bam_file_path)
+
+    def _parse_reference_lengths(header_text: str) -> Dict[str, int]:
+        ref_lengths: Dict[str, int] = {}
+        for line in header_text.splitlines():
+            if not line.startswith("@SQ"):
                 continue
-            # Extract the read metrics
-            read_quality = read.query_qualities
-            median_read_quality = np.median(read_quality)
-            # Extract the reference (chromosome) name and its length
-            reference_name = read.reference_name
-            reference_index = bam_file.references.index(reference_name)
-            reference_length = reference_lengths[reference_index]
-            mapped_length = sum(end - start for start, end in read.get_blocks())
-            mapping_quality = read.mapping_quality  # Phred-scaled MAPQ
-            read_metrics[read.query_name] = [
-                read.query_length,
-                median_read_quality,
-                reference_length,
-                mapped_length,
-                mapping_quality,
-            ]
+            fields = line.split("\t")
+            name = None
+            length = None
+            for field in fields[1:]:
+                if field.startswith("SN:"):
+                    name = field.split(":", 1)[1]
+                elif field.startswith("LN:"):
+                    length = int(field.split(":", 1)[1])
+            if name is not None and length is not None:
+                ref_lengths[name] = length
+        return ref_lengths
+
+    def _mapped_length_from_cigar(cigar: str) -> int:
+        mapped = 0
+        for length_str, op in re.findall(r"(\\d+)([MIDNSHP=XB])", cigar):
+            length = int(length_str)
+            if op in {"M", "=", "X"}:
+                mapped += length
+        return mapped
+
+    header_cp = subprocess.run(
+        ["samtools", "view", "-H", str(bam_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if header_cp.returncode != 0:
+        raise RuntimeError(
+            f"samtools view -H failed (exit {header_cp.returncode}):\n{header_cp.stderr}"
+        )
+    reference_lengths = _parse_reference_lengths(header_cp.stdout)
+
+    proc = subprocess.Popen(
+        ["samtools", "view", "-F", "4", str(bam_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        if not line.strip() or line.startswith("@"):
+            continue
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) < 11:
+            continue
+        read_name = fields[0]
+        reference_name = fields[2]
+        mapping_quality = float(fields[4])
+        cigar = fields[5]
+        sequence = fields[9]
+        quality = fields[10]
+        if sequence == "*":
+            read_length = float("nan")
+        else:
+            read_length = float(len(sequence))
+        if quality == "*" or not quality:
+            median_read_quality = float("nan")
+        else:
+            phreds = [ord(char) - 33 for char in quality]
+            median_read_quality = float(np.median(phreds))
+        reference_length = float(reference_lengths.get(reference_name, float("nan")))
+        mapped_length = float(_mapped_length_from_cigar(cigar)) if cigar != "*" else 0.0
+        read_metrics[read_name] = [
+            read_length,
+            median_read_quality,
+            reference_length,
+            mapped_length,
+            mapping_quality,
+        ]
+
+    rc = proc.wait()
+    if rc != 0:
+        stderr = proc.stderr.read() if proc.stderr else ""
+        raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
 
     return read_metrics
 
