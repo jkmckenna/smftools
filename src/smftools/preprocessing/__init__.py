@@ -30,6 +30,7 @@ def __getattr__(name: str):
         return attr
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
+
 __all__ = [
     "append_base_context",
     "append_binary_layer_by_base_context",

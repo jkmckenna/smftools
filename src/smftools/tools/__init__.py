@@ -9,7 +9,7 @@ _LAZY_ATTRS = {
     "calculate_relative_risk_on_activity": "smftools.tools.position_stats",
     "compute_positionwise_statistics": "smftools.tools.position_stats",
     "calculate_row_entropy": "smftools.tools.read_stats",
-    "subset_adata": "smftools.tools.subset_adata"
+    "subset_adata": "smftools.tools.subset_adata",
 }
 
 

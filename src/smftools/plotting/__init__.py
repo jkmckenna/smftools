@@ -23,6 +23,7 @@ def __getattr__(name: str):
         return attr
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
+
 __all__ = [
     "combined_hmm_raw_clustermap",
     "plot_bar_relative_risk",

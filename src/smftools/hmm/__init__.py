@@ -18,6 +18,7 @@ def __getattr__(name: str):
         return attr
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
+
 __all__ = [
     "call_hmm_peaks",
     "display_hmm",
