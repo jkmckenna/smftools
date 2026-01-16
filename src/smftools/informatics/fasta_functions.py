@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import gzip
+import shutil
+import subprocess
 from concurrent.futures import ProcessPoolExecutor
+from importlib.util import find_spec
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, Tuple, TYPE_CHECKING
 
 import numpy as np
 from Bio import SeqIO
@@ -11,29 +14,31 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 from ..readwrite import time_string
 
 logger = get_logger(__name__)
 
-try:
-    import pysam
-except Exception:
-    pysam = None  # type: ignore
+if TYPE_CHECKING:
+    import pysam as pysam_module
 
-try:
-    import shutil
-    import subprocess
-except Exception:  # pragma: no cover - stdlib
-    shutil = None  # type: ignore
-    subprocess = None  # type: ignore
+
+def _require_pysam() -> "pysam_module":
+    if pysam_types is not None:
+        return pysam_types
+    return require("pysam", extra="pysam", purpose="FASTA access")
+
+pysam_types = None
+if find_spec("pysam") is not None:
+    pysam_types = require("pysam", extra="pysam", purpose="FASTA access")
 
 
 def _resolve_fasta_backend() -> str:
     """Resolve the backend to use for FASTA access."""
     if shutil is not None and shutil.which("samtools"):
         return "cli"
-    if pysam is not None:
+    if pysam_types is not None:
         return "python"
     raise RuntimeError("FASTA access requires pysam or samtools in PATH.")
 
@@ -43,10 +48,9 @@ def _ensure_fasta_index(fasta: Path) -> None:
     if fai.exists():
         return
     if subprocess is None or shutil is None or not shutil.which("samtools"):
-        if pysam is not None:
-            pysam.faidx(str(fasta))
-            return
-        raise RuntimeError("FASTA indexing requires pysam or samtools in PATH.")
+        pysam_mod = _require_pysam()
+        pysam_mod.faidx(str(fasta))
+        return
     cp = subprocess.run(
         ["samtools", "faidx", str(fasta)],
         stdout=subprocess.DEVNULL,
@@ -225,7 +229,7 @@ def index_fasta(fasta: str | Path, write_chrom_sizes: bool = True) -> Path:
         Path: Path to the index file or chromosome sizes file.
     """
     fasta = Path(fasta)
-    pysam.faidx(str(fasta))  # creates <fasta>.fai
+    _require_pysam().faidx(str(fasta))  # creates <fasta>.fai
 
     fai = fasta.with_suffix(fasta.suffix + ".fai")
     if write_chrom_sizes:
@@ -377,8 +381,8 @@ def subsample_fasta_from_bed(
 
     fasta_handle = None
     if backend == "python":
-        assert pysam is not None
-        fasta_handle = pysam.FastaFile(str(input_FASTA))
+        pysam_mod = _require_pysam()
+        fasta_handle = pysam_mod.FastaFile(str(input_FASTA))
 
     # Open BED + output FASTA
     with input_bed.open("r") as bed, output_FASTA.open("w") as out_fasta:

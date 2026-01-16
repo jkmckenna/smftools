@@ -3,9 +3,17 @@ from __future__ import annotations
 import math
 from typing import Optional, Tuple, Union
 
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_pdf import PdfPages
+
+from smftools.optional_imports import require
+
+plt = require("matplotlib.pyplot", extra="plotting", purpose="HMM plots")
+pdf_backend = require(
+    "matplotlib.backends.backend_pdf",
+    extra="plotting",
+    purpose="PDF output",
+)
+PdfPages = pdf_backend.PdfPages
 
 
 def plot_hmm_size_contours(
