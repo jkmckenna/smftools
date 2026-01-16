@@ -15,9 +15,6 @@ from smftools.optional_imports import require
 
 logger = get_logger(__name__)
 
-p5 = require("pod5", extra="ont", purpose="POD5 metadata")
-Reader = p5.Reader
-
 
 def add_demux_type_annotation(
     adata,
@@ -233,6 +230,9 @@ def _collect_read_origins_from_pod5(pod5_path: str, target_ids: set[str]) -> dic
     Worker function: scan one POD5 file and return a mapping
     {read_id: pod5_basename} only for read_ids in `target_ids`.
     """
+    p5 = require("pod5", extra="ont", purpose="POD5 metadata")
+    Reader = p5.Reader
+    
     basename = os.path.basename(pod5_path)
     mapping: dict[str, str] = {}
 
