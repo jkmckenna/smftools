@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## binary_layers_to_ohe
 
 from smftools.logging_utils import get_logger

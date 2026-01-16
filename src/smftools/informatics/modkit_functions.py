@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import subprocess
 
 from smftools.logging_utils import get_logger

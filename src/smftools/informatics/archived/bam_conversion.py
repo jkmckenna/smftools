@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## bam_conversion
 
 def bam_conversion(fasta, output_directory, conversion_types, strands, basecalled_path, split_dir, mapping_threshold, experiment_name, bam_suffix):

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # calculate_pairwise_differences
 
 

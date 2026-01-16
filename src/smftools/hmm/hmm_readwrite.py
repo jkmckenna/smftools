@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def load_hmm(model_path, device="cpu"):
     """
     Reads in a pretrained HMM.

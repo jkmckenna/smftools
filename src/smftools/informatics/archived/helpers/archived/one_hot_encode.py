@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # one_hot_encode
 
 def one_hot_encode(sequence, device='auto'):

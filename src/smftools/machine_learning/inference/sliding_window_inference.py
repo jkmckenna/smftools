@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ..data import AnnDataModule
 from ..evaluation import PostInferenceModelEvaluator
 from .lightning_inference import run_lightning_inference

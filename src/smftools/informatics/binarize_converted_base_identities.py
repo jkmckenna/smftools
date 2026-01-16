@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def binarize_converted_base_identities(
     base_identities,
     strand,

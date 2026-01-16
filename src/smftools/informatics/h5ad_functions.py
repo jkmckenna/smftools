@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import glob
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed

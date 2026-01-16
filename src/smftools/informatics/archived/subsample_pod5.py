@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # subsample_pod5
 
 def subsample_pod5(pod5_path, read_name_path, output_directory):

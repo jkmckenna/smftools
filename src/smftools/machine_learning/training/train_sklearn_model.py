@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ..data import AnnDataModule
 from ..models import SklearnModelWrapper
 

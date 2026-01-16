@@ -1,3 +1,4 @@
+from __future__ import annotations
 
 def deaminase_smf(fasta, output_directory, conversion_types, strands, model_dir, model, input_data_path, split_dir, barcode_kit, mapping_threshold, experiment_name, bam_suffix, basecall, barcode_both_ends, trim, device, make_bigwigs, threads, input_already_demuxed):
     """

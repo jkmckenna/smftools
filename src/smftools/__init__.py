@@ -1,14 +1,20 @@
 """smftools"""
+from __future__ import annotations
 
 import logging
 import warnings
 from importlib import import_module
 from importlib.metadata import version
+from typing import TYPE_CHECKING
 
 from .readwrite import adata_to_df, merge_barcoded_anndatas_core, safe_read_h5ad, safe_write_h5ad
 
 package_name = "smftools"
 __version__ = version(package_name)
+
+if TYPE_CHECKING:
+    from smftools import cli, config, datasets, hmm, informatics, machine_learning, plotting
+    from smftools import preprocessing, tools
 
 _LAZY_MODULES = {
     "cli": "smftools.cli",

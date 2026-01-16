@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # basecall_pod5s
 
 def basecall_pod5s(config_path):

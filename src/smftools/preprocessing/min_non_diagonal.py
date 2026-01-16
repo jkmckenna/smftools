@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## min_non_diagonal
 
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # remove_duplicates
 
 def remove_duplicates(adata):
