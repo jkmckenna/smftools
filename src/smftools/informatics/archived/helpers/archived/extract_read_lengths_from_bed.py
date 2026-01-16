@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # extract_read_lengths_from_bed
 
 def extract_read_lengths_from_bed(file_path):

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def find_conversion_sites(fasta_file, modification_type, conversions, deaminase_footprinting=False):
     """
     Finds genomic coordinates of modified bases (5mC or 6mA) in a reference FASTA file.

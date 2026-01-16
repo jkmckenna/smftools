@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # get_chromosome_lengths
 
 def get_chromosome_lengths(fasta):

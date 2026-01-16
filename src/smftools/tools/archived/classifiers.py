@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## Train CNN, RNN, Random Forest models on double barcoded, low contamination datasets
 import torch
 import torch.nn as nn

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## mark_duplicates
 
 def mark_duplicates(adata, layers, obs_column='Reference', sample_col='Sample_names', method='N_masked_distances', distance_thresholds={}):

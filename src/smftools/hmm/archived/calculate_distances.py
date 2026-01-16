@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # calculate_distances
 
 def calculate_distances(intervals, threshold=0.9):

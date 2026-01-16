@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # classify_non_methylated_features
 
 def classify_non_methylated_features(read, model, coordinates, classification_mapping={}):

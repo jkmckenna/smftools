@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # one_hot_decode
 
 # String encodings

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## converted_BAM_to_adata
 
 def converted_BAM_to_adata(converted_FASTA, split_dir, mapping_threshold, experiment_name, conversion_types, bam_suffix):

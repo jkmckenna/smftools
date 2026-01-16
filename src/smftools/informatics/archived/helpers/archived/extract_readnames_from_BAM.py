@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # extract_readnames_from_BAM
 
 def extract_readnames_from_BAM(aligned_BAM):

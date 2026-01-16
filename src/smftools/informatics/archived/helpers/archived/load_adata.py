@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # load_adata
 ######################################################################################################
 # Archived helper; legacy imports removed for syntax compatibility.

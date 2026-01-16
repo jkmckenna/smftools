@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # duplicate_detection_with_hier_and_plots.py
 import copy
 import math
