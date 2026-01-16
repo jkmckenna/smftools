@@ -557,15 +557,18 @@ def process_bams_parallel(
                     completed_bams.add(processed_bam)
                 except Exception as e:
                     logger.error(f"Timeout waiting for worker process. Possible crash? {e}")
+                    _log_async_result_errors(results, bam_path_list)
 
             pool.close()
             pool.join()  # Ensure all workers finish
+
+    _log_async_result_errors(results, bam_path_list)
 
     # Final Concatenation Step
     h5ad_files = [f for f in h5_dir.iterdir() if f.suffix == ".h5ad"]
 
     if not h5ad_files:
-        logger.debug(f"No valid H5AD files generated. Exiting.")
+        logger.warning(f"No valid H5AD files generated. Exiting.")
         return None
 
     logger.info(f"Concatenating {len(h5ad_files)} H5AD files into final output...")
@@ -574,6 +577,15 @@ def process_bams_parallel(
     logger.info(f"Successfully generated final AnnData object.")
     return final_adata
 
+def _log_async_result_errors(results, bam_path_list):
+    """Log worker failures captured by multiprocessing AsyncResult objects."""
+    for bam, result in zip(bam_path_list, results):
+        if not result.ready():
+            continue
+        try:
+            result.get()
+        except Exception as exc:
+            logger.error("Worker process failed for %s: %s", bam, exc)
 
 def delete_intermediate_h5ads_and_tmpdir(
     h5_dir: Union[str, Path, Iterable[str], None],
