@@ -9,20 +9,68 @@ from collections import Counter, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import zip_longest
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+import shutil
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, TYPE_CHECKING
 
 import numpy as np
-import pysam
 from tqdm import tqdm
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 from ..readwrite import date_string, time_string
+
+if TYPE_CHECKING:
+    import pysam as pysam_types
+
+try:
+    import pysam
+except Exception:
+    pysam = None  # type: ignore
 
 logger = get_logger(__name__)
 
 _PROGRESS_RE = re.compile(r"Output records written:\s*(\d+)")
 _EMPTY_RE = re.compile(r"^\s*$")
+
+
+def _require_pysam() -> "pysam_types":
+    """Return the pysam module or raise if unavailable."""
+    if pysam is not None:
+        return pysam
+    return require("pysam", extra="pysam", purpose="samtools-compatible Python backend")
+
+
+def _resolve_samtools_backend(backend: str | None) -> str:
+    """Resolve backend choice for samtools-compatible operations.
+
+    Args:
+        backend: One of {"auto", "python", "cli"} (case-insensitive).
+
+    Returns:
+        Resolved backend string ("python" or "cli").
+    """
+    choice = (backend or "auto").strip().lower()
+    if choice not in {"auto", "python", "cli"}:
+        raise ValueError("samtools_backend must be one of: auto, python, cli")
+
+    have_pysam = pysam is not None
+    have_samtools = shutil.which("samtools") is not None
+
+    if choice == "python":
+        if not have_pysam:
+            raise RuntimeError("samtools_backend=python requires pysam to be installed.")
+        return "python"
+    if choice == "cli":
+        if not have_samtools:
+            raise RuntimeError("samtools_backend=cli requires samtools in PATH.")
+        return "cli"
+
+    if have_pysam:
+        return "python"
+    if have_samtools:
+        return "cli"
+    raise RuntimeError("Neither pysam nor samtools is available in PATH.")
 
 
 def _stream_dorado_logs(stderr_iter) -> None:
@@ -60,8 +108,9 @@ def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, 
 
     logger.debug(f"Converting BAM to FASTQ using _bam_to_fastq_with_pysam")
 
+    pysam_mod = _require_pysam()
     with (
-        pysam.AlignmentFile(bam_path, "rb", check_sq=False) as bam,
+        pysam_mod.AlignmentFile(bam_path, "rb", check_sq=False) as bam,
         open(fastq_path, "w", encoding="utf-8") as fq,
     ):
         for r in bam.fetch(until_eof=True):
@@ -103,7 +152,8 @@ def _sort_bam_with_pysam(
     if threads:
         args += ["-@", str(threads)]
     args += ["-o", out_bam, in_bam]
-    pysam.sort(*args)
+    pysam_mod = _require_pysam()
+    pysam_mod.sort(*args)
 
 
 def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = None) -> None:
@@ -115,11 +165,56 @@ def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = N
     """
     bam_path = str(bam_path)
     logger.debug(f"Indexing BAM using _index_bam_with_pysam")
+    pysam_mod = _require_pysam()
     # pysam.index supports samtools-style args
     if threads:
-        pysam.index("-@", str(threads), bam_path)
+        pysam_mod.index("-@", str(threads), bam_path)
     else:
-        pysam.index(bam_path)
+        pysam_mod.index(bam_path)
+
+
+def _bam_to_fastq_with_samtools(
+    bam_path: Union[str, Path], fastq_path: Union[str, Path]
+) -> None:
+    """Convert BAM to FASTQ using samtools."""
+    if not shutil.which("samtools"):
+        raise RuntimeError("samtools is required but not available in PATH.")
+    cmd = ["samtools", "fastq", str(bam_path)]
+    logger.debug("Converting BAM to FASTQ using samtools: %s", " ".join(cmd))
+    with open(fastq_path, "w", encoding="utf-8") as fq:
+        cp = subprocess.run(cmd, stdout=fq, stderr=subprocess.PIPE, text=True)
+    if cp.returncode != 0:
+        raise RuntimeError(f"samtools fastq failed (exit {cp.returncode}):\n{cp.stderr}")
+
+
+def _sort_bam_with_samtools(
+    in_bam: Union[str, Path], out_bam: Union[str, Path], threads: Optional[int] = None
+) -> None:
+    """Sort a BAM file using samtools."""
+    if not shutil.which("samtools"):
+        raise RuntimeError("samtools is required but not available in PATH.")
+    cmd = ["samtools", "sort", "-o", str(out_bam)]
+    if threads:
+        cmd += ["-@", str(threads)]
+    cmd.append(str(in_bam))
+    logger.debug("Sorting BAM using samtools: %s", " ".join(cmd))
+    cp = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if cp.returncode != 0:
+        raise RuntimeError(f"samtools sort failed (exit {cp.returncode}):\n{cp.stderr}")
+
+
+def _index_bam_with_samtools(bam_path: Union[str, Path], threads: Optional[int] = None) -> None:
+    """Index a BAM file using samtools."""
+    if not shutil.which("samtools"):
+        raise RuntimeError("samtools is required but not available in PATH.")
+    cmd = ["samtools", "index"]
+    if threads:
+        cmd += ["-@", str(threads)]
+    cmd.append(str(bam_path))
+    logger.debug("Indexing BAM using samtools: %s", " ".join(cmd))
+    cp = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if cp.returncode != 0:
+        raise RuntimeError(f"samtools index failed (exit {cp.returncode}):\n{cp.stderr}")
 
 
 def align_and_sort_BAM(
@@ -156,10 +251,15 @@ def align_and_sort_BAM(
     else:
         threads = None
 
+    samtools_backend = _resolve_samtools_backend(getattr(cfg, "samtools_backend", "auto"))
+
     if cfg.aligner == "minimap2":
         if not cfg.align_from_bam:
             logger.debug(f"Converting BAM to FASTQ: {input}")
-            _bam_to_fastq_with_pysam(input, input_as_fastq)
+            if samtools_backend == "python":
+                _bam_to_fastq_with_pysam(input, input_as_fastq)
+            else:
+                _bam_to_fastq_with_samtools(input, input_as_fastq)
             logger.debug(f"Aligning FASTQ to Reference: {input_as_fastq}")
             mm_input = input_as_fastq
         else:
@@ -220,12 +320,18 @@ def align_and_sort_BAM(
         logger.error(f"Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado")
         return
 
-    # --- Sort & Index with pysam ---
+    # --- Sort & Index ---
     logger.debug(f"Sorting: {aligned_output} -> {aligned_sorted_output}")
-    _sort_bam_with_pysam(aligned_output, aligned_sorted_output, threads=threads)
+    if samtools_backend == "python":
+        _sort_bam_with_pysam(aligned_output, aligned_sorted_output, threads=threads)
+    else:
+        _sort_bam_with_samtools(aligned_output, aligned_sorted_output, threads=threads)
 
     logger.debug(f"Indexing: {aligned_sorted_output}")
-    _index_bam_with_pysam(aligned_sorted_output, threads=threads)
+    if samtools_backend == "python":
+        _index_bam_with_pysam(aligned_sorted_output, threads=threads)
+    else:
+        _index_bam_with_samtools(aligned_sorted_output, threads=threads)
 
 
 def bam_qc(
@@ -236,25 +342,20 @@ def bam_qc(
     stats: bool = True,
     flagstats: bool = True,
     idxstats: bool = True,
+    samtools_backend: str | None = "auto",
 ) -> None:
     """
     QC for BAM/CRAMs: stats, flagstat, idxstats.
     Prefers pysam; falls back to `samtools` if needed.
     Runs BAMs in parallel (up to `threads`, default serial).
     """
-    import shutil
     import subprocess
 
     logger.debug("Performing BAM QC using bam_qc")
 
-    # Try to import pysam once
-    try:
-        import pysam  # type: ignore
-
-        have_pysam = True
-    except Exception:
-        pysam = None  # type: ignore
-        have_pysam = False
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    have_pysam = backend_choice == "python"
+    pysam_mod = _require_pysam() if have_pysam else None
 
     bam_qc_dir = Path(bam_qc_dir)
     bam_qc_dir.mkdir(parents=True, exist_ok=True)
@@ -275,11 +376,9 @@ def bam_qc(
         if _has_index(p):
             return
         if have_pysam:
-            assert pysam is not None
-            pysam.index(str(p))  # supports BAM & CRAM
+            assert pysam_mod is not None
+            pysam_mod.index(str(p))  # supports BAM & CRAM
         else:
-            if not shutil.which("samtools"):
-                raise RuntimeError("Neither pysam nor samtools is available in PATH.")
             cmd = ["samtools", "index", str(p)]
             # capture text so errors are readable; raise on failure
             cp = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -332,16 +431,13 @@ def bam_qc(
             # Still attempt stats/flagstat if requested; idxstats may fail later if index is required.
             logger.warning("Indexing failed for %s: %s", bam, e)
 
-        if not have_pysam:
-            import shutil
-
-            if not shutil.which("samtools"):
-                raise RuntimeError("Neither pysam nor samtools is available in PATH.")
-
         # --- stats ---
         if stats:
-            if have_pysam and pysam is not None and hasattr(pysam, "stats"):
-                txt = pysam.stats(str(bam))
+            if have_pysam:
+                assert pysam_mod is not None
+                if not hasattr(pysam_mod, "stats"):
+                    raise RuntimeError("pysam.stats is unavailable in this pysam build.")
+                txt = pysam_mod.stats(str(bam))
                 out_stats.write_text(txt)
                 results.append(("stats(pysam)", 0))
             else:
@@ -351,8 +447,11 @@ def bam_qc(
 
         # --- flagstat ---
         if flagstats:
-            if have_pysam and pysam is not None and hasattr(pysam, "flagstat"):
-                txt = pysam.flagstat(str(bam))
+            if have_pysam:
+                assert pysam_mod is not None
+                if not hasattr(pysam_mod, "flagstat"):
+                    raise RuntimeError("pysam.flagstat is unavailable in this pysam build.")
+                txt = pysam_mod.flagstat(str(bam))
                 out_flag.write_text(txt)
                 results.append(("flagstat(pysam)", 0))
             else:
@@ -362,8 +461,11 @@ def bam_qc(
 
         # --- idxstats ---
         if idxstats:
-            if have_pysam and pysam is not None and hasattr(pysam, "idxstats"):
-                txt = pysam.idxstats(str(bam))
+            if have_pysam:
+                assert pysam_mod is not None
+                if not hasattr(pysam_mod, "idxstats"):
+                    raise RuntimeError("pysam.idxstats is unavailable in this pysam build.")
+                txt = pysam_mod.idxstats(str(bam))
                 out_idx.write_text(txt)
                 results.append(("idxstats(pysam)", 0))
             else:

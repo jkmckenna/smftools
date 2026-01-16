@@ -6,17 +6,82 @@ from pathlib import Path
 from typing import Dict, Iterable, Tuple
 
 import numpy as np
-import pysam
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-from pyfaidx import Fasta
 
 from smftools.logging_utils import get_logger
 
 from ..readwrite import time_string
 
 logger = get_logger(__name__)
+
+try:
+    import pysam
+except Exception:
+    pysam = None  # type: ignore
+
+try:
+    import shutil
+    import subprocess
+except Exception:  # pragma: no cover - stdlib
+    shutil = None  # type: ignore
+    subprocess = None  # type: ignore
+
+
+def _resolve_fasta_backend() -> str:
+    """Resolve the backend to use for FASTA access."""
+    if pysam is not None:
+        return "python"
+    if shutil is not None and shutil.which("samtools"):
+        return "cli"
+    raise RuntimeError("FASTA access requires pysam or samtools in PATH.")
+
+
+def _ensure_fasta_index(fasta: Path) -> None:
+    fai = fasta.with_suffix(fasta.suffix + ".fai")
+    if fai.exists():
+        return
+    if pysam is not None:
+        pysam.faidx(str(fasta))
+        return
+    if subprocess is None or shutil is None or not shutil.which("samtools"):
+        raise RuntimeError("FASTA indexing requires pysam or samtools in PATH.")
+    cp = subprocess.run(
+        ["samtools", "faidx", str(fasta)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if cp.returncode != 0:
+        raise RuntimeError(f"samtools faidx failed (exit {cp.returncode}):\n{cp.stderr}")
+
+
+def _bed_to_faidx_region(chrom: str, start: int, end: int) -> str:
+    """Convert 0-based half-open BED coords to samtools faidx region."""
+    start1 = start + 1
+    end1 = end
+    if start1 > end1:
+        start1, end1 = end1, start1
+    return f"{chrom}:{start1}-{end1}"
+
+
+def _fetch_sequence_with_samtools(fasta: Path, chrom: str, start: int, end: int) -> str:
+    if subprocess is None or shutil is None:
+        raise RuntimeError("samtools backend is unavailable.")
+    if not shutil.which("samtools"):
+        raise RuntimeError("samtools is required but not available in PATH.")
+    region = _bed_to_faidx_region(chrom, start, end)
+    cp = subprocess.run(
+        ["samtools", "faidx", str(fasta), region],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if cp.returncode != 0:
+        raise RuntimeError(f"samtools faidx failed (exit {cp.returncode}):\n{cp.stderr}")
+    lines = [line.strip() for line in cp.stdout.splitlines() if line and not line.startswith(">")]
+    return "".join(lines)
 
 
 def _convert_FASTA_record(
@@ -307,8 +372,13 @@ def subsample_fasta_from_bed(
     # Ensure output directory exists
     output_directory.mkdir(parents=True, exist_ok=True)
 
-    # Load the FASTA file using pyfaidx
-    fasta = Fasta(str(input_FASTA))  # pyfaidx requires string paths
+    backend = _resolve_fasta_backend()
+    _ensure_fasta_index(input_FASTA)
+
+    fasta_handle = None
+    if backend == "python":
+        assert pysam is not None
+        fasta_handle = pysam.FastaFile(str(input_FASTA))
 
     # Open BED + output FASTA
     with input_bed.open("r") as bed, output_FASTA.open("w") as out_fasta:
@@ -319,15 +389,24 @@ def subsample_fasta_from_bed(
             end = int(fields[2])  # BED is 0-based and end is exclusive
             desc = " ".join(fields[3:]) if len(fields) > 3 else ""
 
-            if chrom not in fasta:
+            if backend == "python":
+                assert fasta_handle is not None
+                if chrom not in fasta_handle.references:
+                    logger.warning(f"{chrom} not found in FASTA")
+                    continue
+                sequence = fasta_handle.fetch(chrom, start, end)
+            else:
+                sequence = _fetch_sequence_with_samtools(input_FASTA, chrom, start, end)
+
+            if not sequence:
                 logger.warning(f"{chrom} not found in FASTA")
                 continue
-
-            # pyfaidx is 1-based indexing internally, but [start:end] works with BED coords
-            sequence = fasta[chrom][start:end].seq
 
             header = f">{chrom}:{start}-{end}"
             if desc:
                 header += f"    {desc}"
 
             out_fasta.write(f"{header}\n{sequence}\n")
+
+    if fasta_handle is not None:
+        fasta_handle.close()
