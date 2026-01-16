@@ -10,8 +10,7 @@ from collections import Counter, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import zip_longest
 from pathlib import Path
-import shutil
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 from tqdm import tqdm
@@ -76,9 +75,10 @@ def _resolve_samtools_backend(backend: str | None) -> str:
 
 def _has_bam_index(bam_path: Path) -> bool:
     """Return True if the BAM index exists alongside the BAM."""
-    return bam_path.with_suffix(bam_path.suffix + ".bai").exists() or Path(
-        str(bam_path) + ".bai"
-    ).exists()
+    return (
+        bam_path.with_suffix(bam_path.suffix + ".bai").exists()
+        or Path(str(bam_path) + ".bai").exists()
+    )
 
 
 def _ensure_bam_index(bam_path: Path, backend: str) -> None:
@@ -215,9 +215,7 @@ def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = N
         pysam_mod.index(bam_path)
 
 
-def _bam_to_fastq_with_samtools(
-    bam_path: Union[str, Path], fastq_path: Union[str, Path]
-) -> None:
+def _bam_to_fastq_with_samtools(bam_path: Union[str, Path], fastq_path: Union[str, Path]) -> None:
     """Convert BAM to FASTQ using samtools."""
     if not shutil.which("samtools"):
         raise RuntimeError("samtools is required but not available in PATH.")
@@ -881,7 +879,8 @@ def concatenate_fastqs_to_bam(
                 rg_fields = [f"ID:{bc}"]
                 if rg_sample_field:
                     rg_fields.append(f"SM:{rg_sample_field}")
-                header_lines.append(f"@RG\t{'\t'.join(rg_fields)}")
+                rg_body = "\t".join(rg_fields)
+                header_lines.append(f"@RG\t{rg_body}")
         header_lines.append("@PG\tID:concat-fastq\tPN:concatenate_fastqs_to_bam\tVN:1")
         bam_out_ctx.stdin.write("\n".join(header_lines) + "\n")
 
@@ -917,7 +916,9 @@ def concatenate_fastqs_to_bam(
                 )
                 if name is None:
                     name = (
-                        _clean(getattr(rec2, "name", None) if backend_choice == "python" else rec2[0])
+                        _clean(
+                            getattr(rec2, "name", None) if backend_choice == "python" else rec2[0]
+                        )
                         if rec2 is not None
                         else None
                     )
@@ -1354,9 +1355,10 @@ def extract_readnames_from_bam(aligned_BAM, samtools_backend: str | None = "auto
 
     if backend_choice == "python":
         pysam_mod = _require_pysam()
-        with pysam_mod.AlignmentFile(aligned_BAM, "rb") as bam, open(
-            txt_output, "w", encoding="utf-8"
-        ) as output_file:
+        with (
+            pysam_mod.AlignmentFile(aligned_BAM, "rb") as bam,
+            open(txt_output, "w", encoding="utf-8") as output_file,
+        ):
             for read in bam:
                 output_file.write(f"{read.query_name}\n")
         return
@@ -1370,7 +1372,7 @@ def extract_readnames_from_bam(aligned_BAM, samtools_backend: str | None = "auto
             if not line.strip():
                 continue
             qname = line.split("\t", 1)[0]
-            output_file.write(f"{qname}\n")    
+            output_file.write(f"{qname}\n")
     rc = samtools_view.wait()
     if rc != 0:
         stderr = samtools_view.stderr.read() if samtools_view.stderr else ""

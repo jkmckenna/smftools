@@ -4,7 +4,9 @@ from smftools.optional_imports import require
 
 torch = require("torch", extra="ml-base", purpose="Lightning training")
 pytorch_lightning = require("pytorch_lightning", extra="ml-extended", purpose="Lightning training")
-pl_callbacks = require("pytorch_lightning.callbacks", extra="ml-extended", purpose="Lightning training")
+pl_callbacks = require(
+    "pytorch_lightning.callbacks", extra="ml-extended", purpose="Lightning training"
+)
 
 Trainer = pytorch_lightning.Trainer
 EarlyStopping = pl_callbacks.EarlyStopping

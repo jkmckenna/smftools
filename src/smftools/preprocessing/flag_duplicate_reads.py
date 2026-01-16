@@ -7,7 +7,7 @@ import os
 import warnings
 from collections import defaultdict
 from importlib.util import find_spec
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd

@@ -6,7 +6,7 @@ import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Dict, Iterable, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Iterable, Tuple
 
 import numpy as np
 from Bio import SeqIO
@@ -28,6 +28,7 @@ def _require_pysam() -> "pysam_module":
     if pysam_types is not None:
         return pysam_types
     return require("pysam", extra="pysam", purpose="FASTA access")
+
 
 pysam_types = None
 if find_spec("pysam") is not None:

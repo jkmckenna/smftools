@@ -3,9 +3,10 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
+
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 

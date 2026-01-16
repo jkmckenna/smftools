@@ -428,7 +428,8 @@ def compute_positionwise_statistics(
                             worker = _relative_risk_row_job
                         out = np.full((n_pos, n_pos), np.nan, dtype=float)
                         tasks = (
-                            joblib.delayed(worker)(i, X_bin, min_count_for_pairwise) for i in range(n_pos)
+                            joblib.delayed(worker)(i, X_bin, min_count_for_pairwise)
+                            for i in range(n_pos)
                         )
                         pbar_rows = tqdm(
                             total=n_pos, desc=f"{m}: rows ({sample}__{ref})", leave=False

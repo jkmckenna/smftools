@@ -37,6 +37,7 @@ def calculate_umap(
     import os
 
     import numpy as np
+
     sc = require("scanpy", extra="scanpy", purpose="UMAP calculation")
     from scipy.sparse import issparse
 

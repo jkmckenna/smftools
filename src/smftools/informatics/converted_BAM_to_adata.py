@@ -7,11 +7,12 @@ import time
 import traceback
 from multiprocessing import Manager, Pool, current_process
 from pathlib import Path
-from typing import Iterable, Optional, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable, Optional, Union
 
 import anndata as ad
 import numpy as np
 import pandas as pd
+
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 

@@ -236,6 +236,7 @@ def plot_positionwise_matrix(
 
     import numpy as np
     import pandas as pd
+
     plt = require("matplotlib.pyplot", extra="plotting", purpose="position stats plots")
     sns = require("seaborn", extra="plotting", purpose="position stats plots")
 

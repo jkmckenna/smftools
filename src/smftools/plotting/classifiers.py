@@ -9,6 +9,7 @@ from smftools.optional_imports import require
 plt = require("matplotlib.pyplot", extra="plotting", purpose="model plots")
 torch = require("torch", extra="ml-base", purpose="model saliency plots")
 
+
 def plot_model_performance(metrics, save_path=None):
     """Plot ROC and precision-recall curves for model metrics.
 
@@ -356,6 +357,7 @@ def plot_model_curves_from_adata_with_frequency_grid(
     import os
 
     import numpy as np
+
     sklearn_metrics = require("sklearn.metrics", extra="ml-base", purpose="model curves")
     auc = sklearn_metrics.auc
     precision_recall_curve = sklearn_metrics.precision_recall_curve
