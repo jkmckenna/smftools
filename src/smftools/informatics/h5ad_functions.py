@@ -92,7 +92,7 @@ def add_read_length_and_mapping_qc(
     extract_read_features_from_bam_callable=None,
     bypass: bool = False,
     force_redo: bool = True,
-    samtools_backend: str | None = "auto"
+    samtools_backend: str | None = "auto",
 ):
     """
     Populate adata.obs with read/mapping QC columns.

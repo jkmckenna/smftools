@@ -1302,8 +1302,7 @@ def extract_base_identities(
 
 
 def extract_read_features_from_bam(
-    bam_file_path: str | Path, 
-    samtools_backend: str | None = "auto"
+    bam_file_path: str | Path, samtools_backend: str | None = "auto"
 ) -> Dict[str, List[float]]:
     """Extract read metrics from a BAM file.
 
