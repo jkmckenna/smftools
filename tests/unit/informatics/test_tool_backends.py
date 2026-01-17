@@ -132,9 +132,7 @@ def test_extract_read_features_from_bam_python_backend(monkeypatch, tmp_path):
 
     bam_path = tmp_path / "sample.bam"
     bam_path.write_text("stub")
-    metrics = bam_functions.extract_read_features_from_bam(
-        bam_path, samtools_backend="python"
-    )
+    metrics = bam_functions.extract_read_features_from_bam(bam_path, samtools_backend="python")
     assert metrics["read1"] == [4.0, 25.0, 100.0, 4.0, 60.0]
 
 

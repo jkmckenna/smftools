@@ -556,7 +556,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             deaminase_footprinting,
             delete_intermediates=cfg.delete_intermediate_hdfs,
             double_barcoded_path=double_barcoded_path,
-            samtools_backend=cfg.samtools_backend
+            samtools_backend=cfg.samtools_backend,
         )
     else:
         if mod_bed_dir.is_dir():

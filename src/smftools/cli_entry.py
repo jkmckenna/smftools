@@ -12,7 +12,7 @@ from .cli.load_adata import load_adata
 from .cli.preprocess_adata import preprocess_adata
 from .cli.spatial_adata import spatial_adata
 from .informatics.pod5_functions import subsample_pod5
-from .logging_utils import setup_logging, get_logger
+from .logging_utils import get_logger, setup_logging
 from .readwrite import concatenate_h5ads
 
 

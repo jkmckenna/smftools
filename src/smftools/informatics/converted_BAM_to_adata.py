@@ -581,6 +581,7 @@ def process_bams_parallel(
     logger.info(f"Successfully generated final AnnData object.")
     return final_adata
 
+
 def _log_async_result_errors(results, bam_path_list):
     """Log worker failures captured by multiprocessing AsyncResult objects."""
     for bam, result in zip(bam_path_list, results):
@@ -590,6 +591,7 @@ def _log_async_result_errors(results, bam_path_list):
             result.get()
         except Exception as exc:
             logger.error("Worker process failed for %s: %s", bam, exc)
+
 
 def _get_logger_config() -> tuple[int, Path | None]:
     smftools_logger = logging.getLogger("smftools")
@@ -608,7 +610,6 @@ def _ensure_worker_logging(log_level: int, log_file: Path | None) -> None:
     smftools_logger = logging.getLogger("smftools")
     if not smftools_logger.handlers:
         setup_logging(level=log_level, log_file=log_file)
-
 
 
 def delete_intermediate_h5ads_and_tmpdir(

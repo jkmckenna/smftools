@@ -232,7 +232,7 @@ def _collect_read_origins_from_pod5(pod5_path: str, target_ids: set[str]) -> dic
     """
     p5 = require("pod5", extra="ont", purpose="POD5 metadata")
     Reader = p5.Reader
-    
+
     basename = os.path.basename(pod5_path)
     mapping: dict[str, str] = {}
 
