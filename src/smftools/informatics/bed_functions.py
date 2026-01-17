@@ -443,6 +443,7 @@ def aligned_BAM_to_bed(
     make_bigwigs,
     threads=None,
     *,
+    samtools_backend: str | None = "auto",
     bedtools_backend: str | None = "auto",
     bigwig_backend: str | None = "auto",
 ):
@@ -471,32 +472,79 @@ def aligned_BAM_to_bed(
 
     logger.debug(f"Creating BED-like file from BAM (with MAPQ and avg base quality): {aligned_BAM}")
 
-    pysam_mod = _require_pysam()
-    with pysam_mod.AlignmentFile(aligned_BAM, "rb") as bam, open(bed_output, "w") as out:
-        for read in bam.fetch(until_eof=True):
-            if read.is_unmapped:
-                chrom = "*"
-                start1 = 1
-                rl = read.query_length or 0
-                mapq = 0
-            else:
-                chrom = bam.get_reference_name(read.reference_id)
-                # pysam reference_start is 0-based → +1 for 1-based SAM-like start
-                start1 = int(read.reference_start) + 1
-                rl = read.query_length or 0
-                mapq = int(read.mapping_quality)
+    backend_choice = _resolve_backend(
+        samtools_backend,
+        tool="samtools",
+        python_available=pysam is not None,
+        cli_name="samtools",
+    )
+    with open(bed_output, "w") as out:
+        if backend_choice == "python":
+            pysam_mod = _require_pysam()
+            with pysam_mod.AlignmentFile(aligned_BAM, "rb") as bam:
+                for read in bam.fetch(until_eof=True):
+                    if read.is_unmapped:
+                        chrom = "*"
+                        start1 = 1
+                        rl = read.query_length or 0
+                        mapq = 0
+                    else:
+                        chrom = bam.get_reference_name(read.reference_id)
+                        # pysam reference_start is 0-based → +1 for 1-based SAM-like start
+                        start1 = int(read.reference_start) + 1
+                        rl = read.query_length or 0
+                        mapq = int(read.mapping_quality)
 
-            # End position in 1-based inclusive coords
-            end1 = start1 + (rl or 0) - 1
+                    # End position in 1-based inclusive coords
+                    end1 = start1 + (rl or 0) - 1
 
-            qname = read.query_name
-            quals = read.query_qualities
-            if quals is None or rl == 0:
-                avg_q = float("nan")
-            else:
-                avg_q = float(np.mean(quals))
+                    qname = read.query_name
+                    quals = read.query_qualities
+                    if quals is None or rl == 0:
+                        avg_q = float("nan")
+                    else:
+                        avg_q = float(np.mean(quals))
 
-            out.write(f"{chrom}\t{start1}\t{end1}\t{rl}\t{qname}\t{mapq}\t{avg_q:.3f}\n")
+                    out.write(f"{chrom}\t{start1}\t{end1}\t{rl}\t{qname}\t{mapq}\t{avg_q:.3f}\n")
+        else:
+            samtools_view = subprocess.Popen(
+                ["samtools", "view", str(aligned_BAM)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert samtools_view.stdout is not None
+            for line in samtools_view.stdout:
+                if not line.strip():
+                    continue
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) < 11:
+                    continue
+                qname = fields[0]
+                flag = int(fields[1])
+                chrom = fields[2]
+                pos = int(fields[3])
+                mapq = int(fields[4])
+                seq = fields[9]
+                qual = fields[10]
+                rl = 0 if seq == "*" else len(seq)
+                is_unmapped = bool(flag & 0x4) or chrom == "*"
+                if is_unmapped:
+                    chrom = "*"
+                    start1 = 1
+                    mapq = 0
+                else:
+                    start1 = pos
+                end1 = start1 + (rl or 0) - 1
+                if qual == "*" or rl == 0:
+                    avg_q = float("nan")
+                else:
+                    avg_q = float(np.mean([ord(ch) - 33 for ch in qual]))
+                out.write(f"{chrom}\t{start1}\t{end1}\t{rl}\t{qname}\t{mapq}\t{avg_q:.3f}\n")
+            rc = samtools_view.wait()
+            if rc != 0:
+                stderr = samtools_view.stderr.read() if samtools_view.stderr else ""
+                raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
 
     logger.debug(f"BED-like file created: {bed_output}")
 
