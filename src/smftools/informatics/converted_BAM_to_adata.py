@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import gc
-import multiprocessing
+import logging
 import shutil
 import time
 import traceback
@@ -13,7 +13,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 
-from smftools.logging_utils import get_logger
+from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
 
 from ..readwrite import make_dirs
@@ -44,6 +44,7 @@ def converted_BAM_to_adata(
     deaminase_footprinting: bool = False,
     delete_intermediates: bool = True,
     double_barcoded_path: Path | None = None,
+    samtools_backend: str | None = "auto",
 ) -> tuple[ad.AnnData | None, Path]:
     """Convert BAM files into an AnnData object by binarizing modified base identities.
 
@@ -104,7 +105,7 @@ def converted_BAM_to_adata(
 
     ## Filter BAM Files by Mapping Threshold
     records_to_analyze = filter_bams_by_mapping_threshold(
-        bam_path_list, bam_files, mapping_threshold
+        bam_path_list, bam_files, mapping_threshold, samtools_backend
     )
 
     ## Process BAMs in Parallel
@@ -119,6 +120,7 @@ def converted_BAM_to_adata(
         max_reference_length,
         device,
         deaminase_footprinting,
+        samtools_backend,
     )
 
     final_adata.uns["References"] = {}
@@ -246,12 +248,12 @@ def process_conversion_sites(
     return max_reference_length, record_FASTA_dict, chromosome_FASTA_dict
 
 
-def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold):
+def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold, samtools_backend):
     """Filters BAM files based on mapping threshold."""
     records_to_analyze = set()
 
     for i, bam in enumerate(bam_path_list):
-        aligned_reads, unaligned_reads, record_counts = count_aligned_reads(bam)
+        aligned_reads, unaligned_reads, record_counts = count_aligned_reads(bam, samtools_backend)
         aligned_percent = aligned_reads * 100 / (aligned_reads + unaligned_reads)
         logger.info(f"{aligned_percent:.2f}% of reads in {bam_files[i].name} aligned successfully.")
 
@@ -273,6 +275,7 @@ def process_single_bam(
     max_reference_length,
     device,
     deaminase_footprinting,
+    samtools_backend,
 ):
     """Worker function to process a single BAM file (must be at top-level for multiprocessing)."""
     adata_list = []
@@ -287,7 +290,7 @@ def process_single_bam(
         # Extract Base Identities
         fwd_bases, rev_bases, mismatch_counts_per_read, mismatch_trend_per_read = (
             extract_base_identities(
-                bam, record, range(current_length), max_reference_length, sequence
+                bam, record, range(current_length), max_reference_length, sequence, samtools_backend
             )
         )
         mismatch_trend_series = pd.Series(mismatch_trend_per_read)
@@ -439,13 +442,15 @@ def worker_function(
     max_reference_length,
     device,
     deaminase_footprinting,
+    samtools_backend,
     progress_queue,
+    log_level,
+    log_file,
 ):
     """Worker function that processes a single BAM and writes the output to an H5AD file."""
+    _ensure_worker_logging(log_level, log_file)
     worker_id = current_process().pid  # Get worker process ID
     sample = bam.stem
-
-    logger.info(f"Testing {worker_id}")
 
     try:
         logger.info(f"[Worker {worker_id}] Processing BAM: {sample}")
@@ -479,6 +484,7 @@ def worker_function(
             max_reference_length,
             device,
             deaminase_footprinting,
+            samtools_backend,
         )
 
         if adata is not None:
@@ -509,11 +515,13 @@ def process_bams_parallel(
     max_reference_length,
     device,
     deaminase_footprinting,
+    samtools_backend,
 ):
     """Processes BAM files in parallel, writes each H5AD to disk, and concatenates them at the end."""
     make_dirs(h5_dir)  # Ensure h5_dir exists
 
     logger.info(f"Starting parallel BAM processing with {num_threads} threads...")
+    log_level, log_file = _get_logger_config()
 
     with Manager() as manager:
         progress_queue = manager.Queue()
@@ -534,7 +542,10 @@ def process_bams_parallel(
                         max_reference_length,
                         device,
                         deaminase_footprinting,
+                        samtools_backend,
                         progress_queue,
+                        log_level,
+                        log_file,
                     ),
                 )
                 for i, bam in enumerate(bam_path_list)
@@ -547,7 +558,6 @@ def process_bams_parallel(
             while len(completed_bams) < len(bam_path_list):
                 try:
                     processed_bam = progress_queue.get(timeout=2400)  # Wait for a finished BAM
-                    logger.info(f"Finished processing {processed_bam} - adding to completed set")
                     completed_bams.add(processed_bam)
                 except Exception as e:
                     logger.error(f"Timeout waiting for worker process. Possible crash? {e}")
@@ -580,6 +590,26 @@ def _log_async_result_errors(results, bam_path_list):
             result.get()
         except Exception as exc:
             logger.error("Worker process failed for %s: %s", bam, exc)
+
+def _get_logger_config() -> tuple[int, Path | None]:
+    smftools_logger = logging.getLogger("smftools")
+    level = smftools_logger.level
+    if level == logging.NOTSET:
+        level = logging.INFO
+    log_file: Path | None = None
+    for handler in smftools_logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            log_file = Path(handler.baseFilename)
+            break
+    return level, log_file
+
+
+def _ensure_worker_logging(log_level: int, log_file: Path | None) -> None:
+    smftools_logger = logging.getLogger("smftools")
+    if not smftools_logger.handlers:
+        setup_logging(level=log_level, log_file=log_file)
+
+
 
 def delete_intermediate_h5ads_and_tmpdir(
     h5_dir: Union[str, Path, Iterable[str], None],

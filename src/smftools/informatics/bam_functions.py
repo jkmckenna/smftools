@@ -1058,7 +1058,7 @@ def count_aligned_reads(bam_file, samtools_backend: str | None = "auto"):
         with pysam_mod.AlignmentFile(str(bam_file), "rb") as bam:
             total_reads = bam.mapped + bam.unmapped
             # Iterate over reads to get the total mapped read counts and the reads that map to each reference
-            for read in tqdm(bam, desc="Counting aligned reads in BAM", total=total_reads):
+            for read in bam:
                 if read.is_unmapped:
                     unaligned_reads_count += 1
                 else:
@@ -1200,6 +1200,7 @@ def extract_base_identities(
     ref_seq = sequence.upper()
 
     if backend_choice == "python":
+        logger.debug("Extracting base identities using python")
         pysam_mod = _require_pysam()
         # print(f"{timestamp} Reading reads from {chromosome} BAM file: {bam_file}")
         with pysam_mod.AlignmentFile(str(bam_file), "rb") as bam:
@@ -1226,6 +1227,7 @@ def extract_base_identities(
                         mismatch_counts_per_read[read_name][ref_base][read_base] += 1
     else:
         bam_path = Path(bam_file)
+        logger.debug("Extracting base identities using samtools")
         _ensure_bam_index(bam_path, backend_choice)
 
         def _iter_aligned_pairs(cigar: str, start: int) -> Iterable[Tuple[int, int]]:

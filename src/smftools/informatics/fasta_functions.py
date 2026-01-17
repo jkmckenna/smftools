@@ -37,10 +37,10 @@ if find_spec("pysam") is not None:
 
 def _resolve_fasta_backend() -> str:
     """Resolve the backend to use for FASTA access."""
-    if shutil is not None and shutil.which("samtools"):
-        return "cli"
     if pysam_types is not None:
         return "python"
+    if shutil is not None and shutil.which("samtools"):
+        return "cli"
     raise RuntimeError("FASTA access requires pysam or samtools in PATH.")
 
 
