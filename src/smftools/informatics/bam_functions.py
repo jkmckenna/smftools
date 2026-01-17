@@ -1367,7 +1367,7 @@ def extract_read_features_from_bam(
 
     def _mapped_length_from_cigar(cigar: str) -> int:
         mapped = 0
-        for length_str, op in re.findall(r"(\\d+)([MIDNSHP=XB])", cigar):
+        for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
             length = int(length_str)
             if op in {"M", "=", "X"}:
                 mapped += length

@@ -162,6 +162,7 @@ def flag_duplicate_reads(
     import copy
     import warnings
 
+    import anndata as ad
     import numpy as np
     import pandas as pd
 
