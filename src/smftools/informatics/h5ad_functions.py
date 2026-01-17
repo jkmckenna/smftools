@@ -92,6 +92,7 @@ def add_read_length_and_mapping_qc(
     extract_read_features_from_bam_callable=None,
     bypass: bool = False,
     force_redo: bool = True,
+    samtools_backend: str | None = "auto"
 ):
     """
     Populate adata.obs with read/mapping QC columns.
@@ -135,7 +136,7 @@ def add_read_length_and_mapping_qc(
                     "No `read_metrics` provided and `extract_read_features_from_bam` not found."
                 )
             for bam in bam_files:
-                bam_read_metrics = extractor(bam)
+                bam_read_metrics = extractor(bam, samtools_backend)
                 if not isinstance(bam_read_metrics, dict):
                     raise ValueError(f"extract_read_features_from_bam returned non-dict for {bam}")
                 read_metrics.update(bam_read_metrics)

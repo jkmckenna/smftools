@@ -14,6 +14,7 @@ _LAZY_ATTRS = {
     "plot_model_curves_from_adata": "smftools.plotting.classifiers",
     "plot_model_curves_from_adata_with_frequency_grid": "smftools.plotting.classifiers",
     "plot_model_performance": "smftools.plotting.classifiers",
+    "plot_read_qc_histograms": "smftools.plotting.qc_plotting",
 }
 
 

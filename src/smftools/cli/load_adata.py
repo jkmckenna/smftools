@@ -612,6 +612,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             cfg.delete_batch_hdfs,
             cfg.threads,
             double_barcoded_path,
+            cfg.samtools_backend,
         )
         if cfg.delete_intermediate_tsvs:
             delete_tsvs(mod_tsv_dir)
@@ -632,6 +633,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         extract_read_features_from_bam_callable=extract_read_features_from_bam,
         bypass=cfg.bypass_add_read_length_and_mapping_qc,
         force_redo=cfg.force_redo_add_read_length_and_mapping_qc,
+        samtools_backend=cfg.samtools_backend,
     )
 
     raw_adata.obs["Raw_modification_signal"] = np.nansum(raw_adata.X, axis=1)

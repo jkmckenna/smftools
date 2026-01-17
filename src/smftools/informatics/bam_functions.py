@@ -1233,7 +1233,7 @@ def extract_base_identities(
         def _iter_aligned_pairs(cigar: str, start: int) -> Iterable[Tuple[int, int]]:
             qpos = 0
             rpos = start
-            for length_str, op in re.findall(r"(\\d+)([MIDNSHP=XB])", cigar):
+            for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
                 length = int(length_str)
                 if op in {"M", "=", "X"}:
                     for _ in range(length):
@@ -1302,7 +1302,8 @@ def extract_base_identities(
 
 
 def extract_read_features_from_bam(
-    bam_file_path: str | Path, samtools_backend: str | None = "auto"
+    bam_file_path: str | Path, 
+    samtools_backend: str | None = "auto"
 ) -> Dict[str, List[float]]:
     """Extract read metrics from a BAM file.
 
