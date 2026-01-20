@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
-import torch
+
+from smftools.optional_imports import require
 
 from .inference_utils import annotate_split_column
+
+torch = require("torch", extra="ml-base", purpose="Lightning inference")
 
 
 def run_lightning_inference(adata, model, datamodule, trainer, prefix="model", devices=1):

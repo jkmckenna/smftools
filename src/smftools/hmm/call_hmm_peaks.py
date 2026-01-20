@@ -1,9 +1,11 @@
-# FILE: smftools/hmm/call_hmm_peaks.py
+from __future__ import annotations
 
+# FILE: smftools/hmm/call_hmm_peaks.py
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Union
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 logger = get_logger(__name__)
 
@@ -35,11 +37,12 @@ def call_hmm_peaks(
       - adata.var["is_in_any_{layer}_peak_{ref}"]
       - adata.var["is_in_any_peak"] (global)
     """
-    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
     from scipy.signal import find_peaks
     from scipy.sparse import issparse
+
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="HMM peak plots")
 
     if not inplace:
         adata = adata.copy()

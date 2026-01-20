@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Optional, Tuple
 
 import anndata as ad
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 logger = get_logger(__name__)
 
@@ -153,7 +156,8 @@ def spatial_adata_core(
 
     import numpy as np
     import pandas as pd
-    import scanpy as sc
+
+    sc = require("scanpy", extra="scanpy", purpose="spatial analyses")
 
     from ..metadata import record_smftools_metadata
     from ..plotting import (

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 from typing import Sequence
@@ -10,8 +12,30 @@ from .cli.load_adata import load_adata
 from .cli.preprocess_adata import preprocess_adata
 from .cli.spatial_adata import spatial_adata
 from .informatics.pod5_functions import subsample_pod5
-from .logging_utils import setup_logging
+from .logging_utils import get_logger, setup_logging
 from .readwrite import concatenate_h5ads
+
+
+def _configure_multiprocessing() -> None:
+    import multiprocessing as mp
+    import sys
+
+    logger = get_logger(__name__)
+
+    try:
+        if sys.platform == "win32":
+            mp.set_start_method("spawn")
+            logger.debug("Setting multiprocessing start method to spawn")
+        else:
+            # try forkserver first, fallback to spawn
+            try:
+                mp.set_start_method("forkserver")
+                logger.debug("Setting multiprocessing start method to forkserver")
+            except ValueError:
+                mp.set_start_method("spawn")
+                logger.debug("Setting multiprocessing start method to spawn")
+    except RuntimeError:
+        logger.warning("Could not set multiprocessing start method")
 
 
 @click.group()
@@ -32,6 +56,7 @@ def cli(log_file: Path | None, log_level: str):
     """Command-line interface for smftools."""
     level = getattr(logging, log_level.upper(), logging.INFO)
     setup_logging(level=level, log_file=log_file)
+    _configure_multiprocessing()
 
 
 ####### Load anndata from raw data ###########

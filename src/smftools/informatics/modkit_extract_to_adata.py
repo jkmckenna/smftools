@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import concurrent.futures
 import gc
 import re
@@ -16,9 +18,11 @@ from .bam_functions import count_aligned_reads
 logger = get_logger(__name__)
 
 
-def filter_bam_records(bam, mapping_threshold):
+def filter_bam_records(bam, mapping_threshold, samtools_backend: str | None = "auto"):
     """Processes a single BAM file, counts reads, and determines records to analyze."""
-    aligned_reads_count, unaligned_reads_count, record_counts_dict = count_aligned_reads(bam)
+    aligned_reads_count, unaligned_reads_count, record_counts_dict = count_aligned_reads(
+        bam, samtools_backend
+    )
 
     total_reads = aligned_reads_count + unaligned_reads_count
     percent_aligned = (aligned_reads_count * 100 / total_reads) if total_reads > 0 else 0
@@ -35,13 +39,16 @@ def filter_bam_records(bam, mapping_threshold):
     return set(records)
 
 
-def parallel_filter_bams(bam_path_list, mapping_threshold):
+def parallel_filter_bams(bam_path_list, mapping_threshold, samtools_backend: str | None = "auto"):
     """Parallel processing for multiple BAM files."""
     records_to_analyze = set()
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
         results = executor.map(
-            filter_bam_records, bam_path_list, [mapping_threshold] * len(bam_path_list)
+            filter_bam_records,
+            bam_path_list,
+            [mapping_threshold] * len(bam_path_list),
+            [samtools_backend] * len(bam_path_list),
         )
 
     # Aggregate results
@@ -484,6 +491,7 @@ def modkit_extract_to_adata(
     delete_batch_hdfs=False,
     threads=None,
     double_barcoded_path=None,
+    samtools_backend: str | None = "auto",
 ):
     """
     Takes modkit extract outputs and organizes it into an adata object
@@ -591,7 +599,7 @@ def modkit_extract_to_adata(
 
     ######### Get Record names that have over a passed threshold of mapped reads #############
     # get all records that are above a certain mapping threshold in at least one sample bam
-    records_to_analyze = parallel_filter_bams(bam_path_list, mapping_threshold)
+    records_to_analyze = parallel_filter_bams(bam_path_list, mapping_threshold, samtools_backend)
 
     ##########################################################################################
 
@@ -635,7 +643,9 @@ def modkit_extract_to_adata(
                     rev_base_identities,
                     mismatch_counts_per_read,
                     mismatch_trend_per_read,
-                ) = extract_base_identities(bam, record, positions, max_reference_length, ref_seq)
+                ) = extract_base_identities(
+                    bam, record, positions, max_reference_length, ref_seq, samtools_backend
+                )
                 # Store read names of fwd and rev mapped reads
                 fwd_mapped_reads.update(fwd_base_identities.keys())
                 rev_mapped_reads.update(rev_base_identities.keys())

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## bam_direct
 
 def bam_direct(fasta, output_directory, mod_list, thresholds, bam_path, split_dir, mapping_threshold, experiment_name, bam_suffix, batch_size):

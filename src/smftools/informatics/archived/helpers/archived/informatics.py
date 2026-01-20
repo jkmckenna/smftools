@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## fasta_module
 from .. import readwrite
 # bioinformatic operations

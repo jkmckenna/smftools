@@ -1,6 +1,10 @@
-import torch.nn as nn
+from __future__ import annotations
+
+from smftools.optional_imports import require
 
 from .base import BaseTorchModel
+
+nn = require("torch.nn", extra="ml-base", purpose="RNN models")
 
 
 class RNNClassifier(BaseTorchModel):

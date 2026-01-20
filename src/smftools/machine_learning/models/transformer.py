@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import numpy as np
-import torch
-import torch.nn as nn
+
+from smftools.optional_imports import require
 
 from ..utils.grl import grad_reverse
 from .base import BaseTorchModel
 from .positional import PositionalEncoding
+
+torch = require("torch", extra="ml-base", purpose="Transformer models")
+nn = torch.nn
 
 
 class TransformerEncoderLayerWithAttn(nn.TransformerEncoderLayer):

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -40,9 +41,15 @@ def calculate_position_Youden(
         save: Whether to save ROC plots to disk.
         output_directory: Output directory for ROC plots.
     """
-    import matplotlib.pyplot as plt
     import numpy as np
-    from sklearn.metrics import roc_curve
+
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="Youden ROC plots")
+    sklearn_metrics = require(
+        "sklearn.metrics",
+        extra="ml-base",
+        purpose="Youden ROC curve calculation",
+    )
+    roc_curve = sklearn_metrics.roc_curve
 
     control_samples = [positive_control_sample, negative_control_sample]
     references = adata.obs[ref_column].cat.categories

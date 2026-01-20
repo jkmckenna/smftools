@@ -1,23 +1,134 @@
+from __future__ import annotations
+
 import concurrent.futures
 import os
+import shutil
+import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pybedtools
-import pyBigWig
-import pysam
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 from ..readwrite import make_dirs
 
 logger = get_logger(__name__)
 
+if TYPE_CHECKING:
+    import pybedtools as pybedtools_types
+    import pyBigWig as pybigwig_types
+    import pysam as pysam_types
 
-def _bed_to_bigwig(fasta: str, bed: str) -> str:
+try:
+    import pybedtools
+except Exception:
+    pybedtools = None  # type: ignore
+
+try:
+    import pyBigWig
+except Exception:
+    pyBigWig = None  # type: ignore
+
+try:
+    import pysam
+except Exception:
+    pysam = None  # type: ignore
+
+
+def _require_pybedtools() -> "pybedtools_types":
+    if pybedtools is not None:
+        return pybedtools
+    return require("pybedtools", extra="pybedtools", purpose="bedtools Python backend")
+
+
+def _require_pybigwig() -> "pybigwig_types":
+    if pyBigWig is not None:
+        return pyBigWig
+    return require("pyBigWig", extra="pybigwig", purpose="BigWig Python backend")
+
+
+def _require_pysam() -> "pysam_types":
+    if pysam is not None:
+        return pysam
+    return require("pysam", extra="pysam", purpose="FASTA indexing")
+
+
+def _resolve_backend(
+    backend: str | None, *, tool: str, python_available: bool, cli_name: str
+) -> str:
+    choice = (backend or "auto").strip().lower()
+    if choice not in {"auto", "python", "cli"}:
+        raise ValueError(f"{tool}_backend must be one of: auto, python, cli")
+    if choice == "python":
+        if not python_available:
+            raise RuntimeError(
+                f"{tool}_backend=python requires the Python package to be installed."
+            )
+        return "python"
+    if choice == "cli":
+        if not shutil.which(cli_name):
+            raise RuntimeError(f"{tool}_backend=cli requires {cli_name} in PATH.")
+        return "cli"
+    if shutil.which(cli_name):
+        return "cli"
+    if python_available:
+        return "python"
+    raise RuntimeError(f"Neither Python nor CLI backend is available for {tool}.")
+
+
+def _read_chrom_sizes(chrom_sizes: Path) -> list[tuple[str, int]]:
+    sizes: list[tuple[str, int]] = []
+    with chrom_sizes.open() as f:
+        for line in f:
+            chrom, size = line.split()[:2]
+            sizes.append((chrom, int(size)))
+    return sizes
+
+
+def _ensure_fasta_index(fasta: Path) -> Path:
+    fai = fasta.with_suffix(fasta.suffix + ".fai")
+    if fai.exists():
+        return fai
+    if shutil.which("samtools"):
+        cp = subprocess.run(
+            ["samtools", "faidx", str(fasta)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if cp.returncode != 0:
+            raise RuntimeError(f"samtools faidx failed (exit {cp.returncode}):\n{cp.stderr}")
+        return fai
+    if pysam is not None:
+        pysam_mod = _require_pysam()
+        pysam_mod.faidx(str(fasta))
+        return fai
+    raise RuntimeError("FASTA indexing requires pysam or samtools in PATH.")
+
+
+def _ensure_chrom_sizes(fasta: Path) -> Path:
+    fai = _ensure_fasta_index(fasta)
+    chrom_sizes = fasta.with_suffix(".chrom.sizes")
+    if chrom_sizes.exists():
+        return chrom_sizes
+    with fai.open() as f_in, chrom_sizes.open("w") as out:
+        for line in f_in:
+            chrom, size = line.split()[:2]
+            out.write(f"{chrom}\t{size}\n")
+    return chrom_sizes
+
+
+def _bed_to_bigwig(
+    fasta: str,
+    bed: str,
+    *,
+    bedtools_backend: str | None = "auto",
+    bigwig_backend: str | None = "auto",
+) -> str:
     """
     BED → bedGraph → bigWig
     Requires:
@@ -28,40 +139,70 @@ def _bed_to_bigwig(fasta: str, bed: str) -> str:
     fa = Path(fasta)  # path to .fa
     parent = bed.parent
     stem = bed.stem
-    fa_stem = fa.stem
-    fai = parent / f"{fa_stem}.fai"
+    chrom_sizes = _ensure_chrom_sizes(fa)
 
     bedgraph = parent / f"{stem}.bedgraph"
     bigwig = parent / f"{stem}.bw"
 
     # 1) Compute coverage → bedGraph
-    logger.debug(f"[pybedtools] generating coverage bedgraph from {bed}")
-    bt = pybedtools.BedTool(str(bed))
-    # bedtools genomecov -bg
-    coverage = bt.genome_coverage(bg=True, genome=str(fai))
-    coverage.saveas(str(bedgraph))
+    bedtools_choice = _resolve_backend(
+        bedtools_backend,
+        tool="bedtools",
+        python_available=pybedtools is not None,
+        cli_name="bedtools",
+    )
+    if bedtools_choice == "python":
+        logger.debug(f"[pybedtools] generating coverage bedgraph from {bed}")
+        pybedtools_mod = _require_pybedtools()
+        bt = pybedtools_mod.BedTool(str(bed))
+        # bedtools genomecov -bg
+        coverage = bt.genome_coverage(bg=True, genome=str(chrom_sizes))
+        coverage.saveas(str(bedgraph))
+    else:
+        if not shutil.which("bedtools"):
+            raise RuntimeError("bedtools is required but not available in PATH.")
+        cmd = [
+            "bedtools",
+            "genomecov",
+            "-i",
+            str(bed),
+            "-g",
+            str(chrom_sizes),
+            "-bg",
+        ]
+        logger.debug("[bedtools] generating coverage bedgraph: %s", " ".join(cmd))
+        with bedgraph.open("w") as out:
+            cp = subprocess.run(cmd, stdout=out, stderr=subprocess.PIPE, text=True)
+        if cp.returncode != 0:
+            raise RuntimeError(f"bedtools genomecov failed (exit {cp.returncode}):\n{cp.stderr}")
 
     # 2) Convert bedGraph → BigWig via pyBigWig
-    logger.debug(f"[pyBigWig] converting bedgraph → bigwig: {bigwig}")
+    bigwig_choice = _resolve_backend(
+        bigwig_backend,
+        tool="bigwig",
+        python_available=pyBigWig is not None,
+        cli_name="bedGraphToBigWig",
+    )
+    if bigwig_choice == "python":
+        logger.debug(f"[pyBigWig] converting bedgraph → bigwig: {bigwig}")
+        pybigwig_mod = _require_pybigwig()
+        bw = pybigwig_mod.open(str(bigwig), "w")
+        bw.addHeader(_read_chrom_sizes(chrom_sizes))
 
-    # read chrom sizes from the FASTA .fai index
-    chrom_sizes = {}
-    with open(fai) as f:
-        for line in f:
-            fields = line.strip().split("\t")
-            chrom = fields[0]
-            size = int(fields[1])
-            chrom_sizes[chrom] = size
+        with bedgraph.open() as f:
+            for line in f:
+                chrom, start, end, coverage = line.strip().split()
+                bw.addEntries(chrom, int(start), ends=int(end), values=float(coverage))
 
-    bw = pyBigWig.open(str(bigwig), "w")
-    bw.addHeader(list(chrom_sizes.items()))
-
-    with open(bedgraph) as f:
-        for line in f:
-            chrom, start, end, coverage = line.strip().split()
-            bw.addEntries(chrom, int(start), ends=int(end), values=float(coverage))
-
-    bw.close()
+        bw.close()
+    else:
+        if not shutil.which("bedGraphToBigWig"):
+            raise RuntimeError("bedGraphToBigWig is required but not available in PATH.")
+        cmd = ["bedGraphToBigWig", str(bedgraph), str(chrom_sizes), str(bigwig)]
+        logger.debug("[bedGraphToBigWig] converting bedgraph → bigwig: %s", " ".join(cmd))
+        cp = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if cp.returncode != 0:
+            raise RuntimeError(f"bedGraphToBigWig failed (exit {cp.returncode}):\n{cp.stderr}")
 
     logger.debug(f"BigWig written: {bigwig}")
     return str(bigwig)
@@ -113,6 +254,8 @@ def _plot_bed_histograms(
     coordinate_mode : {"one_based","zero_based"}
         One-based, inclusive (your file) vs BED-standard zero-based, half-open.
     """
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="plotting BED histograms")
+
     os.makedirs(plotting_directory, exist_ok=True)
 
     bed_basename = os.path.basename(bed_file).rsplit(".bed", 1)[0]
@@ -167,7 +310,8 @@ def _plot_bed_histograms(
         return np.clip(x, lo, hi)
 
     # Load chromosome order/lengths from FASTA
-    with pysam.FastaFile(fasta) as fa:
+    pysam_mod = _require_pysam()
+    with pysam_mod.FastaFile(fasta) as fa:
         ref_names = list(fa.references)
         ref_lengths = dict(zip(ref_names, fa.lengths))
 
@@ -292,7 +436,17 @@ def _plot_bed_histograms(
     logger.debug("[plot_bed_histograms] Done.")
 
 
-def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
+def aligned_BAM_to_bed(
+    aligned_BAM,
+    out_dir,
+    fasta,
+    make_bigwigs,
+    threads=None,
+    *,
+    samtools_backend: str | None = "auto",
+    bedtools_backend: str | None = "auto",
+    bigwig_backend: str | None = "auto",
+):
     """
     Takes an aligned BAM as input and writes a BED file of reads as output.
     Bed columns are: Record name, start position, end position, read length, read name, mapping quality, read quality.
@@ -318,31 +472,79 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
 
     logger.debug(f"Creating BED-like file from BAM (with MAPQ and avg base quality): {aligned_BAM}")
 
-    with pysam.AlignmentFile(aligned_BAM, "rb") as bam, open(bed_output, "w") as out:
-        for read in bam.fetch(until_eof=True):
-            if read.is_unmapped:
-                chrom = "*"
-                start1 = 1
-                rl = read.query_length or 0
-                mapq = 0
-            else:
-                chrom = bam.get_reference_name(read.reference_id)
-                # pysam reference_start is 0-based → +1 for 1-based SAM-like start
-                start1 = int(read.reference_start) + 1
-                rl = read.query_length or 0
-                mapq = int(read.mapping_quality)
+    backend_choice = _resolve_backend(
+        samtools_backend,
+        tool="samtools",
+        python_available=pysam is not None,
+        cli_name="samtools",
+    )
+    with open(bed_output, "w") as out:
+        if backend_choice == "python":
+            pysam_mod = _require_pysam()
+            with pysam_mod.AlignmentFile(aligned_BAM, "rb") as bam:
+                for read in bam.fetch(until_eof=True):
+                    if read.is_unmapped:
+                        chrom = "*"
+                        start1 = 1
+                        rl = read.query_length or 0
+                        mapq = 0
+                    else:
+                        chrom = bam.get_reference_name(read.reference_id)
+                        # pysam reference_start is 0-based → +1 for 1-based SAM-like start
+                        start1 = int(read.reference_start) + 1
+                        rl = read.query_length or 0
+                        mapq = int(read.mapping_quality)
 
-            # End position in 1-based inclusive coords
-            end1 = start1 + (rl or 0) - 1
+                    # End position in 1-based inclusive coords
+                    end1 = start1 + (rl or 0) - 1
 
-            qname = read.query_name
-            quals = read.query_qualities
-            if quals is None or rl == 0:
-                avg_q = float("nan")
-            else:
-                avg_q = float(np.mean(quals))
+                    qname = read.query_name
+                    quals = read.query_qualities
+                    if quals is None or rl == 0:
+                        avg_q = float("nan")
+                    else:
+                        avg_q = float(np.mean(quals))
 
-            out.write(f"{chrom}\t{start1}\t{end1}\t{rl}\t{qname}\t{mapq}\t{avg_q:.3f}\n")
+                    out.write(f"{chrom}\t{start1}\t{end1}\t{rl}\t{qname}\t{mapq}\t{avg_q:.3f}\n")
+        else:
+            samtools_view = subprocess.Popen(
+                ["samtools", "view", str(aligned_BAM)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert samtools_view.stdout is not None
+            for line in samtools_view.stdout:
+                if not line.strip():
+                    continue
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) < 11:
+                    continue
+                qname = fields[0]
+                flag = int(fields[1])
+                chrom = fields[2]
+                pos = int(fields[3])
+                mapq = int(fields[4])
+                seq = fields[9]
+                qual = fields[10]
+                rl = 0 if seq == "*" else len(seq)
+                is_unmapped = bool(flag & 0x4) or chrom == "*"
+                if is_unmapped:
+                    chrom = "*"
+                    start1 = 1
+                    mapq = 0
+                else:
+                    start1 = pos
+                end1 = start1 + (rl or 0) - 1
+                if qual == "*" or rl == 0:
+                    avg_q = float("nan")
+                else:
+                    avg_q = float(np.mean([ord(ch) - 33 for ch in qual]))
+                out.write(f"{chrom}\t{start1}\t{end1}\t{rl}\t{qname}\t{mapq}\t{avg_q:.3f}\n")
+            rc = samtools_view.wait()
+            if rc != 0:
+                stderr = samtools_view.stderr.read() if samtools_view.stderr else ""
+                raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
 
     logger.debug(f"BED-like file created: {bed_output}")
 
@@ -368,7 +570,15 @@ def aligned_BAM_to_bed(aligned_BAM, out_dir, fasta, make_bigwigs, threads=None):
         futures = []
         futures.append(executor.submit(_plot_bed_histograms, aligned_bed, plotting_dir, fasta))
         if make_bigwigs:
-            futures.append(executor.submit(_bed_to_bigwig, fasta, aligned_bed))
+            futures.append(
+                executor.submit(
+                    _bed_to_bigwig,
+                    fasta,
+                    aligned_bed,
+                    bedtools_backend=bedtools_backend,
+                    bigwig_backend=bigwig_backend,
+                )
+            )
         concurrent.futures.wait(futures)
 
     logger.debug("Processing completed successfully.")

@@ -3,26 +3,116 @@ from __future__ import annotations
 import glob
 import os
 import re
+import shutil
 import subprocess
 import time
 from collections import Counter, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import zip_longest
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
-import pysam
 from tqdm import tqdm
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 from ..readwrite import date_string, time_string
+
+if TYPE_CHECKING:
+    import pysam as pysam_types
+
+try:
+    import pysam
+except Exception:
+    pysam = None  # type: ignore
 
 logger = get_logger(__name__)
 
 _PROGRESS_RE = re.compile(r"Output records written:\s*(\d+)")
 _EMPTY_RE = re.compile(r"^\s*$")
+
+
+def _require_pysam() -> "pysam_types":
+    """Return the pysam module or raise if unavailable."""
+    if pysam is not None:
+        return pysam
+    return require("pysam", extra="pysam", purpose="samtools-compatible Python backend")
+
+
+def _resolve_samtools_backend(backend: str | None) -> str:
+    """Resolve backend choice for samtools-compatible operations.
+
+    Args:
+        backend: One of {"auto", "python", "cli"} (case-insensitive).
+
+    Returns:
+        Resolved backend string ("python" or "cli").
+    """
+    choice = (backend or "auto").strip().lower()
+    if choice not in {"auto", "python", "cli"}:
+        raise ValueError("samtools_backend must be one of: auto, python, cli")
+
+    have_pysam = pysam is not None
+    have_samtools = shutil.which("samtools") is not None
+
+    if choice == "python":
+        if not have_pysam:
+            raise RuntimeError("samtools_backend=python requires pysam to be installed.")
+        return "python"
+    if choice == "cli":
+        if not have_samtools:
+            raise RuntimeError("samtools_backend=cli requires samtools in PATH.")
+        return "cli"
+
+    if have_samtools:
+        return "cli"
+    if have_pysam:
+        return "python"
+    raise RuntimeError("Neither pysam nor samtools is available in PATH.")
+
+
+def _has_bam_index(bam_path: Path) -> bool:
+    """Return True if the BAM index exists alongside the BAM."""
+    return (
+        bam_path.with_suffix(bam_path.suffix + ".bai").exists()
+        or Path(str(bam_path) + ".bai").exists()
+    )
+
+
+def _ensure_bam_index(bam_path: Path, backend: str) -> None:
+    """Ensure a BAM index exists, creating one if needed."""
+    if _has_bam_index(bam_path):
+        return
+    if backend == "python":
+        _index_bam_with_pysam(bam_path)
+    else:
+        _index_bam_with_samtools(bam_path)
+
+
+def _parse_idxstats_output(output: str) -> Tuple[int, int, Dict[str, Tuple[int, float]]]:
+    """Parse samtools idxstats output into counts and proportions."""
+    aligned_reads_count = 0
+    unaligned_reads_count = 0
+    record_counts: Dict[str, int] = {}
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        ref, _length, mapped, unmapped = line.split("\t")[:4]
+        if ref == "*":
+            unaligned_reads_count += int(unmapped)
+            continue
+        mapped_count = int(mapped)
+        aligned_reads_count += mapped_count
+        record_counts[ref] = mapped_count
+
+    proportions: Dict[str, Tuple[int, float]] = {}
+    for ref, count in record_counts.items():
+        proportion = count / aligned_reads_count if aligned_reads_count else 0.0
+        proportions[ref] = (count, proportion)
+
+    return aligned_reads_count, unaligned_reads_count, proportions
 
 
 def _stream_dorado_logs(stderr_iter) -> None:
@@ -60,8 +150,9 @@ def _bam_to_fastq_with_pysam(bam_path: Union[str, Path], fastq_path: Union[str, 
 
     logger.debug(f"Converting BAM to FASTQ using _bam_to_fastq_with_pysam")
 
+    pysam_mod = _require_pysam()
     with (
-        pysam.AlignmentFile(bam_path, "rb", check_sq=False) as bam,
+        pysam_mod.AlignmentFile(bam_path, "rb", check_sq=False) as bam,
         open(fastq_path, "w", encoding="utf-8") as fq,
     ):
         for r in bam.fetch(until_eof=True):
@@ -103,7 +194,8 @@ def _sort_bam_with_pysam(
     if threads:
         args += ["-@", str(threads)]
     args += ["-o", out_bam, in_bam]
-    pysam.sort(*args)
+    pysam_mod = _require_pysam()
+    pysam_mod.sort(*args)
 
 
 def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = None) -> None:
@@ -115,11 +207,54 @@ def _index_bam_with_pysam(bam_path: Union[str, Path], threads: Optional[int] = N
     """
     bam_path = str(bam_path)
     logger.debug(f"Indexing BAM using _index_bam_with_pysam")
+    pysam_mod = _require_pysam()
     # pysam.index supports samtools-style args
     if threads:
-        pysam.index("-@", str(threads), bam_path)
+        pysam_mod.index("-@", str(threads), bam_path)
     else:
-        pysam.index(bam_path)
+        pysam_mod.index(bam_path)
+
+
+def _bam_to_fastq_with_samtools(bam_path: Union[str, Path], fastq_path: Union[str, Path]) -> None:
+    """Convert BAM to FASTQ using samtools."""
+    if not shutil.which("samtools"):
+        raise RuntimeError("samtools is required but not available in PATH.")
+    cmd = ["samtools", "fastq", str(bam_path)]
+    logger.debug("Converting BAM to FASTQ using samtools: %s", " ".join(cmd))
+    with open(fastq_path, "w", encoding="utf-8") as fq:
+        cp = subprocess.run(cmd, stdout=fq, stderr=subprocess.PIPE, text=True)
+    if cp.returncode != 0:
+        raise RuntimeError(f"samtools fastq failed (exit {cp.returncode}):\n{cp.stderr}")
+
+
+def _sort_bam_with_samtools(
+    in_bam: Union[str, Path], out_bam: Union[str, Path], threads: Optional[int] = None
+) -> None:
+    """Sort a BAM file using samtools."""
+    if not shutil.which("samtools"):
+        raise RuntimeError("samtools is required but not available in PATH.")
+    cmd = ["samtools", "sort", "-o", str(out_bam)]
+    if threads:
+        cmd += ["-@", str(threads)]
+    cmd.append(str(in_bam))
+    logger.debug("Sorting BAM using samtools: %s", " ".join(cmd))
+    cp = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if cp.returncode != 0:
+        raise RuntimeError(f"samtools sort failed (exit {cp.returncode}):\n{cp.stderr}")
+
+
+def _index_bam_with_samtools(bam_path: Union[str, Path], threads: Optional[int] = None) -> None:
+    """Index a BAM file using samtools."""
+    if not shutil.which("samtools"):
+        raise RuntimeError("samtools is required but not available in PATH.")
+    cmd = ["samtools", "index"]
+    if threads:
+        cmd += ["-@", str(threads)]
+    cmd.append(str(bam_path))
+    logger.debug("Indexing BAM using samtools: %s", " ".join(cmd))
+    cp = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if cp.returncode != 0:
+        raise RuntimeError(f"samtools index failed (exit {cp.returncode}):\n{cp.stderr}")
 
 
 def align_and_sort_BAM(
@@ -156,10 +291,15 @@ def align_and_sort_BAM(
     else:
         threads = None
 
+    samtools_backend = _resolve_samtools_backend(getattr(cfg, "samtools_backend", "auto"))
+
     if cfg.aligner == "minimap2":
         if not cfg.align_from_bam:
             logger.debug(f"Converting BAM to FASTQ: {input}")
-            _bam_to_fastq_with_pysam(input, input_as_fastq)
+            if samtools_backend == "python":
+                _bam_to_fastq_with_pysam(input, input_as_fastq)
+            else:
+                _bam_to_fastq_with_samtools(input, input_as_fastq)
             logger.debug(f"Aligning FASTQ to Reference: {input_as_fastq}")
             mm_input = input_as_fastq
         else:
@@ -220,12 +360,18 @@ def align_and_sort_BAM(
         logger.error(f"Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado")
         return
 
-    # --- Sort & Index with pysam ---
+    # --- Sort & Index ---
     logger.debug(f"Sorting: {aligned_output} -> {aligned_sorted_output}")
-    _sort_bam_with_pysam(aligned_output, aligned_sorted_output, threads=threads)
+    if samtools_backend == "python":
+        _sort_bam_with_pysam(aligned_output, aligned_sorted_output, threads=threads)
+    else:
+        _sort_bam_with_samtools(aligned_output, aligned_sorted_output, threads=threads)
 
     logger.debug(f"Indexing: {aligned_sorted_output}")
-    _index_bam_with_pysam(aligned_sorted_output, threads=threads)
+    if samtools_backend == "python":
+        _index_bam_with_pysam(aligned_sorted_output, threads=threads)
+    else:
+        _index_bam_with_samtools(aligned_sorted_output, threads=threads)
 
 
 def bam_qc(
@@ -236,25 +382,20 @@ def bam_qc(
     stats: bool = True,
     flagstats: bool = True,
     idxstats: bool = True,
+    samtools_backend: str | None = "auto",
 ) -> None:
     """
     QC for BAM/CRAMs: stats, flagstat, idxstats.
     Prefers pysam; falls back to `samtools` if needed.
     Runs BAMs in parallel (up to `threads`, default serial).
     """
-    import shutil
     import subprocess
 
     logger.debug("Performing BAM QC using bam_qc")
 
-    # Try to import pysam once
-    try:
-        import pysam  # type: ignore
-
-        have_pysam = True
-    except Exception:
-        pysam = None  # type: ignore
-        have_pysam = False
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    have_pysam = backend_choice == "python"
+    pysam_mod = _require_pysam() if have_pysam else None
 
     bam_qc_dir = Path(bam_qc_dir)
     bam_qc_dir.mkdir(parents=True, exist_ok=True)
@@ -275,11 +416,9 @@ def bam_qc(
         if _has_index(p):
             return
         if have_pysam:
-            assert pysam is not None
-            pysam.index(str(p))  # supports BAM & CRAM
+            assert pysam_mod is not None
+            pysam_mod.index(str(p))  # supports BAM & CRAM
         else:
-            if not shutil.which("samtools"):
-                raise RuntimeError("Neither pysam nor samtools is available in PATH.")
             cmd = ["samtools", "index", str(p)]
             # capture text so errors are readable; raise on failure
             cp = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -300,7 +439,7 @@ def bam_qc(
                 line = line.rstrip()
                 if line:
                     last_err.append(line)
-                    logger.info("[%s][%s] %s", tag, bam.name, line)
+                    logger.debug("[%s][%s] %s", tag, bam.name, line)
             rc = proc.wait()
 
         if rc != 0:
@@ -332,16 +471,13 @@ def bam_qc(
             # Still attempt stats/flagstat if requested; idxstats may fail later if index is required.
             logger.warning("Indexing failed for %s: %s", bam, e)
 
-        if not have_pysam:
-            import shutil
-
-            if not shutil.which("samtools"):
-                raise RuntimeError("Neither pysam nor samtools is available in PATH.")
-
         # --- stats ---
         if stats:
-            if have_pysam and pysam is not None and hasattr(pysam, "stats"):
-                txt = pysam.stats(str(bam))
+            if have_pysam:
+                assert pysam_mod is not None
+                if not hasattr(pysam_mod, "stats"):
+                    raise RuntimeError("pysam.stats is unavailable in this pysam build.")
+                txt = pysam_mod.stats(str(bam))
                 out_stats.write_text(txt)
                 results.append(("stats(pysam)", 0))
             else:
@@ -351,8 +487,11 @@ def bam_qc(
 
         # --- flagstat ---
         if flagstats:
-            if have_pysam and pysam is not None and hasattr(pysam, "flagstat"):
-                txt = pysam.flagstat(str(bam))
+            if have_pysam:
+                assert pysam_mod is not None
+                if not hasattr(pysam_mod, "flagstat"):
+                    raise RuntimeError("pysam.flagstat is unavailable in this pysam build.")
+                txt = pysam_mod.flagstat(str(bam))
                 out_flag.write_text(txt)
                 results.append(("flagstat(pysam)", 0))
             else:
@@ -362,8 +501,11 @@ def bam_qc(
 
         # --- idxstats ---
         if idxstats:
-            if have_pysam and pysam is not None and hasattr(pysam, "idxstats"):
-                txt = pysam.idxstats(str(bam))
+            if have_pysam:
+                assert pysam_mod is not None
+                if not hasattr(pysam_mod, "idxstats"):
+                    raise RuntimeError("pysam.idxstats is unavailable in this pysam build.")
+                txt = pysam_mod.idxstats(str(bam))
                 out_idx.write_text(txt)
                 results.append(("idxstats(pysam)", 0))
             else:
@@ -400,6 +542,8 @@ def concatenate_fastqs_to_bam(
     rg_sample_field: Optional[str] = None,
     progress: bool = True,
     auto_pair: bool = True,
+    gzip_suffixes: Tuple[str, ...] = (".gz", ".gzip"),
+    samtools_backend: str | None = "auto",
 ) -> Dict[str, Any]:
     """
     Concatenate FASTQ(s) into an **unaligned** BAM. Supports single-end and paired-end.
@@ -422,6 +566,10 @@ def concatenate_fastqs_to_bam(
         Show tqdm progress bars.
     auto_pair : bool
         Auto-pair R1/R2 based on filename patterns if given a flat list.
+    gzip_suffixes : tuple[str, ...]
+        Suffixes treated as gzip-compressed FASTQ files.
+    samtools_backend : str | None
+        Backend selection for samtools-compatible operations (auto|python|cli).
 
     Returns
     -------
@@ -436,9 +584,10 @@ def concatenate_fastqs_to_bam(
         """
         name = p.name
         lowers = name.lower()
+        gzip_exts = tuple(s.lower() for s in gzip_suffixes)
         for ext in (
-            ".fastq.gz",
-            ".fq.gz",
+            *(f".fastq{suf}" for suf in gzip_exts),
+            *(f".fq{suf}" for suf in gzip_exts),
             ".fastq.bz2",
             ".fq.bz2",
             ".fastq.xz",
@@ -525,9 +674,49 @@ def concatenate_fastqs_to_bam(
             Pysam Fastx records.
         """
         # pysam.FastxFile handles compressed extensions transparently
-        with pysam.FastxFile(str(p)) as fx:
+        pysam_mod = _require_pysam()
+        with pysam_mod.FastxFile(str(p)) as fx:
             for rec in fx:
                 yield rec  # rec.name, rec.sequence, rec.quality
+
+    def _fastq_iter_plain(p: Path) -> Iterable[Tuple[str, str, str]]:
+        """Yield FASTQ records from plain-text parsing.
+
+        Args:
+            p: FASTQ path.
+
+        Yields:
+            Tuple of (name, sequence, quality).
+        """
+        import bz2
+        import gzip
+        import lzma
+
+        lowers = p.name.lower()
+        if any(lowers.endswith(suf) for suf in (s.lower() for s in gzip_suffixes)):
+            handle = gzip.open(p, "rt", encoding="utf-8")
+        elif lowers.endswith(".bz2"):
+            handle = bz2.open(p, "rt", encoding="utf-8")
+        elif lowers.endswith(".xz"):
+            handle = lzma.open(p, "rt", encoding="utf-8")
+        else:
+            handle = p.open("r", encoding="utf-8")
+
+        with handle as fh:
+            while True:
+                header = fh.readline()
+                if not header:
+                    break
+                seq = fh.readline()
+                fh.readline()
+                qual = fh.readline()
+                if not qual:
+                    break
+                name = header.strip()
+                if name.startswith("@"):
+                    name = name[1:]
+                name = name.split()[0]
+                yield name, seq.strip(), qual.strip()
 
     def _make_unaligned_segment(
         name: str,
@@ -550,11 +739,12 @@ def concatenate_fastqs_to_bam(
         Returns:
             Unaligned pysam.AlignedSegment.
         """
-        a = pysam.AlignedSegment()
+        pysam_mod = _require_pysam()
+        a = pysam_mod.AlignedSegment()
         a.query_name = name
         a.query_sequence = seq
         if qual is not None:
-            a.query_qualities = pysam.qualitystring_to_array(qual)
+            a.query_qualities = pysam_mod.qualitystring_to_array(qual)
         a.is_unmapped = True
         a.is_paired = read1 or read2
         a.is_read1 = read1
@@ -569,6 +759,48 @@ def concatenate_fastqs_to_bam(
         if add_read_group:
             a.set_tag("RG", str(bc), value_type="Z")
         return a
+
+    def _write_sam_line(
+        handle,
+        name: str,
+        seq: str,
+        qual: str,
+        bc: str,
+        *,
+        read1: bool,
+        read2: bool,
+        add_read_group: bool,
+    ) -> None:
+        """Write a single unaligned SAM record to a text stream."""
+        if read1:
+            flag = 77
+        elif read2:
+            flag = 141
+        else:
+            flag = 4
+        tags = [f"{barcode_tag}:Z:{bc}"]
+        if add_read_group:
+            tags.append(f"RG:Z:{bc}")
+        tag_str = "\t".join(tags)
+        if not qual:
+            qual = "*"
+        line = "\t".join(
+            [
+                name,
+                str(flag),
+                "*",
+                "0",
+                "0",
+                "*",
+                "*",
+                "0",
+                "0",
+                seq,
+                qual,
+                tag_str,
+            ]
+        )
+        handle.write(f"{line}\n")
 
     # ---------- normalize inputs to Path ----------
     def _to_path_pair(x) -> Tuple[Path, Path]:
@@ -630,7 +862,29 @@ def concatenate_fastqs_to_bam(
     singletons_written = 0
 
     # ---------- write BAM ----------
-    with pysam.AlignmentFile(str(output_bam), "wb", header=header) as bam_out:
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        bam_out_ctx = pysam_mod.AlignmentFile(str(output_bam), "wb", header=header)
+    else:
+        cmd = ["samtools", "view", "-b", "-o", str(output_bam), "-"]
+        logger.debug("Writing BAM using samtools: %s", " ".join(cmd))
+        bam_out_ctx = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+        )
+        assert bam_out_ctx.stdin is not None
+        header_lines = ["@HD\tVN:1.6\tSO:unknown"]
+        if add_read_group:
+            for bc in barcodes_in_order:
+                rg_fields = [f"ID:{bc}"]
+                if rg_sample_field:
+                    rg_fields.append(f"SM:{rg_sample_field}")
+                rg_body = "\t".join(rg_fields)
+                header_lines.append(f"@RG\t{rg_body}")
+        header_lines.append("@PG\tID:concat-fastq\tPN:concatenate_fastqs_to_bam\tVN:1")
+        bam_out_ctx.stdin.write("\n".join(header_lines) + "\n")
+
+    try:
         # Paired
         it_pairs = explicit_pairs
         if progress and it_pairs:
@@ -640,8 +894,12 @@ def concatenate_fastqs_to_bam(
                 raise FileNotFoundError(f"Paired file missing: {r1_path} or {r2_path}")
             bc = per_path_barcode.get(r1_path) or per_path_barcode.get(r2_path) or "barcode"
 
-            it1 = _fastq_iter(r1_path)
-            it2 = _fastq_iter(r2_path)
+            if backend_choice == "python":
+                it1 = _fastq_iter(r1_path)
+                it2 = _fastq_iter(r2_path)
+            else:
+                it1 = _fastq_iter_plain(r1_path)
+                it2 = _fastq_iter_plain(r2_path)
 
             for rec1, rec2 in zip_longest(it1, it2, fillvalue=None):
 
@@ -652,24 +910,67 @@ def concatenate_fastqs_to_bam(
                     return re.sub(r"(?:/1$|/2$|\s[12]$)", "", n)
 
                 name = (
-                    _clean(getattr(rec1, "name", None))
-                    or _clean(getattr(rec2, "name", None))
-                    or getattr(rec1, "name", None)
-                    or getattr(rec2, "name", None)
+                    _clean(getattr(rec1, "name", None) if backend_choice == "python" else rec1[0])
+                    if rec1 is not None
+                    else None
                 )
+                if name is None:
+                    name = (
+                        _clean(
+                            getattr(rec2, "name", None) if backend_choice == "python" else rec2[0]
+                        )
+                        if rec2 is not None
+                        else None
+                    )
+                if name is None:
+                    name = (
+                        getattr(rec1, "name", None)
+                        if backend_choice == "python" and rec1 is not None
+                        else (rec1[0] if rec1 is not None else None)
+                    )
+                if name is None:
+                    name = (
+                        getattr(rec2, "name", None)
+                        if backend_choice == "python" and rec2 is not None
+                        else (rec2[0] if rec2 is not None else None)
+                    )
 
                 if rec1 is not None:
-                    a1 = _make_unaligned_segment(
-                        name, rec1.sequence, rec1.quality, bc, read1=True, read2=False
-                    )
-                    bam_out.write(a1)
+                    if backend_choice == "python":
+                        a1 = _make_unaligned_segment(
+                            name, rec1.sequence, rec1.quality, bc, read1=True, read2=False
+                        )
+                        bam_out_ctx.write(a1)
+                    else:
+                        _write_sam_line(
+                            bam_out_ctx.stdin,
+                            name,
+                            rec1[1],
+                            rec1[2],
+                            bc,
+                            read1=True,
+                            read2=False,
+                            add_read_group=add_read_group,
+                        )
                     per_file_counts[r1_path] = per_file_counts.get(r1_path, 0) + 1
                     total_written += 1
                 if rec2 is not None:
-                    a2 = _make_unaligned_segment(
-                        name, rec2.sequence, rec2.quality, bc, read1=False, read2=True
-                    )
-                    bam_out.write(a2)
+                    if backend_choice == "python":
+                        a2 = _make_unaligned_segment(
+                            name, rec2.sequence, rec2.quality, bc, read1=False, read2=True
+                        )
+                        bam_out_ctx.write(a2)
+                    else:
+                        _write_sam_line(
+                            bam_out_ctx.stdin,
+                            name,
+                            rec2[1],
+                            rec2[2],
+                            bc,
+                            read1=False,
+                            read2=True,
+                            add_read_group=add_read_group,
+                        )
                     per_file_counts[r2_path] = per_file_counts.get(r2_path, 0) + 1
                     total_written += 1
 
@@ -689,14 +990,40 @@ def concatenate_fastqs_to_bam(
             if not pth.exists():
                 raise FileNotFoundError(pth)
             bc = per_path_barcode.get(pth, "barcode")
-            for rec in _fastq_iter(pth):
-                a = _make_unaligned_segment(
-                    rec.name, rec.sequence, rec.quality, bc, read1=False, read2=False
-                )
-                bam_out.write(a)
+            if backend_choice == "python":
+                iterator = _fastq_iter(pth)
+            else:
+                iterator = _fastq_iter_plain(pth)
+            for rec in iterator:
+                if backend_choice == "python":
+                    a = _make_unaligned_segment(
+                        rec.name, rec.sequence, rec.quality, bc, read1=False, read2=False
+                    )
+                    bam_out_ctx.write(a)
+                else:
+                    _write_sam_line(
+                        bam_out_ctx.stdin,
+                        rec[0],
+                        rec[1],
+                        rec[2],
+                        bc,
+                        read1=False,
+                        read2=False,
+                        add_read_group=add_read_group,
+                    )
                 per_file_counts[pth] = per_file_counts.get(pth, 0) + 1
                 total_written += 1
                 singletons_written += 1
+    finally:
+        if backend_choice == "python":
+            bam_out_ctx.close()
+        else:
+            if bam_out_ctx.stdin is not None:
+                bam_out_ctx.stdin.close()
+            rc = bam_out_ctx.wait()
+            if rc != 0:
+                stderr = bam_out_ctx.stderr.read() if bam_out_ctx.stderr else ""
+                raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
 
     return {
         "total_reads": total_written,
@@ -707,7 +1034,7 @@ def concatenate_fastqs_to_bam(
     }
 
 
-def count_aligned_reads(bam_file):
+def count_aligned_reads(bam_file, samtools_backend: str | None = "auto"):
     """
     Counts the number of aligned reads in a bam file that map to each reference record.
 
@@ -720,30 +1047,42 @@ def count_aligned_reads(bam_file):
        record_counts (dict): A dictionary keyed by reference record instance that points toa tuple containing the total reads mapped to the record and the fraction of mapped reads which map to the record.
 
     """
-    print("{0}: Counting aligned reads in BAM > {1}".format(time_string(), bam_file))
+    logger.info("Counting aligned reads in BAM > {}".format(bam_file.name))
+    backend_choice = _resolve_samtools_backend(samtools_backend)
     aligned_reads_count = 0
     unaligned_reads_count = 0
-    # Make a dictionary, keyed by the reference_name of reference chromosome that points to an integer number of read counts mapped to the chromosome, as well as the proportion of mapped reads in that chromosome
-    record_counts = defaultdict(int)
 
-    with pysam.AlignmentFile(str(bam_file), "rb") as bam:
-        total_reads = bam.mapped + bam.unmapped
-        # Iterate over reads to get the total mapped read counts and the reads that map to each reference
-        for read in tqdm(bam, desc="Counting aligned reads in BAM", total=total_reads):
-            if read.is_unmapped:
-                unaligned_reads_count += 1
-            else:
-                aligned_reads_count += 1
-                record_counts[read.reference_name] += (
-                    1  # Automatically increments if key exists, adds if not
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        record_counts = defaultdict(int)
+        with pysam_mod.AlignmentFile(str(bam_file), "rb") as bam:
+            total_reads = bam.mapped + bam.unmapped
+            # Iterate over reads to get the total mapped read counts and the reads that map to each reference
+            for read in bam:
+                if read.is_unmapped:
+                    unaligned_reads_count += 1
+                else:
+                    aligned_reads_count += 1
+                    record_counts[read.reference_name] += (
+                        1  # Automatically increments if key exists, adds if not
+                    )
+
+            # reformat the dictionary to contain read counts mapped to the reference, as well as the proportion of mapped reads in reference
+            for reference in record_counts:
+                proportion_mapped_reads_in_record = record_counts[reference] / aligned_reads_count
+                record_counts[reference] = (
+                    record_counts[reference],
+                    proportion_mapped_reads_in_record,
                 )
+        return aligned_reads_count, unaligned_reads_count, dict(record_counts)
 
-        # reformat the dictionary to contain read counts mapped to the reference, as well as the proportion of mapped reads in reference
-        for reference in record_counts:
-            proportion_mapped_reads_in_record = record_counts[reference] / aligned_reads_count
-            record_counts[reference] = (record_counts[reference], proportion_mapped_reads_in_record)
-
-    return aligned_reads_count, unaligned_reads_count, dict(record_counts)
+    bam_path = Path(bam_file)
+    _ensure_bam_index(bam_path, backend_choice)
+    cmd = ["samtools", "idxstats", str(bam_path)]
+    cp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if cp.returncode != 0:
+        raise RuntimeError(f"samtools idxstats failed (exit {cp.returncode}):\n{cp.stderr}")
+    return _parse_idxstats_output(cp.stdout)
 
 
 def demux_and_index_BAM(
@@ -827,7 +1166,14 @@ def demux_and_index_BAM(
     return renamed_bams
 
 
-def extract_base_identities(bam_file, chromosome, positions, max_reference_length, sequence):
+def extract_base_identities(
+    bam_file,
+    chromosome,
+    positions,
+    max_reference_length,
+    sequence,
+    samtools_backend: str | None = "auto",
+):
     """
     Efficiently extracts base identities from mapped reads with reference coordinates.
 
@@ -850,31 +1196,87 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
     rev_base_identities = defaultdict(lambda: np.full(max_reference_length, "N", dtype="<U1"))
     mismatch_counts_per_read = defaultdict(lambda: defaultdict(Counter))
 
-    # print(f"{timestamp} Reading reads from {chromosome} BAM file: {bam_file}")
-    with pysam.AlignmentFile(str(bam_file), "rb") as bam:
-        total_reads = bam.mapped
-        ref_seq = sequence.upper()
-        for read in bam.fetch(chromosome):
-            if not read.is_mapped:
-                continue  # Skip unmapped reads
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    ref_seq = sequence.upper()
 
-            read_name = read.query_name
-            query_sequence = read.query_sequence
-            base_dict = rev_base_identities if read.is_reverse else fwd_base_identities
+    if backend_choice == "python":
+        logger.debug("Extracting base identities using python")
+        pysam_mod = _require_pysam()
+        # print(f"{timestamp} Reading reads from {chromosome} BAM file: {bam_file}")
+        with pysam_mod.AlignmentFile(str(bam_file), "rb") as bam:
+            total_reads = bam.mapped
+            for read in bam.fetch(chromosome):
+                if not read.is_mapped:
+                    continue  # Skip unmapped reads
 
-            # Use get_aligned_pairs directly with positions filtering
-            aligned_pairs = read.get_aligned_pairs(matches_only=True)
+                read_name = read.query_name
+                query_sequence = read.query_sequence
+                base_dict = rev_base_identities if read.is_reverse else fwd_base_identities
 
-            for read_position, reference_position in aligned_pairs:
-                if reference_position in positions:
+                # Use get_aligned_pairs directly with positions filtering
+                aligned_pairs = read.get_aligned_pairs(matches_only=True)
+
+                for read_position, reference_position in aligned_pairs:
                     read_base = query_sequence[read_position]
                     ref_base = ref_seq[reference_position]
+                    if reference_position in positions:
+                        base_dict[read_name][reference_position] = read_base
 
-                    base_dict[read_name][reference_position] = read_base
+                    # Track mismatches (excluding Ns)
+                    if read_base != ref_base and read_base != "N" and ref_base != "N":
+                        mismatch_counts_per_read[read_name][ref_base][read_base] += 1
+    else:
+        bam_path = Path(bam_file)
+        logger.debug("Extracting base identities using samtools")
+        _ensure_bam_index(bam_path, backend_choice)
 
-                # Track mismatches (excluding Ns)
+        def _iter_aligned_pairs(cigar: str, start: int) -> Iterable[Tuple[int, int]]:
+            qpos = 0
+            rpos = start
+            for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+                length = int(length_str)
+                if op in {"M", "=", "X"}:
+                    for _ in range(length):
+                        yield qpos, rpos
+                        qpos += 1
+                        rpos += 1
+                elif op in {"I", "S"}:
+                    qpos += length
+                elif op in {"D", "N"}:
+                    rpos += length
+                elif op in {"H", "P"}:
+                    continue
+
+        cmd = ["samtools", "view", "-F", "4", str(bam_path), chromosome]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if not line.strip() or line.startswith("@"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 11:
+                continue
+            read_name = fields[0]
+            flag = int(fields[1])
+            pos = int(fields[3])
+            cigar = fields[5]
+            query_sequence = fields[9]
+            if cigar == "*" or query_sequence == "*":
+                continue
+            base_dict = rev_base_identities if (flag & 16) else fwd_base_identities
+            for read_pos, ref_pos in _iter_aligned_pairs(cigar, pos - 1):
+                if read_pos >= len(query_sequence) or ref_pos >= len(ref_seq):
+                    continue
+                read_base = query_sequence[read_pos]
+                ref_base = ref_seq[ref_pos]
+                if ref_pos in positions:
+                    base_dict[read_name][ref_pos] = read_base
                 if read_base != ref_base and read_base != "N" and ref_base != "N":
                     mismatch_counts_per_read[read_name][ref_base][read_base] += 1
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
 
     # Determine C→T vs G→A dominance per read
     mismatch_trend_per_read = {}
@@ -899,46 +1301,137 @@ def extract_base_identities(bam_file, chromosome, positions, max_reference_lengt
     )
 
 
-def extract_read_features_from_bam(bam_file_path):
-    """
-    Make a dict of reads from a bam that points to a list of read metrics: read length, read median Q-score, reference length, mapped length, mapping quality
-    Params:
-        bam_file_path (str):
+def extract_read_features_from_bam(
+    bam_file_path: str | Path, samtools_backend: str | None = "auto"
+) -> Dict[str, List[float]]:
+    """Extract read metrics from a BAM file.
+
+    Args:
+        bam_file_path: Path to the BAM file.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
     Returns:
-        read_metrics (dict)
+        Mapping of read name to [read_length, read_median_qscore, reference_length,
+        mapped_length, mapping_quality].
     """
-    # Open the BAM file
     logger.debug(
-        f"Extracting read metrics from BAM using extract_read_features_from_bam: {bam_file_path}"
+        "Extracting read metrics from BAM using extract_read_features_from_bam: %s",
+        bam_file_path,
     )
-    with pysam.AlignmentFile(bam_file_path, "rb") as bam_file:
-        read_metrics = {}
-        reference_lengths = bam_file.lengths  # List of lengths for each reference (chromosome)
-        for read in bam_file:
-            # Skip unmapped reads
-            if read.is_unmapped:
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    read_metrics: Dict[str, List[float]] = {}
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(bam_file_path), "rb") as bam_file:
+            reference_lengths = dict(zip(bam_file.references, bam_file.lengths))
+            for read in bam_file:
+                if read.is_unmapped:
+                    continue
+                read_quality = read.query_qualities
+                if read_quality is None:
+                    median_read_quality = float("nan")
+                else:
+                    median_read_quality = float(np.median(read_quality))
+                reference_length = reference_lengths.get(read.reference_name, float("nan"))
+                mapped_length = sum(end - start for start, end in read.get_blocks())
+                mapping_quality = float(read.mapping_quality)
+                read_metrics[read.query_name] = [
+                    float(read.query_length),
+                    median_read_quality,
+                    float(reference_length),
+                    float(mapped_length),
+                    mapping_quality,
+                ]
+        return read_metrics
+
+    bam_path = Path(bam_file_path)
+
+    def _parse_reference_lengths(header_text: str) -> Dict[str, int]:
+        ref_lengths: Dict[str, int] = {}
+        for line in header_text.splitlines():
+            if not line.startswith("@SQ"):
                 continue
-            # Extract the read metrics
-            read_quality = read.query_qualities
-            median_read_quality = np.median(read_quality)
-            # Extract the reference (chromosome) name and its length
-            reference_name = read.reference_name
-            reference_index = bam_file.references.index(reference_name)
-            reference_length = reference_lengths[reference_index]
-            mapped_length = sum(end - start for start, end in read.get_blocks())
-            mapping_quality = read.mapping_quality  # Phred-scaled MAPQ
-            read_metrics[read.query_name] = [
-                read.query_length,
-                median_read_quality,
-                reference_length,
-                mapped_length,
-                mapping_quality,
-            ]
+            fields = line.split("\t")
+            name = None
+            length = None
+            for field in fields[1:]:
+                if field.startswith("SN:"):
+                    name = field.split(":", 1)[1]
+                elif field.startswith("LN:"):
+                    length = int(field.split(":", 1)[1])
+            if name is not None and length is not None:
+                ref_lengths[name] = length
+        return ref_lengths
+
+    def _mapped_length_from_cigar(cigar: str) -> int:
+        mapped = 0
+        for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+            length = int(length_str)
+            if op in {"M", "=", "X"}:
+                mapped += length
+        return mapped
+
+    header_cp = subprocess.run(
+        ["samtools", "view", "-H", str(bam_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if header_cp.returncode != 0:
+        raise RuntimeError(
+            f"samtools view -H failed (exit {header_cp.returncode}):\n{header_cp.stderr}"
+        )
+    reference_lengths = _parse_reference_lengths(header_cp.stdout)
+
+    proc = subprocess.Popen(
+        ["samtools", "view", "-F", "4", str(bam_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        if not line.strip() or line.startswith("@"):
+            continue
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) < 11:
+            continue
+        read_name = fields[0]
+        reference_name = fields[2]
+        mapping_quality = float(fields[4])
+        cigar = fields[5]
+        sequence = fields[9]
+        quality = fields[10]
+        if sequence == "*":
+            read_length = float("nan")
+        else:
+            read_length = float(len(sequence))
+        if quality == "*" or not quality:
+            median_read_quality = float("nan")
+        else:
+            phreds = [ord(char) - 33 for char in quality]
+            median_read_quality = float(np.median(phreds))
+        reference_length = float(reference_lengths.get(reference_name, float("nan")))
+        mapped_length = float(_mapped_length_from_cigar(cigar)) if cigar != "*" else 0.0
+        read_metrics[read_name] = [
+            read_length,
+            median_read_quality,
+            reference_length,
+            mapped_length,
+            mapping_quality,
+        ]
+
+    rc = proc.wait()
+    if rc != 0:
+        stderr = proc.stderr.read() if proc.stderr else ""
+        raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
 
     return read_metrics
 
 
-def extract_readnames_from_bam(aligned_BAM):
+def extract_readnames_from_bam(aligned_BAM, samtools_backend: str | None = "auto"):
     """
     Takes a BAM and writes out a txt file containing read names from the BAM
 
@@ -949,21 +1442,39 @@ def extract_readnames_from_bam(aligned_BAM):
         None
 
     """
-    import subprocess
-
     # Make a text file of reads for the BAM
+    backend_choice = _resolve_samtools_backend(samtools_backend)
     txt_output = aligned_BAM.split(".bam")[0] + "_read_names.txt"
-    samtools_view = subprocess.Popen(["samtools", "view", aligned_BAM], stdout=subprocess.PIPE)
-    with open(txt_output, "w") as output_file:
-        cut_process = subprocess.Popen(
-            ["cut", "-f1"], stdin=samtools_view.stdout, stdout=output_file
-        )
-    samtools_view.stdout.close()
-    cut_process.wait()
-    samtools_view.wait()
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with (
+            pysam_mod.AlignmentFile(aligned_BAM, "rb") as bam,
+            open(txt_output, "w", encoding="utf-8") as output_file,
+        ):
+            for read in bam:
+                output_file.write(f"{read.query_name}\n")
+        return
+
+    samtools_view = subprocess.Popen(
+        ["samtools", "view", aligned_BAM], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    assert samtools_view.stdout is not None
+    with open(txt_output, "w", encoding="utf-8") as output_file:
+        for line in samtools_view.stdout:
+            if not line.strip():
+                continue
+            qname = line.split("\t", 1)[0]
+            output_file.write(f"{qname}\n")
+    rc = samtools_view.wait()
+    if rc != 0:
+        stderr = samtools_view.stderr.read() if samtools_view.stderr else ""
+        raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
 
 
-def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
+def separate_bam_by_bc(
+    input_bam, output_prefix, bam_suffix, split_dir, samtools_backend: str | None = "auto"
+):
     """
     Separates an input BAM file on the BC SAM tag values.
 
@@ -981,34 +1492,80 @@ def separate_bam_by_bc(input_bam, output_prefix, bam_suffix, split_dir):
     bam_base = input_bam.name
     bam_base_minus_suffix = input_bam.stem
 
-    # Open the input BAM file for reading
-    with pysam.AlignmentFile(str(input_bam), "rb") as bam:
-        # Create a dictionary to store output BAM files
-        output_files = {}
-        # Iterate over each read in the BAM file
-        for read in bam:
-            try:
-                # Get the barcode tag value
-                bc_tag = read.get_tag("BC", with_value_type=True)[0]
-                # bc_tag = read.get_tag("BC", with_value_type=True)[0].split('barcode')[1]
-                # Open the output BAM file corresponding to the barcode
-                if bc_tag not in output_files:
-                    output_path = (
-                        split_dir / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
-                    )
-                    output_files[bc_tag] = pysam.AlignmentFile(
-                        str(output_path), "wb", header=bam.header
-                    )
-                # Write the read to the corresponding output BAM file
-                output_files[bc_tag].write(read)
-            except KeyError:
-                logger.warning(f"BC tag not present for read: {read.query_name}")
-    # Close all output BAM files
-    for output_file in output_files.values():
-        output_file.close()
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        # Open the input BAM file for reading
+        with pysam_mod.AlignmentFile(str(input_bam), "rb") as bam:
+            # Create a dictionary to store output BAM files
+            output_files = {}
+            # Iterate over each read in the BAM file
+            for read in bam:
+                try:
+                    # Get the barcode tag value
+                    bc_tag = read.get_tag("BC", with_value_type=True)[0]
+                    # bc_tag = read.get_tag("BC", with_value_type=True)[0].split('barcode')[1]
+                    # Open the output BAM file corresponding to the barcode
+                    if bc_tag not in output_files:
+                        output_path = (
+                            split_dir
+                            / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
+                        )
+                        output_files[bc_tag] = pysam_mod.AlignmentFile(
+                            str(output_path), "wb", header=bam.header
+                        )
+                    # Write the read to the corresponding output BAM file
+                    output_files[bc_tag].write(read)
+                except KeyError:
+                    logger.warning(f"BC tag not present for read: {read.query_name}")
+        # Close all output BAM files
+        for output_file in output_files.values():
+            output_file.close()
+        return
+
+    def _collect_bc_tags() -> set[str]:
+        bc_tags: set[str] = set()
+        proc = subprocess.Popen(
+            ["samtools", "view", str(input_bam)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if not line.strip():
+                continue
+            fields = line.rstrip("\n").split("\t")
+            for tag in fields[11:]:
+                if tag.startswith("BC:"):
+                    bc_tags.add(tag.split(":", 2)[2])
+                    break
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+        return bc_tags
+
+    bc_tags = _collect_bc_tags()
+    if not bc_tags:
+        logger.warning("No BC tags found in %s", input_bam)
+        return
+
+    for bc_tag in bc_tags:
+        output_path = split_dir / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
+        cmd = ["samtools", "view", "-b", "-d", f"BC:{bc_tag}", "-o", str(output_path)]
+        cmd.append(str(input_bam))
+        cp = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if cp.returncode != 0:
+            raise RuntimeError(
+                f"samtools view failed for BC={bc_tag} (exit {cp.returncode}):\n{cp.stderr}"
+            )
 
 
-def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
+def split_and_index_BAM(
+    aligned_sorted_BAM, split_dir, bam_suffix, samtools_backend: str | None = "auto"
+):
     """
     A wrapper function for splitting BAMS and indexing them.
     Parameters:
@@ -1023,12 +1580,22 @@ def split_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix):
     logger.debug("Demultiplexing and indexing BAMS based on BC tag using split_and_index_BAM")
     aligned_sorted_output = aligned_sorted_BAM + bam_suffix
     file_prefix = date_string()
-    separate_bam_by_bc(aligned_sorted_output, file_prefix, bam_suffix, split_dir)
+    separate_bam_by_bc(
+        aligned_sorted_output,
+        file_prefix,
+        bam_suffix,
+        split_dir,
+        samtools_backend=samtools_backend,
+    )
     # Make a BAM index file for the BAMs in that directory
     bam_pattern = "*" + bam_suffix
     bam_files = glob.glob(split_dir / bam_pattern)
     bam_files = [str(bam) for bam in bam_files if ".bai" not in str(bam)]
+    backend_choice = _resolve_samtools_backend(samtools_backend)
     for input_file in bam_files:
-        pysam.index(input_file)
+        if backend_choice == "python":
+            _index_bam_with_pysam(input_file)
+        else:
+            _index_bam_with_samtools(input_file)
 
     return bam_files

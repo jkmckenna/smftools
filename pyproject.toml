@@ -25,7 +25,7 @@ keywords = [
 readme = "README.md"
 classifiers = [
     "License :: OSI Approved :: MIT License",
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
@@ -36,39 +36,17 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Topic :: Scientific/Engineering :: Visualization"
 ]
 dependencies = [
     "anndata>=0.10.0",
     "biopython>=1.79",
-    "captum",
     "click",
-    "fastcluster",
-    "hydra-core",
-    "igraph",
-    "leidenalg",
-    "lightning",
-    "multiqc",
-    "networkx>=3.2",
     "numpy>=1.22.0,<2",
-    "omegaconf",
     "pandas>=1.4.2",
-    "pod5>=0.1.21",
-    "pyfaidx>=0.8.0",
-    "pybedtools>=0.12.0",
-    "pyBigWig>=0.3.24",
-    "pysam>=0.19.1",
-    "scanpy>=1.9",
-    "scikit-learn>=1.0.2",
     "scipy>=1.7.3",
-    "shap",
-    "seaborn>=0.11",
-    "torch>=1.9.0",
     "tqdm",
-    "upsetplot",
-    "wandb"
 ]
 dynamic = ["version"]
 
@@ -81,25 +59,126 @@ smftools = "smftools.cli_entry:cli"
 
 [project.optional-dependencies]
 
-dev = ["ruff", "pre-commit", "pytest", "pytest-cov"]
+dev = [
+    "ruff", 
+    "pre-commit", 
+    "pytest", 
+    "pytest-cov"]
 
 docs = [
-    "sphinx>=7",
-    "sphinx-book-theme>=1.1.0",
-    "sphinx-autodoc-typehints>=1.25.2",
-    "myst-parser>=2",
-    "myst-nb>=1",
+    "sphinx>=7,<8",
+    "sphinx-book-theme>=1.1,<2",
+    "sphinx-autodoc-typehints>=1.25.2,<4",
+    "myst-parser>=2,<3",
+    "myst-nb>=1,<2",
     "sphinx-design",
     "readthedocs-sphinx-search",
-    "sphinxext-opengraph",
-    "sphinx-copybutton",
-    "sphinx-click",
+    "sphinxext-opengraph>=0.9,<0.10",
+    "sphinx-copybutton>=0.5,<0.6",
+    "sphinx-click>=5,<7",
     "nbsphinx>=0.9",
     "ipython>=7.20",
     "matplotlib!=3.6.1",
-    "sphinxcontrib-bibtex",
+    "sphinxcontrib-bibtex>=2,<3",
     "setuptools",
     "pyyaml"
+]
+
+cluster = [
+    "fastcluster",
+    "leidenalg",
+]
+
+misc = [
+    "networkx>=3.2",
+    "upsetplot",
+]
+
+ont = [
+    "pod5>=0.1.21",
+]
+
+plotting = [
+    "matplotlib>=3.6.2",
+    "seaborn>=0.11",
+]
+
+pybedtools = [
+    "pybedtools>=0.12.0",
+]
+
+pybigwig = [
+    "pyBigWig>=0.3.24",
+]
+
+pysam = [
+    "pysam>=0.19.1",
+]
+
+ml-base = [
+    "scikit-learn>=1.0.2",
+    "torch>=1.9.0",
+]
+
+ml-extended = [
+    "captum",
+    "hydra-core",
+    "lightning",
+    "omegaconf",
+    "shap",
+    "wandb",
+]
+
+qc = [
+    "multiqc",
+]
+
+scanpy = [
+    "igraph",
+    "scanpy>=1.9",
+]
+
+torch = [
+    "torch>=1.9.0",
+]
+
+all = [
+    # cluster
+    "fastcluster",
+    "leidenalg",
+
+    # informatics
+    "pybedtools>=0.12.0",
+    "pyBigWig>=0.3.24",
+    "pysam>=0.19.1",
+
+    # misc
+    "networkx>=3.2",
+    "upsetplot",
+
+    # ont
+    "pod5>=0.1.21",
+
+    # plotting
+    "matplotlib>=3.6.2",
+    "seaborn>=0.11",
+
+    # ml
+    "captum",
+    "hydra-core",
+    "lightning",
+    "omegaconf",
+    "scikit-learn>=1.0.2",
+    "shap",
+    "torch>=1.9.0",
+    "wandb",
+
+    # scanpy
+    "igraph",
+    "scanpy>=1.9",
+
+    # qc
+    "multiqc",
 ]
 
 [tool.hatch.build]

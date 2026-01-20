@@ -1,11 +1,25 @@
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
-import pytorch_lightning as pl
-import torch
-from sklearn.utils.class_weight import compute_class_weight
-from torch.utils.data import DataLoader, Dataset, Subset
+
+from smftools.optional_imports import require
 
 from .preprocessing import random_fill_nans
+
+pl = require("pytorch_lightning", extra="ml-extended", purpose="Lightning data modules")
+torch = require("torch", extra="ml-base", purpose="ML data loading")
+sklearn_class_weight = require(
+    "sklearn.utils.class_weight",
+    extra="ml-base",
+    purpose="class weighting",
+)
+torch_utils_data = require("torch.utils.data", extra="ml-base", purpose="ML data loading")
+
+compute_class_weight = sklearn_class_weight.compute_class_weight
+DataLoader = torch_utils_data.DataLoader
+Dataset = torch_utils_data.Dataset
+Subset = torch_utils_data.Subset
 
 
 class AnnDataDataset(Dataset):

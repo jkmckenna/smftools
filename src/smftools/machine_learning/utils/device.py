@@ -1,4 +1,8 @@
-import torch
+from __future__ import annotations
+
+from smftools.optional_imports import require
+
+torch = require("torch", extra="ml-base", purpose="device selection")
 
 
 def detect_device():

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## canoncall
 
 # Conversion SMF specific

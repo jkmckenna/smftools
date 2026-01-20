@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## basecalls_to_adata
 
 def basecalls_to_adata(config_path):

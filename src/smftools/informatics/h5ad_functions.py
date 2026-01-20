@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import glob
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -7,9 +9,9 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
-from pod5 import Reader
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 logger = get_logger(__name__)
 
@@ -90,6 +92,7 @@ def add_read_length_and_mapping_qc(
     extract_read_features_from_bam_callable=None,
     bypass: bool = False,
     force_redo: bool = True,
+    samtools_backend: str | None = "auto",
 ):
     """
     Populate adata.obs with read/mapping QC columns.
@@ -133,7 +136,7 @@ def add_read_length_and_mapping_qc(
                     "No `read_metrics` provided and `extract_read_features_from_bam` not found."
                 )
             for bam in bam_files:
-                bam_read_metrics = extractor(bam)
+                bam_read_metrics = extractor(bam, samtools_backend)
                 if not isinstance(bam_read_metrics, dict):
                     raise ValueError(f"extract_read_features_from_bam returned non-dict for {bam}")
                 read_metrics.update(bam_read_metrics)
@@ -228,6 +231,9 @@ def _collect_read_origins_from_pod5(pod5_path: str, target_ids: set[str]) -> dic
     Worker function: scan one POD5 file and return a mapping
     {read_id: pod5_basename} only for read_ids in `target_ids`.
     """
+    p5 = require("pod5", extra="ont", purpose="POD5 metadata")
+    Reader = p5.Reader
+
     basename = os.path.basename(pod5_path)
     mapping: dict[str, str] = {}
 

@@ -1,18 +1,20 @@
+from __future__ import annotations
+
 import gc
-import multiprocessing
+import logging
 import shutil
 import time
 import traceback
 from multiprocessing import Manager, Pool, current_process
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import TYPE_CHECKING, Iterable, Optional, Union
 
 import anndata as ad
 import numpy as np
 import pandas as pd
-import torch
 
-from smftools.logging_utils import get_logger
+from smftools.logging_utils import get_logger, setup_logging
+from smftools.optional_imports import require
 
 from ..readwrite import make_dirs
 from .bam_functions import count_aligned_reads, extract_base_identities
@@ -22,8 +24,10 @@ from .ohe import ohe_batching
 
 logger = get_logger(__name__)
 
-if __name__ == "__main__":
-    multiprocessing.set_start_method("forkserver", force=True)
+if TYPE_CHECKING:
+    import torch
+
+torch = require("torch", extra="torch", purpose="converted BAM processing")
 
 
 def converted_BAM_to_adata(
@@ -40,6 +44,7 @@ def converted_BAM_to_adata(
     deaminase_footprinting: bool = False,
     delete_intermediates: bool = True,
     double_barcoded_path: Path | None = None,
+    samtools_backend: str | None = "auto",
 ) -> tuple[ad.AnnData | None, Path]:
     """Convert BAM files into an AnnData object by binarizing modified base identities.
 
@@ -89,7 +94,9 @@ def converted_BAM_to_adata(
     )
 
     bam_path_list = bam_files
-    logger.info(f"Found {len(bam_files)} BAM files: {bam_files}")
+
+    bam_names = [bam.name for bam in bam_files]
+    logger.info(f"Found {len(bam_files)} BAM files within {split_dir}: {bam_names}")
 
     ## Process Conversion Sites
     max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(
@@ -98,7 +105,7 @@ def converted_BAM_to_adata(
 
     ## Filter BAM Files by Mapping Threshold
     records_to_analyze = filter_bams_by_mapping_threshold(
-        bam_path_list, bam_files, mapping_threshold
+        bam_path_list, bam_files, mapping_threshold, samtools_backend
     )
 
     ## Process BAMs in Parallel
@@ -113,6 +120,7 @@ def converted_BAM_to_adata(
         max_reference_length,
         device,
         deaminase_footprinting,
+        samtools_backend,
     )
 
     final_adata.uns["References"] = {}
@@ -240,14 +248,14 @@ def process_conversion_sites(
     return max_reference_length, record_FASTA_dict, chromosome_FASTA_dict
 
 
-def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold):
+def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold, samtools_backend):
     """Filters BAM files based on mapping threshold."""
     records_to_analyze = set()
 
     for i, bam in enumerate(bam_path_list):
-        aligned_reads, unaligned_reads, record_counts = count_aligned_reads(bam)
+        aligned_reads, unaligned_reads, record_counts = count_aligned_reads(bam, samtools_backend)
         aligned_percent = aligned_reads * 100 / (aligned_reads + unaligned_reads)
-        print(f"{aligned_percent:.2f}% of reads in {bam_files[i]} aligned successfully.")
+        logger.info(f"{aligned_percent:.2f}% of reads in {bam_files[i].name} aligned successfully.")
 
         for record, (count, percent) in record_counts.items():
             if percent >= mapping_threshold:
@@ -267,6 +275,7 @@ def process_single_bam(
     max_reference_length,
     device,
     deaminase_footprinting,
+    samtools_backend,
 ):
     """Worker function to process a single BAM file (must be at top-level for multiprocessing)."""
     adata_list = []
@@ -281,7 +290,7 @@ def process_single_bam(
         # Extract Base Identities
         fwd_bases, rev_bases, mismatch_counts_per_read, mismatch_trend_per_read = (
             extract_base_identities(
-                bam, record, range(current_length), max_reference_length, sequence
+                bam, record, range(current_length), max_reference_length, sequence, samtools_backend
             )
         )
         mismatch_trend_series = pd.Series(mismatch_trend_per_read)
@@ -433,9 +442,13 @@ def worker_function(
     max_reference_length,
     device,
     deaminase_footprinting,
+    samtools_backend,
     progress_queue,
+    log_level,
+    log_file,
 ):
     """Worker function that processes a single BAM and writes the output to an H5AD file."""
+    _ensure_worker_logging(log_level, log_file)
     worker_id = current_process().pid  # Get worker process ID
     sample = bam.stem
 
@@ -471,6 +484,7 @@ def worker_function(
             max_reference_length,
             device,
             deaminase_footprinting,
+            samtools_backend,
         )
 
         if adata is not None:
@@ -501,19 +515,13 @@ def process_bams_parallel(
     max_reference_length,
     device,
     deaminase_footprinting,
+    samtools_backend,
 ):
     """Processes BAM files in parallel, writes each H5AD to disk, and concatenates them at the end."""
     make_dirs(h5_dir)  # Ensure h5_dir exists
 
     logger.info(f"Starting parallel BAM processing with {num_threads} threads...")
-
-    # Ensure macOS uses forkserver to avoid spawning issues
-    try:
-        import multiprocessing
-
-        multiprocessing.set_start_method("forkserver", force=True)
-    except RuntimeError:
-        logger.warning(f"Multiprocessing context already set. Skipping set_start_method.")
+    log_level, log_file = _get_logger_config()
 
     with Manager() as manager:
         progress_queue = manager.Queue()
@@ -534,13 +542,16 @@ def process_bams_parallel(
                         max_reference_length,
                         device,
                         deaminase_footprinting,
+                        samtools_backend,
                         progress_queue,
+                        log_level,
+                        log_file,
                     ),
                 )
                 for i, bam in enumerate(bam_path_list)
             ]
 
-            logger.info(f"Submitted {len(bam_path_list)} BAMs for processing.")
+            logger.info(f"Submitting {len(results)} BAMs for processing.")
 
             # Track completed BAMs
             completed_bams = set()
@@ -550,15 +561,18 @@ def process_bams_parallel(
                     completed_bams.add(processed_bam)
                 except Exception as e:
                     logger.error(f"Timeout waiting for worker process. Possible crash? {e}")
+                    _log_async_result_errors(results, bam_path_list)
 
             pool.close()
             pool.join()  # Ensure all workers finish
+
+    _log_async_result_errors(results, bam_path_list)
 
     # Final Concatenation Step
     h5ad_files = [f for f in h5_dir.iterdir() if f.suffix == ".h5ad"]
 
     if not h5ad_files:
-        logger.debug(f"No valid H5AD files generated. Exiting.")
+        logger.warning(f"No valid H5AD files generated. Exiting.")
         return None
 
     logger.info(f"Concatenating {len(h5ad_files)} H5AD files into final output...")
@@ -566,6 +580,36 @@ def process_bams_parallel(
 
     logger.info(f"Successfully generated final AnnData object.")
     return final_adata
+
+
+def _log_async_result_errors(results, bam_path_list):
+    """Log worker failures captured by multiprocessing AsyncResult objects."""
+    for bam, result in zip(bam_path_list, results):
+        if not result.ready():
+            continue
+        try:
+            result.get()
+        except Exception as exc:
+            logger.error("Worker process failed for %s: %s", bam, exc)
+
+
+def _get_logger_config() -> tuple[int, Path | None]:
+    smftools_logger = logging.getLogger("smftools")
+    level = smftools_logger.level
+    if level == logging.NOTSET:
+        level = logging.INFO
+    log_file: Path | None = None
+    for handler in smftools_logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            log_file = Path(handler.baseFilename)
+            break
+    return level, log_file
+
+
+def _ensure_worker_logging(log_level: int, log_file: Path | None) -> None:
+    smftools_logger = logging.getLogger("smftools")
+    if not smftools_logger.handlers:
+        setup_logging(level=log_level, log_file=log_file)
 
 
 def delete_intermediate_h5ads_and_tmpdir(

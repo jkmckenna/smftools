@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import numpy as np
-import torch
-import torch.nn as nn
+
+from smftools.optional_imports import require
 
 from ..utils.device import detect_device
+
+torch = require("torch", extra="ml-base", purpose="ML base models")
+nn = torch.nn
 
 
 class BaseTorchModel(nn.Module):

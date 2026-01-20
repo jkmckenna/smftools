@@ -1,51 +1,64 @@
+from __future__ import annotations
+
 # duplicate_detection_with_hier_and_plots.py
 import copy
 import math
 import os
 import warnings
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from importlib.util import find_spec
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
-import anndata as ad
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import torch
+from scipy.cluster import hierarchy as sch
+from scipy.spatial.distance import pdist, squareform
+from scipy.stats import gaussian_kde
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 from ..readwrite import make_dirs
 
 logger = get_logger(__name__)
 
-# optional imports for clustering / PCA / KDE
-try:
-    from scipy.cluster import hierarchy as sch
-    from scipy.spatial.distance import pdist, squareform
+plt = require("matplotlib.pyplot", extra="plotting", purpose="duplicate read plots")
+torch = require("torch", extra="torch", purpose="duplicate read detection")
 
-    SCIPY_AVAILABLE = True
-except Exception:
-    sch = None
-    pdist = None
-    squareform = None
-    SCIPY_AVAILABLE = False
+if TYPE_CHECKING:
+    import anndata as ad
 
-try:
-    from sklearn.cluster import DBSCAN, KMeans
-    from sklearn.decomposition import PCA
-    from sklearn.metrics import silhouette_score
-    from sklearn.mixture import GaussianMixture
+SCIPY_AVAILABLE = True
+SKLEARN_AVAILABLE = find_spec("sklearn") is not None
 
-    SKLEARN_AVAILABLE = True
-except Exception:
-    PCA = None
-    KMeans = DBSCAN = GaussianMixture = silhouette_score = None
-    SKLEARN_AVAILABLE = False
-
-try:
-    from scipy.stats import gaussian_kde
-except Exception:
-    gaussian_kde = None
+PCA = None
+KMeans = DBSCAN = GaussianMixture = silhouette_score = None
+if SKLEARN_AVAILABLE:
+    sklearn_cluster = require(
+        "sklearn.cluster",
+        extra="ml-base",
+        purpose="duplicate read clustering",
+    )
+    sklearn_decomp = require(
+        "sklearn.decomposition",
+        extra="ml-base",
+        purpose="duplicate read PCA",
+    )
+    sklearn_metrics = require(
+        "sklearn.metrics",
+        extra="ml-base",
+        purpose="duplicate read clustering diagnostics",
+    )
+    sklearn_mixture = require(
+        "sklearn.mixture",
+        extra="ml-base",
+        purpose="duplicate read clustering",
+    )
+    DBSCAN = sklearn_cluster.DBSCAN
+    KMeans = sklearn_cluster.KMeans
+    PCA = sklearn_decomp.PCA
+    silhouette_score = sklearn_metrics.silhouette_score
+    GaussianMixture = sklearn_mixture.GaussianMixture
 
 
 def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer: str = "orig") -> dict:
@@ -152,24 +165,6 @@ def flag_duplicate_reads(
     import anndata as ad
     import numpy as np
     import pandas as pd
-
-    # optional imports already guarded at module import time, but re-check
-    try:
-        from scipy.cluster import hierarchy as sch
-        from scipy.spatial.distance import pdist
-
-        SCIPY_AVAILABLE = True
-    except Exception:
-        sch = None
-        pdist = None
-        SCIPY_AVAILABLE = False
-    try:
-        from sklearn.decomposition import PCA
-
-        SKLEARN_AVAILABLE = True
-    except Exception:
-        PCA = None
-        SKLEARN_AVAILABLE = False
 
     # -------- helper: demux-aware keeper selection --------
     def _choose_keeper_with_demux_preference(
@@ -1577,13 +1572,6 @@ def _run_clustering(
     Run clustering on 2D points (x,y). Returns labels (len = npoints) and diagnostics dict.
     Labels follow sklearn conventions (noise -> -1 for DBSCAN/HDBSCAN).
     """
-    try:
-        from sklearn.cluster import DBSCAN, KMeans
-        from sklearn.metrics import silhouette_score
-        from sklearn.mixture import GaussianMixture
-    except Exception:
-        KMeans = DBSCAN = GaussianMixture = silhouette_score = None
-
     pts = np.column_stack([x, y])
     diagnostics: Dict[str, Any] = {"method": method, "n_input": len(x)}
     if len(x) < min_points:

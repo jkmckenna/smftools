@@ -3,14 +3,20 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import torch
-import torch.nn as nn
 from scipy.sparse import issparse
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
+
+if TYPE_CHECKING:
+    import torch as torch_types
+    import torch.nn as nn_types
+
+torch = require("torch", extra="torch", purpose="HMM modeling")
+nn = torch.nn
 
 logger = get_logger(__name__)
 # =============================================================================

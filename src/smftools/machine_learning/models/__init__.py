@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .base import BaseTorchModel
 from .cnn import CNNClassifier
 from .lightning_base import TorchClassifierWrapper

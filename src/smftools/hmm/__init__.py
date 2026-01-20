@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from importlib import import_module
 
 _LAZY_ATTRS = {
@@ -19,11 +21,4 @@ def __getattr__(name: str):
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
-__all__ = [
-    "call_hmm_peaks",
-    "display_hmm",
-    "load_hmm",
-    "refine_nucleosome_calls",
-    "infer_nucleosomes_in_large_bound",
-    "save_hmm",
-]
+__all__ = list(_LAZY_ATTRS.keys())

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## demux_and_index_BAM
 
 def demux_and_index_BAM(aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, fasta, make_bigwigs, threads):

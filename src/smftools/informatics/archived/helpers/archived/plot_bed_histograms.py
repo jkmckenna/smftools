@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # plot_bed_histograms
 
 def plot_bed_histograms(

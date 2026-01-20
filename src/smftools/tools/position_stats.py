@@ -1,41 +1,26 @@
 from __future__ import annotations
 
+import os
 import warnings
+from contextlib import contextmanager
+from itertools import cycle
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+from scipy.stats import chi2_contingency
+from tqdm import tqdm
+
+from smftools.optional_imports import require
 
 if TYPE_CHECKING:
     import anndata as ad
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-
-# optional imports
-try:
-    from joblib import Parallel, delayed
-
-    JOBLIB_AVAILABLE = True
-except Exception:
-    JOBLIB_AVAILABLE = False
-
-try:
-    from scipy.stats import chi2_contingency
-
-    SCIPY_STATS_AVAILABLE = True
-except Exception:
-    SCIPY_STATS_AVAILABLE = False
+plt = require("matplotlib.pyplot", extra="plotting", purpose="position stats plots")
 
 # -----------------------------
 # Compute positionwise statistic (multi-method + simple site_types)
 # -----------------------------
-import os
-from contextlib import contextmanager
-from itertools import cycle
-
-import joblib
-from joblib import Parallel, cpu_count, delayed
-from scipy.stats import chi2_contingency
-from tqdm import tqdm
 
 
 # ------------------------- Utilities -------------------------
@@ -197,6 +182,8 @@ def calculate_relative_risk_on_activity(
 @contextmanager
 def tqdm_joblib(tqdm_object: tqdm):
     """Context manager to patch joblib to update a tqdm progress bar."""
+    joblib = require("joblib", extra="ml-base", purpose="parallel position statistics")
+
     old = joblib.parallel.BatchCompletionCallBack
 
     class TqdmBatchCompletionCallback(old):  # type: ignore
@@ -315,6 +302,8 @@ def compute_positionwise_statistics(
         max_threads: Maximum number of threads.
         reverse_indices_on_store: Whether to reverse indices on output storage.
     """
+    joblib = require("joblib", extra="ml-base", purpose="parallel position statistics")
+
     if isinstance(methods, str):
         methods = [methods]
     methods = [m.lower() for m in methods]
@@ -325,7 +314,7 @@ def compute_positionwise_statistics(
 
     # workers
     if max_threads is None or max_threads <= 0:
-        n_jobs = max(1, cpu_count() or 1)
+        n_jobs = max(1, joblib.cpu_count() or 1)
     else:
         n_jobs = max(1, int(max_threads))
 
@@ -439,13 +428,14 @@ def compute_positionwise_statistics(
                             worker = _relative_risk_row_job
                         out = np.full((n_pos, n_pos), np.nan, dtype=float)
                         tasks = (
-                            delayed(worker)(i, X_bin, min_count_for_pairwise) for i in range(n_pos)
+                            joblib.delayed(worker)(i, X_bin, min_count_for_pairwise)
+                            for i in range(n_pos)
                         )
                         pbar_rows = tqdm(
                             total=n_pos, desc=f"{m}: rows ({sample}__{ref})", leave=False
                         )
                         with tqdm_joblib(pbar_rows):
-                            results = Parallel(n_jobs=n_jobs, prefer="processes")(tasks)
+                            results = joblib.Parallel(n_jobs=n_jobs, prefer="processes")(tasks)
                         pbar_rows.close()
                         for i, row in results:
                             out[int(i), :] = row

@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from smftools.optional_imports import require
+
+
 def plot_volcano_relative_risk(
     results_dict,
     save_path=None,
@@ -22,7 +27,7 @@ def plot_volcano_relative_risk(
     """
     import os
 
-    import matplotlib.pyplot as plt
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="relative risk plots")
 
     for ref, group_results in results_dict.items():
         for group_label, (results_df, _) in group_results.items():
@@ -124,7 +129,7 @@ def plot_bar_relative_risk(
     """
     import os
 
-    import matplotlib.pyplot as plt
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="relative risk plots")
 
     for ref, group_data in results_dict.items():
         for group_label, (df, _) in group_data.items():
@@ -229,10 +234,11 @@ def plot_positionwise_matrix(
     """
     import os
 
-    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
-    import seaborn as sns
+
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="position stats plots")
+    sns = require("seaborn", extra="plotting", purpose="position stats plots")
 
     def find_closest_index(index, target):
         """Find the index value closest to a target value."""
@@ -408,12 +414,14 @@ def plot_positionwise_matrix_grid(
     """
     import os
 
-    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
-    import seaborn as sns
     from joblib import Parallel, delayed
-    from matplotlib.gridspec import GridSpec
+
+    plt = require("matplotlib.pyplot", extra="plotting", purpose="position stats plots")
+    sns = require("seaborn", extra="plotting", purpose="position stats plots")
+    grid_spec = require("matplotlib.gridspec", extra="plotting", purpose="position stats plots")
+    GridSpec = grid_spec.GridSpec
 
     matrices = adata.uns[key]
     group_labels = list(matrices.keys())

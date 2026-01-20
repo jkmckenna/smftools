@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## get_native_references
 
 # Direct methylation specific

@@ -11,6 +11,15 @@ This file tells coding agents (including OpenAI Codex) how to work in this repo.
 - Read existing patterns before inventing new ones.
 - Don’t refactor broadly unless asked.
 - If you’re unsure about intended behavior, look for tests/docs first.
+- Ignore all files in any directory named "archived".
+
+## Project dependencies
+- A core set of dependencies is required for the project.
+- Various optional dependencies are provided for:
+    - Optional functional modules of the package (ont, plotting, ml-base, ml-extended, scanpy, qc)
+    - If a Python version of a CLI tool is preferred (Such as for Samtools, Bedtools, BedGraphToBigWig).
+    - For potential performance boosts in computation (torch)
+    - All dependencies can be installed with `pip install -e ".[all]"`
 
 ## Setup
 - Create env (pick one):
@@ -38,6 +47,7 @@ This file tells coding agents (including OpenAI Codex) how to work in this repo.
   - Use type hints for new/modified functions where reasonable.
   - Use Google style docstring format.
   - Avoid heavy dependencies unless necessary.
+  - Use typing.TYPE_CHECKING and annotations.
 
 ## Testing expectations
 - New functionality must include tests.

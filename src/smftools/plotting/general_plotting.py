@@ -5,12 +5,15 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import matplotlib.gridspec as gridspec
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy.cluster.hierarchy as sch
-import seaborn as sns
+
+from smftools.optional_imports import require
+
+gridspec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plotting")
+plt = require("matplotlib.pyplot", extra="plotting", purpose="plot rendering")
+sns = require("seaborn", extra="plotting", purpose="plot styling")
 
 
 def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 ## calculate_complexity
 
 def calculate_complexity(adata, output_directory='', obs_column='Reference', sample_col='Sample_names', plot=True, save_plot=False):

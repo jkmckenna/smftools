@@ -3,17 +3,22 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import torch
 
 from smftools.logging_utils import get_logger
+from smftools.optional_imports import require
 
 # FIX: import _to_dense_np to avoid NameError
 from ..hmm.HMM import _safe_int_coords, _to_dense_np, create_hmm, normalize_hmm_feature_sets
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    import torch as torch_types
+
+torch = require("torch", extra="torch", purpose="HMM CLI")
 
 # =============================================================================
 # Helpers: extracting training arrays

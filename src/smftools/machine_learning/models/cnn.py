@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import numpy as np
-import torch
-import torch.nn as nn
+
+from smftools.optional_imports import require
 
 from .base import BaseTorchModel
+
+torch = require("torch", extra="ml-base", purpose="CNN models")
+nn = torch.nn
 
 
 class CNNClassifier(BaseTorchModel):
