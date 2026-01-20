@@ -2,7 +2,8 @@
 
 smftools uses an experiment configuration CSV to define paths, modality settings, and workflow
 options. You can start from the repository template (`experiment_config.csv`) and fill in your
-experiment-specific values.
+experiment-specific values. The configuration CSV can override any parameter within the default.yaml
+and modality specific config .yamls found within the config subpackage of smftools.
 
 ## CSV format
 
