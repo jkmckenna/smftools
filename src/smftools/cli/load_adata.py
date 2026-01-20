@@ -80,6 +80,96 @@ def delete_tsvs(
                         logger.warning(f"[error] failed to remove tmp dir {td}: {e}")
 
 
+def load_adata(config_path: str):
+    """
+    CLI-facing wrapper for the load pipeline.
+
+    - Reads config CSV into ExperimentConfig
+    - Computes canonical paths for all downstream AnnData stages
+    - Registers those in the summary CSV
+    - Applies stage-skipping logic (hmm > spatial > pp_dedup > pp > raw)
+    - If needed, calls the core pipeline to actually build the raw AnnData
+
+    Returns
+    -------
+    adata : anndata.AnnData | None
+        Newly created AnnData object, or None if we skipped because a later-stage
+        AnnData already exists.
+    adata_path : pathlib.Path
+        Path to the "current" AnnData that should be used downstream.
+    cfg : ExperimentConfig
+        Config object for downstream steps.
+    """
+    from datetime import datetime
+    from importlib import resources
+
+    from ..config import ExperimentConfig, LoadExperimentConfig
+    from ..readwrite import add_or_update_column_in_csv, make_dirs
+    from .helpers import get_adata_paths
+
+    date_str = datetime.today().strftime("%y%m%d")
+
+    # -----------------------------
+    # 1) Load config into cfg
+    # -----------------------------
+    loader = LoadExperimentConfig(config_path)
+    defaults_dir = resources.files("smftools").joinpath("config")
+    cfg, report = ExperimentConfig.from_var_dict(
+        loader.var_dict, date_str=date_str, defaults_dir=defaults_dir
+    )
+
+    # Ensure base output dir
+    make_dirs([cfg.output_directory])
+
+    # -----------------------------
+    # 2) Compute and register paths
+    # -----------------------------
+    paths = get_adata_paths(cfg)
+
+    # experiment-level metadata in summary CSV
+    add_or_update_column_in_csv(cfg.summary_file, "experiment_name", cfg.experiment_name)
+    add_or_update_column_in_csv(cfg.summary_file, "config_path", config_path)
+    add_or_update_column_in_csv(cfg.summary_file, "input_data_path", cfg.input_data_path)
+    add_or_update_column_in_csv(cfg.summary_file, "input_files", [cfg.input_files])
+
+    # AnnData stage paths
+    add_or_update_column_in_csv(cfg.summary_file, "load_adata", paths.raw)
+    add_or_update_column_in_csv(cfg.summary_file, "pp_adata", paths.pp)
+    add_or_update_column_in_csv(cfg.summary_file, "pp_dedup_adata", paths.pp_dedup)
+    add_or_update_column_in_csv(cfg.summary_file, "spatial_adata", paths.spatial)
+    add_or_update_column_in_csv(cfg.summary_file, "hmm_adata", paths.hmm)
+
+    # -----------------------------
+    # 3) Stage skipping logic
+    # -----------------------------
+    if not getattr(cfg, "force_redo_load_adata", False):
+        if paths.hmm.exists():
+            logger.debug(f"HMM AnnData already exists: {paths.hmm}\nSkipping smftools load")
+            return None, paths.hmm, cfg
+        if paths.spatial.exists():
+            logger.debug(f"Spatial AnnData already exists: {paths.spatial}\nSkipping smftools load")
+            return None, paths.spatial, cfg
+        if paths.pp_dedup.exists():
+            logger.debug(
+                f"Preprocessed deduplicated AnnData already exists: {paths.pp_dedup}\n"
+                f"Skipping smftools load"
+            )
+            return None, paths.pp_dedup, cfg
+        if paths.pp.exists():
+            logger.debug(f"Preprocessed AnnData already exists: {paths.pp}\nSkipping smftools load")
+            return None, paths.pp, cfg
+        if paths.raw.exists():
+            logger.debug(
+                f"Raw AnnData from smftools load already exists: {paths.raw}\nSkipping smftools load"
+            )
+            return None, paths.raw, cfg
+
+    # If we get here, we actually want to run the full load pipeline
+    adata, adata_path, cfg = load_adata_core(cfg, paths, config_path=config_path)
+
+    return adata, adata_path, cfg
+
+
 def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     """
     Core load pipeline.
@@ -391,6 +481,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 fasta,
                 cfg.make_bigwigs,
                 cfg.threads,
+                samtools_backend=cfg.samtools_backend,
                 bedtools_backend=cfg.bedtools_backend,
                 bigwig_backend=cfg.bigwig_backend,
             )
@@ -508,6 +599,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                     fasta,
                     cfg.make_bigwigs,
                     cfg.threads,
+                    samtools_backend=cfg.samtools_backend,
                     bedtools_backend=cfg.bedtools_backend,
                     bigwig_backend=cfg.bigwig_backend,
                 )
@@ -695,93 +787,3 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ########################################################################################################################
 
     return raw_adata, raw_adata_path, cfg
-
-
-def load_adata(config_path: str):
-    """
-    CLI-facing wrapper for the load pipeline.
-
-    - Reads config CSV into ExperimentConfig
-    - Computes canonical paths for all downstream AnnData stages
-    - Registers those in the summary CSV
-    - Applies stage-skipping logic (hmm > spatial > pp_dedup > pp > raw)
-    - If needed, calls the core pipeline to actually build the raw AnnData
-
-    Returns
-    -------
-    adata : anndata.AnnData | None
-        Newly created AnnData object, or None if we skipped because a later-stage
-        AnnData already exists.
-    adata_path : pathlib.Path
-        Path to the "current" AnnData that should be used downstream.
-    cfg : ExperimentConfig
-        Config object for downstream steps.
-    """
-    from datetime import datetime
-    from importlib import resources
-
-    from ..config import ExperimentConfig, LoadExperimentConfig
-    from ..readwrite import add_or_update_column_in_csv, make_dirs
-    from .helpers import get_adata_paths
-
-    date_str = datetime.today().strftime("%y%m%d")
-
-    # -----------------------------
-    # 1) Load config into cfg
-    # -----------------------------
-    loader = LoadExperimentConfig(config_path)
-    defaults_dir = resources.files("smftools").joinpath("config")
-    cfg, report = ExperimentConfig.from_var_dict(
-        loader.var_dict, date_str=date_str, defaults_dir=defaults_dir
-    )
-
-    # Ensure base output dir
-    make_dirs([cfg.output_directory])
-
-    # -----------------------------
-    # 2) Compute and register paths
-    # -----------------------------
-    paths = get_adata_paths(cfg)
-
-    # experiment-level metadata in summary CSV
-    add_or_update_column_in_csv(cfg.summary_file, "experiment_name", cfg.experiment_name)
-    add_or_update_column_in_csv(cfg.summary_file, "config_path", config_path)
-    add_or_update_column_in_csv(cfg.summary_file, "input_data_path", cfg.input_data_path)
-    add_or_update_column_in_csv(cfg.summary_file, "input_files", [cfg.input_files])
-
-    # AnnData stage paths
-    add_or_update_column_in_csv(cfg.summary_file, "load_adata", paths.raw)
-    add_or_update_column_in_csv(cfg.summary_file, "pp_adata", paths.pp)
-    add_or_update_column_in_csv(cfg.summary_file, "pp_dedup_adata", paths.pp_dedup)
-    add_or_update_column_in_csv(cfg.summary_file, "spatial_adata", paths.spatial)
-    add_or_update_column_in_csv(cfg.summary_file, "hmm_adata", paths.hmm)
-
-    # -----------------------------
-    # 3) Stage skipping logic
-    # -----------------------------
-    if not getattr(cfg, "force_redo_load_adata", False):
-        if paths.hmm.exists():
-            logger.debug(f"HMM AnnData already exists: {paths.hmm}\nSkipping smftools load")
-            return None, paths.hmm, cfg
-        if paths.spatial.exists():
-            logger.debug(f"Spatial AnnData already exists: {paths.spatial}\nSkipping smftools load")
-            return None, paths.spatial, cfg
-        if paths.pp_dedup.exists():
-            logger.debug(
-                f"Preprocessed deduplicated AnnData already exists: {paths.pp_dedup}\n"
-                f"Skipping smftools load"
-            )
-            return None, paths.pp_dedup, cfg
-        if paths.pp.exists():
-            logger.debug(f"Preprocessed AnnData already exists: {paths.pp}\nSkipping smftools load")
-            return None, paths.pp, cfg
-        if paths.raw.exists():
-            logger.debug(
-                f"Raw AnnData from smftools load already exists: {paths.raw}\nSkipping smftools load"
-            )
-            return None, paths.raw, cfg
-
-    # If we get here, we actually want to run the full load pipeline
-    adata, adata_path, cfg = load_adata_core(cfg, paths, config_path=config_path)
-
-    return adata, adata_path, cfg
