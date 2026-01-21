@@ -221,7 +221,7 @@ def preprocess_adata_core(
     from pathlib import Path
 
     from ..metadata import record_smftools_metadata
-    from ..plotting import plot_read_qc_histograms
+    from ..plotting import plot_read_qc_histograms, plot_sequence_integer_encoding_clustermaps
     from ..preprocessing import (
         append_base_context,
         append_binary_layer_by_base_context,
@@ -540,6 +540,50 @@ def preprocess_adata_core(
     else:
         adata_unique = adata
     ########################################################################################################################
+
+    ############################################### Plot integer sequence encoding clustermaps ###############################################
+    if "sequence_integer_encoding" not in adata.layers:
+        logger.debug(
+            "sequence_integer_encoding layer not found; skipping integer encoding clustermaps."
+        )
+    else:
+        pp_seq_clustermap_dir = pp_dir / "06_sequence_integer_encoding_clustermaps"
+        if pp_seq_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(
+                f"{pp_seq_clustermap_dir} already exists. Skipping sequence integer encoding clustermaps."
+            )
+        else:
+            make_dirs([pp_seq_clustermap_dir])
+            plot_sequence_integer_encoding_clustermaps(
+                adata,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                min_quality=None,
+                min_length=None,
+                min_mapped_length_to_reference_length_ratio=None,
+                sort_by="none",
+                save_path=pp_seq_clustermap_dir,
+            )
+
+        pp_dedup_seq_clustermap_dir = pp_dir / "deduplicated" / "06_sequence_integer_encoding_clustermaps"
+        if pp_dedup_seq_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(
+                f"{pp_dedup_seq_clustermap_dir} already exists. Skipping sequence integer encoding clustermaps."
+            )
+        else:
+            make_dirs([pp_dedup_seq_clustermap_dir])
+            plot_sequence_integer_encoding_clustermaps(
+                adata_unique,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                min_quality=None,
+                min_length=None,
+                min_mapped_length_to_reference_length_ratio=None,
+                sort_by="none",
+                save_path=pp_dedup_seq_clustermap_dir,
+            )
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
