@@ -11,9 +11,19 @@ import scipy.cluster.hierarchy as sch
 
 from smftools.optional_imports import require
 
+colors = require("matplotlib.colors", extra="plotting", purpose="plot rendering")
 gridspec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plotting")
+patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
 plt = require("matplotlib.pyplot", extra="plotting", purpose="plot rendering")
 sns = require("seaborn", extra="plotting", purpose="plot styling")
+
+DNA_5COLOR_PALETTE = {
+    "A": "#00A000",  # green
+    "C": "#0000FF",  # blue
+    "G": "#FF7F00",  # orange
+    "T": "#FF0000",  # red
+    "OTHER": "#808080",  # gray (N, PAD, unknown)
+}
 
 
 def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
@@ -853,7 +863,6 @@ def plot_sequence_integer_encoding_clustermaps(
     demux_types: Sequence[str] = ("single", "double", "already"),
     sort_by: str = "none",  # "none", "hierarchical", "obs:<col>"
     cmap: str = "viridis",
-    base_palette: Mapping[str, str] | None = None,
     max_unknown_fraction: float | None = None,
     unknown_values: Sequence[int] = (4, 5),
     xtick_step: int | None = None,
@@ -861,6 +870,8 @@ def plot_sequence_integer_encoding_clustermaps(
     xtick_fontsize: int = 9,
     max_reads: int | None = None,
     save_path: str | Path | None = None,
+    use_dna_5color_palette: bool = True,
+    show_numeric_colorbar: bool = False,
 ):
     """Plot integer-encoded sequence clustermaps per sample/reference.
 
@@ -874,8 +885,7 @@ def plot_sequence_integer_encoding_clustermaps(
         min_mapped_length_to_reference_length_ratio: Optional min length ratio filter.
         demux_types: Allowed ``demux_type`` values, if present in ``adata.obs``.
         sort_by: Row sorting strategy: ``none``, ``hierarchical``, or ``obs:<col>``.
-        cmap: Matplotlib colormap for the heatmap when ``base_palette`` is not set.
-        base_palette: Optional base-to-color mapping for A/C/G/T/N/PAD.
+        cmap: Matplotlib colormap for the heatmap when ``use_dna_5color_palette`` is False.
         max_unknown_fraction: Optional maximum fraction of ``unknown_values`` allowed per
             position; positions above this threshold are excluded.
         unknown_values: Integer values to treat as unknown/padding.
@@ -884,6 +894,8 @@ def plot_sequence_integer_encoding_clustermaps(
         xtick_fontsize: Font size for x-axis tick labels.
         max_reads: Optional maximum number of reads to plot per sample/reference.
         save_path: Optional output directory for saving plots.
+        use_dna_5color_palette: Whether to use a fixed A/C/G/T/Other palette.
+        show_numeric_colorbar: If False, use a legend instead of a numeric colorbar.
 
     Returns:
         List of dictionaries with per-plot metadata and output paths.
@@ -912,8 +924,25 @@ def plot_sequence_integer_encoding_clustermaps(
     for col in (sample_col, reference_col):
         if col not in adata.obs:
             raise KeyError(f"{col} not in adata.obs")
-        if not pd.api.types.is_categorical_dtype(adata.obs[col]):
+        if not isinstance(adata.obs[col].dtype, pd.CategoricalDtype):
             adata.obs[col] = adata.obs[col].astype("category")
+
+    int_to_base = adata.uns.get("sequence_integer_decoding_map", {}) or {}
+    if not int_to_base:
+        encoding_map = adata.uns.get("sequence_integer_encoding_map", {}) or {}
+        int_to_base = {int(v): str(k) for k, v in encoding_map.items()} if encoding_map else {}
+
+    coerced_int_to_base = {}
+    for key, value in int_to_base.items():
+        try:
+            coerced_key = int(key)
+        except Exception:
+            continue
+        coerced_int_to_base[coerced_key] = str(value)
+    int_to_base = coerced_int_to_base
+
+    def normalize_base(base: str) -> str:
+        return base if base in {"A", "C", "G", "T"} else "OTHER"
 
     for ref in adata.obs[reference_col].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
@@ -950,12 +979,12 @@ def plot_sequence_integer_encoding_clustermaps(
                 & lrr_mask
                 & demux_mask
             )
-
             if not bool(row_mask.any()):
                 continue
 
             subset = adata[row_mask, :].copy()
             matrix = np.asarray(subset.layers[layer])
+
             if max_unknown_fraction is not None:
                 unknown_mask = np.isin(matrix, np.asarray(unknown_values))
                 unknown_fraction = unknown_mask.mean(axis=0)
@@ -964,12 +993,26 @@ def plot_sequence_integer_encoding_clustermaps(
                     continue
                 matrix = matrix[:, keep_columns]
                 subset = subset[:, keep_columns].copy()
+
             if max_reads is not None and matrix.shape[0] > max_reads:
                 matrix = matrix[:max_reads]
                 subset = subset[:max_reads, :].copy()
 
             if matrix.size == 0:
                 continue
+
+            if use_dna_5color_palette and not int_to_base:
+                uniq_vals = np.unique(matrix[~pd.isna(matrix)])
+                guess = {}
+                for val in uniq_vals:
+                    try:
+                        int_val = int(val)
+                    except Exception:
+                        continue
+                    guess[int_val] = {0: "A", 1: "C", 2: "G", 3: "T"}.get(int_val, "OTHER")
+                int_to_base_local = guess
+            else:
+                int_to_base_local = int_to_base
 
             order = None
             if sort_by.startswith("obs:"):
@@ -985,29 +1028,58 @@ def plot_sequence_integer_encoding_clustermaps(
                 matrix = matrix[order]
 
             fig, ax = plt.subplots(figsize=(12, 6))
-            if base_palette is not None:
-                int_to_base = adata.uns.get("sequence_integer_decoding_map", {})
-                if not int_to_base:
-                    int_to_base = {
-                        int(v): k
-                        for k, v in adata.uns.get("sequence_integer_encoding_map", {}).items()
-                    }
-                palette = {
-                    base: color
-                    for base, color in base_palette.items()
-                    if base in ("A", "C", "G", "T", "N", "PAD")
+
+            if use_dna_5color_palette and int_to_base_local:
+                int_to_color = {
+                    int(int_val): DNA_5COLOR_PALETTE[normalize_base(str(base))]
+                    for int_val, base in int_to_base_local.items()
                 }
-                ordered = [
-                    (int_value, palette.get(base, "#808080"))
-                    for int_value, base in sorted(int_to_base.items())
+                uniq_matrix = np.unique(matrix[~pd.isna(matrix)])
+                for val in uniq_matrix:
+                    try:
+                        int_val = int(val)
+                    except Exception:
+                        continue
+                    if int_val not in int_to_color:
+                        int_to_color[int_val] = DNA_5COLOR_PALETTE["OTHER"]
+
+                ordered = sorted(int_to_color.items(), key=lambda x: x[0])
+                colors_list = [color for _, color in ordered]
+                bounds = [int_val - 0.5 for int_val, _ in ordered]
+                bounds.append(ordered[-1][0] + 0.5)
+
+                cmap_obj = colors.ListedColormap(colors_list)
+                norm = colors.BoundaryNorm(bounds, cmap_obj.N)
+
+                sns.heatmap(
+                    matrix,
+                    cmap=cmap_obj,
+                    norm=norm,
+                    ax=ax,
+                    yticklabels=False,
+                    cbar=show_numeric_colorbar,
+                )
+
+                legend_handles = [
+                    patches.Patch(facecolor=DNA_5COLOR_PALETTE["A"], label="A"),
+                    patches.Patch(facecolor=DNA_5COLOR_PALETTE["C"], label="C"),
+                    patches.Patch(facecolor=DNA_5COLOR_PALETTE["G"], label="G"),
+                    patches.Patch(facecolor=DNA_5COLOR_PALETTE["T"], label="T"),
+                    patches.Patch(
+                        facecolor=DNA_5COLOR_PALETTE["OTHER"],
+                        label="Other (N / PAD / unknown)",
+                    ),
                 ]
-                boundaries = [val - 0.5 for val, _ in ordered]
-                boundaries.append(ordered[-1][0] + 0.5)
-                cmap_obj = plt.matplotlib.colors.ListedColormap([c for _, c in ordered])
-                norm = plt.matplotlib.colors.BoundaryNorm(boundaries, cmap_obj.N)
-                sns.heatmap(matrix, cmap=cmap_obj, norm=norm, ax=ax, yticklabels=False, cbar=True)
+                ax.legend(
+                    handles=legend_handles,
+                    title="Base",
+                    loc="upper left",
+                    bbox_to_anchor=(1.02, 1.0),
+                    frameon=False,
+                )
             else:
                 sns.heatmap(matrix, cmap=cmap, ax=ax, yticklabels=False, cbar=True)
+
             ax.set_title(f"{sample} - {ref} ({layer})")
 
             if xtick_step is not None and xtick_step > 0:
@@ -1027,13 +1099,15 @@ def plot_sequence_integer_encoding_clustermaps(
                 out_file = save_path / f"{safe_name}.png"
                 fig.savefig(out_file, dpi=300, bbox_inches="tight")
                 plt.close(fig)
+            else:
+                plt.show()
 
             results.append(
                 {
-                    "reference": ref,
-                    "sample": sample,
+                    "reference": str(ref),
+                    "sample": str(sample),
                     "layer": layer,
-                    "n_positions": matrix.shape[1],
+                    "n_positions": int(matrix.shape[1]),
                     "output_path": str(out_file) if out_file is not None else None,
                 }
             )
