@@ -30,6 +30,8 @@ _LAZY_ATTRS = {
     "modQC": "smftools.informatics.modkit_functions",
     "modcall": "smftools.informatics.basecalling",
     "modkit_extract_to_adata": "smftools.informatics.modkit_extract_to_adata",
+    "decode_int_sequence": "smftools.informatics.sequence_encoding",
+    "encode_sequence_to_int": "smftools.informatics.sequence_encoding",
     "ohe_batching": "smftools.informatics.ohe",
     "ohe_layers_decode": "smftools.informatics.ohe",
     "one_hot_decode": "smftools.informatics.ohe",
@@ -55,6 +57,8 @@ def __getattr__(name: str):
 __all__ = [
     "basecall_pod5s",
     "converted_BAM_to_adata",
+    "decode_int_sequence",
+    "encode_sequence_to_int",
     "subsample_fasta_from_bed",
     "subsample_pod5",
     "fast5_to_pod5",
