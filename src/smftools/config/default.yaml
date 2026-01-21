@@ -18,8 +18,9 @@ conversions:
 fastq_barcode_map: null # For FASTQ files, an optional map of file paths to barcodes can be provided. Default is autodetecting barcodes.
 fastq_auto_pairing: True # For FASTQ files, attempt to find read pair files automatically.
 input_already_demuxed: False # If the input files are already demultiplexed.
+
 delete_intermediate_hdfs: True # Whether to delete the intermediate hdfs from the conversion/deamination workflows.
-delete_intermediate_bams: True # Whether to delete intermediate BAM files.
+delete_intermediate_bams: False # Whether to delete intermediate BAM files.
 delete_intermediate_tsvs: True # Whether to delete intermediate TSV files.
 
 # Sequencing modality and general experiment params

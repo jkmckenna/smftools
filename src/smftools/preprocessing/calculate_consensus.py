@@ -53,4 +53,4 @@ def calculate_consensus(
     else:
         adata.var[f"{reference}_consensus_across_samples"] = consensus_sequence_list
 
-    adata.uns[f"{reference}_consensus_sequence"] = consensus_sequence_list
+    adata.uns[f"{reference}_consensus_sequence"] = str(consensus_sequence_list)
