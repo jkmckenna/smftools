@@ -414,6 +414,17 @@ def process_single_bam(
         adata.obs["Reference_strand"] = [f"{chromosome}_{strand}"] * len(adata)
         adata.obs["Read_mismatch_trend"] = adata.obs_names.map(mismatch_trend_series)
 
+        read_mapping_direction = []
+        for read_id in adata.obs_names:
+            if read_id in fwd_bases:
+                read_mapping_direction.append("fwd")
+            elif read_id in rev_bases:
+                read_mapping_direction.append("rev")
+            else:
+                read_mapping_direction.append("unk")
+                
+        adata.obs["Read_mapping_direction"] = read_mapping_direction
+
         # Attach One-Hot Encodings to Layers
         adata.layers["A_binary_sequence_encoding"] = df_A
         adata.layers["C_binary_sequence_encoding"] = df_C
