@@ -422,7 +422,7 @@ def process_single_bam(
                 read_mapping_direction.append("rev")
             else:
                 read_mapping_direction.append("unk")
-                
+
         adata.obs["Read_mapping_direction"] = read_mapping_direction
 
         # Attach One-Hot Encodings to Layers

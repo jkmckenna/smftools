@@ -58,9 +58,7 @@ MODKIT_EXTRACT_CALL_CODE_CANONICAL: Final[tuple[str, ...]] = _deep_freeze(
     _private_modkit_extract_call_code_canonical
 )
 
-MODKIT_EXTRACT_SEQUENCE_BASES: Final[tuple[str, ...]] = _deep_freeze(
-    ("A", "C", "G", "T", "N")
-)
+MODKIT_EXTRACT_SEQUENCE_BASES: Final[tuple[str, ...]] = _deep_freeze(("A", "C", "G", "T", "N"))
 MODKIT_EXTRACT_SEQUENCE_PADDING_BASE: Final[str] = "PAD"
 _private_modkit_extract_base_to_int: Dict[str, int] = {
     "A": 0,

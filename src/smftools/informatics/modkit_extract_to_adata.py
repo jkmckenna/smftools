@@ -19,8 +19,8 @@ from smftools.constants import (
     MODKIT_EXTRACT_MODIFIED_BASE_C,
     MODKIT_EXTRACT_REF_STRAND_MINUS,
     MODKIT_EXTRACT_REF_STRAND_PLUS,
-    MODKIT_EXTRACT_SEQUENCE_BASES,
     MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
+    MODKIT_EXTRACT_SEQUENCE_BASES,
     MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE,
     MODKIT_EXTRACT_SEQUENCE_PADDING_BASE,
     MODKIT_EXTRACT_TSV_COLUMN_CALL_CODE,
@@ -927,9 +927,7 @@ def _build_modification_dicts(
                 batch_dicts.dict_a_bottom[record][sample_index] = batch_dicts.dict_a[record][
                     sample_index
                 ][
-                    batch_dicts.dict_a[record][sample_index][
-                        MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND
-                    ]
+                    batch_dicts.dict_a[record][sample_index][MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND]
                     == MODKIT_EXTRACT_REF_STRAND_MINUS
                 ]
                 logger.debug(
@@ -940,9 +938,7 @@ def _build_modification_dicts(
                 batch_dicts.dict_a_top[record][sample_index] = batch_dicts.dict_a[record][
                     sample_index
                 ][
-                    batch_dicts.dict_a[record][sample_index][
-                        MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND
-                    ]
+                    batch_dicts.dict_a[record][sample_index][MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND]
                     == MODKIT_EXTRACT_REF_STRAND_PLUS
                 ]
                 logger.debug(
@@ -982,9 +978,7 @@ def _build_modification_dicts(
                 batch_dicts.dict_c_bottom[record][sample_index] = batch_dicts.dict_c[record][
                     sample_index
                 ][
-                    batch_dicts.dict_c[record][sample_index][
-                        MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND
-                    ]
+                    batch_dicts.dict_c[record][sample_index][MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND]
                     == MODKIT_EXTRACT_REF_STRAND_MINUS
                 ]
                 logger.debug(
@@ -995,9 +989,7 @@ def _build_modification_dicts(
                 batch_dicts.dict_c_top[record][sample_index] = batch_dicts.dict_c[record][
                     sample_index
                 ][
-                    batch_dicts.dict_c[record][sample_index][
-                        MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND
-                    ]
+                    batch_dicts.dict_c[record][sample_index][MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND]
                     == MODKIT_EXTRACT_REF_STRAND_PLUS
                 ]
                 logger.debug(
@@ -1184,13 +1176,9 @@ def modkit_extract_to_adata(
                     current_reference_length,
                     batch_size=100000,
                 )
-                sequence_batch_files[f"{bami}_{record}"] = (
-                    fwd_sequence_files + rev_sequence_files
-                )
+                sequence_batch_files[f"{bami}_{record}"] = fwd_sequence_files + rev_sequence_files
                 del fwd_base_identities, rev_base_identities
-        ad.AnnData(X=np.random.rand(1, 1), uns=sequence_batch_files).write_h5ad(
-            sequence_cache_path
-        )
+        ad.AnnData(X=np.random.rand(1, 1), uns=sequence_batch_files).write_h5ad(sequence_cache_path)
     ##########################################################################################
 
     ##########################################################################################
@@ -1245,26 +1233,6 @@ def modkit_extract_to_adata(
                 batch_size=len(tsv_batch),
                 threads=threads,
             )
-
-            # # Step 2: Extract modification-specific data (per (record,sample)) in parallel
-            # processed_mod_results = parallel_process_modifications(dict_total, mods, max_reference_length, threads=threads or 4)
-            # (m6A_dict, m6A_minus_strand, m6A_plus_strand,
-            # c5m_dict, c5m_minus_strand, c5m_plus_strand,
-            # combined_minus_strand, combined_plus_strand) = merge_modification_results(processed_mod_results, mods)
-
-            # # Create dict_list with the desired ordering:
-            # # 0: dict_total, 1: m6A, 2: m6A_minus, 3: m6A_plus, 4: 5mC, 5: 5mC_minus, 6: 5mC_plus, 7: combined_minus, 8: combined_plus
-            # dict_list = [dict_total, m6A_dict, m6A_minus_strand, m6A_plus_strand,
-            #             c5m_dict, c5m_minus_strand, c5m_plus_strand,
-            #             combined_minus_strand, combined_plus_strand]
-
-            # # Initialize dict_to_skip (default skip all mod-specific indices)
-            # dict_to_skip = set([0, 1, 4, 7, 8, 2, 3, 5, 6])
-            # # Update dict_to_skip based on modifications present in mods
-            # dict_to_skip = update_dict_to_skip(dict_to_skip, mods)
-
-            # # Step 3: Process stranded methylation data in parallel
-            # dict_list = parallel_extract_stranded_methylation(dict_list, dict_to_skip, max_reference_length, threads=threads or 4)
 
             batch_dicts, dict_to_skip = _build_modification_dicts(dict_total, mods)
             dict_list = batch_dicts.as_list()
@@ -1355,15 +1323,9 @@ def modkit_extract_to_adata(
 
                                 # Get relevant columns as NumPy arrays
                                 read_ids = temp_df[MODKIT_EXTRACT_TSV_COLUMN_READ_ID].values
-                                positions = temp_df[
-                                    MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION
-                                ].values
-                                call_codes = temp_df[
-                                    MODKIT_EXTRACT_TSV_COLUMN_CALL_CODE
-                                ].values
-                                probabilities = temp_df[
-                                    MODKIT_EXTRACT_TSV_COLUMN_CALL_PROB
-                                ].values
+                                positions = temp_df[MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION].values
+                                call_codes = temp_df[MODKIT_EXTRACT_TSV_COLUMN_CALL_CODE].values
+                                probabilities = temp_df[MODKIT_EXTRACT_TSV_COLUMN_CALL_PROB].values
 
                                 # Define valid call code categories
                                 modified_codes = MODKIT_EXTRACT_CALL_CODE_MODIFIED
@@ -1481,9 +1443,7 @@ def modkit_extract_to_adata(
 
                                 # Load integer-encoded reads for the current sample/record
                                 sequence_files = _normalize_sequence_batch_files(
-                                    sequence_batch_files.get(
-                                        f"{final_sample_index}_{record}", []
-                                    )
+                                    sequence_batch_files.get(f"{final_sample_index}_{record}", [])
                                 )
                                 if not sequence_files:
                                     logger.warning(
@@ -1627,17 +1587,13 @@ def modkit_extract_to_adata(
     for col in final_adata.obs.columns:
         final_adata.obs[col] = final_adata.obs[col].astype("category")
 
-    final_adata.uns["sequence_integer_encoding_map"] = dict(
-        MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
-    )
+    final_adata.uns["sequence_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
     final_adata.uns["sequence_integer_decoding_map"] = {
         str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
     }
 
     consensus_bases = MODKIT_EXTRACT_SEQUENCE_BASES[:4]  # ignore N/PAD for consensus
-    consensus_base_ints = [
-        MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT[base] for base in consensus_bases
-    ]
+    consensus_base_ints = [MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT[base] for base in consensus_bases]
     final_adata.uns["References"] = {}
     for record in records_to_analyze:
         # Add FASTA sequence to the object
@@ -1662,9 +1618,7 @@ def modkit_extract_to_adata(
                 ]
                 count_array = np.array(layer_counts)
                 nucleotide_indexes = np.argmax(count_array, axis=0)
-                consensus_sequence_list = [
-                    consensus_bases[i] for i in nucleotide_indexes
-                ]
+                consensus_sequence_list = [consensus_bases[i] for i in nucleotide_indexes]
                 no_calls_mask = np.sum(count_array, axis=0) == 0
                 if np.any(no_calls_mask):
                     consensus_sequence_list = np.array(consensus_sequence_list, dtype=object)
