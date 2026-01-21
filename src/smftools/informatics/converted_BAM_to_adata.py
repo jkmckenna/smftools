@@ -5,14 +5,21 @@ import logging
 import shutil
 import time
 import traceback
+from dataclasses import dataclass
 from multiprocessing import Manager, Pool, current_process
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Optional, Union
+from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Union
 
 import anndata as ad
 import numpy as np
 import pandas as pd
 
+from smftools.constants import (
+    MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
+    MODKIT_EXTRACT_SEQUENCE_BASES,
+    MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE,
+    MODKIT_EXTRACT_SEQUENCE_PADDING_BASE,
+)
 from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
 
@@ -20,7 +27,6 @@ from ..readwrite import make_dirs
 from .bam_functions import count_aligned_reads, extract_base_identities
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .fasta_functions import find_conversion_sites
-from .ohe import ohe_batching
 
 logger = get_logger(__name__)
 
@@ -28,6 +34,67 @@ if TYPE_CHECKING:
     import torch
 
 torch = require("torch", extra="torch", purpose="converted BAM processing")
+
+
+@dataclass(frozen=True)
+class RecordFastaInfo:
+    """Structured FASTA metadata for a single converted record.
+
+    Attributes:
+        sequence: Padded top-strand sequence for the record.
+        complement: Padded bottom-strand sequence for the record.
+        chromosome: Canonical chromosome name for the record.
+        unconverted_name: FASTA record name for the unconverted reference.
+        sequence_length: Length of the unpadded reference sequence.
+        padding_length: Number of padded bases applied to reach max length.
+        conversion: Conversion label (e.g., "unconverted", "5mC").
+        strand: Strand label ("top" or "bottom").
+        max_reference_length: Maximum reference length across all records.
+    """
+
+    sequence: str
+    complement: str
+    chromosome: str
+    unconverted_name: str
+    sequence_length: int
+    padding_length: int
+    conversion: str
+    strand: str
+    max_reference_length: int
+
+
+@dataclass(frozen=True)
+class SequenceEncodingConfig:
+    """Configuration for integer sequence encoding.
+
+    Attributes:
+        base_to_int: Mapping of base characters to integer encodings.
+        bases: Valid base characters used for encoding.
+        padding_base: Base token used for padding.
+        batch_size: Number of reads per temporary batch file.
+    """
+
+    base_to_int: Mapping[str, int]
+    bases: tuple[str, ...]
+    padding_base: str
+    batch_size: int = 100000
+
+    @property
+    def padding_value(self) -> int:
+        """Return the integer value used for padding positions."""
+        return self.base_to_int[self.padding_base]
+
+    @property
+    def unknown_value(self) -> int:
+        """Return the integer value used for unknown bases."""
+        return self.base_to_int["N"]
+
+
+SEQUENCE_ENCODING_CONFIG = SequenceEncodingConfig(
+    base_to_int=MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
+    bases=MODKIT_EXTRACT_SEQUENCE_BASES,
+    padding_base=MODKIT_EXTRACT_SEQUENCE_PADDING_BASE,
+)
 
 
 def converted_BAM_to_adata(
@@ -46,7 +113,7 @@ def converted_BAM_to_adata(
     double_barcoded_path: Path | None = None,
     samtools_backend: str | None = "auto",
 ) -> tuple[ad.AnnData | None, Path]:
-    """Convert BAM files into an AnnData object by binarizing modified base identities.
+    """Convert converted BAM files into an AnnData object with integer sequence encoding.
 
     Args:
         converted_FASTA: Path to the converted FASTA reference.
@@ -62,9 +129,18 @@ def converted_BAM_to_adata(
         deaminase_footprinting: Whether the footprinting used direct deamination chemistry.
         delete_intermediates: Whether to remove intermediate files after processing.
         double_barcoded_path: Path to dorado demux summary file of double-ended barcodes.
+        samtools_backend: Samtools backend choice for alignment parsing.
 
     Returns:
         tuple[anndata.AnnData | None, Path]: The AnnData object (if generated) and its path.
+
+    Processing Steps:
+        1. Resolve the best available torch device and create output directories.
+        2. Load converted FASTA records and compute conversion sites.
+        3. Filter BAMs based on mapping thresholds.
+        4. Process each BAM in parallel, building per-sample H5AD files.
+        5. Concatenate per-sample AnnData objects and attach reference metadata.
+        6. Add demultiplexing annotations and clean intermediate artifacts.
     """
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -123,6 +199,13 @@ def converted_BAM_to_adata(
         samtools_backend,
     )
 
+    final_adata.uns["sequence_integer_encoding_map"] = dict(
+        MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
+    )
+    final_adata.uns["sequence_integer_decoding_map"] = dict(
+        MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE
+    )
+
     final_adata.uns["References"] = {}
     for chromosome, [seq, comp] in chromosome_FASTA_dict.items():
         final_adata.var[f"{chromosome}_top_strand_FASTA_base"] = list(seq)
@@ -136,6 +219,26 @@ def converted_BAM_to_adata(
     # Make obs cols categorical
     for col in cols:
         final_adata.obs[col] = final_adata.obs[col].astype("category")
+
+    consensus_bases = MODKIT_EXTRACT_SEQUENCE_BASES[:4]  # ignore N/PAD for consensus
+    consensus_base_ints = [MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT[base] for base in consensus_bases]
+    for ref_group in final_adata.obs["Reference_dataset_strand"].cat.categories:
+        group_subset = final_adata[final_adata.obs["Reference_dataset_strand"] == ref_group]
+        encoded_sequences = group_subset.layers["sequence_integer_encoding"]
+        layer_counts = [
+            np.sum(encoded_sequences == base_int, axis=0) for base_int in consensus_base_ints
+        ]
+        count_array = np.array(layer_counts)
+        nucleotide_indexes = np.argmax(count_array, axis=0)
+        consensus_sequence_list = [consensus_bases[i] for i in nucleotide_indexes]
+        no_calls_mask = np.sum(count_array, axis=0) == 0
+        if np.any(no_calls_mask):
+            consensus_sequence_list = np.array(consensus_sequence_list, dtype=object)
+            consensus_sequence_list[no_calls_mask] = "N"
+            consensus_sequence_list = consensus_sequence_list.tolist()
+        final_adata.var[f"{ref_group}_consensus_sequence_from_all_samples"] = (
+            consensus_sequence_list
+        )
 
     if input_already_demuxed:
         final_adata.obs["demux_type"] = ["already"] * final_adata.shape[0]
@@ -156,23 +259,31 @@ def converted_BAM_to_adata(
 
 
 def process_conversion_sites(
-    converted_FASTA, conversions=["unconverted", "5mC"], deaminase_footprinting=False
-):
-    """
-    Extracts conversion sites and determines the max reference length.
+    converted_FASTA: str | Path,
+    conversions: list[str] | None = None,
+    deaminase_footprinting: bool = False,
+) -> tuple[int, dict[str, RecordFastaInfo], dict[str, tuple[str, str]]]:
+    """Extract conversion sites and FASTA metadata for converted references.
 
-    Parameters:
-        converted_FASTA (str): Path to the converted reference FASTA.
-        conversions (list): List of modification types (e.g., ['unconverted', '5mC', '6mA']).
-        deaminase_footprinting (bool): Whether the footprinting was done with a direct deamination chemistry.
+    Args:
+        converted_FASTA: Path to the converted reference FASTA.
+        conversions: List of modification types (e.g., ["unconverted", "5mC", "6mA"]).
+        deaminase_footprinting: Whether the footprinting was done with direct deamination chemistry.
 
     Returns:
-        max_reference_length (int): The length of the longest sequence.
-        record_FASTA_dict (dict): Dictionary of sequence information for **both converted & unconverted** records.
+        tuple[int, dict[str, RecordFastaInfo], dict[str, tuple[str, str]]]:
+            Maximum reference length, record metadata, and chromosome sequences.
+
+    Processing Steps:
+        1. Parse unconverted FASTA records to determine the max reference length.
+        2. Build record metadata for unconverted and converted strands.
+        3. Cache chromosome-level sequences for downstream annotation.
     """
-    modification_dict = {}
-    record_FASTA_dict = {}
-    chromosome_FASTA_dict = {}
+    if conversions is None:
+        conversions = ["unconverted", "5mC"]
+    modification_dict: dict[str, dict] = {}
+    record_FASTA_dict: dict[str, RecordFastaInfo] = {}
+    chromosome_FASTA_dict: dict[str, tuple[str, str]] = {}
     max_reference_length = 0
     unconverted = conversions[0]
     conversion_types = conversions[1:]
@@ -196,22 +307,23 @@ def process_conversion_sites(
             chromosome = record
 
         # Store **original sequence**
-        record_FASTA_dict[record] = [
-            sequence + "N" * (max_reference_length - sequence_length),
-            complement + "N" * (max_reference_length - sequence_length),
-            chromosome,
-            record,
-            sequence_length,
-            max_reference_length - sequence_length,
-            unconverted,
-            "top",
-        ]
+        record_FASTA_dict[record] = RecordFastaInfo(
+            sequence=sequence + "N" * (max_reference_length - sequence_length),
+            complement=complement + "N" * (max_reference_length - sequence_length),
+            chromosome=chromosome,
+            unconverted_name=record,
+            sequence_length=sequence_length,
+            padding_length=max_reference_length - sequence_length,
+            conversion=unconverted,
+            strand="top",
+            max_reference_length=max_reference_length,
+        )
 
         if chromosome not in chromosome_FASTA_dict:
-            chromosome_FASTA_dict[chromosome] = [
+            chromosome_FASTA_dict[chromosome] = (
                 sequence + "N" * (max_reference_length - sequence_length),
                 complement + "N" * (max_reference_length - sequence_length),
-            ]
+            )
 
     # Process converted records
     for conversion in conversion_types:
@@ -233,24 +345,44 @@ def process_conversion_sites(
                 converted_name = f"{chromosome}_{conversion}_{strand}"
                 unconverted_name = f"{chromosome}_{unconverted}_top"
 
-                record_FASTA_dict[converted_name] = [
-                    sequence + "N" * (max_reference_length - sequence_length),
-                    complement + "N" * (max_reference_length - sequence_length),
-                    chromosome,
-                    unconverted_name,
-                    sequence_length,
-                    max_reference_length - sequence_length,
-                    conversion,
-                    strand,
-                ]
+                record_FASTA_dict[converted_name] = RecordFastaInfo(
+                    sequence=sequence + "N" * (max_reference_length - sequence_length),
+                    complement=complement + "N" * (max_reference_length - sequence_length),
+                    chromosome=chromosome,
+                    unconverted_name=unconverted_name,
+                    sequence_length=sequence_length,
+                    padding_length=max_reference_length - sequence_length,
+                    conversion=conversion,
+                    strand=strand,
+                    max_reference_length=max_reference_length,
+                )
 
-    logger.debug("Updated record_FASTA_dict Keys:", list(record_FASTA_dict.keys()))
+    logger.debug("Updated record_FASTA_dict keys: %s", list(record_FASTA_dict.keys()))
     return max_reference_length, record_FASTA_dict, chromosome_FASTA_dict
 
 
-def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold, samtools_backend):
-    """Filters BAM files based on mapping threshold."""
-    records_to_analyze = set()
+def filter_bams_by_mapping_threshold(
+    bam_path_list: list[Path],
+    bam_files: list[Path],
+    mapping_threshold: float,
+    samtools_backend: str | None,
+) -> set[str]:
+    """Filter FASTA records based on per-BAM mapping thresholds.
+
+    Args:
+        bam_path_list: Ordered list of BAM paths to evaluate.
+        bam_files: Matching list of BAM paths used for reporting.
+        mapping_threshold: Minimum percentage of aligned reads to include a record.
+        samtools_backend: Samtools backend choice for alignment parsing.
+
+    Returns:
+        set[str]: FASTA record IDs that pass the mapping threshold.
+
+    Processing Steps:
+        1. Count aligned/unaligned reads and per-record percentages.
+        2. Collect record IDs that meet the mapping threshold.
+    """
+    records_to_analyze: set[str] = set()
 
     for i, bam in enumerate(bam_path_list):
         aligned_reads, unaligned_reads, record_counts = count_aligned_reads(bam, samtools_backend)
@@ -265,26 +397,158 @@ def filter_bams_by_mapping_threshold(bam_path_list, bam_files, mapping_threshold
     return records_to_analyze
 
 
+def _encode_sequence_array(
+    read_sequence: np.ndarray,
+    valid_length: int,
+    config: SequenceEncodingConfig,
+) -> np.ndarray:
+    """Encode a base-identity array into integer values with padding.
+
+    Args:
+        read_sequence: Array of base calls (dtype "<U1").
+        valid_length: Number of valid reference positions for this record.
+        config: Integer encoding configuration.
+
+    Returns:
+        np.ndarray: Integer-encoded sequence with padding applied.
+
+    Processing Steps:
+        1. Initialize an array filled with the unknown base encoding.
+        2. Map A/C/G/T/N bases into integer values.
+        3. Mark positions beyond valid_length with the padding value.
+    """
+    read_sequence = np.asarray(read_sequence, dtype="<U1")
+    encoded = np.full(read_sequence.shape, config.unknown_value, dtype=np.int16)
+    for base in config.bases:
+        encoded[read_sequence == base] = config.base_to_int[base]
+    if valid_length < encoded.size:
+        encoded[valid_length:] = config.padding_value
+    return encoded
+
+
+def _write_sequence_batches(
+    base_identities: Mapping[str, np.ndarray],
+    tmp_dir: Path,
+    record: str,
+    prefix: str,
+    valid_length: int,
+    config: SequenceEncodingConfig,
+) -> list[str]:
+    """Encode base identities into integer arrays and write batched H5AD files.
+
+    Args:
+        base_identities: Mapping of read name to base identity arrays.
+        tmp_dir: Directory for temporary H5AD files.
+        record: Reference record identifier.
+        prefix: Prefix used to name batch files.
+        valid_length: Valid reference length for padding determination.
+        config: Integer encoding configuration.
+
+    Returns:
+        list[str]: Paths to written H5AD batch files.
+
+    Processing Steps:
+        1. Encode each read sequence into integers.
+        2. Accumulate encoded reads into batches.
+        3. Persist each batch to an H5AD file with `.uns` storage.
+    """
+    batch_files: list[str] = []
+    batch: dict[str, np.ndarray] = {}
+    batch_number = 0
+
+    for read_name, sequence in base_identities.items():
+        if sequence is None:
+            continue
+        batch[read_name] = _encode_sequence_array(sequence, valid_length, config)
+        if len(batch) >= config.batch_size:
+            save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
+            ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
+            batch_files.append(str(save_name))
+            batch = {}
+            batch_number += 1
+
+    if batch:
+        save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
+        ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
+        batch_files.append(str(save_name))
+
+    return batch_files
+
+
+def _load_sequence_batches(
+    batch_files: list[Path | str],
+) -> tuple[dict[str, np.ndarray], set[str], set[str]]:
+    """Load integer-encoded sequence batches from H5AD files.
+
+    Args:
+        batch_files: H5AD paths containing encoded sequences in `.uns`.
+
+    Returns:
+        tuple[dict[str, np.ndarray], set[str], set[str]]:
+            Read-to-sequence mapping and sets of forward/reverse mapped reads.
+
+    Processing Steps:
+        1. Read each H5AD file.
+        2. Merge `.uns` dictionaries into a single mapping.
+        3. Track forward/reverse read IDs based on filename markers.
+    """
+    sequences: dict[str, np.ndarray] = {}
+    fwd_reads: set[str] = set()
+    rev_reads: set[str] = set()
+    for batch_file in batch_files:
+        batch_path = Path(batch_file)
+        batch_sequences = ad.read_h5ad(batch_path).uns
+        sequences.update(batch_sequences)
+        if "_fwd_" in batch_path.name:
+            fwd_reads.update(batch_sequences.keys())
+        elif "_rev_" in batch_path.name:
+            rev_reads.update(batch_sequences.keys())
+    return sequences, fwd_reads, rev_reads
+
+
 def process_single_bam(
-    bam_index,
-    bam,
-    records_to_analyze,
-    record_FASTA_dict,
-    chromosome_FASTA_dict,
-    tmp_dir,
-    max_reference_length,
-    device,
-    deaminase_footprinting,
-    samtools_backend,
-):
-    """Worker function to process a single BAM file (must be at top-level for multiprocessing)."""
-    adata_list = []
+    bam_index: int,
+    bam: Path,
+    records_to_analyze: set[str],
+    record_FASTA_dict: dict[str, RecordFastaInfo],
+    chromosome_FASTA_dict: dict[str, tuple[str, str]],
+    tmp_dir: Path,
+    max_reference_length: int,
+    device: torch.device,
+    deaminase_footprinting: bool,
+    samtools_backend: str | None,
+) -> ad.AnnData | None:
+    """Process a single BAM file into per-record AnnData objects.
+
+    Args:
+        bam_index: Index of the BAM within the processing batch.
+        bam: Path to the BAM file.
+        records_to_analyze: FASTA record IDs that passed the mapping threshold.
+        record_FASTA_dict: FASTA metadata keyed by record ID.
+        chromosome_FASTA_dict: Chromosome sequences for annotations.
+        tmp_dir: Directory for temporary batch files.
+        max_reference_length: Maximum reference length for padding.
+        device: Torch device used for binarization.
+        deaminase_footprinting: Whether direct deamination chemistry was used.
+        samtools_backend: Samtools backend choice for alignment parsing.
+
+    Returns:
+        anndata.AnnData | None: Concatenated AnnData object or None if no data.
+
+    Processing Steps:
+        1. Extract base identities and mismatch profiles for each record.
+        2. Binarize modified base identities into feature matrices.
+        3. Encode read sequences into integer arrays and cache batches.
+        4. Build AnnData layers/obs metadata for each record and concatenate.
+    """
+    adata_list: list[ad.AnnData] = []
 
     for record in records_to_analyze:
         sample = bam.stem
-        chromosome = record_FASTA_dict[record][2]
-        current_length = record_FASTA_dict[record][4]
-        mod_type, strand = record_FASTA_dict[record][6], record_FASTA_dict[record][7]
+        record_info = record_FASTA_dict[record]
+        chromosome = record_info.chromosome
+        current_length = record_info.sequence_length
+        mod_type, strand = record_info.conversion, record_info.strand
         sequence = chromosome_FASTA_dict[chromosome][0]
 
         # Extract Base Identities
@@ -343,57 +607,57 @@ def process_single_bam(
         sorted_index = sorted(bin_df.index)
         bin_df = bin_df.reindex(sorted_index)
 
-        # One-Hot Encode Reads if there is valid data
-        one_hot_reads = {}
-
+        # Integer-encode reads if there is valid data
+        batch_files: list[str] = []
         if fwd_bases:
-            fwd_ohe_files = ohe_batching(
-                fwd_bases, tmp_dir, record, f"{bam_index}_fwd", batch_size=100000
+            batch_files.extend(
+                _write_sequence_batches(
+                    fwd_bases,
+                    tmp_dir,
+                    record,
+                    f"{bam_index}_fwd",
+                    current_length,
+                    SEQUENCE_ENCODING_CONFIG,
+                )
             )
-            for ohe_file in fwd_ohe_files:
-                tmp_ohe_dict = ad.read_h5ad(ohe_file).uns
-                one_hot_reads.update(tmp_ohe_dict)
-                del tmp_ohe_dict
 
         if rev_bases:
-            rev_ohe_files = ohe_batching(
-                rev_bases, tmp_dir, record, f"{bam_index}_rev", batch_size=100000
+            batch_files.extend(
+                _write_sequence_batches(
+                    rev_bases,
+                    tmp_dir,
+                    record,
+                    f"{bam_index}_rev",
+                    current_length,
+                    SEQUENCE_ENCODING_CONFIG,
+                )
             )
-            for ohe_file in rev_ohe_files:
-                tmp_ohe_dict = ad.read_h5ad(ohe_file).uns
-                one_hot_reads.update(tmp_ohe_dict)
-                del tmp_ohe_dict
 
-        # Skip if one_hot_reads is empty
-        if not one_hot_reads:
+        if not batch_files:
             logger.debug(
-                f"[Worker {current_process().pid}] Skipping {sample} - No valid one-hot encoded data for {record}."
+                f"[Worker {current_process().pid}] Skipping {sample} - No valid encoded data for {record}."
             )
             continue
 
         gc.collect()
 
-        # Convert One-Hot Encodings to Numpy Arrays
-        n_rows_OHE = 5
-        read_names = list(one_hot_reads.keys())
-
-        # Skip if no read names exist
-        if not read_names:
+        encoded_reads, fwd_reads, rev_reads = _load_sequence_batches(batch_files)
+        if not encoded_reads:
             logger.debug(
-                f"[Worker {current_process().pid}] Skipping {sample} - No reads found in one-hot encoded data for {record}."
+                f"[Worker {current_process().pid}] Skipping {sample} - No reads found in encoded data for {record}."
             )
             continue
 
-        sequence_length = one_hot_reads[read_names[0]].reshape(n_rows_OHE, -1).shape[1]
-        df_A, df_C, df_G, df_T, df_N = [
-            np.zeros((len(sorted_index), sequence_length), dtype=int) for _ in range(5)
-        ]
+        sequence_length = max_reference_length
+        default_sequence = np.full(
+            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int16
+        )
+        if current_length < sequence_length:
+            default_sequence[current_length:] = SEQUENCE_ENCODING_CONFIG.padding_value
 
-        # Populate One-Hot Arrays
-        for j, read_name in enumerate(sorted_index):
-            if read_name in one_hot_reads:
-                one_hot_array = one_hot_reads[read_name].reshape(n_rows_OHE, -1)
-                df_A[j], df_C[j], df_G[j], df_T[j], df_N[j] = one_hot_array
+        encoded_matrix = np.vstack(
+            [encoded_reads.get(read_name, default_sequence) for read_name in sorted_index]
+        )
 
         # Convert to AnnData
         X = bin_df.values.astype(np.float32)
@@ -416,21 +680,17 @@ def process_single_bam(
 
         read_mapping_direction = []
         for read_id in adata.obs_names:
-            if read_id in fwd_bases:
+            if read_id in fwd_reads:
                 read_mapping_direction.append("fwd")
-            elif read_id in rev_bases:
+            elif read_id in rev_reads:
                 read_mapping_direction.append("rev")
             else:
                 read_mapping_direction.append("unk")
 
         adata.obs["Read_mapping_direction"] = read_mapping_direction
 
-        # Attach One-Hot Encodings to Layers
-        adata.layers["A_binary_sequence_encoding"] = df_A
-        adata.layers["C_binary_sequence_encoding"] = df_C
-        adata.layers["G_binary_sequence_encoding"] = df_G
-        adata.layers["T_binary_sequence_encoding"] = df_T
-        adata.layers["N_binary_sequence_encoding"] = df_N
+        # Attach integer sequence encoding to layers
+        adata.layers["sequence_integer_encoding"] = encoded_matrix
 
         adata_list.append(adata)
 
@@ -438,27 +698,54 @@ def process_single_bam(
 
 
 def timestamp():
-    """Returns a formatted timestamp for logging."""
+    """Return a formatted timestamp for logging.
+
+    Returns:
+        str: Timestamp string in the format ``[YYYY-MM-DD HH:MM:SS]``.
+    """
     return time.strftime("[%Y-%m-%d %H:%M:%S]")
 
 
 def worker_function(
-    bam_index,
-    bam,
-    records_to_analyze,
-    shared_record_FASTA_dict,
-    chromosome_FASTA_dict,
-    tmp_dir,
-    h5_dir,
-    max_reference_length,
-    device,
-    deaminase_footprinting,
-    samtools_backend,
+    bam_index: int,
+    bam: Path,
+    records_to_analyze: set[str],
+    shared_record_FASTA_dict: dict[str, RecordFastaInfo],
+    chromosome_FASTA_dict: dict[str, tuple[str, str]],
+    tmp_dir: Path,
+    h5_dir: Path,
+    max_reference_length: int,
+    device: torch.device,
+    deaminase_footprinting: bool,
+    samtools_backend: str | None,
     progress_queue,
-    log_level,
-    log_file,
+    log_level: int,
+    log_file: Path | None,
 ):
-    """Worker function that processes a single BAM and writes the output to an H5AD file."""
+    """Process a single BAM and write the output to an H5AD file.
+
+    Args:
+        bam_index: Index of the BAM within the processing batch.
+        bam: Path to the BAM file.
+        records_to_analyze: FASTA record IDs that passed the mapping threshold.
+        shared_record_FASTA_dict: Shared FASTA metadata keyed by record ID.
+        chromosome_FASTA_dict: Chromosome sequences for annotations.
+        tmp_dir: Directory for temporary batch files.
+        h5_dir: Directory for per-BAM H5AD outputs.
+        max_reference_length: Maximum reference length for padding.
+        device: Torch device used for binarization.
+        deaminase_footprinting: Whether direct deamination chemistry was used.
+        samtools_backend: Samtools backend choice for alignment parsing.
+        progress_queue: Queue used to signal completion.
+        log_level: Logging level to configure in workers.
+        log_file: Optional log file path.
+
+    Processing Steps:
+        1. Skip processing if an output H5AD already exists.
+        2. Filter records to those present in the FASTA metadata.
+        3. Run per-record processing and write AnnData output.
+        4. Signal completion via the progress queue.
+    """
     _ensure_worker_logging(log_level, log_file)
     worker_id = current_process().pid  # Get worker process ID
     sample = bam.stem
@@ -516,19 +803,41 @@ def worker_function(
 
 
 def process_bams_parallel(
-    bam_path_list,
-    records_to_analyze,
-    record_FASTA_dict,
-    chromosome_FASTA_dict,
-    tmp_dir,
-    h5_dir,
-    num_threads,
-    max_reference_length,
-    device,
-    deaminase_footprinting,
-    samtools_backend,
-):
-    """Processes BAM files in parallel, writes each H5AD to disk, and concatenates them at the end."""
+    bam_path_list: list[Path],
+    records_to_analyze: set[str],
+    record_FASTA_dict: dict[str, RecordFastaInfo],
+    chromosome_FASTA_dict: dict[str, tuple[str, str]],
+    tmp_dir: Path,
+    h5_dir: Path,
+    num_threads: int,
+    max_reference_length: int,
+    device: torch.device,
+    deaminase_footprinting: bool,
+    samtools_backend: str | None,
+) -> ad.AnnData | None:
+    """Process BAM files in parallel and concatenate the resulting AnnData.
+
+    Args:
+        bam_path_list: List of BAM files to process.
+        records_to_analyze: FASTA record IDs that passed the mapping threshold.
+        record_FASTA_dict: FASTA metadata keyed by record ID.
+        chromosome_FASTA_dict: Chromosome sequences for annotations.
+        tmp_dir: Directory for temporary batch files.
+        h5_dir: Directory for per-BAM H5AD outputs.
+        num_threads: Number of worker processes.
+        max_reference_length: Maximum reference length for padding.
+        device: Torch device used for binarization.
+        deaminase_footprinting: Whether direct deamination chemistry was used.
+        samtools_backend: Samtools backend choice for alignment parsing.
+
+    Returns:
+        anndata.AnnData | None: Concatenated AnnData or None if no H5ADs produced.
+
+    Processing Steps:
+        1. Spawn worker processes to handle each BAM.
+        2. Track completion via a multiprocessing queue.
+        3. Concatenate per-BAM H5AD files into a final AnnData.
+    """
     make_dirs(h5_dir)  # Ensure h5_dir exists
 
     logger.info(f"Starting parallel BAM processing with {num_threads} threads...")
@@ -594,7 +903,16 @@ def process_bams_parallel(
 
 
 def _log_async_result_errors(results, bam_path_list):
-    """Log worker failures captured by multiprocessing AsyncResult objects."""
+    """Log worker failures captured by multiprocessing AsyncResult objects.
+
+    Args:
+        results: Iterable of AsyncResult objects from multiprocessing.
+        bam_path_list: List of BAM paths matching the async results.
+
+    Processing Steps:
+        1. Iterate over async results.
+        2. Retrieve results to surface worker exceptions.
+    """
     for bam, result in zip(bam_path_list, results):
         if not result.ready():
             continue
@@ -605,6 +923,15 @@ def _log_async_result_errors(results, bam_path_list):
 
 
 def _get_logger_config() -> tuple[int, Path | None]:
+    """Return the active smftools logger level and optional file path.
+
+    Returns:
+        tuple[int, Path | None]: Log level and log file path (if configured).
+
+    Processing Steps:
+        1. Inspect the smftools logger for configured handlers.
+        2. Extract log level and file handler path.
+    """
     smftools_logger = logging.getLogger("smftools")
     level = smftools_logger.level
     if level == logging.NOTSET:
@@ -618,6 +945,16 @@ def _get_logger_config() -> tuple[int, Path | None]:
 
 
 def _ensure_worker_logging(log_level: int, log_file: Path | None) -> None:
+    """Ensure worker processes have logging configured.
+
+    Args:
+        log_level: Logging level to configure.
+        log_file: Optional log file path.
+
+    Processing Steps:
+        1. Check if handlers are already configured.
+        2. Initialize logging with the provided level and file path.
+    """
     smftools_logger = logging.getLogger("smftools")
     if not smftools_logger.handlers:
         setup_logging(level=log_level, log_file=log_file)
@@ -630,21 +967,17 @@ def delete_intermediate_h5ads_and_tmpdir(
     dry_run: bool = False,
     verbose: bool = True,
 ):
-    """
-    Delete intermediate .h5ad files and a temporary directory.
+    """Delete intermediate .h5ad files and a temporary directory.
 
-    Parameters
-    ----------
-    h5_dir : str | Path | iterable[str] | None
-        If a directory path is given, all files directly inside it will be considered.
-        If an iterable of file paths is given, those files will be considered.
-        Only files ending with '.h5ad' (and not ending with '.gz') are removed.
-    tmp_dir : str | Path | None
-        Path to a directory to remove recursively (e.g. a temp dir created earlier).
-    dry_run : bool
-        If True, print what *would* be removed but do not actually delete.
-    verbose : bool
-        Print progress / warnings.
+    Args:
+        h5_dir: Directory path or iterable of file paths to inspect for `.h5ad` files.
+        tmp_dir: Optional directory to remove recursively.
+        dry_run: If True, log what would be removed without deleting.
+        verbose: If True, log progress and warnings.
+
+    Processing Steps:
+        1. Remove `.h5ad` files (excluding `.gz`) from the provided directory or list.
+        2. Optionally remove the temporary directory tree.
     """
 
     # Helper: remove a single file path (Path-like or string)
