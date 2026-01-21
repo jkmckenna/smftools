@@ -1630,9 +1630,9 @@ def modkit_extract_to_adata(
     final_adata.uns["sequence_integer_encoding_map"] = dict(
         MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
     )
-    final_adata.uns["sequence_integer_decoding_map"] = dict(
-        MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE
-    )
+    final_adata.uns["sequence_integer_decoding_map"] = {
+        str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
+    }
 
     consensus_bases = MODKIT_EXTRACT_SEQUENCE_BASES[:4]  # ignore N/PAD for consensus
     consensus_base_ints = [
