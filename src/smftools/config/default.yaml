@@ -91,6 +91,12 @@ mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall w
 reference_column: 'Reference_strand'
 sample_column: 'Experiment_name_and_barcode'
 
+# Plotting params
+clustermap_demux_types_to_plot: 
+  - "single"
+  - "double"
+  - "already"
+
 ######## smftools preprocess params #########
 # Read length, quality, and mapping filtering params
 read_coord_filter:

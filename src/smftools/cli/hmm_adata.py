@@ -935,7 +935,7 @@ def hmm_adata_core(
                     0
                 ],
                 min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
-                demux_types=("double", "already"),
+                demux_types=cfg.clustermap_demux_types_to_plot,
                 save_path=hmm_cluster_save_dir,
                 normalize_hmm=False,
                 sort_by=cfg.hmm_clustermap_sortby,  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'

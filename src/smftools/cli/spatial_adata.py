@@ -304,7 +304,7 @@ def spatial_adata_core(
                         0
                     ],
                     min_position_valid_fraction=cfg.min_valid_fraction_positions_in_read_vs_ref,
-                    demux_types=("double", "already"),
+                    demux_types=cfg.clustermap_demux_types_to_plot,
                     bins=None,
                     sample_mapping=None,
                     save_path=pp_clustermap_dir,
@@ -346,7 +346,7 @@ def spatial_adata_core(
                 0
             ],
             min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
-            demux_types=("double", "already"),
+            demux_types=cfg.clustermap_demux_types_to_plot,
             bins=None,
             sample_mapping=None,
             save_path=pp_clustermap_dir_dedup,

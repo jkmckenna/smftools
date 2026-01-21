@@ -747,6 +747,9 @@ class ExperimentConfig:
     # General Plotting
     sample_name_col_for_plotting: Optional[str] = "Barcode"
     rows_per_qc_histogram_grid: int = 12
+    clustermap_demux_types_to_plot: List[str] = field(
+        default_factory=lambda: ["single", "double", "already"]
+    )
 
     # Preprocessing - Read length and quality filter params
     read_coord_filter: Optional[Sequence[float]] = field(default_factory=lambda: [None, None])
@@ -1313,6 +1316,9 @@ class ExperimentConfig:
             ),
             reindexing_offsets=merged.get("reindexing_offsets", {None: None}),
             reindexed_var_suffix=merged.get("reindexed_var_suffix", "reindexed"),
+            clustermap_demux_types_to_plot=merged.get(
+                "clustermap_demux_types_to_plot", ["single", "double", "already"]
+            ),
             layer_for_clustermap_plotting=merged.get(
                 "layer_for_clustermap_plotting", "nan0_0minus1"
             ),
