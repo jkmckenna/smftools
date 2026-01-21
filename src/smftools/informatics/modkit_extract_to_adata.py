@@ -4,13 +4,33 @@ import concurrent.futures
 import gc
 import re
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Iterable, Mapping, Optional, Union
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from smftools.constants import (
+    MODKIT_EXTRACT_CALL_CODE_CANONICAL,
+    MODKIT_EXTRACT_CALL_CODE_MODIFIED,
+    MODKIT_EXTRACT_MODIFIED_BASE_A,
+    MODKIT_EXTRACT_MODIFIED_BASE_C,
+    MODKIT_EXTRACT_REF_STRAND_MINUS,
+    MODKIT_EXTRACT_REF_STRAND_PLUS,
+    MODKIT_EXTRACT_SEQUENCE_BASES,
+    MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
+    MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE,
+    MODKIT_EXTRACT_SEQUENCE_PADDING_BASE,
+    MODKIT_EXTRACT_TSV_COLUMN_CALL_CODE,
+    MODKIT_EXTRACT_TSV_COLUMN_CALL_PROB,
+    MODKIT_EXTRACT_TSV_COLUMN_CHROM,
+    MODKIT_EXTRACT_TSV_COLUMN_MODIFIED_PRIMARY_BASE,
+    MODKIT_EXTRACT_TSV_COLUMN_READ_ID,
+    MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION,
+    MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND,
+)
 from smftools.logging_utils import get_logger
 
 from .bam_functions import count_aligned_reads
@@ -18,8 +38,78 @@ from .bam_functions import count_aligned_reads
 logger = get_logger(__name__)
 
 
+@dataclass
+class ModkitBatchDictionaries:
+    """Container for per-batch modification dictionaries.
+
+    Attributes:
+        dict_total: Raw TSV DataFrames keyed by record and sample index.
+        dict_a: Adenine modification DataFrames.
+        dict_a_bottom: Adenine minus-strand DataFrames.
+        dict_a_top: Adenine plus-strand DataFrames.
+        dict_c: Cytosine modification DataFrames.
+        dict_c_bottom: Cytosine minus-strand DataFrames.
+        dict_c_top: Cytosine plus-strand DataFrames.
+        dict_combined_bottom: Combined minus-strand methylation arrays.
+        dict_combined_top: Combined plus-strand methylation arrays.
+    """
+
+    dict_total: dict = field(default_factory=dict)
+    dict_a: dict = field(default_factory=dict)
+    dict_a_bottom: dict = field(default_factory=dict)
+    dict_a_top: dict = field(default_factory=dict)
+    dict_c: dict = field(default_factory=dict)
+    dict_c_bottom: dict = field(default_factory=dict)
+    dict_c_top: dict = field(default_factory=dict)
+    dict_combined_bottom: dict = field(default_factory=dict)
+    dict_combined_top: dict = field(default_factory=dict)
+
+    @property
+    def sample_types(self) -> list[str]:
+        """Return ordered labels for the dictionary list."""
+        return [
+            "total",
+            "m6A",
+            "m6A_bottom_strand",
+            "m6A_top_strand",
+            "5mC",
+            "5mC_bottom_strand",
+            "5mC_top_strand",
+            "combined_bottom_strand",
+            "combined_top_strand",
+        ]
+
+    def as_list(self) -> list[dict]:
+        """Return the dictionaries in the expected list ordering."""
+        return [
+            self.dict_total,
+            self.dict_a,
+            self.dict_a_bottom,
+            self.dict_a_top,
+            self.dict_c,
+            self.dict_c_bottom,
+            self.dict_c_top,
+            self.dict_combined_bottom,
+            self.dict_combined_top,
+        ]
+
+
 def filter_bam_records(bam, mapping_threshold, samtools_backend: str | None = "auto"):
-    """Processes a single BAM file, counts reads, and determines records to analyze."""
+    """Identify reference records that exceed a mapping threshold in one BAM.
+
+    Args:
+        bam (Path | str): BAM file to inspect.
+        mapping_threshold (float): Minimum fraction of mapped reads required to keep a record.
+        samtools_backend (str | None): Samtools backend selection.
+
+    Returns:
+        set[str]: Record names that pass the mapping threshold.
+
+    Processing Steps:
+        1. Count aligned/unaligned reads per record.
+        2. Compute percent aligned and per-record mapping percentages.
+        3. Return records whose mapping fraction meets the threshold.
+    """
     aligned_reads_count, unaligned_reads_count, record_counts_dict = count_aligned_reads(
         bam, samtools_backend
     )
@@ -40,7 +130,21 @@ def filter_bam_records(bam, mapping_threshold, samtools_backend: str | None = "a
 
 
 def parallel_filter_bams(bam_path_list, mapping_threshold, samtools_backend: str | None = "auto"):
-    """Parallel processing for multiple BAM files."""
+    """Aggregate mapping-threshold records across BAM files in parallel.
+
+    Args:
+        bam_path_list (list[Path | str]): BAM files to scan.
+        mapping_threshold (float): Minimum fraction of mapped reads required to keep a record.
+        samtools_backend (str | None): Samtools backend selection.
+
+    Returns:
+        set[str]: Union of all record names passing the threshold in any BAM.
+
+    Processing Steps:
+        1. Spawn workers to compute passing records per BAM.
+        2. Merge all passing records into a single set.
+        3. Log the final record set.
+    """
     records_to_analyze = set()
 
     with concurrent.futures.ProcessPoolExecutor() as executor:
@@ -60,8 +164,21 @@ def parallel_filter_bams(bam_path_list, mapping_threshold, samtools_backend: str
 
 
 def process_tsv(tsv, records_to_analyze, reference_dict, sample_index):
-    """
-    Loads and filters a single TSV file based on chromosome and position criteria.
+    """Load and filter a modkit TSV file for relevant records and positions.
+
+    Args:
+        tsv (Path | str): TSV file produced by modkit extract.
+        records_to_analyze (Iterable[str]): Record names to keep.
+        reference_dict (dict[str, tuple[int, str]]): Mapping of record to (length, sequence).
+        sample_index (int): Sample index to attach to the filtered results.
+
+    Returns:
+        dict[str, dict[int, pd.DataFrame]]: Filtered data keyed by record and sample index.
+
+    Processing Steps:
+        1. Read the TSV into a DataFrame.
+        2. Filter rows for each record to valid reference positions.
+        3. Emit per-record DataFrames keyed by the provided sample index.
     """
     temp_df = pd.read_csv(tsv, sep="\t", header=0)
     filtered_records = {}
@@ -72,9 +189,9 @@ def process_tsv(tsv, records_to_analyze, reference_dict, sample_index):
 
         ref_length = reference_dict[record][0]
         filtered_df = temp_df[
-            (temp_df["chrom"] == record)
-            & (temp_df["ref_position"] >= 0)
-            & (temp_df["ref_position"] < ref_length)
+            (temp_df[MODKIT_EXTRACT_TSV_COLUMN_CHROM] == record)
+            & (temp_df[MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION] >= 0)
+            & (temp_df[MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION] < ref_length)
         ]
 
         if not filtered_df.empty:
@@ -84,19 +201,23 @@ def process_tsv(tsv, records_to_analyze, reference_dict, sample_index):
 
 
 def parallel_load_tsvs(tsv_batch, records_to_analyze, reference_dict, batch, batch_size, threads=4):
-    """
-    Loads and filters TSV files in parallel.
+    """Load and filter a batch of TSVs in parallel.
 
-    Parameters:
-        tsv_batch (list): List of TSV file paths.
-        records_to_analyze (list): Chromosome records to analyze.
-        reference_dict (dict): Dictionary containing reference lengths.
-        batch (int): Current batch number.
-        batch_size (int): Total files in the batch.
-        threads (int): Number of parallel workers.
+    Args:
+        tsv_batch (list[Path | str]): TSV file paths for the batch.
+        records_to_analyze (Iterable[str]): Record names to keep.
+        reference_dict (dict[str, tuple[int, str]]): Mapping of record to (length, sequence).
+        batch (int): Batch number for progress logging.
+        batch_size (int): Number of TSVs in the batch.
+        threads (int): Parallel worker count.
 
     Returns:
-        dict: Processed `dict_total` dictionary.
+        dict[str, dict[int, pd.DataFrame]]: Per-record DataFrames keyed by sample index.
+
+    Processing Steps:
+        1. Submit each TSV to a worker via `process_tsv`.
+        2. Merge per-record outputs into a single dictionary.
+        3. Return the aggregated per-record dictionary for the batch.
     """
     dict_total = {record: {} for record in records_to_analyze}
 
@@ -121,15 +242,19 @@ def parallel_load_tsvs(tsv_batch, records_to_analyze, reference_dict, batch, bat
 
 
 def update_dict_to_skip(dict_to_skip, detected_modifications):
-    """
-    Updates the dict_to_skip set based on the detected modifications.
+    """Update dictionary skip indices based on modifications in the batch.
 
-    Parameters:
-        dict_to_skip (set): The initial set of dictionary indices to skip.
-        detected_modifications (list or set): The modifications (e.g. ['6mA', '5mC']) present.
+    Args:
+        dict_to_skip (set[int]): Initial set of dictionary indices to skip.
+        detected_modifications (Iterable[str]): Modification labels present (e.g., ["6mA", "5mC"]).
 
     Returns:
-        set: The updated dict_to_skip set.
+        set[int]: Updated skip set after considering present modifications.
+
+    Processing Steps:
+        1. Define indices for A- and C-stranded dictionaries.
+        2. Remove indices for modifications that are present.
+        3. Return the updated skip set.
     """
     # Define which indices correspond to modification-specific or strand-specific dictionaries
     A_stranded_dicts = {2, 3}  # m6A bottom and top strand dictionaries
@@ -150,31 +275,49 @@ def update_dict_to_skip(dict_to_skip, detected_modifications):
 
 
 def process_modifications_for_sample(args):
-    """
-    Processes a single (record, sample) pair to extract modification-specific data.
+    """Extract modification-specific subsets for one record/sample pair.
 
-    Parameters:
-        args: (record, sample_index, sample_df, mods, max_reference_length)
+    Args:
+        args (tuple): (record, sample_index, sample_df, mods, max_reference_length).
 
     Returns:
-        (record, sample_index, result) where result is a dict with keys:
-          'm6A', 'm6A_minus', 'm6A_plus', '5mC', '5mC_minus', '5mC_plus', and
-          optionally 'combined_minus' and 'combined_plus' (initialized as empty lists).
+        tuple[str, int, dict[str, pd.DataFrame | list]]:
+            Record, sample index, and a dict of modification-specific DataFrames
+            (with optional combined placeholders).
+
+    Processing Steps:
+        1. Filter by modified base (A/C) when requested.
+        2. Split filtered rows by strand where needed.
+        3. Add empty combined placeholders when both modifications are present.
     """
     record, sample_index, sample_df, mods, max_reference_length = args
     result = {}
     if "6mA" in mods:
-        m6a_df = sample_df[sample_df["modified_primary_base"] == "A"]
+        m6a_df = sample_df[
+            sample_df[MODKIT_EXTRACT_TSV_COLUMN_MODIFIED_PRIMARY_BASE]
+            == MODKIT_EXTRACT_MODIFIED_BASE_A
+        ]
         result["m6A"] = m6a_df
-        result["m6A_minus"] = m6a_df[m6a_df["ref_strand"] == "-"]
-        result["m6A_plus"] = m6a_df[m6a_df["ref_strand"] == "+"]
+        result["m6A_minus"] = m6a_df[
+            m6a_df[MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND] == MODKIT_EXTRACT_REF_STRAND_MINUS
+        ]
+        result["m6A_plus"] = m6a_df[
+            m6a_df[MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND] == MODKIT_EXTRACT_REF_STRAND_PLUS
+        ]
         m6a_df = None
         gc.collect()
     if "5mC" in mods:
-        m5c_df = sample_df[sample_df["modified_primary_base"] == "C"]
+        m5c_df = sample_df[
+            sample_df[MODKIT_EXTRACT_TSV_COLUMN_MODIFIED_PRIMARY_BASE]
+            == MODKIT_EXTRACT_MODIFIED_BASE_C
+        ]
         result["5mC"] = m5c_df
-        result["5mC_minus"] = m5c_df[m5c_df["ref_strand"] == "-"]
-        result["5mC_plus"] = m5c_df[m5c_df["ref_strand"] == "+"]
+        result["5mC_minus"] = m5c_df[
+            m5c_df[MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND] == MODKIT_EXTRACT_REF_STRAND_MINUS
+        ]
+        result["5mC_plus"] = m5c_df[
+            m5c_df[MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND] == MODKIT_EXTRACT_REF_STRAND_PLUS
+        ]
         m5c_df = None
         gc.collect()
     if "6mA" in mods and "5mC" in mods:
@@ -184,11 +327,22 @@ def process_modifications_for_sample(args):
 
 
 def parallel_process_modifications(dict_total, mods, max_reference_length, threads=4):
-    """
-    Processes each (record, sample) pair in dict_total in parallel to extract modification-specific data.
+    """Parallelize modification extraction across records and samples.
+
+    Args:
+        dict_total (dict[str, dict[int, pd.DataFrame]]): Raw TSV DataFrames per record/sample.
+        mods (list[str]): Modification labels to process.
+        max_reference_length (int): Maximum reference length in the dataset.
+        threads (int): Parallel worker count.
 
     Returns:
-        processed_results: Dict keyed by record, with sub-dict keyed by sample index and the processed results.
+        dict[str, dict[int, dict[str, pd.DataFrame | list]]]: Processed results keyed by
+        record and sample index.
+
+    Processing Steps:
+        1. Build a task list of (record, sample) pairs.
+        2. Submit tasks to a process pool.
+        3. Collect and store results in a nested dictionary.
     """
     tasks = []
     for record, sample_dict in dict_total.items():
@@ -208,11 +362,20 @@ def parallel_process_modifications(dict_total, mods, max_reference_length, threa
 
 
 def merge_modification_results(processed_results, mods):
-    """
-    Merges individual sample results into global dictionaries.
+    """Merge per-sample modification outputs into global dictionaries.
+
+    Args:
+        processed_results (dict[str, dict[int, dict]]): Output of parallel modification extraction.
+        mods (list[str]): Modification labels to include.
 
     Returns:
-        A tuple: (m6A_dict, m6A_minus, m6A_plus, c5m_dict, c5m_minus, c5m_plus, combined_minus, combined_plus)
+        tuple[dict, dict, dict, dict, dict, dict, dict, dict]:
+            Global dictionaries for each modification/strand combination.
+
+    Processing Steps:
+        1. Initialize empty output dictionaries per modification category.
+        2. Populate each dictionary using the processed sample results.
+        3. Return the ordered tuple for downstream processing.
     """
     m6A_dict = {}
     m6A_minus = {}
@@ -254,18 +417,18 @@ def merge_modification_results(processed_results, mods):
 
 
 def process_stranded_methylation(args):
-    """
-    Processes a single (dict_index, record, sample) task.
+    """Convert modification DataFrames into per-read methylation arrays.
 
-    For combined dictionaries (indices 7 or 8), it merges the corresponding A-stranded and C-stranded data.
-    For other dictionaries, it converts the DataFrame into a nested dictionary mapping read names to a
-    NumPy methylation array (of float type). Non-numeric values (e.g. '-') are coerced to NaN.
-
-    Parameters:
-        args: (dict_index, record, sample, dict_list, max_reference_length)
+    Args:
+        args (tuple): (dict_index, record, sample, dict_list, max_reference_length).
 
     Returns:
-        (dict_index, record, sample, processed_data)
+        tuple[int, str, int, dict[str, np.ndarray]]: Updated dictionary entries for the task.
+
+    Processing Steps:
+        1. For combined dictionaries (indices 7/8), merge A- and C-strand arrays.
+        2. For other dictionaries, compute methylation probabilities per read/position.
+        3. Return per-read arrays keyed by read name.
     """
     dict_index, record, sample, dict_list, max_reference_length = args
     processed_data = {}
@@ -329,13 +492,15 @@ def process_stranded_methylation(args):
         temp_df = dict_list[dict_index][record][sample]
         processed_data = {}
         # Extract columns and convert probabilities to float (coercing errors)
-        read_ids = temp_df["read_id"].values
-        positions = temp_df["ref_position"].values
-        call_codes = temp_df["call_code"].values
-        probabilities = pd.to_numeric(temp_df["call_prob"].values, errors="coerce")
+        read_ids = temp_df[MODKIT_EXTRACT_TSV_COLUMN_READ_ID].values
+        positions = temp_df[MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION].values
+        call_codes = temp_df[MODKIT_EXTRACT_TSV_COLUMN_CALL_CODE].values
+        probabilities = pd.to_numeric(
+            temp_df[MODKIT_EXTRACT_TSV_COLUMN_CALL_PROB].values, errors="coerce"
+        )
 
-        modified_codes = {"a", "h", "m"}
-        canonical_codes = {"-"}
+        modified_codes = MODKIT_EXTRACT_CALL_CODE_MODIFIED
+        canonical_codes = MODKIT_EXTRACT_CALL_CODE_CANONICAL
 
         # Compute methylation probabilities (vectorized)
         methylation_prob = np.full(probabilities.shape, np.nan, dtype=float)
@@ -363,11 +528,21 @@ def process_stranded_methylation(args):
 
 
 def parallel_extract_stranded_methylation(dict_list, dict_to_skip, max_reference_length, threads=4):
-    """
-    Processes all (dict_index, record, sample) tasks in dict_list (excluding indices in dict_to_skip) in parallel.
+    """Parallelize per-read methylation extraction over all dictionary entries.
+
+    Args:
+        dict_list (list[dict]): List of modification/strand dictionaries.
+        dict_to_skip (set[int]): Dictionary indices to exclude from processing.
+        max_reference_length (int): Maximum reference length for array sizing.
+        threads (int): Parallel worker count.
 
     Returns:
-        Updated dict_list with processed (nested) dictionaries.
+        list[dict]: Updated dictionary list with per-read methylation arrays.
+
+    Processing Steps:
+        1. Build tasks for every (dict_index, record, sample) to process.
+        2. Execute tasks in a process pool.
+        3. Replace DataFrames with per-read arrays in-place.
     """
     tasks = []
     for dict_index, current_dict in enumerate(dict_list):
@@ -393,21 +568,20 @@ def delete_intermediate_h5ads_and_tmpdir(
     dry_run: bool = False,
     verbose: bool = True,
 ):
-    """
-    Delete intermediate .h5ad files and a temporary directory.
+    """Delete intermediate .h5ad files and optionally a temporary directory.
 
-    Parameters
-    ----------
-    h5_dir : str | Path | iterable[str] | None
-        If a directory path is given, all files directly inside it will be considered.
-        If an iterable of file paths is given, those files will be considered.
-        Only files ending with '.h5ad' (and not ending with '.gz') are removed.
-    tmp_dir : str | Path | None
-        Path to a directory to remove recursively (e.g. a temp dir created earlier).
-    dry_run : bool
-        If True, print what *would* be removed but do not actually delete.
-    verbose : bool
-        Print progress / warnings.
+    Args:
+        h5_dir (str | Path | Iterable[str] | None): Directory or iterable of h5ad paths.
+        tmp_dir (str | Path | None): Temporary directory to remove recursively.
+        dry_run (bool): If True, log deletions without performing them.
+        verbose (bool): If True, log progress and warnings.
+
+    Returns:
+        None: This function performs deletions in-place.
+
+    Processing Steps:
+        1. Iterate over .h5ad file candidates and delete them (if not dry-run).
+        2. Remove the temporary directory tree if requested.
     """
 
     # Helper: remove a single file path (Path-like or string)
@@ -478,6 +652,393 @@ def delete_intermediate_h5ads_and_tmpdir(
                         logger.warning(f"[error] failed to remove tmp dir {td}: {e}")
 
 
+def _collect_input_paths(mod_tsv_dir: Path, bam_dir: Path) -> tuple[list[Path], list[Path]]:
+    """Collect sorted TSV and BAM paths for processing.
+
+    Args:
+        mod_tsv_dir (Path): Directory containing modkit extract TSVs.
+        bam_dir (Path): Directory containing aligned BAM files.
+
+    Returns:
+        tuple[list[Path], list[Path]]: Sorted TSV paths and BAM paths.
+
+    Processing Steps:
+        1. Filter TSVs for extract outputs and exclude unclassified entries.
+        2. Filter BAMs for aligned files and exclude indexes/unclassified entries.
+        3. Sort both lists for deterministic processing.
+    """
+    tsvs = sorted(
+        p
+        for p in mod_tsv_dir.iterdir()
+        if p.is_file() and "unclassified" not in p.name and "extract.tsv" in p.name
+    )
+    bams = sorted(
+        p
+        for p in bam_dir.iterdir()
+        if p.is_file()
+        and p.suffix == ".bam"
+        and "unclassified" not in p.name
+        and ".bai" not in p.name
+    )
+    return tsvs, bams
+
+
+def _build_sample_maps(bam_path_list: list[Path]) -> tuple[dict[int, str], dict[int, str]]:
+    """Build sample name and barcode maps from BAM filenames.
+
+    Args:
+        bam_path_list (list[Path]): Paths to BAM files in sample order.
+
+    Returns:
+        tuple[dict[int, str], dict[int, str]]: Maps of sample index to sample name and barcode.
+
+    Processing Steps:
+        1. Parse the BAM stem for barcode suffixes.
+        2. Build a standardized sample name with barcode suffix.
+        3. Store mappings for downstream metadata annotations.
+    """
+    sample_name_map: dict[int, str] = {}
+    barcode_map: dict[int, str] = {}
+
+    for idx, bam_path in enumerate(bam_path_list):
+        stem = bam_path.stem
+        m = re.search(r"^(.*?)[_\-\.]?(barcode[0-9A-Za-z\-]+)$", stem)
+        if m:
+            sample_name = m.group(1) or stem
+            barcode = m.group(2)
+        else:
+            sample_name = stem
+            barcode = stem
+
+        sample_name = f"{sample_name}_{barcode}"
+        barcode_id = int(barcode.split("barcode")[1])
+
+        sample_name_map[idx] = sample_name
+        barcode_map[idx] = str(barcode_id)
+
+    return sample_name_map, barcode_map
+
+
+def _encode_sequence_array(
+    read_sequence: np.ndarray,
+    valid_length: int,
+    base_to_int: Mapping[str, int],
+    padding_value: int,
+) -> np.ndarray:
+    """Convert a base-identity array into integer encoding with padding.
+
+    Args:
+        read_sequence (np.ndarray): Array of base calls (dtype "<U1").
+        valid_length (int): Number of valid reference positions for this record.
+        base_to_int (Mapping[str, int]): Base-to-integer mapping for A/C/G/T/N/PAD.
+        padding_value (int): Integer value to use for padding.
+
+    Returns:
+        np.ndarray: Integer-encoded sequence with padding applied.
+
+    Processing Steps:
+        1. Initialize an integer array filled with the N value.
+        2. Overwrite values for known bases (A/C/G/T/N).
+        3. Replace positions beyond valid_length with padding.
+    """
+    read_sequence = np.asarray(read_sequence, dtype="<U1")
+    encoded = np.full(read_sequence.shape, base_to_int["N"], dtype=np.int16)
+    for base in MODKIT_EXTRACT_SEQUENCE_BASES:
+        encoded[read_sequence == base] = base_to_int[base]
+    if valid_length < encoded.size:
+        encoded[valid_length:] = padding_value
+    return encoded
+
+
+def _write_sequence_batches(
+    base_identities: Mapping[str, np.ndarray],
+    tmp_dir: Path,
+    record: str,
+    prefix: str,
+    base_to_int: Mapping[str, int],
+    valid_length: int,
+    batch_size: int,
+) -> list[str]:
+    """Encode base identities into integer arrays and write batched H5AD files.
+
+    Args:
+        base_identities (Mapping[str, np.ndarray]): Read name to base identity arrays.
+        tmp_dir (Path): Directory for temporary H5AD files.
+        record (str): Reference record identifier.
+        prefix (str): Prefix used to name batch files.
+        base_to_int (Mapping[str, int]): Base-to-integer mapping.
+        valid_length (int): Valid reference length for padding determination.
+        batch_size (int): Number of reads per H5AD batch file.
+
+    Returns:
+        list[str]: Paths to written H5AD batch files.
+
+    Processing Steps:
+        1. Encode each read sequence to integer values.
+        2. Accumulate encoded reads into batches.
+        3. Persist each batch as an H5AD with the dictionary stored in `.uns`.
+    """
+    import anndata as ad
+
+    padding_value = base_to_int[MODKIT_EXTRACT_SEQUENCE_PADDING_BASE]
+    batch_files: list[str] = []
+    batch: dict[str, np.ndarray] = {}
+    batch_number = 0
+
+    for read_name, sequence in base_identities.items():
+        if sequence is None:
+            continue
+        batch[read_name] = _encode_sequence_array(
+            sequence, valid_length, base_to_int, padding_value
+        )
+        if len(batch) >= batch_size:
+            save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
+            ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
+            batch_files.append(str(save_name))
+            batch = {}
+            batch_number += 1
+
+    if batch:
+        save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
+        ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
+        batch_files.append(str(save_name))
+
+    return batch_files
+
+
+def _load_sequence_batches(
+    batch_files: list[Path | str],
+) -> tuple[dict[str, np.ndarray], set[str], set[str]]:
+    """Load integer-encoded sequence batches from H5AD files.
+
+    Args:
+        batch_files (list[Path | str]): H5AD paths containing encoded sequences in `.uns`.
+
+    Returns:
+        tuple[dict[str, np.ndarray], set[str], set[str]]:
+            Read-to-sequence mapping and sets of forward/reverse mapped reads.
+
+    Processing Steps:
+        1. Read each H5AD file.
+        2. Merge `.uns` dictionaries into a single mapping.
+        3. Track forward/reverse read IDs based on the filename marker.
+    """
+    import anndata as ad
+
+    sequences: dict[str, np.ndarray] = {}
+    fwd_reads: set[str] = set()
+    rev_reads: set[str] = set()
+    for batch_file in batch_files:
+        batch_path = Path(batch_file)
+        batch_sequences = ad.read_h5ad(batch_path).uns
+        sequences.update(batch_sequences)
+        if "_fwd_" in batch_path.name:
+            fwd_reads.update(batch_sequences.keys())
+        elif "_rev_" in batch_path.name:
+            rev_reads.update(batch_sequences.keys())
+    return sequences, fwd_reads, rev_reads
+
+
+def _normalize_sequence_batch_files(batch_files: object) -> list[Path]:
+    """Normalize cached batch file entries into a list of Paths.
+
+    Args:
+        batch_files (object): Cached batch file entry from AnnData `.uns`.
+
+    Returns:
+        list[Path]: Paths to batch files, filtered to non-empty values.
+
+    Processing Steps:
+        1. Convert numpy arrays and scalars into Python lists.
+        2. Filter out empty/placeholder values.
+        3. Cast remaining entries to Path objects.
+    """
+    if batch_files is None:
+        return []
+    if isinstance(batch_files, np.ndarray):
+        batch_files = batch_files.tolist()
+    if isinstance(batch_files, (str, Path)):
+        batch_files = [batch_files]
+    if not isinstance(batch_files, list):
+        batch_files = list(batch_files)
+    normalized: list[Path] = []
+    for entry in batch_files:
+        if entry is None:
+            continue
+        entry_str = str(entry).strip()
+        if not entry_str or entry_str == ".":
+            continue
+        normalized.append(Path(entry_str))
+    return normalized
+
+
+def _build_modification_dicts(
+    dict_total: dict,
+    mods: list[str],
+) -> tuple[ModkitBatchDictionaries, set[int]]:
+    """Build modification/strand dictionaries from the raw TSV batch dictionary.
+
+    Args:
+        dict_total (dict): Raw TSV DataFrames keyed by record and sample index.
+        mods (list[str]): Modification labels to include (e.g., ["6mA", "5mC"]).
+
+    Returns:
+        tuple[ModkitBatchDictionaries, set[int]]: Batch dictionaries and indices to skip.
+
+    Processing Steps:
+        1. Initialize modification dictionaries and skip-set.
+        2. Filter TSV rows per record/sample into modification and strand subsets.
+        3. Populate combined dict placeholders when both modifications are present.
+    """
+    batch_dicts = ModkitBatchDictionaries(dict_total=dict_total)
+    dict_to_skip = {0, 1, 4}
+    combined_dicts = {7, 8}
+    A_stranded_dicts = {2, 3}
+    C_stranded_dicts = {5, 6}
+    dict_to_skip.update(combined_dicts | A_stranded_dicts | C_stranded_dicts)
+
+    for record in dict_total.keys():
+        for sample_index in dict_total[record].keys():
+            if "6mA" in mods:
+                dict_to_skip.difference_update(A_stranded_dicts)
+                if (
+                    record not in batch_dicts.dict_a.keys()
+                    and record not in batch_dicts.dict_a_bottom.keys()
+                    and record not in batch_dicts.dict_a_top.keys()
+                ):
+                    (
+                        batch_dicts.dict_a[record],
+                        batch_dicts.dict_a_bottom[record],
+                        batch_dicts.dict_a_top[record],
+                    ) = ({}, {}, {})
+
+                batch_dicts.dict_a[record][sample_index] = dict_total[record][sample_index][
+                    dict_total[record][sample_index][
+                        MODKIT_EXTRACT_TSV_COLUMN_MODIFIED_PRIMARY_BASE
+                    ]
+                    == MODKIT_EXTRACT_MODIFIED_BASE_A
+                ]
+                logger.debug(
+                    "Successfully loaded a methyl-adenine dictionary for {}".format(
+                        str(sample_index)
+                    )
+                )
+
+                batch_dicts.dict_a_bottom[record][sample_index] = batch_dicts.dict_a[record][
+                    sample_index
+                ][
+                    batch_dicts.dict_a[record][sample_index][
+                        MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND
+                    ]
+                    == MODKIT_EXTRACT_REF_STRAND_MINUS
+                ]
+                logger.debug(
+                    "Successfully loaded a minus strand methyl-adenine dictionary for {}".format(
+                        str(sample_index)
+                    )
+                )
+                batch_dicts.dict_a_top[record][sample_index] = batch_dicts.dict_a[record][
+                    sample_index
+                ][
+                    batch_dicts.dict_a[record][sample_index][
+                        MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND
+                    ]
+                    == MODKIT_EXTRACT_REF_STRAND_PLUS
+                ]
+                logger.debug(
+                    "Successfully loaded a plus strand methyl-adenine dictionary for ".format(
+                        str(sample_index)
+                    )
+                )
+
+                batch_dicts.dict_a[record][sample_index] = None
+                gc.collect()
+
+            if "5mC" in mods:
+                dict_to_skip.difference_update(C_stranded_dicts)
+                if (
+                    record not in batch_dicts.dict_c.keys()
+                    and record not in batch_dicts.dict_c_bottom.keys()
+                    and record not in batch_dicts.dict_c_top.keys()
+                ):
+                    (
+                        batch_dicts.dict_c[record],
+                        batch_dicts.dict_c_bottom[record],
+                        batch_dicts.dict_c_top[record],
+                    ) = ({}, {}, {})
+
+                batch_dicts.dict_c[record][sample_index] = dict_total[record][sample_index][
+                    dict_total[record][sample_index][
+                        MODKIT_EXTRACT_TSV_COLUMN_MODIFIED_PRIMARY_BASE
+                    ]
+                    == MODKIT_EXTRACT_MODIFIED_BASE_C
+                ]
+                logger.debug(
+                    "Successfully loaded a methyl-cytosine dictionary for {}".format(
+                        str(sample_index)
+                    )
+                )
+
+                batch_dicts.dict_c_bottom[record][sample_index] = batch_dicts.dict_c[record][
+                    sample_index
+                ][
+                    batch_dicts.dict_c[record][sample_index][
+                        MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND
+                    ]
+                    == MODKIT_EXTRACT_REF_STRAND_MINUS
+                ]
+                logger.debug(
+                    "Successfully loaded a minus strand methyl-cytosine dictionary for {}".format(
+                        str(sample_index)
+                    )
+                )
+                batch_dicts.dict_c_top[record][sample_index] = batch_dicts.dict_c[record][
+                    sample_index
+                ][
+                    batch_dicts.dict_c[record][sample_index][
+                        MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND
+                    ]
+                    == MODKIT_EXTRACT_REF_STRAND_PLUS
+                ]
+                logger.debug(
+                    "Successfully loaded a plus strand methyl-cytosine dictionary for {}".format(
+                        str(sample_index)
+                    )
+                )
+
+                batch_dicts.dict_c[record][sample_index] = None
+                gc.collect()
+
+            if "6mA" in mods and "5mC" in mods:
+                dict_to_skip.difference_update(combined_dicts)
+                if (
+                    record not in batch_dicts.dict_combined_bottom.keys()
+                    and record not in batch_dicts.dict_combined_top.keys()
+                ):
+                    (
+                        batch_dicts.dict_combined_bottom[record],
+                        batch_dicts.dict_combined_top[record],
+                    ) = ({}, {})
+
+                logger.debug(
+                    "Successfully created a minus strand combined methylation dictionary for {}".format(
+                        str(sample_index)
+                    )
+                )
+                batch_dicts.dict_combined_bottom[record][sample_index] = []
+                logger.debug(
+                    "Successfully created a plus strand combined methylation dictionary for {}".format(
+                        str(sample_index)
+                    )
+                )
+                batch_dicts.dict_combined_top[record][sample_index] = []
+
+            dict_total[record][sample_index] = None
+            gc.collect()
+
+    return batch_dicts, dict_to_skip
+
+
 def modkit_extract_to_adata(
     fasta,
     bam_dir,
@@ -493,24 +1054,32 @@ def modkit_extract_to_adata(
     double_barcoded_path=None,
     samtools_backend: str | None = "auto",
 ):
-    """
-    Takes modkit extract outputs and organizes it into an adata object
+    """Convert modkit extract TSVs and BAMs into an AnnData object.
 
-    Parameters:
-        fasta (Path): File path to the reference genome to align to.
-        bam_dir (Path): File path to the directory containing the aligned_sorted split modified BAM files
-        out_dir (Path): File path to output directory
-        input_already_demuxed (bool): Whether input reads were originally demuxed
-        mapping_threshold (float): A value in between 0 and 1 to threshold the minimal fraction of aligned reads which map to the reference region. References with values above the threshold are included in the output adata.
-        experiment_name (str): A string to provide an experiment name to the output adata file.
-        mods (list): A list of strings of the modification types to use in the analysis.
-        batch_size (int): An integer number of TSV files to analyze in memory at once while loading the final adata object.
-        mod_tsv_dir (Path): path to the mod TSV directory
-        delete_batch_hdfs (bool): Whether to delete the batch hdfs after writing out the final concatenated hdf. Default is False
-        double_barcoded_path (Path): Path to dorado demux summary file of double ended barcodes
+    Args:
+        fasta (Path): Reference FASTA path.
+        bam_dir (Path): Directory with aligned BAM files.
+        out_dir (Path): Output directory for intermediate and final H5ADs.
+        input_already_demuxed (bool): Whether reads were already demultiplexed.
+        mapping_threshold (float): Minimum fraction of mapped reads to keep a record.
+        experiment_name (str): Experiment name used in output file naming.
+        mods (list[str]): Modification labels to analyze (e.g., ["6mA", "5mC"]).
+        batch_size (int): Number of TSVs to process per batch.
+        mod_tsv_dir (Path): Directory containing modkit extract TSVs.
+        delete_batch_hdfs (bool): Remove batch H5ADs after concatenation.
+        threads (int | None): Thread count for parallel operations.
+        double_barcoded_path (Path | None): Dorado demux summary directory for double barcodes.
+        samtools_backend (str | None): Samtools backend selection.
 
     Returns:
-        final_adata_path (Path): Path to the final adata
+        tuple[ad.AnnData | None, Path]: The final AnnData (if created) and its H5AD path.
+
+    Processing Steps:
+        1. Discover input TSV/BAM files and derive sample metadata.
+        2. Identify records that pass mapping thresholds and build reference metadata.
+        3. Encode read sequences into integer arrays and cache them.
+        4. Process TSV batches into per-read methylation matrices.
+        5. Concatenate batch H5ADs into a final AnnData with consensus sequences.
     """
     ###################################################
     # Package imports
@@ -527,7 +1096,6 @@ def modkit_extract_to_adata(
     from ..readwrite import make_dirs
     from .bam_functions import extract_base_identities
     from .fasta_functions import get_native_references
-    from .ohe import ohe_batching
     ###################################################
 
     ################## Get input tsv and bam file names into a sorted list ################
@@ -546,55 +1114,14 @@ def modkit_extract_to_adata(
         logger.debug(f"{final_adata_path} already exists. Using existing adata")
         return final_adata, final_adata_path
 
-    # List all files in the directory
-    tsvs = sorted(
-        p
-        for p in mod_tsv_dir.iterdir()
-        if p.is_file() and "unclassified" not in p.name and "extract.tsv" in p.name
-    )
-    bams = sorted(
-        p
-        for p in bam_dir.iterdir()
-        if p.is_file()
-        and p.suffix == ".bam"
-        and "unclassified" not in p.name
-        and ".bai" not in p.name
-    )
-
-    tsv_path_list = [tsv for tsv in tsvs]
-    bam_path_list = [bam for bam in bams]
+    tsvs, bams = _collect_input_paths(mod_tsv_dir, bam_dir)
+    tsv_path_list = list(tsvs)
+    bam_path_list = list(bams)
     logger.info(f"{len(tsvs)} sample tsv files found: {tsvs}")
     logger.info(f"{len(bams)} sample bams found: {bams}")
 
     # Map global sample index (bami / final_sample_index) -> sample name / barcode
-    sample_name_map = {}
-    barcode_map = {}
-
-    for idx, bam_path in enumerate(bam_path_list):
-        stem = bam_path.stem
-
-        # Try to peel off a "barcode..." suffix if present.
-        # This handles things like:
-        #   "mySample_barcode01"   -> sample="mySample", barcode="barcode01"
-        #   "run1-s1_barcode05"   -> sample="run1-s1", barcode="barcode05"
-        #   "barcode01"           -> sample="barcode01", barcode="barcode01"
-        m = re.search(r"^(.*?)[_\-\.]?(barcode[0-9A-Za-z\-]+)$", stem)
-        if m:
-            sample_name = m.group(1) or stem
-            barcode = m.group(2)
-        else:
-            # Fallback: treat the whole stem as both sample & barcode
-            sample_name = stem
-            barcode = stem
-
-        # make sample name of the format of the bam file stem
-        sample_name = sample_name + f"_{barcode}"
-
-        # Clean the barcode name to be an integer
-        barcode = int(barcode.split("barcode")[1])
-
-        sample_name_map[idx] = sample_name
-        barcode_map[idx] = str(barcode)
+    sample_name_map, barcode_map = _build_sample_maps(bam_path_list)
     ##########################################################################################
 
     ######### Get Record names that have over a passed threshold of mapped reads #############
@@ -619,59 +1146,51 @@ def modkit_extract_to_adata(
     ##########################################################################################
 
     ##########################################################################################
-    # One hot encode read sequences and write them out into the tmp_dir as h5ad files.
-    # Save the file paths in the bam_record_ohe_files dict.
-    bam_record_ohe_files = {}
-    bam_record_save = tmp_dir / "tmp_file_dict.h5ad"
-    fwd_mapped_reads = set()
-    rev_mapped_reads = set()
-    # If this step has already been performed, read in the tmp_dile_dict
-    if bam_record_save.exists():
-        bam_record_ohe_files = ad.read_h5ad(bam_record_save).uns
-        logger.debug("Found existing OHE reads, using these")
+    # Encode read sequences into integer arrays and cache in tmp_dir.
+    sequence_batch_files: dict[str, list[str]] = {}
+    sequence_cache_path = tmp_dir / "tmp_sequence_int_file_dict.h5ad"
+    if sequence_cache_path.exists():
+        sequence_batch_files = ad.read_h5ad(sequence_cache_path).uns
+        logger.debug("Found existing integer-encoded reads, using these")
     else:
-        # Iterate over split bams
         for bami, bam in enumerate(bam_path_list):
-            # Iterate over references to process
             for record in records_to_analyze:
                 current_reference_length = reference_dict[record][0]
                 positions = range(current_reference_length)
                 ref_seq = reference_dict[record][1]
-                # Extract the base identities of reads aligned to the record
                 (
                     fwd_base_identities,
                     rev_base_identities,
-                    mismatch_counts_per_read,
-                    mismatch_trend_per_read,
+                    _mismatch_counts_per_read,
+                    _mismatch_trend_per_read,
                 ) = extract_base_identities(
                     bam, record, positions, max_reference_length, ref_seq, samtools_backend
                 )
-                # Store read names of fwd and rev mapped reads
-                fwd_mapped_reads.update(fwd_base_identities.keys())
-                rev_mapped_reads.update(rev_base_identities.keys())
-                # One hot encode the sequence string of the reads
-                fwd_ohe_files = ohe_batching(
+                fwd_sequence_files = _write_sequence_batches(
                     fwd_base_identities,
                     tmp_dir,
                     record,
                     f"{bami}_fwd",
+                    MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
+                    current_reference_length,
                     batch_size=100000,
-                    threads=threads,
                 )
-                rev_ohe_files = ohe_batching(
+                rev_sequence_files = _write_sequence_batches(
                     rev_base_identities,
                     tmp_dir,
                     record,
                     f"{bami}_rev",
+                    MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
+                    current_reference_length,
                     batch_size=100000,
-                    threads=threads,
                 )
-                bam_record_ohe_files[f"{bami}_{record}"] = fwd_ohe_files + rev_ohe_files
+                sequence_batch_files[f"{bami}_{record}"] = (
+                    fwd_sequence_files + rev_sequence_files
+                )
                 del fwd_base_identities, rev_base_identities
-        # Save out the ohe file paths
-        X = np.random.rand(1, 1)
-        tmp_ad = ad.AnnData(X=X, uns=bam_record_ohe_files)
-        tmp_ad.write_h5ad(bam_record_save)
+        ad.AnnData(X=np.random.rand(1, 1), uns=sequence_batch_files).write_h5ad(
+            sequence_cache_path
+        )
     ##########################################################################################
 
     ##########################################################################################
@@ -713,47 +1232,9 @@ def modkit_extract_to_adata(
             ###################################################
             ### Add the tsvs as dataframes to a dictionary (dict_total) keyed by integer index. Also make modification specific dictionaries and strand specific dictionaries.
             # # Initialize dictionaries and place them in a list
-            (
-                dict_total,
-                dict_a,
-                dict_a_bottom,
-                dict_a_top,
-                dict_c,
-                dict_c_bottom,
-                dict_c_top,
-                dict_combined_bottom,
-                dict_combined_top,
-            ) = {}, {}, {}, {}, {}, {}, {}, {}, {}
-            dict_list = [
-                dict_total,
-                dict_a,
-                dict_a_bottom,
-                dict_a_top,
-                dict_c,
-                dict_c_bottom,
-                dict_c_top,
-                dict_combined_bottom,
-                dict_combined_top,
-            ]
-            # Give names to represent each dictionary in the list
-            sample_types = [
-                "total",
-                "m6A",
-                "m6A_bottom_strand",
-                "m6A_top_strand",
-                "5mC",
-                "5mC_bottom_strand",
-                "5mC_top_strand",
-                "combined_bottom_strand",
-                "combined_top_strand",
-            ]
-            # Give indices of dictionaries to skip for analysis and final dictionary saving.
-            dict_to_skip = [0, 1, 4]
-            combined_dicts = [7, 8]
-            A_stranded_dicts = [2, 3]
-            C_stranded_dicts = [5, 6]
-            dict_to_skip = dict_to_skip + combined_dicts + A_stranded_dicts + C_stranded_dicts
-            dict_to_skip = set(dict_to_skip)
+            batch_dicts = ModkitBatchDictionaries()
+            dict_list = batch_dicts.as_list()
+            sample_types = batch_dicts.sample_types
 
             # # Step 1):Load the dict_total dictionary with all of the batch tsv files as dataframes.
             dict_total = parallel_load_tsvs(
@@ -785,120 +1266,9 @@ def modkit_extract_to_adata(
             # # Step 3: Process stranded methylation data in parallel
             # dict_list = parallel_extract_stranded_methylation(dict_list, dict_to_skip, max_reference_length, threads=threads or 4)
 
-            # Iterate over dict_total of all the tsv files and extract the modification specific and strand specific dataframes into dictionaries
-            for record in dict_total.keys():
-                for sample_index in dict_total[record].keys():
-                    if "6mA" in mods:
-                        # Remove Adenine stranded dicts from the dicts to skip set
-                        dict_to_skip.difference_update(set(A_stranded_dicts))
-
-                        if (
-                            record not in dict_a.keys()
-                            and record not in dict_a_bottom.keys()
-                            and record not in dict_a_top.keys()
-                        ):
-                            dict_a[record], dict_a_bottom[record], dict_a_top[record] = {}, {}, {}
-
-                        # get a dictionary of dataframes that only contain methylated adenine positions
-                        dict_a[record][sample_index] = dict_total[record][sample_index][
-                            dict_total[record][sample_index]["modified_primary_base"] == "A"
-                        ]
-                        logger.debug(
-                            "Successfully loaded a methyl-adenine dictionary for {}".format(
-                                str(sample_index)
-                            )
-                        )
-
-                        # Stratify the adenine dictionary into two strand specific dictionaries.
-                        dict_a_bottom[record][sample_index] = dict_a[record][sample_index][
-                            dict_a[record][sample_index]["ref_strand"] == "-"
-                        ]
-                        logger.debug(
-                            "Successfully loaded a minus strand methyl-adenine dictionary for {}".format(
-                                str(sample_index)
-                            )
-                        )
-                        dict_a_top[record][sample_index] = dict_a[record][sample_index][
-                            dict_a[record][sample_index]["ref_strand"] == "+"
-                        ]
-                        logger.debug(
-                            "Successfully loaded a plus strand methyl-adenine dictionary for ".format(
-                                str(sample_index)
-                            )
-                        )
-
-                        # Reassign pointer for dict_a to None and delete the original value that it pointed to in order to decrease memory usage.
-                        dict_a[record][sample_index] = None
-                        gc.collect()
-
-                    if "5mC" in mods:
-                        # Remove Cytosine stranded dicts from the dicts to skip set
-                        dict_to_skip.difference_update(set(C_stranded_dicts))
-
-                        if (
-                            record not in dict_c.keys()
-                            and record not in dict_c_bottom.keys()
-                            and record not in dict_c_top.keys()
-                        ):
-                            dict_c[record], dict_c_bottom[record], dict_c_top[record] = {}, {}, {}
-
-                        # get a dictionary of dataframes that only contain methylated cytosine positions
-                        dict_c[record][sample_index] = dict_total[record][sample_index][
-                            dict_total[record][sample_index]["modified_primary_base"] == "C"
-                        ]
-                        logger.debug(
-                            "Successfully loaded a methyl-cytosine dictionary for {}".format(
-                                str(sample_index)
-                            )
-                        )
-                        # Stratify the cytosine dictionary into two strand specific dictionaries.
-                        dict_c_bottom[record][sample_index] = dict_c[record][sample_index][
-                            dict_c[record][sample_index]["ref_strand"] == "-"
-                        ]
-                        logger.debug(
-                            "Successfully loaded a minus strand methyl-cytosine dictionary for {}".format(
-                                str(sample_index)
-                            )
-                        )
-                        dict_c_top[record][sample_index] = dict_c[record][sample_index][
-                            dict_c[record][sample_index]["ref_strand"] == "+"
-                        ]
-                        logger.debug(
-                            "Successfully loaded a plus strand methyl-cytosine dictionary for {}".format(
-                                str(sample_index)
-                            )
-                        )
-                        # Reassign pointer for dict_c to None and delete the original value that it pointed to in order to decrease memory usage.
-                        dict_c[record][sample_index] = None
-                        gc.collect()
-
-                    if "6mA" in mods and "5mC" in mods:
-                        # Remove combined stranded dicts from the dicts to skip set
-                        dict_to_skip.difference_update(set(combined_dicts))
-                        # Initialize the sample keys for the combined dictionaries
-
-                        if (
-                            record not in dict_combined_bottom.keys()
-                            and record not in dict_combined_top.keys()
-                        ):
-                            dict_combined_bottom[record], dict_combined_top[record] = {}, {}
-
-                        logger.debug(
-                            "Successfully created a minus strand combined methylation dictionary for {}".format(
-                                str(sample_index)
-                            )
-                        )
-                        dict_combined_bottom[record][sample_index] = []
-                        logger.debug(
-                            "Successfully created a plus strand combined methylation dictionary for {}".format(
-                                str(sample_index)
-                            )
-                        )
-                        dict_combined_top[record][sample_index] = []
-
-                    # Reassign pointer for dict_total to None and delete the original value that it pointed to in order to decrease memory usage.
-                    dict_total[record][sample_index] = None
-                    gc.collect()
+            batch_dicts, dict_to_skip = _build_modification_dicts(dict_total, mods)
+            dict_list = batch_dicts.as_list()
+            sample_types = batch_dicts.sample_types
 
             # Iterate over the stranded modification dictionaries and replace the dataframes with a dictionary of read names pointing to a list of values from the dataframe
             for dict_index, dict_type in enumerate(dict_list):
@@ -984,14 +1354,20 @@ def modkit_extract_to_adata(
                                 mod_strand_record_sample_dict[sample] = {}
 
                                 # Get relevant columns as NumPy arrays
-                                read_ids = temp_df["read_id"].values
-                                positions = temp_df["ref_position"].values
-                                call_codes = temp_df["call_code"].values
-                                probabilities = temp_df["call_prob"].values
+                                read_ids = temp_df[MODKIT_EXTRACT_TSV_COLUMN_READ_ID].values
+                                positions = temp_df[
+                                    MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION
+                                ].values
+                                call_codes = temp_df[
+                                    MODKIT_EXTRACT_TSV_COLUMN_CALL_CODE
+                                ].values
+                                probabilities = temp_df[
+                                    MODKIT_EXTRACT_TSV_COLUMN_CALL_PROB
+                                ].values
 
                                 # Define valid call code categories
-                                modified_codes = {"a", "h", "m"}
-                                canonical_codes = {"-"}
+                                modified_codes = MODKIT_EXTRACT_CALL_CODE_MODIFIED
+                                canonical_codes = MODKIT_EXTRACT_CALL_CODE_CANONICAL
 
                                 # Vectorized methylation calculation with NaN for other codes
                                 methylation_prob = np.full_like(
@@ -1103,23 +1479,27 @@ def modkit_extract_to_adata(
                                     temp_adata
                                 )
 
-                                # Load in the one hot encoded reads from the current sample and record
-                                one_hot_reads = {}
-                                n_rows_OHE = 5
-                                ohe_files = bam_record_ohe_files[f"{final_sample_index}_{record}"]
-                                logger.info(f"Loading OHEs from {ohe_files}")
-                                fwd_mapped_reads = set()
-                                rev_mapped_reads = set()
-                                for ohe_file in ohe_files:
-                                    tmp_ohe_dict = ad.read_h5ad(ohe_file).uns
-                                    one_hot_reads.update(tmp_ohe_dict)
-                                    if "_fwd_" in ohe_file:
-                                        fwd_mapped_reads.update(tmp_ohe_dict.keys())
-                                    elif "_rev_" in ohe_file:
-                                        rev_mapped_reads.update(tmp_ohe_dict.keys())
-                                    del tmp_ohe_dict
+                                # Load integer-encoded reads for the current sample/record
+                                sequence_files = _normalize_sequence_batch_files(
+                                    sequence_batch_files.get(
+                                        f"{final_sample_index}_{record}", []
+                                    )
+                                )
+                                if not sequence_files:
+                                    logger.warning(
+                                        "No encoded sequence batches found for sample %s record %s",
+                                        final_sample_index,
+                                        record,
+                                    )
+                                    continue
+                                logger.info(f"Loading encoded sequences from {sequence_files}")
+                                (
+                                    encoded_reads,
+                                    fwd_mapped_reads,
+                                    rev_mapped_reads,
+                                ) = _load_sequence_batches(sequence_files)
 
-                                read_names = list(one_hot_reads.keys())
+                                read_names = list(encoded_reads.keys())
 
                                 read_mapping_direction = []
                                 for read_id in temp_adata.obs_names:
@@ -1134,53 +1514,27 @@ def modkit_extract_to_adata(
 
                                 del temp_df
 
-                                # Initialize NumPy arrays
-                                sequence_length = (
-                                    one_hot_reads[read_names[0]].reshape(n_rows_OHE, -1).shape[1]
+                                padding_value = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT[
+                                    MODKIT_EXTRACT_SEQUENCE_PADDING_BASE
+                                ]
+                                sequence_length = encoded_reads[read_names[0]].shape[0]
+                                encoded_matrix = np.full(
+                                    (len(sorted_index), sequence_length),
+                                    padding_value,
+                                    dtype=np.int16,
                                 )
-                                df_A = np.zeros((len(sorted_index), sequence_length), dtype=int)
-                                df_C = np.zeros((len(sorted_index), sequence_length), dtype=int)
-                                df_G = np.zeros((len(sorted_index), sequence_length), dtype=int)
-                                df_T = np.zeros((len(sorted_index), sequence_length), dtype=int)
-                                df_N = np.zeros((len(sorted_index), sequence_length), dtype=int)
 
-                                # Process one-hot data into dictionaries
-                                dict_A, dict_C, dict_G, dict_T, dict_N = {}, {}, {}, {}, {}
-                                for read_name, one_hot_array in one_hot_reads.items():
-                                    one_hot_array = one_hot_array.reshape(n_rows_OHE, -1)
-                                    dict_A[read_name] = one_hot_array[0, :]
-                                    dict_C[read_name] = one_hot_array[1, :]
-                                    dict_G[read_name] = one_hot_array[2, :]
-                                    dict_T[read_name] = one_hot_array[3, :]
-                                    dict_N[read_name] = one_hot_array[4, :]
-
-                                del one_hot_reads
-                                gc.collect()
-
-                                # Fill the arrays
                                 for j, read_name in tqdm(
                                     enumerate(sorted_index),
-                                    desc="Loading dataframes of OHE reads",
+                                    desc="Loading integer-encoded reads",
                                     total=len(sorted_index),
                                 ):
-                                    df_A[j, :] = dict_A[read_name]
-                                    df_C[j, :] = dict_C[read_name]
-                                    df_G[j, :] = dict_G[read_name]
-                                    df_T[j, :] = dict_T[read_name]
-                                    df_N[j, :] = dict_N[read_name]
+                                    encoded_matrix[j, :] = encoded_reads[read_name]
 
-                                del dict_A, dict_C, dict_G, dict_T, dict_N
+                                del encoded_reads
                                 gc.collect()
 
-                                # Store the results in AnnData layers
-                                ohe_df_map = {0: df_A, 1: df_C, 2: df_G, 3: df_T, 4: df_N}
-                                for j, base in enumerate(["A", "C", "G", "T", "N"]):
-                                    temp_adata.layers[f"{base}_binary_sequence_encoding"] = (
-                                        ohe_df_map[j]
-                                    )
-                                    ohe_df_map[j] = (
-                                        None  # Reassign pointer for memory usage purposes
-                                    )
+                                temp_adata.layers["sequence_integer_encoding"] = encoded_matrix
 
                                 # If final adata object already has a sample loaded, concatenate the current sample into the existing adata object
                                 if adata:
@@ -1273,8 +1627,17 @@ def modkit_extract_to_adata(
     for col in final_adata.obs.columns:
         final_adata.obs[col] = final_adata.obs[col].astype("category")
 
-    ohe_bases = ["A", "C", "G", "T"]  # ignore N bases for consensus
-    ohe_layers = [f"{ohe_base}_binary_sequence_encoding" for ohe_base in ohe_bases]
+    final_adata.uns["sequence_integer_encoding_map"] = dict(
+        MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
+    )
+    final_adata.uns["sequence_integer_decoding_map"] = {
+        str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
+    }
+
+    consensus_bases = MODKIT_EXTRACT_SEQUENCE_BASES[:4]  # ignore N/PAD for consensus
+    consensus_base_ints = [
+        MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT[base] for base in consensus_bases
+    ]
     final_adata.uns["References"] = {}
     for record in records_to_analyze:
         # Add FASTA sequence to the object
@@ -1292,13 +1655,21 @@ def modkit_extract_to_adata(
                 mapping_dir_subset = strand_subset[
                     strand_subset.obs["Read_mapping_direction"] == mapping_dir
                 ]
-                layer_map, layer_counts = {}, []
-                for i, layer in enumerate(ohe_layers):
-                    layer_map[i] = layer.split("_")[0]
-                    layer_counts.append(np.sum(mapping_dir_subset.layers[layer], axis=0))
+                encoded_sequences = mapping_dir_subset.layers["sequence_integer_encoding"]
+                layer_counts = [
+                    np.sum(encoded_sequences == base_int, axis=0)
+                    for base_int in consensus_base_ints
+                ]
                 count_array = np.array(layer_counts)
                 nucleotide_indexes = np.argmax(count_array, axis=0)
-                consensus_sequence_list = [layer_map[i] for i in nucleotide_indexes]
+                consensus_sequence_list = [
+                    consensus_bases[i] for i in nucleotide_indexes
+                ]
+                no_calls_mask = np.sum(count_array, axis=0) == 0
+                if np.any(no_calls_mask):
+                    consensus_sequence_list = np.array(consensus_sequence_list, dtype=object)
+                    consensus_sequence_list[no_calls_mask] = "N"
+                    consensus_sequence_list = consensus_sequence_list.tolist()
                 final_adata.var[
                     f"{record}_{strand}_{mapping_dir}_consensus_sequence_from_all_samples"
                 ] = consensus_sequence_list
