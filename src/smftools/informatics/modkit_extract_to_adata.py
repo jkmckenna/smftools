@@ -758,7 +758,7 @@ def _write_sequence_batches(
     base_to_int: Mapping[str, int],
     valid_length: int,
     batch_size: int,
-) -> list[Path]:
+) -> list[str]:
     """Encode base identities into integer arrays and write batched H5AD files.
 
     Args:
@@ -771,7 +771,7 @@ def _write_sequence_batches(
         batch_size (int): Number of reads per H5AD batch file.
 
     Returns:
-        list[Path]: Paths to written H5AD batch files.
+        list[str]: Paths to written H5AD batch files.
 
     Processing Steps:
         1. Encode each read sequence to integer values.
@@ -781,7 +781,7 @@ def _write_sequence_batches(
     import anndata as ad
 
     padding_value = base_to_int[MODKIT_EXTRACT_SEQUENCE_PADDING_BASE]
-    batch_files: list[Path] = []
+    batch_files: list[str] = []
     batch: dict[str, np.ndarray] = {}
     batch_number = 0
 
@@ -794,25 +794,25 @@ def _write_sequence_batches(
         if len(batch) >= batch_size:
             save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
             ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
-            batch_files.append(save_name)
+            batch_files.append(str(save_name))
             batch = {}
             batch_number += 1
 
     if batch:
         save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
         ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
-        batch_files.append(save_name)
+        batch_files.append(str(save_name))
 
     return batch_files
 
 
 def _load_sequence_batches(
-    batch_files: list[Path],
+    batch_files: list[Path | str],
 ) -> tuple[dict[str, np.ndarray], set[str], set[str]]:
     """Load integer-encoded sequence batches from H5AD files.
 
     Args:
-        batch_files (list[Path]): H5AD paths containing encoded sequences in `.uns`.
+        batch_files (list[Path | str]): H5AD paths containing encoded sequences in `.uns`.
 
     Returns:
         tuple[dict[str, np.ndarray], set[str], set[str]]:
@@ -837,6 +837,39 @@ def _load_sequence_batches(
         elif "_rev_" in batch_path.name:
             rev_reads.update(batch_sequences.keys())
     return sequences, fwd_reads, rev_reads
+
+
+def _normalize_sequence_batch_files(batch_files: object) -> list[Path]:
+    """Normalize cached batch file entries into a list of Paths.
+
+    Args:
+        batch_files (object): Cached batch file entry from AnnData `.uns`.
+
+    Returns:
+        list[Path]: Paths to batch files, filtered to non-empty values.
+
+    Processing Steps:
+        1. Convert numpy arrays and scalars into Python lists.
+        2. Filter out empty/placeholder values.
+        3. Cast remaining entries to Path objects.
+    """
+    if batch_files is None:
+        return []
+    if isinstance(batch_files, np.ndarray):
+        batch_files = batch_files.tolist()
+    if isinstance(batch_files, (str, Path)):
+        batch_files = [batch_files]
+    if not isinstance(batch_files, list):
+        batch_files = list(batch_files)
+    normalized: list[Path] = []
+    for entry in batch_files:
+        if entry is None:
+            continue
+        entry_str = str(entry).strip()
+        if not entry_str or entry_str == ".":
+            continue
+        normalized.append(Path(entry_str))
+    return normalized
 
 
 def _build_modification_dicts(
@@ -1114,7 +1147,7 @@ def modkit_extract_to_adata(
 
     ##########################################################################################
     # Encode read sequences into integer arrays and cache in tmp_dir.
-    sequence_batch_files: dict[str, list[Path]] = {}
+    sequence_batch_files: dict[str, list[str]] = {}
     sequence_cache_path = tmp_dir / "tmp_sequence_int_file_dict.h5ad"
     if sequence_cache_path.exists():
         sequence_batch_files = ad.read_h5ad(sequence_cache_path).uns
@@ -1447,12 +1480,18 @@ def modkit_extract_to_adata(
                                 )
 
                                 # Load integer-encoded reads for the current sample/record
-                                sequence_files = [
-                                    Path(path)
-                                    for path in sequence_batch_files[
-                                        f"{final_sample_index}_{record}"
-                                    ]
-                                ]
+                                sequence_files = _normalize_sequence_batch_files(
+                                    sequence_batch_files.get(
+                                        f"{final_sample_index}_{record}", []
+                                    )
+                                )
+                                if not sequence_files:
+                                    logger.warning(
+                                        "No encoded sequence batches found for sample %s record %s",
+                                        final_sample_index,
+                                        record,
+                                    )
+                                    continue
                                 logger.info(f"Loading encoded sequences from {sequence_files}")
                                 (
                                     encoded_reads,
