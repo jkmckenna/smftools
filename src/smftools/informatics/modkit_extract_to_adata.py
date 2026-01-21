@@ -1665,6 +1665,11 @@ def modkit_extract_to_adata(
                 consensus_sequence_list = [
                     consensus_bases[i] for i in nucleotide_indexes
                 ]
+                no_calls_mask = np.sum(count_array, axis=0) == 0
+                if np.any(no_calls_mask):
+                    consensus_sequence_list = np.array(consensus_sequence_list, dtype=object)
+                    consensus_sequence_list[no_calls_mask] = "N"
+                    consensus_sequence_list = consensus_sequence_list.tolist()
                 final_adata.var[
                     f"{record}_{strand}_{mapping_dir}_consensus_sequence_from_all_samples"
                 ] = consensus_sequence_list
