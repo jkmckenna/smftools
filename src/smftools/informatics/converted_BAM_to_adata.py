@@ -199,9 +199,7 @@ def converted_BAM_to_adata(
         samtools_backend,
     )
 
-    final_adata.uns["sequence_integer_encoding_map"] = dict(
-        MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
-    )
+    final_adata.uns["sequence_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
     final_adata.uns["sequence_integer_decoding_map"] = {
         str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
     }
