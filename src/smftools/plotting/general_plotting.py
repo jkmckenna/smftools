@@ -853,6 +853,9 @@ def plot_sequence_integer_encoding_clustermaps(
     demux_types: Sequence[str] = ("single", "double", "already"),
     sort_by: str = "none",  # "none", "hierarchical", "obs:<col>"
     cmap: str = "viridis",
+    base_palette: Mapping[str, str] | None = None,
+    max_unknown_fraction: float | None = None,
+    unknown_values: Sequence[int] = (4, 5),
     xtick_step: int | None = None,
     xtick_rotation: int = 90,
     xtick_fontsize: int = 9,
@@ -871,7 +874,11 @@ def plot_sequence_integer_encoding_clustermaps(
         min_mapped_length_to_reference_length_ratio: Optional min length ratio filter.
         demux_types: Allowed ``demux_type`` values, if present in ``adata.obs``.
         sort_by: Row sorting strategy: ``none``, ``hierarchical``, or ``obs:<col>``.
-        cmap: Matplotlib colormap for the heatmap.
+        cmap: Matplotlib colormap for the heatmap when ``base_palette`` is not set.
+        base_palette: Optional base-to-color mapping for A/C/G/T/N/PAD.
+        max_unknown_fraction: Optional maximum fraction of ``unknown_values`` allowed per
+            position; positions above this threshold are excluded.
+        unknown_values: Integer values to treat as unknown/padding.
         xtick_step: Spacing between x-axis tick labels (None = no labels).
         xtick_rotation: Rotation for x-axis tick labels.
         xtick_fontsize: Font size for x-axis tick labels.
@@ -893,6 +900,9 @@ def plot_sequence_integer_encoding_clustermaps(
 
     if layer not in adata.layers:
         raise KeyError(f"Layer '{layer}' not found in adata.layers")
+
+    if max_unknown_fraction is not None and not (0 <= max_unknown_fraction <= 1):
+        raise ValueError("max_unknown_fraction must be between 0 and 1.")
 
     results: List[Dict[str, Any]] = []
     save_path = Path(save_path) if save_path is not None else None
@@ -946,6 +956,14 @@ def plot_sequence_integer_encoding_clustermaps(
 
             subset = adata[row_mask, :].copy()
             matrix = np.asarray(subset.layers[layer])
+            if max_unknown_fraction is not None:
+                unknown_mask = np.isin(matrix, np.asarray(unknown_values))
+                unknown_fraction = unknown_mask.mean(axis=0)
+                keep_columns = unknown_fraction <= max_unknown_fraction
+                if not np.any(keep_columns):
+                    continue
+                matrix = matrix[:, keep_columns]
+                subset = subset[:, keep_columns].copy()
             if max_reads is not None and matrix.shape[0] > max_reads:
                 matrix = matrix[:max_reads]
                 subset = subset[:max_reads, :].copy()
@@ -967,7 +985,29 @@ def plot_sequence_integer_encoding_clustermaps(
                 matrix = matrix[order]
 
             fig, ax = plt.subplots(figsize=(12, 6))
-            sns.heatmap(matrix, cmap=cmap, ax=ax, yticklabels=False, cbar=True)
+            if base_palette is not None:
+                int_to_base = adata.uns.get("sequence_integer_decoding_map", {})
+                if not int_to_base:
+                    int_to_base = {
+                        int(v): k
+                        for k, v in adata.uns.get("sequence_integer_encoding_map", {}).items()
+                    }
+                palette = {
+                    base: color
+                    for base, color in base_palette.items()
+                    if base in ("A", "C", "G", "T", "N", "PAD")
+                }
+                ordered = [
+                    (int_value, palette.get(base, "#808080"))
+                    for int_value, base in sorted(int_to_base.items())
+                ]
+                boundaries = [val - 0.5 for val, _ in ordered]
+                boundaries.append(ordered[-1][0] + 0.5)
+                cmap_obj = plt.matplotlib.colors.ListedColormap([c for _, c in ordered])
+                norm = plt.matplotlib.colors.BoundaryNorm(boundaries, cmap_obj.N)
+                sns.heatmap(matrix, cmap=cmap_obj, norm=norm, ax=ax, yticklabels=False, cbar=True)
+            else:
+                sns.heatmap(matrix, cmap=cmap, ax=ax, yticklabels=False, cbar=True)
             ax.set_title(f"{sample} - {ref} ({layer})")
 
             if xtick_step is not None and xtick_step > 0:
@@ -993,6 +1033,7 @@ def plot_sequence_integer_encoding_clustermaps(
                     "reference": ref,
                     "sample": sample,
                     "layer": layer,
+                    "n_positions": matrix.shape[1],
                     "output_path": str(out_file) if out_file is not None else None,
                 }
             )
