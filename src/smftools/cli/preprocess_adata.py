@@ -563,6 +563,7 @@ def preprocess_adata_core(
                 min_length=None,
                 min_mapped_length_to_reference_length_ratio=None,
                 sort_by="none",
+                max_unknown_fraction=0.5,
                 save_path=pp_seq_clustermap_dir,
             )
 
@@ -582,6 +583,7 @@ def preprocess_adata_core(
                 min_length=None,
                 min_mapped_length_to_reference_length_ratio=None,
                 sort_by="none",
+                max_unknown_fraction=0.5,
                 save_path=pp_dedup_seq_clustermap_dir,
             )
 
