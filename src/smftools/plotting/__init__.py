@@ -5,6 +5,7 @@ from importlib import import_module
 _LAZY_ATTRS = {
     "combined_hmm_raw_clustermap": "smftools.plotting.general_plotting",
     "combined_raw_clustermap": "smftools.plotting.general_plotting",
+    "plot_rolling_nn_and_layer": "smftools.plotting.general_plotting",
     "plot_hmm_layers_rolling_by_sample_ref": "smftools.plotting.general_plotting",
     "plot_sequence_integer_encoding_clustermaps": "smftools.plotting.general_plotting",
     "plot_bar_relative_risk": "smftools.plotting.position_stats",
