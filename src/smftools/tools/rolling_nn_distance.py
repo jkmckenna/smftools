@@ -49,6 +49,40 @@ def _popcount_u64_matrix(values: np.ndarray) -> np.ndarray:
     return np.unpackbits(bytes_view, axis=-1).sum(axis=-1)
 
 
+def _resolve_site_mask(
+    adata: "ad.AnnData",
+    site_types: Optional[Sequence[str]],
+    reference: Optional[str],
+    site_var_suffix: str,
+) -> Optional[np.ndarray]:
+    if site_types is None:
+        return None
+
+    if not site_types:
+        raise ValueError("site_types must contain at least one site type when provided")
+
+    site_types = [str(site) for site in site_types]
+    colnames: list[str] = []
+
+    if reference is not None:
+        colnames.extend([f"{reference}_{site}_{site_var_suffix}" for site in site_types])
+    colnames.extend([f"{site}_{site_var_suffix}" for site in site_types])
+
+    existing = [col for col in colnames if col in adata.var]
+    if not existing:
+        raise KeyError(f"No site columns found in adata.var for site_types={site_types}")
+
+    mask = np.zeros(adata.n_vars, dtype=bool)
+    for col in existing:
+        values = adata.var[col]
+        mask |= np.asarray(values, dtype=bool)
+
+    if not mask.any():
+        raise ValueError(f"Site mask empty for site_types={site_types}")
+
+    return mask
+
+
 def rolling_window_nn_distance(
     adata: "ad.AnnData",
     layer: Optional[str] = None,
@@ -59,6 +93,9 @@ def rolling_window_nn_distance(
     block_rows: int = 256,
     block_cols: int = 2048,
     store_obsm: Optional[str] = "rolling_nn_dist",
+    site_types: Optional[Sequence[str]] = None,
+    reference: Optional[str] = None,
+    site_var_suffix: str = "site",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute rolling-window nearest-neighbor distances per read.
 
@@ -79,13 +116,21 @@ def rolling_window_nn_distance(
         block_cols: Number of columns per block (controls memory use).
         store_obsm: Key to store results in ``adata.obsm``. If ``None``, results
             are not stored on the AnnData object.
+        site_types: Optional subset of site types to include when computing the
+            rolling NN distances.
+        reference: Optional reference label used to resolve site-specific columns.
+        site_var_suffix: Suffix for site columns in ``adata.var``.
 
     Returns:
         Tuple of ``(out, starts)`` where ``out`` is ``(n_obs, n_windows)`` and
         ``starts`` is an array of window start indices.
     """
+    site_mask = _resolve_site_mask(adata, site_types, reference, site_var_suffix)
+
     X = adata.layers[layer] if layer is not None else adata.X
     X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
+    if site_mask is not None:
+        X = X[:, site_mask]
 
     n_obs, n_vars = X.shape
     if window > n_vars:
@@ -171,6 +216,10 @@ def rolling_window_nn_distance(
         adata.uns[f"{store_obsm}_min_overlap"] = int(min_overlap)
         adata.uns[f"{store_obsm}_return_fraction"] = bool(return_fraction)
         adata.uns[f"{store_obsm}_layer"] = layer if layer is not None else "X"
+        if site_mask is not None:
+            adata.uns[f"{store_obsm}_var_indices"] = np.where(site_mask)[0]
+            adata.uns[f"{store_obsm}_site_types"] = list(site_types or [])
+            adata.uns[f"{store_obsm}_reference"] = reference
 
     return out, starts
 
@@ -186,6 +235,9 @@ def rolling_window_nn_distance_by_group(
     block_rows: int = 256,
     block_cols: int = 2048,
     store_obsm: Optional[str] = "rolling_nn_dist",
+    site_types: Optional[Sequence[str]] = None,
+    reference_col: Optional[str] = None,
+    site_var_suffix: str = "site",
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """Compute rolling-window nearest-neighbor distances per group.
 
@@ -202,6 +254,10 @@ def rolling_window_nn_distance_by_group(
         block_cols: Number of columns per block (controls memory use).
         store_obsm: Key to store results in ``adata.obsm``. If ``None``, results
             are not stored on the AnnData object.
+        site_types: Optional subset of site types to include when computing the
+            rolling NN distances.
+        reference_col: Column containing reference labels for resolving site columns.
+        site_var_suffix: Suffix for site columns in ``adata.var``.
 
     Returns:
         Tuple of ``(out, starts)`` where ``out`` is ``(n_obs, n_windows)`` and
@@ -215,6 +271,9 @@ def rolling_window_nn_distance_by_group(
     if missing:
         raise KeyError(f"Missing group columns in adata.obs: {missing}")
 
+    if site_types is not None and reference_col is not None and reference_col not in adata.obs:
+        raise KeyError(f"Missing reference column in adata.obs: {reference_col}")
+
     group_df = adata.obs[list(group_cols)]
     grouped = group_df.groupby(list(group_cols), dropna=False)
 
@@ -226,6 +285,9 @@ def rolling_window_nn_distance_by_group(
             continue
 
         subset = adata[indices]
+        reference = None
+        if reference_col is not None:
+            reference = str(subset.obs[reference_col].iloc[0])
         out, subset_starts = rolling_window_nn_distance(
             subset,
             layer=layer,
@@ -236,6 +298,9 @@ def rolling_window_nn_distance_by_group(
             block_rows=block_rows,
             block_cols=block_cols,
             store_obsm=None,
+            site_types=site_types,
+            reference=reference,
+            site_var_suffix=site_var_suffix,
         )
 
         if starts is None:
@@ -258,5 +323,9 @@ def rolling_window_nn_distance_by_group(
         adata.uns[f"{store_obsm}_return_fraction"] = bool(return_fraction)
         adata.uns[f"{store_obsm}_layer"] = layer if layer is not None else "X"
         adata.uns[f"{store_obsm}_group_cols"] = list(group_cols)
+        if site_types is not None:
+            adata.uns[f"{store_obsm}_site_types"] = list(site_types)
+            adata.uns[f"{store_obsm}_reference_col"] = reference_col
+            adata.uns[f"{store_obsm}_site_var_suffix"] = site_var_suffix
 
     return out_all, starts

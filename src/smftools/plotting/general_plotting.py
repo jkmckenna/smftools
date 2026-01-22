@@ -879,6 +879,38 @@ def _cluster_row_order(matrix: np.ndarray) -> np.ndarray:
         return np.arange(n_rows)
 
 
+def _resolve_site_mask(
+    adata,
+    site_types: Optional[Sequence[str]],
+    reference: Optional[str],
+    site_var_suffix: str,
+) -> Optional[np.ndarray]:
+    if site_types is None:
+        return None
+    if not site_types:
+        raise ValueError("site_types must contain at least one site type when provided")
+
+    site_types = [str(site) for site in site_types]
+    colnames: list[str] = []
+    if reference is not None:
+        colnames.extend([f"{reference}_{site}_{site_var_suffix}" for site in site_types])
+    colnames.extend([f"{site}_{site_var_suffix}" for site in site_types])
+
+    existing = [col for col in colnames if col in adata.var]
+    if not existing:
+        raise KeyError(f"No site columns found in adata.var for site_types={site_types}")
+
+    mask = np.zeros(adata.n_vars, dtype=bool)
+    for col in existing:
+        values = adata.var[col]
+        mask |= np.asarray(values, dtype=bool)
+
+    if not mask.any():
+        raise ValueError(f"Site mask empty for site_types={site_types}")
+
+    return mask
+
+
 def plot_rolling_nn_and_layer(
     adata,
     rolling_obsm_key: str,
@@ -895,6 +927,8 @@ def plot_rolling_nn_and_layer(
     n_xticks_layer: int = 10,
     max_obs: Optional[int] = None,
     show: bool = False,
+    site_types: Optional[Sequence[str]] = None,
+    site_var_suffix: str = "site",
 ) -> None:
     """Plot rolling NN clustermap next to a layer heatmap.
 
@@ -928,6 +962,23 @@ def plot_rolling_nn_and_layer(
     layer_matrix = subset.layers[layer] if layer is not None else subset.X
     layer_matrix = layer_matrix.toarray() if hasattr(layer_matrix, "toarray") else layer_matrix
     layer_matrix = np.asarray(layer_matrix)
+
+    site_indices = adata.uns.get(f"{rolling_obsm_key}_var_indices")
+    if site_indices is not None:
+        site_indices = np.asarray(site_indices, dtype=int)
+    else:
+        site_mask = _resolve_site_mask(
+            adata,
+            site_types=site_types,
+            reference=reference,
+            site_var_suffix=site_var_suffix,
+        )
+        if site_mask is not None:
+            site_indices = np.where(site_mask)[0]
+
+    if site_indices is not None:
+        layer_matrix = layer_matrix[:, site_indices]
+        subset = subset[:, site_indices]
 
     order = _cluster_row_order(rolling_nn)
     if max_obs is not None:

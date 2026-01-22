@@ -22,6 +22,7 @@ rolling_nn_step: 2
 rolling_nn_min_overlap: 10
 rolling_nn_return_fraction: true
 rolling_nn_obsm_key: "rolling_nn_dist"
+rolling_nn_site_types: null
 clustermap_cmap_c: "coolwarm"
 clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "viridis"

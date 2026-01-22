@@ -378,6 +378,8 @@ def spatial_adata_core(
                 min_overlap=cfg.rolling_nn_min_overlap,
                 return_fraction=cfg.rolling_nn_return_fraction,
                 store_obsm=cfg.rolling_nn_obsm_key,
+                site_types=cfg.rolling_nn_site_types,
+                reference_col=cfg.reference_column,
             )
         except Exception as exc:
             logger.warning(f"Rolling NN distance computation failed: {exc}")
@@ -417,6 +419,7 @@ def spatial_adata_core(
                                 reference_col=cfg.reference_column,
                                 out_path=out_png,
                                 title=title,
+                                site_types=cfg.rolling_nn_site_types,
                             )
                         except Exception as exc:
                             logger.warning(
