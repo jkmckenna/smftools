@@ -382,7 +382,9 @@ def spatial_adata_core(
                 if not mask.any():
                     continue
 
-                subset = adata[mask].copy()
+                subset = adata[mask]
+                site_mask = adata.var[f"{reference}_GpC_site"]
+                subset = subset[:, site_mask].copy()
                 try:
                     rolling_window_nn_distance(
                         subset,
@@ -392,8 +394,6 @@ def spatial_adata_core(
                         min_overlap=cfg.rolling_nn_min_overlap,
                         return_fraction=cfg.rolling_nn_return_fraction,
                         store_obsm=cfg.rolling_nn_obsm_key,
-                        site_types=cfg.rolling_nn_site_types,
-                        reference=str(reference),
                     )
                 except Exception as exc:
                     logger.warning(
@@ -411,15 +411,9 @@ def spatial_adata_core(
                 try:
                     plot_rolling_nn_and_layer(
                         subset,
-                        rolling_obsm_key=cfg.rolling_nn_obsm_key,
-                        layer=cfg.rolling_nn_plot_layer,
-                        sample=sample,
-                        reference=reference,
-                        sample_col=cfg.sample_name_col_for_plotting,
-                        reference_col=cfg.reference_column,
-                        out_path=out_png,
-                        title=title,
-                        site_types=cfg.rolling_nn_site_types,
+                        obsm_key=cfg.rolling_nn_obsm_key,
+                        layer_key=cfg.rolling_nn_plot_layer,
+                        save_name=out_png,
                     )
                 except Exception as exc:
                     logger.warning(

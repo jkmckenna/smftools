@@ -185,7 +185,6 @@ rolling_nn_return_fraction: true
 rolling_nn_obsm_key: "rolling_nn_dist"
 rolling_nn_site_types: 
   - "GpC"
-  - "CpG"
 
 # Spatial Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'

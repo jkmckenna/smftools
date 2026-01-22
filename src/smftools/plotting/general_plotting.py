@@ -857,271 +857,141 @@ def combined_raw_clustermap(
     return results
 
 
-def _cluster_row_order(matrix: np.ndarray) -> np.ndarray:
-    """Return row order from hierarchical clustering of a matrix.
-
-    Args:
-        matrix: 2D array to cluster.
-
-    Returns:
-        Array of row indices representing the clustering order.
+def make_row_colors(meta: pd.DataFrame) -> pd.DataFrame:
     """
-    n_rows = matrix.shape[0]
-    if n_rows <= 1:
-        return np.arange(n_rows)
+    Convert metadata columns to RGB colors without invoking pandas Categorical.map
+    (MultiIndex-safe, category-safe).
+    """
+    row_colors = pd.DataFrame(index=meta.index)
 
-    if not np.isfinite(matrix).any():
-        return np.arange(n_rows)
+    for col in meta.columns:
+        # Force plain python objects to avoid ExtensionArray/Categorical behavior
+        s = meta[col].astype("object")
 
-    col_means = np.nanmean(matrix, axis=0)
-    col_means = np.nan_to_num(col_means, nan=0.0)
-    filled = np.where(np.isfinite(matrix), matrix, col_means)
+        def _to_label(x):
+            if x is None:
+                return "NA"
+            if isinstance(x, float) and np.isnan(x):
+                return "NA"
+            # If a MultiIndex object is stored in a cell (rare), bucket it
+            if isinstance(x, pd.MultiIndex):
+                return "MultiIndex"
+            # Tuples are common when MultiIndex-ish things get stored as values
+            if isinstance(x, tuple):
+                return "|".join(map(str, x))
+            return str(x)
 
-    try:
-        linkage = sch.linkage(filled, method="average", metric="euclidean")
-        return sch.leaves_list(linkage)
-    except Exception:
-        return np.arange(n_rows)
+        labels = np.array([_to_label(x) for x in s.to_numpy()], dtype=object)
+        uniq = pd.unique(labels)
+        palette = dict(zip(uniq, sns.color_palette(n_colors=len(uniq))))
 
+        # Map via python loop -> no pandas map machinery
+        colors = [palette.get(lbl, (0.7, 0.7, 0.7)) for lbl in labels]
+        row_colors[col] = colors
 
-def _normalize_site_types(site_types: Optional[Sequence[str] | str]) -> Optional[list[str]]:
-    if site_types is None:
-        return None
-    if isinstance(site_types, str):
-        text = site_types.strip()
-        if text == "" or text.lower() == "none":
-            return []
-        try:
-            parsed = json.loads(text)
-            if isinstance(parsed, list):
-                return [str(item) for item in parsed]
-        except Exception:
-            pass
-        try:
-            parsed = ast.literal_eval(text)
-            if isinstance(parsed, (list, tuple, set)):
-                return [str(item) for item in parsed]
-        except Exception:
-            pass
-        cleaned = text.strip("[]() ")
-        parts = [part.strip() for part in cleaned.split(",") if part.strip()]
-        return parts
-    return [str(item) for item in site_types]
-
-
-def _resolve_site_mask(
-    adata,
-    site_types: Optional[Sequence[str]],
-    reference: Optional[str],
-    site_var_suffix: str,
-) -> Optional[np.ndarray]:
-    site_types = _normalize_site_types(site_types)
-    if site_types is None:
-        return None
-    if not site_types:
-        raise ValueError("site_types must contain at least one site type when provided")
-
-    variants = _site_type_variants(site_types, site_var_suffix)
-    existing = _resolve_site_columns(adata, variants, reference)
-
-    logger.debug(
-        "Resolving plot site mask with site_types=%s reference=%s suffix=%s",
-        site_types,
-        reference,
-        site_var_suffix,
-    )
-    logger.debug("Existing plot site columns in adata.var: %s", existing)
-
-    if not existing:
-        raise KeyError(f"No site columns found in adata.var for site_types={site_types}")
-
-    mask = np.zeros(adata.n_vars, dtype=bool)
-    for col in existing:
-        values = adata.var[col]
-        mask |= np.asarray(values, dtype=bool)
-
-    logger.debug(
-        "Plot site mask selected %d/%d positions",
-        int(mask.sum()),
-        adata.n_vars,
-    )
-    if not mask.any():
-        raise ValueError(f"Site mask empty for site_types={site_types}")
-
-    return mask
-
-
-def _site_type_variants(site_types: Sequence[str], site_var_suffix: str) -> list[str]:
-    site_types = [str(site) for site in site_types]
-    variants: list[str] = []
-
-    for site in site_types:
-        site_str = str(site)
-        site_variants = {site_str}
-        if not site_str.endswith(f"_{site_var_suffix}"):
-            site_variants.add(f"{site_str}_{site_var_suffix}")
-        else:
-            site_variants.add(site_str.removesuffix(f"_{site_var_suffix}"))
-        variants.extend(site_variants)
-
-    return list(dict.fromkeys(variants))
-
-
-def _resolve_site_columns(
-    adata,
-    variants: Sequence[str],
-    reference: Optional[str],
-) -> list[str]:
-    if reference is None:
-        return [col for col in variants if col in adata.var]
-
-    reference_cols = []
-    for variant in variants:
-        if variant.startswith(f"{reference}_"):
-            reference_cols.append(variant)
-        else:
-            reference_cols.append(f"{reference}_{variant}")
-
-    reference_cols = list(dict.fromkeys(reference_cols))
-    reference_existing = [col for col in reference_cols if col in adata.var]
-    if reference_existing:
-        return reference_existing
-
-    return [col for col in variants if col in adata.var]
+    return row_colors
 
 
 def plot_rolling_nn_and_layer(
-    adata,
-    rolling_obsm_key: str,
-    layer: Optional[str],
-    sample: str,
-    reference: str,
-    sample_col: str,
-    reference_col: str,
-    out_path: str | Path,
-    title: Optional[str] = None,
-    cmap_nn: str = "viridis",
-    cmap_layer: str = "coolwarm",
-    n_xticks_nn: int = 8,
-    n_xticks_layer: int = 10,
-    max_obs: Optional[int] = None,
-    show: bool = False,
-    site_types: Optional[Sequence[str]] = None,
-    site_var_suffix: str = "site",
-) -> None:
-    """Plot rolling NN clustermap next to a layer heatmap.
-
-    Args:
-        adata: AnnData with rolling NN distances stored in ``obsm``.
-        rolling_obsm_key: Key for rolling NN distances in ``adata.obsm``.
-        layer: Layer name to show next to the rolling NN heatmap (``None`` uses ``X``).
-        sample: Sample label to plot.
-        reference: Reference label to plot.
-        sample_col: Observation column for samples.
-        reference_col: Observation column for references.
-        out_path: Output PNG file path.
-        title: Optional title for the figure.
-        cmap_nn: Colormap for rolling NN distances.
-        cmap_layer: Colormap for the layer heatmap.
-        n_xticks_nn: Number of x-ticks for rolling NN window positions.
-        n_xticks_layer: Number of x-ticks for the layer heatmap.
-        max_obs: Optional cap on the number of rows plotted.
-        show: Whether to show the plot interactively.
+    subset,
+    obsm_key: str = "rolling_nn_dist",
+    layer_key: str = "nan0_0minus1",
+    meta_cols=("Reference_strand", "Sample"),
+    col_cluster: bool = False,
+    fill_nn_with_colmax: bool = True,
+    fill_layer_value: float = 0.0,
+    drop_all_nan_windows: bool = True,
+    figsize=(14, 10),
+    right_panel_var_mask=None,  # optional boolean mask over subset.var to reduce width
+    robust=True,
+    save_name=None
+):
     """
-    site_types = _normalize_site_types(site_types)
-    if rolling_obsm_key not in adata.obsm:
-        raise KeyError(f"{rolling_obsm_key} not found in adata.obsm")
+    1) Cluster rows by subset.obsm[obsm_key] (rolling NN distances)
+    2) Plot two heatmaps side-by-side in the SAME row order:
+         - left: rolling NN distance matrix
+         - right: subset.layers[layer_key] matrix
 
-    mask = (adata.obs[sample_col] == sample) & (adata.obs[reference_col] == reference)
-    if not np.any(mask):
-        raise ValueError("No observations found for the requested sample/reference subset.")
+    Handles categorical/MultiIndex issues in metadata coloring.
+    """
 
-    rolling_nn = adata.obsm[rolling_obsm_key][mask.to_numpy()]
-    subset = adata[mask.to_numpy()]
+    # --- rolling NN distances
+    X = subset.obsm[obsm_key]
+    valid = ~np.all(np.isnan(X), axis=1)
 
-    layer_matrix = subset.layers[layer] if layer is not None else subset.X
-    layer_matrix = layer_matrix.toarray() if hasattr(layer_matrix, "toarray") else layer_matrix
-    layer_matrix = np.asarray(layer_matrix)
-    logger.debug(
-        "Initial rolling NN plot matrices: rolling_nn=%s layer_matrix=%s",
-        rolling_nn.shape,
-        layer_matrix.shape,
+    X_df = pd.DataFrame(X[valid], index=subset.obs_names[valid])
+
+    if drop_all_nan_windows:
+        X_df = X_df.loc[:, ~X_df.isna().all(axis=0)]
+
+    X_df_filled = X_df.copy()
+    if fill_nn_with_colmax:
+        col_max = X_df_filled.max(axis=0, skipna=True)
+        X_df_filled = X_df_filled.fillna(col_max)
+
+    # Ensure non-MultiIndex index for seaborn
+    X_df_filled.index = X_df_filled.index.astype(str)
+
+    # --- row colors from metadata (MultiIndex-safe)
+    meta = subset.obs.loc[X_df.index, list(meta_cols)].copy()
+    meta.index = meta.index.astype(str)
+    row_colors = make_row_colors(meta)
+
+    # --- get row order via clustermap
+    g = sns.clustermap(
+        X_df_filled,
+        cmap="viridis",
+        col_cluster=col_cluster,
+        row_cluster=True,
+        row_colors=row_colors,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
     )
+    row_order = g.dendrogram_row.reordered_ind
+    ordered_index = X_df_filled.index[row_order]
+    plt.close(g.fig)
 
-    site_indices = adata.uns.get(f"{rolling_obsm_key}_var_indices")
-    if site_indices is not None:
-        site_indices = np.asarray(site_indices, dtype=int)
-        logger.debug(
-            "Using stored site indices for rolling NN plot: %d indices",
-            site_indices.size,
-        )
+    # reorder rolling NN matrix
+    X_ord = X_df_filled.loc[ordered_index]
+
+    # --- layer matrix
+    L = subset.layers[layer_key]
+    L = L.toarray() if hasattr(L, "toarray") else np.asarray(L)
+
+    L_df = pd.DataFrame(L[valid], index=subset.obs_names[valid], columns=subset.var_names)
+    L_df.index = L_df.index.astype(str)
+
+    if right_panel_var_mask is not None:
+        # right_panel_var_mask must be boolean array/Series aligned to subset.var_names
+        if hasattr(right_panel_var_mask, "values"):
+            right_panel_var_mask = right_panel_var_mask.values
+        L_df = L_df.loc[:, right_panel_var_mask]
+
+    L_ord = L_df.loc[ordered_index]
+    L_plot = L_ord.fillna(fill_layer_value)
+
+    # --- plot side-by-side
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(1, 2, width_ratios=[1, 2], wspace=0.05)
+
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+
+    sns.heatmap(X_ord, ax=ax1, cmap="viridis", xticklabels=False, yticklabels=False, robust=robust)
+    ax1.set_title(f"{obsm_key} (row-clustered)")
+
+    sns.heatmap(L_plot, ax=ax2, cmap="coolwarm", xticklabels=False, yticklabels=False, robust=robust)
+    ax2.set_title(f"{layer_key} (same row order)")
+
+    if save_name is not None:
+        fname = os.path.join(save_name)
+        plt.savefig(fname, dpi=200, bbox_inches="tight")
+
     else:
-        site_mask = _resolve_site_mask(
-            adata,
-            site_types=site_types,
-            reference=reference,
-            site_var_suffix=site_var_suffix,
-        )
-        if site_mask is not None:
-            site_indices = np.where(site_mask)[0]
-
-    if site_indices is not None:
-        layer_matrix = layer_matrix[:, site_indices]
-        subset = subset[:, site_indices]
-        logger.debug(
-            "Subset layer matrix by site indices: %s",
-            layer_matrix.shape,
-        )
-
-    order = _cluster_row_order(rolling_nn)
-    if max_obs is not None:
-        order = order[: max_obs]
-
-    rolling_nn = rolling_nn[order, :]
-    layer_matrix = layer_matrix[order, :]
-
-    starts = adata.uns.get(f"{rolling_obsm_key}_starts")
-    if starts is None:
-        starts = np.arange(rolling_nn.shape[1])
-
-    fig_height = max(4.0, min(12.0, 0.15 * rolling_nn.shape[0]))
-    fig = plt.figure(figsize=(12, fig_height))
-    spec = gridspec.GridSpec(1, 2, width_ratios=[1, 1.2], wspace=0.1)
-
-    ax_nn = fig.add_subplot(spec[0, 0])
-    ax_layer = fig.add_subplot(spec[0, 1])
-
-    sns.heatmap(rolling_nn, ax=ax_nn, cmap=cmap_nn, cbar=True)
-    sns.heatmap(layer_matrix, ax=ax_layer, cmap=cmap_layer, cbar=True)
-
-    nn_positions = _fixed_tick_positions(rolling_nn.shape[1], n_xticks_nn)
-    ax_nn.set_xticks(nn_positions)
-    ax_nn.set_xticklabels(starts[nn_positions], rotation=90, fontsize=7)
-    ax_nn.set_ylabel("Reads")
-    ax_nn.set_xlabel("Window start")
-    ax_nn.set_title("Rolling NN distance")
-
-    layer_positions = _fixed_tick_positions(layer_matrix.shape[1], n_xticks_layer)
-    ax_layer.set_xticks(layer_positions)
-    ax_layer.set_xticklabels(
-        subset.var_names[layer_positions].astype(str),
-        rotation=90,
-        fontsize=7,
-    )
-    ax_layer.set_ylabel("")
-    ax_layer.set_xlabel("Position")
-    ax_layer.set_title(layer if layer is not None else "X")
-
-    if title:
-        fig.suptitle(title)
-
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
-
-    if show:
         plt.show()
-    plt.close(fig)
+
+    return ordered_index
 
 
 def plot_sequence_integer_encoding_clustermaps(

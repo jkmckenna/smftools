@@ -12,7 +12,6 @@ _LAZY_ATTRS = {
     "compute_positionwise_statistics": "smftools.tools.position_stats",
     "calculate_row_entropy": "smftools.tools.read_stats",
     "rolling_window_nn_distance": "smftools.tools.rolling_nn_distance",
-    "rolling_window_nn_distance_by_group": "smftools.tools.rolling_nn_distance",
     "subset_adata": "smftools.tools.subset_adata",
 }
 
