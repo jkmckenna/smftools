@@ -895,9 +895,31 @@ def _resolve_site_mask(
 
     site_types = [str(site) for site in site_types]
     colnames: list[str] = []
-    if reference is not None:
-        colnames.extend([f"{reference}_{site}_{site_var_suffix}" for site in site_types])
-    colnames.extend([f"{site}_{site_var_suffix}" for site in site_types])
+    for site in site_types:
+        site_str = str(site)
+        site_variants = {site_str}
+        if not site_str.endswith(f"_{site_var_suffix}"):
+            site_variants.add(f"{site_str}_{site_var_suffix}")
+        else:
+            site_variants.add(site_str.removesuffix(f"_{site_var_suffix}"))
+
+        for variant in site_variants:
+            colnames.append(variant)
+            if reference is not None:
+                if variant.startswith(f"{reference}_"):
+                    colnames.append(variant)
+                else:
+                    colnames.append(f"{reference}_{variant}")
+
+    colnames = list(dict.fromkeys(colnames))
+
+    logger.debug(
+        "Resolving plot site mask with site_types=%s reference=%s suffix=%s",
+        site_types,
+        reference,
+        site_var_suffix,
+    )
+    logger.debug("Candidate plot site columns: %s", colnames)
 
     logger.debug(
         "Resolving plot site mask with site_types=%s reference=%s suffix=%s",
