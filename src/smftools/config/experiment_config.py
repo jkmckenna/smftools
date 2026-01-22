@@ -838,6 +838,14 @@ class ExperimentConfig:
     clustermap_cmap_cpg: Optional[str] = "coolwarm"
     clustermap_cmap_a: Optional[str] = "coolwarm"
     spatial_clustermap_sortby: Optional[str] = "gpc"
+    rolling_nn_layer: Optional[str] = "nan0_0minus1"
+    rolling_nn_plot_layer: Optional[str] = "nan0_0minus1"
+    rolling_nn_window: int = 15
+    rolling_nn_step: int = 2
+    rolling_nn_min_overlap: int = 10
+    rolling_nn_return_fraction: bool = True
+    rolling_nn_obsm_key: str = "rolling_nn_dist"
+    rolling_nn_site_types: Optional[List[str]] = None
 
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = "nan_half"
@@ -1327,6 +1335,14 @@ class ExperimentConfig:
             clustermap_cmap_cpg=merged.get("clustermap_cmap_cpg", "coolwarm"),
             clustermap_cmap_a=merged.get("clustermap_cmap_a", "coolwarm"),
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
+            rolling_nn_layer=merged.get("rolling_nn_layer", "nan0_0minus1"),
+            rolling_nn_plot_layer=merged.get("rolling_nn_plot_layer", "nan0_0minus1"),
+            rolling_nn_window=merged.get("rolling_nn_window", 15),
+            rolling_nn_step=merged.get("rolling_nn_step", 2),
+            rolling_nn_min_overlap=merged.get("rolling_nn_min_overlap", 10),
+            rolling_nn_return_fraction=merged.get("rolling_nn_return_fraction", True),
+            rolling_nn_obsm_key=merged.get("rolling_nn_obsm_key", "rolling_nn_dist"),
+            rolling_nn_site_types=merged.get("rolling_nn_site_types", None),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
             umap_layers_to_plot=merged.get(
                 "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]

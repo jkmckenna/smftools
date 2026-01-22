@@ -852,6 +852,185 @@ def combined_raw_clustermap(
     return results
 
 
+def _cluster_row_order(matrix: np.ndarray) -> np.ndarray:
+    """Return row order from hierarchical clustering of a matrix.
+
+    Args:
+        matrix: 2D array to cluster.
+
+    Returns:
+        Array of row indices representing the clustering order.
+    """
+    n_rows = matrix.shape[0]
+    if n_rows <= 1:
+        return np.arange(n_rows)
+
+    if not np.isfinite(matrix).any():
+        return np.arange(n_rows)
+
+    col_means = np.nanmean(matrix, axis=0)
+    col_means = np.nan_to_num(col_means, nan=0.0)
+    filled = np.where(np.isfinite(matrix), matrix, col_means)
+
+    try:
+        linkage = sch.linkage(filled, method="average", metric="euclidean")
+        return sch.leaves_list(linkage)
+    except Exception:
+        return np.arange(n_rows)
+
+
+def _resolve_site_mask(
+    adata,
+    site_types: Optional[Sequence[str]],
+    reference: Optional[str],
+    site_var_suffix: str,
+) -> Optional[np.ndarray]:
+    if site_types is None:
+        return None
+    if not site_types:
+        raise ValueError("site_types must contain at least one site type when provided")
+
+    site_types = [str(site) for site in site_types]
+    colnames: list[str] = []
+    if reference is not None:
+        colnames.extend([f"{reference}_{site}_{site_var_suffix}" for site in site_types])
+    colnames.extend([f"{site}_{site_var_suffix}" for site in site_types])
+
+    existing = [col for col in colnames if col in adata.var]
+    if not existing:
+        raise KeyError(f"No site columns found in adata.var for site_types={site_types}")
+
+    mask = np.zeros(adata.n_vars, dtype=bool)
+    for col in existing:
+        values = adata.var[col]
+        mask |= np.asarray(values, dtype=bool)
+
+    if not mask.any():
+        raise ValueError(f"Site mask empty for site_types={site_types}")
+
+    return mask
+
+
+def plot_rolling_nn_and_layer(
+    adata,
+    rolling_obsm_key: str,
+    layer: Optional[str],
+    sample: str,
+    reference: str,
+    sample_col: str,
+    reference_col: str,
+    out_path: str | Path,
+    title: Optional[str] = None,
+    cmap_nn: str = "viridis",
+    cmap_layer: str = "coolwarm",
+    n_xticks_nn: int = 8,
+    n_xticks_layer: int = 10,
+    max_obs: Optional[int] = None,
+    show: bool = False,
+    site_types: Optional[Sequence[str]] = None,
+    site_var_suffix: str = "site",
+) -> None:
+    """Plot rolling NN clustermap next to a layer heatmap.
+
+    Args:
+        adata: AnnData with rolling NN distances stored in ``obsm``.
+        rolling_obsm_key: Key for rolling NN distances in ``adata.obsm``.
+        layer: Layer name to show next to the rolling NN heatmap (``None`` uses ``X``).
+        sample: Sample label to plot.
+        reference: Reference label to plot.
+        sample_col: Observation column for samples.
+        reference_col: Observation column for references.
+        out_path: Output PNG file path.
+        title: Optional title for the figure.
+        cmap_nn: Colormap for rolling NN distances.
+        cmap_layer: Colormap for the layer heatmap.
+        n_xticks_nn: Number of x-ticks for rolling NN window positions.
+        n_xticks_layer: Number of x-ticks for the layer heatmap.
+        max_obs: Optional cap on the number of rows plotted.
+        show: Whether to show the plot interactively.
+    """
+    if rolling_obsm_key not in adata.obsm:
+        raise KeyError(f"{rolling_obsm_key} not found in adata.obsm")
+
+    mask = (adata.obs[sample_col] == sample) & (adata.obs[reference_col] == reference)
+    if not np.any(mask):
+        raise ValueError("No observations found for the requested sample/reference subset.")
+
+    rolling_nn = adata.obsm[rolling_obsm_key][mask.to_numpy()]
+    subset = adata[mask.to_numpy()]
+
+    layer_matrix = subset.layers[layer] if layer is not None else subset.X
+    layer_matrix = layer_matrix.toarray() if hasattr(layer_matrix, "toarray") else layer_matrix
+    layer_matrix = np.asarray(layer_matrix)
+
+    site_indices = adata.uns.get(f"{rolling_obsm_key}_var_indices")
+    if site_indices is not None:
+        site_indices = np.asarray(site_indices, dtype=int)
+    else:
+        site_mask = _resolve_site_mask(
+            adata,
+            site_types=site_types,
+            reference=reference,
+            site_var_suffix=site_var_suffix,
+        )
+        if site_mask is not None:
+            site_indices = np.where(site_mask)[0]
+
+    if site_indices is not None:
+        layer_matrix = layer_matrix[:, site_indices]
+        subset = subset[:, site_indices]
+
+    order = _cluster_row_order(rolling_nn)
+    if max_obs is not None:
+        order = order[: max_obs]
+
+    rolling_nn = rolling_nn[order, :]
+    layer_matrix = layer_matrix[order, :]
+
+    starts = adata.uns.get(f"{rolling_obsm_key}_starts")
+    if starts is None:
+        starts = np.arange(rolling_nn.shape[1])
+
+    fig_height = max(4.0, min(12.0, 0.15 * rolling_nn.shape[0]))
+    fig = plt.figure(figsize=(12, fig_height))
+    spec = gridspec.GridSpec(1, 2, width_ratios=[1, 1.2], wspace=0.1)
+
+    ax_nn = fig.add_subplot(spec[0, 0])
+    ax_layer = fig.add_subplot(spec[0, 1])
+
+    sns.heatmap(rolling_nn, ax=ax_nn, cmap=cmap_nn, cbar=True)
+    sns.heatmap(layer_matrix, ax=ax_layer, cmap=cmap_layer, cbar=True)
+
+    nn_positions = _fixed_tick_positions(rolling_nn.shape[1], n_xticks_nn)
+    ax_nn.set_xticks(nn_positions)
+    ax_nn.set_xticklabels(starts[nn_positions], rotation=90, fontsize=7)
+    ax_nn.set_ylabel("Reads")
+    ax_nn.set_xlabel("Window start")
+    ax_nn.set_title("Rolling NN distance")
+
+    layer_positions = _fixed_tick_positions(layer_matrix.shape[1], n_xticks_layer)
+    ax_layer.set_xticks(layer_positions)
+    ax_layer.set_xticklabels(
+        subset.var_names[layer_positions].astype(str),
+        rotation=90,
+        fontsize=7,
+    )
+    ax_layer.set_ylabel("")
+    ax_layer.set_xlabel("Position")
+    ax_layer.set_title(layer if layer is not None else "X")
+
+    if title:
+        fig.suptitle(title)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    plt.close(fig)
+
+
 def plot_sequence_integer_encoding_clustermaps(
     adata,
     sample_col: str = "Sample_Names",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -49,6 +49,40 @@ def _popcount_u64_matrix(values: np.ndarray) -> np.ndarray:
     return np.unpackbits(bytes_view, axis=-1).sum(axis=-1)
 
 
+def _resolve_site_mask(
+    adata: "ad.AnnData",
+    site_types: Optional[Sequence[str]],
+    reference: Optional[str],
+    site_var_suffix: str,
+) -> Optional[np.ndarray]:
+    if site_types is None:
+        return None
+
+    if not site_types:
+        raise ValueError("site_types must contain at least one site type when provided")
+
+    site_types = [str(site) for site in site_types]
+    colnames: list[str] = []
+
+    if reference is not None:
+        colnames.extend([f"{reference}_{site}_{site_var_suffix}" for site in site_types])
+    colnames.extend([f"{site}_{site_var_suffix}" for site in site_types])
+
+    existing = [col for col in colnames if col in adata.var]
+    if not existing:
+        raise KeyError(f"No site columns found in adata.var for site_types={site_types}")
+
+    mask = np.zeros(adata.n_vars, dtype=bool)
+    for col in existing:
+        values = adata.var[col]
+        mask |= np.asarray(values, dtype=bool)
+
+    if not mask.any():
+        raise ValueError(f"Site mask empty for site_types={site_types}")
+
+    return mask
+
+
 def rolling_window_nn_distance(
     adata: "ad.AnnData",
     layer: Optional[str] = None,
@@ -59,6 +93,9 @@ def rolling_window_nn_distance(
     block_rows: int = 256,
     block_cols: int = 2048,
     store_obsm: Optional[str] = "rolling_nn_dist",
+    site_types: Optional[Sequence[str]] = None,
+    reference: Optional[str] = None,
+    site_var_suffix: str = "site",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute rolling-window nearest-neighbor distances per read.
 
@@ -79,13 +116,21 @@ def rolling_window_nn_distance(
         block_cols: Number of columns per block (controls memory use).
         store_obsm: Key to store results in ``adata.obsm``. If ``None``, results
             are not stored on the AnnData object.
+        site_types: Optional subset of site types to include when computing the
+            rolling NN distances.
+        reference: Optional reference label used to resolve site-specific columns.
+        site_var_suffix: Suffix for site columns in ``adata.var``.
 
     Returns:
         Tuple of ``(out, starts)`` where ``out`` is ``(n_obs, n_windows)`` and
         ``starts`` is an array of window start indices.
     """
+    site_mask = _resolve_site_mask(adata, site_types, reference, site_var_suffix)
+
     X = adata.layers[layer] if layer is not None else adata.X
     X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
+    if site_mask is not None:
+        X = X[:, site_mask]
 
     n_obs, n_vars = X.shape
     if window > n_vars:
@@ -171,5 +216,116 @@ def rolling_window_nn_distance(
         adata.uns[f"{store_obsm}_min_overlap"] = int(min_overlap)
         adata.uns[f"{store_obsm}_return_fraction"] = bool(return_fraction)
         adata.uns[f"{store_obsm}_layer"] = layer if layer is not None else "X"
+        if site_mask is not None:
+            adata.uns[f"{store_obsm}_var_indices"] = np.where(site_mask)[0]
+            adata.uns[f"{store_obsm}_site_types"] = list(site_types or [])
+            adata.uns[f"{store_obsm}_reference"] = reference
 
     return out, starts
+
+
+def rolling_window_nn_distance_by_group(
+    adata: "ad.AnnData",
+    group_cols: Sequence[str],
+    layer: Optional[str] = None,
+    window: int = 15,
+    step: int = 2,
+    min_overlap: int = 10,
+    return_fraction: bool = True,
+    block_rows: int = 256,
+    block_cols: int = 2048,
+    store_obsm: Optional[str] = "rolling_nn_dist",
+    site_types: Optional[Sequence[str]] = None,
+    reference_col: Optional[str] = None,
+    site_var_suffix: str = "site",
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """Compute rolling-window nearest-neighbor distances per group.
+
+    Args:
+        adata: AnnData object containing the data.
+        group_cols: Observation columns defining the groups.
+        layer: Layer name to use; ``None`` uses ``adata.X``.
+        window: Window size in ``adata.var`` coordinates.
+        step: Step size between windows.
+        min_overlap: Minimum overlapping observed positions.
+        return_fraction: If ``True``, return mismatch/overlap; otherwise return
+            mismatch counts.
+        block_rows: Number of rows per block (controls memory use).
+        block_cols: Number of columns per block (controls memory use).
+        store_obsm: Key to store results in ``adata.obsm``. If ``None``, results
+            are not stored on the AnnData object.
+        site_types: Optional subset of site types to include when computing the
+            rolling NN distances.
+        reference_col: Column containing reference labels for resolving site columns.
+        site_var_suffix: Suffix for site columns in ``adata.var``.
+
+    Returns:
+        Tuple of ``(out, starts)`` where ``out`` is ``(n_obs, n_windows)`` and
+        ``starts`` is an array of window start indices. Returns ``(None, None)``
+        if no groups are available.
+    """
+    if not group_cols:
+        raise ValueError("group_cols must contain at least one column name")
+
+    missing = [col for col in group_cols if col not in adata.obs]
+    if missing:
+        raise KeyError(f"Missing group columns in adata.obs: {missing}")
+
+    if site_types is not None and reference_col is not None and reference_col not in adata.obs:
+        raise KeyError(f"Missing reference column in adata.obs: {reference_col}")
+
+    group_df = adata.obs[list(group_cols)]
+    grouped = group_df.groupby(list(group_cols), dropna=False)
+
+    starts = None
+    out_all = None
+
+    for _, indices in grouped.indices.items():
+        if len(indices) == 0:
+            continue
+
+        subset = adata[indices]
+        reference = None
+        if reference_col is not None:
+            reference = str(subset.obs[reference_col].iloc[0])
+        out, subset_starts = rolling_window_nn_distance(
+            subset,
+            layer=layer,
+            window=window,
+            step=step,
+            min_overlap=min_overlap,
+            return_fraction=return_fraction,
+            block_rows=block_rows,
+            block_cols=block_cols,
+            store_obsm=None,
+            site_types=site_types,
+            reference=reference,
+            site_var_suffix=site_var_suffix,
+        )
+
+        if starts is None:
+            starts = subset_starts
+            out_all = np.full((adata.n_obs, len(starts)), np.nan, dtype=float)
+        elif not np.array_equal(starts, subset_starts):
+            raise ValueError("Rolling window starts differ across groups")
+
+        out_all[indices, :] = out
+
+    if starts is None or out_all is None:
+        return None, None
+
+    if store_obsm is not None:
+        adata.obsm[store_obsm] = out_all
+        adata.uns[f"{store_obsm}_starts"] = starts
+        adata.uns[f"{store_obsm}_window"] = int(window)
+        adata.uns[f"{store_obsm}_step"] = int(step)
+        adata.uns[f"{store_obsm}_min_overlap"] = int(min_overlap)
+        adata.uns[f"{store_obsm}_return_fraction"] = bool(return_fraction)
+        adata.uns[f"{store_obsm}_layer"] = layer if layer is not None else "X"
+        adata.uns[f"{store_obsm}_group_cols"] = list(group_cols)
+        if site_types is not None:
+            adata.uns[f"{store_obsm}_site_types"] = list(site_types)
+            adata.uns[f"{store_obsm}_reference_col"] = reference_col
+            adata.uns[f"{store_obsm}_site_var_suffix"] = site_var_suffix
+
+    return out_all, starts
