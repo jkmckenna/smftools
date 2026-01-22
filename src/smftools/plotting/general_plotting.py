@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 import math
 import os
 from pathlib import Path
@@ -882,12 +884,38 @@ def _cluster_row_order(matrix: np.ndarray) -> np.ndarray:
         return np.arange(n_rows)
 
 
+def _normalize_site_types(site_types: Optional[Sequence[str] | str]) -> Optional[list[str]]:
+    if site_types is None:
+        return None
+    if isinstance(site_types, str):
+        text = site_types.strip()
+        if text == "" or text.lower() == "none":
+            return []
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except Exception:
+            pass
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, (list, tuple, set)):
+                return [str(item) for item in parsed]
+        except Exception:
+            pass
+        cleaned = text.strip("[]() ")
+        parts = [part.strip() for part in cleaned.split(",") if part.strip()]
+        return parts
+    return [str(item) for item in site_types]
+
+
 def _resolve_site_mask(
     adata,
     site_types: Optional[Sequence[str]],
     reference: Optional[str],
     site_var_suffix: str,
 ) -> Optional[np.ndarray]:
+    site_types = _normalize_site_types(site_types)
     if site_types is None:
         return None
     if not site_types:
@@ -1000,6 +1028,7 @@ def plot_rolling_nn_and_layer(
         max_obs: Optional cap on the number of rows plotted.
         show: Whether to show the plot interactively.
     """
+    site_types = _normalize_site_types(site_types)
     if rolling_obsm_key not in adata.obsm:
         raise KeyError(f"{rolling_obsm_key} not found in adata.obsm")
 
