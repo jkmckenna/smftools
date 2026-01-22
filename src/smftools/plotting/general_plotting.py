@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import scipy.cluster.hierarchy as sch
 
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
 colors = require("matplotlib.colors", extra="plotting", purpose="plot rendering")
@@ -16,6 +17,8 @@ gridspec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plo
 patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
 plt = require("matplotlib.pyplot", extra="plotting", purpose="plot rendering")
 sns = require("seaborn", extra="plotting", purpose="plot styling")
+
+logger = get_logger(__name__)
 
 DNA_5COLOR_PALETTE = {
     "A": "#00A000",  # green
@@ -896,7 +899,16 @@ def _resolve_site_mask(
         colnames.extend([f"{reference}_{site}_{site_var_suffix}" for site in site_types])
     colnames.extend([f"{site}_{site_var_suffix}" for site in site_types])
 
+    logger.debug(
+        "Resolving plot site mask with site_types=%s reference=%s suffix=%s",
+        site_types,
+        reference,
+        site_var_suffix,
+    )
+    logger.debug("Candidate plot site columns: %s", colnames)
+
     existing = [col for col in colnames if col in adata.var]
+    logger.debug("Existing plot site columns in adata.var: %s", existing)
     if not existing:
         raise KeyError(f"No site columns found in adata.var for site_types={site_types}")
 
@@ -905,6 +917,11 @@ def _resolve_site_mask(
         values = adata.var[col]
         mask |= np.asarray(values, dtype=bool)
 
+    logger.debug(
+        "Plot site mask selected %d/%d positions",
+        int(mask.sum()),
+        adata.n_vars,
+    )
     if not mask.any():
         raise ValueError(f"Site mask empty for site_types={site_types}")
 
@@ -962,10 +979,19 @@ def plot_rolling_nn_and_layer(
     layer_matrix = subset.layers[layer] if layer is not None else subset.X
     layer_matrix = layer_matrix.toarray() if hasattr(layer_matrix, "toarray") else layer_matrix
     layer_matrix = np.asarray(layer_matrix)
+    logger.debug(
+        "Initial rolling NN plot matrices: rolling_nn=%s layer_matrix=%s",
+        rolling_nn.shape,
+        layer_matrix.shape,
+    )
 
     site_indices = adata.uns.get(f"{rolling_obsm_key}_var_indices")
     if site_indices is not None:
         site_indices = np.asarray(site_indices, dtype=int)
+        logger.debug(
+            "Using stored site indices for rolling NN plot: %d indices",
+            site_indices.size,
+        )
     else:
         site_mask = _resolve_site_mask(
             adata,
@@ -979,6 +1005,10 @@ def plot_rolling_nn_and_layer(
     if site_indices is not None:
         layer_matrix = layer_matrix[:, site_indices]
         subset = subset[:, site_indices]
+        logger.debug(
+            "Subset layer matrix by site indices: %s",
+            layer_matrix.shape,
+        )
 
     order = _cluster_row_order(rolling_nn)
     if max_obs is not None:
