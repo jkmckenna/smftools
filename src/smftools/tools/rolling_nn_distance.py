@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
 import numpy as np
@@ -10,6 +12,31 @@ if TYPE_CHECKING:
     import anndata as ad
 
 logger = get_logger(__name__)
+
+
+def _normalize_site_types(site_types: Optional[Sequence[str] | str]) -> Optional[list[str]]:
+    if site_types is None:
+        return None
+    if isinstance(site_types, str):
+        text = site_types.strip()
+        if text == "" or text.lower() == "none":
+            return []
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except Exception:
+            pass
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, (list, tuple, set)):
+                return [str(item) for item in parsed]
+        except Exception:
+            pass
+        cleaned = text.strip("[]() ")
+        parts = [part.strip() for part in cleaned.split(",") if part.strip()]
+        return parts
+    return [str(item) for item in site_types]
 
 
 def _pack_bool_to_u64(values: np.ndarray) -> np.ndarray:
@@ -192,10 +219,16 @@ def rolling_window_nn_distance(
         Tuple of ``(out, starts)`` where ``out`` is ``(n_obs, n_windows)`` and
         ``starts`` is an array of window start indices.
     """
+    site_types = _normalize_site_types(site_types)
     site_mask = _resolve_site_mask(adata, site_types, reference, site_var_suffix)
 
     X = _get_layer_matrix(adata, layer)
     if site_mask is not None:
+        logger.debug(
+            "Rolling NN site filter: total_vars=%d selected_vars=%d",
+            adata.n_vars,
+            int(site_mask.sum()),
+        )
         X = X[:, site_mask]
 
     n_obs, n_vars = X.shape
@@ -335,6 +368,7 @@ def rolling_window_nn_distance_by_group(
     if missing:
         raise KeyError(f"Missing group columns in adata.obs: {missing}")
 
+    site_types = _normalize_site_types(site_types)
     if site_types is not None and reference_col is not None and reference_col not in adata.obs:
         raise KeyError(f"Missing reference column in adata.obs: {reference_col}")
 

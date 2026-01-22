@@ -127,6 +127,37 @@ def test_rolling_window_nn_distance_site_types_subset():
     assert adata.uns["rolling_nn_sites_var_indices"].tolist() == [0, 2]
 
 
+def test_rolling_window_nn_distance_site_types_string():
+    X = np.array(
+        [
+            [1.0, 0.0, 1.0, np.nan],
+            [0.0, 1.0, 0.0, 1.0],
+            [1.0, np.nan, 1.0, 0.0],
+        ]
+    )
+    var = pd.DataFrame(
+        {
+            "GpC_site": [True, False, True, False],
+            "CpG_site": [False, True, False, True],
+        }
+    )
+    adata = ad.AnnData(X, var=var)
+
+    distances, starts = rolling_window_nn_distance(
+        adata,
+        window=2,
+        step=2,
+        min_overlap=1,
+        return_fraction=True,
+        store_obsm="rolling_nn_sites",
+        site_types="GpC",
+    )
+
+    assert starts.tolist() == [0]
+    assert distances.shape == (3, 1)
+    assert adata.uns["rolling_nn_sites_var_indices"].tolist() == [0, 2]
+
+
 def test_rolling_window_nn_distance_reference_site_mask():
     X = np.array(
         [
