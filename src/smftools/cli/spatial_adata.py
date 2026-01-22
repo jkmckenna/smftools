@@ -383,7 +383,9 @@ def spatial_adata_core(
                     continue
 
                 subset = adata[mask]
-                site_mask = adata.var[f"{reference}_GpC_site"]
+                site_mask = adata.var[
+                    [f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]
+                ].fillna(False).any(axis=1)
                 subset = subset[:, site_mask].copy()
                 try:
                     rolling_window_nn_distance(
