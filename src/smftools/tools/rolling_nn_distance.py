@@ -4,8 +4,12 @@ from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
 import numpy as np
 
+from smftools.logging_utils import get_logger
+
 if TYPE_CHECKING:
     import anndata as ad
+
+logger = get_logger(__name__)
 
 
 def _pack_bool_to_u64(values: np.ndarray) -> np.ndarray:
@@ -64,11 +68,34 @@ def _resolve_site_mask(
     site_types = [str(site) for site in site_types]
     colnames: list[str] = []
 
-    if reference is not None:
-        colnames.extend([f"{reference}_{site}_{site_var_suffix}" for site in site_types])
-    colnames.extend([f"{site}_{site_var_suffix}" for site in site_types])
+    for site in site_types:
+        site_str = str(site)
+        site_variants = {site_str}
+        if not site_str.endswith(f"_{site_var_suffix}"):
+            site_variants.add(f"{site_str}_{site_var_suffix}")
+        else:
+            site_variants.add(site_str.removesuffix(f"_{site_var_suffix}"))
+
+        for variant in site_variants:
+            colnames.append(variant)
+            if reference is not None:
+                if variant.startswith(f"{reference}_"):
+                    colnames.append(variant)
+                else:
+                    colnames.append(f"{reference}_{variant}")
+
+    colnames = list(dict.fromkeys(colnames))
+
+    logger.debug(
+        "Resolving rolling NN site mask with site_types=%s reference=%s suffix=%s",
+        site_types,
+        reference,
+        site_var_suffix,
+    )
+    logger.debug("Candidate site columns: %s", colnames)
 
     existing = [col for col in colnames if col in adata.var]
+    logger.debug("Existing site columns in adata.var: %s", existing)
     if not existing:
         raise KeyError(f"No site columns found in adata.var for site_types={site_types}")
 
@@ -77,6 +104,11 @@ def _resolve_site_mask(
         values = adata.var[col]
         mask |= np.asarray(values, dtype=bool)
 
+    logger.debug(
+        "Rolling NN site mask selected %d/%d positions",
+        int(mask.sum()),
+        adata.n_vars,
+    )
     if not mask.any():
         raise ValueError(f"Site mask empty for site_types={site_types}")
 
@@ -133,6 +165,11 @@ def rolling_window_nn_distance(
         X = X[:, site_mask]
 
     n_obs, n_vars = X.shape
+    logger.debug(
+        "Rolling NN distance matrix shape after site filtering: n_obs=%d n_vars=%d",
+        n_obs,
+        n_vars,
+    )
     if window > n_vars:
         raise ValueError(f"window={window} is larger than n_vars={n_vars}")
     if window <= 0:
@@ -288,6 +325,12 @@ def rolling_window_nn_distance_by_group(
         reference = None
         if reference_col is not None:
             reference = str(subset.obs[reference_col].iloc[0])
+        logger.debug(
+            "Rolling NN group subset size=%d reference=%s site_types=%s",
+            subset.n_obs,
+            reference,
+            site_types,
+        )
         out, subset_starts = rolling_window_nn_distance(
             subset,
             layer=layer,
