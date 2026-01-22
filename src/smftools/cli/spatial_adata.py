@@ -172,7 +172,7 @@ def spatial_adata_core(
         reindex_references_adata,
     )
     from ..readwrite import make_dirs, safe_read_h5ad
-    from ..tools import calculate_umap, rolling_window_nn_distance_by_group
+    from ..tools import calculate_umap, rolling_window_nn_distance
     from ..tools.position_stats import (
         compute_positionwise_statistics,
         plot_positionwise_matrices,
@@ -367,67 +367,67 @@ def spatial_adata_core(
         )
     else:
         make_dirs([pp_rolling_nn_dir])
-        group_cols = [cfg.sample_name_col_for_plotting, cfg.reference_column]
-        try:
-            rolling_nn, _rolling_starts = rolling_window_nn_distance_by_group(
-                adata,
-                group_cols=group_cols,
-                layer=cfg.rolling_nn_layer,
-                window=cfg.rolling_nn_window,
-                step=cfg.rolling_nn_step,
-                min_overlap=cfg.rolling_nn_min_overlap,
-                return_fraction=cfg.rolling_nn_return_fraction,
-                store_obsm=cfg.rolling_nn_obsm_key,
-                site_types=cfg.rolling_nn_site_types,
-                reference_col=cfg.reference_column,
-            )
-        except Exception as exc:
-            logger.warning(f"Rolling NN distance computation failed: {exc}")
-        else:
-            if rolling_nn is None or _rolling_starts is None:
-                logger.warning("Rolling NN distance computation produced no results.")
-            else:
-                samples = (
-                    adata.obs[cfg.sample_name_col_for_plotting]
-                    .astype("category")
-                    .cat.categories.tolist()
-                )
-                references = (
-                    adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
-                )
+        samples = (
+            adata.obs[cfg.sample_name_col_for_plotting]
+            .astype("category")
+            .cat.categories.tolist()
+        )
+        references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
 
-                for reference in references:
-                    for sample in samples:
-                        mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
-                            adata.obs[cfg.reference_column] == reference
-                        )
-                        if not mask.any():
-                            continue
+        for reference in references:
+            for sample in samples:
+                mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
+                    adata.obs[cfg.reference_column] == reference
+                )
+                if not mask.any():
+                    continue
 
-                        safe_sample = str(sample).replace(os.sep, "_")
-                        safe_ref = str(reference).replace(os.sep, "_")
-                        out_png = pp_rolling_nn_dir / f"{safe_sample}__{safe_ref}.png"
-                        title = f"{sample} {reference}"
-                        try:
-                            plot_rolling_nn_and_layer(
-                                adata,
-                                rolling_obsm_key=cfg.rolling_nn_obsm_key,
-                                layer=cfg.rolling_nn_plot_layer,
-                                sample=sample,
-                                reference=reference,
-                                sample_col=cfg.sample_name_col_for_plotting,
-                                reference_col=cfg.reference_column,
-                                out_path=out_png,
-                                title=title,
-                                site_types=cfg.rolling_nn_site_types,
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "Failed rolling NN plot for sample=%s ref=%s: %s",
-                                sample,
-                                reference,
-                                exc,
-                            )
+                subset = adata[mask].copy()
+                try:
+                    rolling_window_nn_distance(
+                        subset,
+                        layer=cfg.rolling_nn_layer,
+                        window=cfg.rolling_nn_window,
+                        step=cfg.rolling_nn_step,
+                        min_overlap=cfg.rolling_nn_min_overlap,
+                        return_fraction=cfg.rolling_nn_return_fraction,
+                        store_obsm=cfg.rolling_nn_obsm_key,
+                        site_types=cfg.rolling_nn_site_types,
+                        reference=str(reference),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Rolling NN distance computation failed for sample=%s ref=%s: %s",
+                        sample,
+                        reference,
+                        exc,
+                    )
+                    continue
+
+                safe_sample = str(sample).replace(os.sep, "_")
+                safe_ref = str(reference).replace(os.sep, "_")
+                out_png = pp_rolling_nn_dir / f"{safe_sample}__{safe_ref}.png"
+                title = f"{sample} {reference}"
+                try:
+                    plot_rolling_nn_and_layer(
+                        subset,
+                        rolling_obsm_key=cfg.rolling_nn_obsm_key,
+                        layer=cfg.rolling_nn_plot_layer,
+                        sample=sample,
+                        reference=reference,
+                        sample_col=cfg.sample_name_col_for_plotting,
+                        reference_col=cfg.reference_column,
+                        out_path=out_png,
+                        title=title,
+                        site_types=cfg.rolling_nn_site_types,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed rolling NN plot for sample=%s ref=%s: %s",
+                        sample,
+                        reference,
+                        exc,
+                    )
 
     # UMAP / Leiden
     if pp_umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
