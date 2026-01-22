@@ -893,25 +893,8 @@ def _resolve_site_mask(
     if not site_types:
         raise ValueError("site_types must contain at least one site type when provided")
 
-    site_types = [str(site) for site in site_types]
-    colnames: list[str] = []
-    for site in site_types:
-        site_str = str(site)
-        site_variants = {site_str}
-        if not site_str.endswith(f"_{site_var_suffix}"):
-            site_variants.add(f"{site_str}_{site_var_suffix}")
-        else:
-            site_variants.add(site_str.removesuffix(f"_{site_var_suffix}"))
-
-        for variant in site_variants:
-            colnames.append(variant)
-            if reference is not None:
-                if variant.startswith(f"{reference}_"):
-                    colnames.append(variant)
-                else:
-                    colnames.append(f"{reference}_{variant}")
-
-    colnames = list(dict.fromkeys(colnames))
+    variants = _site_type_variants(site_types, site_var_suffix)
+    existing = _resolve_site_columns(adata, variants, reference)
 
     logger.debug(
         "Resolving plot site mask with site_types=%s reference=%s suffix=%s",
@@ -919,18 +902,8 @@ def _resolve_site_mask(
         reference,
         site_var_suffix,
     )
-    logger.debug("Candidate plot site columns: %s", colnames)
-
-    logger.debug(
-        "Resolving plot site mask with site_types=%s reference=%s suffix=%s",
-        site_types,
-        reference,
-        site_var_suffix,
-    )
-    logger.debug("Candidate plot site columns: %s", colnames)
-
-    existing = [col for col in colnames if col in adata.var]
     logger.debug("Existing plot site columns in adata.var: %s", existing)
+
     if not existing:
         raise KeyError(f"No site columns found in adata.var for site_types={site_types}")
 
@@ -948,6 +921,45 @@ def _resolve_site_mask(
         raise ValueError(f"Site mask empty for site_types={site_types}")
 
     return mask
+
+
+def _site_type_variants(site_types: Sequence[str], site_var_suffix: str) -> list[str]:
+    site_types = [str(site) for site in site_types]
+    variants: list[str] = []
+
+    for site in site_types:
+        site_str = str(site)
+        site_variants = {site_str}
+        if not site_str.endswith(f"_{site_var_suffix}"):
+            site_variants.add(f"{site_str}_{site_var_suffix}")
+        else:
+            site_variants.add(site_str.removesuffix(f"_{site_var_suffix}"))
+        variants.extend(site_variants)
+
+    return list(dict.fromkeys(variants))
+
+
+def _resolve_site_columns(
+    adata,
+    variants: Sequence[str],
+    reference: Optional[str],
+) -> list[str]:
+    if reference is None:
+        return [col for col in variants if col in adata.var]
+
+    reference_cols = []
+    for variant in variants:
+        if variant.startswith(f"{reference}_"):
+            reference_cols.append(variant)
+        else:
+            reference_cols.append(f"{reference}_{variant}")
+
+    reference_cols = list(dict.fromkeys(reference_cols))
+    reference_existing = [col for col in reference_cols if col in adata.var]
+    if reference_existing:
+        return reference_existing
+
+    return [col for col in variants if col in adata.var]
 
 
 def plot_rolling_nn_and_layer(

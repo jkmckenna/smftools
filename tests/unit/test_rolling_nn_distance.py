@@ -125,3 +125,35 @@ def test_rolling_window_nn_distance_site_types_subset():
     assert starts.tolist() == [0]
     assert distances.shape == (3, 1)
     assert adata.uns["rolling_nn_sites_var_indices"].tolist() == [0, 2]
+
+
+def test_rolling_window_nn_distance_reference_site_mask():
+    X = np.array(
+        [
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+        ]
+    )
+    var = pd.DataFrame(
+        {
+            "C_site": [True, True, True],
+            "ref1_C_site": [True, False, True],
+            "ref2_C_site": [False, True, False],
+        }
+    )
+    adata = ad.AnnData(X, var=var)
+
+    distances, starts = rolling_window_nn_distance(
+        adata,
+        window=1,
+        step=1,
+        min_overlap=1,
+        return_fraction=True,
+        store_obsm="rolling_nn_ref",
+        site_types=["C"],
+        reference="ref2",
+    )
+
+    assert starts.tolist() == [0]
+    assert distances.shape == (2, 1)
+    assert adata.uns["rolling_nn_ref_var_indices"].tolist() == [2]

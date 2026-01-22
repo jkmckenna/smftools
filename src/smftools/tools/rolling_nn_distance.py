@@ -65,26 +65,8 @@ def _resolve_site_mask(
     if not site_types:
         raise ValueError("site_types must contain at least one site type when provided")
 
-    site_types = [str(site) for site in site_types]
-    colnames: list[str] = []
-
-    for site in site_types:
-        site_str = str(site)
-        site_variants = {site_str}
-        if not site_str.endswith(f"_{site_var_suffix}"):
-            site_variants.add(f"{site_str}_{site_var_suffix}")
-        else:
-            site_variants.add(site_str.removesuffix(f"_{site_var_suffix}"))
-
-        for variant in site_variants:
-            colnames.append(variant)
-            if reference is not None:
-                if variant.startswith(f"{reference}_"):
-                    colnames.append(variant)
-                else:
-                    colnames.append(f"{reference}_{variant}")
-
-    colnames = list(dict.fromkeys(colnames))
+    variants = _site_type_variants(site_types, site_var_suffix)
+    existing = _resolve_site_columns(adata, variants, reference)
 
     logger.debug(
         "Resolving rolling NN site mask with site_types=%s reference=%s suffix=%s",
@@ -92,18 +74,8 @@ def _resolve_site_mask(
         reference,
         site_var_suffix,
     )
-    logger.debug("Candidate site columns: %s", colnames)
-
-    logger.debug(
-        "Resolving rolling NN site mask with site_types=%s reference=%s suffix=%s",
-        site_types,
-        reference,
-        site_var_suffix,
-    )
-    logger.debug("Candidate site columns: %s", colnames)
-
-    existing = [col for col in colnames if col in adata.var]
     logger.debug("Existing site columns in adata.var: %s", existing)
+
     if not existing:
         raise KeyError(f"No site columns found in adata.var for site_types={site_types}")
 
@@ -121,6 +93,61 @@ def _resolve_site_mask(
         raise ValueError(f"Site mask empty for site_types={site_types}")
 
     return mask
+
+
+def _site_type_variants(site_types: Sequence[str], site_var_suffix: str) -> list[str]:
+    site_types = [str(site) for site in site_types]
+    variants: list[str] = []
+
+    for site in site_types:
+        site_str = str(site)
+        site_variants = {site_str}
+        if not site_str.endswith(f"_{site_var_suffix}"):
+            site_variants.add(f"{site_str}_{site_var_suffix}")
+        else:
+            site_variants.add(site_str.removesuffix(f"_{site_var_suffix}"))
+        variants.extend(site_variants)
+
+    return list(dict.fromkeys(variants))
+
+
+def _resolve_site_columns(
+    adata: "ad.AnnData",
+    variants: Sequence[str],
+    reference: Optional[str],
+) -> list[str]:
+    if reference is None:
+        return [col for col in variants if col in adata.var]
+
+    reference_cols = []
+    for variant in variants:
+        if variant.startswith(f"{reference}_"):
+            reference_cols.append(variant)
+        else:
+            reference_cols.append(f"{reference}_{variant}")
+
+    reference_cols = list(dict.fromkeys(reference_cols))
+    reference_existing = [col for col in reference_cols if col in adata.var]
+    if reference_existing:
+        return reference_existing
+
+    return [col for col in variants if col in adata.var]
+
+
+def _get_layer_matrix(adata: "ad.AnnData", layer: Optional[str]) -> np.ndarray:
+    X = adata.layers[layer] if layer is not None else adata.X
+    return X.toarray() if hasattr(X, "toarray") else np.asarray(X)
+
+
+def _validate_rolling_nn_params(window: int, step: int, min_overlap: int, n_vars: int) -> None:
+    if window > n_vars:
+        raise ValueError(f"window={window} is larger than n_vars={n_vars}")
+    if window <= 0:
+        raise ValueError("window must be > 0")
+    if step <= 0:
+        raise ValueError("step must be > 0")
+    if min_overlap <= 0:
+        raise ValueError("min_overlap must be > 0")
 
 
 def rolling_window_nn_distance(
@@ -167,8 +194,7 @@ def rolling_window_nn_distance(
     """
     site_mask = _resolve_site_mask(adata, site_types, reference, site_var_suffix)
 
-    X = adata.layers[layer] if layer is not None else adata.X
-    X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
+    X = _get_layer_matrix(adata, layer)
     if site_mask is not None:
         X = X[:, site_mask]
 
@@ -178,14 +204,7 @@ def rolling_window_nn_distance(
         n_obs,
         n_vars,
     )
-    if window > n_vars:
-        raise ValueError(f"window={window} is larger than n_vars={n_vars}")
-    if window <= 0:
-        raise ValueError("window must be > 0")
-    if step <= 0:
-        raise ValueError("step must be > 0")
-    if min_overlap <= 0:
-        raise ValueError("min_overlap must be > 0")
+    _validate_rolling_nn_params(window, step, min_overlap, n_vars)
 
     starts = np.arange(0, n_vars - window + 1, step, dtype=int)
     n_windows = len(starts)
