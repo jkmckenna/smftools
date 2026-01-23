@@ -21,10 +21,89 @@ if TYPE_CHECKING:
     import torch as torch_types
 
 torch = require("torch", extra="torch", purpose="HMM CLI")
+mpl = require("matplotlib", extra="plotting", purpose="HMM plotting")
+mpl_colors = require("matplotlib.colors", extra="plotting", purpose="HMM plotting")
 
 # =============================================================================
 # Helpers: extracting training arrays
 # =============================================================================
+
+
+def _strip_hmm_layer_prefix(layer: str) -> str:
+    """Strip methbase prefixes and length suffixes from an HMM layer name.
+
+    Args:
+        layer: Full layer name (e.g., "GpC_small_accessible_patch_lengths").
+
+    Returns:
+        The base layer name without methbase prefixes or length suffixes.
+    """
+    base = layer
+    for prefix in ("Combined_", "GpC_", "CpG_", "C_", "A_"):
+        if base.startswith(prefix):
+            base = base[len(prefix) :]
+            break
+    if base.endswith("_lengths"):
+        base = base[: -len("_lengths")]
+    return base
+
+
+def _resolve_feature_colormap(layer: str, cfg, default_cmap: str) -> Any:
+    """Resolve a colormap for a given HMM layer.
+
+    Args:
+        layer: Full layer name.
+        cfg: Experiment config.
+        default_cmap: Fallback colormap name.
+
+    Returns:
+        A matplotlib colormap or colormap name.
+    """
+    feature_maps = getattr(cfg, "hmm_feature_colormaps", {}) or {}
+    if not isinstance(feature_maps, dict):
+        feature_maps = {}
+
+    base = _strip_hmm_layer_prefix(layer)
+    value = feature_maps.get(layer, feature_maps.get(base))
+    if value is None:
+        return default_cmap
+
+    if isinstance(value, (list, tuple)):
+        return mpl_colors.ListedColormap(list(value))
+
+    if isinstance(value, str):
+        try:
+            mpl.colormaps.get_cmap(value)
+            return value
+        except Exception:
+            return mpl_colors.LinearSegmentedColormap.from_list(
+                f"hmm_{base}_cmap", ["#ffffff", value]
+            )
+
+    return default_cmap
+
+
+def _resolve_feature_color(layer: str, cfg, fallback_cmap: str, idx: int, total: int) -> Any:
+    """Resolve a line color for a given HMM layer."""
+    feature_maps = getattr(cfg, "hmm_feature_colormaps", {}) or {}
+    if not isinstance(feature_maps, dict):
+        feature_maps = {}
+
+    base = _strip_hmm_layer_prefix(layer)
+    value = feature_maps.get(layer, feature_maps.get(base))
+    if isinstance(value, str):
+        try:
+            mpl.colormaps.get_cmap(value)
+        except Exception:
+            return value
+        return mpl.colormaps.get_cmap(value)(0.75)
+    if isinstance(value, (list, tuple)) and value:
+        return value[-1]
+
+    cmap_obj = mpl.colormaps.get_cmap(fallback_cmap)
+    if total <= 1:
+        return cmap_obj(0.5)
+    return cmap_obj(idx / (total - 1))
 
 
 def _get_training_matrix(
@@ -934,6 +1013,7 @@ def hmm_adata_core(
             pass
         else:
             make_dirs([hmm_cluster_save_dir])
+            hmm_cmap = _resolve_feature_colormap(layer, cfg, cfg.clustermap_cmap_hmm)
 
             combined_hmm_raw_clustermap(
                 adata,
@@ -944,7 +1024,7 @@ def hmm_adata_core(
                 layer_cpg=cfg.layer_for_clustermap_plotting,
                 layer_c=cfg.layer_for_clustermap_plotting,
                 layer_a=cfg.layer_for_clustermap_plotting,
-                cmap_hmm=cfg.clustermap_cmap_hmm,
+                cmap_hmm=hmm_cmap,
                 cmap_gpc=cfg.clustermap_cmap_gpc,
                 cmap_cpg=cfg.clustermap_cmap_cpg,
                 cmap_c=cfg.clustermap_cmap_c,
@@ -978,6 +1058,10 @@ def hmm_adata_core(
             for layer in hmm_layers
             if not any(s in layer for s in ("_lengths", "_states", "_posterior"))
         ]
+        layer_colors = {
+            layer: _resolve_feature_color(layer, cfg, "tab20", idx, len(bulk_hmm_layers))
+            for idx, layer in enumerate(bulk_hmm_layers)
+        }
         saved = plot_hmm_layers_rolling_by_sample_ref(
             adata,
             layers=bulk_hmm_layers,
@@ -989,6 +1073,7 @@ def hmm_adata_core(
             output_dir=hmm_dir,
             save=True,
             show_raw=False,
+            layer_colors=layer_colors,
         )
 
     hmm_dir = hmm_directory / "14_hmm_fragment_distributions"
@@ -1021,6 +1106,7 @@ def hmm_adata_core(
         for layer, max in fragments:
             save_path = hmm_dir / layer
             make_dirs([save_path])
+            layer_cmap = _resolve_feature_colormap(layer, cfg, "Greens")
 
             figs = plot_hmm_size_contours(
                 adata,
@@ -1036,7 +1122,7 @@ def hmm_adata_core(
                 dpi=200,
                 smoothing_sigma=(10, 10),
                 normalize_after_smoothing=True,
-                cmap="Greens",
+                cmap=layer_cmap,
                 log_scale_z=True,
             )
     ########################################################################################################################

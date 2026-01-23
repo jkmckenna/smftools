@@ -253,6 +253,17 @@ hmm_feature_sets:
       mid_accessible_patch: [20, 40]
       large_accessible_patch: [40, 110]
       nucleosome_depleted_region: [110, inf]
+hmm_feature_colormaps:
+  small_accessible_patch: "#A5D6A7"
+  mid_accessible_patch: "#2E7D32"
+  large_accessible_patch: "#006400"
+  nucleosome_depleted_region: "#00441B"
+  all_accessible_features: "#2E7D32"
+  all_accessible_features_merged: "#006400"
+  small_bound_stretch: "#1E88E5"
+  medium_bound_stretch: "#6A1B9A"
+  large_bound_stretch: "#FB8C00"
+  putative_nucleosome: "#6D4C41"
 hmm_merge_layer_features:
   - ["all_accessible_features", 60]
 clustermap_cmap_hmm: "coolwarm"

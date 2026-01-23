@@ -1276,6 +1276,7 @@ def plot_hmm_layers_rolling_by_sample_ref(
     save: bool = True,
     show_raw: bool = False,
     cmap: str = "tab20",
+    layer_colors: Optional[Mapping[str, Any]] = None,
     use_var_coords: bool = True,
 ):
     """
@@ -1314,6 +1315,8 @@ def plot_hmm_layers_rolling_by_sample_ref(
         draw unsmoothed mean as faint line under smoothed curve.
     cmap : str
         matplotlib colormap for layer lines.
+    layer_colors : dict[str, Any] | None
+        Optional mapping of layer name to explicit line colors.
     use_var_coords : bool
         if True, tries to use adata.var_names (coerced to int) as x-axis coordinates; otherwise uses 0..n-1.
 
@@ -1380,7 +1383,9 @@ def plot_hmm_layers_rolling_by_sample_ref(
     # color cycle for layers
     cmap_obj = plt.get_cmap(cmap)
     n_layers = max(1, len(layers))
-    colors = [cmap_obj(i / max(1, n_layers - 1)) for i in range(n_layers)]
+    fallback_colors = [cmap_obj(i / max(1, n_layers - 1)) for i in range(n_layers)]
+    layer_colors = layer_colors or {}
+    colors = [layer_colors.get(layer, fallback_colors[idx]) for idx, layer in enumerate(layers)]
 
     for page in range(total_pages):
         start = page * rows_per_page
