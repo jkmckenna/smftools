@@ -100,6 +100,44 @@ def normalized_mean(matrix: np.ndarray) -> np.ndarray:
     return (mean - mean.min()) / denom
 
 
+def _layer_to_numpy(
+    subset,
+    layer_name: str,
+    sites: np.ndarray | None = None,
+    *,
+    fill_nan_strategy: str = "none",
+    fill_nan_value: float = 0.0,
+) -> np.ndarray:
+    """Return a (copied) numpy array for a layer with optional NaN filling."""
+    if sites is not None:
+        layer_data = subset[:, sites].layers[layer_name]
+    else:
+        layer_data = subset.layers[layer_name]
+
+    if hasattr(layer_data, "toarray"):
+        arr = layer_data.toarray()
+    else:
+        arr = np.asarray(layer_data)
+
+    arr = np.array(arr, copy=True)
+
+    if fill_nan_strategy == "none":
+        return arr
+
+    if fill_nan_strategy not in {"value", "col_mean"}:
+        raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
+
+    arr = arr.astype(float, copy=False)
+
+    if fill_nan_strategy == "value":
+        return np.where(np.isnan(arr), fill_nan_value, arr)
+
+    col_mean = np.nanmean(arr, axis=0)
+    if np.any(np.isnan(col_mean)):
+        col_mean = np.where(np.isnan(col_mean), fill_nan_value, col_mean)
+    return np.where(np.isnan(arr), col_mean, arr)
+
+
 def methylation_fraction(matrix: np.ndarray) -> np.ndarray:
     """
     Fraction methylated per column.
@@ -491,6 +529,8 @@ def combined_raw_clustermap(
     xtick_rotation: int = 90,
     xtick_fontsize: int = 9,
     index_col_suffix: str | None = None,
+    fill_nan_strategy: str = "none",
+    fill_nan_value: float = 0.0,
 ):
     """
     Plot stacked heatmaps + per-position mean barplots for C, GpC, CpG, and optional A.
@@ -501,6 +541,7 @@ def combined_raw_clustermap(
       - NaNs excluded from methylation denominators
       - var_names not forced to int
       - fixed count of x tick labels per block (controllable)
+      - optional NaN fill strategy for clustering/plotting (in-memory only)
       - adata.uns updated once at end
 
     Returns
@@ -508,6 +549,8 @@ def combined_raw_clustermap(
     results : list[dict]
         One entry per (sample, ref) plot with matrices + bin metadata.
     """
+    if fill_nan_strategy not in {"none", "value", "col_mean"}:
+        raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
 
     # Helper: build a True mask if filter is inactive or column missing
     def _mask_or_true(series_name: str, predicate):
@@ -654,31 +697,58 @@ def combined_raw_clustermap(
                         order = np.argsort(subset_bin.obs[colname].values)
 
                     elif sort_by == "gpc" and num_gpc > 0:
-                        linkage = sch.linkage(
-                            subset_bin[:, gpc_sites].layers[layer_gpc], method="ward"
+                        gpc_matrix = _layer_to_numpy(
+                            subset_bin,
+                            layer_gpc,
+                            gpc_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
                         )
+                        linkage = sch.linkage(gpc_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "cpg" and num_cpg > 0:
-                        linkage = sch.linkage(
-                            subset_bin[:, cpg_sites].layers[layer_cpg], method="ward"
+                        cpg_matrix = _layer_to_numpy(
+                            subset_bin,
+                            layer_cpg,
+                            cpg_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
                         )
+                        linkage = sch.linkage(cpg_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "c" and num_any_c > 0:
-                        linkage = sch.linkage(
-                            subset_bin[:, any_c_sites].layers[layer_c], method="ward"
+                        any_c_matrix = _layer_to_numpy(
+                            subset_bin,
+                            layer_c,
+                            any_c_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
                         )
+                        linkage = sch.linkage(any_c_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "gpc_cpg":
-                        linkage = sch.linkage(subset_bin.layers[layer_gpc], method="ward")
+                        gpc_matrix = _layer_to_numpy(
+                            subset_bin,
+                            layer_gpc,
+                            None,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(gpc_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "a" and num_any_a > 0:
-                        linkage = sch.linkage(
-                            subset_bin[:, any_a_sites].layers[layer_a], method="ward"
+                        any_a_matrix = _layer_to_numpy(
+                            subset_bin,
+                            layer_a,
+                            any_a_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
                         )
+                        linkage = sch.linkage(any_a_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "none":
@@ -691,13 +761,45 @@ def combined_raw_clustermap(
 
                     # stack consistently
                     if include_any_c and num_any_c > 0:
-                        stacked_any_c.append(subset_bin[:, any_c_sites].layers[layer_c])
+                        stacked_any_c.append(
+                            _layer_to_numpy(
+                                subset_bin,
+                                layer_c,
+                                any_c_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
                     if include_any_c and num_gpc > 0:
-                        stacked_gpc.append(subset_bin[:, gpc_sites].layers[layer_gpc])
+                        stacked_gpc.append(
+                            _layer_to_numpy(
+                                subset_bin,
+                                layer_gpc,
+                                gpc_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
                     if include_any_c and num_cpg > 0:
-                        stacked_cpg.append(subset_bin[:, cpg_sites].layers[layer_cpg])
+                        stacked_cpg.append(
+                            _layer_to_numpy(
+                                subset_bin,
+                                layer_cpg,
+                                cpg_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
                     if include_any_a and num_any_a > 0:
-                        stacked_any_a.append(subset_bin[:, any_a_sites].layers[layer_a])
+                        stacked_any_a.append(
+                            _layer_to_numpy(
+                                subset_bin,
+                                layer_a,
+                                any_a_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
 
                     row_labels.extend([bin_label] * num_reads)
                     bin_labels.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
