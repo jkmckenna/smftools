@@ -1305,7 +1305,9 @@ class ExperimentConfig:
             sample_column=merged.get("sample_column", SAMPLE_COL),
             sample_name_col_for_plotting=merged.get("sample_name_col_for_plotting", "Barcode"),
             obs_to_plot_pp_qc=obs_to_plot_pp_qc,
-            fit_position_methylation_thresholds=merged.get("fit_position_methylation_thresholds", False),
+            fit_position_methylation_thresholds=merged.get(
+                "fit_position_methylation_thresholds", False
+            ),
             binarize_on_fixed_methlyation_threshold=merged.get(
                 "binarize_on_fixed_methlyation_threshold", 0.7
             ),
@@ -1347,7 +1349,9 @@ class ExperimentConfig:
             rolling_nn_obsm_key=merged.get("rolling_nn_obsm_key", "rolling_nn_dist"),
             rolling_nn_site_types=merged.get("rolling_nn_site_types", None),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
-            umap_layers_to_plot=merged.get("umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]),
+            umap_layers_to_plot=merged.get(
+                "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]
+            ),
             rows_per_qc_histogram_grid=merged.get("rows_per_qc_histogram_grid", 12),
             rows_per_qc_autocorr_grid=merged.get("rows_per_qc_autocorr_grid", 12),
             autocorr_normalization_method=merged.get("autocorr_normalization_method", "pearson"),
@@ -1356,7 +1360,9 @@ class ExperimentConfig:
             autocorr_site_types=merged.get("autocorr_site_types", ["GpC", "CpG", "C"]),
             hmm_n_states=merged.get("hmm_n_states", 2),
             hmm_init_emission_probs=merged.get("hmm_init_emission_probs", [[0.8, 0.2], [0.2, 0.8]]),
-            hmm_init_transition_probs=merged.get("hmm_init_transition_probs", [[0.9, 0.1], [0.1, 0.9]]),
+            hmm_init_transition_probs=merged.get(
+                "hmm_init_transition_probs", [[0.9, 0.1], [0.1, 0.9]]
+            ),
             hmm_init_start_probs=merged.get("hmm_init_start_probs", [0.5, 0.5]),
             hmm_eps=merged.get("hmm_eps", 1e-8),
             hmm_fit_strategy=hmm_fit_strategy,
@@ -1383,25 +1389,57 @@ class ExperimentConfig:
             cpg=merged.get("cpg", None),
             read_coord_filter=merged.get("read_coord_filter", [None, None]),
             read_len_filter_thresholds=merged.get("read_len_filter_thresholds", [100, None]),
-            read_len_to_ref_ratio_filter_thresholds=merged.get("read_len_to_ref_ratio_filter_thresholds", [0.3, None]),
+            read_len_to_ref_ratio_filter_thresholds=merged.get(
+                "read_len_to_ref_ratio_filter_thresholds", [0.3, None]
+            ),
             read_quality_filter_thresholds=merged.get("read_quality_filter_thresholds", [15, None]),
-            read_mapping_quality_filter_thresholds=merged.get("read_mapping_quality_filter_thresholds", [None, None]),
-            read_mod_filtering_gpc_thresholds=merged.get("read_mod_filtering_gpc_thresholds", [0.025, 0.975]),
-            read_mod_filtering_cpg_thresholds=merged.get("read_mod_filtering_cpg_thresholds", [0.0, 1.0]),
-            read_mod_filtering_c_thresholds=merged.get("read_mod_filtering_c_thresholds", [0.025, 0.975]),
-            read_mod_filtering_a_thresholds=merged.get("read_mod_filtering_a_thresholds", [0.025, 0.975]),
-            read_mod_filtering_use_other_c_as_background=merged.get("read_mod_filtering_use_other_c_as_background", True),
-            min_valid_fraction_positions_in_read_vs_ref=merged.get("min_valid_fraction_positions_in_read_vs_ref", 0.2),
-            duplicate_detection_site_types=merged.get("duplicate_detection_site_types", ["GpC", "CpG", "ambiguous_GpC_CpG"]),
-            duplicate_detection_distance_threshold=merged.get("duplicate_detection_distance_threshold", 0.07),
-            duplicate_detection_keep_best_metric=merged.get("duplicate_detection_keep_best_metric", "read_quality"),
-            duplicate_detection_window_size_for_hamming_neighbors=merged.get("duplicate_detection_window_size_for_hamming_neighbors", 50),
-            duplicate_detection_min_overlapping_positions=merged.get("duplicate_detection_min_overlapping_positions", 20),
-            duplicate_detection_do_hierarchical=merged.get("duplicate_detection_do_hierarchical", True),
-            duplicate_detection_hierarchical_linkage=merged.get("duplicate_detection_hierarchical_linkage", "average"),
+            read_mapping_quality_filter_thresholds=merged.get(
+                "read_mapping_quality_filter_thresholds", [None, None]
+            ),
+            read_mod_filtering_gpc_thresholds=merged.get(
+                "read_mod_filtering_gpc_thresholds", [0.025, 0.975]
+            ),
+            read_mod_filtering_cpg_thresholds=merged.get(
+                "read_mod_filtering_cpg_thresholds", [0.0, 1.0]
+            ),
+            read_mod_filtering_c_thresholds=merged.get(
+                "read_mod_filtering_c_thresholds", [0.025, 0.975]
+            ),
+            read_mod_filtering_a_thresholds=merged.get(
+                "read_mod_filtering_a_thresholds", [0.025, 0.975]
+            ),
+            read_mod_filtering_use_other_c_as_background=merged.get(
+                "read_mod_filtering_use_other_c_as_background", True
+            ),
+            min_valid_fraction_positions_in_read_vs_ref=merged.get(
+                "min_valid_fraction_positions_in_read_vs_ref", 0.2
+            ),
+            duplicate_detection_site_types=merged.get(
+                "duplicate_detection_site_types", ["GpC", "CpG", "ambiguous_GpC_CpG"]
+            ),
+            duplicate_detection_distance_threshold=merged.get(
+                "duplicate_detection_distance_threshold", 0.07
+            ),
+            duplicate_detection_keep_best_metric=merged.get(
+                "duplicate_detection_keep_best_metric", "read_quality"
+            ),
+            duplicate_detection_window_size_for_hamming_neighbors=merged.get(
+                "duplicate_detection_window_size_for_hamming_neighbors", 50
+            ),
+            duplicate_detection_min_overlapping_positions=merged.get(
+                "duplicate_detection_min_overlapping_positions", 20
+            ),
+            duplicate_detection_do_hierarchical=merged.get(
+                "duplicate_detection_do_hierarchical", True
+            ),
+            duplicate_detection_hierarchical_linkage=merged.get(
+                "duplicate_detection_hierarchical_linkage", "average"
+            ),
             duplicate_detection_do_pca=merged.get("duplicate_detection_do_pca", False),
             position_max_nan_threshold=merged.get("position_max_nan_threshold", 0.1),
-            correlation_matrix_types=merged.get("correlation_matrix_types", ["pearson", "binary_covariance"]),
+            correlation_matrix_types=merged.get(
+                "correlation_matrix_types", ["pearson", "binary_covariance"]
+            ),
             correlation_matrix_cmaps=merged.get("correlation_matrix_cmaps", ["seismic", "viridis"]),
             correlation_matrix_site_types=merged.get("correlation_matrix_site_types", ["GpC_site"]),
             hamming_vs_metric_keys=merged.get(

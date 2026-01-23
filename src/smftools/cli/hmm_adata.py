@@ -8,10 +8,9 @@ from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from smftools.constants import HMM_DIR, LOGGING_DIR
 from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
-from smftools.constants import LOGGING_DIR, HMM_DIR
-
 
 # FIX: import _to_dense_np to avoid NameError
 from ..hmm.HMM import _safe_int_coords, _to_dense_np, create_hmm, normalize_hmm_feature_sets
@@ -520,8 +519,9 @@ def hmm_adata_core(
     Does NOT decide which h5ad to start from – that is the wrapper's job.
     """
 
-    import numpy as np
     from datetime import datetime
+
+    import numpy as np
 
     from ..hmm import call_hmm_peaks
     from ..metadata import record_smftools_metadata
@@ -534,6 +534,8 @@ def hmm_adata_core(
     from .helpers import write_gz_h5ad
 
     date_str = datetime.today().strftime("%y%m%d")
+    now = datetime.now()
+    time_str = now.strftime("%H%M%S")
 
     log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
 
@@ -547,12 +549,12 @@ def hmm_adata_core(
     make_dirs([output_directory, hmm_directory])
 
     if cfg.emit_log_file:
-        log_file = logging_directory / f"{date_str}_log.log"
+        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
         make_dirs([logging_directory])
     else:
         log_file = None
-        
-    setup_logging(level=log_level, log_file=log_file)
+
+    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     # ---------------------------- HMM annotate stage ----------------------------
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):

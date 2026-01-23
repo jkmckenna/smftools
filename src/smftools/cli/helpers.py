@@ -5,10 +5,10 @@ from pathlib import Path
 
 import anndata as ad
 
+from smftools.constants import H5_DIR, HMM_DIR, LOAD_DIR, PREPROCESS_DIR, SPATIAL_DIR
+
 from ..metadata import write_runtime_schema_yaml
 from ..readwrite import safe_write_h5ad
-
-from smftools.constants import (H5_DIR, LOAD_DIR, PREPROCESS_DIR, SPATIAL_DIR, HMM_DIR)
 
 
 @dataclass
@@ -34,7 +34,12 @@ def get_adata_paths(cfg) -> AdataPaths:
         # direct SMF: duplicate-removed path is just preprocessed path
         pp_dedup = pp
     else:
-        pp_dedup = output_directory / PREPROCESS_DIR / H5_DIR / f"{cfg.experiment_name}_preprocessed_duplicates_removed.h5ad.gz"
+        pp_dedup = (
+            output_directory
+            / PREPROCESS_DIR
+            / H5_DIR
+            / f"{cfg.experiment_name}_preprocessed_duplicates_removed.h5ad.gz"
+        )
 
     pp_dedup_base = pp_dedup.name.removesuffix(".h5ad.gz")
 

@@ -7,8 +7,7 @@ from typing import Iterable, Union
 
 import numpy as np
 
-from smftools.constants import LOAD_DIR, LOGGING_DIR, HMM_DIR, PREPROCESS_DIR, SPATIAL_DIR
-
+from smftools.constants import HMM_DIR, LOAD_DIR, LOGGING_DIR, PREPROCESS_DIR, SPATIAL_DIR
 from smftools.logging_utils import get_logger, setup_logging
 
 from .helpers import AdataPaths
@@ -232,6 +231,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     ################################### 1) General params and input organization ###################################
     date_str = datetime.today().strftime("%y%m%d")
+    now = datetime.now()
+    time_str = now.strftime("%H%M%S")
 
     log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
 
@@ -242,7 +243,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     make_dirs([output_directory, load_directory])
 
     if cfg.emit_log_file:
-        log_file = logging_directory / f"{date_str}_log.log"
+        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
         make_dirs([logging_directory])
     else:
         log_file = None

@@ -282,7 +282,7 @@ def align_and_sort_BAM(
 
     aligned_BAM = output.parent / output.stem
     aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
-    
+
     aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
     aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
 

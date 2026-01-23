@@ -6,8 +6,8 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.logging_utils import get_logger, setup_logging
 from smftools.constants import LOGGING_DIR, PREPROCESS_DIR
+from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
@@ -220,8 +220,8 @@ def preprocess_adata_core(
     pp_dup_rem_adata_path : Path
         Path where pp_dedup_adata was written.
     """
-    from pathlib import Path
     from datetime import datetime
+    from pathlib import Path
 
     from ..metadata import record_smftools_metadata
     from ..plotting import plot_read_qc_histograms, plot_sequence_integer_encoding_clustermaps
@@ -245,6 +245,8 @@ def preprocess_adata_core(
 
     ################################### 1) Load existing  ###################################
     date_str = datetime.today().strftime("%y%m%d")
+    now = datetime.now()
+    time_str = now.strftime("%H%M%S")
 
     log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
 
@@ -259,12 +261,12 @@ def preprocess_adata_core(
     make_dirs([output_directory, preprocess_directory])
 
     if cfg.emit_log_file:
-        log_file = logging_directory / f"{date_str}_log.log"
+        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
         make_dirs([logging_directory])
     else:
         log_file = None
 
-    setup_logging(level=log_level, log_file=log_file)
+    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     ######### Begin Preprocessing #########
     ## Load sample sheet metadata based on barcode mapping ##
@@ -583,7 +585,9 @@ def preprocess_adata_core(
                 save_path=pp_seq_clustermap_dir,
             )
 
-        pp_dedup_seq_clustermap_dir = preprocess_directory / "deduplicated" / "06_sequence_integer_encoding_clustermaps"
+        pp_dedup_seq_clustermap_dir = (
+            preprocess_directory / "deduplicated" / "06_sequence_integer_encoding_clustermaps"
+        )
         if pp_dedup_seq_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
             logger.debug(
                 f"{pp_dedup_seq_clustermap_dir} already exists. Skipping sequence integer encoding clustermaps."

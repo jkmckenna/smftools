@@ -6,10 +6,9 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
+from smftools.constants import LOGGING_DIR, SPATIAL_DIR
 from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
-from smftools.constants import LOGGING_DIR, SPATIAL_DIR
-
 
 logger = get_logger(__name__)
 
@@ -156,8 +155,8 @@ def spatial_adata_core(
     """
     import os
     import warnings
-    from pathlib import Path
     from datetime import datetime
+    from pathlib import Path
 
     import numpy as np
     import pandas as pd
@@ -167,8 +166,8 @@ def spatial_adata_core(
     from ..metadata import record_smftools_metadata
     from ..plotting import (
         combined_raw_clustermap,
-        plot_rolling_nn_and_layer,
         plot_rolling_grid,
+        plot_rolling_nn_and_layer,
         plot_spatial_autocorr_grid,
     )
     from ..preprocessing import (
@@ -194,6 +193,8 @@ def spatial_adata_core(
     # General setup
     # -----------------------------
     date_str = datetime.today().strftime("%y%m%d")
+    now = datetime.now()
+    time_str = now.strftime("%H%M%S")
     log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
 
     output_directory = Path(cfg.output_directory)
@@ -203,12 +204,12 @@ def spatial_adata_core(
     make_dirs([output_directory, spatial_directory])
 
     if cfg.emit_log_file:
-        log_file = logging_directory / f"{date_str}_log.log"
+        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
         make_dirs([logging_directory])
     else:
         log_file = None
 
-    setup_logging(level=log_level, log_file=log_file)
+    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     smf_modality = cfg.smf_modality
     if smf_modality == "conversion":
@@ -380,15 +381,11 @@ def spatial_adata_core(
     pp_rolling_nn_dir = spatial_dir_dedup / "06b_rolling_nn_clustermaps"
 
     if pp_rolling_nn_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.debug(
-            f"{pp_rolling_nn_dir} already exists. Skipping rolling NN distance plots."
-        )
+        logger.debug(f"{pp_rolling_nn_dir} already exists. Skipping rolling NN distance plots.")
     else:
         make_dirs([pp_rolling_nn_dir])
         samples = (
-            adata.obs[cfg.sample_name_col_for_plotting]
-            .astype("category")
-            .cat.categories.tolist()
+            adata.obs[cfg.sample_name_col_for_plotting].astype("category").cat.categories.tolist()
         )
         references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
 
@@ -401,9 +398,11 @@ def spatial_adata_core(
                     continue
 
                 subset = adata[mask]
-                site_mask = adata.var[
-                    [f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]
-                ].fillna(False).any(axis=1)
+                site_mask = (
+                    adata.var[[f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]]
+                    .fillna(False)
+                    .any(axis=1)
+                )
                 subset = subset[:, site_mask].copy()
                 try:
                     rolling_window_nn_distance(

@@ -904,7 +904,7 @@ def plot_rolling_nn_and_layer(
     figsize=(14, 10),
     right_panel_var_mask=None,  # optional boolean mask over subset.var to reduce width
     robust=True,
-    save_name=None
+    save_name=None,
 ):
     """
     1) Cluster rows by subset.obsm[obsm_key] (rolling NN distances)
@@ -981,7 +981,9 @@ def plot_rolling_nn_and_layer(
     sns.heatmap(X_ord, ax=ax1, cmap="viridis", xticklabels=False, yticklabels=False, robust=robust)
     ax1.set_title(f"{obsm_key} (row-clustered)")
 
-    sns.heatmap(L_plot, ax=ax2, cmap="coolwarm", xticklabels=False, yticklabels=False, robust=robust)
+    sns.heatmap(
+        L_plot, ax=ax2, cmap="coolwarm", xticklabels=False, yticklabels=False, robust=robust
+    )
     ax2.set_title(f"{layer_key} (same row order)")
 
     if save_name is not None:
