@@ -212,6 +212,8 @@ def combined_hmm_raw_clustermap(
     n_xticks_cpg: int = 8,
     n_xticks_a: int = 8,
     index_col_suffix: str | None = None,
+    fill_nan_strategy: str = "none",
+    fill_nan_value: float = 0.0,
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
@@ -221,7 +223,11 @@ def combined_hmm_raw_clustermap(
 
     sort_by options:
       'gpc', 'cpg', 'c', 'a', 'gpc_cpg', 'none', 'hmm', or 'obs:<col>'
+
+    NaN fill strategy is applied in-memory for clustering/plotting only.
     """
+    if fill_nan_strategy not in {"none", "value", "col_mean"}:
+        raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
 
     def pick_xticks(labels: np.ndarray, n_ticks: int):
         """Pick tick indices/labels from an array."""
@@ -366,29 +372,69 @@ def combined_hmm_raw_clustermap(
                         order = np.argsort(sb.obs[colname].values)
 
                     elif sort_by == "gpc" and gpc_sites.size:
-                        linkage = sch.linkage(sb[:, gpc_sites].layers[layer_gpc], method="ward")
+                        gpc_matrix = _layer_to_numpy(
+                            sb,
+                            layer_gpc,
+                            gpc_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(gpc_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "cpg" and cpg_sites.size:
-                        linkage = sch.linkage(sb[:, cpg_sites].layers[layer_cpg], method="ward")
+                        cpg_matrix = _layer_to_numpy(
+                            sb,
+                            layer_cpg,
+                            cpg_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(cpg_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "c" and any_c_sites.size:
-                        linkage = sch.linkage(sb[:, any_c_sites].layers[layer_c], method="ward")
+                        any_c_matrix = _layer_to_numpy(
+                            sb,
+                            layer_c,
+                            any_c_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(any_c_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "a" and any_a_sites.size:
-                        linkage = sch.linkage(sb[:, any_a_sites].layers[layer_a], method="ward")
+                        any_a_matrix = _layer_to_numpy(
+                            sb,
+                            layer_a,
+                            any_a_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(any_a_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "gpc_cpg" and gpc_sites.size and cpg_sites.size:
-                        linkage = sch.linkage(sb.layers[layer_gpc], method="ward")
+                        gpc_matrix = _layer_to_numpy(
+                            sb,
+                            layer_gpc,
+                            None,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(gpc_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     elif sort_by == "hmm" and hmm_sites.size:
-                        linkage = sch.linkage(
-                            sb[:, hmm_sites].layers[hmm_feature_layer], method="ward"
+                        hmm_matrix = _layer_to_numpy(
+                            sb,
+                            hmm_feature_layer,
+                            hmm_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
                         )
+                        linkage = sch.linkage(hmm_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
                     else:
@@ -397,15 +443,55 @@ def combined_hmm_raw_clustermap(
                     sb = sb[order]
 
                     # ---- collect matrices ----
-                    stacked_hmm.append(sb.layers[hmm_feature_layer])
+                    stacked_hmm.append(
+                        _layer_to_numpy(
+                            sb,
+                            hmm_feature_layer,
+                            None,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                    )
                     if any_c_sites.size:
-                        stacked_any_c.append(sb[:, any_c_sites].layers[layer_c])
+                        stacked_any_c.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_c,
+                                any_c_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
                     if gpc_sites.size:
-                        stacked_gpc.append(sb[:, gpc_sites].layers[layer_gpc])
+                        stacked_gpc.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_gpc,
+                                gpc_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
                     if cpg_sites.size:
-                        stacked_cpg.append(sb[:, cpg_sites].layers[layer_cpg])
+                        stacked_cpg.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_cpg,
+                                cpg_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
                     if any_a_sites.size:
-                        stacked_any_a.append(sb[:, any_a_sites].layers[layer_a])
+                        stacked_any_a.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_a,
+                                any_a_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
 
                     row_labels.extend([bin_label] * n)
                     bin_labels.append(f"{bin_label}: {n} reads ({pct:.1f}%)")
