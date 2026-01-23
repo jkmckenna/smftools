@@ -15,17 +15,36 @@ def setup_logging(
     fmt: str = DEFAULT_LOG_FORMAT,
     datefmt: str = DEFAULT_DATE_FORMAT,
     log_file: Optional[Union[str, Path]] = None,
+    reconfigure: bool = False,
 ) -> None:
     """
     Configure logging for smftools.
 
     Should be called once by the CLI entrypoint.
-    Safe to call multiple times.
+    Safe to call multiple times, with optional reconfiguration.
     """
     logger = logging.getLogger("smftools")
 
-    if logger.handlers:
+    if logger.handlers and not reconfigure:
+        if log_file is not None:
+            log_path = Path(log_file)
+            has_file_handler = any(
+                isinstance(handler, logging.FileHandler)
+                and Path(getattr(handler, "baseFilename", "")) == log_path
+                for handler in logger.handlers
+            )
+            if not has_file_handler:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                file_handler = logging.FileHandler(log_path)
+                file_handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
+                logger.addHandler(file_handler)
+        logger.setLevel(level)
         return
+
+    if logger.handlers and reconfigure:
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
 
     formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
 
