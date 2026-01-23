@@ -1312,7 +1312,7 @@ def extract_read_features_from_bam(
 
     Returns:
         Mapping of read name to [read_length, read_median_qscore, reference_length,
-        mapped_length, mapping_quality].
+        mapped_length, mapping_quality, reference_start, reference_end].
     """
     logger.debug(
         "Extracting read metrics from BAM using extract_read_features_from_bam: %s",
@@ -1336,12 +1336,16 @@ def extract_read_features_from_bam(
                 reference_length = reference_lengths.get(read.reference_name, float("nan"))
                 mapped_length = sum(end - start for start, end in read.get_blocks())
                 mapping_quality = float(read.mapping_quality)
+                reference_start = float(read.reference_start)
+                reference_end = float(read.reference_end)
                 read_metrics[read.query_name] = [
                     float(read.query_length),
                     median_read_quality,
                     float(reference_length),
                     float(mapped_length),
                     mapping_quality,
+                    reference_start,
+                    reference_end,
                 ]
         return read_metrics
 
@@ -1371,6 +1375,14 @@ def extract_read_features_from_bam(
             if op in {"M", "=", "X"}:
                 mapped += length
         return mapped
+
+    def _reference_span_from_cigar(cigar: str) -> int:
+        reference_span = 0
+        for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+            length = int(length_str)
+            if op in {"M", "D", "N", "=", "X"}:
+                reference_span += length
+        return reference_span
 
     header_cp = subprocess.run(
         ["samtools", "view", "-H", str(bam_path)],
@@ -1402,6 +1414,7 @@ def extract_read_features_from_bam(
         reference_name = fields[2]
         mapping_quality = float(fields[4])
         cigar = fields[5]
+        reference_start = float(int(fields[3]) - 1)
         sequence = fields[9]
         quality = fields[10]
         if sequence == "*":
@@ -1415,12 +1428,18 @@ def extract_read_features_from_bam(
             median_read_quality = float(np.median(phreds))
         reference_length = float(reference_lengths.get(reference_name, float("nan")))
         mapped_length = float(_mapped_length_from_cigar(cigar)) if cigar != "*" else 0.0
+        if cigar != "*":
+            reference_end = float(reference_start + _reference_span_from_cigar(cigar))
+        else:
+            reference_end = float("nan")
         read_metrics[read_name] = [
             read_length,
             median_read_quality,
             reference_length,
             mapped_length,
             mapping_quality,
+            reference_start,
+            reference_end,
         ]
 
     rc = proc.wait()
