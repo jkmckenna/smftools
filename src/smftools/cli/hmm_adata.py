@@ -45,6 +45,8 @@ def _strip_hmm_layer_prefix(layer: str) -> str:
             break
     if base.endswith("_lengths"):
         base = base[: -len("_lengths")]
+    if base.endswith("_merged"):
+        base = base[: -len("_merged")]
     return base
 
 
