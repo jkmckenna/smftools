@@ -247,7 +247,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     else:
         log_file = None
 
-    setup_logging(level=log_level, log_file=log_file)
+    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     raw_adata_path = paths.raw
     pp_adata_path = paths.pp
