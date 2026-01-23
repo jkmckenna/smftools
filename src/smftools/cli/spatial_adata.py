@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.logging_utils import get_logger
+from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
+from smftools.constants import LOGGING_DIR, SPATIAL_DIR
+
 
 logger = get_logger(__name__)
 
@@ -41,6 +44,7 @@ def spatial_adata(
 
     # 1) Ensure config + basic paths via load_adata
     loaded_adata, loaded_path, cfg = load_adata(config_path)
+
     paths = get_adata_paths(cfg)
 
     raw_path = paths.raw
@@ -153,6 +157,7 @@ def spatial_adata_core(
     import os
     import warnings
     from pathlib import Path
+    from datetime import datetime
 
     import numpy as np
     import pandas as pd
@@ -188,8 +193,22 @@ def spatial_adata_core(
     # -----------------------------
     # General setup
     # -----------------------------
+    date_str = datetime.today().strftime("%y%m%d")
+    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+
     output_directory = Path(cfg.output_directory)
-    make_dirs([output_directory])
+    spatial_directory = output_directory / SPATIAL_DIR
+    logging_directory = spatial_directory / LOGGING_DIR
+
+    make_dirs([output_directory, spatial_directory])
+
+    if cfg.emit_log_file:
+        log_file = logging_directory / f"{date_str}_log.log"
+        make_dirs([logging_directory])
+    else:
+        log_file = None
+
+    setup_logging(level=log_level, log_file=log_file)
 
     smf_modality = cfg.smf_modality
     if smf_modality == "conversion":
@@ -232,7 +251,6 @@ def spatial_adata_core(
     else:
         reindex_suffix = None
 
-    pp_dir = output_directory / "preprocessed"
     references = adata.obs[cfg.reference_column].cat.categories
 
     # ============================================================
@@ -242,7 +260,7 @@ def spatial_adata_core(
         preprocessed_version_available = pp_adata_path.exists()
 
         if preprocessed_version_available:
-            pp_clustermap_dir = pp_dir / "06_clustermaps"
+            pp_clustermap_dir = spatial_directory / "06_clustermaps"
 
             if pp_clustermap_dir.is_dir() and not getattr(
                 cfg, "force_redo_spatial_analyses", False
@@ -251,7 +269,7 @@ def spatial_adata_core(
                     f"{pp_clustermap_dir} already exists. Skipping clustermap plotting for preprocessed AnnData."
                 )
             else:
-                make_dirs([pp_dir, pp_clustermap_dir])
+                make_dirs([spatial_directory, pp_clustermap_dir])
 
                 if first_pp_run and (pp_adata_in_memory is not None):
                     pp_adata = pp_adata_in_memory
@@ -317,17 +335,17 @@ def spatial_adata_core(
     # ============================================================
     # 2) Clustermaps + UMAP on *deduplicated* preprocessed AnnData
     # ============================================================
-    pp_dir_dedup = pp_dir / "deduplicated"
-    pp_clustermap_dir_dedup = pp_dir_dedup / "06_clustermaps"
-    pp_umap_dir = pp_dir_dedup / "07_umaps"
+    spatial_dir_dedup = spatial_directory / "deduplicated"
+    clustermap_dir_dedup = spatial_dir_dedup / "06_clustermaps"
+    umap_dir = spatial_dir_dedup / "07_umaps"
 
     # Clustermaps on deduplicated adata
-    if pp_clustermap_dir_dedup.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if clustermap_dir_dedup.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(
-            f"{pp_clustermap_dir_dedup} already exists. Skipping clustermap plotting for deduplicated AnnData."
+            f"{clustermap_dir_dedup} already exists. Skipping clustermap plotting for deduplicated AnnData."
         )
     else:
-        make_dirs([pp_dir_dedup, pp_clustermap_dir_dedup])
+        make_dirs([spatial_dir_dedup, clustermap_dir_dedup])
         combined_raw_clustermap(
             adata,
             sample_col=cfg.sample_name_col_for_plotting,
@@ -350,7 +368,7 @@ def spatial_adata_core(
             demux_types=cfg.clustermap_demux_types_to_plot,
             bins=None,
             sample_mapping=None,
-            save_path=pp_clustermap_dir_dedup,
+            save_path=clustermap_dir_dedup,
             sort_by=cfg.spatial_clustermap_sortby,
             deaminase=deaminase,
             index_col_suffix=reindex_suffix,
@@ -359,7 +377,7 @@ def spatial_adata_core(
     # ============================================================
     # 2b) Rolling NN distances + layer clustermaps
     # ============================================================
-    pp_rolling_nn_dir = pp_dir_dedup / "06b_rolling_nn_clustermaps"
+    pp_rolling_nn_dir = spatial_dir_dedup / "06b_rolling_nn_clustermaps"
 
     if pp_rolling_nn_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(
@@ -426,10 +444,10 @@ def spatial_adata_core(
                     )
 
     # UMAP / Leiden
-    if pp_umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.debug(f"{pp_umap_dir} already exists. Skipping UMAP plotting.")
+    if umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{umap_dir} already exists. Skipping UMAP plotting.")
     else:
-        make_dirs([pp_umap_dir])
+        make_dirs([umap_dir])
 
         var_filters = []
         if smf_modality == "direct":
@@ -454,7 +472,7 @@ def spatial_adata_core(
 
         sc.tl.leiden(adata, resolution=0.1, flavor="igraph", n_iterations=2)
 
-        sc.settings.figdir = pp_umap_dir
+        sc.settings.figdir = umap_dir
         umap_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
         umap_layers += cfg.umap_layers_to_plot
         sc.pl.umap(adata, color=umap_layers, show=False, save=True)
@@ -462,7 +480,7 @@ def spatial_adata_core(
     # ============================================================
     # 3) Spatial autocorrelation + rolling metrics
     # ============================================================
-    pp_autocorr_dir = pp_dir_dedup / "08_autocorrelations"
+    pp_autocorr_dir = spatial_dir_dedup / "08_autocorrelations"
 
     if pp_autocorr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{pp_autocorr_dir} already exists. Skipping autocorrelation plotting.")
@@ -805,10 +823,10 @@ def spatial_adata_core(
     # ============================================================
     # 4) Pearson / correlation matrices
     # ============================================================
-    pp_corr_dir = pp_dir_dedup / "09_correlation_matrices"
+    corr_dir = spatial_dir_dedup / "09_correlation_matrices"
 
-    if pp_corr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.debug(f"{pp_corr_dir} already exists. Skipping correlation matrix plotting.")
+    if corr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{corr_dir} already exists. Skipping correlation matrix plotting.")
     else:
         compute_positionwise_statistics(
             adata,
@@ -833,7 +851,7 @@ def spatial_adata_core(
             cmaps=cfg.correlation_matrix_cmaps,
             vmin=None,
             vmax=None,
-            output_dir=pp_corr_dir,
+            output_dir=corr_dir,
             output_key="positionwise_result",
         )
 

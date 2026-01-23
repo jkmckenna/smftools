@@ -22,6 +22,12 @@ BARCODE_BOTH_ENDS: Final[bool] = False
 REF_COL: Final[str] = "Reference_strand"
 SAMPLE_COL: Final[str] = "Experiment_name_and_barcode"
 SPLIT_DIR: Final[str] = "demultiplexed_BAMs"
+H5_DIR: Final[str] = "h5ads"
+LOAD_DIR: Final[str] = "load_adata_outputs"
+PREPROCESS_DIR: Final[str] = "preprocess_adata_outputs"
+SPATIAL_DIR: Final[str] = "spatial_adata_outputs"
+HMM_DIR: Final[str] = "hmm_adata_outputs"
+LOGGING_DIR: Final[str] = "logs"
 TRIM: Final[bool] = False
 
 _private_conversions = ["unconverted"]

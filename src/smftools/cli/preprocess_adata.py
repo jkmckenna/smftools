@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.logging_utils import get_logger
+from smftools.logging_utils import get_logger, setup_logging
+from smftools.constants import LOGGING_DIR, PREPROCESS_DIR
 
 logger = get_logger(__name__)
 
@@ -219,6 +221,7 @@ def preprocess_adata_core(
         Path where pp_dedup_adata was written.
     """
     from pathlib import Path
+    from datetime import datetime
 
     from ..metadata import record_smftools_metadata
     from ..plotting import plot_read_qc_histograms, plot_sequence_integer_encoding_clustermaps
@@ -241,16 +244,29 @@ def preprocess_adata_core(
     from .helpers import write_gz_h5ad
 
     ################################### 1) Load existing  ###################################
+    date_str = datetime.today().strftime("%y%m%d")
+
+    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality  # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
     output_directory = Path(
         cfg.output_directory
     )  # Path to the output directory to make for the analysis. Necessary.
-    make_dirs([output_directory])
+    preprocess_directory = output_directory / PREPROCESS_DIR
+    logging_directory = preprocess_directory / LOGGING_DIR
+
+    make_dirs([output_directory, preprocess_directory])
+
+    if cfg.emit_log_file:
+        log_file = logging_directory / f"{date_str}_log.log"
+        make_dirs([logging_directory])
+    else:
+        log_file = None
+
+    setup_logging(level=log_level, log_file=log_file)
 
     ######### Begin Preprocessing #########
-    pp_dir = output_directory / "preprocessed"
-
     ## Load sample sheet metadata based on barcode mapping ##
     if getattr(cfg, "sample_sheet_path", None):
         load_sample_sheet(
@@ -264,12 +280,12 @@ def preprocess_adata_core(
         pass
 
     # Adding read length, read quality, reference length, mapped_length, and mapping quality metadata to adata object.
-    pp_length_qc_dir = pp_dir / "01_Read_length_and_quality_QC_metrics"
+    pp_length_qc_dir = preprocess_directory / "01_Read_length_and_quality_QC_metrics"
 
     if pp_length_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         logger.debug(f"{pp_length_qc_dir} already exists. Skipping read level QC plotting.")
     else:
-        make_dirs([pp_dir, pp_length_qc_dir])
+        make_dirs([preprocess_directory, pp_length_qc_dir])
         plot_read_qc_histograms(
             adata,
             pp_length_qc_dir,
@@ -292,12 +308,12 @@ def preprocess_adata_core(
     )
     print(adata.shape)
 
-    pp_length_qc_dir = pp_dir / "02_Read_length_and_quality_QC_metrics_post_filtering"
+    pp_length_qc_dir = preprocess_directory / "02_Read_length_and_quality_QC_metrics_post_filtering"
 
     if pp_length_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         logger.debug(f"{pp_length_qc_dir} already exists. Skipping read level QC plotting.")
     else:
-        make_dirs([pp_dir, pp_length_qc_dir])
+        make_dirs([preprocess_directory, pp_length_qc_dir])
         plot_read_qc_histograms(
             adata,
             pp_length_qc_dir,
@@ -310,7 +326,7 @@ def preprocess_adata_core(
     if smf_modality == "direct":
         native = True
         if cfg.fit_position_methylation_thresholds:
-            pp_Youden_dir = pp_dir / "02B_Position_wide_Youden_threshold_performance"
+            pp_Youden_dir = preprocess_directory / "02B_Position_wide_Youden_threshold_performance"
             make_dirs([pp_Youden_dir])
             # Calculate positional methylation thresholds for mod calls
             calculate_position_Youden(
@@ -381,14 +397,14 @@ def preprocess_adata_core(
     )
 
     ### Make a dir for outputting sample level read modification metrics before filtering ###
-    pp_meth_qc_dir = pp_dir / "03_read_modification_QC_metrics"
+    pp_meth_qc_dir = preprocess_directory / "03_read_modification_QC_metrics"
 
     if pp_meth_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         logger.debug(
             f"{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting."
         )
     else:
-        make_dirs([pp_dir, pp_meth_qc_dir])
+        make_dirs([preprocess_directory, pp_meth_qc_dir])
         obs_to_plot = ["Raw_modification_signal"]
         if any(base in cfg.mod_target_bases for base in ["GpC", "CpG", "C"]):
             obs_to_plot += [
@@ -422,14 +438,14 @@ def preprocess_adata_core(
         force_redo=cfg.force_redo_filter_reads_on_modification_thresholds,
     )
 
-    pp_meth_qc_dir = pp_dir / "04_read_modification_QC_metrics_post_filtering"
+    pp_meth_qc_dir = preprocess_directory / "04_read_modification_QC_metrics_post_filtering"
 
     if pp_meth_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         logger.debug(
             f"{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting."
         )
     else:
-        make_dirs([pp_dir, pp_meth_qc_dir])
+        make_dirs([preprocess_directory, pp_meth_qc_dir])
         obs_to_plot = ["Raw_modification_signal"]
         if any(base in cfg.mod_target_bases for base in ["GpC", "CpG", "C"]):
             obs_to_plot += [
@@ -489,7 +505,7 @@ def preprocess_adata_core(
             for site_type in cfg.duplicate_detection_site_types:
                 var_filters_sets += [[f"{ref}_{site_type}_site", f"position_in_{ref}"]]
 
-        pp_dup_qc_dir = pp_dir / "05_read_duplication_QC_metrics"
+        pp_dup_qc_dir = preprocess_directory / "05_read_duplication_QC_metrics"
 
         make_dirs([pp_dup_qc_dir])
 
@@ -547,7 +563,7 @@ def preprocess_adata_core(
             "sequence_integer_encoding layer not found; skipping integer encoding clustermaps."
         )
     else:
-        pp_seq_clustermap_dir = pp_dir / "06_sequence_integer_encoding_clustermaps"
+        pp_seq_clustermap_dir = preprocess_directory / "06_sequence_integer_encoding_clustermaps"
         if pp_seq_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
             logger.debug(
                 f"{pp_seq_clustermap_dir} already exists. Skipping sequence integer encoding clustermaps."
@@ -567,7 +583,7 @@ def preprocess_adata_core(
                 save_path=pp_seq_clustermap_dir,
             )
 
-        pp_dedup_seq_clustermap_dir = pp_dir / "deduplicated" / "06_sequence_integer_encoding_clustermaps"
+        pp_dedup_seq_clustermap_dir = preprocess_directory / "deduplicated" / "06_sequence_integer_encoding_clustermaps"
         if pp_dedup_seq_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
             logger.debug(
                 f"{pp_dedup_seq_clustermap_dir} already exists. Skipping sequence integer encoding clustermaps."

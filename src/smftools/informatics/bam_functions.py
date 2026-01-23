@@ -260,6 +260,7 @@ def _index_bam_with_samtools(bam_path: Union[str, Path], threads: Optional[int] 
 def align_and_sort_BAM(
     fasta,
     input,
+    output,
     cfg,
 ):
     """
@@ -279,10 +280,9 @@ def align_and_sort_BAM(
     input_suffix = input.suffix
     input_as_fastq = input.with_name(input.stem + ".fastq")
 
-    output_path_minus_suffix = cfg.output_directory / input.stem
-
-    aligned_BAM = output_path_minus_suffix.with_name(output_path_minus_suffix.stem + "_aligned")
+    aligned_BAM = output.parent / output.stem
     aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
+    
     aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
     aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
 

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Iterable, Union
 
 import numpy as np
 
-from smftools.logging_utils import get_logger
+from smftools.constants import LOAD_DIR, LOGGING_DIR, HMM_DIR, PREPROCESS_DIR, SPATIAL_DIR
+
+from smftools.logging_utils import get_logger, setup_logging
 
 from .helpers import AdataPaths
 
@@ -119,7 +122,8 @@ def load_adata(config_path: str):
     )
 
     # Ensure base output dir
-    make_dirs([cfg.output_directory])
+    output_directory = Path(cfg.output_directory)
+    make_dirs([output_directory])
 
     # -----------------------------
     # 2) Compute and register paths
@@ -199,6 +203,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     cfg : ExperimentConfig
         (Same object, possibly with some fields updated, e.g. fasta path.)
     """
+    from datetime import datetime
 
     from ..informatics.bam_functions import (
         align_and_sort_BAM,
@@ -226,8 +231,23 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     from .helpers import write_gz_h5ad
 
     ################################### 1) General params and input organization ###################################
+    date_str = datetime.today().strftime("%y%m%d")
+
+    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+
     output_directory = Path(cfg.output_directory)
-    make_dirs([output_directory])
+    load_directory = output_directory / LOAD_DIR
+    logging_directory = load_directory / LOGGING_DIR
+
+    make_dirs([output_directory, load_directory])
+
+    if cfg.emit_log_file:
+        log_file = logging_directory / f"{date_str}_log.log"
+        make_dirs([logging_directory])
+    else:
+        log_file = None
+
+    setup_logging(level=log_level, log_file=log_file)
 
     raw_adata_path = paths.raw
     pp_adata_path = paths.pp
@@ -241,11 +261,11 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     # Direct methylation detection SMF specific parameters
     if cfg.smf_modality == "direct":
-        mod_bed_dir = cfg.output_directory / "mod_beds"
+        mod_bed_dir = load_directory / "mod_beds"
         add_or_update_column_in_csv(cfg.summary_file, "mod_bed_dir", mod_bed_dir)
-        mod_tsv_dir = cfg.output_directory / "mod_tsvs"
+        mod_tsv_dir = load_directory / "mod_tsvs"
         add_or_update_column_in_csv(cfg.summary_file, "mod_tsv_dir", mod_tsv_dir)
-        bam_qc_dir = cfg.output_directory / "bam_qc"
+        bam_qc_dir = load_directory / "bam_qc"
         mods = [cfg.mod_map[mod] for mod in cfg.mod_list]
 
         if not check_executable_exists("dorado"):
@@ -281,7 +301,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     # If the input files are fast5 files, convert the files to a pod5 file before proceeding.
     if cfg.input_type == "fast5":
         # take the input directory of fast5 files and write out a single pod5 file into the output directory.
-        output_pod5 = cfg.output_directory / "FAST5s_to_POD5.pod5"
+        output_pod5 = load_directory / "FAST5s_to_POD5.pod5"
         if output_pod5.exists():
             pass
         else:
@@ -295,7 +315,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     # If the input is a fastq or a directory of fastqs, concatenate them into an unaligned BAM and save the barcode
     elif cfg.input_type == "fastq":
         # Output file for FASTQ concatenation.
-        output_bam = cfg.output_directory / "canonical_basecalls.bam"
+        output_bam = load_directory / "canonical_basecalls.bam"
         if output_bam.exists():
             logger.debug("Output BAM already exists")
         else:
@@ -341,18 +361,20 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         model_basename = str(model_basename).replace(".", "_")
         if cfg.smf_modality == "direct":
             mod_string = "_".join(cfg.mod_list)
-            bam = cfg.output_directory / f"{model_basename}_{mod_string}_calls"
+            bam = load_directory / f"{model_basename}_{mod_string}_calls"
         else:
-            bam = cfg.output_directory / f"{model_basename}_canonical_basecalls"
+            bam = load_directory / f"{model_basename}_canonical_basecalls"
     else:
-        bam_base = cfg.input_data_path.name
-        bam = cfg.output_directory / bam_base
+        bam_base = cfg.input_data_path.stem
+        bam = cfg.input_data_path.parent / bam_base
 
     # Generate path names for the unaligned, aligned, as well as the aligned/sorted bam.
     unaligned_output = bam.with_suffix(cfg.bam_suffix)
+
     aligned_BAM = (
-        cfg.output_directory / (bam.stem + "_aligned")
+        load_directory / (bam.stem + "_aligned")
     )  # doing this allows specifying an input bam in a seperate directory as the aligned output bams
+
     aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
     aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
     aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
@@ -373,11 +395,11 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     if cfg.fasta_regions_of_interest and ".bed" in cfg.fasta_regions_of_interest:
         fasta_stem = cfg.fasta.stem
         bed_stem = Path(cfg.fasta_regions_of_interest).stem
-        output_FASTA = cfg.output_directory / f"{fasta_stem}_subsampled_by_{bed_stem}.fasta"
+        output_FASTA = load_directory / f"{fasta_stem}_subsampled_by_{bed_stem}.fasta"
 
         logger.info("Subsampling FASTA records using the provided BED file")
         subsample_fasta_from_bed(
-            cfg.fasta, cfg.fasta_regions_of_interest, cfg.output_directory, output_FASTA
+            cfg.fasta, cfg.fasta_regions_of_interest, load_directory, output_FASTA
         )
         fasta = output_FASTA
     else:
@@ -388,7 +410,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     if cfg.smf_modality == "conversion":
         fasta_stem = fasta.stem
         converted_FASTA_basename = f"{fasta_stem}_converted.fasta"
-        converted_FASTA = cfg.output_directory / converted_FASTA_basename
+        converted_FASTA = load_directory / converted_FASTA_basename
 
         if "converted.fa" in fasta.name:
             logger.info(f"{fasta} is already converted. Using existing converted FASTA.")
@@ -462,13 +484,13 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         logger.debug(f"{aligned_sorted_output} already exists. Using existing aligned/sorted BAM.")
     else:
         logger.info(f"Aligning and sorting reads")
-        align_and_sort_BAM(fasta, unaligned_output, cfg)
+        align_and_sort_BAM(fasta, unaligned_output, aligned_output, cfg)
         # Deleted the unsorted aligned output
         aligned_output.unlink()
 
     if cfg.make_beds:
         # Make beds and provide basic histograms
-        bed_dir = cfg.output_directory / "beds"
+        bed_dir = load_directory / "beds"
         if bed_dir.is_dir():
             logger.debug(
                 f"{bed_dir} already exists. Skipping BAM -> BED conversion for {aligned_sorted_output}"
@@ -477,7 +499,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             logger.info("Making bed files from the aligned and sorted BAM file")
             aligned_BAM_to_bed(
                 aligned_sorted_output,
-                cfg.output_directory,
+                load_directory,
                 fasta,
                 cfg.make_bigwigs,
                 cfg.threads,
@@ -608,7 +630,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ################################### 6) SAMTools based BAM QC ######################################################################
 
     # 5) Samtools QC metrics on split BAM files
-    bam_qc_dir = cfg.split_path / "bam_qc"
+    bam_qc_dir = load_directory / "bam_qc"
     if bam_qc_dir.is_dir():
         logger.debug(f"{bam_qc_dir} already exists. Using existing BAM QC calculations.")
     else:
@@ -637,7 +659,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         raw_adata, raw_adata_path = converted_BAM_to_adata(
             fasta,
             bam_dir,
-            cfg.output_directory,
+            load_directory,
             cfg.input_already_demuxed,
             cfg.mapping_threshold,
             cfg.experiment_name,
@@ -694,7 +716,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         raw_adata, raw_adata_path = modkit_extract_to_adata(
             fasta,
             bam_dir,
-            cfg.output_directory,
+            load_directory,
             cfg.input_already_demuxed,
             cfg.mapping_threshold,
             cfg.experiment_name,
@@ -740,7 +762,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             raw_adata,
             cfg.input_data_path,
             n_jobs=cfg.threads,
-            csv_path=output_directory / "read_to_pod5_origin_mapping.csv",
+            csv_path=load_directory / "read_to_pod5_origin_mapping.csv",
         )
     ########################################################################################################################
 
@@ -759,12 +781,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ############################################### MultiQC HTML Report ###############################################
 
     # multiqc ###
-    mqc_dir = cfg.split_path / "multiqc"
+    mqc_dir = load_directory / "multiqc"
     if mqc_dir.is_dir():
         logger.info(f"{mqc_dir} already exists, skipping multiqc")
     else:
         logger.info("Running multiqc")
-        run_multiqc(cfg.split_path, mqc_dir)
+        run_multiqc(bam_qc_dir, mqc_dir)
     ########################################################################################################################
 
     ############################################### delete intermediate BAM files ###############################################

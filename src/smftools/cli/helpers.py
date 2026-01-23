@@ -8,6 +8,8 @@ import anndata as ad
 from ..metadata import write_runtime_schema_yaml
 from ..readwrite import safe_write_h5ad
 
+from smftools.constants import (H5_DIR, LOAD_DIR, PREPROCESS_DIR, SPATIAL_DIR, HMM_DIR)
+
 
 @dataclass
 class AdataPaths:
@@ -22,22 +24,22 @@ def get_adata_paths(cfg) -> AdataPaths:
     """
     Central helper: given cfg, compute all standard AnnData paths.
     """
-    h5_dir = Path(cfg.output_directory) / "h5ads"
+    output_directory = Path(cfg.output_directory)
 
-    raw = h5_dir / f"{cfg.experiment_name}.h5ad.gz"
+    raw = output_directory / LOAD_DIR / H5_DIR / f"{cfg.experiment_name}.h5ad.gz"
 
-    pp = h5_dir / f"{cfg.experiment_name}_preprocessed.h5ad.gz"
+    pp = output_directory / PREPROCESS_DIR / H5_DIR / f"{cfg.experiment_name}_preprocessed.h5ad.gz"
 
     if cfg.smf_modality == "direct":
         # direct SMF: duplicate-removed path is just preprocessed path
         pp_dedup = pp
     else:
-        pp_dedup = h5_dir / f"{cfg.experiment_name}_preprocessed_duplicates_removed.h5ad.gz"
+        pp_dedup = output_directory / PREPROCESS_DIR / H5_DIR / f"{cfg.experiment_name}_preprocessed_duplicates_removed.h5ad.gz"
 
     pp_dedup_base = pp_dedup.name.removesuffix(".h5ad.gz")
 
-    spatial = h5_dir / f"{pp_dedup_base}_spatial.h5ad.gz"
-    hmm = h5_dir / f"{pp_dedup_base}_spatial_hmm.h5ad.gz"
+    spatial = output_directory / SPATIAL_DIR / H5_DIR / f"{pp_dedup_base}_spatial.h5ad.gz"
+    hmm = output_directory / HMM_DIR / H5_DIR / f"{pp_dedup_base}_spatial_hmm.h5ad.gz"
 
     return AdataPaths(
         raw=raw,
