@@ -104,7 +104,8 @@ def add_read_length_and_mapping_qc(
     bam_files
         Optional list of BAM files to extract metrics from. Ignored if read_metrics supplied.
     read_metrics
-        Optional dict mapping obs_name -> [read_length, read_quality, reference_length, mapped_length, mapping_quality]
+        Optional dict mapping obs_name -> [read_length, read_quality, reference_length, mapped_length,
+        mapping_quality, reference_start, reference_end]
         If provided, this will be used directly and bam_files will be ignored.
     uns_flag
         key in final_adata.uns used to record that QC was performed (kept the name with original misspelling).
@@ -154,10 +155,12 @@ def add_read_length_and_mapping_qc(
         adata.obs["reference_length"] = np.full(n, np.nan)
         adata.obs["read_quality"] = np.full(n, np.nan)
         adata.obs["mapping_quality"] = np.full(n, np.nan)
+        adata.obs["reference_start"] = np.full(n, np.nan)
+        adata.obs["reference_end"] = np.full(n, np.nan)
     else:
         # Build DF robustly
         # Convert values to lists where possible, else to [val, val, val...]
-        max_cols = 5
+        max_cols = 7
         rows = {}
         for k, v in read_metrics.items():
             if isinstance(v, (list, tuple, np.ndarray)):
@@ -179,6 +182,8 @@ def add_read_length_and_mapping_qc(
                 "reference_length",
                 "mapped_length",
                 "mapping_quality",
+                "reference_start",
+                "reference_end",
             ],
         )
 
@@ -191,6 +196,8 @@ def add_read_length_and_mapping_qc(
         adata.obs["reference_length"] = df_reindexed["reference_length"].values
         adata.obs["read_quality"] = df_reindexed["read_quality"].values
         adata.obs["mapping_quality"] = df_reindexed["mapping_quality"].values
+        adata.obs["reference_start"] = df_reindexed["reference_start"].values
+        adata.obs["reference_end"] = df_reindexed["reference_end"].values
 
     # Compute ratio columns safely (avoid divide-by-zero and preserve NaN)
     # read_length_to_reference_length_ratio
