@@ -894,6 +894,7 @@ class ExperimentConfig:
     accessible_patches: Optional[bool] = True
     cpg: Optional[bool] = False
     hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
+    hmm_feature_colormaps: Dict[str, Any] = field(default_factory=dict)
     hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 60)])
     clustermap_cmap_hmm: Optional[str] = "coolwarm"
     hmm_clustermap_feature_layers: List[str] = field(
@@ -1208,6 +1209,9 @@ class ExperimentConfig:
         # Final normalization of hmm_feature_sets and canonical local variables
         merged["hmm_feature_sets"] = normalize_hmm_feature_sets(merged.get("hmm_feature_sets", {}))
         hmm_feature_sets = merged.get("hmm_feature_sets", {})
+        hmm_feature_colormaps = merged.get("hmm_feature_colormaps", {})
+        if not isinstance(hmm_feature_colormaps, dict):
+            hmm_feature_colormaps = {}
         hmm_annotation_threshold = merged.get("hmm_annotation_threshold", 0.5)
         hmm_batch_size = int(merged.get("hmm_batch_size", 1024))
         hmm_use_viterbi = bool(merged.get("hmm_use_viterbi", False))
@@ -1369,6 +1373,7 @@ class ExperimentConfig:
             hmm_emission_adapt_tol=hmm_emission_adapt_tol,
             hmm_dtype=merged.get("hmm_dtype", "float64"),
             hmm_feature_sets=hmm_feature_sets,
+            hmm_feature_colormaps=hmm_feature_colormaps,
             hmm_annotation_threshold=hmm_annotation_threshold,
             hmm_batch_size=hmm_batch_size,
             hmm_use_viterbi=hmm_use_viterbi,
