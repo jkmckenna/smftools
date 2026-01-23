@@ -844,6 +844,8 @@ def hmm_adata_core(
                                     uns_key=uns_key,
                                     uns_flag="hmm_annotated_combined",
                                     force_redo=force_apply,
+                                    mask_to_read_span=True,
+                                    mask_use_original_var_names=True,
                                 )
 
                                 for core_layer, dist in (

@@ -1141,7 +1141,7 @@ class BaseHMM(nn.Module):
         uns_key: str = "hmm_appended_layers",
         uns_flag: str = "hmm_annotated",
         force_redo: bool = False,
-        mask_to_read_span: bool = False,
+        mask_to_read_span: bool = True,
         mask_use_original_var_names: bool = True,
         device: Optional[Union[str, torch.device]] = None,
         **kwargs,
