@@ -105,8 +105,8 @@ def _layer_to_numpy(
     layer_name: str,
     sites: np.ndarray | None = None,
     *,
-    fill_nan_strategy: str = "none",
-    fill_nan_value: float = 0.0,
+    fill_nan_strategy: str = "value",
+    fill_nan_value: float = -1,
 ) -> np.ndarray:
     """Return a (copied) numpy array for a layer with optional NaN filling."""
     if sites is not None:
@@ -212,8 +212,8 @@ def combined_hmm_raw_clustermap(
     n_xticks_cpg: int = 8,
     n_xticks_a: int = 8,
     index_col_suffix: str | None = None,
-    fill_nan_strategy: str = "none",
-    fill_nan_value: float = 0.0,
+    fill_nan_strategy: str = "value",
+    fill_nan_value: float = -1,
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
@@ -615,8 +615,8 @@ def combined_raw_clustermap(
     xtick_rotation: int = 90,
     xtick_fontsize: int = 9,
     index_col_suffix: str | None = None,
-    fill_nan_strategy: str = "none",
-    fill_nan_value: float = 0.0,
+    fill_nan_strategy: str = "value",
+    fill_nan_value: float = -1,
 ):
     """
     Plot stacked heatmaps + per-position mean barplots for C, GpC, CpG, and optional A.
