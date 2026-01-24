@@ -121,7 +121,7 @@ def _build_hmm_feature_cmap(
     cmap: Any,
     *,
     zero_color: str = "#f5f1e8",
-    nan_color: str = "#D3D3D3",
+    nan_color: str = "#E6E6E6",
 ) -> colors.Colormap:
     """Build a two-color HMM colormap with explicit NaN/under handling."""
     feature_color = _resolve_feature_color(cmap)
