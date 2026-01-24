@@ -108,6 +108,43 @@ def _resolve_feature_color(layer: str, cfg, fallback_cmap: str, idx: int, total:
     return cmap_obj(idx / (total - 1))
 
 
+def _resolve_length_feature_ranges(layer: str, cfg, default_cmap: str) -> List[Tuple[int, int, Any]]:
+    """Resolve length-based feature ranges to colors for size contour overlays."""
+    base = _strip_hmm_layer_prefix(layer)
+    feature_sets = getattr(cfg, "hmm_feature_sets", {}) or {}
+    if not isinstance(feature_sets, dict):
+        return []
+
+    feature_key = None
+    if "accessible" in base:
+        feature_key = "accessible"
+    elif "footprint" in base:
+        feature_key = "footprint"
+
+    if feature_key is None:
+        return []
+
+    features = feature_sets.get(feature_key, {}).get("features", {})
+    if not isinstance(features, dict):
+        return []
+
+    ranges: List[Tuple[int, int, Any]] = []
+    for feature_name, bounds in features.items():
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+            continue
+        min_len, max_len = bounds
+        if max_len is None or (isinstance(max_len, (float, int)) and np.isinf(max_len)):
+            max_len = int(1e9)
+        try:
+            min_len_int = int(min_len)
+            max_len_int = int(max_len)
+        except (TypeError, ValueError):
+            continue
+        color = _resolve_feature_color(feature_name, cfg, default_cmap, 0, 1)
+        ranges.append((min_len_int, max_len_int, color))
+    return ranges
+
+
 def _get_training_matrix(
     subset, cols_mask: np.ndarray, smf_modality: Optional[str], cfg
 ) -> Tuple[np.ndarray, Optional[str]]:
@@ -1111,6 +1148,7 @@ def hmm_adata_core(
             save_path = hmm_dir / layer
             make_dirs([save_path])
             layer_cmap = _resolve_feature_colormap(layer, cfg, "Greens")
+            feature_ranges = _resolve_length_feature_ranges(layer, cfg, "Greens")
 
             figs = plot_hmm_size_contours(
                 adata,
@@ -1128,6 +1166,7 @@ def hmm_adata_core(
                 normalize_after_smoothing=True,
                 cmap=layer_cmap,
                 log_scale_z=True,
+                feature_ranges=tuple(feature_ranges),
             )
     ########################################################################################################################
 

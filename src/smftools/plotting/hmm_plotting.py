@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -9,6 +9,7 @@ import pandas as pd
 from smftools.optional_imports import require
 
 plt = require("matplotlib.pyplot", extra="plotting", purpose="HMM plots")
+mpl_colors = require("matplotlib.colors", extra="plotting", purpose="HMM plots")
 pdf_backend = require(
     "matplotlib.backends.backend_pdf",
     extra="plotting",
@@ -33,6 +34,9 @@ def plot_hmm_size_contours(
     dpi: int = 150,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
+    feature_ranges: Optional[Sequence[Tuple[int, int, str]]] = None,
+    zero_color: str = "#f5f1e8",
+    nan_color: str = "#E6E6E6",
     # ---------------- smoothing params ----------------
     smoothing_sigma: Optional[Union[float, Tuple[float, float]]] = None,
     normalize_after_smoothing: bool = True,
@@ -41,6 +45,9 @@ def plot_hmm_size_contours(
     """
     Create contour/pcolormesh plots of P(length | position) using a length-encoded HMM layer.
     Optional Gaussian smoothing applied to the 2D probability grid before plotting.
+    When feature_ranges is provided, each length row is assigned a base color based
+    on the matching (min_len, max_len) range and the probability value modulates
+    the color intensity.
 
     smoothing_sigma: None or 0 -> no smoothing.
         float -> same sigma applied to (length_axis, position_axis)
@@ -49,6 +56,51 @@ def plot_hmm_size_contours(
 
     Other args are the same as prior function.
     """
+    feature_ranges = tuple(feature_ranges or ())
+
+    def _resolve_length_color(length: int, fallback: str) -> Tuple[float, float, float, float]:
+        for min_len, max_len, color in feature_ranges:
+            if min_len <= length <= max_len:
+                return mpl_colors.to_rgba(color)
+        return mpl_colors.to_rgba(fallback)
+
+    def _build_length_facecolors(
+        Z_values: np.ndarray,
+        lengths: np.ndarray,
+        fallback_color: str,
+        *,
+        vmin_local: Optional[float],
+        vmax_local: Optional[float],
+    ) -> np.ndarray:
+        zero_rgba = np.array(mpl_colors.to_rgba(zero_color))
+        nan_rgba = np.array(mpl_colors.to_rgba(nan_color))
+        base_colors = np.array(
+            [_resolve_length_color(int(length), fallback_color) for length in lengths],
+            dtype=float,
+        )
+        base_colors[:, 3] = 1.0
+
+        scale = np.array(Z_values, copy=True, dtype=float)
+        finite_mask = np.isfinite(scale)
+        if not finite_mask.any():
+            facecolors = np.zeros(scale.shape + (4,), dtype=float)
+            facecolors[:] = nan_rgba
+            return facecolors
+
+        vmin_use = np.nanmin(scale) if vmin_local is None else vmin_local
+        vmax_use = np.nanmax(scale) if vmax_local is None else vmax_local
+        denom = vmax_use - vmin_use
+        if denom <= 0:
+            norm = np.zeros_like(scale)
+        else:
+            norm = (scale - vmin_use) / denom
+        norm = np.clip(norm, 0, 1)
+
+        row_colors = base_colors[:, None, :]
+        facecolors = zero_rgba + norm[..., None] * (row_colors - zero_rgba)
+        facecolors[..., 3] = 1.0
+        facecolors[~finite_mask] = nan_rgba
+        return facecolors
 
     # --- helper: gaussian smoothing (scipy fallback -> numpy separable conv) ---
     def _gaussian_1d_kernel(sigma: float, eps: float = 1e-12):
@@ -265,9 +317,28 @@ def plot_hmm_size_contours(
                 dy = 1.0
                 y_edges = np.concatenate([y - 0.5, [y[-1] + 0.5]])
 
-                pcm = ax.pcolormesh(
-                    x_edges, y_edges, Z_plot, cmap=cmap, shading="auto", vmin=vmin, vmax=vmax
-                )
+                if feature_ranges:
+                    fallback_color = mpl_colors.to_rgba(plt.get_cmap(cmap)(1.0))
+                    facecolors = _build_length_facecolors(
+                        Z_plot,
+                        lengths_range,
+                        fallback_color,
+                        vmin_local=vmin,
+                        vmax_local=vmax,
+                    )
+                    pcm = ax.pcolormesh(
+                        x_edges,
+                        y_edges,
+                        Z_plot,
+                        shading="auto",
+                        vmin=vmin,
+                        vmax=vmax,
+                        facecolors=facecolors,
+                    )
+                else:
+                    pcm = ax.pcolormesh(
+                        x_edges, y_edges, Z_plot, cmap=cmap, shading="auto", vmin=vmin, vmax=vmax
+                    )
                 ax.set_title(f"{sample} / {ref}")
                 ax.set_ylabel("length")
                 if i_row == rows_on_page - 1:
