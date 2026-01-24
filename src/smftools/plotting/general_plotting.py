@@ -1472,12 +1472,22 @@ def plot_rolling_nn_and_layer(
 
     # --- plot side-by-side with barplots above
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(2, 2, width_ratios=[1, 2], height_ratios=[1, 6], wspace=0.05)
+    gs = fig.add_gridspec(
+        2,
+        4,
+        width_ratios=[1, 0.05, 1, 0.05],
+        height_ratios=[1, 6],
+        wspace=0.2,
+    )
 
     ax1 = fig.add_subplot(gs[1, 0])
-    ax2 = fig.add_subplot(gs[1, 1])
+    ax1_cbar = fig.add_subplot(gs[1, 1])
+    ax2 = fig.add_subplot(gs[1, 2])
+    ax2_cbar = fig.add_subplot(gs[1, 3])
     ax1_bar = fig.add_subplot(gs[0, 0], sharex=ax1)
-    ax2_bar = fig.add_subplot(gs[0, 1], sharex=ax2)
+    ax2_bar = fig.add_subplot(gs[0, 2], sharex=ax2)
+    fig.add_subplot(gs[0, 1]).axis("off")
+    fig.add_subplot(gs[0, 3]).axis("off")
 
     mean_nn = np.nanmean(X_ord.to_numpy(), axis=0)
     clean_barplot(
@@ -1490,7 +1500,13 @@ def plot_rolling_nn_and_layer(
     )
 
     sns.heatmap(
-        X_ord, ax=ax1, cmap="viridis", xticklabels=False, yticklabels=False, robust=robust
+        X_ord,
+        ax=ax1,
+        cmap="viridis",
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax1_cbar,
     )
     ax1.set_title(f"{obsm_key} (row-clustered)")
     starts = subset.uns.get(f"{obsm_key}_starts")
@@ -1518,7 +1534,13 @@ def plot_rolling_nn_and_layer(
     )
 
     sns.heatmap(
-        L_plot, ax=ax2, cmap="coolwarm", xticklabels=False, yticklabels=False, robust=robust
+        L_plot,
+        ax=ax2,
+        cmap="coolwarm",
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax2_cbar,
     )
     ax2.set_title(f"{layer_key} (same row order)")
     _apply_xticks(ax2, [str(x) for x in L_plot.columns], xtick_step)
