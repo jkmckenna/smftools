@@ -100,6 +100,40 @@ def normalized_mean(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarra
     return (mean - mean.min()) / denom
 
 
+def _resolve_feature_color(cmap: Any) -> Tuple[float, float, float, float]:
+    """Resolve a representative feature color from a colormap or color spec."""
+    if isinstance(cmap, str):
+        try:
+            cmap_obj = plt.get_cmap(cmap)
+            return colors.to_rgba(cmap_obj(1.0))
+        except Exception:
+            return colors.to_rgba(cmap)
+
+    if isinstance(cmap, colors.Colormap):
+        if hasattr(cmap, "colors") and cmap.colors:
+            return colors.to_rgba(cmap.colors[-1])
+        return colors.to_rgba(cmap(1.0))
+
+    return colors.to_rgba("black")
+
+
+def _build_hmm_feature_cmap(
+    cmap: Any,
+    *,
+    zero_color: str = "#f5f1e8",
+    nan_color: str = "#ffffff",
+) -> colors.Colormap:
+    """Build a two-color HMM colormap with explicit NaN/under handling."""
+    feature_color = _resolve_feature_color(cmap)
+    hmm_cmap = colors.LinearSegmentedColormap.from_list(
+        "hmm_feature_cmap",
+        [zero_color, feature_color],
+    )
+    hmm_cmap.set_bad(nan_color)
+    hmm_cmap.set_under(nan_color)
+    return hmm_cmap
+
+
 def _layer_to_numpy(
     subset,
     layer_name: str,
@@ -558,13 +592,15 @@ def combined_hmm_raw_clustermap(
                     if normalize_hmm
                     else np.nanmean(hmm_matrix_raw, axis=0)
                 )
+                hmm_plot_matrix = hmm_matrix_raw
+                hmm_plot_cmap = _build_hmm_feature_cmap(cmap_hmm)
 
                 panels = [
                     (
                         f"HMM - {hmm_feature_layer}",
-                        hmm_matrix,
+                        hmm_plot_matrix,
                         hmm_labels,
-                        cmap_hmm,
+                        hmm_plot_cmap,
                         mean_hmm,
                         n_xticks_hmm,
                     ),
@@ -635,7 +671,15 @@ def combined_hmm_raw_clustermap(
                     clean_barplot(axes_bar[i], mean_vec, name)
 
                     # ---- heatmap ----
-                    sns.heatmap(matrix, cmap=cmap, ax=axes_heat[i], yticklabels=False, cbar=False)
+                    heatmap_kwargs = dict(
+                        cmap=cmap,
+                        ax=axes_heat[i],
+                        yticklabels=False,
+                        cbar=False,
+                    )
+                    if name.startswith("HMM -"):
+                        heatmap_kwargs.update(vmin=0.0, vmax=1.0)
+                    sns.heatmap(matrix, **heatmap_kwargs)
 
                     # ---- xticks ----
                     xtick_pos, xtick_labels = pick_xticks(np.asarray(labels), n_ticks)
