@@ -457,6 +457,9 @@ def spatial_adata_core(
                         subset,
                         obsm_key=cfg.rolling_nn_obsm_key,
                         layer_key=cfg.rolling_nn_plot_layer,
+                        max_nan_fraction=cfg.position_max_nan_threshold,
+                        var_valid_fraction_col=f"{reference}_valid_fraction",
+                        title=title,
                         save_name=out_png,
                     )
                 except Exception as exc:
