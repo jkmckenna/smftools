@@ -1227,7 +1227,7 @@ def plot_rolling_nn_and_layer(
 ):
     """
     1) Cluster rows by subset.obsm[obsm_key] (rolling NN distances)
-    2) Plot two heatmaps side-by-side in the SAME row order:
+    2) Plot two heatmaps side-by-side in the SAME row order, with mean barplots above:
          - left: rolling NN distance matrix
          - right: subset.layers[layer_key] matrix
 
@@ -1350,12 +1350,17 @@ def plot_rolling_nn_and_layer(
     L_ord = L_df.loc[ordered_index]
     L_plot = L_ord.fillna(fill_layer_value)
 
-    # --- plot side-by-side
+    # --- plot side-by-side with barplots above
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(1, 2, width_ratios=[1, 2], wspace=0.05)
+    gs = fig.add_gridspec(2, 2, width_ratios=[1, 2], height_ratios=[1, 6], wspace=0.05)
 
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax2 = fig.add_subplot(gs[0, 1])
+    ax1 = fig.add_subplot(gs[1, 0])
+    ax2 = fig.add_subplot(gs[1, 1])
+    ax1_bar = fig.add_subplot(gs[0, 0], sharex=ax1)
+    ax2_bar = fig.add_subplot(gs[0, 1], sharex=ax2)
+
+    mean_nn = np.nanmean(X_ord.to_numpy(), axis=0)
+    clean_barplot(ax1_bar, mean_nn, obsm_key)
 
     sns.heatmap(
         X_ord, ax=ax1, cmap="viridis", xticklabels=False, yticklabels=False, robust=robust
@@ -1374,6 +1379,9 @@ def plot_rolling_nn_and_layer(
         except Exception:
             window_labels = [str(s) for s in starts]
         _apply_xticks(ax1, window_labels, xtick_step)
+
+    mean_layer = np.nanmean(L_ord.to_numpy(), axis=0)
+    clean_barplot(ax2_bar, mean_layer, layer_key)
 
     sns.heatmap(
         L_plot, ax=ax2, cmap="coolwarm", xticklabels=False, yticklabels=False, robust=robust
