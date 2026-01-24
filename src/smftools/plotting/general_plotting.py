@@ -2077,6 +2077,7 @@ def plot_sequence_integer_encoding_clustermaps(
     sample_col: str = "Sample_Names",
     reference_col: str = "Reference_strand",
     layer: str = "sequence_integer_encoding",
+    mismatch_layer: str = "mismatch_integer_encoding",
     min_quality: float | None = 20,
     min_length: int | None = 200,
     min_mapped_length_to_reference_length_ratio: float | None = 0,
@@ -2100,6 +2101,7 @@ def plot_sequence_integer_encoding_clustermaps(
         sample_col: Column in ``adata.obs`` that identifies samples.
         reference_col: Column in ``adata.obs`` that identifies references.
         layer: Layer name containing integer-encoded sequences.
+        mismatch_layer: Optional layer name containing mismatch integer encodings.
         min_quality: Optional minimum read quality filter.
         min_length: Optional minimum mapped length filter.
         min_mapped_length_to_reference_length_ratio: Optional min length ratio filter.
@@ -2164,6 +2166,13 @@ def plot_sequence_integer_encoding_clustermaps(
     def normalize_base(base: str) -> str:
         return base if base in {"A", "C", "G", "T"} else "OTHER"
 
+    mismatch_int_to_base = {}
+    if mismatch_layer in adata.layers:
+        mismatch_encoding_map = adata.uns.get("mismatch_integer_encoding_map", {}) or {}
+        mismatch_int_to_base = {
+            int(v): str(k) for k, v in mismatch_encoding_map.items() if isinstance(v, (int, np.integer))
+        }
+
     for ref in adata.obs[reference_col].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
             qmask = _mask_or_true(
@@ -2204,6 +2213,9 @@ def plot_sequence_integer_encoding_clustermaps(
 
             subset = adata[row_mask, :].copy()
             matrix = np.asarray(subset.layers[layer])
+            mismatch_matrix = None
+            if mismatch_layer in subset.layers:
+                mismatch_matrix = np.asarray(subset.layers[mismatch_layer])
 
             if max_unknown_fraction is not None:
                 unknown_mask = np.isin(matrix, np.asarray(unknown_values))
@@ -2213,10 +2225,14 @@ def plot_sequence_integer_encoding_clustermaps(
                     continue
                 matrix = matrix[:, keep_columns]
                 subset = subset[:, keep_columns].copy()
+                if mismatch_matrix is not None:
+                    mismatch_matrix = mismatch_matrix[:, keep_columns]
 
             if max_reads is not None and matrix.shape[0] > max_reads:
                 matrix = matrix[:max_reads]
                 subset = subset[:max_reads, :].copy()
+                if mismatch_matrix is not None:
+                    mismatch_matrix = mismatch_matrix[:max_reads]
 
             if matrix.size == 0:
                 continue
@@ -2246,8 +2262,18 @@ def plot_sequence_integer_encoding_clustermaps(
 
             if order is not None:
                 matrix = matrix[order]
+                if mismatch_matrix is not None:
+                    mismatch_matrix = mismatch_matrix[order]
 
-            fig, ax = plt.subplots(figsize=(12, 6))
+            has_mismatch = mismatch_matrix is not None
+            fig, axes = plt.subplots(
+                ncols=2 if has_mismatch else 1,
+                figsize=(18, 6) if has_mismatch else (12, 6),
+                sharey=has_mismatch,
+            )
+            if not isinstance(axes, np.ndarray):
+                axes = np.asarray([axes])
+            ax = axes[0]
 
             if use_dna_5color_palette and int_to_base_local:
                 int_to_color = {
@@ -2313,6 +2339,84 @@ def plot_sequence_integer_encoding_clustermaps(
             else:
                 ax.set_xticks([])
 
+            if has_mismatch:
+                mismatch_ax = axes[1]
+                mismatch_int_to_base_local = mismatch_int_to_base or int_to_base_local
+                if use_dna_5color_palette and mismatch_int_to_base_local:
+                    mismatch_int_to_color = {}
+                    for int_val, base in mismatch_int_to_base_local.items():
+                        base_upper = str(base).upper()
+                        if base_upper == "PAD":
+                            mismatch_int_to_color[int(int_val)] = "#D3D3D3"
+                        elif base_upper == "N":
+                            mismatch_int_to_color[int(int_val)] = "#808080"
+                        else:
+                            mismatch_int_to_color[int(int_val)] = DNA_5COLOR_PALETTE[
+                                normalize_base(base_upper)
+                            ]
+
+                    uniq_mismatch = np.unique(mismatch_matrix[~pd.isna(mismatch_matrix)])
+                    for val in uniq_mismatch:
+                        try:
+                            int_val = int(val)
+                        except Exception:
+                            continue
+                        if int_val not in mismatch_int_to_color:
+                            mismatch_int_to_color[int_val] = DNA_5COLOR_PALETTE["OTHER"]
+
+                    ordered_mismatch = sorted(mismatch_int_to_color.items(), key=lambda x: x[0])
+                    mismatch_colors = [color for _, color in ordered_mismatch]
+                    mismatch_bounds = [int_val - 0.5 for int_val, _ in ordered_mismatch]
+                    mismatch_bounds.append(ordered_mismatch[-1][0] + 0.5)
+
+                    mismatch_cmap = colors.ListedColormap(mismatch_colors)
+                    mismatch_norm = colors.BoundaryNorm(mismatch_bounds, mismatch_cmap.N)
+
+                    sns.heatmap(
+                        mismatch_matrix,
+                        cmap=mismatch_cmap,
+                        norm=mismatch_norm,
+                        ax=mismatch_ax,
+                        yticklabels=False,
+                        cbar=show_numeric_colorbar,
+                    )
+
+                    mismatch_legend_handles = [
+                        patches.Patch(facecolor=DNA_5COLOR_PALETTE["A"], label="A"),
+                        patches.Patch(facecolor=DNA_5COLOR_PALETTE["C"], label="C"),
+                        patches.Patch(facecolor=DNA_5COLOR_PALETTE["G"], label="G"),
+                        patches.Patch(facecolor=DNA_5COLOR_PALETTE["T"], label="T"),
+                        patches.Patch(facecolor="#808080", label="Match/N"),
+                        patches.Patch(facecolor="#D3D3D3", label="PAD"),
+                    ]
+                    mismatch_ax.legend(
+                        handles=mismatch_legend_handles,
+                        title="Mismatch base",
+                        loc="upper left",
+                        bbox_to_anchor=(1.02, 1.0),
+                        frameon=False,
+                    )
+                else:
+                    sns.heatmap(
+                        mismatch_matrix,
+                        cmap=cmap,
+                        ax=mismatch_ax,
+                        yticklabels=False,
+                        cbar=True,
+                    )
+
+                mismatch_ax.set_title(f"{sample} - {ref} ({mismatch_layer})")
+                if xtick_step is not None and xtick_step > 0:
+                    sites = np.arange(0, mismatch_matrix.shape[1], xtick_step)
+                    mismatch_ax.set_xticks(sites)
+                    mismatch_ax.set_xticklabels(
+                        subset.var_names[sites].astype(str),
+                        rotation=xtick_rotation,
+                        fontsize=xtick_fontsize,
+                    )
+                else:
+                    mismatch_ax.set_xticks([])
+
             out_file = None
             if save_path is not None:
                 safe_name = f"{ref}__{sample}__{layer}".replace("=", "").replace(",", "_")
@@ -2328,6 +2432,8 @@ def plot_sequence_integer_encoding_clustermaps(
                     "sample": str(sample),
                     "layer": layer,
                     "n_positions": int(matrix.shape[1]),
+                    "mismatch_layer": mismatch_layer if has_mismatch else None,
+                    "mismatch_layer_present": bool(has_mismatch),
                     "output_path": str(out_file) if out_file is not None else None,
                 }
             )
