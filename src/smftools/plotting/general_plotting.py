@@ -1478,6 +1478,7 @@ def plot_rolling_nn_and_layer(
         width_ratios=[1, 0.05, 1, 0.05],
         height_ratios=[1, 6],
         wspace=0.2,
+        hspace=0.05,
     )
 
     ax1 = fig.add_subplot(gs[1, 0])
@@ -1508,7 +1509,6 @@ def plot_rolling_nn_and_layer(
         robust=robust,
         cbar_ax=ax1_cbar,
     )
-    ax1.set_title(f"{obsm_key} (row-clustered)")
     starts = subset.uns.get(f"{obsm_key}_starts")
     if starts is not None:
         starts = np.asarray(starts)
@@ -1542,7 +1542,6 @@ def plot_rolling_nn_and_layer(
         robust=robust,
         cbar_ax=ax2_cbar,
     )
-    ax2.set_title(f"{layer_key} (same row order)")
     _apply_xticks(ax2, [str(x) for x in L_plot.columns], xtick_step)
 
     if title:
