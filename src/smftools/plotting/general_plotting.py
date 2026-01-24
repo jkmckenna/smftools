@@ -1626,15 +1626,17 @@ def plot_hmm_layers_rolling_by_sample_ref(
             )
     layers = list(layers)
 
-    # x coordinates (positions)
+    # x coordinates (positions) + optional labels
+    x_labels = None
     try:
         if use_var_coords:
             x_coords = np.array([int(v) for v in adata.var_names])
         else:
             raise Exception("user disabled var coords")
     except Exception:
-        # fallback to 0..n_vars-1
+        # fallback to 0..n_vars-1, but keep var_names as labels
         x_coords = np.arange(adata.shape[1], dtype=int)
+        x_labels = adata.var_names.astype(str).tolist()
 
     # make output dir
     if save:
@@ -1731,6 +1733,8 @@ def plot_hmm_layers_rolling_by_sample_ref(
                     if np.all(np.isnan(col_mean)):
                         continue
 
+                    valid_mask = np.isfinite(col_mean)
+
                     # smooth via pandas rolling (centered)
                     if (window is None) or (window <= 1):
                         smoothed = col_mean
@@ -1741,6 +1745,7 @@ def plot_hmm_layers_rolling_by_sample_ref(
                             .mean()
                             .to_numpy()
                         )
+                        smoothed = np.where(valid_mask, smoothed, np.nan)
 
                     # x axis: x_coords (trim/pad to match length)
                     L = len(col_mean)
@@ -1769,6 +1774,13 @@ def plot_hmm_layers_rolling_by_sample_ref(
                     ax.set_ylabel(f"{sample_name}\n(n={total_reads})", fontsize=8)
                 if r_idx == nrows - 1:
                     ax.set_xlabel("position", fontsize=8)
+                    if x_labels is not None:
+                        max_ticks = 8
+                        tick_step = max(1, int(math.ceil(len(x_labels) / max_ticks)))
+                        tick_positions = x_coords[::tick_step]
+                        tick_labels = x_labels[::tick_step]
+                        ax.set_xticks(tick_positions)
+                        ax.set_xticklabels(tick_labels, fontsize=7, rotation=45, ha="right")
 
                 # legend (only show in top-left plot to reduce clutter)
                 if (r_idx == 0 and c_idx == 0) and plotted_any:
