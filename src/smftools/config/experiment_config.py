@@ -903,6 +903,9 @@ class ExperimentConfig:
     hmm_clustermap_feature_layers: List[str] = field(
         default_factory=lambda: ["all_accessible_features"]
     )
+    hmm_clustermap_length_layers: List[str] = field(
+        default_factory=lambda: ["all_accessible_features"]
+    )
     hmm_clustermap_sortby: Optional[str] = "hmm"
     hmm_peak_feature_configs: Dict[str, Any] = field(default_factory=dict)
 
@@ -1229,6 +1232,9 @@ class ExperimentConfig:
         hmm_clustermap_feature_layers = _parse_list(
             merged.get("hmm_clustermap_feature_layers", "all_accessible_features")
         )
+        hmm_clustermap_length_layers = _parse_list(
+            merged.get("hmm_clustermap_length_layers", hmm_clustermap_feature_layers)
+        )
 
         hmm_fit_strategy = str(merged.get("hmm_fit_strategy", "per_group")).strip()
         hmm_shared_scope = _parse_list(merged.get("hmm_shared_scope", ["reference", "methbase"]))
@@ -1387,6 +1393,7 @@ class ExperimentConfig:
             hmm_merge_layer_features=hmm_merge_layer_features,
             clustermap_cmap_hmm=merged.get("clustermap_cmap_hmm", "coolwarm"),
             hmm_clustermap_feature_layers=hmm_clustermap_feature_layers,
+            hmm_clustermap_length_layers=hmm_clustermap_length_layers,
             hmm_clustermap_sortby=merged.get("hmm_clustermap_sortby", "hmm"),
             hmm_peak_feature_configs=hmm_peak_feature_configs,
             footprints=merged.get("footprints", None),

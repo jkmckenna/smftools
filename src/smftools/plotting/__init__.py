@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import import_module
 
 _LAZY_ATTRS = {
+    "combined_hmm_length_clustermap": "smftools.plotting.general_plotting",
     "combined_hmm_raw_clustermap": "smftools.plotting.general_plotting",
     "combined_raw_clustermap": "smftools.plotting.general_plotting",
     "plot_rolling_nn_and_layer": "smftools.plotting.general_plotting",

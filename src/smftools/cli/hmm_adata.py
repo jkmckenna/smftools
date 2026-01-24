@@ -644,6 +644,7 @@ def hmm_adata_core(
     from ..hmm import call_hmm_peaks
     from ..metadata import record_smftools_metadata
     from ..plotting import (
+        combined_hmm_length_clustermap,
         combined_hmm_raw_clustermap,
         plot_hmm_layers_rolling_by_sample_ref,
         plot_hmm_size_contours,
@@ -1084,6 +1085,62 @@ def hmm_adata_core(
                 deaminase=deaminase,
                 min_signal=0,
                 index_col_suffix=cfg.reindexed_var_suffix,
+            )
+
+    hmm_length_dir = hmm_directory / "12b_hmm_length_clustermaps"
+    make_dirs([hmm_directory, hmm_length_dir])
+
+    length_layers: list[str] = []
+    length_layer_roots = list(
+        getattr(cfg, "hmm_clustermap_length_layers", cfg.hmm_clustermap_feature_layers)
+    )
+
+    for base in cfg.hmm_methbases:
+        length_layers.extend([f"{base}_{layer}_lengths" for layer in length_layer_roots])
+
+    if getattr(cfg, "hmm_run_multichannel", True) and len(cfg.hmm_methbases) >= 2:
+        length_layers.extend([f"Combined_{layer}_lengths" for layer in length_layer_roots])
+
+    if cfg.cpg:
+        length_layers.extend(["CpG_cpg_patch_lengths"])
+
+    for layer in length_layers:
+        hmm_cluster_save_dir = hmm_length_dir / layer
+        if hmm_cluster_save_dir.is_dir():
+            pass
+        else:
+            make_dirs([hmm_cluster_save_dir])
+            length_cmap = _resolve_feature_colormap(layer, cfg, "Greens")
+            length_feature_ranges = _resolve_length_feature_ranges(layer, cfg, "Greens")
+
+            combined_hmm_length_clustermap(
+                adata,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                length_layer=layer,
+                layer_gpc=cfg.layer_for_clustermap_plotting,
+                layer_cpg=cfg.layer_for_clustermap_plotting,
+                layer_c=cfg.layer_for_clustermap_plotting,
+                layer_a=cfg.layer_for_clustermap_plotting,
+                cmap_lengths=length_cmap,
+                cmap_gpc=cfg.clustermap_cmap_gpc,
+                cmap_cpg=cfg.clustermap_cmap_cpg,
+                cmap_c=cfg.clustermap_cmap_c,
+                cmap_a=cfg.clustermap_cmap_a,
+                min_quality=cfg.read_quality_filter_thresholds[0],
+                min_length=cfg.read_len_filter_thresholds[0],
+                min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[
+                    0
+                ],
+                min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                save_path=hmm_cluster_save_dir,
+                sort_by=cfg.hmm_clustermap_sortby,
+                bins=None,
+                deaminase=deaminase,
+                min_signal=0,
+                index_col_suffix=cfg.reindexed_var_suffix,
+                length_feature_ranges=length_feature_ranges,
             )
 
     hmm_dir = hmm_directory / "13_hmm_bulk_traces"
