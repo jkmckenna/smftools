@@ -177,6 +177,7 @@ def spatial_adata_core(
     )
     from ..readwrite import make_dirs, safe_read_h5ad
     from ..tools import calculate_umap, rolling_window_nn_distance
+    from ..tools.rolling_nn_distance import assign_rolling_nn_results
     from ..tools.position_stats import (
         compute_positionwise_statistics,
         plot_positionwise_matrices,
@@ -405,7 +406,7 @@ def spatial_adata_core(
                 )
                 subset = subset[:, site_mask].copy()
                 try:
-                    rolling_window_nn_distance(
+                    rolling_values, rolling_starts = rolling_window_nn_distance(
                         subset,
                         layer=cfg.rolling_nn_layer,
                         window=cfg.rolling_nn_window,
@@ -425,6 +426,30 @@ def spatial_adata_core(
 
                 safe_sample = str(sample).replace(os.sep, "_")
                 safe_ref = str(reference).replace(os.sep, "_")
+                parent_obsm_key = f"{cfg.rolling_nn_obsm_key}__{safe_ref}"
+                try:
+                    assign_rolling_nn_results(
+                        adata,
+                        subset,
+                        rolling_values,
+                        rolling_starts,
+                        obsm_key=parent_obsm_key,
+                        window=cfg.rolling_nn_window,
+                        step=cfg.rolling_nn_step,
+                        min_overlap=cfg.rolling_nn_min_overlap,
+                        return_fraction=cfg.rolling_nn_return_fraction,
+                        layer=cfg.rolling_nn_layer,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to merge rolling NN results for sample=%s ref=%s: %s",
+                        sample,
+                        reference,
+                        exc,
+                    )
+                adata.uns.setdefault(f"{cfg.rolling_nn_obsm_key}_reference_map", {})[
+                    reference
+                ] = parent_obsm_key
                 out_png = pp_rolling_nn_dir / f"{safe_sample}__{safe_ref}.png"
                 title = f"{sample} {reference}"
                 try:

@@ -164,3 +164,72 @@ def rolling_window_nn_distance(
         adata.uns[f"{store_obsm}_layer"] = layer if layer is not None else "X"
 
     return out, starts
+
+
+def assign_rolling_nn_results(
+    parent_adata: "ad.AnnData",
+    subset_adata: "ad.AnnData",
+    values: np.ndarray,
+    starts: np.ndarray,
+    obsm_key: str,
+    window: int,
+    step: int,
+    min_overlap: int,
+    return_fraction: bool,
+    layer: Optional[str],
+) -> None:
+    """
+    Assign rolling NN results computed on a subset back onto a parent AnnData.
+
+    Parameters
+    ----------
+    parent_adata : AnnData
+        Parent AnnData that should store the combined results.
+    subset_adata : AnnData
+        Subset AnnData used to compute `values`.
+    values : np.ndarray
+        Rolling NN output with shape (n_subset_obs, n_windows).
+    starts : np.ndarray
+        Window start indices corresponding to `values`.
+    obsm_key : str
+        Key to store results under in parent_adata.obsm.
+    window : int
+        Rolling window size (stored in parent_adata.uns).
+    step : int
+        Rolling window step size (stored in parent_adata.uns).
+    min_overlap : int
+        Minimum overlap (stored in parent_adata.uns).
+    return_fraction : bool
+        Whether distances are fractional (stored in parent_adata.uns).
+    layer : str | None
+        Layer used for calculations (stored in parent_adata.uns).
+    """
+    n_obs = parent_adata.n_obs
+    n_windows = values.shape[1]
+
+    if obsm_key not in parent_adata.obsm:
+        parent_adata.obsm[obsm_key] = np.full((n_obs, n_windows), np.nan, dtype=float)
+        parent_adata.uns[f"{obsm_key}_starts"] = starts
+        parent_adata.uns[f"{obsm_key}_window"] = int(window)
+        parent_adata.uns[f"{obsm_key}_step"] = int(step)
+        parent_adata.uns[f"{obsm_key}_min_overlap"] = int(min_overlap)
+        parent_adata.uns[f"{obsm_key}_return_fraction"] = bool(return_fraction)
+        parent_adata.uns[f"{obsm_key}_layer"] = layer if layer is not None else "X"
+    else:
+        existing = parent_adata.obsm[obsm_key]
+        if existing.shape[1] != n_windows:
+            raise ValueError(
+                f"Existing obsm[{obsm_key!r}] has {existing.shape[1]} windows; "
+                f"new values have {n_windows} windows."
+            )
+        existing_starts = parent_adata.uns.get(f"{obsm_key}_starts")
+        if existing_starts is not None and not np.array_equal(existing_starts, starts):
+            raise ValueError(
+                f"Existing obsm[{obsm_key!r}] has different window starts than new values."
+            )
+
+    parent_indexer = parent_adata.obs_names.get_indexer(subset_adata.obs_names)
+    if (parent_indexer < 0).any():
+        raise ValueError("Subset AnnData contains obs not present in parent AnnData.")
+
+    parent_adata.obsm[obsm_key][parent_indexer, :] = values

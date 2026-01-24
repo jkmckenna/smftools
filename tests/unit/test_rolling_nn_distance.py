@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 
 from smftools.tools.rolling_nn_distance import (
+    assign_rolling_nn_results,
     rolling_window_nn_distance,
     rolling_window_nn_distance_by_group,
 )
@@ -188,3 +189,44 @@ def test_rolling_window_nn_distance_reference_site_mask():
     assert starts.tolist() == [0]
     assert distances.shape == (2, 1)
     assert adata.uns["rolling_nn_ref_var_indices"].tolist() == [2]
+
+
+def test_assign_rolling_nn_results_to_parent():
+    X = np.array(
+        [
+            [1.0, 1.0, 0.0, np.nan],
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0],
+            [np.nan, 1.0, 1.0, 0.0],
+        ]
+    )
+    parent = ad.AnnData(X)
+    subset = parent[[0, 2]].copy()
+
+    values, starts = rolling_window_nn_distance(
+        subset,
+        window=4,
+        step=4,
+        min_overlap=2,
+        return_fraction=True,
+        store_obsm=None,
+    )
+
+    assign_rolling_nn_results(
+        parent,
+        subset,
+        values,
+        starts,
+        obsm_key="rolling_nn_parent",
+        window=4,
+        step=4,
+        min_overlap=2,
+        return_fraction=True,
+        layer=None,
+    )
+
+    assert parent.obsm["rolling_nn_parent"].shape == (4, 1)
+    np.testing.assert_allclose(parent.obsm["rolling_nn_parent"][[0, 2], :], values, rtol=1e-6)
+    assert np.isnan(parent.obsm["rolling_nn_parent"][[1, 3], :]).all()
+    assert parent.uns["rolling_nn_parent_starts"].tolist() == [0]
+    assert parent.uns["rolling_nn_parent_window"] == 4
