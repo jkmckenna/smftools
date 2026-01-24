@@ -86,7 +86,7 @@ def _select_labels(subset, sites: np.ndarray, reference: str, index_col_suffix: 
     return labels[sites]
 
 
-def normalized_mean(matrix: np.ndarray) -> np.ndarray:
+def normalized_mean(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarray:
     """Compute normalized column means for a matrix.
 
     Args:
@@ -95,7 +95,7 @@ def normalized_mean(matrix: np.ndarray) -> np.ndarray:
     Returns:
         1D array of normalized means.
     """
-    mean = np.nanmean(matrix, axis=0)
+    mean = np.nanmean(matrix, axis=0) if ignore_nan else np.mean(matrix, axis=0)
     denom = (mean.max() - mean.min()) + 1e-9
     return (mean - mean.min()) / denom
 
@@ -138,13 +138,15 @@ def _layer_to_numpy(
     return np.where(np.isnan(arr), col_mean, arr)
 
 
-def methylation_fraction(matrix: np.ndarray) -> np.ndarray:
+def methylation_fraction(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarray:
     """
     Fraction methylated per column.
     Methylated = 1
     Valid = finite AND not 0
     """
     matrix = np.asarray(matrix)
+    if not ignore_nan:
+        matrix = np.where(np.isnan(matrix), 0, matrix)
     valid_mask = np.isfinite(matrix) & (matrix != 0)
     methyl_mask = (matrix == 1) & np.isfinite(matrix)
 
@@ -346,10 +348,15 @@ def combined_hmm_raw_clustermap(
 
                 # storage
                 stacked_hmm = []
+                stacked_hmm_raw = []
                 stacked_any_c = []
+                stacked_any_c_raw = []
                 stacked_gpc = []
+                stacked_gpc_raw = []
                 stacked_cpg = []
+                stacked_cpg_raw = []
                 stacked_any_a = []
+                stacked_any_a_raw = []
 
                 row_labels, bin_labels, bin_boundaries = [], [], []
                 total_reads = subset.n_obs
@@ -452,6 +459,15 @@ def combined_hmm_raw_clustermap(
                             fill_nan_value=fill_nan_value,
                         )
                     )
+                    stacked_hmm_raw.append(
+                        _layer_to_numpy(
+                            sb,
+                            hmm_feature_layer,
+                            None,
+                            fill_nan_strategy="none",
+                            fill_nan_value=fill_nan_value,
+                        )
+                    )
                     if any_c_sites.size:
                         stacked_any_c.append(
                             _layer_to_numpy(
@@ -459,6 +475,15 @@ def combined_hmm_raw_clustermap(
                                 layer_c,
                                 any_c_sites,
                                 fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                        stacked_any_c_raw.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_c,
+                                any_c_sites,
+                                fill_nan_strategy="none",
                                 fill_nan_value=fill_nan_value,
                             )
                         )
@@ -472,6 +497,15 @@ def combined_hmm_raw_clustermap(
                                 fill_nan_value=fill_nan_value,
                             )
                         )
+                        stacked_gpc_raw.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_gpc,
+                                gpc_sites,
+                                fill_nan_strategy="none",
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
                     if cpg_sites.size:
                         stacked_cpg.append(
                             _layer_to_numpy(
@@ -479,6 +513,15 @@ def combined_hmm_raw_clustermap(
                                 layer_cpg,
                                 cpg_sites,
                                 fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                        stacked_cpg_raw.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_cpg,
+                                cpg_sites,
+                                fill_nan_strategy="none",
                                 fill_nan_value=fill_nan_value,
                             )
                         )
@@ -492,6 +535,15 @@ def combined_hmm_raw_clustermap(
                                 fill_nan_value=fill_nan_value,
                             )
                         )
+                        stacked_any_a_raw.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_a,
+                                any_a_sites,
+                                fill_nan_strategy="none",
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
 
                     row_labels.extend([bin_label] * n)
                     bin_labels.append(f"{bin_label}: {n} reads ({pct:.1f}%)")
@@ -500,8 +552,11 @@ def combined_hmm_raw_clustermap(
 
                 # ---------------- stack ----------------
                 hmm_matrix = np.vstack(stacked_hmm)
+                hmm_matrix_raw = np.vstack(stacked_hmm_raw)
                 mean_hmm = (
-                    normalized_mean(hmm_matrix) if normalize_hmm else np.nanmean(hmm_matrix, axis=0)
+                    normalized_mean(hmm_matrix_raw)
+                    if normalize_hmm
+                    else np.nanmean(hmm_matrix_raw, axis=0)
                 )
 
                 panels = [
@@ -517,26 +572,51 @@ def combined_hmm_raw_clustermap(
 
                 if stacked_any_c:
                     m = np.vstack(stacked_any_c)
+                    m_raw = np.vstack(stacked_any_c_raw)
                     panels.append(
-                        ("C", m, any_c_labels, cmap_c, methylation_fraction(m), n_xticks_any_c)
+                        (
+                            "C",
+                            m,
+                            any_c_labels,
+                            cmap_c,
+                            methylation_fraction(m_raw),
+                            n_xticks_any_c,
+                        )
                     )
 
                 if stacked_gpc:
                     m = np.vstack(stacked_gpc)
+                    m_raw = np.vstack(stacked_gpc_raw)
                     panels.append(
-                        ("GpC", m, gpc_labels, cmap_gpc, methylation_fraction(m), n_xticks_gpc)
+                        (
+                            "GpC",
+                            m,
+                            gpc_labels,
+                            cmap_gpc,
+                            methylation_fraction(m_raw),
+                            n_xticks_gpc,
+                        )
                     )
 
                 if stacked_cpg:
                     m = np.vstack(stacked_cpg)
+                    m_raw = np.vstack(stacked_cpg_raw)
                     panels.append(
-                        ("CpG", m, cpg_labels, cmap_cpg, methylation_fraction(m), n_xticks_cpg)
+                        (
+                            "CpG",
+                            m,
+                            cpg_labels,
+                            cmap_cpg,
+                            methylation_fraction(m_raw),
+                            n_xticks_cpg,
+                        )
                     )
 
                 if stacked_any_a:
                     m = np.vstack(stacked_any_a)
+                    m_raw = np.vstack(stacked_any_a_raw)
                     panels.append(
-                        ("A", m, any_a_labels, cmap_a, methylation_fraction(m), n_xticks_a)
+                        ("A", m, any_a_labels, cmap_a, methylation_fraction(m_raw), n_xticks_a)
                     )
 
                 # ---------------- plotting ----------------

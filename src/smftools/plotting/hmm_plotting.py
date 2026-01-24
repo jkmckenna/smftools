@@ -4,6 +4,7 @@ import math
 from typing import Optional, Tuple, Union
 
 import numpy as np
+import pandas as pd
 
 from smftools.optional_imports import require
 
@@ -150,7 +151,8 @@ def plot_hmm_size_contours(
     figs = []
 
     # decide global max length to allocate y axis (cap to avoid huge memory)
-    observed_max_len = int(np.max(full_layer)) if full_layer.size > 0 else 0
+    finite_lengths = full_layer[np.isfinite(full_layer) & (full_layer > 0)]
+    observed_max_len = int(np.nanmax(finite_lengths)) if finite_lengths.size > 0 else 0
     if max_length_cap is None:
         max_len = observed_max_len
     else:
@@ -205,10 +207,15 @@ def plot_hmm_size_contours(
                     ax.text(0.5, 0.5, "no data", ha="center", va="center")
                     ax.set_title(f"{sample} / {ref}")
                     continue
+                valid_lengths = sub[np.isfinite(sub) & (sub > 0)]
+                if valid_lengths.size == 0:
+                    ax.text(0.5, 0.5, "no data", ha="center", va="center")
+                    ax.set_title(f"{sample} / {ref}")
+                    continue
 
                 # compute counts per length per position
                 n_positions = sub.shape[1]
-                max_len_local = int(sub.max()) if sub.size > 0 else 0
+                max_len_local = int(valid_lengths.max()) if valid_lengths.size > 0 else 0
                 max_len_here = min(max_len, max_len_local)
 
                 lengths_range = np.arange(1, max_len_here + 1, dtype=int)
@@ -219,7 +226,7 @@ def plot_hmm_size_contours(
                 # fill Z by efficient bincount across columns
                 for j in range(n_positions):
                     col_vals = sub[:, j]
-                    pos_vals = col_vals[col_vals > 0].astype(int)
+                    pos_vals = col_vals[np.isfinite(col_vals) & (col_vals > 0)].astype(int)
                     if pos_vals.size == 0:
                         continue
                     clipped = np.clip(pos_vals, 1, max_len_here)
