@@ -883,6 +883,12 @@ def combined_raw_clustermap(
                     any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
 
                 stacked_any_c, stacked_gpc, stacked_cpg, stacked_any_a = [], [], [], []
+                stacked_any_c_raw, stacked_gpc_raw, stacked_cpg_raw, stacked_any_a_raw = (
+                    [],
+                    [],
+                    [],
+                    [],
+                )
                 row_labels, bin_labels, bin_boundaries = [], [], []
                 percentages = {}
                 last_idx = 0
@@ -980,6 +986,15 @@ def combined_raw_clustermap(
                                 fill_nan_value=fill_nan_value,
                             )
                         )
+                        stacked_any_c_raw.append(
+                            _layer_to_numpy(
+                                subset_bin,
+                                layer_c,
+                                any_c_sites,
+                                fill_nan_strategy="none",
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
                     if include_any_c and num_gpc > 0:
                         stacked_gpc.append(
                             _layer_to_numpy(
@@ -987,6 +1002,15 @@ def combined_raw_clustermap(
                                 layer_gpc,
                                 gpc_sites,
                                 fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                        stacked_gpc_raw.append(
+                            _layer_to_numpy(
+                                subset_bin,
+                                layer_gpc,
+                                gpc_sites,
+                                fill_nan_strategy="none",
                                 fill_nan_value=fill_nan_value,
                             )
                         )
@@ -1000,6 +1024,15 @@ def combined_raw_clustermap(
                                 fill_nan_value=fill_nan_value,
                             )
                         )
+                        stacked_cpg_raw.append(
+                            _layer_to_numpy(
+                                subset_bin,
+                                layer_cpg,
+                                cpg_sites,
+                                fill_nan_strategy="none",
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
                     if include_any_a and num_any_a > 0:
                         stacked_any_a.append(
                             _layer_to_numpy(
@@ -1007,6 +1040,15 @@ def combined_raw_clustermap(
                                 layer_a,
                                 any_a_sites,
                                 fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                        stacked_any_a_raw.append(
+                            _layer_to_numpy(
+                                subset_bin,
+                                layer_a,
+                                any_a_sites,
+                                fill_nan_strategy="none",
                                 fill_nan_value=fill_nan_value,
                             )
                         )
@@ -1023,12 +1065,25 @@ def combined_raw_clustermap(
 
                 if include_any_c and stacked_any_c:
                     any_c_matrix = np.vstack(stacked_any_c)
+                    any_c_matrix_raw = np.vstack(stacked_any_c_raw)
                     gpc_matrix = np.vstack(stacked_gpc) if stacked_gpc else np.empty((0, 0))
+                    gpc_matrix_raw = (
+                        np.vstack(stacked_gpc_raw) if stacked_gpc_raw else np.empty((0, 0))
+                    )
                     cpg_matrix = np.vstack(stacked_cpg) if stacked_cpg else np.empty((0, 0))
+                    cpg_matrix_raw = (
+                        np.vstack(stacked_cpg_raw) if stacked_cpg_raw else np.empty((0, 0))
+                    )
 
-                    mean_any_c = methylation_fraction(any_c_matrix) if any_c_matrix.size else None
-                    mean_gpc = methylation_fraction(gpc_matrix) if gpc_matrix.size else None
-                    mean_cpg = methylation_fraction(cpg_matrix) if cpg_matrix.size else None
+                    mean_any_c = (
+                        methylation_fraction(any_c_matrix_raw) if any_c_matrix_raw.size else None
+                    )
+                    mean_gpc = (
+                        methylation_fraction(gpc_matrix_raw) if gpc_matrix_raw.size else None
+                    )
+                    mean_cpg = (
+                        methylation_fraction(cpg_matrix_raw) if cpg_matrix_raw.size else None
+                    )
 
                     if any_c_matrix.size:
                         blocks.append(
@@ -1069,7 +1124,10 @@ def combined_raw_clustermap(
 
                 if include_any_a and stacked_any_a:
                     any_a_matrix = np.vstack(stacked_any_a)
-                    mean_any_a = methylation_fraction(any_a_matrix) if any_a_matrix.size else None
+                    any_a_matrix_raw = np.vstack(stacked_any_a_raw)
+                    mean_any_a = (
+                        methylation_fraction(any_a_matrix_raw) if any_a_matrix_raw.size else None
+                    )
                     if any_a_matrix.size:
                         blocks.append(
                             dict(
