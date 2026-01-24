@@ -200,6 +200,7 @@ def converted_BAM_to_adata(
     )
 
     final_adata.uns["sequence_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
+    final_adata.uns["mismatch_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
     final_adata.uns["sequence_integer_decoding_map"] = {
         str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
     }
@@ -550,10 +551,14 @@ def process_single_bam(
         sequence = chromosome_FASTA_dict[chromosome][0]
 
         # Extract Base Identities
-        fwd_bases, rev_bases, mismatch_counts_per_read, mismatch_trend_per_read = (
-            extract_base_identities(
-                bam, record, range(current_length), max_reference_length, sequence, samtools_backend
-            )
+        (
+            fwd_bases,
+            rev_bases,
+            mismatch_counts_per_read,
+            mismatch_trend_per_read,
+            mismatch_base_identities,
+        ) = extract_base_identities(
+            bam, record, range(current_length), max_reference_length, sequence, samtools_backend
         )
         mismatch_trend_series = pd.Series(mismatch_trend_per_read)
 
@@ -656,6 +661,17 @@ def process_single_bam(
         encoded_matrix = np.vstack(
             [encoded_reads.get(read_name, default_sequence) for read_name in sorted_index]
         )
+        default_mismatch_sequence = np.full(
+            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int16
+        )
+        if current_length < sequence_length:
+            default_mismatch_sequence[current_length:] = SEQUENCE_ENCODING_CONFIG.padding_value
+        mismatch_encoded_matrix = np.vstack(
+            [
+                mismatch_base_identities.get(read_name, default_mismatch_sequence)
+                for read_name in sorted_index
+            ]
+        )
 
         # Convert to AnnData
         X = bin_df.values.astype(np.float32)
@@ -689,6 +705,7 @@ def process_single_bam(
 
         # Attach integer sequence encoding to layers
         adata.layers["sequence_integer_encoding"] = encoded_matrix
+        adata.layers["mismatch_integer_encoding"] = mismatch_encoded_matrix
 
         adata_list.append(adata)
 

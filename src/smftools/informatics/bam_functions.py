@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Un
 import numpy as np
 from tqdm import tqdm
 
+from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
@@ -1187,6 +1188,9 @@ def extract_base_identities(
     Returns:
         dict: Base identities from forward mapped reads.
         dict: Base identities from reverse mapped reads.
+        dict: Mismatch counts per read.
+        dict: Mismatch trends per read.
+        dict: Integer-encoded mismatch bases per read.
     """
     logger.debug("Extracting nucleotide identities for each read using extract_base_identities")
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
@@ -1195,9 +1199,22 @@ def extract_base_identities(
     fwd_base_identities = defaultdict(lambda: np.full(max_reference_length, "N", dtype="<U1"))
     rev_base_identities = defaultdict(lambda: np.full(max_reference_length, "N", dtype="<U1"))
     mismatch_counts_per_read = defaultdict(lambda: defaultdict(Counter))
+    mismatch_base_identities = defaultdict(
+        lambda: np.full(
+            max_reference_length,
+            MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"],
+            dtype=np.int16,
+        )
+    )
 
     backend_choice = _resolve_samtools_backend(samtools_backend)
     ref_seq = sequence.upper()
+    sequence_length = len(sequence)
+
+    def _encode_mismatch_base(base: str) -> int:
+        return MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT.get(
+            base.upper(), MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"]
+        )
 
     if backend_choice == "python":
         logger.debug("Extracting base identities using python")
@@ -1212,6 +1229,7 @@ def extract_base_identities(
                 read_name = read.query_name
                 query_sequence = read.query_sequence
                 base_dict = rev_base_identities if read.is_reverse else fwd_base_identities
+                mismatch_base_identities[read_name]
 
                 # Use get_aligned_pairs directly with positions filtering
                 aligned_pairs = read.get_aligned_pairs(matches_only=True)
@@ -1225,6 +1243,9 @@ def extract_base_identities(
                     # Track mismatches (excluding Ns)
                     if read_base != ref_base and read_base != "N" and ref_base != "N":
                         mismatch_counts_per_read[read_name][ref_base][read_base] += 1
+                        mismatch_base_identities[read_name][reference_position] = (
+                            _encode_mismatch_base(read_base)
+                        )
     else:
         bam_path = Path(bam_file)
         logger.debug("Extracting base identities using samtools")
@@ -1264,6 +1285,7 @@ def extract_base_identities(
             if cigar == "*" or query_sequence == "*":
                 continue
             base_dict = rev_base_identities if (flag & 16) else fwd_base_identities
+            mismatch_base_identities[read_name]
             for read_pos, ref_pos in _iter_aligned_pairs(cigar, pos - 1):
                 if read_pos >= len(query_sequence) or ref_pos >= len(ref_seq):
                     continue
@@ -1273,6 +1295,7 @@ def extract_base_identities(
                     base_dict[read_name][ref_pos] = read_base
                 if read_base != ref_base and read_base != "N" and ref_base != "N":
                     mismatch_counts_per_read[read_name][ref_base][read_base] += 1
+                    mismatch_base_identities[read_name][ref_pos] = _encode_mismatch_base(read_base)
         rc = proc.wait()
         if rc != 0:
             stderr = proc.stderr.read() if proc.stderr else ""
@@ -1293,11 +1316,17 @@ def extract_base_identities(
         else:
             mismatch_trend_per_read[read_name] = "none"
 
+    if sequence_length < max_reference_length:
+        padding_value = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["PAD"]
+        for mismatch_values in mismatch_base_identities.values():
+            mismatch_values[sequence_length:] = padding_value
+
     return (
         dict(fwd_base_identities),
         dict(rev_base_identities),
         dict(mismatch_counts_per_read),
         mismatch_trend_per_read,
+        dict(mismatch_base_identities),
     )
 
 

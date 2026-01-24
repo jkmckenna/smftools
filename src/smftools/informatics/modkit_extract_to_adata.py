@@ -806,6 +806,54 @@ def _write_sequence_batches(
     return batch_files
 
 
+def _write_integer_batches(
+    sequences: Mapping[str, np.ndarray],
+    tmp_dir: Path,
+    record: str,
+    prefix: str,
+    batch_size: int,
+) -> list[str]:
+    """Write integer-encoded sequences into batched H5AD files.
+
+    Args:
+        sequences (Mapping[str, np.ndarray]): Read name to integer arrays.
+        tmp_dir (Path): Directory for temporary H5AD files.
+        record (str): Reference record identifier.
+        prefix (str): Prefix used to name batch files.
+        batch_size (int): Number of reads per H5AD batch file.
+
+    Returns:
+        list[str]: Paths to written H5AD batch files.
+
+    Processing Steps:
+        1. Accumulate integer arrays into batches.
+        2. Persist each batch as an H5AD with the dictionary stored in `.uns`.
+    """
+    import anndata as ad
+
+    batch_files: list[str] = []
+    batch: dict[str, np.ndarray] = {}
+    batch_number = 0
+
+    for read_name, sequence in sequences.items():
+        if sequence is None:
+            continue
+        batch[read_name] = np.asarray(sequence, dtype=np.int16)
+        if len(batch) >= batch_size:
+            save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
+            ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
+            batch_files.append(str(save_name))
+            batch = {}
+            batch_number += 1
+
+    if batch:
+        save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
+        ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
+        batch_files.append(str(save_name))
+
+    return batch_files
+
+
 def _load_sequence_batches(
     batch_files: list[Path | str],
 ) -> tuple[dict[str, np.ndarray], set[str], set[str]]:
@@ -1140,9 +1188,15 @@ def modkit_extract_to_adata(
     ##########################################################################################
     # Encode read sequences into integer arrays and cache in tmp_dir.
     sequence_batch_files: dict[str, list[str]] = {}
+    mismatch_batch_files: dict[str, list[str]] = {}
     sequence_cache_path = tmp_dir / "tmp_sequence_int_file_dict.h5ad"
     if sequence_cache_path.exists():
-        sequence_batch_files = ad.read_h5ad(sequence_cache_path).uns
+        cached_uns = ad.read_h5ad(sequence_cache_path).uns
+        if "sequence_batch_files" in cached_uns:
+            sequence_batch_files = cached_uns.get("sequence_batch_files", {})
+            mismatch_batch_files = cached_uns.get("mismatch_batch_files", {})
+        else:
+            sequence_batch_files = cached_uns
         logger.debug("Found existing integer-encoded reads, using these")
     else:
         for bami, bam in enumerate(bam_path_list):
@@ -1155,9 +1209,18 @@ def modkit_extract_to_adata(
                     rev_base_identities,
                     _mismatch_counts_per_read,
                     _mismatch_trend_per_read,
+                    mismatch_base_identities,
                 ) = extract_base_identities(
                     bam, record, positions, max_reference_length, ref_seq, samtools_backend
                 )
+                mismatch_fwd = {
+                    read_name: mismatch_base_identities[read_name]
+                    for read_name in fwd_base_identities
+                }
+                mismatch_rev = {
+                    read_name: mismatch_base_identities[read_name]
+                    for read_name in rev_base_identities
+                }
                 fwd_sequence_files = _write_sequence_batches(
                     fwd_base_identities,
                     tmp_dir,
@@ -1177,8 +1240,31 @@ def modkit_extract_to_adata(
                     batch_size=100000,
                 )
                 sequence_batch_files[f"{bami}_{record}"] = fwd_sequence_files + rev_sequence_files
-                del fwd_base_identities, rev_base_identities
-        ad.AnnData(X=np.random.rand(1, 1), uns=sequence_batch_files).write_h5ad(sequence_cache_path)
+                mismatch_fwd_files = _write_integer_batches(
+                    mismatch_fwd,
+                    tmp_dir,
+                    record,
+                    f"{bami}_mismatch_fwd",
+                    batch_size=100000,
+                )
+                mismatch_rev_files = _write_integer_batches(
+                    mismatch_rev,
+                    tmp_dir,
+                    record,
+                    f"{bami}_mismatch_rev",
+                    batch_size=100000,
+                )
+                mismatch_batch_files[f"{bami}_{record}"] = (
+                    mismatch_fwd_files + mismatch_rev_files
+                )
+                del fwd_base_identities, rev_base_identities, mismatch_base_identities
+        ad.AnnData(
+            X=np.random.rand(1, 1),
+            uns={
+                "sequence_batch_files": sequence_batch_files,
+                "mismatch_batch_files": mismatch_batch_files,
+            },
+        ).write_h5ad(sequence_cache_path)
     ##########################################################################################
 
     ##########################################################################################
@@ -1445,6 +1531,11 @@ def modkit_extract_to_adata(
                                 sequence_files = _normalize_sequence_batch_files(
                                     sequence_batch_files.get(f"{final_sample_index}_{record}", [])
                                 )
+                                mismatch_files = _normalize_sequence_batch_files(
+                                    mismatch_batch_files.get(
+                                        f"{final_sample_index}_{record}", []
+                                    )
+                                )
                                 if not sequence_files:
                                     logger.warning(
                                         "No encoded sequence batches found for sample %s record %s",
@@ -1458,6 +1549,13 @@ def modkit_extract_to_adata(
                                     fwd_mapped_reads,
                                     rev_mapped_reads,
                                 ) = _load_sequence_batches(sequence_files)
+                                mismatch_reads: dict[str, np.ndarray] = {}
+                                if mismatch_files:
+                                    (
+                                        mismatch_reads,
+                                        _mismatch_fwd_reads,
+                                        _mismatch_rev_reads,
+                                    ) = _load_sequence_batches(mismatch_files)
 
                                 read_names = list(encoded_reads.keys())
 
@@ -1495,6 +1593,24 @@ def modkit_extract_to_adata(
                                 gc.collect()
 
                                 temp_adata.layers["sequence_integer_encoding"] = encoded_matrix
+                                if mismatch_reads:
+                                    current_reference_length = reference_dict[record][0]
+                                    default_mismatch_sequence = np.full(
+                                        sequence_length,
+                                        MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"],
+                                        dtype=np.int16,
+                                    )
+                                    if current_reference_length < sequence_length:
+                                        default_mismatch_sequence[current_reference_length:] = (
+                                            padding_value
+                                        )
+                                    mismatch_matrix = np.vstack(
+                                        [
+                                            mismatch_reads.get(read_name, default_mismatch_sequence)
+                                            for read_name in sorted_index
+                                        ]
+                                    )
+                                    temp_adata.layers["mismatch_integer_encoding"] = mismatch_matrix
 
                                 # If final adata object already has a sample loaded, concatenate the current sample into the existing adata object
                                 if adata:
@@ -1588,6 +1704,7 @@ def modkit_extract_to_adata(
         final_adata.obs[col] = final_adata.obs[col].astype("category")
 
     final_adata.uns["sequence_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
+    final_adata.uns["mismatch_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
     final_adata.uns["sequence_integer_decoding_map"] = {
         str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
     }
