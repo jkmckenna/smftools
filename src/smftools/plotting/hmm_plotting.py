@@ -85,7 +85,7 @@ def plot_hmm_size_contours(
         if not finite_mask.any():
             facecolors = np.zeros(scale.shape + (4,), dtype=float)
             facecolors[:] = nan_rgba
-            return facecolors
+            return facecolors.reshape(-1, 4)
 
         vmin_use = np.nanmin(scale) if vmin_local is None else vmin_local
         vmax_use = np.nanmax(scale) if vmax_local is None else vmax_local
@@ -100,7 +100,7 @@ def plot_hmm_size_contours(
         facecolors = zero_rgba + norm[..., None] * (row_colors - zero_rgba)
         facecolors[..., 3] = 1.0
         facecolors[~finite_mask] = nan_rgba
-        return facecolors
+        return facecolors.reshape(-1, 4)
 
     # --- helper: gaussian smoothing (scipy fallback -> numpy separable conv) ---
     def _gaussian_1d_kernel(sigma: float, eps: float = 1e-12):
