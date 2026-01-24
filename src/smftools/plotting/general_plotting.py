@@ -1169,9 +1169,16 @@ def plot_rolling_nn_and_layer(
     fill_nn_with_colmax: bool = True,
     fill_layer_value: float = 0.0,
     drop_all_nan_windows: bool = True,
+    max_nan_fraction: float | None = None,
+    var_valid_fraction_col: str | None = None,
+    var_nan_fraction_col: str | None = None,
     figsize=(14, 10),
     right_panel_var_mask=None,  # optional boolean mask over subset.var to reduce width
     robust=True,
+    title: str | None = None,
+    xtick_step: int | None = None,
+    xtick_rotation: int = 90,
+    xtick_fontsize: int = 8,
     save_name=None,
 ):
     """
@@ -1181,7 +1188,44 @@ def plot_rolling_nn_and_layer(
          - right: subset.layers[layer_key] matrix
 
     Handles categorical/MultiIndex issues in metadata coloring.
+
+    Args:
+        subset: AnnData subset with rolling NN distances stored in ``obsm``.
+        obsm_key: Key in ``subset.obsm`` containing rolling NN distances.
+        layer_key: Layer name to plot alongside rolling NN distances.
+        meta_cols: Obs columns used for row color annotations.
+        col_cluster: Whether to cluster columns in the rolling NN clustermap.
+        fill_nn_with_colmax: Fill NaNs in rolling NN distances with per-column max values.
+        fill_layer_value: Fill NaNs in the layer heatmap with this value.
+        drop_all_nan_windows: Drop rolling windows that are all NaN.
+        max_nan_fraction: Maximum allowed NaN fraction per position (filtering columns).
+        var_valid_fraction_col: ``subset.var`` column with valid fractions (1 - NaN fraction).
+        var_nan_fraction_col: ``subset.var`` column with NaN fractions.
+        figsize: Figure size for the combined plot.
+        right_panel_var_mask: Optional boolean mask over ``subset.var`` for the right panel.
+        robust: Use robust color scaling in seaborn.
+        title: Optional figure title (suptitle).
+        xtick_step: Spacing between x-axis tick labels.
+        xtick_rotation: Rotation for x-axis tick labels.
+        xtick_fontsize: Font size for x-axis tick labels.
+        save_name: Optional output path for saving the plot.
     """
+    if max_nan_fraction is not None and not (0 <= max_nan_fraction <= 1):
+        raise ValueError("max_nan_fraction must be between 0 and 1.")
+
+    def _apply_xticks(ax, labels, step):
+        if labels is None or len(labels) == 0:
+            ax.set_xticks([])
+            return
+        if step is None or step <= 0:
+            step = max(1, len(labels) // 10)
+        ticks = np.arange(0, len(labels), step)
+        ax.set_xticks(ticks + 0.5)
+        ax.set_xticklabels(
+            [labels[i] for i in ticks],
+            rotation=xtick_rotation,
+            fontsize=xtick_fontsize,
+        )
 
     # --- rolling NN distances
     X = subset.obsm[obsm_key]
@@ -1234,6 +1278,29 @@ def plot_rolling_nn_and_layer(
         # right_panel_var_mask must be boolean array/Series aligned to subset.var_names
         if hasattr(right_panel_var_mask, "values"):
             right_panel_var_mask = right_panel_var_mask.values
+        right_panel_var_mask = np.asarray(right_panel_var_mask, dtype=bool)
+
+    if max_nan_fraction is not None:
+        nan_fraction = None
+        if var_nan_fraction_col and var_nan_fraction_col in subset.var:
+            nan_fraction = pd.to_numeric(
+                subset.var[var_nan_fraction_col], errors="coerce"
+            ).to_numpy()
+        elif var_valid_fraction_col and var_valid_fraction_col in subset.var:
+            valid_fraction = pd.to_numeric(
+                subset.var[var_valid_fraction_col], errors="coerce"
+            ).to_numpy()
+            nan_fraction = 1 - valid_fraction
+        if nan_fraction is not None:
+            nan_mask = nan_fraction <= max_nan_fraction
+            if right_panel_var_mask is None:
+                right_panel_var_mask = nan_mask
+            else:
+                right_panel_var_mask = right_panel_var_mask & nan_mask
+
+    if right_panel_var_mask is not None:
+        if right_panel_var_mask.size != L_df.shape[1]:
+            raise ValueError("right_panel_var_mask must align with subset.var_names.")
         L_df = L_df.loc[:, right_panel_var_mask]
 
     L_ord = L_df.loc[ordered_index]
@@ -1246,13 +1313,32 @@ def plot_rolling_nn_and_layer(
     ax1 = fig.add_subplot(gs[0, 0])
     ax2 = fig.add_subplot(gs[0, 1])
 
-    sns.heatmap(X_ord, ax=ax1, cmap="viridis", xticklabels=False, yticklabels=False, robust=robust)
+    sns.heatmap(
+        X_ord, ax=ax1, cmap="viridis", xticklabels=False, yticklabels=False, robust=robust
+    )
     ax1.set_title(f"{obsm_key} (row-clustered)")
+    starts = subset.uns.get(f"{obsm_key}_starts")
+    if starts is not None:
+        starts = np.asarray(starts)
+        window_labels = [str(s) for s in starts]
+        try:
+            col_idx = X_ord.columns.to_numpy()
+            if np.issubdtype(col_idx.dtype, np.number):
+                col_idx = col_idx.astype(int)
+                if col_idx.size and col_idx.max() < len(starts):
+                    window_labels = [str(s) for s in starts[col_idx]]
+        except Exception:
+            window_labels = [str(s) for s in starts]
+        _apply_xticks(ax1, window_labels, xtick_step)
 
     sns.heatmap(
         L_plot, ax=ax2, cmap="coolwarm", xticklabels=False, yticklabels=False, robust=robust
     )
     ax2.set_title(f"{layer_key} (same row order)")
+    _apply_xticks(ax2, [str(x) for x in L_plot.columns], xtick_step)
+
+    if title:
+        fig.suptitle(title)
 
     if save_name is not None:
         fname = os.path.join(save_name)
