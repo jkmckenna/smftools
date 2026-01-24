@@ -220,20 +220,39 @@ def _methylation_fraction_for_layer(
     return methylation_fraction(matrix, ignore_nan=ignore_nan, zero_is_valid=zero_is_valid)
 
 
-def clean_barplot(ax, mean_values, title):
+def clean_barplot(
+    ax,
+    mean_values,
+    title,
+    *,
+    y_max: float | None = 1.0,
+    y_label: str = "Mean",
+    y_ticks: list[float] | None = None,
+):
     """Format a barplot with consistent axes and labels.
 
     Args:
         ax: Matplotlib axes.
         mean_values: Values to plot.
         title: Plot title.
+        y_max: Optional y-axis max; inferred from data if not provided.
+        y_label: Y-axis label.
+        y_ticks: Optional y-axis ticks.
     """
     x = np.arange(len(mean_values))
     ax.bar(x, mean_values, color="gray", width=1.0, align="edge")
     ax.set_xlim(0, len(mean_values))
-    ax.set_ylim(0, 1)
-    ax.set_yticks([0.0, 0.5, 1.0])
-    ax.set_ylabel("Mean")
+    if y_ticks is None and y_max == 1.0:
+        y_ticks = [0.0, 0.5, 1.0]
+    if y_max is None:
+        y_max = np.nanmax(mean_values) if len(mean_values) else 1.0
+        if not np.isfinite(y_max) or y_max <= 0:
+            y_max = 1.0
+        y_max *= 1.05
+    ax.set_ylim(0, y_max)
+    if y_ticks is not None:
+        ax.set_yticks(y_ticks)
+    ax.set_ylabel(y_label)
     ax.set_title(title, fontsize=12, pad=2)
 
     # Hide all spines except left
@@ -1461,7 +1480,14 @@ def plot_rolling_nn_and_layer(
     ax2_bar = fig.add_subplot(gs[0, 1], sharex=ax2)
 
     mean_nn = np.nanmean(X_ord.to_numpy(), axis=0)
-    clean_barplot(ax1_bar, mean_nn, obsm_key)
+    clean_barplot(
+        ax1_bar,
+        mean_nn,
+        obsm_key,
+        y_max=None,
+        y_label="Mean distance",
+        y_ticks=None,
+    )
 
     sns.heatmap(
         X_ord, ax=ax1, cmap="viridis", xticklabels=False, yticklabels=False, robust=robust
@@ -1481,8 +1507,15 @@ def plot_rolling_nn_and_layer(
             window_labels = [str(s) for s in starts]
         _apply_xticks(ax1, window_labels, xtick_step)
 
-    mean_layer = np.nanmean(L_ord.to_numpy(), axis=0)
-    clean_barplot(ax2_bar, mean_layer, layer_key)
+    methylation_fraction = _methylation_fraction_for_layer(L_ord.to_numpy(), layer_key)
+    clean_barplot(
+        ax2_bar,
+        methylation_fraction,
+        layer_key,
+        y_max=1.0,
+        y_label="Methylation fraction",
+        y_ticks=[0.0, 0.5, 1.0],
+    )
 
     sns.heatmap(
         L_plot, ax=ax2, cmap="coolwarm", xticklabels=False, yticklabels=False, robust=robust
