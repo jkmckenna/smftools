@@ -134,6 +134,35 @@ def _build_hmm_feature_cmap(
     return hmm_cmap
 
 
+def _map_length_matrix_to_subclasses(
+    length_matrix: np.ndarray,
+    feature_ranges: Sequence[Tuple[int, int, Any]],
+) -> np.ndarray:
+    """Map length values into subclass integer codes based on feature ranges."""
+    mapped = np.zeros_like(length_matrix, dtype=float)
+    finite_mask = np.isfinite(length_matrix)
+    for idx, (min_len, max_len, _color) in enumerate(feature_ranges, start=1):
+        mask = finite_mask & (length_matrix >= min_len) & (length_matrix <= max_len)
+        mapped[mask] = float(idx)
+    mapped[~finite_mask] = np.nan
+    return mapped
+
+
+def _build_length_feature_cmap(
+    feature_ranges: Sequence[Tuple[int, int, Any]],
+    *,
+    zero_color: str = "#f5f1e8",
+    nan_color: str = "#E6E6E6",
+) -> Tuple[colors.Colormap, colors.BoundaryNorm]:
+    """Build a discrete colormap and norm for length-based subclasses."""
+    color_list = [zero_color] + [color for _, _, color in feature_ranges]
+    cmap = colors.ListedColormap(color_list, name="hmm_length_feature_cmap")
+    cmap.set_bad(nan_color)
+    bounds = np.arange(-0.5, len(color_list) + 0.5, 1)
+    norm = colors.BoundaryNorm(bounds, cmap.N)
+    return cmap, norm
+
+
 def _layer_to_numpy(
     subset,
     layer_name: str,
@@ -1285,6 +1314,492 @@ def combined_raw_clustermap(
 
                 traceback.print_exc()
                 continue
+
+    return results
+
+
+def combined_hmm_length_clustermap(
+    adata,
+    sample_col: str = "Sample_Names",
+    reference_col: str = "Reference_strand",
+    length_layer: str = "hmm_combined_lengths",
+    layer_gpc: str = "nan0_0minus1",
+    layer_cpg: str = "nan0_0minus1",
+    layer_c: str = "nan0_0minus1",
+    layer_a: str = "nan0_0minus1",
+    cmap_lengths: Any = "Greens",
+    cmap_gpc: str = "coolwarm",
+    cmap_cpg: str = "viridis",
+    cmap_c: str = "coolwarm",
+    cmap_a: str = "coolwarm",
+    min_quality: int = 20,
+    min_length: int = 200,
+    min_mapped_length_to_reference_length_ratio: float = 0.8,
+    min_position_valid_fraction: float = 0.5,
+    demux_types: Sequence[str] = ("single", "double", "already"),
+    sample_mapping: Optional[Mapping[str, str]] = None,
+    save_path: str | Path | None = None,
+    sort_by: str = "gpc",
+    bins: Optional[Dict[str, Any]] = None,
+    deaminase: bool = False,
+    min_signal: float = 0.0,
+    n_xticks_lengths: int = 10,
+    n_xticks_any_c: int = 8,
+    n_xticks_gpc: int = 8,
+    n_xticks_cpg: int = 8,
+    n_xticks_a: int = 8,
+    index_col_suffix: str | None = None,
+    fill_nan_strategy: str = "value",
+    fill_nan_value: float = -1,
+    length_feature_ranges: Optional[Sequence[Tuple[int, int, Any]]] = None,
+):
+    """
+    Plot clustermaps for length-encoded HMM feature layers with optional subclass colors.
+
+    Length-based feature ranges map integer lengths into subclass colors for accessible
+    and footprint layers. Raw methylation panels are included when available.
+    """
+    if fill_nan_strategy not in {"none", "value", "col_mean"}:
+        raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
+
+    def pick_xticks(labels: np.ndarray, n_ticks: int):
+        """Pick tick indices/labels from an array."""
+        if labels.size == 0:
+            return [], []
+        idx = np.linspace(0, len(labels) - 1, n_ticks).round().astype(int)
+        idx = np.unique(idx)
+        return idx.tolist(), labels[idx].tolist()
+
+    def _mask_or_true(series_name: str, predicate):
+        """Return a mask from predicate or an all-True mask."""
+        if series_name not in adata.obs:
+            return pd.Series(True, index=adata.obs.index)
+        s = adata.obs[series_name]
+        try:
+            return predicate(s)
+        except Exception:
+            return pd.Series(True, index=adata.obs.index)
+
+    results = []
+    signal_type = "deamination" if deaminase else "methylation"
+    feature_ranges = tuple(length_feature_ranges or ())
+
+    for ref in adata.obs[reference_col].cat.categories:
+        for sample in adata.obs[sample_col].cat.categories:
+            display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
+            qmask = _mask_or_true(
+                "read_quality",
+                (lambda s: s >= float(min_quality))
+                if (min_quality is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lm_mask = _mask_or_true(
+                "mapped_length",
+                (lambda s: s >= float(min_length))
+                if (min_length is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lrr_mask = _mask_or_true(
+                "mapped_length_to_reference_length_ratio",
+                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
+                if (min_mapped_length_to_reference_length_ratio is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+
+            demux_mask = _mask_or_true(
+                "demux_type",
+                (lambda s: s.astype("string").isin(list(demux_types)))
+                if (demux_types is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+
+            ref_mask = adata.obs[reference_col] == ref
+            sample_mask = adata.obs[sample_col] == sample
+
+            row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
+
+            if not bool(row_mask.any()):
+                print(
+                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
+                )
+                continue
+
+            try:
+                subset = adata[row_mask, :].copy()
+
+                if min_position_valid_fraction is not None:
+                    valid_key = f"{ref}_valid_fraction"
+                    if valid_key in subset.var:
+                        v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
+                        col_mask = np.asarray(v > float(min_position_valid_fraction), dtype=bool)
+                        if col_mask.any():
+                            subset = subset[:, col_mask].copy()
+                        else:
+                            print(
+                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
+                            )
+                            continue
+
+                if subset.shape[0] == 0:
+                    print(f"No reads left after filtering for {display_sample} - {ref}")
+                    continue
+
+                if bins is None:
+                    bins_temp = {"All": np.ones(subset.n_obs, dtype=bool)}
+                else:
+                    bins_temp = bins
+
+                def _sites(*keys):
+                    """Return indices for the first matching site key."""
+                    for k in keys:
+                        if k in subset.var:
+                            return np.where(subset.var[k].values)[0]
+                    return np.array([], dtype=int)
+
+                gpc_sites = _sites(f"{ref}_GpC_site")
+                cpg_sites = _sites(f"{ref}_CpG_site")
+                any_c_sites = _sites(f"{ref}_any_C_site", f"{ref}_C_site")
+                any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
+
+                length_sites = np.arange(subset.n_vars, dtype=int)
+                length_labels = _select_labels(subset, length_sites, ref, index_col_suffix)
+                gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
+                cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
+                any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
+                any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
+
+                stacked_lengths = []
+                stacked_lengths_raw = []
+                stacked_any_c = []
+                stacked_any_c_raw = []
+                stacked_gpc = []
+                stacked_gpc_raw = []
+                stacked_cpg = []
+                stacked_cpg_raw = []
+                stacked_any_a = []
+                stacked_any_a_raw = []
+
+                row_labels, bin_labels, bin_boundaries = [], [], []
+                total_reads = subset.n_obs
+                percentages = {}
+                last_idx = 0
+
+                for bin_label, bin_filter in bins_temp.items():
+                    sb = subset[bin_filter].copy()
+                    n = sb.n_obs
+                    if n == 0:
+                        continue
+
+                    pct = (n / total_reads) * 100 if total_reads else 0
+                    percentages[bin_label] = pct
+
+                    if sort_by.startswith("obs:"):
+                        colname = sort_by.split("obs:")[1]
+                        order = np.argsort(sb.obs[colname].values)
+                    elif sort_by == "gpc" and gpc_sites.size:
+                        gpc_matrix = _layer_to_numpy(
+                            sb,
+                            layer_gpc,
+                            gpc_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(gpc_matrix, method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "cpg" and cpg_sites.size:
+                        cpg_matrix = _layer_to_numpy(
+                            sb,
+                            layer_cpg,
+                            cpg_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(cpg_matrix, method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "c" and any_c_sites.size:
+                        any_c_matrix = _layer_to_numpy(
+                            sb,
+                            layer_c,
+                            any_c_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(any_c_matrix, method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "a" and any_a_sites.size:
+                        any_a_matrix = _layer_to_numpy(
+                            sb,
+                            layer_a,
+                            any_a_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(any_a_matrix, method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "gpc_cpg" and gpc_sites.size and cpg_sites.size:
+                        gpc_matrix = _layer_to_numpy(
+                            sb,
+                            layer_gpc,
+                            None,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(gpc_matrix, method="ward")
+                        order = sch.leaves_list(linkage)
+                    elif sort_by == "hmm" and length_sites.size:
+                        length_matrix = _layer_to_numpy(
+                            sb,
+                            length_layer,
+                            length_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(length_matrix, method="ward")
+                        order = sch.leaves_list(linkage)
+                    else:
+                        order = np.arange(n)
+
+                    sb = sb[order]
+
+                    stacked_lengths.append(
+                        _layer_to_numpy(
+                            sb,
+                            length_layer,
+                            None,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                    )
+                    stacked_lengths_raw.append(
+                        _layer_to_numpy(
+                            sb,
+                            length_layer,
+                            None,
+                            fill_nan_strategy="none",
+                            fill_nan_value=fill_nan_value,
+                        )
+                    )
+                    if any_c_sites.size:
+                        stacked_any_c.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_c,
+                                any_c_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                        stacked_any_c_raw.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_c,
+                                any_c_sites,
+                                fill_nan_strategy="none",
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                    if gpc_sites.size:
+                        stacked_gpc.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_gpc,
+                                gpc_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                        stacked_gpc_raw.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_gpc,
+                                gpc_sites,
+                                fill_nan_strategy="none",
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                    if cpg_sites.size:
+                        stacked_cpg.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_cpg,
+                                cpg_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                        stacked_cpg_raw.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_cpg,
+                                cpg_sites,
+                                fill_nan_strategy="none",
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                    if any_a_sites.size:
+                        stacked_any_a.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_a,
+                                any_a_sites,
+                                fill_nan_strategy=fill_nan_strategy,
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+                        stacked_any_a_raw.append(
+                            _layer_to_numpy(
+                                sb,
+                                layer_a,
+                                any_a_sites,
+                                fill_nan_strategy="none",
+                                fill_nan_value=fill_nan_value,
+                            )
+                        )
+
+                    row_labels.extend([bin_label] * n)
+                    bin_labels.append(f"{bin_label}: {n} reads ({pct:.1f}%)")
+                    last_idx += n
+                    bin_boundaries.append(last_idx)
+
+                length_matrix = np.vstack(stacked_lengths)
+                length_matrix_raw = np.vstack(stacked_lengths_raw)
+                capped_lengths = np.where(length_matrix_raw > 1, 1.0, length_matrix_raw)
+                mean_lengths = np.nanmean(capped_lengths, axis=0)
+                length_plot_matrix = length_matrix_raw
+                length_plot_cmap = cmap_lengths
+                length_plot_norm = None
+
+                if feature_ranges:
+                    length_plot_matrix = _map_length_matrix_to_subclasses(
+                        length_matrix_raw, feature_ranges
+                    )
+                    length_plot_cmap, length_plot_norm = _build_length_feature_cmap(
+                        feature_ranges
+                    )
+
+                panels = [
+                    (
+                        f"HMM lengths - {length_layer}",
+                        length_plot_matrix,
+                        length_labels,
+                        length_plot_cmap,
+                        mean_lengths,
+                        n_xticks_lengths,
+                        length_plot_norm,
+                    ),
+                ]
+
+                if stacked_any_c:
+                    m = np.vstack(stacked_any_c)
+                    m_raw = np.vstack(stacked_any_c_raw)
+                    panels.append(
+                        (
+                            "C",
+                            m,
+                            any_c_labels,
+                            cmap_c,
+                            _methylation_fraction_for_layer(m_raw, layer_c),
+                            n_xticks_any_c,
+                            None,
+                        )
+                    )
+
+                if stacked_gpc:
+                    m = np.vstack(stacked_gpc)
+                    m_raw = np.vstack(stacked_gpc_raw)
+                    panels.append(
+                        (
+                            "GpC",
+                            m,
+                            gpc_labels,
+                            cmap_gpc,
+                            _methylation_fraction_for_layer(m_raw, layer_gpc),
+                            n_xticks_gpc,
+                            None,
+                        )
+                    )
+
+                if stacked_cpg:
+                    m = np.vstack(stacked_cpg)
+                    m_raw = np.vstack(stacked_cpg_raw)
+                    panels.append(
+                        (
+                            "CpG",
+                            m,
+                            cpg_labels,
+                            cmap_cpg,
+                            _methylation_fraction_for_layer(m_raw, layer_cpg),
+                            n_xticks_cpg,
+                            None,
+                        )
+                    )
+
+                if stacked_any_a:
+                    m = np.vstack(stacked_any_a)
+                    m_raw = np.vstack(stacked_any_a_raw)
+                    panels.append(
+                        (
+                            "A",
+                            m,
+                            any_a_labels,
+                            cmap_a,
+                            _methylation_fraction_for_layer(m_raw, layer_a),
+                            n_xticks_a,
+                            None,
+                        )
+                    )
+
+                n_panels = len(panels)
+                fig = plt.figure(figsize=(4.5 * n_panels, 10))
+                gs = gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
+                fig.suptitle(
+                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=14, y=0.98
+                )
+
+                axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
+                axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
+
+                for i, (name, matrix, labels, cmap, mean_vec, n_ticks, norm) in enumerate(
+                    panels
+                ):
+                    clean_barplot(axes_bar[i], mean_vec, name)
+
+                    heatmap_kwargs = dict(
+                        cmap=cmap,
+                        ax=axes_heat[i],
+                        yticklabels=False,
+                        cbar=False,
+                    )
+                    if norm is not None:
+                        heatmap_kwargs["norm"] = norm
+                    sns.heatmap(matrix, **heatmap_kwargs)
+
+                    xtick_pos, xtick_labels = pick_xticks(np.asarray(labels), n_ticks)
+                    axes_heat[i].set_xticks(xtick_pos)
+                    axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=8)
+
+                    for boundary in bin_boundaries[:-1]:
+                        axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
+
+                plt.tight_layout()
+
+                if save_path:
+                    save_path = Path(save_path)
+                    save_path.mkdir(parents=True, exist_ok=True)
+                    safe_name = f"{ref}__{sample}".replace("/", "_")
+                    out_file = save_path / f"{safe_name}.png"
+                    plt.savefig(out_file, dpi=300)
+                    plt.close(fig)
+                else:
+                    plt.show()
+
+                results.append((sample, ref))
+
+            except Exception:
+                import traceback
+
+                traceback.print_exc()
+                print(f"Failed {sample} - {ref} - {length_layer}")
 
     return results
 
