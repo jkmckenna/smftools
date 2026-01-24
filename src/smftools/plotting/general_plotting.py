@@ -1663,7 +1663,8 @@ def combined_hmm_length_clustermap(
 
                 length_matrix = np.vstack(stacked_lengths)
                 length_matrix_raw = np.vstack(stacked_lengths_raw)
-                mean_lengths = np.nanmean(length_matrix_raw, axis=0)
+                capped_lengths = np.where(length_matrix_raw > 1, 1.0, length_matrix_raw)
+                mean_lengths = np.nanmean(capped_lengths, axis=0)
                 length_plot_matrix = length_matrix_raw
                 length_plot_cmap = cmap_lengths
                 length_plot_norm = None
