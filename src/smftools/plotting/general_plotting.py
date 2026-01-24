@@ -172,16 +172,30 @@ def _layer_to_numpy(
     return np.where(np.isnan(arr), col_mean, arr)
 
 
-def methylation_fraction(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarray:
+def _infer_zero_is_valid(layer_name: str | None, matrix: np.ndarray) -> bool:
+    """Infer whether zeros should count as valid (unmethylated) values."""
+    if layer_name and "nan0_0minus1" in layer_name:
+        return False
+    if np.isnan(matrix).any():
+        return True
+    if np.any(matrix < 0):
+        return False
+    return True
+
+
+def methylation_fraction(
+    matrix: np.ndarray, *, ignore_nan: bool = True, zero_is_valid: bool = False
+) -> np.ndarray:
     """
     Fraction methylated per column.
     Methylated = 1
-    Valid = finite AND not 0
+    Valid = finite AND not 0 (unless zero_is_valid=True)
     """
     matrix = np.asarray(matrix)
     if not ignore_nan:
         matrix = np.where(np.isnan(matrix), 0, matrix)
-    valid_mask = np.isfinite(matrix) & (matrix != 0)
+    finite_mask = np.isfinite(matrix)
+    valid_mask = finite_mask if zero_is_valid else (finite_mask & (matrix != 0))
     methyl_mask = (matrix == 1) & np.isfinite(matrix)
 
     methylated = methyl_mask.sum(axis=0)
@@ -190,6 +204,20 @@ def methylation_fraction(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.n
     return np.divide(
         methylated, valid, out=np.zeros_like(methylated, dtype=float), where=valid != 0
     )
+
+
+def _methylation_fraction_for_layer(
+    matrix: np.ndarray,
+    layer_name: str | None,
+    *,
+    ignore_nan: bool = True,
+    zero_is_valid: bool | None = None,
+) -> np.ndarray:
+    """Compute methylation fractions with layer-aware zero handling."""
+    matrix = np.asarray(matrix)
+    if zero_is_valid is None:
+        zero_is_valid = _infer_zero_is_valid(layer_name, matrix)
+    return methylation_fraction(matrix, ignore_nan=ignore_nan, zero_is_valid=zero_is_valid)
 
 
 def clean_barplot(ax, mean_values, title):
@@ -615,7 +643,7 @@ def combined_hmm_raw_clustermap(
                             m,
                             any_c_labels,
                             cmap_c,
-                            methylation_fraction(m_raw),
+                            _methylation_fraction_for_layer(m_raw, layer_c),
                             n_xticks_any_c,
                         )
                     )
@@ -629,7 +657,7 @@ def combined_hmm_raw_clustermap(
                             m,
                             gpc_labels,
                             cmap_gpc,
-                            methylation_fraction(m_raw),
+                            _methylation_fraction_for_layer(m_raw, layer_gpc),
                             n_xticks_gpc,
                         )
                     )
@@ -643,7 +671,7 @@ def combined_hmm_raw_clustermap(
                             m,
                             cpg_labels,
                             cmap_cpg,
-                            methylation_fraction(m_raw),
+                            _methylation_fraction_for_layer(m_raw, layer_cpg),
                             n_xticks_cpg,
                         )
                     )
@@ -652,7 +680,14 @@ def combined_hmm_raw_clustermap(
                     m = np.vstack(stacked_any_a)
                     m_raw = np.vstack(stacked_any_a_raw)
                     panels.append(
-                        ("A", m, any_a_labels, cmap_a, methylation_fraction(m_raw), n_xticks_a)
+                        (
+                            "A",
+                            m,
+                            any_a_labels,
+                            cmap_a,
+                            _methylation_fraction_for_layer(m_raw, layer_a),
+                            n_xticks_a,
+                        )
                     )
 
                 # ---------------- plotting ----------------
@@ -1076,13 +1111,19 @@ def combined_raw_clustermap(
                     )
 
                     mean_any_c = (
-                        methylation_fraction(any_c_matrix_raw) if any_c_matrix_raw.size else None
+                        _methylation_fraction_for_layer(any_c_matrix_raw, layer_c)
+                        if any_c_matrix_raw.size
+                        else None
                     )
                     mean_gpc = (
-                        methylation_fraction(gpc_matrix_raw) if gpc_matrix_raw.size else None
+                        _methylation_fraction_for_layer(gpc_matrix_raw, layer_gpc)
+                        if gpc_matrix_raw.size
+                        else None
                     )
                     mean_cpg = (
-                        methylation_fraction(cpg_matrix_raw) if cpg_matrix_raw.size else None
+                        _methylation_fraction_for_layer(cpg_matrix_raw, layer_cpg)
+                        if cpg_matrix_raw.size
+                        else None
                     )
 
                     if any_c_matrix.size:
@@ -1126,7 +1167,9 @@ def combined_raw_clustermap(
                     any_a_matrix = np.vstack(stacked_any_a)
                     any_a_matrix_raw = np.vstack(stacked_any_a_raw)
                     mean_any_a = (
-                        methylation_fraction(any_a_matrix_raw) if any_a_matrix_raw.size else None
+                        _methylation_fraction_for_layer(any_a_matrix_raw, layer_a)
+                        if any_a_matrix_raw.size
+                        else None
                     )
                     if any_a_matrix.size:
                         blocks.append(
