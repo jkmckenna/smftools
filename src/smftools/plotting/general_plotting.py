@@ -1546,6 +1546,7 @@ def plot_hmm_layers_rolling_by_sample_ref(
     cmap: str = "tab20",
     layer_colors: Optional[Mapping[str, Any]] = None,
     use_var_coords: bool = True,
+    reindexed_var_suffix: str = "reindexed",
 ):
     """
     For each sample (row) and reference (col) plot the rolling average of the
@@ -1587,6 +1588,8 @@ def plot_hmm_layers_rolling_by_sample_ref(
         Optional mapping of layer name to explicit line colors.
     use_var_coords : bool
         if True, tries to use adata.var_names (coerced to int) as x-axis coordinates; otherwise uses 0..n-1.
+    reindexed_var_suffix : str
+        Suffix for per-reference reindexed var columns (e.g., ``Reference_reindexed``) used when available.
 
     Returns
     -------
@@ -1626,15 +1629,23 @@ def plot_hmm_layers_rolling_by_sample_ref(
             )
     layers = list(layers)
 
-    # x coordinates (positions)
+    # x coordinates (positions) + optional labels
+    x_labels = None
     try:
         if use_var_coords:
             x_coords = np.array([int(v) for v in adata.var_names])
         else:
             raise Exception("user disabled var coords")
     except Exception:
-        # fallback to 0..n_vars-1
+        # fallback to 0..n_vars-1, but keep var_names as labels
         x_coords = np.arange(adata.shape[1], dtype=int)
+        x_labels = adata.var_names.astype(str).tolist()
+
+    ref_reindexed_cols = {
+        ref: f"{ref}_{reindexed_var_suffix}"
+        for ref in refs_all
+        if f"{ref}_{reindexed_var_suffix}" in adata.var
+    }
 
     # make output dir
     if save:
@@ -1698,6 +1709,14 @@ def plot_hmm_layers_rolling_by_sample_ref(
 
                 # for each layer, compute positional mean across reads (ignore NaNs)
                 plotted_any = False
+                reindexed_col = ref_reindexed_cols.get(ref_name)
+                if reindexed_col is not None:
+                    try:
+                        ref_coords = np.asarray(adata.var[reindexed_col], dtype=int)
+                    except Exception:
+                        ref_coords = x_coords
+                else:
+                    ref_coords = x_coords
                 for li, layer in enumerate(layers):
                     if layer in sub.layers:
                         mat = sub.layers[layer]
@@ -1731,6 +1750,8 @@ def plot_hmm_layers_rolling_by_sample_ref(
                     if np.all(np.isnan(col_mean)):
                         continue
 
+                    valid_mask = np.isfinite(col_mean)
+
                     # smooth via pandas rolling (centered)
                     if (window is None) or (window <= 1):
                         smoothed = col_mean
@@ -1741,10 +1762,11 @@ def plot_hmm_layers_rolling_by_sample_ref(
                             .mean()
                             .to_numpy()
                         )
+                        smoothed = np.where(valid_mask, smoothed, np.nan)
 
                     # x axis: x_coords (trim/pad to match length)
                     L = len(col_mean)
-                    x = x_coords[:L]
+                    x = ref_coords[:L]
 
                     # optionally plot raw faint line first
                     if show_raw:
@@ -1769,6 +1791,13 @@ def plot_hmm_layers_rolling_by_sample_ref(
                     ax.set_ylabel(f"{sample_name}\n(n={total_reads})", fontsize=8)
                 if r_idx == nrows - 1:
                     ax.set_xlabel("position", fontsize=8)
+                    if x_labels is not None and reindexed_col is None:
+                        max_ticks = 8
+                        tick_step = max(1, int(math.ceil(len(x_labels) / max_ticks)))
+                        tick_positions = x_coords[::tick_step]
+                        tick_labels = x_labels[::tick_step]
+                        ax.set_xticks(tick_positions)
+                        ax.set_xticklabels(tick_labels, fontsize=7, rotation=45, ha="right")
 
                 # legend (only show in top-left plot to reduce clutter)
                 if (r_idx == 0 and c_idx == 0) and plotted_any:
