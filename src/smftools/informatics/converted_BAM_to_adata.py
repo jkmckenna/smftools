@@ -557,6 +557,8 @@ def process_single_bam(
             mismatch_counts_per_read,
             mismatch_trend_per_read,
             mismatch_base_identities,
+            base_quality_scores,
+            read_span_masks,
         ) = extract_base_identities(
             bam, record, range(current_length), max_reference_length, sequence, samtools_backend
         )
@@ -672,6 +674,17 @@ def process_single_bam(
                 for read_name in sorted_index
             ]
         )
+        default_quality_sequence = np.full(sequence_length, -1, dtype=np.int16)
+        quality_matrix = np.vstack(
+            [
+                base_quality_scores.get(read_name, default_quality_sequence)
+                for read_name in sorted_index
+            ]
+        )
+        default_read_span = np.zeros(sequence_length, dtype=np.int16)
+        read_span_matrix = np.vstack(
+            [read_span_masks.get(read_name, default_read_span) for read_name in sorted_index]
+        )
 
         # Convert to AnnData
         X = bin_df.values.astype(np.float32)
@@ -706,6 +719,8 @@ def process_single_bam(
         # Attach integer sequence encoding to layers
         adata.layers["sequence_integer_encoding"] = encoded_matrix
         adata.layers["mismatch_integer_encoding"] = mismatch_encoded_matrix
+        adata.layers["base_quality_scores"] = quality_matrix
+        adata.layers["read_span_mask"] = read_span_matrix
 
         adata_list.append(adata)
 

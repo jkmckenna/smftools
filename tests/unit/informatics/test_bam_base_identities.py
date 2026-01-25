@@ -11,6 +11,9 @@ def test_extract_base_identities_returns_mismatch_integer_encoding(monkeypatch, 
             self.is_reverse = False
             self.query_name = "read1"
             self.query_sequence = "AGGT"
+            self.query_qualities = [30, 31, 32, 33]
+            self.reference_start = 0
+            self.reference_end = 4
 
         def get_aligned_pairs(self, matches_only=True):
             return [(0, 0), (1, 1), (2, 2), (3, 3)]
@@ -44,6 +47,8 @@ def test_extract_base_identities_returns_mismatch_integer_encoding(monkeypatch, 
         _mismatch_counts,
         _mismatch_trends,
         mismatch_base_identities,
+        base_quality_scores,
+        read_span_masks,
     ) = bam_functions.extract_base_identities(
         bam_path,
         "chr1",
@@ -66,3 +71,11 @@ def test_extract_base_identities_returns_mismatch_integer_encoding(monkeypatch, 
         dtype=np.int16,
     )
     np.testing.assert_array_equal(mismatch_array, expected)
+
+    quality_array = base_quality_scores["read1"]
+    expected_quality = np.array([30, 31, 32, 33, -1, -1], dtype=np.int16)
+    np.testing.assert_array_equal(quality_array, expected_quality)
+
+    span_mask = read_span_masks["read1"]
+    expected_span = np.array([1, 1, 1, 1, 0, 0], dtype=np.int8)
+    np.testing.assert_array_equal(span_mask, expected_span)

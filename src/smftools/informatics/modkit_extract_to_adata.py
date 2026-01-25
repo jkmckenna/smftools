@@ -887,6 +887,28 @@ def _load_sequence_batches(
     return sequences, fwd_reads, rev_reads
 
 
+def _load_integer_batches(batch_files: list[Path | str]) -> dict[str, np.ndarray]:
+    """Load integer arrays from batched H5AD files.
+
+    Args:
+        batch_files (list[Path | str]): H5AD paths containing arrays in `.uns`.
+
+    Returns:
+        dict[str, np.ndarray]: Read-to-array mapping.
+
+    Processing Steps:
+        1. Read each H5AD file.
+        2. Merge `.uns` dictionaries into a single mapping.
+    """
+    import anndata as ad
+
+    sequences: dict[str, np.ndarray] = {}
+    for batch_file in batch_files:
+        batch_path = Path(batch_file)
+        sequences.update(ad.read_h5ad(batch_path).uns)
+    return sequences
+
+
 def _normalize_sequence_batch_files(batch_files: object) -> list[Path]:
     """Normalize cached batch file entries into a list of Paths.
 
@@ -1189,16 +1211,30 @@ def modkit_extract_to_adata(
     # Encode read sequences into integer arrays and cache in tmp_dir.
     sequence_batch_files: dict[str, list[str]] = {}
     mismatch_batch_files: dict[str, list[str]] = {}
+    quality_batch_files: dict[str, list[str]] = {}
+    read_span_batch_files: dict[str, list[str]] = {}
     sequence_cache_path = tmp_dir / "tmp_sequence_int_file_dict.h5ad"
+    cache_needs_rebuild = True
     if sequence_cache_path.exists():
         cached_uns = ad.read_h5ad(sequence_cache_path).uns
         if "sequence_batch_files" in cached_uns:
             sequence_batch_files = cached_uns.get("sequence_batch_files", {})
             mismatch_batch_files = cached_uns.get("mismatch_batch_files", {})
+            quality_batch_files = cached_uns.get("quality_batch_files", {})
+            read_span_batch_files = cached_uns.get("read_span_batch_files", {})
+            cache_needs_rebuild = not (
+                quality_batch_files and read_span_batch_files and sequence_batch_files
+            )
         else:
             sequence_batch_files = cached_uns
-        logger.debug("Found existing integer-encoded reads, using these")
-    else:
+            cache_needs_rebuild = True
+        if cache_needs_rebuild:
+            logger.info(
+                "Cached sequence batches missing quality or read-span data; rebuilding cache."
+            )
+        else:
+            logger.debug("Found existing integer-encoded reads, using these")
+    if cache_needs_rebuild:
         for bami, bam in enumerate(bam_path_list):
             for record in records_to_analyze:
                 current_reference_length = reference_dict[record][0]
@@ -1210,6 +1246,8 @@ def modkit_extract_to_adata(
                     _mismatch_counts_per_read,
                     _mismatch_trend_per_read,
                     mismatch_base_identities,
+                    base_quality_scores,
+                    read_span_masks,
                 ) = extract_base_identities(
                     bam, record, positions, max_reference_length, ref_seq, samtools_backend
                 )
@@ -1220,6 +1258,18 @@ def modkit_extract_to_adata(
                 mismatch_rev = {
                     read_name: mismatch_base_identities[read_name]
                     for read_name in rev_base_identities
+                }
+                quality_fwd = {
+                    read_name: base_quality_scores[read_name] for read_name in fwd_base_identities
+                }
+                quality_rev = {
+                    read_name: base_quality_scores[read_name] for read_name in rev_base_identities
+                }
+                read_span_fwd = {
+                    read_name: read_span_masks[read_name] for read_name in fwd_base_identities
+                }
+                read_span_rev = {
+                    read_name: read_span_masks[read_name] for read_name in rev_base_identities
                 }
                 fwd_sequence_files = _write_sequence_batches(
                     fwd_base_identities,
@@ -1257,12 +1307,52 @@ def modkit_extract_to_adata(
                 mismatch_batch_files[f"{bami}_{record}"] = (
                     mismatch_fwd_files + mismatch_rev_files
                 )
-                del fwd_base_identities, rev_base_identities, mismatch_base_identities
+                quality_fwd_files = _write_integer_batches(
+                    quality_fwd,
+                    tmp_dir,
+                    record,
+                    f"{bami}_quality_fwd",
+                    batch_size=100000,
+                )
+                quality_rev_files = _write_integer_batches(
+                    quality_rev,
+                    tmp_dir,
+                    record,
+                    f"{bami}_quality_rev",
+                    batch_size=100000,
+                )
+                quality_batch_files[f"{bami}_{record}"] = quality_fwd_files + quality_rev_files
+                read_span_fwd_files = _write_integer_batches(
+                    read_span_fwd,
+                    tmp_dir,
+                    record,
+                    f"{bami}_read_span_fwd",
+                    batch_size=100000,
+                )
+                read_span_rev_files = _write_integer_batches(
+                    read_span_rev,
+                    tmp_dir,
+                    record,
+                    f"{bami}_read_span_rev",
+                    batch_size=100000,
+                )
+                read_span_batch_files[f"{bami}_{record}"] = (
+                    read_span_fwd_files + read_span_rev_files
+                )
+                del (
+                    fwd_base_identities,
+                    rev_base_identities,
+                    mismatch_base_identities,
+                    base_quality_scores,
+                    read_span_masks,
+                )
         ad.AnnData(
             X=np.random.rand(1, 1),
             uns={
                 "sequence_batch_files": sequence_batch_files,
                 "mismatch_batch_files": mismatch_batch_files,
+                "quality_batch_files": quality_batch_files,
+                "read_span_batch_files": read_span_batch_files,
             },
         ).write_h5ad(sequence_cache_path)
     ##########################################################################################
@@ -1536,6 +1626,14 @@ def modkit_extract_to_adata(
                                         f"{final_sample_index}_{record}", []
                                     )
                                 )
+                                quality_files = _normalize_sequence_batch_files(
+                                    quality_batch_files.get(f"{final_sample_index}_{record}", [])
+                                )
+                                read_span_files = _normalize_sequence_batch_files(
+                                    read_span_batch_files.get(
+                                        f"{final_sample_index}_{record}", []
+                                    )
+                                )
                                 if not sequence_files:
                                     logger.warning(
                                         "No encoded sequence batches found for sample %s record %s",
@@ -1556,6 +1654,12 @@ def modkit_extract_to_adata(
                                         _mismatch_fwd_reads,
                                         _mismatch_rev_reads,
                                     ) = _load_sequence_batches(mismatch_files)
+                                quality_reads: dict[str, np.ndarray] = {}
+                                if quality_files:
+                                    quality_reads = _load_integer_batches(quality_files)
+                                read_span_reads: dict[str, np.ndarray] = {}
+                                if read_span_files:
+                                    read_span_reads = _load_integer_batches(read_span_files)
 
                                 read_names = list(encoded_reads.keys())
 
@@ -1611,6 +1715,26 @@ def modkit_extract_to_adata(
                                         ]
                                     )
                                     temp_adata.layers["mismatch_integer_encoding"] = mismatch_matrix
+                                if quality_reads:
+                                    default_quality_sequence = np.full(
+                                        sequence_length, -1, dtype=np.int16
+                                    )
+                                    quality_matrix = np.vstack(
+                                        [
+                                            quality_reads.get(read_name, default_quality_sequence)
+                                            for read_name in sorted_index
+                                        ]
+                                    )
+                                    temp_adata.layers["base_quality_scores"] = quality_matrix
+                                if read_span_reads:
+                                    default_read_span = np.zeros(sequence_length, dtype=np.int16)
+                                    read_span_matrix = np.vstack(
+                                        [
+                                            read_span_reads.get(read_name, default_read_span)
+                                            for read_name in sorted_index
+                                        ]
+                                    )
+                                    temp_adata.layers["read_span_mask"] = read_span_matrix
 
                                 # If final adata object already has a sample loaded, concatenate the current sample into the existing adata object
                                 if adata:
