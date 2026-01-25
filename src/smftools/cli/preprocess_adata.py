@@ -224,7 +224,11 @@ def preprocess_adata_core(
     from pathlib import Path
 
     from ..metadata import record_smftools_metadata
-    from ..plotting import plot_read_qc_histograms, plot_sequence_integer_encoding_clustermaps
+    from ..plotting import (
+        plot_read_qc_histograms,
+        plot_read_span_quality_clustermaps,
+        plot_sequence_integer_encoding_clustermaps,
+    )
     from ..preprocessing import (
         append_base_context,
         append_binary_layer_by_base_context,
@@ -606,6 +610,56 @@ def preprocess_adata_core(
                 sort_by="none",
                 max_unknown_fraction=0.5,
                 save_path=pp_dedup_seq_clustermap_dir,
+                show_position_axis=True,
+            )
+
+    ############################################### Plot read span mask + base quality clustermaps ###############################################
+    quality_layer = None
+    if "base_quality_scores" in adata.layers:
+        quality_layer = "base_quality_scores"
+    elif "base_qualities" in adata.layers:
+        quality_layer = "base_qualities"
+
+    if "read_span_mask" not in adata.layers or quality_layer is None:
+        logger.debug(
+            "read_span_mask and base quality layers not found; skipping read span/base quality clustermaps."
+        )
+    else:
+        pp_span_quality_dir = preprocess_directory / "07_read_span_quality_clustermaps"
+        if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(
+                f"{pp_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
+            )
+        else:
+            make_dirs([pp_span_quality_dir])
+            plot_read_span_quality_clustermaps(
+                adata,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                quality_layer=quality_layer,
+                read_span_layer="read_span_mask",
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                save_path=pp_span_quality_dir,
+                show_position_axis=True,
+            )
+
+        pp_dedup_span_quality_dir = (
+            preprocess_directory / "deduplicated" / "07_read_span_quality_clustermaps"
+        )
+        if pp_dedup_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(
+                f"{pp_dedup_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
+            )
+        elif quality_layer in adata_unique.layers and "read_span_mask" in adata_unique.layers:
+            make_dirs([pp_dedup_span_quality_dir])
+            plot_read_span_quality_clustermaps(
+                adata_unique,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                quality_layer=quality_layer,
+                read_span_layer="read_span_mask",
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                save_path=pp_dedup_span_quality_dir,
                 show_position_axis=True,
             )
 

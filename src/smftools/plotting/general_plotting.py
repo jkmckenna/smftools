@@ -2460,6 +2460,219 @@ def plot_sequence_integer_encoding_clustermaps(
     return results
 
 
+def plot_read_span_quality_clustermaps(
+    adata,
+    sample_col: str = "Sample_Names",
+    reference_col: str = "Reference_strand",
+    quality_layer: str = "base_quality_scores",
+    read_span_layer: str = "read_span_mask",
+    quality_cmap: str = "viridis",
+    read_span_color: str = "#2ca25f",
+    min_quality: float | None = None,
+    min_length: int | None = None,
+    min_mapped_length_to_reference_length_ratio: float | None = None,
+    demux_types: Sequence[str] = ("single", "double", "already"),
+    max_reads: int | None = None,
+    xtick_step: int | None = None,
+    xtick_rotation: int = 90,
+    xtick_fontsize: int = 9,
+    show_position_axis: bool = False,
+    position_axis_tick_target: int = 25,
+    save_path: str | Path | None = None,
+) -> List[Dict[str, Any]]:
+    """Plot read-span mask and base quality clustermaps side by side.
+
+    Clustering is performed using the base-quality layer ordering, which is then
+    applied to the read-span mask to keep the two panels aligned.
+
+    Args:
+        adata: AnnData with read-span and base-quality layers.
+        sample_col: Column in ``adata.obs`` that identifies samples.
+        reference_col: Column in ``adata.obs`` that identifies references.
+        quality_layer: Layer name containing base-quality scores.
+        read_span_layer: Layer name containing read-span masks.
+        quality_cmap: Colormap for base-quality scores.
+        read_span_color: Color for read-span mask (1-values); 0-values are white.
+        min_quality: Optional minimum read quality filter.
+        min_length: Optional minimum mapped length filter.
+        min_mapped_length_to_reference_length_ratio: Optional min length ratio filter.
+        demux_types: Allowed ``demux_type`` values, if present in ``adata.obs``.
+        max_reads: Optional maximum number of reads to plot per sample/reference.
+        xtick_step: Spacing between x-axis tick labels (None = no labels).
+        xtick_rotation: Rotation for x-axis tick labels.
+        xtick_fontsize: Font size for x-axis tick labels.
+        show_position_axis: Whether to draw a position axis with tick labels.
+        position_axis_tick_target: Approximate number of ticks to show when auto-sizing.
+        save_path: Optional output directory for saving plots.
+
+    Returns:
+        List of dictionaries with per-plot metadata and output paths.
+    """
+
+    def _mask_or_true(series_name: str, predicate):
+        if series_name not in adata.obs:
+            return pd.Series(True, index=adata.obs.index)
+        s = adata.obs[series_name]
+        try:
+            return predicate(s)
+        except Exception:
+            return pd.Series(True, index=adata.obs.index)
+
+    def _resolve_xtick_step(n_positions: int) -> int | None:
+        if xtick_step is not None:
+            return xtick_step
+        if not show_position_axis:
+            return None
+        return max(1, int(np.ceil(n_positions / position_axis_tick_target)))
+
+    def _fill_nan_with_col_means(matrix: np.ndarray) -> np.ndarray:
+        filled = matrix.copy()
+        col_means = np.nanmean(filled, axis=0)
+        col_means = np.where(np.isnan(col_means), 0.0, col_means)
+        nan_rows, nan_cols = np.where(np.isnan(filled))
+        filled[nan_rows, nan_cols] = col_means[nan_cols]
+        return filled
+
+    if quality_layer not in adata.layers:
+        raise KeyError(f"Layer '{quality_layer}' not found in adata.layers")
+    if read_span_layer not in adata.layers:
+        raise KeyError(f"Layer '{read_span_layer}' not found in adata.layers")
+    if position_axis_tick_target < 1:
+        raise ValueError("position_axis_tick_target must be at least 1.")
+
+    results: List[Dict[str, Any]] = []
+    save_path = Path(save_path) if save_path is not None else None
+    if save_path is not None:
+        save_path.mkdir(parents=True, exist_ok=True)
+
+    for col in (sample_col, reference_col):
+        if col not in adata.obs:
+            raise KeyError(f"{col} not in adata.obs")
+        if not isinstance(adata.obs[col].dtype, pd.CategoricalDtype):
+            adata.obs[col] = adata.obs[col].astype("category")
+
+    for ref in adata.obs[reference_col].cat.categories:
+        for sample in adata.obs[sample_col].cat.categories:
+            qmask = _mask_or_true(
+                "read_quality",
+                (lambda s: s >= float(min_quality))
+                if (min_quality is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lm_mask = _mask_or_true(
+                "mapped_length",
+                (lambda s: s >= float(min_length))
+                if (min_length is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lrr_mask = _mask_or_true(
+                "mapped_length_to_reference_length_ratio",
+                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
+                if (min_mapped_length_to_reference_length_ratio is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            demux_mask = _mask_or_true(
+                "demux_type",
+                (lambda s: s.astype("string").isin(list(demux_types)))
+                if (demux_types is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+
+            row_mask = (
+                (adata.obs[reference_col] == ref)
+                & (adata.obs[sample_col] == sample)
+                & qmask
+                & lm_mask
+                & lrr_mask
+                & demux_mask
+            )
+            if not bool(row_mask.any()):
+                continue
+
+            subset = adata[row_mask, :].copy()
+            quality_matrix = np.asarray(subset.layers[quality_layer]).astype(float)
+            quality_matrix[quality_matrix < 0] = np.nan
+            read_span_matrix = np.asarray(subset.layers[read_span_layer])
+
+            if max_reads is not None and quality_matrix.shape[0] > max_reads:
+                quality_matrix = quality_matrix[:max_reads]
+                read_span_matrix = read_span_matrix[:max_reads]
+                subset = subset[:max_reads, :].copy()
+
+            if quality_matrix.size == 0:
+                continue
+
+            quality_filled = _fill_nan_with_col_means(quality_matrix)
+            linkage = sch.linkage(quality_filled, method="ward")
+            order = sch.leaves_list(linkage)
+
+            quality_matrix = quality_matrix[order]
+            read_span_matrix = read_span_matrix[order]
+
+            fig, axes = plt.subplots(ncols=2, figsize=(18, 6), sharey=True)
+            span_ax, quality_ax = axes
+
+            span_cmap = colors.ListedColormap(["white", read_span_color])
+            span_norm = colors.BoundaryNorm([-0.5, 0.5, 1.5], span_cmap.N)
+            sns.heatmap(
+                read_span_matrix,
+                cmap=span_cmap,
+                norm=span_norm,
+                ax=span_ax,
+                yticklabels=False,
+                cbar=True,
+            )
+            span_ax.set_title(f"{sample} - {ref} ({read_span_layer})")
+
+            sns.heatmap(
+                quality_matrix,
+                cmap=quality_cmap,
+                ax=quality_ax,
+                yticklabels=False,
+                cbar=True,
+            )
+            quality_ax.set_title(f"{sample} - {ref} ({quality_layer})")
+
+            resolved_step = _resolve_xtick_step(quality_matrix.shape[1])
+            for axis in (span_ax, quality_ax):
+                if resolved_step is not None and resolved_step > 0:
+                    sites = np.arange(0, quality_matrix.shape[1], resolved_step)
+                    axis.set_xticks(sites)
+                    axis.set_xticklabels(
+                        subset.var_names[sites].astype(str),
+                        rotation=xtick_rotation,
+                        fontsize=xtick_fontsize,
+                    )
+                else:
+                    axis.set_xticks([])
+                if show_position_axis or xtick_step is not None:
+                    axis.set_xlabel("Position")
+
+            out_file = None
+            if save_path is not None:
+                safe_name = f"{ref}__{sample}__read_span_quality".replace("=", "").replace(
+                    ",", "_"
+                )
+                out_file = save_path / f"{safe_name}.png"
+                fig.savefig(out_file, dpi=300, bbox_inches="tight")
+                plt.close(fig)
+            else:
+                plt.show()
+
+            results.append(
+                {
+                    "reference": str(ref),
+                    "sample": str(sample),
+                    "quality_layer": quality_layer,
+                    "read_span_layer": read_span_layer,
+                    "n_positions": int(quality_matrix.shape[1]),
+                    "output_path": str(out_file) if out_file is not None else None,
+                }
+            )
+
+    return results
+
+
 def plot_hmm_layers_rolling_by_sample_ref(
     adata,
     layers: Optional[Sequence[str]] = None,
