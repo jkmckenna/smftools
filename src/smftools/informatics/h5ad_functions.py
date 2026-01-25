@@ -84,6 +84,62 @@ def add_demux_type_annotation(
     return adata
 
 
+def add_read_tag_annotations(
+    adata,
+    bam_files: Optional[List[str]] = None,
+    read_tags: Optional[Dict[str, Dict[str, object]]] = None,
+    tag_names: Optional[List[str]] = None,
+    include_flags: bool = True,
+    include_cigar: bool = True,
+    extract_read_tags_from_bam_callable=None,
+    samtools_backend: str | None = "auto",
+):
+    """Populate adata.obs with read tag metadata.
+
+    Args:
+        adata: AnnData to annotate (modified in-place).
+        bam_files: Optional list of BAM files to extract tags from.
+        read_tags: Optional mapping of read name to tag dict.
+        tag_names: Optional list of BAM tag names to extract (e.g. ["NM", "MD", "MM", "ML"]).
+        include_flags: Whether to add a FLAGS list column.
+        include_cigar: Whether to add the CIGAR string column.
+        extract_read_tags_from_bam_callable: Optional callable to extract tags from a BAM.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
+    Returns:
+        None (mutates adata in-place).
+    """
+    if read_tags is None:
+        read_tags = {}
+        if bam_files:
+            extractor = extract_read_tags_from_bam_callable or globals().get(
+                "extract_read_tags_from_bam"
+            )
+            if extractor is None:
+                raise ValueError(
+                    "No `read_tags` provided and `extract_read_tags_from_bam` not found."
+                )
+            for bam in bam_files:
+                bam_read_tags = extractor(
+                    bam,
+                    tag_names=tag_names,
+                    include_flags=include_flags,
+                    include_cigar=include_cigar,
+                    samtools_backend=samtools_backend,
+                )
+                if not isinstance(bam_read_tags, dict):
+                    raise ValueError(f"extract_read_tags_from_bam returned non-dict for {bam}")
+                read_tags.update(bam_read_tags)
+
+    if not read_tags:
+        return
+
+    df = pd.DataFrame.from_dict(read_tags, orient="index")
+    df_reindexed = df.reindex(adata.obs_names)
+    for column in df_reindexed.columns:
+        adata.obs[column] = df_reindexed[column].values
+
+
 def add_read_length_and_mapping_qc(
     adata,
     bam_files: Optional[List[str]] = None,

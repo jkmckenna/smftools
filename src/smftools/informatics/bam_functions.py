@@ -33,6 +33,20 @@ logger = get_logger(__name__)
 
 _PROGRESS_RE = re.compile(r"Output records written:\s*(\d+)")
 _EMPTY_RE = re.compile(r"^\s*$")
+_BAM_FLAG_BITS: Tuple[Tuple[int, str], ...] = (
+    (0x1, "paired"),
+    (0x2, "proper_pair"),
+    (0x4, "unmapped"),
+    (0x8, "mate_unmapped"),
+    (0x10, "reverse"),
+    (0x20, "mate_reverse"),
+    (0x40, "read1"),
+    (0x80, "read2"),
+    (0x100, "secondary"),
+    (0x200, "qc_fail"),
+    (0x400, "duplicate"),
+    (0x800, "supplementary"),
+)
 
 
 def _require_pysam() -> "pysam_types":
@@ -1191,6 +1205,8 @@ def extract_base_identities(
         dict: Mismatch counts per read.
         dict: Mismatch trends per read.
         dict: Integer-encoded mismatch bases per read.
+        dict: Base quality scores per read aligned to reference positions.
+        dict: Read span masks per read (1 within span, 0 outside).
     """
     logger.debug("Extracting nucleotide identities for each read using extract_base_identities")
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
@@ -1206,6 +1222,8 @@ def extract_base_identities(
             dtype=np.int16,
         )
     )
+    base_quality_scores = defaultdict(lambda: np.full(max_reference_length, -1, dtype=np.int16))
+    read_span_masks = defaultdict(lambda: np.zeros(max_reference_length, dtype=np.int8))
 
     backend_choice = _resolve_samtools_backend(samtools_backend)
     ref_seq = sequence.upper()
@@ -1228,17 +1246,30 @@ def extract_base_identities(
 
                 read_name = read.query_name
                 query_sequence = read.query_sequence
+                query_qualities = read.query_qualities or []
                 base_dict = rev_base_identities if read.is_reverse else fwd_base_identities
                 mismatch_base_identities[read_name]
+                base_quality_scores[read_name]
+                read_span_masks[read_name]
+
+                if read.reference_start is not None and read.reference_end is not None:
+                    span_end = min(read.reference_end, max_reference_length)
+                    read_span_masks[read_name][read.reference_start:span_end] = 1
 
                 # Use get_aligned_pairs directly with positions filtering
                 aligned_pairs = read.get_aligned_pairs(matches_only=True)
 
                 for read_position, reference_position in aligned_pairs:
+                    if reference_position is None or read_position is None:
+                        continue
                     read_base = query_sequence[read_position]
                     ref_base = ref_seq[reference_position]
                     if reference_position in positions:
                         base_dict[read_name][reference_position] = read_base
+                        if read_position < len(query_qualities):
+                            base_quality_scores[read_name][reference_position] = query_qualities[
+                                read_position
+                            ]
 
                     # Track mismatches (excluding Ns)
                     if read_base != ref_base and read_base != "N" and ref_base != "N":
@@ -1268,6 +1299,13 @@ def extract_base_identities(
                 elif op in {"H", "P"}:
                     continue
 
+        def _reference_span_from_cigar(cigar: str) -> int:
+            span = 0
+            for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+                if op in {"M", "D", "N", "=", "X"}:
+                    span += int(length_str)
+            return span
+
         cmd = ["samtools", "view", "-F", "4", str(bam_path), chromosome]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         assert proc.stdout is not None
@@ -1282,10 +1320,21 @@ def extract_base_identities(
             pos = int(fields[3])
             cigar = fields[5]
             query_sequence = fields[9]
+            qual_string = fields[10]
             if cigar == "*" or query_sequence == "*":
                 continue
             base_dict = rev_base_identities if (flag & 16) else fwd_base_identities
             mismatch_base_identities[read_name]
+            base_quality_scores[read_name]
+            read_span_masks[read_name]
+            qualities = (
+                [ord(ch) - 33 for ch in qual_string] if qual_string and qual_string != "*" else []
+            )
+            ref_start = pos - 1
+            ref_end = ref_start + _reference_span_from_cigar(cigar)
+            span_end = min(ref_end, max_reference_length)
+            if ref_start < max_reference_length:
+                read_span_masks[read_name][ref_start:span_end] = 1
             for read_pos, ref_pos in _iter_aligned_pairs(cigar, pos - 1):
                 if read_pos >= len(query_sequence) or ref_pos >= len(ref_seq):
                     continue
@@ -1293,6 +1342,8 @@ def extract_base_identities(
                 ref_base = ref_seq[ref_pos]
                 if ref_pos in positions:
                     base_dict[read_name][ref_pos] = read_base
+                    if read_pos < len(qualities):
+                        base_quality_scores[read_name][ref_pos] = qualities[read_pos]
                 if read_base != ref_base and read_base != "N" and ref_base != "N":
                     mismatch_counts_per_read[read_name][ref_base][read_base] += 1
                     mismatch_base_identities[read_name][ref_pos] = _encode_mismatch_base(read_base)
@@ -1327,6 +1378,8 @@ def extract_base_identities(
         dict(mismatch_counts_per_read),
         mismatch_trend_per_read,
         dict(mismatch_base_identities),
+        dict(base_quality_scores),
+        dict(read_span_masks),
     )
 
 
@@ -1477,6 +1530,87 @@ def extract_read_features_from_bam(
         raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
 
     return read_metrics
+
+
+def extract_read_tags_from_bam(
+    bam_file_path: str | Path,
+    tag_names: Iterable[str] | None = None,
+    include_flags: bool = True,
+    include_cigar: bool = True,
+    samtools_backend: str | None = "auto",
+) -> Dict[str, Dict[str, object]]:
+    """Extract per-read tag metadata from a BAM file.
+
+    Args:
+        bam_file_path: Path to the BAM file.
+        tag_names: Iterable of BAM tag names to extract (e.g., ["NM", "MD", "MM", "ML"]).
+            If None, only flags/cigar are populated.
+        include_flags: Whether to include a list of flag names for each read.
+        include_cigar: Whether to include the CIGAR string for each read.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
+    Returns:
+        Mapping of read name to a dict of extracted tag values.
+    """
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    tag_names_list = [tag.upper() for tag in tag_names] if tag_names else []
+    read_tags: Dict[str, Dict[str, object]] = {}
+
+    def _decode_flags(flag: int) -> list[str]:
+        return [name for bit, name in _BAM_FLAG_BITS if flag & bit]
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(bam_file_path), "rb") as bam_file:
+            for read in bam_file.fetch(until_eof=True):
+                if not read.query_name:
+                    continue
+                tag_map: Dict[str, object] = {}
+                if include_cigar:
+                    tag_map["CIGAR"] = read.cigarstring
+                if include_flags:
+                    tag_map["FLAGS"] = _decode_flags(read.flag)
+                for tag in tag_names_list:
+                    try:
+                        tag_map[tag] = read.get_tag(tag)
+                    except Exception:
+                        tag_map[tag] = None
+                read_tags[read.query_name] = tag_map
+    else:
+        cmd = ["samtools", "view", "-F", "4", str(bam_file_path)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if not line.strip() or line.startswith("@"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 11:
+                continue
+            read_name = fields[0]
+            flag = int(fields[1])
+            cigar = fields[5]
+            tag_map: Dict[str, object] = {}
+            if include_cigar:
+                tag_map["CIGAR"] = cigar
+            if include_flags:
+                tag_map["FLAGS"] = _decode_flags(flag)
+            if tag_names_list:
+                raw_tags = fields[11:]
+                parsed_tags: Dict[str, str] = {}
+                for raw_tag in raw_tags:
+                    parts = raw_tag.split(":", 2)
+                    if len(parts) == 3:
+                        tag_name, _tag_type, value = parts
+                        parsed_tags[tag_name.upper()] = value
+                for tag in tag_names_list:
+                    tag_map[tag] = parsed_tags.get(tag)
+            read_tags[read_name] = tag_map
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+
+    return read_tags
 
 
 def extract_readnames_from_bam(aligned_BAM, samtools_backend: str | None = "auto"):
