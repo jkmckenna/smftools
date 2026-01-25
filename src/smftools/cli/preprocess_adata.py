@@ -583,6 +583,7 @@ def preprocess_adata_core(
                 sort_by="none",
                 max_unknown_fraction=0.5,
                 save_path=pp_seq_clustermap_dir,
+                show_position_axis=True,
             )
 
         pp_dedup_seq_clustermap_dir = (
@@ -605,6 +606,7 @@ def preprocess_adata_core(
                 sort_by="none",
                 max_unknown_fraction=0.5,
                 save_path=pp_dedup_seq_clustermap_dir,
+                show_position_axis=True,
             )
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
