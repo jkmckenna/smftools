@@ -532,7 +532,7 @@ def preprocess_adata_core(
             hierarchical_linkage=cfg.duplicate_detection_hierarchical_linkage,
             hierarchical_metric="euclidean",
             hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors,
-            demux_types=("double", "already"),
+            demux_types=cfg.duplicate_detection_demux_types_to_use,
             demux_col="demux_type",
         )
 

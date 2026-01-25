@@ -822,6 +822,9 @@ class ExperimentConfig:
     duplicate_detection_site_types: List[str] = field(
         default_factory=lambda: ["GpC", "CpG", "ambiguous_GpC_CpG"]
     )
+    duplicate_detection_demux_types_to_use: List[str] = field(
+        default_factory=lambda: ["single", "double", "already"]
+    )
     duplicate_detection_distance_threshold: float = 0.07
     hamming_vs_metric_keys: List[str] = field(default_factory=lambda: ["Fraction_C_site_modified"])
     duplicate_detection_keep_best_metric: str = "read_quality"
@@ -1428,6 +1431,9 @@ class ExperimentConfig:
             ),
             duplicate_detection_site_types=merged.get(
                 "duplicate_detection_site_types", ["GpC", "CpG", "ambiguous_GpC_CpG"]
+            ),
+            duplicate_detection_demux_types_to_use=merged.get(
+                "duplicate_detection_demux_types_to_use", ["single", "double", "already"]
             ),
             duplicate_detection_distance_threshold=merged.get(
                 "duplicate_detection_distance_threshold", 0.07

@@ -220,7 +220,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         get_chromosome_lengths,
         subsample_fasta_from_bed,
     )
-    from ..informatics.h5ad_functions import add_read_length_and_mapping_qc
+    from ..informatics.h5ad_functions import add_read_length_and_mapping_qc, add_read_tag_annotations
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
     from ..informatics.pod5_functions import fast5_to_pod5
@@ -748,6 +748,16 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         extract_read_features_from_bam_callable=extract_read_features_from_bam,
         bypass=cfg.bypass_add_read_length_and_mapping_qc,
         force_redo=cfg.force_redo_add_read_length_and_mapping_qc,
+        samtools_backend=cfg.samtools_backend,
+    )
+
+    logger.info("Adding BAM tags and BAM flags to adata.obs")
+    add_read_tag_annotations(
+        raw_adata,
+        se_bam_files,
+        tag_names=getattr(cfg, "bam_tag_names", ["NM", "MD", "MM", "ML"]),
+        include_flags=True,
+        include_cigar=True,
         samtools_backend=cfg.samtools_backend,
     )
 
