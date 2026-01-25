@@ -1236,6 +1236,7 @@ def modkit_extract_to_adata(
             logger.debug("Found existing integer-encoded reads, using these")
     if cache_needs_rebuild:
         for bami, bam in enumerate(bam_path_list):
+            logger.info(f"Extracting base level sequences, qualities, reference spans, and mismatches per read for bam {bami}")
             for record in records_to_analyze:
                 current_reference_length = reference_dict[record][0]
                 positions = range(current_reference_length)

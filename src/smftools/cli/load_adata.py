@@ -210,6 +210,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
         extract_read_features_from_bam,
+        extract_read_tags_from_bam,
         split_and_index_BAM,
     )
     from ..informatics.basecalling import canoncall, modcall
@@ -758,6 +759,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         tag_names=getattr(cfg, "bam_tag_names", ["NM", "MD", "MM", "ML"]),
         include_flags=True,
         include_cigar=True,
+        extract_read_tags_from_bam_callable=extract_read_tags_from_bam,
         samtools_backend=cfg.samtools_backend,
     )
 
