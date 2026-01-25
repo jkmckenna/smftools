@@ -2093,6 +2093,8 @@ def plot_sequence_integer_encoding_clustermaps(
     save_path: str | Path | None = None,
     use_dna_5color_palette: bool = True,
     show_numeric_colorbar: bool = False,
+    show_position_axis: bool = False,
+    position_axis_tick_target: int = 25,
 ):
     """Plot integer-encoded sequence clustermaps per sample/reference.
 
@@ -2118,6 +2120,8 @@ def plot_sequence_integer_encoding_clustermaps(
         save_path: Optional output directory for saving plots.
         use_dna_5color_palette: Whether to use a fixed A/C/G/T/Other palette.
         show_numeric_colorbar: If False, use a legend instead of a numeric colorbar.
+        show_position_axis: Whether to draw a position axis with tick labels.
+        position_axis_tick_target: Approximate number of ticks to show when auto-sizing.
 
     Returns:
         List of dictionaries with per-plot metadata and output paths.
@@ -2137,6 +2141,9 @@ def plot_sequence_integer_encoding_clustermaps(
 
     if max_unknown_fraction is not None and not (0 <= max_unknown_fraction <= 1):
         raise ValueError("max_unknown_fraction must be between 0 and 1.")
+
+    if position_axis_tick_target < 1:
+        raise ValueError("position_axis_tick_target must be at least 1.")
 
     results: List[Dict[str, Any]] = []
     save_path = Path(save_path) if save_path is not None else None
@@ -2172,6 +2179,13 @@ def plot_sequence_integer_encoding_clustermaps(
         mismatch_int_to_base = {
             int(v): str(k) for k, v in mismatch_encoding_map.items() if isinstance(v, (int, np.integer))
         }
+
+    def _resolve_xtick_step(n_positions: int) -> int | None:
+        if xtick_step is not None:
+            return xtick_step
+        if not show_position_axis:
+            return None
+        return max(1, int(np.ceil(n_positions / position_axis_tick_target)))
 
     for ref in adata.obs[reference_col].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
@@ -2328,8 +2342,9 @@ def plot_sequence_integer_encoding_clustermaps(
 
             ax.set_title(f"{sample} - {ref} ({layer})")
 
-            if xtick_step is not None and xtick_step > 0:
-                sites = np.arange(0, matrix.shape[1], xtick_step)
+            resolved_step = _resolve_xtick_step(matrix.shape[1])
+            if resolved_step is not None and resolved_step > 0:
+                sites = np.arange(0, matrix.shape[1], resolved_step)
                 ax.set_xticks(sites)
                 ax.set_xticklabels(
                     subset.var_names[sites].astype(str),
@@ -2338,6 +2353,8 @@ def plot_sequence_integer_encoding_clustermaps(
                 )
             else:
                 ax.set_xticks([])
+            if show_position_axis or xtick_step is not None:
+                ax.set_xlabel("Position")
 
             if has_mismatch:
                 mismatch_ax = axes[1]
@@ -2406,8 +2423,8 @@ def plot_sequence_integer_encoding_clustermaps(
                     )
 
                 mismatch_ax.set_title(f"{sample} - {ref} ({mismatch_layer})")
-                if xtick_step is not None and xtick_step > 0:
-                    sites = np.arange(0, mismatch_matrix.shape[1], xtick_step)
+                if resolved_step is not None and resolved_step > 0:
+                    sites = np.arange(0, mismatch_matrix.shape[1], resolved_step)
                     mismatch_ax.set_xticks(sites)
                     mismatch_ax.set_xticklabels(
                         subset.var_names[sites].astype(str),
@@ -2416,6 +2433,8 @@ def plot_sequence_integer_encoding_clustermaps(
                     )
                 else:
                     mismatch_ax.set_xticks([])
+                if show_position_axis or xtick_step is not None:
+                    mismatch_ax.set_xlabel("Position")
 
             out_file = None
             if save_path is not None:
