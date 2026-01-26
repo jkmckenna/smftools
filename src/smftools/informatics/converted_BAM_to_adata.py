@@ -19,6 +19,23 @@ from smftools.constants import (
     MODKIT_EXTRACT_SEQUENCE_BASES,
     MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE,
     MODKIT_EXTRACT_SEQUENCE_PADDING_BASE,
+    H5_DIR,
+    BAM_SUFFIX,
+    SEQUENCE_INTEGER_ENCODING,
+    SEQUENCE_INTEGER_DECODING,
+    DEMUX_TYPE,
+    REFERENCE,
+    REFERENCE_STRAND,
+    REFERENCE_DATASET_STRAND,
+    SAMPLE,
+    BARCODE,
+    STRAND,
+    DATASET,
+    READ_MISMATCH_TREND,
+    READ_MAPPING_DIRECTION,
+    MISMATCH_INTEGER_ENCODING,
+    BASE_QUALITY_SCORES,
+    READ_SPAN_MASK
 )
 from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
@@ -152,7 +169,7 @@ def converted_BAM_to_adata(
     logger.debug(f"Using device: {device}")
 
     ## Set Up Directories and File Paths
-    h5_dir = output_dir / "h5ads"
+    h5_dir = output_dir / H5_DIR
     tmp_dir = output_dir / "tmp"
     final_adata = None
     final_adata_path = h5_dir / f"{experiment_name}.h5ad.gz"
@@ -166,7 +183,7 @@ def converted_BAM_to_adata(
     bam_files = sorted(
         p
         for p in split_dir.iterdir()
-        if p.is_file() and p.suffix == ".bam" and "unclassified" not in p.name
+        if p.is_file() and p.suffix == BAM_SUFFIX and "unclassified" not in p.name
     )
 
     bam_path_list = bam_files
@@ -199,9 +216,9 @@ def converted_BAM_to_adata(
         samtools_backend,
     )
 
-    final_adata.uns["sequence_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
-    final_adata.uns["mismatch_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
-    final_adata.uns["sequence_integer_decoding_map"] = {
+    final_adata.uns[f"{SEQUENCE_INTEGER_ENCODING}_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
+    final_adata.uns[f"{MISMATCH_INTEGER_ENCODING}_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
+    final_adata.uns[f"{SEQUENCE_INTEGER_DECODING}_map"] = {
         str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
     }
 
@@ -221,9 +238,9 @@ def converted_BAM_to_adata(
 
     consensus_bases = MODKIT_EXTRACT_SEQUENCE_BASES[:4]  # ignore N/PAD for consensus
     consensus_base_ints = [MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT[base] for base in consensus_bases]
-    for ref_group in final_adata.obs["Reference_dataset_strand"].cat.categories:
-        group_subset = final_adata[final_adata.obs["Reference_dataset_strand"] == ref_group]
-        encoded_sequences = group_subset.layers["sequence_integer_encoding"]
+    for ref_group in final_adata.obs[REFERENCE_DATASET_STRAND].cat.categories:
+        group_subset = final_adata[final_adata.obs[REFERENCE_DATASET_STRAND] == ref_group]
+        encoded_sequences = group_subset.layers[SEQUENCE_INTEGER_ENCODING]
         layer_counts = [
             np.sum(encoded_sequences == base_int, axis=0) for base_int in consensus_base_ints
         ]
@@ -240,8 +257,8 @@ def converted_BAM_to_adata(
         )
 
     if input_already_demuxed:
-        final_adata.obs["demux_type"] = ["already"] * final_adata.shape[0]
-        final_adata.obs["demux_type"] = final_adata.obs["demux_type"].astype("category")
+        final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
+        final_adata.obs[DEMUX_TYPE] = final_adata.obs[DEMUX_TYPE].astype("category")
     else:
         from .h5ad_functions import add_demux_type_annotation
 
@@ -691,19 +708,19 @@ def process_single_bam(
         adata = ad.AnnData(X)
         adata.obs_names = bin_df.index.astype(str)
         adata.var_names = bin_df.columns.astype(str)
-        adata.obs["Sample"] = [sample] * len(adata)
+        adata.obs[SAMPLE] = [sample] * len(adata)
         try:
             barcode = sample.split("barcode")[1]
         except Exception:
             barcode = np.nan
-        adata.obs["Barcode"] = [int(barcode)] * len(adata)
-        adata.obs["Barcode"] = adata.obs["Barcode"].astype(str)
-        adata.obs["Reference"] = [chromosome] * len(adata)
-        adata.obs["Strand"] = [strand] * len(adata)
-        adata.obs["Dataset"] = [mod_type] * len(adata)
-        adata.obs["Reference_dataset_strand"] = [f"{chromosome}_{mod_type}_{strand}"] * len(adata)
-        adata.obs["Reference_strand"] = [f"{chromosome}_{strand}"] * len(adata)
-        adata.obs["Read_mismatch_trend"] = adata.obs_names.map(mismatch_trend_series)
+        adata.obs[BARCODE] = [int(barcode)] * len(adata)
+        adata.obs[BARCODE] = adata.obs[BARCODE].astype(str)
+        adata.obs[REFERENCE] = [chromosome] * len(adata)
+        adata.obs[STRAND] = [strand] * len(adata)
+        adata.obs[DATASET] = [mod_type] * len(adata)
+        adata.obs[REFERENCE_DATASET_STRAND] = [f"{chromosome}_{mod_type}_{strand}"] * len(adata)
+        adata.obs[REFERENCE_STRAND] = [f"{chromosome}_{strand}"] * len(adata)
+        adata.obs[READ_MISMATCH_TREND] = adata.obs_names.map(mismatch_trend_series)
 
         read_mapping_direction = []
         for read_id in adata.obs_names:
@@ -714,13 +731,13 @@ def process_single_bam(
             else:
                 read_mapping_direction.append("unk")
 
-        adata.obs["Read_mapping_direction"] = read_mapping_direction
+        adata.obs[READ_MAPPING_DIRECTION] = read_mapping_direction
 
         # Attach integer sequence encoding to layers
-        adata.layers["sequence_integer_encoding"] = encoded_matrix
-        adata.layers["mismatch_integer_encoding"] = mismatch_encoded_matrix
-        adata.layers["base_quality_scores"] = quality_matrix
-        adata.layers["read_span_mask"] = read_span_matrix
+        adata.layers[SEQUENCE_INTEGER_ENCODING] = encoded_matrix
+        adata.layers[MISMATCH_INTEGER_ENCODING] = mismatch_encoded_matrix
+        adata.layers[BASE_QUALITY_SCORES] = quality_matrix
+        adata.layers[READ_SPAN_MASK] = read_span_matrix
 
         adata_list.append(adata)
 

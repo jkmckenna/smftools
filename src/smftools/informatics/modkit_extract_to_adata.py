@@ -13,6 +13,12 @@ import pandas as pd
 from tqdm import tqdm
 
 from smftools.constants import (
+    BARCODE,
+    BASE_QUALITY_SCORES,
+    DATASET,
+    DEMUX_TYPE,
+    H5_DIR,
+    MISMATCH_INTEGER_ENCODING,
     MODKIT_EXTRACT_CALL_CODE_CANONICAL,
     MODKIT_EXTRACT_CALL_CODE_MODIFIED,
     MODKIT_EXTRACT_MODIFIED_BASE_A,
@@ -30,6 +36,15 @@ from smftools.constants import (
     MODKIT_EXTRACT_TSV_COLUMN_READ_ID,
     MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION,
     MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND,
+    READ_MAPPING_DIRECTION,
+    READ_SPAN_MASK,
+    REFERENCE,
+    REFERENCE_DATASET_STRAND,
+    REFERENCE_STRAND,
+    SAMPLE,
+    SEQUENCE_INTEGER_DECODING,
+    SEQUENCE_INTEGER_ENCODING,
+    STRAND,
 )
 from smftools.logging_utils import get_logger
 
@@ -1162,7 +1177,7 @@ def modkit_extract_to_adata(
 
     ################## Get input tsv and bam file names into a sorted list ################
     # Make output dirs
-    h5_dir = out_dir / "h5ads"
+    h5_dir = out_dir / H5_DIR
     tmp_dir = out_dir / "tmp"
     make_dirs([h5_dir, tmp_dir])
 
@@ -1602,19 +1617,19 @@ def modkit_extract_to_adata(
                                         final_sample_index,
                                     )
                                 )
-                                temp_adata.obs["Sample"] = [
+                                temp_adata.obs[SAMPLE] = [
                                     sample_name_map[final_sample_index]
                                 ] * len(temp_adata)
-                                temp_adata.obs["Barcode"] = [barcode_map[final_sample_index]] * len(
+                                temp_adata.obs[BARCODE] = [barcode_map[final_sample_index]] * len(
                                     temp_adata
                                 )
-                                temp_adata.obs["Reference"] = [f"{record}"] * len(temp_adata)
-                                temp_adata.obs["Strand"] = [strand] * len(temp_adata)
-                                temp_adata.obs["Dataset"] = [dataset] * len(temp_adata)
-                                temp_adata.obs["Reference_dataset_strand"] = [
+                                temp_adata.obs[REFERENCE] = [f"{record}"] * len(temp_adata)
+                                temp_adata.obs[STRAND] = [strand] * len(temp_adata)
+                                temp_adata.obs[DATASET] = [dataset] * len(temp_adata)
+                                temp_adata.obs[REFERENCE_DATASET_STRAND] = [
                                     f"{record}_{dataset}_{strand}"
                                 ] * len(temp_adata)
-                                temp_adata.obs["Reference_strand"] = [f"{record}_{strand}"] * len(
+                                temp_adata.obs[REFERENCE_STRAND] = [f"{record}_{strand}"] * len(
                                     temp_adata
                                 )
 
@@ -1673,7 +1688,7 @@ def modkit_extract_to_adata(
                                     else:
                                         read_mapping_direction.append("unk")
 
-                                temp_adata.obs["Read_mapping_direction"] = read_mapping_direction
+                                temp_adata.obs[READ_MAPPING_DIRECTION] = read_mapping_direction
 
                                 del temp_df
 
@@ -1697,7 +1712,7 @@ def modkit_extract_to_adata(
                                 del encoded_reads
                                 gc.collect()
 
-                                temp_adata.layers["sequence_integer_encoding"] = encoded_matrix
+                                temp_adata.layers[SEQUENCE_INTEGER_ENCODING] = encoded_matrix
                                 if mismatch_reads:
                                     current_reference_length = reference_dict[record][0]
                                     default_mismatch_sequence = np.full(
@@ -1715,7 +1730,7 @@ def modkit_extract_to_adata(
                                             for read_name in sorted_index
                                         ]
                                     )
-                                    temp_adata.layers["mismatch_integer_encoding"] = mismatch_matrix
+                                    temp_adata.layers[MISMATCH_INTEGER_ENCODING] = mismatch_matrix
                                 if quality_reads:
                                     default_quality_sequence = np.full(
                                         sequence_length, -1, dtype=np.int16
@@ -1726,7 +1741,7 @@ def modkit_extract_to_adata(
                                             for read_name in sorted_index
                                         ]
                                     )
-                                    temp_adata.layers["base_quality_scores"] = quality_matrix
+                                    temp_adata.layers[BASE_QUALITY_SCORES] = quality_matrix
                                 if read_span_reads:
                                     default_read_span = np.zeros(sequence_length, dtype=np.int16)
                                     read_span_matrix = np.vstack(
@@ -1735,7 +1750,7 @@ def modkit_extract_to_adata(
                                             for read_name in sorted_index
                                         ]
                                     )
-                                    temp_adata.layers["read_span_mask"] = read_span_matrix
+                                    temp_adata.layers[READ_SPAN_MASK] = read_span_matrix
 
                                 # If final adata object already has a sample loaded, concatenate the current sample into the existing adata object
                                 if adata:
@@ -1828,9 +1843,9 @@ def modkit_extract_to_adata(
     for col in final_adata.obs.columns:
         final_adata.obs[col] = final_adata.obs[col].astype("category")
 
-    final_adata.uns["sequence_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
-    final_adata.uns["mismatch_integer_encoding_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
-    final_adata.uns["sequence_integer_decoding_map"] = {
+    final_adata.uns[f"{SEQUENCE_INTEGER_ENCODING}_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
+    final_adata.uns[f"{MISMATCH_INTEGER_ENCODING}_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
+    final_adata.uns[f"{SEQUENCE_INTEGER_DECODING}_map"] = {
         str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
     }
 
@@ -1846,14 +1861,14 @@ def modkit_extract_to_adata(
         final_adata.uns[f"{record}_FASTA_sequence"] = sequence
         final_adata.uns["References"][f"{record}_FASTA_sequence"] = sequence
         # Add consensus sequence of samples mapped to the record to the object
-        record_subset = final_adata[final_adata.obs["Reference"] == record]
-        for strand in record_subset.obs["Strand"].cat.categories:
-            strand_subset = record_subset[record_subset.obs["Strand"] == strand]
-            for mapping_dir in strand_subset.obs["Read_mapping_direction"].cat.categories:
+        record_subset = final_adata[final_adata.obs[REFERENCE] == record]
+        for strand in record_subset.obs[STRAND].cat.categories:
+            strand_subset = record_subset[record_subset.obs[STRAND] == strand]
+            for mapping_dir in strand_subset.obs[READ_MAPPING_DIRECTION].cat.categories:
                 mapping_dir_subset = strand_subset[
-                    strand_subset.obs["Read_mapping_direction"] == mapping_dir
+                    strand_subset.obs[READ_MAPPING_DIRECTION] == mapping_dir
                 ]
-                encoded_sequences = mapping_dir_subset.layers["sequence_integer_encoding"]
+                encoded_sequences = mapping_dir_subset.layers[SEQUENCE_INTEGER_ENCODING]
                 layer_counts = [
                     np.sum(encoded_sequences == base_int, axis=0)
                     for base_int in consensus_base_ints
@@ -1871,8 +1886,8 @@ def modkit_extract_to_adata(
                 ] = consensus_sequence_list
 
     if input_already_demuxed:
-        final_adata.obs["demux_type"] = ["already"] * final_adata.shape[0]
-        final_adata.obs["demux_type"] = final_adata.obs["demux_type"].astype("category")
+        final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
+        final_adata.obs[DEMUX_TYPE] = final_adata.obs["demux_type"].astype("category")
     else:
         from .h5ad_functions import add_demux_type_annotation
 
