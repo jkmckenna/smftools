@@ -6,6 +6,7 @@ import pytest
 from tests.smoke.import_helpers import import_module_or_skip
 
 MODULES = [
+    "smftools.tools.calculate_nmf",
     "smftools.tools.calculate_umap",
     "smftools.tools.cluster_adata_on_methylation",
     "smftools.tools.general_tools",

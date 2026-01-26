@@ -176,7 +176,7 @@ def spatial_adata_core(
         reindex_references_adata,
     )
     from ..readwrite import make_dirs, safe_read_h5ad
-    from ..tools import calculate_umap, rolling_window_nn_distance
+    from ..tools import calculate_nmf, calculate_umap, rolling_window_nn_distance
     from ..tools.rolling_nn_distance import assign_rolling_nn_results
     from ..tools.position_stats import (
         compute_positionwise_statistics,
@@ -340,6 +340,20 @@ def spatial_adata_core(
     spatial_dir_dedup = spatial_directory / "deduplicated"
     clustermap_dir_dedup = spatial_dir_dedup / "06_clustermaps"
     umap_dir = spatial_dir_dedup / "07_umaps"
+    nmf_dir = spatial_dir_dedup / "07b_nmf"
+
+    var_filters = []
+    if smf_modality == "direct":
+        for ref in references:
+            for base in cfg.mod_target_bases:
+                var_filters.append(f"{ref}_{base}_site")
+    elif deaminase:
+        for ref in references:
+            var_filters.append(f"{ref}_C_site")
+    else:
+        for ref in references:
+            for base in cfg.mod_target_bases:
+                var_filters.append(f"{ref}_{base}_site")
 
     # Clustermaps on deduplicated adata
     if clustermap_dir_dedup.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
@@ -476,19 +490,6 @@ def spatial_adata_core(
     else:
         make_dirs([umap_dir])
 
-        var_filters = []
-        if smf_modality == "direct":
-            for ref in references:
-                for base in cfg.mod_target_bases:
-                    var_filters.append(f"{ref}_{base}_site")
-        elif deaminase:
-            for ref in references:
-                var_filters.append(f"{ref}_C_site")
-        else:
-            for ref in references:
-                for base in cfg.mod_target_bases:
-                    var_filters.append(f"{ref}_{base}_site")
-
         adata = calculate_umap(
             adata,
             layer=cfg.layer_for_umap_plotting,
@@ -504,6 +505,22 @@ def spatial_adata_core(
         umap_layers += cfg.umap_layers_to_plot
         sc.pl.umap(adata, color=umap_layers, show=False, save=True)
         sc.pl.pca(adata, color=umap_layers, show=False, save=True)
+
+    # NMF
+    if nmf_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{nmf_dir} already exists. Skipping NMF plotting.")
+    else:
+        make_dirs([nmf_dir])
+        adata = calculate_nmf(
+            adata,
+            layer=cfg.layer_for_umap_plotting,
+            var_filters=var_filters,
+            n_components=2,
+        )
+        sc.settings.figdir = nmf_dir
+        nmf_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
+        nmf_layers += cfg.umap_layers_to_plot
+        sc.pl.embedding(adata, basis="nmf", color=nmf_layers, show=False, save=True)
 
     # ============================================================
     # 3) Spatial autocorrelation + rolling metrics
