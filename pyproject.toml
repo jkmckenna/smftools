@@ -117,6 +117,7 @@ pysam = [
 
 ml-base = [
     "scikit-learn>=1.0.2",
+    "tensorly",
     "torch>=1.9.0",
 ]
 
