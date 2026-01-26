@@ -166,6 +166,7 @@ def spatial_adata_core(
     from ..metadata import record_smftools_metadata
     from ..plotting import (
         combined_raw_clustermap,
+        plot_nmf_components,
         plot_rolling_grid,
         plot_rolling_nn_and_layer,
         plot_spatial_autocorr_grid,
@@ -521,6 +522,7 @@ def spatial_adata_core(
         nmf_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
         nmf_layers += cfg.umap_layers_to_plot
         sc.pl.embedding(adata, basis="nmf", color=nmf_layers, show=False, save=True)
+        plot_nmf_components(adata, output_dir=nmf_dir)
 
     # ============================================================
     # 3) Spatial autocorrelation + rolling metrics

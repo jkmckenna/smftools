@@ -5,7 +5,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,9 @@ DNA_5COLOR_PALETTE = {
     "T": "#FF0000",  # red
     "OTHER": "#808080",  # gray (N, PAD, unknown)
 }
+
+if TYPE_CHECKING:
+    import anndata as ad
 
 
 def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
@@ -98,6 +101,104 @@ def normalized_mean(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarra
     mean = np.nanmean(matrix, axis=0) if ignore_nan else np.mean(matrix, axis=0)
     denom = (mean.max() - mean.min()) + 1e-9
     return (mean - mean.min()) / denom
+
+
+def plot_nmf_components(
+    adata: "ad.AnnData",
+    *,
+    output_dir: Path | str,
+    components_key: str = "H_nmf",
+    heatmap_name: str = "nmf_H_heatmap.png",
+    lineplot_name: str = "nmf_H_lineplot.png",
+    max_features: int = 2000,
+) -> Dict[str, Path]:
+    """Plot NMF component weights as a heatmap and per-component line plot.
+
+    Args:
+        adata: AnnData object containing NMF results.
+        output_dir: Directory to write plots into.
+        components_key: Key in ``adata.varm`` storing the H matrix.
+        heatmap_name: Filename for the heatmap plot.
+        lineplot_name: Filename for the line plot.
+        max_features: Maximum number of features to plot (top-weighted by component).
+
+    Returns:
+        Dict[str, Path]: Paths to created plots (keys: ``heatmap`` and ``lineplot``).
+    """
+    if components_key not in adata.varm:
+        logger.warning("NMF components key '%s' not found in adata.varm.", components_key)
+        return {}
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    components = np.asarray(adata.varm[components_key])
+    if components.ndim != 2:
+        raise ValueError(f"NMF components must be 2D; got shape {components.shape}.")
+
+    feature_labels = (
+        np.asarray(adata.var_names).astype(str)
+        if adata.shape[1] == components.shape[0]
+        else np.array([str(i) for i in range(components.shape[0])])
+    )
+
+    nonzero_mask = np.any(components != 0, axis=1)
+    if not np.any(nonzero_mask):
+        logger.warning("NMF components are all zeros; skipping plot generation.")
+        return {}
+
+    components = components[nonzero_mask]
+    feature_labels = feature_labels[nonzero_mask]
+
+    if max_features and components.shape[0] > max_features:
+        scores = np.nanmax(components, axis=1)
+        top_idx = np.argsort(scores)[-max_features:]
+        top_idx = np.sort(top_idx)
+        components = components[top_idx]
+        feature_labels = feature_labels[top_idx]
+        logger.info(
+            "Downsampled NMF features from %s to %s for plotting.",
+            nonzero_mask.sum(),
+            components.shape[0],
+        )
+
+    n_features, n_components = components.shape
+    component_labels = [f"C{i + 1}" for i in range(n_components)]
+
+    heatmap_width = max(8, min(20, n_features / 60))
+    heatmap_height = max(2.5, 0.6 * n_components + 1.5)
+    fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
+    sns.heatmap(
+        components.T,
+        ax=ax,
+        cmap="viridis",
+        cbar_kws={"label": "Component weight"},
+        xticklabels=feature_labels if n_features <= 60 else False,
+        yticklabels=component_labels,
+    )
+    ax.set_xlabel("Feature")
+    ax.set_ylabel("NMF component")
+    fig.tight_layout()
+    heatmap_path = output_path / heatmap_name
+    fig.savefig(heatmap_path, dpi=200)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(max(8, min(20, n_features / 50)), 3.5))
+    x = np.arange(n_features)
+    for idx, label in enumerate(component_labels):
+        ax.plot(x, components[:, idx], label=label, linewidth=1.5)
+    ax.set_xlabel("Feature index")
+    ax.set_ylabel("Component weight")
+    if n_features <= 60:
+        ax.set_xticks(x)
+        ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
+    ax.legend(loc="upper right", frameon=False)
+    fig.tight_layout()
+    lineplot_path = output_path / lineplot_name
+    fig.savefig(lineplot_path, dpi=200)
+    plt.close(fig)
+
+    return {"heatmap": heatmap_path, "lineplot": lineplot_path}
 
 
 def _resolve_feature_color(cmap: Any) -> Tuple[float, float, float, float]:
