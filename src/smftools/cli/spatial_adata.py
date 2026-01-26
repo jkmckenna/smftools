@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import LOGGING_DIR, SPATIAL_DIR
+from smftools.constants import LOGGING_DIR, SEQUENCE_INTEGER_ENCODING, SPATIAL_DIR
 from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
 
@@ -342,6 +342,7 @@ def spatial_adata_core(
     clustermap_dir_dedup = spatial_dir_dedup / "06_clustermaps"
     umap_dir = spatial_dir_dedup / "07_umaps"
     nmf_dir = spatial_dir_dedup / "07b_nmf"
+    nmf_sequence_dir = spatial_dir_dedup / "07c_nmf_sequence"
 
     var_filters = []
     if smf_modality == "direct":
@@ -523,6 +524,37 @@ def spatial_adata_core(
         nmf_layers += cfg.umap_layers_to_plot
         sc.pl.embedding(adata, basis="nmf", color=nmf_layers, show=False, save=True)
         plot_nmf_components(adata, output_dir=nmf_dir)
+
+    # NMF using sequence integer encoding (no var filters)
+    if nmf_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{nmf_sequence_dir} already exists. Skipping sequence NMF plotting.")
+    elif SEQUENCE_INTEGER_ENCODING not in adata.layers:
+        logger.warning(
+            "Layer %s not found; skipping sequence integer encoding NMF.",
+            SEQUENCE_INTEGER_ENCODING,
+        )
+    else:
+        make_dirs([nmf_sequence_dir])
+        adata = calculate_nmf(
+            adata,
+            layer=SEQUENCE_INTEGER_ENCODING,
+            var_filters=None,
+            n_components=10,
+            embedding_key="X_nmf_sequence",
+            components_key="H_nmf_sequence",
+            uns_key="nmf_sequence",
+        )
+        sc.settings.figdir = nmf_sequence_dir
+        nmf_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
+        nmf_layers += cfg.umap_layers_to_plot
+        sc.pl.embedding(
+            adata, basis="nmf_sequence", color=nmf_layers, show=False, save=True
+        )
+        plot_nmf_components(
+            adata,
+            output_dir=nmf_sequence_dir,
+            components_key="H_nmf_sequence",
+        )
 
     # ============================================================
     # 3) Spatial autocorrelation + rolling metrics
