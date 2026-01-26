@@ -653,6 +653,7 @@ def preprocess_adata_core(
                 demux_types=cfg.clustermap_demux_types_to_plot,
                 save_path=pp_span_quality_dir,
                 show_position_axis=True,
+                max_nan_fraction=0.5,
             )
 
         pp_dedup_span_quality_dir = (
@@ -673,6 +674,7 @@ def preprocess_adata_core(
                 demux_types=cfg.clustermap_demux_types_to_plot,
                 save_path=pp_dedup_span_quality_dir,
                 show_position_axis=True,
+                max_nan_fraction=0.5,
             )
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
