@@ -2340,7 +2340,7 @@ def plot_sequence_integer_encoding_clustermaps(
             else:
                 sns.heatmap(matrix, cmap=cmap, ax=ax, yticklabels=False, cbar=True)
 
-            ax.set_title(f"{sample} - {ref} ({layer})")
+            ax.set_title(layer)
 
             resolved_step = _resolve_xtick_step(matrix.shape[1])
             if resolved_step is not None and resolved_step > 0:
@@ -2422,7 +2422,7 @@ def plot_sequence_integer_encoding_clustermaps(
                         cbar=True,
                     )
 
-                mismatch_ax.set_title(f"{sample} - {ref} ({mismatch_layer})")
+                mismatch_ax.set_title(mismatch_layer)
                 if resolved_step is not None and resolved_step > 0:
                     sites = np.arange(0, mismatch_matrix.shape[1], resolved_step)
                     mismatch_ax.set_xticks(sites)
@@ -2435,6 +2435,9 @@ def plot_sequence_integer_encoding_clustermaps(
                     mismatch_ax.set_xticks([])
                 if show_position_axis or xtick_step is not None:
                     mismatch_ax.set_xlabel("Position")
+
+            fig.suptitle(f"{sample} - {ref}")
+            fig.tight_layout(rect=(0, 0, 1, 0.95))
 
             out_file = None
             if save_path is not None:
@@ -2620,9 +2623,9 @@ def plot_read_span_quality_clustermaps(
                 norm=span_norm,
                 ax=span_ax,
                 yticklabels=False,
-                cbar=True,
+                cbar=False,
             )
-            span_ax.set_title(f"{sample} - {ref} ({read_span_layer})")
+            span_ax.set_title(read_span_layer)
 
             sns.heatmap(
                 quality_matrix,
@@ -2631,7 +2634,7 @@ def plot_read_span_quality_clustermaps(
                 yticklabels=False,
                 cbar=True,
             )
-            quality_ax.set_title(f"{sample} - {ref} ({quality_layer})")
+            quality_ax.set_title(quality_layer)
 
             resolved_step = _resolve_xtick_step(quality_matrix.shape[1])
             for axis in (span_ax, quality_ax):
@@ -2647,6 +2650,9 @@ def plot_read_span_quality_clustermaps(
                     axis.set_xticks([])
                 if show_position_axis or xtick_step is not None:
                     axis.set_xlabel("Position")
+
+            fig.suptitle(f"{sample} - {ref}")
+            fig.tight_layout(rect=(0, 0, 1, 0.95))
 
             out_file = None
             if save_path is not None:
