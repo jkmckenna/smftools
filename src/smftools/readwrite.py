@@ -431,6 +431,8 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         "layers_skipped": [],
         "obsm_converted": [],
         "obsm_skipped": [],
+        "varm_converted": [],
+        "varm_skipped": [],
         "X_replaced_or_converted": None,
         "errors": [],
     }
@@ -605,10 +607,16 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
 
     def _sanitize_layers_obsm(src_dict, which: str):
         """
-        Ensure arrays in layers/obsm are numeric and non-object dtype.
+        Ensure arrays in layers/obsm/varm are numeric and non-object dtype.
         Returns a cleaned dict suitable to pass into AnnData(...)
         If an entry is not convertible, it is backed up & skipped.
         """
+        report_map = {
+            "layers": ("layers_converted", "layers_skipped"),
+            "obsm": ("obsm_converted", "obsm_skipped"),
+            "varm": ("varm_converted", "varm_skipped"),
+        }
+        converted_key, skipped_key = report_map[which]
         cleaned = {}
         for k, v in src_dict.items():
             try:
@@ -618,9 +626,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                         arr_f = arr.astype(float)
                         cleaned[k] = arr_f
                         report_key = f"{which}.{k}"
-                        report["layers_converted"].append(
-                            report_key
-                        ) if which == "layers" else report["obsm_converted"].append(report_key)
+                        report[converted_key].append(report_key)
                         if verbose:
                             print(f"  {which}.{k} object array coerced to float.")
                     except Exception:
@@ -628,18 +634,13 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                             arr_i = arr.astype(int)
                             cleaned[k] = arr_i
                             report_key = f"{which}.{k}"
-                            report["layers_converted"].append(
-                                report_key
-                            ) if which == "layers" else report["obsm_converted"].append(report_key)
+                            report[converted_key].append(report_key)
                             if verbose:
                                 print(f"  {which}.{k} object array coerced to int.")
                         except Exception:
                             if backup:
                                 _backup(v, f"{which}_{k}_backup")
-                            if which == "layers":
-                                report["layers_skipped"].append(k)
-                            else:
-                                report["obsm_skipped"].append(k)
+                            report[skipped_key].append(k)
                             if verbose:
                                 print(
                                     f"  SKIPPING {which}.{k} (object dtype not numeric). Backed up: {backup}"
@@ -650,10 +651,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
             except Exception as e:
                 if backup:
                     _backup(v, f"{which}_{k}_backup")
-                if which == "layers":
-                    report["layers_skipped"].append(k)
-                else:
-                    report["obsm_skipped"].append(k)
+                report[skipped_key].append(k)
                 msg = f"  SKIPPING {which}.{k} due to conversion error: {e}"
                 report["errors"].append(msg)
                 if verbose:
@@ -693,6 +691,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
     # ---------- sanitize layers and obsm ----------
     layers_src = getattr(adata, "layers", {})
     obsm_src = getattr(adata, "obsm", {})
+    varm_src = getattr(adata, "varm", {})
 
     try:
         layers_clean = _sanitize_layers_obsm(layers_src, "layers")
@@ -711,6 +710,15 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         if verbose:
             print(msg)
         obsm_clean = {}
+
+    try:
+        varm_clean = _sanitize_layers_obsm(varm_src, "varm")
+    except Exception as e:
+        msg = f"Failed to sanitize varm: {e}"
+        report["errors"].append(msg)
+        if verbose:
+            print(msg)
+        varm_clean = {}
 
     # ---------- handle X ----------
     X_to_use = adata.X
@@ -747,7 +755,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
             layers=layers_clean,
             uns=uns_clean,
             obsm=obsm_clean,
-            varm=getattr(adata, "varm", None),
+            varm=varm_clean,
         )
 
         # preserve names (as strings)
@@ -977,6 +985,7 @@ def safe_read_h5ad(
         "parsed_uns_json_keys": [],
         "restored_layers": [],
         "restored_obsm": [],
+        "restored_varm": [],
         "recategorized_obs": [],
         "recategorized_var": [],
         "missing_backups": [],
@@ -1215,7 +1224,7 @@ def safe_read_h5ad(
                 print(f"[safe_read_h5ad] restored adata.uns['{key}'] from {full}")
 
     # 5) Restore layers and obsm from backups if present
-    # expected backup names: layers_<name>_backup.pkl, obsm_<name>_backup.pkl
+    # expected backup names: layers_<name>_backup.pkl, obsm_<name>_backup.pkl, varm_<name>_backup.pkl
     if os.path.isdir(backup_dir):
         for fname in os.listdir(backup_dir):
             if fname.startswith("layers_") and fname.endswith("_backup.pkl"):
@@ -1246,6 +1255,21 @@ def safe_read_h5ad(
                     except Exception as e:
                         report["errors"].append(
                             f"Failed to restore obsm['{obsm_name}'] from {full}: {e}"
+                        )
+
+            if fname.startswith("varm_") and fname.endswith("_backup.pkl"):
+                varm_name = fname[len("varm_") : -len("_backup.pkl")]
+                full = os.path.join(backup_dir, fname)
+                val = _load_pickle_if_exists(full)
+                if val is not None:
+                    try:
+                        adata.varm[varm_name] = np.asarray(val)
+                        report["restored_varm"].append((varm_name, full))
+                        if verbose:
+                            print(f"[safe_read_h5ad] restored varm['{varm_name}'] from {full}")
+                    except Exception as e:
+                        report["errors"].append(
+                            f"Failed to restore varm['{varm_name}'] from {full}: {e}"
                         )
 
     # 6) If restore_backups True but some expected backups missing, note them
@@ -1297,6 +1321,8 @@ def safe_read_h5ad(
             print("Restored layers:", report["restored_layers"])
         if report["restored_obsm"]:
             print("Restored obsm:", report["restored_obsm"])
+        if report["restored_varm"]:
+            print("Restored varm:", report["restored_varm"])
         if report["recategorized_obs"] or report["recategorized_var"]:
             print(
                 "Recategorized columns (obs/var):",
