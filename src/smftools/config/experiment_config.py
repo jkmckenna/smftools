@@ -836,6 +836,9 @@ class ExperimentConfig:
 
     # Preprocessing - Position QC
     position_max_nan_threshold: float = 0.1
+    mismatch_frequency_range: Sequence[float] = field(default_factory=lambda: [0.05, 0.95])
+    mismatch_frequency_layer: str = "mismatch_integer_encoding"
+    mismatch_frequency_read_span_layer: str = "read_span_mask"
 
     # Spatial Analysis - Clustermap params
     layer_for_clustermap_plotting: Optional[str] = "nan0_0minus1"
@@ -927,6 +930,8 @@ class ExperimentConfig:
     invert_adata: bool = False
     bypass_append_binary_layer_by_base_context: bool = False
     force_redo_append_binary_layer_by_base_context: bool = False
+    bypass_append_mismatch_frequency_sites: bool = False
+    force_redo_append_mismatch_frequency_sites: bool = False
     bypass_calculate_read_modification_stats: bool = False
     force_redo_calculate_read_modification_stats: bool = False
     bypass_filter_reads_on_modification_thresholds: bool = False

@@ -232,6 +232,7 @@ def preprocess_adata_core(
     from ..preprocessing import (
         append_base_context,
         append_binary_layer_by_base_context,
+        append_mismatch_frequency_sites,
         binarize_adata,
         binarize_on_Youden,
         calculate_complexity_II,
@@ -562,6 +563,17 @@ def preprocess_adata_core(
     else:
         adata_unique = adata
     ########################################################################################################################
+
+    ############################################### Append mismatch frequency per position ###############################################
+    append_mismatch_frequency_sites(
+        adata_unique,
+        ref_column=cfg.reference_column,
+        mismatch_layer=cfg.mismatch_frequency_layer,
+        read_span_layer=cfg.mismatch_frequency_read_span_layer,
+        mismatch_frequency_range=cfg.mismatch_frequency_range,
+        bypass=cfg.bypass_append_mismatch_frequency_sites,
+        force_redo=cfg.force_redo_append_mismatch_frequency_sites,
+    )
 
     ############################################### Plot integer sequence encoding clustermaps ###############################################
     if "sequence_integer_encoding" not in adata.layers:

@@ -5,6 +5,7 @@ from importlib import import_module
 _LAZY_ATTRS = {
     "append_base_context": "smftools.preprocessing.append_base_context",
     "append_binary_layer_by_base_context": "smftools.preprocessing.append_binary_layer_by_base_context",
+    "append_mismatch_frequency_sites": "smftools.preprocessing.append_mismatch_frequency_sites",
     "binarize_adata": "smftools.preprocessing.binarize",
     "binarize_on_Youden": "smftools.preprocessing.binarize_on_Youden",
     "calculate_complexity_II": "smftools.preprocessing.calculate_complexity_II",

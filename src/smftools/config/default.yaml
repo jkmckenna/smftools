@@ -162,6 +162,11 @@ duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkag
 
 # Position QC params
 position_max_nan_threshold: 0.1 # The maximum amount of nans to tolerate in a column
+mismatch_frequency_range:
+  - 0.05
+  - 0.95
+mismatch_frequency_layer: "mismatch_integer_encoding"
+mismatch_frequency_read_span_layer: "read_span_mask"
 
 ######## smftools spatial params #########
 invert_adata: False # Whether to invert the AnnData along the positions axis.
