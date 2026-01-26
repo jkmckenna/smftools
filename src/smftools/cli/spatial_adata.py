@@ -503,6 +503,7 @@ def spatial_adata_core(
         umap_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
         umap_layers += cfg.umap_layers_to_plot
         sc.pl.umap(adata, color=umap_layers, show=False, save=True)
+        sc.pl.pca(adata, color=umap_layers, show=False, save=True)
 
     # ============================================================
     # 3) Spatial autocorrelation + rolling metrics
