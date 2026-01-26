@@ -2632,7 +2632,6 @@ def plot_read_span_quality_clustermaps(
                 ncols=2,
                 figsize=(18, 6),
                 sharex="col",
-                sharey="row",
                 gridspec_kw={"height_ratios": [1, 4]},
             )
             span_bar_ax, quality_bar_ax = axes[0]
@@ -2640,23 +2639,22 @@ def plot_read_span_quality_clustermaps(
 
             span_mean = np.nanmean(read_span_matrix, axis=0)
             quality_mean = np.nanmean(quality_matrix, axis=0)
+            bar_positions = np.arange(read_span_matrix.shape[1]) + 0.5
             span_bar_ax.bar(
-                np.arange(read_span_matrix.shape[1]),
+                bar_positions,
                 span_mean,
                 color=read_span_color,
                 width=1.0,
-                align="edge",
             )
             span_bar_ax.set_title(f"{read_span_layer} mean")
             span_bar_ax.set_xlim(0, read_span_matrix.shape[1])
             span_bar_ax.tick_params(axis="x", labelbottom=False)
 
             quality_bar_ax.bar(
-                np.arange(quality_matrix.shape[1]),
+                bar_positions,
                 quality_mean,
                 color="#4c72b0",
                 width=1.0,
-                align="edge",
             )
             quality_bar_ax.set_title(f"{quality_layer} mean")
             quality_bar_ax.set_xlim(0, quality_matrix.shape[1])
