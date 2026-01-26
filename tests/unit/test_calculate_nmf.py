@@ -25,4 +25,6 @@ def test_calculate_nmf_adds_embedding() -> None:
 
     assert "X_nmf" in result.obsm
     assert result.obsm["X_nmf"].shape == (3, 2)
+    assert "H_nmf" in result.varm
+    assert result.varm["H_nmf"].shape == (2, 2)
     assert result.uns["nmf"]["n_components"] == 2
