@@ -21,6 +21,9 @@ def calculate_nmf(
     max_iter: int = 200,
     random_state: int = 0,
     overwrite: bool = True,
+    embedding_key: str = "X_nmf",
+    components_key: str = "H_nmf",
+    uns_key: str = "nmf",
 ) -> "ad.AnnData":
     """Compute a low-dimensional NMF embedding.
 
@@ -32,6 +35,9 @@ def calculate_nmf(
         max_iter: Maximum number of NMF iterations.
         random_state: Random seed for the NMF initializer.
         overwrite: Whether to recompute if the embedding already exists.
+        embedding_key: Key for the embedding in ``adata.obsm``.
+        components_key: Key for the components matrix in ``adata.varm``.
+        uns_key: Key for metadata stored in ``adata.uns``.
 
     Returns:
         anndata.AnnData: Updated AnnData object.
@@ -41,8 +47,8 @@ def calculate_nmf(
     require("sklearn", extra="ml-base", purpose="NMF calculation")
     from sklearn.decomposition import NMF
 
-    has_embedding = "X_nmf" in adata.obsm
-    has_components = "H_nmf" in adata.varm
+    has_embedding = embedding_key in adata.obsm
+    has_components = components_key in adata.varm
     if has_embedding and has_components and not overwrite:
         logger.info("NMF embedding and components already present; skipping recomputation.")
         return adata
@@ -94,16 +100,20 @@ def calculate_nmf(
     else:
         components_matrix = components
 
-    adata.obsm["X_nmf"] = embedding
-    adata.varm["H_nmf"] = components_matrix
-    adata.uns["nmf"] = {
+    adata.obsm[embedding_key] = embedding
+    adata.varm[components_key] = components_matrix
+    adata.uns[uns_key] = {
         "n_components": n_components,
         "max_iter": max_iter,
         "random_state": random_state,
         "layer": layer,
         "var_filters": list(var_filters) if var_filters else None,
-        "components_key": "H_nmf",
+        "components_key": components_key,
     }
 
-    logger.info("Stored: adata.obsm['X_nmf'] and adata.varm['H_nmf']")
+    logger.info(
+        "Stored: adata.obsm['%s'] and adata.varm['%s']",
+        embedding_key,
+        components_key,
+    )
     return adata
