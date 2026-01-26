@@ -880,6 +880,16 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                 }
             )
 
+        # varm
+        for k, v in adata_copy.varm.items():
+            meta_rows.append(
+                {
+                    "kind": "varm",
+                    "name": k,
+                    "dtype": str(np.asarray(v).dtype),
+                }
+            )
+
         # uns
         for k, v in adata_copy.uns.items():
             meta_rows.append(
