@@ -1887,7 +1887,7 @@ def modkit_extract_to_adata(
 
     if input_already_demuxed:
         final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
-        final_adata.obs[DEMUX_TYPE] = final_adata.obs["demux_type"].astype("category")
+        final_adata.obs[DEMUX_TYPE] = final_adata.obs[DEMUX_TYPE].astype("category")
     else:
         from .h5ad_functions import add_demux_type_annotation
 
