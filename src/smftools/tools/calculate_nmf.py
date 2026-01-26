@@ -41,10 +41,15 @@ def calculate_nmf(
     require("sklearn", extra="ml-base", purpose="NMF calculation")
     from sklearn.decomposition import NMF
 
-    if "X_nmf" in adata.obsm and not overwrite:
-        logger.info("NMF embedding already present; skipping recomputation.")
+    has_embedding = "X_nmf" in adata.obsm
+    has_components = "H_nmf" in adata.varm
+    if has_embedding and has_components and not overwrite:
+        logger.info("NMF embedding and components already present; skipping recomputation.")
         return adata
+    if has_embedding and not has_components and not overwrite:
+        logger.info("NMF embedding present without components; recomputing to store components.")
 
+    subset_mask = None
     if var_filters:
         subset_mask = np.logical_or.reduce([adata.var[f].values for f in var_filters])
         adata_subset = adata[:, subset_mask].copy()
@@ -81,15 +86,24 @@ def calculate_nmf(
         random_state=random_state,
     )
     embedding = model.fit_transform(data)
+    components = model.components_.T
+
+    if subset_mask is not None:
+        components_matrix = np.zeros((adata.shape[1], components.shape[1]))
+        components_matrix[subset_mask, :] = components
+    else:
+        components_matrix = components
 
     adata.obsm["X_nmf"] = embedding
+    adata.varm["H_nmf"] = components_matrix
     adata.uns["nmf"] = {
         "n_components": n_components,
         "max_iter": max_iter,
         "random_state": random_state,
         "layer": layer,
         "var_filters": list(var_filters) if var_filters else None,
+        "components_key": "H_nmf",
     }
 
-    logger.info("Stored: adata.obsm['X_nmf']")
+    logger.info("Stored: adata.obsm['X_nmf'] and adata.varm['H_nmf']")
     return adata
