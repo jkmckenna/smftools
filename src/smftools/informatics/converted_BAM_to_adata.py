@@ -43,7 +43,7 @@ from smftools.optional_imports import require
 from ..readwrite import make_dirs
 from .bam_functions import count_aligned_reads, extract_base_identities
 from .binarize_converted_base_identities import binarize_converted_base_identities
-from .fasta_functions import find_conversion_sites
+from .fasta_functions import find_conversion_sites, get_native_references
 
 logger = get_logger(__name__)
 
@@ -201,6 +201,17 @@ def converted_BAM_to_adata(
         bam_path_list, bam_files, mapping_threshold, samtools_backend
     )
 
+    # Get converted record sequences:
+    converted_FASTA_record_seq_map = get_native_references(converted_FASTA)
+    # Pad the record sequences
+    for record, [record_length, seq] in converted_FASTA_record_seq_map.items():
+        if max_reference_length > record_length:
+            pad_number = max_reference_length - record_length
+            record_length += pad_number
+            seq += 'N'*pad_number
+            converted_FASTA_record_seq_map[record] = [record_length, seq]
+
+
     ## Process BAMs in Parallel
     final_adata = process_bams_parallel(
         bam_path_list,
@@ -214,6 +225,7 @@ def converted_BAM_to_adata(
         device,
         deaminase_footprinting,
         samtools_backend,
+        converted_FASTA_record_seq_map,
     )
 
     final_adata.uns[f"{SEQUENCE_INTEGER_ENCODING}_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
@@ -228,6 +240,11 @@ def converted_BAM_to_adata(
         final_adata.var[f"{chromosome}_bottom_strand_FASTA_base"] = list(comp)
         final_adata.uns[f"{chromosome}_FASTA_sequence"] = seq
         final_adata.uns["References"][f"{chromosome}_FASTA_sequence"] = seq
+
+    if not deaminase_footprinting:
+        for record, [_length, seq] in converted_FASTA_record_seq_map.items():
+            if "unconverted" not in record:
+                final_adata.var[f"{record}_top_strand_FASTA_base"] = list(seq)
 
     final_adata.obs_names_make_unique()
     cols = final_adata.obs.columns
@@ -533,6 +550,7 @@ def process_single_bam(
     device: torch.device,
     deaminase_footprinting: bool,
     samtools_backend: str | None,
+    converted_FASTA_record_seq_map: dict[str, tuple[int, str]], 
 ) -> ad.AnnData | None:
     """Process a single BAM file into per-record AnnData objects.
 
@@ -547,6 +565,7 @@ def process_single_bam(
         device: Torch device used for binarization.
         deaminase_footprinting: Whether direct deamination chemistry was used.
         samtools_backend: Samtools backend choice for alignment parsing.
+        converted_FASTA_record_seq_map: record to seq map
 
     Returns:
         anndata.AnnData | None: Concatenated AnnData object or None if no data.
@@ -565,7 +584,8 @@ def process_single_bam(
         chromosome = record_info.chromosome
         current_length = record_info.sequence_length
         mod_type, strand = record_info.conversion, record_info.strand
-        sequence = chromosome_FASTA_dict[chromosome][0]
+        non_converted_sequence = chromosome_FASTA_dict[chromosome][0]
+        record_sequence = converted_FASTA_record_seq_map[record][1]
 
         # Extract Base Identities
         (
@@ -577,7 +597,7 @@ def process_single_bam(
             base_quality_scores,
             read_span_masks,
         ) = extract_base_identities(
-            bam, record, range(current_length), max_reference_length, sequence, samtools_backend
+            bam, record, range(current_length), max_reference_length, record_sequence, samtools_backend
         )
         mismatch_trend_series = pd.Series(mismatch_trend_per_read)
 
@@ -765,6 +785,7 @@ def worker_function(
     device: torch.device,
     deaminase_footprinting: bool,
     samtools_backend: str | None,
+    converted_FASTA_record_seq_map: dict[str, tuple[int, str]],
     progress_queue,
     log_level: int,
     log_file: Path | None,
@@ -783,6 +804,7 @@ def worker_function(
         device: Torch device used for binarization.
         deaminase_footprinting: Whether direct deamination chemistry was used.
         samtools_backend: Samtools backend choice for alignment parsing.
+        converted_FASTA_record_seq_map: record to sequence map
         progress_queue: Queue used to signal completion.
         log_level: Logging level to configure in workers.
         log_file: Optional log file path.
@@ -830,6 +852,7 @@ def worker_function(
             device,
             deaminase_footprinting,
             samtools_backend,
+            converted_FASTA_record_seq_map,
         )
 
         if adata is not None:
@@ -861,6 +884,7 @@ def process_bams_parallel(
     device: torch.device,
     deaminase_footprinting: bool,
     samtools_backend: str | None,
+    converted_FASTA_record_seq_map: dict[str, tuple[int, str]],
 ) -> ad.AnnData | None:
     """Process BAM files in parallel and concatenate the resulting AnnData.
 
@@ -876,6 +900,7 @@ def process_bams_parallel(
         device: Torch device used for binarization.
         deaminase_footprinting: Whether direct deamination chemistry was used.
         samtools_backend: Samtools backend choice for alignment parsing.
+        converted_FASTA_record_seq_map: map from converted record name to the converted reference length and sequence.
 
     Returns:
         anndata.AnnData | None: Concatenated AnnData or None if no H5ADs produced.
@@ -910,6 +935,7 @@ def process_bams_parallel(
                         device,
                         deaminase_footprinting,
                         samtools_backend,
+                        converted_FASTA_record_seq_map,
                         progress_queue,
                         log_level,
                         log_file,

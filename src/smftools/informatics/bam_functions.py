@@ -1183,7 +1183,7 @@ def demux_and_index_BAM(
 
 def extract_base_identities(
     bam_file,
-    chromosome,
+    record,
     positions,
     max_reference_length,
     sequence,
@@ -1194,7 +1194,7 @@ def extract_base_identities(
 
     Parameters:
         bam_file (str): Path to the BAM file.
-        chromosome (str): Name of the reference chromosome.
+        record (str): Name of the reference record.
         positions (list): Positions to extract (0-based).
         max_reference_length (int): Maximum reference length for padding.
         sequence (str): The sequence of the record fasta
@@ -1240,7 +1240,7 @@ def extract_base_identities(
         # print(f"{timestamp} Reading reads from {chromosome} BAM file: {bam_file}")
         with pysam_mod.AlignmentFile(str(bam_file), "rb") as bam:
             total_reads = bam.mapped
-            for read in bam.fetch(chromosome):
+            for read in bam.fetch(record):
                 if not read.is_mapped:
                     continue  # Skip unmapped reads
 
@@ -1308,7 +1308,7 @@ def extract_base_identities(
                     span += int(length_str)
             return span
 
-        cmd = ["samtools", "view", "-F", "4", str(bam_path), chromosome]
+        cmd = ["samtools", "view", "-F", "4", str(bam_path), record]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         assert proc.stdout is not None
         for line in proc.stdout:
