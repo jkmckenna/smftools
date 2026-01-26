@@ -166,6 +166,7 @@ def spatial_adata_core(
     from ..metadata import record_smftools_metadata
     from ..plotting import (
         combined_raw_clustermap,
+        plot_cp_sequence_components,
         plot_nmf_components,
         plot_rolling_grid,
         plot_rolling_nn_and_layer,
@@ -177,7 +178,12 @@ def spatial_adata_core(
         reindex_references_adata,
     )
     from ..readwrite import make_dirs, safe_read_h5ad
-    from ..tools import calculate_nmf, calculate_umap, rolling_window_nn_distance
+    from ..tools import (
+        calculate_nmf,
+        calculate_sequence_cp_decomposition,
+        calculate_umap,
+        rolling_window_nn_distance,
+    )
     from ..tools.rolling_nn_distance import assign_rolling_nn_results
     from ..tools.position_stats import (
         compute_positionwise_statistics,
@@ -525,35 +531,35 @@ def spatial_adata_core(
         sc.pl.embedding(adata, basis="nmf", color=nmf_layers, show=False, save=True)
         plot_nmf_components(adata, output_dir=nmf_dir)
 
-    # NMF using sequence integer encoding (no var filters)
+    # CP decomposition using sequence integer encoding (no var filters)
     if nmf_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.debug(f"{nmf_sequence_dir} already exists. Skipping sequence NMF plotting.")
+        logger.debug(f"{nmf_sequence_dir} already exists. Skipping sequence CP plotting.")
     elif SEQUENCE_INTEGER_ENCODING not in adata.layers:
         logger.warning(
-            "Layer %s not found; skipping sequence integer encoding NMF.",
+            "Layer %s not found; skipping sequence integer encoding CP.",
             SEQUENCE_INTEGER_ENCODING,
         )
     else:
         make_dirs([nmf_sequence_dir])
-        adata = calculate_nmf(
+        adata = calculate_sequence_cp_decomposition(
             adata,
             layer=SEQUENCE_INTEGER_ENCODING,
-            var_filters=None,
-            n_components=5,
-            embedding_key="X_nmf_sequence",
-            components_key="H_nmf_sequence",
-            uns_key="nmf_sequence",
+            rank=5,
+            embedding_key="X_cp_sequence",
+            components_key="H_cp_sequence",
+            uns_key="cp_sequence",
         )
         sc.settings.figdir = nmf_sequence_dir
         nmf_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
         nmf_layers += cfg.umap_layers_to_plot
         sc.pl.embedding(
-            adata, basis="nmf_sequence", color=nmf_layers, show=False, save=True
+            adata, basis="cp_sequence", color=nmf_layers, show=False, save=True
         )
-        plot_nmf_components(
+        plot_cp_sequence_components(
             adata,
             output_dir=nmf_sequence_dir,
-            components_key="H_nmf_sequence",
+            components_key="H_cp_sequence",
+            uns_key="cp_sequence",
         )
 
     # ============================================================

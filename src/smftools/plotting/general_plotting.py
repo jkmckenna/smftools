@@ -201,6 +201,136 @@ def plot_nmf_components(
     return {"heatmap": heatmap_path, "lineplot": lineplot_path}
 
 
+def plot_cp_sequence_components(
+    adata: "ad.AnnData",
+    *,
+    output_dir: Path | str,
+    components_key: str = "H_cp_sequence",
+    uns_key: str = "cp_sequence",
+    heatmap_name: str = "cp_sequence_position_heatmap.png",
+    lineplot_name: str = "cp_sequence_position_lineplot.png",
+    base_name: str = "cp_sequence_base_weights.png",
+    max_positions: int = 2000,
+) -> Dict[str, Path]:
+    """Plot CP decomposition position and base factors.
+
+    Args:
+        adata: AnnData object containing CP decomposition results.
+        output_dir: Directory to write plots into.
+        components_key: Key in ``adata.varm`` storing position factors.
+        uns_key: Key in ``adata.uns`` storing base factors.
+        heatmap_name: Filename for position heatmap.
+        lineplot_name: Filename for position line plot.
+        base_name: Filename for base factor bar plot.
+        max_positions: Maximum number of positions to plot.
+
+    Returns:
+        Dict[str, Path]: Paths to created plots.
+    """
+    if components_key not in adata.varm:
+        logger.warning("CP components key '%s' not found in adata.varm.", components_key)
+        return {}
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    components = np.asarray(adata.varm[components_key])
+    if components.ndim != 2:
+        raise ValueError(f"CP position factors must be 2D; got shape {components.shape}.")
+
+    feature_labels = (
+        np.asarray(adata.var_names).astype(str)
+        if adata.shape[1] == components.shape[0]
+        else np.array([str(i) for i in range(components.shape[0])])
+    )
+
+    if max_positions and components.shape[0] > max_positions:
+        original_count = components.shape[0]
+        scores = np.nanmax(np.abs(components), axis=1)
+        top_idx = np.argsort(scores)[-max_positions:]
+        top_idx = np.sort(top_idx)
+        components = components[top_idx]
+        feature_labels = feature_labels[top_idx]
+        logger.info(
+            "Downsampled CP positions from %s to %s for plotting.",
+            original_count,
+            max_positions,
+        )
+
+    n_positions, n_components = components.shape
+    component_labels = [f"C{i + 1}" for i in range(n_components)]
+
+    heatmap_width = max(8, min(20, n_positions / 60))
+    heatmap_height = max(2.5, 0.6 * n_components + 1.5)
+    fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
+    sns.heatmap(
+        components.T,
+        ax=ax,
+        cmap="viridis",
+        cbar_kws={"label": "Component weight"},
+        xticklabels=feature_labels if n_positions <= 60 else False,
+        yticklabels=component_labels,
+    )
+    ax.set_xlabel("Position")
+    ax.set_ylabel("CP component")
+    fig.tight_layout()
+    heatmap_path = output_path / heatmap_name
+    fig.savefig(heatmap_path, dpi=200)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(max(8, min(20, n_positions / 50)), 3.5))
+    x = np.arange(n_positions)
+    for idx, label in enumerate(component_labels):
+        ax.plot(x, components[:, idx], label=label, linewidth=1.5)
+    ax.set_xlabel("Position index")
+    ax.set_ylabel("Component weight")
+    if n_positions <= 60:
+        ax.set_xticks(x)
+        ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
+    ax.legend(loc="upper right", frameon=False)
+    fig.tight_layout()
+    lineplot_path = output_path / lineplot_name
+    fig.savefig(lineplot_path, dpi=200)
+    plt.close(fig)
+
+    outputs = {"heatmap": heatmap_path, "lineplot": lineplot_path}
+    if uns_key in adata.uns:
+        base_factors = adata.uns[uns_key].get("base_factors")
+        base_labels = adata.uns[uns_key].get("base_labels")
+        if base_factors is not None:
+            base_factors = np.asarray(base_factors)
+            if base_factors.ndim != 2 or base_factors.size == 0:
+                logger.warning(
+                    "CP base factors must be 2D and non-empty; got shape %s.",
+                    base_factors.shape,
+                )
+            else:
+                base_labels = base_labels or [
+                    f"B{i + 1}" for i in range(base_factors.shape[0])
+                ]
+                fig, ax = plt.subplots(figsize=(4.5, 3))
+                width = 0.8 / base_factors.shape[1]
+                x = np.arange(base_factors.shape[0])
+                for idx in range(base_factors.shape[1]):
+                    ax.bar(
+                        x + idx * width,
+                        base_factors[:, idx],
+                        width=width,
+                        label=f"C{idx + 1}",
+                    )
+                ax.set_xticks(x + width * (base_factors.shape[1] - 1) / 2)
+                ax.set_xticklabels(base_labels)
+                ax.set_ylabel("Base factor weight")
+                ax.legend(loc="upper right", frameon=False)
+                fig.tight_layout()
+                base_path = output_path / base_name
+                fig.savefig(base_path, dpi=200)
+                plt.close(fig)
+                outputs["base_factors"] = base_path
+
+    return outputs
+
+
 def _resolve_feature_color(cmap: Any) -> Tuple[float, float, float, float]:
     """Resolve a representative feature color from a colormap or color spec."""
     if isinstance(cmap, str):
