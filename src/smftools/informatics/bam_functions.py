@@ -1248,6 +1248,8 @@ def extract_base_identities(
                 query_sequence = read.query_sequence
                 query_qualities = read.query_qualities or []
                 base_dict = rev_base_identities if read.is_reverse else fwd_base_identities
+
+                # Init arrays for each read in each dict
                 mismatch_base_identities[read_name]
                 base_quality_scores[read_name]
                 read_span_masks[read_name]

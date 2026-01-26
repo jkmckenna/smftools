@@ -539,6 +539,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
         se_bam_files = bam_files
         bam_dir = cfg.split_path
+        double_barcoded_path = None
 
     else:
         if single_barcoded_path.is_dir():

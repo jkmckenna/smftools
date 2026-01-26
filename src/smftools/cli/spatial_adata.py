@@ -517,7 +517,7 @@ def spatial_adata_core(
             adata,
             layer=cfg.layer_for_umap_plotting,
             var_filters=var_filters,
-            n_components=10,
+            n_components=5,
         )
         sc.settings.figdir = nmf_dir
         nmf_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
@@ -539,7 +539,7 @@ def spatial_adata_core(
             adata,
             layer=SEQUENCE_INTEGER_ENCODING,
             var_filters=None,
-            n_components=10,
+            n_components=5,
             embedding_key="X_nmf_sequence",
             components_key="H_nmf_sequence",
             uns_key="nmf_sequence",
