@@ -2629,13 +2629,14 @@ def plot_read_span_quality_clustermaps(
 
             fig, axes = plt.subplots(
                 nrows=2,
-                ncols=2,
+                ncols=3,
                 figsize=(18, 6),
                 sharex="col",
-                gridspec_kw={"height_ratios": [1, 4]},
+                gridspec_kw={"height_ratios": [1, 4], "width_ratios": [1, 1, 0.05]},
             )
-            span_bar_ax, quality_bar_ax = axes[0]
-            span_ax, quality_ax = axes[1]
+            span_bar_ax, quality_bar_ax, bar_spacer_ax = axes[0]
+            span_ax, quality_ax, cbar_ax = axes[1]
+            bar_spacer_ax.set_axis_off()
 
             span_mean = np.nanmean(read_span_matrix, axis=0)
             quality_mean = np.nanmean(quality_matrix, axis=0)
@@ -2678,6 +2679,7 @@ def plot_read_span_quality_clustermaps(
                 ax=quality_ax,
                 yticklabels=False,
                 cbar=True,
+                cbar_ax=cbar_ax,
             )
             quality_ax.set_title(quality_layer)
 
