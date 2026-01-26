@@ -2471,6 +2471,7 @@ def plot_read_span_quality_clustermaps(
     read_span_layer: str = "read_span_mask",
     quality_cmap: str = "viridis",
     read_span_color: str = "#2ca25f",
+    max_nan_fraction: float | None = None,
     min_quality: float | None = None,
     min_length: int | None = None,
     min_mapped_length_to_reference_length_ratio: float | None = None,
@@ -2496,6 +2497,8 @@ def plot_read_span_quality_clustermaps(
         read_span_layer: Layer name containing read-span masks.
         quality_cmap: Colormap for base-quality scores.
         read_span_color: Color for read-span mask (1-values); 0-values are white.
+        max_nan_fraction: Optional maximum fraction of NaNs allowed per position; positions
+            above this threshold are excluded.
         min_quality: Optional minimum read quality filter.
         min_length: Optional minimum mapped length filter.
         min_mapped_length_to_reference_length_ratio: Optional min length ratio filter.
@@ -2540,6 +2543,8 @@ def plot_read_span_quality_clustermaps(
         raise KeyError(f"Layer '{quality_layer}' not found in adata.layers")
     if read_span_layer not in adata.layers:
         raise KeyError(f"Layer '{read_span_layer}' not found in adata.layers")
+    if max_nan_fraction is not None and not (0 <= max_nan_fraction <= 1):
+        raise ValueError("max_nan_fraction must be between 0 and 1.")
     if position_axis_tick_target < 1:
         raise ValueError("position_axis_tick_target must be at least 1.")
 
@@ -2595,7 +2600,17 @@ def plot_read_span_quality_clustermaps(
             subset = adata[row_mask, :].copy()
             quality_matrix = np.asarray(subset.layers[quality_layer]).astype(float)
             quality_matrix[quality_matrix < 0] = np.nan
-            read_span_matrix = np.asarray(subset.layers[read_span_layer])
+            read_span_matrix = np.asarray(subset.layers[read_span_layer]).astype(float)
+
+            if max_nan_fraction is not None:
+                nan_mask = np.isnan(quality_matrix) | np.isnan(read_span_matrix)
+                nan_fraction = nan_mask.mean(axis=0)
+                keep_columns = nan_fraction <= max_nan_fraction
+                if not np.any(keep_columns):
+                    continue
+                quality_matrix = quality_matrix[:, keep_columns]
+                read_span_matrix = read_span_matrix[:, keep_columns]
+                subset = subset[:, keep_columns].copy()
 
             if max_reads is not None and quality_matrix.shape[0] > max_reads:
                 quality_matrix = quality_matrix[:max_reads]
@@ -2612,8 +2627,38 @@ def plot_read_span_quality_clustermaps(
             quality_matrix = quality_matrix[order]
             read_span_matrix = read_span_matrix[order]
 
-            fig, axes = plt.subplots(ncols=2, figsize=(18, 6), sharey=True)
-            span_ax, quality_ax = axes
+            fig, axes = plt.subplots(
+                nrows=2,
+                ncols=2,
+                figsize=(18, 6),
+                sharex="col",
+                gridspec_kw={"height_ratios": [1, 4]},
+            )
+            span_bar_ax, quality_bar_ax = axes[0]
+            span_ax, quality_ax = axes[1]
+
+            span_mean = np.nanmean(read_span_matrix, axis=0)
+            quality_mean = np.nanmean(quality_matrix, axis=0)
+            bar_positions = np.arange(read_span_matrix.shape[1]) + 0.5
+            span_bar_ax.bar(
+                bar_positions,
+                span_mean,
+                color=read_span_color,
+                width=1.0,
+            )
+            span_bar_ax.set_title(f"{read_span_layer} mean")
+            span_bar_ax.set_xlim(0, read_span_matrix.shape[1])
+            span_bar_ax.tick_params(axis="x", labelbottom=False)
+
+            quality_bar_ax.bar(
+                bar_positions,
+                quality_mean,
+                color="#4c72b0",
+                width=1.0,
+            )
+            quality_bar_ax.set_title(f"{quality_layer} mean")
+            quality_bar_ax.set_xlim(0, quality_matrix.shape[1])
+            quality_bar_ax.tick_params(axis="x", labelbottom=False)
 
             span_cmap = colors.ListedColormap(["white", read_span_color])
             span_norm = colors.BoundaryNorm([-0.5, 0.5, 1.5], span_cmap.N)
