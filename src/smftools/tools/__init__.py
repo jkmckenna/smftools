@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import import_module
 
 _LAZY_ATTRS = {
+    "calculate_nmf": "smftools.tools.calculate_nmf",
     "calculate_umap": "smftools.tools.calculate_umap",
     "cluster_adata_on_methylation": "smftools.tools.cluster_adata_on_methylation",
     "combine_layers": "smftools.tools.general_tools",
