@@ -21,6 +21,7 @@ BAM_SUFFIX: Final[str] = ".bam"
 BARCODE_BOTH_ENDS: Final[bool] = False
 REF_COL: Final[str] = "Reference_strand"
 SAMPLE_COL: Final[str] = "Experiment_name_and_barcode"
+SAMPLE: Final[str] = "Sample"
 SPLIT_DIR: Final[str] = "demultiplexed_BAMs"
 H5_DIR: Final[str] = "h5ads"
 DEMUX_TYPE: Final[str] = "demux_type"
