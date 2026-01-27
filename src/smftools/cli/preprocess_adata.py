@@ -243,7 +243,9 @@ def preprocess_adata_core(
         filter_reads_on_length_quality_mapping,
         filter_reads_on_modification_thresholds,
         flag_duplicate_reads,
+        invert_adata,
         load_sample_sheet,
+        reindex_references_adata
     )
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
@@ -382,7 +384,6 @@ def preprocess_adata_core(
     )
 
     ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats ###############
-    # Additionally, store base_context level binary modification arrays in adata.obsm
     append_base_context(
         adata,
         ref_column=cfg.reference_column,
@@ -563,6 +564,22 @@ def preprocess_adata_core(
     else:
         adata_unique = adata
     ########################################################################################################################
+
+    # -----------------------------
+    # Optional inversion along positions axis
+    # -----------------------------
+    if getattr(cfg, "invert_adata", False):
+        adata = invert_adata(adata)
+
+    # -----------------------------
+    # Optional reindexing by reference
+    # -----------------------------
+    reindex_references_adata(
+        adata,
+        reference_col=cfg.reference_column,
+        offsets=cfg.reindexing_offsets,
+        new_col=cfg.reindexed_var_suffix,
+    )
 
     ############################################### Append mismatch frequency per position ###############################################
     append_mismatch_frequency_sites(

@@ -69,8 +69,9 @@ def calculate_sequence_cp_decomposition(
     components_key: str = "H_cp_sequence",
     uns_key: str = "cp_sequence",
     bases: Iterable[str] = ("A", "C", "G", "T"),
-    backend: str = "numpy",
+    backend: str = "pytorch",
     show_progress: bool = False,
+    init: str = "random",
 ) -> "ad.AnnData":
     """Compute CP decomposition on one-hot encoded sequence data with masking.
 
@@ -85,7 +86,7 @@ def calculate_sequence_cp_decomposition(
         components_key: Key for position factors in ``adata.varm``.
         uns_key: Key for metadata stored in ``adata.uns``.
         bases: Bases to one-hot encode (in order).
-        backend: Tensorly backend to use (``numpy`` or ``torch``).
+        backend: Tensorly backend to use (``numpy`` or ``pytorch``).
         show_progress: Whether to display progress during factorization if supported.
 
     Returns:
@@ -95,8 +96,8 @@ def calculate_sequence_cp_decomposition(
         logger.info("CP embedding and components already present; skipping recomputation.")
         return adata
 
-    if backend not in {"numpy", "torch"}:
-        raise ValueError(f"Unsupported backend '{backend}'. Use 'numpy' or 'torch'.")
+    if backend not in {"numpy", "pytorch"}:
+        raise ValueError(f"Unsupported backend '{backend}'. Use 'numpy' or 'pytorch'.")
 
     tensorly = require("tensorly", extra="ml-base", purpose="CP decomposition")
     from tensorly.decomposition import parafac
@@ -110,7 +111,7 @@ def calculate_sequence_cp_decomposition(
     mask_tensor = np.repeat(mask[:, :, None], one_hot.shape[2], axis=2)
 
     device = "numpy"
-    if backend == "torch":
+    if backend == "pytorch":
         torch = require("torch", extra="ml-base", purpose="CP decomposition backend")
         if torch.cuda.is_available():
             device = torch.device("cuda")
@@ -120,12 +121,12 @@ def calculate_sequence_cp_decomposition(
             device = torch.device("cpu")
 
         one_hot = torch.tensor(one_hot, dtype=torch.float32, device=device)
-        mask_tensor = torch.tensor(mask_tensor, dtype=torch.bool, device=device)
+        mask_tensor = torch.tensor(mask_tensor, dtype=torch.float32, device=device)
 
     parafac_kwargs = {
         "rank": rank,
         "n_iter_max": n_iter_max,
-        "init": "svd",
+        "init": init,
         "mask": mask_tensor,
         "random_state": random_state,
     }
@@ -136,8 +137,14 @@ def calculate_sequence_cp_decomposition(
 
     cp = parafac(one_hot, **parafac_kwargs)
 
-    weights = np.asarray(cp.weights)
-    read_factors, position_factors, base_factors = [np.asarray(f) for f in cp.factors]
+    if backend == "pytorch":
+        weights = cp.weights.detach().cpu().numpy()
+        read_factors, position_factors, base_factors = [
+            factor.detach().cpu().numpy() for factor in cp.factors
+        ]
+    else:
+        weights = np.asarray(cp.weights)
+        read_factors, position_factors, base_factors = [np.asarray(f) for f in cp.factors]
 
     adata.obsm[embedding_key] = read_factors
     adata.varm[components_key] = position_factors
