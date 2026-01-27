@@ -146,6 +146,8 @@ def latent_adata_core(
         calculate_nmf,
         calculate_sequence_cp_decomposition,
         calculate_umap,
+        calculate_pca,
+        calculate_knn,
     )
     from .helpers import write_gz_h5ad
 
@@ -214,13 +216,19 @@ def latent_adata_core(
 
     references = adata.obs[cfg.reference_column].cat.categories
 
-    # ============================================================
-    # 2) PCA/UMAP on *deduplicated* preprocessed AnnData
-    # ============================================================
     latent_dir_dedup = latent_directory / "deduplicated"
-    umap_dir = latent_dir_dedup / "07_umaps"
-    nmf_dir = latent_dir_dedup / "07b_nmf"
-    nmf_sequence_dir = latent_dir_dedup / "07c_nmf_sequence"
+    
+    # ============================================================
+    # 2) PCA/UMAP/NMF at modified base sites
+    # ============================================================
+    SUBSET = "mod_sites"
+
+    pca_dir = latent_dir_dedup / f"07_pca_{SUBSET}"
+    umap_dir = latent_dir_dedup / f"07_umap_{SUBSET}"
+    nmf_dir = latent_dir_dedup / f"07_nmf_{SUBSET}"
+
+    plotting_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
+    plotting_layers += cfg.umap_layers_to_plot
 
     var_filters = []
     if smf_modality == "direct":
@@ -235,69 +243,97 @@ def latent_adata_core(
             for base in cfg.mod_target_bases:
                 var_filters.append(f"{ref}_{base}_site")
 
-    # UMAP / Leiden
+    # PCA calculation
+    adata = calculate_pca(
+        adata,
+        layer=cfg.layer_for_umap_plotting,
+        var_filters=var_filters,
+        n_pcs=10,
+        output_suffix=SUBSET,
+    )
+
+    # KNN calculation
+    adata = calculate_knn(
+        adata,
+        obsm=f"X_pca_{SUBSET}",
+        knn_neighbors=15,
+    )
+
+    # UMAP Calculation
+    adata = calculate_umap(
+        adata,
+        obsm=f"X_pca_{SUBSET}",
+        output_suffix=SUBSET,
+    )
+
+    # Leiden clustering
+    calculate_leiden(adata, resolution=0.1, connectivities_key=f"connectivities_X_pca_{SUBSET}")
+
+    # NMF Calculation
+    adata = calculate_nmf(
+        adata,
+        layer=cfg.layer_for_umap_plotting,
+        var_filters=var_filters,
+        n_components=5,
+    )
+
+    # PCA
+    if pca_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{pca_dir} already exists. Skipping PCA calculation and plotting.")
+    else:
+        make_dirs([pca_dir])
+        plot_pca(adata, subset=SUBSET, color=plotting_layers, output_dir=pca_dir)
+
+    # UMAP
     if umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{umap_dir} already exists. Skipping UMAP plotting.")
     else:
         make_dirs([umap_dir])
-
-        adata = calculate_umap(
-            adata,
-            layer=cfg.layer_for_umap_plotting,
-            var_filters=var_filters,
-            n_pcs=10,
-            knn_neighbors=15,
-        )
-
-        calculate_leiden(adata, resolution=0.1)
-
-        umap_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
-        umap_layers += cfg.umap_layers_to_plot
-        plot_umap(adata, color=umap_layers, output_dir=umap_dir)
-        plot_pca(adata, color=umap_layers, output_dir=umap_dir)
+        plot_umap(adata, subset=SUBSET, color=plotting_layers, output_dir=umap_dir)
 
     # NMF
     if nmf_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{nmf_dir} already exists. Skipping NMF plotting.")
     else:
         make_dirs([nmf_dir])
-        adata = calculate_nmf(
-            adata,
-            layer=cfg.layer_for_umap_plotting,
-            var_filters=var_filters,
-            n_components=5,
-        )
-        nmf_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
-        nmf_layers += cfg.umap_layers_to_plot
-        plot_embedding(adata, basis="nmf", color=nmf_layers, output_dir=nmf_dir)
+
+        plot_embedding(adata, basis="nmf", color=plotting_layers, output_dir=nmf_dir)
         plot_nmf_components(adata, output_dir=nmf_dir)
 
-    # CP decomposition using sequence integer encoding (no var filters)
-    if nmf_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.debug(f"{nmf_sequence_dir} already exists. Skipping sequence CP plotting.")
-    elif SEQUENCE_INTEGER_ENCODING not in adata.layers:
+    # ============================================================
+    # 3) Tensor factorization of OHE sequences with mask layer
+    # ============================================================
+    SUBSET = "sequence"
+
+    cp_sequence_dir = latent_dir_dedup / f"07_cp_{SUBSET}"
+
+    # Calculate CP tensor factorization
+    if SEQUENCE_INTEGER_ENCODING not in adata.layers:
         logger.warning(
             "Layer %s not found; skipping sequence integer encoding CP.",
             SEQUENCE_INTEGER_ENCODING,
         )
     else:
-        make_dirs([nmf_sequence_dir])
         adata = calculate_sequence_cp_decomposition(
             adata,
             layer=SEQUENCE_INTEGER_ENCODING,
             rank=5,
-            embedding_key="X_cp_sequence",
-            components_key="H_cp_sequence",
-            uns_key="cp_sequence",
+            embedding_key=f"X_cp_{SUBSET}",
+            components_key=f"H_cp_{SUBSET}",
+            uns_key=f"cp_{SUBSET}",
         )
-        nmf_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
-        nmf_layers += cfg.umap_layers_to_plot
-        plot_embedding(adata, basis="cp_sequence", color=nmf_layers, output_dir=nmf_sequence_dir)
+
+    # CP decomposition using sequence integer encoding (no var filters)
+    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{cp_sequence_dir} already exists. Skipping sequence CP plotting.")
+    else:
+        make_dirs([cp_sequence_dir])
+        plot_embedding(adata, basis="cp_sequence", color=plotting_layers, output_dir=cp_sequence_dir)
         plot_cp_sequence_components(
             adata,
-            output_dir=nmf_sequence_dir,
-            components_key="H_cp_sequence",
-            uns_key="cp_sequence",
+            output_dir=cp_sequence_dir,
+            components_key=f"H_cp_{SUBSET}",
+            uns_key=f"cp_{SUBSET}",
         )
 
     # ============================================================

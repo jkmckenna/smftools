@@ -3351,18 +3351,28 @@ def plot_embedding(
 def plot_umap(
     adata: "ad.AnnData",
     *,
+    subset: str | None = None,
     color: str | Sequence[str],
     output_dir: Path | str,
 ) -> Dict[str, Path]:
     """Plot UMAP embedding with scanpy-style color options."""
-    return plot_embedding(adata, basis="umap", color=color, output_dir=output_dir, prefix="umap")
+    if subset:
+        basis = f"umap_{subset}"
+    else:
+        basis = "umap"
+    return plot_embedding(adata, basis=basis, color=color, output_dir=output_dir, prefix=basis)
 
 
 def plot_pca(
     adata: "ad.AnnData",
     *,
+    subset: str | None = None,
     color: str | Sequence[str],
     output_dir: Path | str,
 ) -> Dict[str, Path]:
     """Plot PCA embedding with scanpy-style color options."""
-    return plot_embedding(adata, basis="pca", color=color, output_dir=output_dir, prefix="pca")
+    if subset:
+        basis = f"pca_{subset}"
+    else:
+        basis = "pca"
+    return plot_embedding(adata, basis=basis, color=color, output_dir=output_dir, prefix=basis)
