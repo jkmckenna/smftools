@@ -193,7 +193,7 @@ stages:
     obs:
       leiden:
         dtype: "category"
-        created_by: "smftools.tools.calculate_umap"
+        created_by: "smftools.tools.calculate_leiden"
         modified_by: []
         notes: "Leiden cluster assignments."
         requires: [["obsm.X_umap"]]

@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import import_module
 
 _LAZY_ATTRS = {
+    "calculate_leiden": "smftools.tools.calculate_leiden",
     "calculate_nmf": "smftools.tools.calculate_nmf",
     "calculate_sequence_cp_decomposition": "smftools.tools.tensor_factorization",
     "calculate_umap": "smftools.tools.calculate_umap",
