@@ -132,6 +132,7 @@ def latent_adata_core(
         plot_cp_sequence_components,
         plot_embedding_grid,
         plot_nmf_components,
+        plot_pca_components,
         plot_pca_explained_variance,
         plot_pca_grid,
         plot_umap_grid,
@@ -284,9 +285,9 @@ def latent_adata_core(
         logger.debug(f"{pca_dir} already exists. Skipping PCA calculation and plotting.")
     else:
         make_dirs([pca_dir])
-        import matplotlib.pyplot as plt
         plot_pca_grid(adata, subset=SUBSET, color=plotting_layers, output_dir=pca_dir)
         plot_pca_explained_variance(adata, subset=SUBSET, output_dir=pca_dir)
+        plot_pca_components(adata, output_dir=pca_dir, suffix=SUBSET)
 
         # # Component plotting
         # title = "Component Loadings"

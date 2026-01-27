@@ -113,14 +113,14 @@ def plot_nmf_components(
     lineplot_name: str = "lineplot.png",
     max_features: int = 2000,
 ) -> Dict[str, Path]:
-    """Plot NMF component weights as a heatmap and per-component line plot.
+    """Plot NMF component weights as a heatmap and per-component scatter plot.
 
     Args:
         adata: AnnData object containing NMF results.
         output_dir: Directory to write plots into.
         components_key: Key in ``adata.varm`` storing the H matrix.
         heatmap_name: Filename for the heatmap plot.
-        lineplot_name: Filename for the line plot.
+        lineplot_name: Filename for the scatter plot.
         max_features: Maximum number of features to plot (top-weighted by component).
 
     Returns:
@@ -193,9 +193,115 @@ def plot_nmf_components(
     fig, ax = plt.subplots(figsize=(max(8, min(20, n_features / 50)), 3.5))
     x = np.arange(n_features)
     for idx, label in enumerate(component_labels):
-        ax.plot(x, components[:, idx], label=label, linewidth=1.5)
+        ax.scatter(x, components[:, idx], label=label, s=14, alpha=0.75)
     ax.set_xlabel("Feature index")
     ax.set_ylabel("Component weight")
+    if n_features <= 60:
+        ax.set_xticks(x)
+        ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
+    ax.legend(loc="upper right", frameon=False)
+    fig.tight_layout()
+    lineplot_path = output_path / lineplot_name
+    fig.savefig(lineplot_path, dpi=200)
+    plt.close(fig)
+
+    return {"heatmap": heatmap_path, "lineplot": lineplot_path}
+
+
+def plot_pca_components(
+    adata: "ad.AnnData",
+    *,
+    output_dir: Path | str,
+    components_key: str = "PCs",
+    suffix: str | None = None,
+    heatmap_name: str = "heatmap.png",
+    lineplot_name: str = "lineplot.png",
+    max_features: int = 2000,
+) -> Dict[str, Path]:
+    """Plot PCA loadings as a heatmap and per-component scatter plot.
+
+    Args:
+        adata: AnnData object containing PCA results.
+        output_dir: Directory to write plots into.
+        components_key: Key in ``adata.varm`` storing the PCA loadings.
+        heatmap_name: Filename for the heatmap plot.
+        lineplot_name: Filename for the scatter plot.
+        max_features: Maximum number of features to plot (top-weighted by component).
+
+    Returns:
+        Dict[str, Path]: Paths to created plots (keys: ``heatmap`` and ``lineplot``).
+    """
+    if suffix:
+        components_key = f"{components_key}_{suffix}"
+
+    heatmap_name = f"{components_key}_{heatmap_name}"
+    lineplot_name = f"{components_key}_{lineplot_name}"
+
+    if components_key not in adata.varm:
+        logger.warning("PCA components key '%s' not found in adata.varm.", components_key)
+        return {}
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    components = np.asarray(adata.varm[components_key])
+    if components.ndim != 2:
+        raise ValueError(f"PCA components must be 2D; got shape {components.shape}.")
+
+    feature_labels = (
+        np.asarray(adata.var_names).astype(str)
+        if adata.shape[1] == components.shape[0]
+        else np.array([str(i) for i in range(components.shape[0])])
+    )
+
+    nonzero_mask = np.any(components != 0, axis=1)
+    if not np.any(nonzero_mask):
+        logger.warning("PCA components are all zeros; skipping plot generation.")
+        return {}
+
+    components = components[nonzero_mask]
+    feature_labels = feature_labels[nonzero_mask]
+
+    if max_features and components.shape[0] > max_features:
+        scores = np.nanmax(np.abs(components), axis=1)
+        top_idx = np.argsort(scores)[-max_features:]
+        top_idx = np.sort(top_idx)
+        components = components[top_idx]
+        feature_labels = feature_labels[top_idx]
+        logger.info(
+            "Downsampled PCA features from %s to %s for plotting.",
+            nonzero_mask.sum(),
+            components.shape[0],
+        )
+
+    n_features, n_components = components.shape
+    component_labels = [f"PC{i + 1}" for i in range(n_components)]
+
+    heatmap_width = max(8, min(20, n_features / 60))
+    heatmap_height = max(2.5, 0.6 * n_components + 1.5)
+    fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
+    sns.heatmap(
+        components.T,
+        ax=ax,
+        cmap="coolwarm",
+        center=0,
+        cbar_kws={"label": "Loading"},
+        xticklabels=feature_labels if n_features <= 60 else False,
+        yticklabels=component_labels,
+    )
+    ax.set_xlabel("Feature")
+    ax.set_ylabel("PCA component")
+    fig.tight_layout()
+    heatmap_path = output_path / heatmap_name
+    fig.savefig(heatmap_path, dpi=200)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(max(8, min(20, n_features / 50)), 3.5))
+    x = np.arange(n_features)
+    for idx, label in enumerate(component_labels):
+        ax.scatter(x, components[:, idx], label=label, s=14, alpha=0.75)
+    ax.set_xlabel("Feature index")
+    ax.set_ylabel("Loading")
     if n_features <= 60:
         ax.set_xticks(x)
         ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
