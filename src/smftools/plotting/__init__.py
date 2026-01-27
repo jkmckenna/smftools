@@ -9,6 +9,7 @@ _LAZY_ATTRS = {
     "plot_rolling_nn_and_layer": "smftools.plotting.general_plotting",
     "plot_hmm_layers_rolling_by_sample_ref": "smftools.plotting.general_plotting",
     "plot_nmf_components": "smftools.plotting.general_plotting",
+    "plot_pca_components": "smftools.plotting.general_plotting",
     "plot_cp_sequence_components": "smftools.plotting.general_plotting",
     "plot_embedding": "smftools.plotting.general_plotting",
     "plot_embedding_grid": "smftools.plotting.general_plotting",
