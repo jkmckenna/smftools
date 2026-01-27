@@ -15,6 +15,7 @@ _LAZY_ATTRS = {
     "plot_read_span_quality_clustermaps": "smftools.plotting.general_plotting",
     "plot_pca": "smftools.plotting.general_plotting",
     "plot_pca_grid": "smftools.plotting.general_plotting",
+    "plot_pca_explained_variance": "smftools.plotting.general_plotting",
     "plot_sequence_integer_encoding_clustermaps": "smftools.plotting.general_plotting",
     "plot_umap": "smftools.plotting.general_plotting",
     "plot_umap_grid": "smftools.plotting.general_plotting",
