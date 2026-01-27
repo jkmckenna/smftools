@@ -108,8 +108,9 @@ def plot_nmf_components(
     *,
     output_dir: Path | str,
     components_key: str = "H_nmf",
-    heatmap_name: str = "nmf_H_heatmap.png",
-    lineplot_name: str = "nmf_H_lineplot.png",
+    suffix: str | None = None,
+    heatmap_name: str = "heatmap.png",
+    lineplot_name: str = "lineplot.png",
     max_features: int = 2000,
 ) -> Dict[str, Path]:
     """Plot NMF component weights as a heatmap and per-component line plot.
@@ -125,6 +126,12 @@ def plot_nmf_components(
     Returns:
         Dict[str, Path]: Paths to created plots (keys: ``heatmap`` and ``lineplot``).
     """
+    if suffix:
+        components_key = f"{components_key}_{suffix}"
+
+    heatmap_name = f"{components_key}_{heatmap_name}"
+    lineplot_name = f"{components_key}_{lineplot_name}"
+
     if components_key not in adata.varm:
         logger.warning("NMF components key '%s' not found in adata.varm.", components_key)
         return {}

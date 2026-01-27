@@ -276,6 +276,7 @@ def latent_adata_core(
         layer=cfg.layer_for_umap_plotting,
         var_filters=var_filters,
         n_components=5,
+        suffix=SUBSET,
     )
 
     # PCA
@@ -308,7 +309,7 @@ def latent_adata_core(
     else:
         make_dirs([nmf_dir])
 
-        plot_embedding_grid(adata, basis="nmf", color=plotting_layers, output_dir=nmf_dir)
+        plot_embedding_grid(adata, basis=f"nmf_{SUBSET}", color=plotting_layers, output_dir=nmf_dir)
         plot_nmf_components(adata, output_dir=nmf_dir)
 
     # ============================================================
@@ -341,7 +342,7 @@ def latent_adata_core(
         make_dirs([cp_sequence_dir])
         plot_embedding_grid(
             adata,
-            basis="cp_sequence",
+            basis=f"cp_{SUBSET}",
             color=plotting_layers,
             output_dir=cp_sequence_dir,
         )

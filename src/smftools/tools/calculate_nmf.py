@@ -24,6 +24,7 @@ def calculate_nmf(
     embedding_key: str = "X_nmf",
     components_key: str = "H_nmf",
     uns_key: str = "nmf",
+    suffix: str | None = None,
 ) -> "ad.AnnData":
     """Compute a low-dimensional NMF embedding.
 
@@ -46,6 +47,11 @@ def calculate_nmf(
 
     require("sklearn", extra="ml-base", purpose="NMF calculation")
     from sklearn.decomposition import NMF
+
+    if suffix:
+        embedding_key = f"{embedding_key}_{suffix}"
+        components_key = f"{components_key}_{suffix}"
+        uns_key = f"{uns_key}_{suffix}"
 
     has_embedding = embedding_key in adata.obsm
     has_components = components_key in adata.varm
