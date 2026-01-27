@@ -1672,6 +1672,112 @@ def find_secondary_supplementary_read_names(
     return secondary_reads, supplementary_reads
 
 
+def extract_secondary_supplementary_alignment_spans(
+    bam_file_path: str | Path,
+    read_names: Iterable[str],
+    samtools_backend: str | None = "auto",
+) -> tuple[dict[str, list[tuple[float, float, float]]], dict[str, list[tuple[float, float, float]]]]:
+    """Extract reference/read span data for secondary/supplementary alignments.
+
+    Args:
+        bam_file_path: Path to the BAM file to scan.
+        read_names: Iterable of read names to check.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
+    Returns:
+        Tuple of (secondary_spans, supplementary_spans) where each mapping contains
+        read names mapped to lists of (reference_start, reference_end, read_span).
+    """
+    target_names = set(read_names)
+    if not target_names:
+        return {}, {}
+
+    secondary_spans: dict[str, list[tuple[float, float, float]]] = {}
+    supplementary_spans: dict[str, list[tuple[float, float, float]]] = {}
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(bam_file_path), "rb") as bam_file:
+            for read in bam_file.fetch(until_eof=True):
+                if not read.query_name or read.query_name not in target_names:
+                    continue
+                if not (read.is_secondary or read.is_supplementary):
+                    continue
+                reference_start = (
+                    float(read.reference_start)
+                    if read.reference_start is not None
+                    else float("nan")
+                )
+                reference_end = (
+                    float(read.reference_end) if read.reference_end is not None else float("nan")
+                )
+                read_span = (
+                    float(read.query_alignment_length)
+                    if read.query_alignment_length is not None
+                    else float("nan")
+                )
+                if read.is_secondary:
+                    secondary_spans.setdefault(read.query_name, []).append(
+                        (reference_start, reference_end, read_span)
+                    )
+                if read.is_supplementary:
+                    supplementary_spans.setdefault(read.query_name, []).append(
+                        (reference_start, reference_end, read_span)
+                    )
+        return secondary_spans, supplementary_spans
+
+    def _mapped_length_from_cigar(cigar: str) -> int:
+        mapped = 0
+        for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+            length = int(length_str)
+            if op in {"M", "=", "X"}:
+                mapped += length
+        return mapped
+
+    def _reference_span_from_cigar(cigar: str) -> int:
+        reference_span = 0
+        for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+            length = int(length_str)
+            if op in {"M", "D", "N", "=", "X"}:
+                reference_span += length
+        return reference_span
+
+    def _collect(flag: int) -> dict[str, list[tuple[float, float, float]]]:
+        cmd = ["samtools", "view", "-f", str(flag), str(bam_file_path)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        spans: dict[str, list[tuple[float, float, float]]] = {}
+        for line in proc.stdout:
+            if not line.strip() or line.startswith("@"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 11:
+                continue
+            read_name = fields[0]
+            if read_name not in target_names:
+                continue
+            cigar = fields[5]
+            reference_start = float(int(fields[3]) - 1)
+            if cigar != "*":
+                reference_end = float(reference_start + _reference_span_from_cigar(cigar))
+                read_span = float(_mapped_length_from_cigar(cigar))
+            else:
+                reference_end = float("nan")
+                read_span = float("nan")
+            spans.setdefault(read_name, []).append((reference_start, reference_end, read_span))
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+        return spans
+
+    secondary_spans = _collect(0x100)
+    supplementary_spans = _collect(0x800)
+
+    return secondary_spans, supplementary_spans
+
+
 def extract_readnames_from_bam(aligned_BAM, samtools_backend: str | None = "auto"):
     """
     Takes a BAM and writes out a txt file containing read names from the BAM
