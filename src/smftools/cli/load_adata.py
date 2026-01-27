@@ -186,7 +186,11 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         get_chromosome_lengths,
         subsample_fasta_from_bed,
     )
-    from ..informatics.h5ad_functions import add_read_length_and_mapping_qc, add_read_tag_annotations
+    from ..informatics.h5ad_functions import (
+        add_read_length_and_mapping_qc,
+        add_read_tag_annotations,
+        add_secondary_supplementary_alignment_flags,
+    )
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
     from ..informatics.pod5_functions import fast5_to_pod5
@@ -720,6 +724,14 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         extract_read_tags_from_bam_callable=extract_read_tags_from_bam,
         samtools_backend=cfg.samtools_backend,
     )
+
+    if getattr(cfg, "annotate_secondary_supplementary", False):
+        logger.info("Annotating secondary/supplementary alignments from aligned BAM")
+        add_secondary_supplementary_alignment_flags(
+            raw_adata,
+            aligned_sorted_output,
+            samtools_backend=cfg.samtools_backend,
+        )
 
     raw_adata.obs["Raw_modification_signal"] = np.nansum(raw_adata.X, axis=1)
     ########################################################################################################################
