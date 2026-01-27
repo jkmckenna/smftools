@@ -20,6 +20,7 @@ def calculate_read_modification_stats(
     force_redo: bool = False,
     valid_sites_only: bool = False,
     valid_site_suffix: str = "_valid_coverage",
+    smf_modality: str = "conversion",
 ) -> None:
     """Add methylation/deamination statistics for each read.
 
@@ -80,8 +81,12 @@ def calculate_read_modification_stats(
     for ref in references:
         ref_subset = adata[adata.obs[reference_column] == ref]
         for site_type in site_types:
+            site_subset = ref_subset[:,ref_subset.var[f"{ref}_{site_type}{valid_site_suffix}"]]
             logger.info("Iterating over %s_%s", ref, site_type)
-            observation_matrix = ref_subset.obsm[f"{ref}_{site_type}{valid_site_suffix}"]
+            if smf_modality == 'native':
+                observation_matrix = site_subset.layers['binarized_methylation']
+            else:
+                observation_matrix = site_subset.X
             total_positions_in_read = np.nansum(~np.isnan(observation_matrix), axis=1)
             total_positions_in_reference = observation_matrix.shape[1]
             fraction_valid_positions_in_read_vs_ref = (

@@ -105,20 +105,13 @@ def load_adata(config_path: str):
     from datetime import datetime
     from importlib import resources
 
-    from ..config import ExperimentConfig, LoadExperimentConfig
     from ..readwrite import add_or_update_column_in_csv, make_dirs
-    from .helpers import get_adata_paths
-
-    date_str = datetime.today().strftime("%y%m%d")
+    from .helpers import get_adata_paths, load_experiment_config
 
     # -----------------------------
     # 1) Load config into cfg
     # -----------------------------
-    loader = LoadExperimentConfig(config_path)
-    defaults_dir = resources.files("smftools").joinpath("config")
-    cfg, report = ExperimentConfig.from_var_dict(
-        loader.var_dict, date_str=date_str, defaults_dir=defaults_dir
-    )
+    cfg = load_experiment_config(config_path)
 
     # Ensure base output dir
     output_directory = Path(cfg.output_directory)
@@ -129,40 +122,12 @@ def load_adata(config_path: str):
     # -----------------------------
     paths = get_adata_paths(cfg)
 
-    # experiment-level metadata in summary CSV
-    add_or_update_column_in_csv(cfg.summary_file, "experiment_name", cfg.experiment_name)
-    add_or_update_column_in_csv(cfg.summary_file, "config_path", config_path)
-    add_or_update_column_in_csv(cfg.summary_file, "input_data_path", cfg.input_data_path)
-    add_or_update_column_in_csv(cfg.summary_file, "input_files", [cfg.input_files])
-
-    # AnnData stage paths
-    add_or_update_column_in_csv(cfg.summary_file, "load_adata", paths.raw)
-    add_or_update_column_in_csv(cfg.summary_file, "pp_adata", paths.pp)
-    add_or_update_column_in_csv(cfg.summary_file, "pp_dedup_adata", paths.pp_dedup)
-    add_or_update_column_in_csv(cfg.summary_file, "spatial_adata", paths.spatial)
-    add_or_update_column_in_csv(cfg.summary_file, "hmm_adata", paths.hmm)
-
     # -----------------------------
     # 3) Stage skipping logic
     # -----------------------------
     if not getattr(cfg, "force_redo_load_adata", False):
-        if paths.hmm.exists():
-            logger.debug(f"HMM AnnData already exists: {paths.hmm}\nSkipping smftools load")
-            return None, paths.hmm, cfg
-        if paths.spatial.exists():
-            logger.debug(f"Spatial AnnData already exists: {paths.spatial}\nSkipping smftools load")
-            return None, paths.spatial, cfg
-        if paths.pp_dedup.exists():
-            logger.debug(
-                f"Preprocessed deduplicated AnnData already exists: {paths.pp_dedup}\n"
-                f"Skipping smftools load"
-            )
-            return None, paths.pp_dedup, cfg
-        if paths.pp.exists():
-            logger.debug(f"Preprocessed AnnData already exists: {paths.pp}\nSkipping smftools load")
-            return None, paths.pp, cfg
         if paths.raw.exists():
-            logger.debug(
+            logger.info(
                 f"Raw AnnData from smftools load already exists: {paths.raw}\nSkipping smftools load"
             )
             return None, paths.raw, cfg
@@ -264,9 +229,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     # Direct methylation detection SMF specific parameters
     if cfg.smf_modality == "direct":
         mod_bed_dir = load_directory / "mod_beds"
-        add_or_update_column_in_csv(cfg.summary_file, "mod_bed_dir", mod_bed_dir)
         mod_tsv_dir = load_directory / "mod_tsvs"
-        add_or_update_column_in_csv(cfg.summary_file, "mod_tsv_dir", mod_tsv_dir)
         bam_qc_dir = load_directory / "bam_qc"
         mods = [cfg.mod_map[mod] for mod in cfg.mod_list]
 
@@ -345,7 +308,6 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     else:
         pass
 
-    add_or_update_column_in_csv(cfg.summary_file, "input_data_path", cfg.input_data_path)
 
     # Determine if the input data needs to be basecalled
     if cfg.input_type == "pod5":
@@ -381,9 +343,6 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
     aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
 
-    add_or_update_column_in_csv(cfg.summary_file, "basecalled_bam", unaligned_output)
-    add_or_update_column_in_csv(cfg.summary_file, "aligned_bam", aligned_output)
-    add_or_update_column_in_csv(cfg.summary_file, "sorted_bam", aligned_sorted_output)
     ########################################################################################################################
 
     ################################### 2) FASTA Handling ###################################
@@ -423,8 +382,6 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             logger.info(f"Converting FASTA base sequences")
             generate_converted_FASTA(fasta, cfg.conversion_types, cfg.strands, converted_FASTA)
         fasta = converted_FASTA
-
-    add_or_update_column_in_csv(cfg.summary_file, "fasta", fasta)
 
     # Make a FAI and .chrom.names file for the fasta
     get_chromosome_lengths(fasta)

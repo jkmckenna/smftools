@@ -44,7 +44,7 @@ def get_adata_paths(cfg) -> AdataPaths:
     pp_dedup_base = pp_dedup.name.removesuffix(".h5ad.gz")
 
     spatial = output_directory / SPATIAL_DIR / H5_DIR / f"{pp_dedup_base}_spatial.h5ad.gz"
-    hmm = output_directory / HMM_DIR / H5_DIR / f"{pp_dedup_base}_spatial_hmm.h5ad.gz"
+    hmm = output_directory / HMM_DIR / H5_DIR / f"{pp_dedup_base}_hmm.h5ad.gz"
 
     return AdataPaths(
         raw=raw,
@@ -53,6 +53,22 @@ def get_adata_paths(cfg) -> AdataPaths:
         spatial=spatial,
         hmm=hmm,
     )
+
+
+def load_experiment_config(config_path: str):
+    """Load ExperimentConfig without invoking any pipeline stages."""
+    from datetime import datetime
+    from importlib import resources
+
+    from ..config import ExperimentConfig, LoadExperimentConfig
+
+    date_str = datetime.today().strftime("%y%m%d")
+    loader = LoadExperimentConfig(config_path)
+    defaults_dir = resources.files("smftools").joinpath("config")
+    cfg, _ = ExperimentConfig.from_var_dict(
+        loader.var_dict, date_str=date_str, defaults_dir=defaults_dir
+    )
+    return cfg
 
 
 def write_gz_h5ad(adata: ad.AnnData, path: Path) -> Path:

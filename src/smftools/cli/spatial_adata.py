@@ -37,16 +37,13 @@ def spatial_adata(
         Path to the “current” spatial AnnData (or hmm AnnData if we skip to that).
     """
     from ..readwrite import add_or_update_column_in_csv, safe_read_h5ad
-    from .helpers import get_adata_paths
-    from .load_adata import load_adata
-    from .preprocess_adata import preprocess_adata
+    from .helpers import get_adata_paths, load_experiment_config
 
     # 1) Ensure config + basic paths via load_adata
-    loaded_adata, loaded_path, cfg = load_adata(config_path)
+    cfg = load_experiment_config(config_path)
 
     paths = get_adata_paths(cfg)
 
-    raw_path = paths.raw
     pp_path = paths.pp
     pp_dedup_path = paths.pp_dedup
     spatial_path = paths.spatial
@@ -54,47 +51,32 @@ def spatial_adata(
 
     # Stage-skipping logic for spatial
     if not getattr(cfg, "force_redo_spatial_analyses", False):
-        # If HMM exists, it's the most processed stage — reuse it.
-        if hmm_path.exists():
-            logger.info(f"HMM AnnData found: {hmm_path}\nSkipping smftools spatial")
-            return None, hmm_path
-
         # If spatial exists, we consider spatial analyses already done.
         if spatial_path.exists():
             logger.info(f"Spatial AnnData found: {spatial_path}\nSkipping smftools spatial")
             return None, spatial_path
 
-    # 2) Ensure preprocessing has been run
-    #    This will create pp/pp_dedup as needed or return them if they already exist.
-    pp_adata, pp_adata_path_ret, pp_dedup_adata, pp_dedup_adata_path_ret = preprocess_adata(
-        config_path
-    )
-
     # Helper to load from disk, reusing loaded_adata if it matches
     def _load(path: Path):
-        if loaded_adata is not None and loaded_path == path:
-            return loaded_adata
         adata, _ = safe_read_h5ad(path)
         return adata
 
     # 3) Decide which AnnData to use as the *starting point* for spatial analyses
-    # Prefer in-memory pp_dedup_adata when preprocess_adata just ran.
-    if pp_dedup_adata is not None:
-        start_adata = pp_dedup_adata
-        source_path = pp_dedup_adata_path_ret
+    if hmm_path.exists():
+        start_adata = _load(hmm_path)
+        source_path = hmm_path
+    elif spatial_path.exists():
+        start_adata = _load(spatial_path)
+        source_path = spatial_path
+    elif pp_dedup_path.exists():
+        start_adata = _load(pp_dedup_path)
+        source_path = pp_dedup_path
+    elif pp_path.exists():
+        start_adata = _load(pp_path)
+        source_path = pp_path
     else:
-        if pp_dedup_path.exists():
-            start_adata = _load(pp_dedup_path)
-            source_path = pp_dedup_path
-        elif pp_path.exists():
-            start_adata = _load(pp_path)
-            source_path = pp_path
-        elif raw_path.exists():
-            start_adata = _load(raw_path)
-            source_path = raw_path
-        else:
-            logger.warning("No suitable AnnData found for spatial analyses (need at least raw).")
-            return None, None
+        logger.warning("No suitable AnnData found for spatial analyses (need at least preprocessed).")
+        return None, None
 
     # 4) Run the spatial core
     adata_spatial, spatial_path = spatial_adata_core(
@@ -102,14 +84,9 @@ def spatial_adata(
         cfg=cfg,
         spatial_adata_path=spatial_path,
         pp_adata_path=pp_path,
-        pp_dup_rem_adata_path=pp_dedup_path,
-        pp_adata_in_memory=pp_adata,
         source_adata_path=source_path,
         config_path=config_path,
     )
-
-    # 5) Register spatial path in summary CSV
-    add_or_update_column_in_csv(cfg.summary_file, "spatial_adata", spatial_path)
 
     return adata_spatial, spatial_path
 
@@ -119,8 +96,6 @@ def spatial_adata_core(
     cfg,
     spatial_adata_path: Path,
     pp_adata_path: Path,
-    pp_dup_rem_adata_path: Path,
-    pp_adata_in_memory: Optional[ad.AnnData] = None,
     source_adata_path: Optional[Path] = None,
     config_path: Optional[str] = None,
 ) -> Tuple[ad.AnnData, Path]:
@@ -132,8 +107,6 @@ def spatial_adata_core(
     - `cfg` is the ExperimentConfig.
     - `spatial_adata_path`, `pp_adata_path`, `pp_dup_rem_adata_path` are canonical paths
       from `get_adata_paths`.
-    - `pp_adata_in_memory` optionally holds the preprocessed (non-dedup) AnnData from
-      the same run of `preprocess_adata`, to avoid re-reading from disk.
 
     Does:
     - Optional sample sheet load.
@@ -225,8 +198,6 @@ def spatial_adata_core(
     else:
         deaminase = True
 
-    first_pp_run = pp_adata_in_memory is not None and pp_dup_rem_adata_path.exists()
-
     # -----------------------------
     # Optional sample sheet metadata
     # -----------------------------
@@ -280,10 +251,7 @@ def spatial_adata_core(
             else:
                 make_dirs([spatial_directory, pp_clustermap_dir])
 
-                if first_pp_run and (pp_adata_in_memory is not None):
-                    pp_adata = pp_adata_in_memory
-                else:
-                    pp_adata, _ = safe_read_h5ad(pp_adata_path)
+                pp_adata, _ = safe_read_h5ad(pp_adata_path)
 
                 # -----------------------------
                 # Optional sample sheet metadata

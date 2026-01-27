@@ -38,30 +38,23 @@ def preprocess_adata(
         Path to preprocessed, duplicate-removed AnnData.
     """
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths
-    from .load_adata import load_adata
+    from .helpers import get_adata_paths, load_experiment_config
 
     # 1) Ensure config is loaded and at least *some* AnnData stage exists
-    loaded_adata, loaded_path, cfg = load_adata(config_path)
+    cfg = load_experiment_config(config_path)
 
     # 2) Compute canonical paths
     paths = get_adata_paths(cfg)
     raw_path = paths.raw
     pp_path = paths.pp
     pp_dedup_path = paths.pp_dedup
-    spatial_path = paths.spatial
-    hmm_path = paths.hmm
 
     raw_exists = raw_path.exists()
     pp_exists = pp_path.exists()
     pp_dedup_exists = pp_dedup_path.exists()
-    spatial_exists = spatial_path.exists()
-    hmm_exists = hmm_path.exists()
 
-    # Helper: reuse loaded_adata if it matches the path we want, else read from disk
+    # Helper: read from disk
     def _load(path: Path):
-        if loaded_adata is not None and loaded_path == path:
-            return loaded_adata
         adata, _ = safe_read_h5ad(path)
         return adata
 
@@ -70,19 +63,9 @@ def preprocess_adata(
     # -----------------------------
     if getattr(cfg, "force_redo_preprocessing", False):
         logger.info(
-            "Forcing full redo of preprocessing workflow, starting from latest stage AnnData available."
+            "Forcing full redo of preprocessing workflow."
         )
-
-        if hmm_exists:
-            adata = _load(hmm_path)
-            source_path = hmm_path
-        elif spatial_exists:
-            adata = _load(spatial_path)
-            source_path = spatial_path
-        elif pp_dedup_exists:
-            adata = _load(pp_dedup_path)
-            source_path = pp_dedup_path
-        elif pp_exists:
+        if pp_exists:
             adata = _load(pp_path)
             source_path = pp_path
         elif raw_exists:
@@ -137,26 +120,16 @@ def preprocess_adata(
     # Case C: normal behavior (no explicit redo flags)
     # -----------------------------
 
-    # If HMM exists, preprocessing is considered “done enough”
-    if hmm_exists:
-        logger.debug(f"Skipping preprocessing. HMM AnnData found: {hmm_path}")
-        return (None, None, None, None)
-
-    # If spatial exists, also skip re-preprocessing by default
-    if spatial_exists:
-        logger.debug(f"Skipping preprocessing. Spatial AnnData found: {spatial_path}")
-        return (None, None, None, None)
-
     # If pp_dedup exists, just return paths (no recomputation)
     if pp_dedup_exists:
-        logger.debug(
+        logger.info(
             f"Skipping preprocessing. Preprocessed deduplicated AnnData found: {pp_dedup_path}"
         )
         return (None, pp_path, None, pp_dedup_path)
 
     # If pp exists but pp_dedup does not, load pp and run core
     if pp_exists:
-        logger.debug(f"Preprocessed AnnData found: {pp_path}")
+        logger.info(f"Preprocessed AnnData found: {pp_path}")
         adata = _load(pp_path)
         source_path = pp_path
         pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
@@ -402,6 +375,7 @@ def preprocess_adata_core(
         cfg.mod_target_bases,
         bypass=cfg.bypass_calculate_read_modification_stats,
         force_redo=cfg.force_redo_calculate_read_modification_stats,
+        smf_modality=cfg.smf_modality,
     )
 
     ### Make a dir for outputting sample level read modification metrics before filtering ###

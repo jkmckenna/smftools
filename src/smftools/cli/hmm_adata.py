@@ -565,32 +565,27 @@ def hmm_adata(config_path: str):
     - Call hmm_adata_core(cfg, adata, paths)
     """
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths
-    from .load_adata import load_adata
-    from .preprocess_adata import preprocess_adata
-    from .spatial_adata import spatial_adata
+    from .helpers import get_adata_paths, load_experiment_config
 
     # 1) load cfg / stage paths
-    _, _, cfg = load_adata(config_path)
+    cfg = load_experiment_config(config_path)
 
     paths = get_adata_paths(cfg)
 
-    # 2) make sure upstream stages are run (they have their own skipping logic)
-    preprocess_adata(config_path)
-    spatial_ad, spatial_path = spatial_adata(config_path)
-
-    # 3) choose starting AnnData
+    # 2) choose starting AnnData
     # Prefer:
     #   - existing HMM h5ad if not forcing redo
     #   - in-memory spatial_ad from wrapper call
     #   - saved spatial / pp_dedup / pp / raw on disk
     if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply):
-        adata, _ = safe_read_h5ad(paths.hmm)
-        return adata, paths.hmm
+        logger.debug(
+            f"Skipping hmm. HMM AnnData found: {paths.hmm}"
+        )
+        return None
 
-    if spatial_ad is not None:
-        adata = spatial_ad
-        source_path = spatial_path
+    if paths.hmm.exists():
+        adata, _ = safe_read_h5ad(paths.hmm)
+        source_path = paths.hmm
     elif paths.spatial.exists():
         adata, _ = safe_read_h5ad(paths.spatial)
         source_path = paths.spatial
