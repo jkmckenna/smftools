@@ -62,9 +62,7 @@ def preprocess_adata(
     # Case A: full redo of preprocessing
     # -----------------------------
     if getattr(cfg, "force_redo_preprocessing", False):
-        logger.info(
-            "Forcing full redo of preprocessing workflow."
-        )
+        logger.info("Forcing full redo of preprocessing workflow.")
         if pp_exists:
             adata = _load(pp_path)
             source_path = pp_path
@@ -218,7 +216,7 @@ def preprocess_adata_core(
         flag_duplicate_reads,
         invert_adata,
         load_sample_sheet,
-        reindex_references_adata
+        reindex_references_adata,
     )
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad

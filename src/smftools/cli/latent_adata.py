@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import LOGGING_DIR, SEQUENCE_INTEGER_ENCODING, LATENT_DIR
+from smftools.constants import LATENT_DIR, LOGGING_DIR, SEQUENCE_INTEGER_ENCODING
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -75,7 +75,9 @@ def latent_adata(
         start_adata = _load(pp_path)
         source_path = pp_path
     else:
-        logger.warning("No suitable AnnData found for latent analyses (need at least preprocessed).")
+        logger.warning(
+            "No suitable AnnData found for latent analyses (need at least preprocessed)."
+        )
         return None, None
 
     # 4) Run the latent core
@@ -232,7 +234,6 @@ def latent_adata_core(
         for ref in references:
             for base in cfg.mod_target_bases:
                 var_filters.append(f"{ref}_{base}_site")
-
 
     # UMAP / Leiden
     if umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):

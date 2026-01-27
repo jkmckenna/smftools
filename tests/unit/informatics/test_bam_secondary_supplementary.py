@@ -77,9 +77,15 @@ def test_extract_secondary_supplementary_alignment_spans_python(monkeypatch, tmp
         def fetch(self, until_eof=True):
             return iter(
                 [
-                    FakeRead("read1", secondary=True, reference_start=5, reference_end=25, read_span=20),
                     FakeRead(
-                        "read2", supplementary=True, reference_start=100, reference_end=140, read_span=40
+                        "read1", secondary=True, reference_start=5, reference_end=25, read_span=20
+                    ),
+                    FakeRead(
+                        "read2",
+                        supplementary=True,
+                        reference_start=100,
+                        reference_end=140,
+                        read_span=40,
                     ),
                     FakeRead(
                         "read3",

@@ -35,8 +35,7 @@ def build_sequence_one_hot_and_mask(
     encoded = np.asarray(encoded_sequences)
     if encoded.ndim != 2:
         raise ValueError(
-            "encoded_sequences must be 2D with shape (n_reads, seq_len); "
-            f"got {encoded.shape}."
+            f"encoded_sequences must be 2D with shape (n_reads, seq_len); got {encoded.shape}."
         )
 
     base_values = np.array(

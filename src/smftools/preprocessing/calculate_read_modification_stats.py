@@ -81,10 +81,10 @@ def calculate_read_modification_stats(
     for ref in references:
         ref_subset = adata[adata.obs[reference_column] == ref]
         for site_type in site_types:
-            site_subset = ref_subset[:,ref_subset.var[f"{ref}_{site_type}{valid_site_suffix}"]]
+            site_subset = ref_subset[:, ref_subset.var[f"{ref}_{site_type}{valid_site_suffix}"]]
             logger.info("Iterating over %s_%s", ref, site_type)
-            if smf_modality == 'native':
-                observation_matrix = site_subset.layers['binarized_methylation']
+            if smf_modality == "native":
+                observation_matrix = site_subset.layers["binarized_methylation"]
             else:
                 observation_matrix = site_subset.X
             total_positions_in_read = np.nansum(~np.isnan(observation_matrix), axis=1)

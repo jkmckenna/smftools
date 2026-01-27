@@ -108,7 +108,9 @@ def _resolve_feature_color(layer: str, cfg, fallback_cmap: str, idx: int, total:
     return cmap_obj(idx / (total - 1))
 
 
-def _resolve_length_feature_ranges(layer: str, cfg, default_cmap: str) -> List[Tuple[int, int, Any]]:
+def _resolve_length_feature_ranges(
+    layer: str, cfg, default_cmap: str
+) -> List[Tuple[int, int, Any]]:
     """Resolve length-based feature ranges to colors for size contour overlays."""
     base = _strip_hmm_layer_prefix(layer)
     feature_sets = getattr(cfg, "hmm_feature_sets", {}) or {}
@@ -578,9 +580,7 @@ def hmm_adata(config_path: str):
     #   - in-memory spatial_ad from wrapper call
     #   - saved spatial / pp_dedup / pp / raw on disk
     if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply):
-        logger.debug(
-            f"Skipping hmm. HMM AnnData found: {paths.hmm}"
-        )
+        logger.debug(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
         return None
 
     if paths.hmm.exists():

@@ -75,7 +75,9 @@ def spatial_adata(
         start_adata = _load(pp_path)
         source_path = pp_path
     else:
-        logger.warning("No suitable AnnData found for spatial analyses (need at least preprocessed).")
+        logger.warning(
+            "No suitable AnnData found for spatial analyses (need at least preprocessed)."
+        )
         return None, None
 
     # 4) Run the spatial core
@@ -148,11 +150,11 @@ def spatial_adata_core(
     )
     from ..readwrite import make_dirs, safe_read_h5ad
     from ..tools import rolling_window_nn_distance
-    from ..tools.rolling_nn_distance import assign_rolling_nn_results
     from ..tools.position_stats import (
         compute_positionwise_statistics,
         plot_positionwise_matrices,
     )
+    from ..tools.rolling_nn_distance import assign_rolling_nn_results
     from ..tools.spatial_autocorrelation import (
         analyze_autocorr_matrix,
         binary_autocorrelation_with_spacing,
@@ -412,9 +414,9 @@ def spatial_adata_core(
                         reference,
                         exc,
                     )
-                adata.uns.setdefault(f"{cfg.rolling_nn_obsm_key}_reference_map", {})[
-                    reference
-                ] = parent_obsm_key
+                adata.uns.setdefault(f"{cfg.rolling_nn_obsm_key}_reference_map", {})[reference] = (
+                    parent_obsm_key
+                )
                 out_png = pp_rolling_nn_dir / f"{safe_sample}__{safe_ref}.png"
                 title = f"{sample} {reference}"
                 try:

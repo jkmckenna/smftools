@@ -31,9 +31,7 @@ def test_combined_raw_clustermap_barplot_ignores_fill(tmp_path, monkeypatch):
     def fake_clean_barplot(ax, mean_values, title):
         captured[title] = np.array(mean_values, copy=True)
 
-    monkeypatch.setattr(
-        "smftools.plotting.general_plotting.clean_barplot", fake_clean_barplot
-    )
+    monkeypatch.setattr("smftools.plotting.general_plotting.clean_barplot", fake_clean_barplot)
 
     combined_raw_clustermap(
         adata,
@@ -73,9 +71,7 @@ def test_combined_raw_clustermap_barplot_counts_zeros_for_raw_layer(tmp_path, mo
     def fake_clean_barplot(ax, mean_values, title):
         captured[title] = np.array(mean_values, copy=True)
 
-    monkeypatch.setattr(
-        "smftools.plotting.general_plotting.clean_barplot", fake_clean_barplot
-    )
+    monkeypatch.setattr("smftools.plotting.general_plotting.clean_barplot", fake_clean_barplot)
 
     combined_raw_clustermap(
         adata,
