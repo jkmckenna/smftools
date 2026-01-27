@@ -3302,9 +3302,14 @@ def plot_embedding(
 
         if pd.api.types.is_categorical_dtype(values) or values.dtype == object:
             categories = pd.Categorical(values)
-            palette = sns.color_palette("tab20", n_colors=len(categories.categories))
-            color_map = dict(zip(categories.categories, palette))
-            mapped = categories.map(color_map)
+            label_strings = categories.categories.astype(str)
+            palette = sns.color_palette("tab20", n_colors=len(label_strings))
+            color_map = dict(zip(label_strings, palette))
+            codes = categories.codes
+            mapped = np.empty(len(codes), dtype=object)
+            valid = codes >= 0
+            mapped[valid] = np.asarray(palette, dtype=object)[codes[valid]]
+            mapped[~valid] = "#bdbdbd"
             ax.scatter(
                 embedding[:, 0],
                 embedding[:, 1],
@@ -3314,8 +3319,8 @@ def plot_embedding(
                 linewidths=0,
             )
             handles = [
-                patches.Patch(color=color_map[cat], label=str(cat))
-                for cat in categories.categories
+                patches.Patch(color=color_map[label], label=str(label))
+                for label in label_strings
             ]
             ax.legend(handles=handles, loc="best", fontsize=8, frameon=False)
         else:
