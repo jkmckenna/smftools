@@ -130,10 +130,10 @@ def latent_adata_core(
     from ..metadata import record_smftools_metadata
     from ..plotting import (
         plot_cp_sequence_components,
-        plot_embedding,
+        plot_embedding_grid,
         plot_nmf_components,
-        plot_pca,
-        plot_umap,
+        plot_pca_grid,
+        plot_umap_grid,
     )
     from ..preprocessing import (
         invert_adata,
@@ -282,14 +282,14 @@ def latent_adata_core(
         logger.debug(f"{pca_dir} already exists. Skipping PCA calculation and plotting.")
     else:
         make_dirs([pca_dir])
-        plot_pca(adata, subset=SUBSET, color=plotting_layers, output_dir=pca_dir)
+        plot_pca_grid(adata, subset=SUBSET, color=plotting_layers, output_dir=pca_dir)
 
     # UMAP
     if umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{umap_dir} already exists. Skipping UMAP plotting.")
     else:
         make_dirs([umap_dir])
-        plot_umap(adata, subset=SUBSET, color=plotting_layers, output_dir=umap_dir)
+        plot_umap_grid(adata, subset=SUBSET, color=plotting_layers, output_dir=umap_dir)
 
     # NMF
     if nmf_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
@@ -297,7 +297,7 @@ def latent_adata_core(
     else:
         make_dirs([nmf_dir])
 
-        plot_embedding(adata, basis="nmf", color=plotting_layers, output_dir=nmf_dir)
+        plot_embedding_grid(adata, basis="nmf", color=plotting_layers, output_dir=nmf_dir)
         plot_nmf_components(adata, output_dir=nmf_dir)
 
     # ============================================================
@@ -328,7 +328,12 @@ def latent_adata_core(
         logger.debug(f"{cp_sequence_dir} already exists. Skipping sequence CP plotting.")
     else:
         make_dirs([cp_sequence_dir])
-        plot_embedding(adata, basis="cp_sequence", color=plotting_layers, output_dir=cp_sequence_dir)
+        plot_embedding_grid(
+            adata,
+            basis="cp_sequence",
+            color=plotting_layers,
+            output_dir=cp_sequence_dir,
+        )
         plot_cp_sequence_components(
             adata,
             output_dir=cp_sequence_dir,

@@ -3348,6 +3348,140 @@ def plot_embedding(
     return saved
 
 
+def _grid_dimensions(n_items: int, ncols: int | None) -> tuple[int, int]:
+    if n_items < 1:
+        return 0, 0
+    if ncols is None:
+        ncols = 2 if n_items > 1 else 1
+    ncols = max(1, min(ncols, n_items))
+    nrows = int(math.ceil(n_items / ncols))
+    return nrows, ncols
+
+
+def plot_embedding_grid(
+    adata: "ad.AnnData",
+    *,
+    basis: str,
+    color: str | Sequence[str],
+    output_dir: Path | str,
+    prefix: str | None = None,
+    ncols: int | None = None,
+    point_size: float = 12,
+    alpha: float = 0.8,
+) -> Path | None:
+    """Plot a 2D embedding grid with legends to the right of each subplot.
+
+    Args:
+        adata: AnnData object with ``obsm['X_<basis>']``.
+        basis: Embedding basis name (e.g., ``'umap'``, ``'pca'``).
+        color: Obs column name or list of names to color by.
+        output_dir: Directory to save plots.
+        prefix: Optional filename prefix.
+        ncols: Number of columns in the grid.
+        point_size: Marker size for scatter plots.
+        alpha: Marker transparency.
+
+    Returns:
+        Path to the saved grid image, or None if no valid color keys exist.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    embedding = _resolve_embedding(adata, basis)
+    colors = [color] if isinstance(color, str) else list(color)
+
+    valid_colors = []
+    for color_key in colors:
+        if color_key not in adata.obs:
+            logger.warning("Color key '%s' not found in adata.obs; skipping.", color_key)
+            continue
+        valid_colors.append(color_key)
+
+    if not valid_colors:
+        return None
+
+    nrows, ncols = _grid_dimensions(len(valid_colors), ncols)
+    plot_width = 4.8
+    legend_width = 1.4
+    plot_height = 4.2
+    fig = plt.figure(
+        figsize=(ncols * (plot_width + legend_width), nrows * plot_height),
+    )
+    width_ratios = [plot_width, legend_width] * ncols
+    grid = gridspec.GridSpec(
+        nrows,
+        ncols * 2,
+        figure=fig,
+        width_ratios=width_ratios,
+        wspace=0.3,
+        hspace=0.35,
+    )
+
+    for idx, color_key in enumerate(valid_colors):
+        row = idx // ncols
+        col = idx % ncols
+        ax = fig.add_subplot(grid[row, col * 2])
+        legend_ax = fig.add_subplot(grid[row, col * 2 + 1])
+        legend_ax.axis("off")
+
+        values = adata.obs[color_key]
+        if pd.api.types.is_categorical_dtype(values) or values.dtype == object:
+            categories = pd.Categorical(values)
+            label_strings = categories.categories.astype(str)
+            palette = sns.color_palette("tab20", n_colors=len(label_strings))
+            color_map = dict(zip(label_strings, palette))
+            codes = categories.codes
+            mapped = np.empty(len(codes), dtype=object)
+            valid = codes >= 0
+            if np.any(valid):
+                valid_codes = codes[valid]
+                mapped_values = np.empty(len(valid_codes), dtype=object)
+                for i, idx_code in enumerate(valid_codes):
+                    mapped_values[i] = palette[idx_code]
+                mapped[valid] = mapped_values
+            mapped[~valid] = "#bdbdbd"
+            ax.scatter(
+                embedding[:, 0],
+                embedding[:, 1],
+                c=list(mapped),
+                s=point_size,
+                alpha=alpha,
+                linewidths=0,
+            )
+            handles = [
+                patches.Patch(color=color_map[label], label=str(label)) for label in label_strings
+            ]
+            legend_ax.legend(
+                handles=handles,
+                loc="center left",
+                fontsize=8,
+                frameon=False,
+                title=str(color_key),
+            )
+        else:
+            scatter = ax.scatter(
+                embedding[:, 0],
+                embedding[:, 1],
+                c=values.astype(float),
+                cmap="viridis",
+                s=point_size,
+                alpha=alpha,
+                linewidths=0,
+            )
+            colorbar = fig.colorbar(scatter, cax=legend_ax)
+            colorbar.set_label(str(color_key))
+
+        ax.set_xlabel(f"{basis.upper()} 1")
+        ax.set_ylabel(f"{basis.upper()} 2")
+        ax.set_title(f"{basis.upper()} colored by {color_key}")
+
+    filename_prefix = prefix or basis
+    output_file = output_path / f"{filename_prefix}_grid.png"
+    fig.tight_layout()
+    fig.savefig(output_file, dpi=200)
+    plt.close(fig)
+    return output_file
+
+
 def plot_umap(
     adata: "ad.AnnData",
     *,
@@ -3363,6 +3497,29 @@ def plot_umap(
     return plot_embedding(adata, basis=basis, color=color, output_dir=output_dir, prefix=basis)
 
 
+def plot_umap_grid(
+    adata: "ad.AnnData",
+    *,
+    subset: str | None = None,
+    color: str | Sequence[str],
+    output_dir: Path | str,
+    ncols: int | None = None,
+) -> Path | None:
+    """Plot UMAP embedding grid with scanpy-style color options."""
+    if subset:
+        basis = f"umap_{subset}"
+    else:
+        basis = "umap"
+    return plot_embedding_grid(
+        adata,
+        basis=basis,
+        color=color,
+        output_dir=output_dir,
+        prefix=basis,
+        ncols=ncols,
+    )
+
+
 def plot_pca(
     adata: "ad.AnnData",
     *,
@@ -3376,3 +3533,26 @@ def plot_pca(
     else:
         basis = "pca"
     return plot_embedding(adata, basis=basis, color=color, output_dir=output_dir, prefix=basis)
+
+
+def plot_pca_grid(
+    adata: "ad.AnnData",
+    *,
+    subset: str | None = None,
+    color: str | Sequence[str],
+    output_dir: Path | str,
+    ncols: int | None = None,
+) -> Path | None:
+    """Plot PCA embedding grid with scanpy-style color options."""
+    if subset:
+        basis = f"pca_{subset}"
+    else:
+        basis = "pca"
+    return plot_embedding_grid(
+        adata,
+        basis=basis,
+        color=color,
+        output_dir=output_dir,
+        prefix=basis,
+        ncols=ncols,
+    )
