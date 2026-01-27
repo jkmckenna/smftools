@@ -223,9 +223,9 @@ def latent_adata_core(
     # ============================================================
     SUBSET = "mod_sites"
 
-    pca_dir = latent_dir_dedup / f"07_pca_{SUBSET}"
-    umap_dir = latent_dir_dedup / f"07_umap_{SUBSET}"
-    nmf_dir = latent_dir_dedup / f"07_nmf_{SUBSET}"
+    pca_dir = latent_dir_dedup / f"01_pca_{SUBSET}"
+    umap_dir = latent_dir_dedup / f"01_umap_{SUBSET}"
+    nmf_dir = latent_dir_dedup / f"01_nmf_{SUBSET}"
 
     plotting_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
     plotting_layers += cfg.umap_layers_to_plot
@@ -305,7 +305,7 @@ def latent_adata_core(
     # ============================================================
     SUBSET = "sequence"
 
-    cp_sequence_dir = latent_dir_dedup / f"07_cp_{SUBSET}"
+    cp_sequence_dir = latent_dir_dedup / f"02_cp_{SUBSET}"
 
     # Calculate CP tensor factorization
     if SEQUENCE_INTEGER_ENCODING not in adata.layers:
