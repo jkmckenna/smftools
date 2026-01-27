@@ -3309,7 +3309,9 @@ def plot_embedding(
             mapped = np.empty(len(codes), dtype=object)
             valid = codes >= 0
             if np.any(valid):
-                mapped[valid] = [palette[idx] for idx in codes[valid]]
+                mapped[valid] = np.array(
+                    [palette[idx] for idx in codes[valid]], dtype=object
+                )
             mapped[~valid] = "#bdbdbd"
             ax.scatter(
                 embedding[:, 0],

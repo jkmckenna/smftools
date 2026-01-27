@@ -45,3 +45,31 @@ def test_plot_embedding_writes_file(tmp_path: Path) -> None:
 
     outputs = plot_embedding(adata, basis="umap", color="group", output_dir=tmp_path)
     assert outputs["group"].exists()
+
+
+@pytest.mark.unit
+def test_plot_embedding_handles_ndarray_palette(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("seaborn")
+
+    import smftools.plotting.general_plotting as general_plotting
+
+    rng = np.random.default_rng(2)
+    data = rng.random((6, 4))
+    adata = ad.AnnData(data)
+    adata.obsm["X_umap"] = rng.random((6, 2))
+    adata.obs["group"] = pd.Categorical(["a", "b", "a", "b", "a", "b"])
+
+    original_palette = general_plotting.sns.color_palette
+
+    def _ndarray_palette(name: str, n_colors: int) -> np.ndarray:
+        return np.array(original_palette(name, n_colors=n_colors))
+
+    monkeypatch.setattr(general_plotting.sns, "color_palette", _ndarray_palette)
+
+    outputs = general_plotting.plot_embedding(
+        adata, basis="umap", color="group", output_dir=tmp_path
+    )
+    assert outputs["group"].exists()
