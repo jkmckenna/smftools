@@ -5,7 +5,7 @@ from pathlib import Path
 
 import anndata as ad
 
-from smftools.constants import H5_DIR, HMM_DIR, LOAD_DIR, PREPROCESS_DIR, SPATIAL_DIR
+from smftools.constants import H5_DIR, HMM_DIR, LOAD_DIR, PREPROCESS_DIR, SPATIAL_DIR, LATENT_DIR
 
 from ..metadata import write_runtime_schema_yaml
 from ..readwrite import safe_write_h5ad
@@ -18,6 +18,7 @@ class AdataPaths:
     pp_dedup: Path
     spatial: Path
     hmm: Path
+    latent: Path
 
 
 def get_adata_paths(cfg) -> AdataPaths:
@@ -45,6 +46,7 @@ def get_adata_paths(cfg) -> AdataPaths:
 
     spatial = output_directory / SPATIAL_DIR / H5_DIR / f"{pp_dedup_base}_spatial.h5ad.gz"
     hmm = output_directory / HMM_DIR / H5_DIR / f"{pp_dedup_base}_hmm.h5ad.gz"
+    latent = output_directory / LATENT_DIR / H5_DIR / f"{pp_dedup_base}_latent.h5ad.gz"
 
     return AdataPaths(
         raw=raw,
@@ -52,6 +54,7 @@ def get_adata_paths(cfg) -> AdataPaths:
         pp_dedup=pp_dedup,
         spatial=spatial,
         hmm=hmm,
+        latent=latent,
     )
 
 

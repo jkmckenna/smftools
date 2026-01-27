@@ -11,6 +11,7 @@ from .cli.hmm_adata import hmm_adata
 from .cli.load_adata import load_adata
 from .cli.preprocess_adata import preprocess_adata
 from .cli.spatial_adata import spatial_adata
+from .cli.latent_adata import latent_adata
 from .informatics.pod5_functions import subsample_pod5
 from .logging_utils import get_logger, setup_logging
 from .readwrite import concatenate_h5ads
@@ -98,6 +99,16 @@ def spatial(config_path):
 def hmm(config_path):
     """Process data from CONFIG_PATH."""
     hmm_adata(config_path)
+
+
+##########################################
+
+####### Latent ###########
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
+def latent(config_path):
+    """Process data from CONFIG_PATH."""
+    latent_adata(config_path)
 
 
 ##########################################
