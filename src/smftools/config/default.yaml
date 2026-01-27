@@ -78,7 +78,7 @@ aligner_args:
 # Sorted BAM and BED specific handling
 make_bigwigs: False # Whether to make coverage bigwigs
 make_beds: False # Whether to make beds from the aligned bams
-annotate_secondary_supplementary: False # Whether to annotate reads with secondary/supplementary alignments from the aligned BAM
+annotate_secondary_supplementary: True # Whether to annotate reads with secondary/supplementary alignments from the aligned BAM
 samtools_backend: auto # auto|python|cli for samtools-compatible operations
 bedtools_backend: auto # auto|python|cli for bedtools-compatible operations
 bigwig_backend: auto # auto|python|cli for bedGraphToBigWig conversion

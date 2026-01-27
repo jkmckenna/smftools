@@ -739,7 +739,7 @@ class ExperimentConfig:
     aligner_args: Optional[List[str]] = None
     make_bigwigs: bool = False
     make_beds: bool = False
-    annotate_secondary_supplementary: bool = False
+    annotate_secondary_supplementary: bool = True
     samtools_backend: str = "auto"
     bedtools_backend: str = "auto"
     bigwig_backend: str = "auto"
@@ -1264,6 +1264,7 @@ class ExperimentConfig:
 
         # instantiate dataclass
         instance = cls(
+            annotate_secondary_supplementary=merged.get("annotate_secondary_supplementary", True),
             smf_modality=merged.get("smf_modality"),
             input_data_path=input_data_path,
             recursive_input_search=merged.get("recursive_input_search"),
