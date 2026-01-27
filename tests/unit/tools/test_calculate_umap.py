@@ -72,3 +72,27 @@ def test_plot_embedding_handles_ndarray_palette(
         adata, basis="umap", color="group", output_dir=tmp_path
     )
     assert outputs["group"].exists()
+
+
+@pytest.mark.unit
+def test_plot_embedding_grid_writes_file(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("seaborn")
+
+    from smftools.plotting import plot_embedding_grid
+
+    rng = np.random.default_rng(3)
+    data = rng.random((10, 4))
+    adata = ad.AnnData(data)
+    adata.obsm["X_umap"] = rng.random((10, 2))
+    adata.obs["group"] = pd.Categorical(["a", "b"] * 5)
+    adata.obs["score"] = rng.random(10)
+
+    output = plot_embedding_grid(
+        adata,
+        basis="umap",
+        color=["group", "score"],
+        output_dir=tmp_path,
+    )
+    assert output is not None
+    assert output.exists()
