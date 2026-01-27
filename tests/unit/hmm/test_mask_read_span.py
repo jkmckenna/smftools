@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import numpy as np
 import anndata as ad
+import numpy as np
 
 from smftools.hmm.HMM import mask_layers_outside_read_span
 
@@ -27,7 +27,9 @@ def test_mask_layers_outside_read_span_uses_var_names() -> None:
 def test_mask_layers_outside_read_span_uses_original_var_names() -> None:
     obs = {"reference_start": [2], "reference_end": [3]}
     var_names = ["4", "3", "2", "1"]
-    adata = ad.AnnData(X=np.zeros((1, 4)), obs=obs, var={"Original_var_names": ["1", "2", "3", "4"]})
+    adata = ad.AnnData(
+        X=np.zeros((1, 4)), obs=obs, var={"Original_var_names": ["1", "2", "3", "4"]}
+    )
     adata.var_names = var_names
 
     adata.layers["hmm_test"] = np.array([[10, 11, 12, 13]], dtype=int)

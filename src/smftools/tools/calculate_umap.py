@@ -40,6 +40,7 @@ def calculate_umap(
     import numpy as np
     import scipy.linalg as spla
     import scipy.sparse as sp
+
     umap = require("umap", extra="umap", purpose="UMAP calculation")
     pynndescent = require("pynndescent", extra="umap", purpose="KNN graph computation")
 

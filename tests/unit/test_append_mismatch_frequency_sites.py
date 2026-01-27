@@ -1,6 +1,6 @@
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
 
 from smftools.preprocessing.append_mismatch_frequency_sites import append_mismatch_frequency_sites
 

@@ -1256,7 +1256,7 @@ def extract_base_identities(
 
                 if read.reference_start is not None and read.reference_end is not None:
                     span_end = min(read.reference_end, max_reference_length)
-                    read_span_masks[read_name][read.reference_start:span_end] = 1
+                    read_span_masks[read_name][read.reference_start : span_end] = 1
 
                 # Use get_aligned_pairs directly with positions filtering
                 aligned_pairs = read.get_aligned_pairs(matches_only=True)
@@ -1649,6 +1649,7 @@ def find_secondary_supplementary_read_names(
                 if read.is_supplementary:
                     supplementary_reads.add(read.query_name)
     else:
+
         def _collect(flag: int) -> set[str]:
             cmd = ["samtools", "view", "-f", str(flag), str(bam_file_path)]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -1676,7 +1677,9 @@ def extract_secondary_supplementary_alignment_spans(
     bam_file_path: str | Path,
     read_names: Iterable[str],
     samtools_backend: str | None = "auto",
-) -> tuple[dict[str, list[tuple[float, float, float]]], dict[str, list[tuple[float, float, float]]]]:
+) -> tuple[
+    dict[str, list[tuple[float, float, float]]], dict[str, list[tuple[float, float, float]]]
+]:
     """Extract reference/read span data for secondary/supplementary alignments.
 
     Args:

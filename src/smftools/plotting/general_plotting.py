@@ -305,9 +305,7 @@ def plot_cp_sequence_components(
                     base_factors.shape,
                 )
             else:
-                base_labels = base_labels or [
-                    f"B{i + 1}" for i in range(base_factors.shape[0])
-                ]
+                base_labels = base_labels or [f"B{i + 1}" for i in range(base_factors.shape[0])]
                 fig, ax = plt.subplots(figsize=(4.5, 3))
                 width = 0.8 / base_factors.shape[1]
                 x = np.arange(base_factors.shape[0])
@@ -1904,9 +1902,7 @@ def combined_hmm_length_clustermap(
                     length_plot_matrix = _map_length_matrix_to_subclasses(
                         length_matrix_raw, feature_ranges
                     )
-                    length_plot_cmap, length_plot_norm = _build_length_feature_cmap(
-                        feature_ranges
-                    )
+                    length_plot_cmap, length_plot_norm = _build_length_feature_cmap(feature_ranges)
 
                 panels = [
                     (
@@ -1990,9 +1986,7 @@ def combined_hmm_length_clustermap(
                 axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
                 axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
 
-                for i, (name, matrix, labels, cmap, mean_vec, n_ticks, norm) in enumerate(
-                    panels
-                ):
+                for i, (name, matrix, labels, cmap, mean_vec, n_ticks, norm) in enumerate(panels):
                     clean_barplot(axes_bar[i], mean_vec, name)
 
                     heatmap_kwargs = dict(
@@ -2408,7 +2402,9 @@ def plot_sequence_integer_encoding_clustermaps(
     if mismatch_layer in adata.layers:
         mismatch_encoding_map = adata.uns.get("mismatch_integer_encoding_map", {}) or {}
         mismatch_int_to_base = {
-            int(v): str(k) for k, v in mismatch_encoding_map.items() if isinstance(v, (int, np.integer))
+            int(v): str(k)
+            for k, v in mismatch_encoding_map.items()
+            if isinstance(v, (int, np.integer))
         }
 
     def _resolve_xtick_step(n_positions: int) -> int | None:
@@ -2934,9 +2930,7 @@ def plot_read_span_quality_clustermaps(
 
             out_file = None
             if save_path is not None:
-                safe_name = f"{ref}__{sample}__read_span_quality".replace("=", "").replace(
-                    ",", "_"
-                )
+                safe_name = f"{ref}__{sample}__read_span_quality".replace("=", "").replace(",", "_")
                 out_file = save_path / f"{safe_name}.png"
                 fig.savefig(out_file, dpi=300, bbox_inches="tight")
                 plt.close(fig)
@@ -3324,8 +3318,7 @@ def plot_embedding(
                 linewidths=0,
             )
             handles = [
-                patches.Patch(color=color_map[label], label=str(label))
-                for label in label_strings
+                patches.Patch(color=color_map[label], label=str(label)) for label in label_strings
             ]
             ax.legend(handles=handles, loc="best", fontsize=8, frameon=False)
         else:

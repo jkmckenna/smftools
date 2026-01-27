@@ -312,7 +312,6 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     else:
         pass
 
-
     # Determine if the input data needs to be basecalled
     if cfg.input_type == "pod5":
         logger.info(f"Detected pod5 inputs: {cfg.input_files}")

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import anndata as ad
 
-from smftools.constants import H5_DIR, HMM_DIR, LOAD_DIR, PREPROCESS_DIR, SPATIAL_DIR, LATENT_DIR
+from smftools.constants import H5_DIR, HMM_DIR, LATENT_DIR, LOAD_DIR, PREPROCESS_DIR, SPATIAL_DIR
 
 from ..metadata import write_runtime_schema_yaml
 from ..readwrite import safe_write_h5ad

@@ -1251,7 +1251,9 @@ def modkit_extract_to_adata(
             logger.debug("Found existing integer-encoded reads, using these")
     if cache_needs_rebuild:
         for bami, bam in enumerate(bam_path_list):
-            logger.info(f"Extracting base level sequences, qualities, reference spans, and mismatches per read for bam {bami}")
+            logger.info(
+                f"Extracting base level sequences, qualities, reference spans, and mismatches per read for bam {bami}"
+            )
             for record in records_to_analyze:
                 current_reference_length = reference_dict[record][0]
                 positions = range(current_reference_length)
@@ -1320,9 +1322,7 @@ def modkit_extract_to_adata(
                     f"{bami}_mismatch_rev",
                     batch_size=100000,
                 )
-                mismatch_batch_files[f"{bami}_{record}"] = (
-                    mismatch_fwd_files + mismatch_rev_files
-                )
+                mismatch_batch_files[f"{bami}_{record}"] = mismatch_fwd_files + mismatch_rev_files
                 quality_fwd_files = _write_integer_batches(
                     quality_fwd,
                     tmp_dir,
@@ -1638,17 +1638,13 @@ def modkit_extract_to_adata(
                                     sequence_batch_files.get(f"{final_sample_index}_{record}", [])
                                 )
                                 mismatch_files = _normalize_sequence_batch_files(
-                                    mismatch_batch_files.get(
-                                        f"{final_sample_index}_{record}", []
-                                    )
+                                    mismatch_batch_files.get(f"{final_sample_index}_{record}", [])
                                 )
                                 quality_files = _normalize_sequence_batch_files(
                                     quality_batch_files.get(f"{final_sample_index}_{record}", [])
                                 )
                                 read_span_files = _normalize_sequence_batch_files(
-                                    read_span_batch_files.get(
-                                        f"{final_sample_index}_{record}", []
-                                    )
+                                    read_span_batch_files.get(f"{final_sample_index}_{record}", [])
                                 )
                                 if not sequence_files:
                                     logger.warning(

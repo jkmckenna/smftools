@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import anndata as ad
 import numpy as np
 import pytest
-
-import anndata as ad
 
 from smftools.tools.calculate_nmf import calculate_nmf
 

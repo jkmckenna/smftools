@@ -8,10 +8,10 @@ import click
 import pandas as pd
 
 from .cli.hmm_adata import hmm_adata
+from .cli.latent_adata import latent_adata
 from .cli.load_adata import load_adata
 from .cli.preprocess_adata import preprocess_adata
 from .cli.spatial_adata import spatial_adata
-from .cli.latent_adata import latent_adata
 from .informatics.pod5_functions import subsample_pod5
 from .logging_utils import get_logger, setup_logging
 from .readwrite import concatenate_h5ads
@@ -102,6 +102,7 @@ def hmm(config_path):
 
 
 ##########################################
+
 
 ####### Latent ###########
 @cli.command()

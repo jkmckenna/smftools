@@ -15,27 +15,27 @@ import numpy as np
 import pandas as pd
 
 from smftools.constants import (
+    BAM_SUFFIX,
+    BARCODE,
+    BASE_QUALITY_SCORES,
+    DATASET,
+    DEMUX_TYPE,
+    H5_DIR,
+    MISMATCH_INTEGER_ENCODING,
     MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
     MODKIT_EXTRACT_SEQUENCE_BASES,
     MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE,
     MODKIT_EXTRACT_SEQUENCE_PADDING_BASE,
-    H5_DIR,
-    BAM_SUFFIX,
-    SEQUENCE_INTEGER_ENCODING,
-    SEQUENCE_INTEGER_DECODING,
-    DEMUX_TYPE,
-    REFERENCE,
-    REFERENCE_STRAND,
-    REFERENCE_DATASET_STRAND,
-    SAMPLE,
-    BARCODE,
-    STRAND,
-    DATASET,
-    READ_MISMATCH_TREND,
     READ_MAPPING_DIRECTION,
-    MISMATCH_INTEGER_ENCODING,
-    BASE_QUALITY_SCORES,
-    READ_SPAN_MASK
+    READ_MISMATCH_TREND,
+    READ_SPAN_MASK,
+    REFERENCE,
+    REFERENCE_DATASET_STRAND,
+    REFERENCE_STRAND,
+    SAMPLE,
+    SEQUENCE_INTEGER_DECODING,
+    SEQUENCE_INTEGER_ENCODING,
+    STRAND,
 )
 from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
@@ -208,9 +208,8 @@ def converted_BAM_to_adata(
         if max_reference_length > record_length:
             pad_number = max_reference_length - record_length
             record_length += pad_number
-            seq += 'N'*pad_number
+            seq += "N" * pad_number
             converted_FASTA_record_seq_map[record] = [record_length, seq]
-
 
     ## Process BAMs in Parallel
     final_adata = process_bams_parallel(
@@ -550,7 +549,7 @@ def process_single_bam(
     device: torch.device,
     deaminase_footprinting: bool,
     samtools_backend: str | None,
-    converted_FASTA_record_seq_map: dict[str, tuple[int, str]], 
+    converted_FASTA_record_seq_map: dict[str, tuple[int, str]],
 ) -> ad.AnnData | None:
     """Process a single BAM file into per-record AnnData objects.
 
@@ -597,7 +596,12 @@ def process_single_bam(
             base_quality_scores,
             read_span_masks,
         ) = extract_base_identities(
-            bam, record, range(current_length), max_reference_length, record_sequence, samtools_backend
+            bam,
+            record,
+            range(current_length),
+            max_reference_length,
+            record_sequence,
+            samtools_backend,
         )
         mismatch_trend_series = pd.Series(mismatch_trend_per_read)
 

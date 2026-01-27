@@ -91,9 +91,7 @@ def append_mismatch_frequency_sites(
 
         frequency_values = np.full(n_vars, np.nan, dtype=float)
         variable_flags = np.zeros(n_vars, dtype=bool)
-        mismatch_base_frequencies: list[list[tuple[str, float]]] = [
-            [] for _ in range(n_vars)
-        ]
+        mismatch_base_frequencies: list[list[tuple[str, float]]] = [[] for _ in range(n_vars)]
 
         if ref_mask.sum() == 0:
             adata.var[f"{ref}_mismatch_frequency"] = pd.Series(
@@ -135,9 +133,9 @@ def append_mismatch_frequency_sites(
 
         base_counts_by_int: dict[int, np.ndarray] = {}
         for base_int in base_int_to_label:
-            base_counts_by_int[base_int] = (
-                (mismatch_matrix == base_int) & coverage_mask
-            ).sum(axis=0)
+            base_counts_by_int[base_int] = ((mismatch_matrix == base_int) & coverage_mask).sum(
+                axis=0
+            )
 
         for idx in range(n_vars):
             if not ref_position_mask.iloc[idx] or coverage_counts[idx] == 0:
@@ -149,9 +147,7 @@ def append_mismatch_frequency_sites(
                     base_freqs.append((base_label, float(count / coverage_counts[idx])))
             mismatch_base_frequencies[idx] = base_freqs
 
-        adata.var[f"{ref}_mismatch_frequency"] = pd.Series(
-            frequency_values, index=adata.var.index
-        )
+        adata.var[f"{ref}_mismatch_frequency"] = pd.Series(frequency_values, index=adata.var.index)
         adata.var[f"{ref}_variable_sequence_site"] = pd.Series(
             variable_flags, index=adata.var.index
         )

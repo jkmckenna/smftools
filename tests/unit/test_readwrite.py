@@ -1,5 +1,5 @@
-import numpy as np
 import anndata as ad
+import numpy as np
 
 from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
 

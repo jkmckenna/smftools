@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import anndata as ad
 import numpy as np
 import pytest
-
-import anndata as ad
 
 from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
 from smftools.tools.tensor_factorization import (
