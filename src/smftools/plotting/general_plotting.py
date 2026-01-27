@@ -3401,7 +3401,7 @@ def plot_embedding_grid(
 
     nrows, ncols = _grid_dimensions(len(valid_colors), ncols)
     plot_width = 4.8
-    legend_width = 1.4
+    legend_width = 2.4
     plot_height = 4.2
     fig = plt.figure(
         figsize=(ncols * (plot_width + legend_width), nrows * plot_height),
@@ -3412,7 +3412,7 @@ def plot_embedding_grid(
         ncols * 2,
         figure=fig,
         width_ratios=width_ratios,
-        wspace=0.3,
+        wspace=0.08,
         hspace=0.35,
     )
 
@@ -3453,29 +3453,47 @@ def plot_embedding_grid(
             legend_ax.legend(
                 handles=handles,
                 loc="center left",
+                bbox_to_anchor=(0.0, 0.5),
                 fontsize=8,
                 frameon=False,
                 title=str(color_key),
             )
         else:
+            values_float = values.astype(float)
+
             scatter = ax.scatter(
                 embedding[:, 0],
                 embedding[:, 1],
-                c=values.astype(float),
+                c=values_float,
                 cmap="viridis",
                 s=point_size,
                 alpha=alpha,
                 linewidths=0,
             )
-            colorbar = fig.colorbar(scatter, cax=legend_ax)
-            colorbar.set_label(str(color_key))
 
-        ax.set_xlabel(f"{basis.upper()} 1")
-        ax.set_ylabel(f"{basis.upper()} 2")
-        ax.set_title(f"{basis.upper()} colored by {color_key}")
+            colorbar = fig.colorbar(
+                scatter,
+                ax=ax,
+                fraction=0.04,   # ← thickness (default ~0.15)
+                pad=0.02,        # gap from plot
+                shrink=0.9,      # slightly shorter
+                aspect=30        # larger = thinner
+            )
+
+            # Ticks (5 evenly spaced)
+            vmin, vmax = np.nanmin(values_float), np.nanmax(values_float)
+            ticks = np.linspace(vmin, vmax, 5)
+            colorbar.set_ticks(ticks)
+            colorbar.ax.tick_params(labelsize=8, length=2)
+            colorbar.set_label(str(color_key), fontsize=9)
+
+        ax.set_xlabel(f"Component 1")
+        ax.set_ylabel(f"Component 2")
+        ax.set_title(f"{color_key}")
 
     filename_prefix = prefix or basis
     output_file = output_path / f"{filename_prefix}_grid.png"
+    fig.suptitle(f"{basis}")
     fig.tight_layout()
     fig.savefig(output_file, dpi=200)
     plt.close(fig)
