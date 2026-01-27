@@ -3251,3 +3251,115 @@ def plot_hmm_layers_rolling_by_sample_ref(
         plt.close(fig)
 
     return saved_files
+
+
+def _resolve_embedding(adata: "ad.AnnData", basis: str) -> np.ndarray:
+    key = basis if basis.startswith("X_") else f"X_{basis}"
+    if key not in adata.obsm:
+        raise KeyError(f"Embedding '{key}' not found in adata.obsm.")
+    embedding = np.asarray(adata.obsm[key])
+    if embedding.shape[1] < 2:
+        raise ValueError(f"Embedding '{key}' must have at least two dimensions.")
+    return embedding[:, :2]
+
+
+def plot_embedding(
+    adata: "ad.AnnData",
+    *,
+    basis: str,
+    color: str | Sequence[str],
+    output_dir: Path | str,
+    prefix: str | None = None,
+    point_size: float = 12,
+    alpha: float = 0.8,
+) -> Dict[str, Path]:
+    """Plot a 2D embedding with scanpy-style color options.
+
+    Args:
+        adata: AnnData object with ``obsm['X_<basis>']``.
+        basis: Embedding basis name (e.g., ``'umap'``, ``'pca'``).
+        color: Obs column name or list of names to color by.
+        output_dir: Directory to save plots.
+        prefix: Optional filename prefix.
+        point_size: Marker size for scatter plots.
+        alpha: Marker transparency.
+
+    Returns:
+        Dict[str, Path]: Mapping of color keys to saved plot paths.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    embedding = _resolve_embedding(adata, basis)
+    colors = [color] if isinstance(color, str) else list(color)
+    saved: Dict[str, Path] = {}
+
+    for color_key in colors:
+        if color_key not in adata.obs:
+            logger.warning("Color key '%s' not found in adata.obs; skipping.", color_key)
+            continue
+        values = adata.obs[color_key]
+        fig, ax = plt.subplots(figsize=(5.5, 4.5))
+
+        if pd.api.types.is_categorical_dtype(values) or values.dtype == object:
+            categories = pd.Categorical(values)
+            palette = sns.color_palette("tab20", n_colors=len(categories.categories))
+            color_map = dict(zip(categories.categories, palette))
+            mapped = categories.map(color_map)
+            ax.scatter(
+                embedding[:, 0],
+                embedding[:, 1],
+                c=list(mapped),
+                s=point_size,
+                alpha=alpha,
+                linewidths=0,
+            )
+            handles = [
+                patches.Patch(color=color_map[cat], label=str(cat))
+                for cat in categories.categories
+            ]
+            ax.legend(handles=handles, loc="best", fontsize=8, frameon=False)
+        else:
+            scatter = ax.scatter(
+                embedding[:, 0],
+                embedding[:, 1],
+                c=values.astype(float),
+                cmap="viridis",
+                s=point_size,
+                alpha=alpha,
+                linewidths=0,
+            )
+            fig.colorbar(scatter, ax=ax, label=color_key)
+
+        ax.set_xlabel(f"{basis.upper()} 1")
+        ax.set_ylabel(f"{basis.upper()} 2")
+        ax.set_title(f"{basis.upper()} colored by {color_key}")
+        fig.tight_layout()
+
+        filename_prefix = prefix or basis
+        safe_key = str(color_key).replace(" ", "_")
+        output_file = output_path / f"{filename_prefix}_{safe_key}.png"
+        fig.savefig(output_file, dpi=200)
+        plt.close(fig)
+        saved[color_key] = output_file
+
+    return saved
+
+
+def plot_umap(
+    adata: "ad.AnnData",
+    *,
+    color: str | Sequence[str],
+    output_dir: Path | str,
+) -> Dict[str, Path]:
+    """Plot UMAP embedding with scanpy-style color options."""
+    return plot_embedding(adata, basis="umap", color=color, output_dir=output_dir, prefix="umap")
+
+
+def plot_pca(
+    adata: "ad.AnnData",
+    *,
+    color: str | Sequence[str],
+    output_dir: Path | str,
+) -> Dict[str, Path]:
+    """Plot PCA embedding with scanpy-style color options."""
+    return plot_embedding(adata, basis="pca", color=color, output_dir=output_dir, prefix="pca")
