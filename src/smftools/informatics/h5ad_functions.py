@@ -140,6 +140,42 @@ def add_read_tag_annotations(
         adata.obs[column] = df_reindexed[column].values
 
 
+def add_secondary_supplementary_alignment_flags(
+    adata,
+    bam_path: str | Path,
+    *,
+    uns_flag: str = "add_secondary_supplementary_flags_performed",
+    bypass: bool = False,
+    force_redo: bool = False,
+    samtools_backend: str | None = "auto",
+) -> None:
+    """Annotate whether reads have secondary/supplementary alignments.
+
+    Args:
+        adata: AnnData to annotate (modified in-place).
+        bam_path: Path to the aligned/sorted BAM to scan.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        bypass: Whether to skip annotation.
+        force_redo: Whether to recompute even if ``uns_flag`` is set.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+    """
+    already = bool(adata.uns.get(uns_flag, False))
+    if (already and not force_redo) or bypass:
+        return
+
+    from .bam_functions import find_secondary_supplementary_read_names
+
+    secondary_reads, supplementary_reads = find_secondary_supplementary_read_names(
+        bam_path,
+        adata.obs_names,
+        samtools_backend=samtools_backend,
+    )
+
+    adata.obs["has_secondary_alignment"] = adata.obs_names.isin(secondary_reads)
+    adata.obs["has_supplementary_alignment"] = adata.obs_names.isin(supplementary_reads)
+    adata.uns[uns_flag] = True
+
+
 def add_read_length_and_mapping_qc(
     adata,
     bam_files: Optional[List[str]] = None,

@@ -739,6 +739,7 @@ class ExperimentConfig:
     aligner_args: Optional[List[str]] = None
     make_bigwigs: bool = False
     make_beds: bool = False
+    annotate_secondary_supplementary: bool = False
     samtools_backend: str = "auto"
     bedtools_backend: str = "auto"
     bigwig_backend: str = "auto"

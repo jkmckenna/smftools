@@ -1615,6 +1615,63 @@ def extract_read_tags_from_bam(
     return read_tags
 
 
+def find_secondary_supplementary_read_names(
+    bam_file_path: str | Path,
+    read_names: Iterable[str],
+    samtools_backend: str | None = "auto",
+) -> tuple[set[str], set[str]]:
+    """Find read names with secondary or supplementary alignments in a BAM.
+
+    Args:
+        bam_file_path: Path to the BAM file to scan.
+        read_names: Iterable of read names to check.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
+    Returns:
+        Tuple of (secondary_read_names, supplementary_read_names).
+    """
+    target_names = set(read_names)
+    if not target_names:
+        return set(), set()
+
+    secondary_reads: set[str] = set()
+    supplementary_reads: set[str] = set()
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(bam_file_path), "rb") as bam_file:
+            for read in bam_file.fetch(until_eof=True):
+                if not read.query_name or read.query_name not in target_names:
+                    continue
+                if read.is_secondary:
+                    secondary_reads.add(read.query_name)
+                if read.is_supplementary:
+                    supplementary_reads.add(read.query_name)
+    else:
+        def _collect(flag: int) -> set[str]:
+            cmd = ["samtools", "view", "-f", str(flag), str(bam_file_path)]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert proc.stdout is not None
+            hits: set[str] = set()
+            for line in proc.stdout:
+                if not line.strip() or line.startswith("@"):
+                    continue
+                read_name = line.split("\t", 1)[0]
+                if read_name in target_names:
+                    hits.add(read_name)
+            rc = proc.wait()
+            if rc != 0:
+                stderr = proc.stderr.read() if proc.stderr else ""
+                raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+            return hits
+
+        secondary_reads = _collect(0x100)
+        supplementary_reads = _collect(0x800)
+
+    return secondary_reads, supplementary_reads
+
+
 def extract_readnames_from_bam(aligned_BAM, samtools_backend: str | None = "auto"):
     """
     Takes a BAM and writes out a txt file containing read names from the BAM
