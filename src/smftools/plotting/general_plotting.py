@@ -3574,3 +3574,66 @@ def plot_pca_grid(
         prefix=basis,
         ncols=ncols,
     )
+
+
+def plot_pca_explained_variance(
+    adata: "ad.AnnData",
+    *,
+    subset: str | None = None,
+    output_dir: Path | str,
+    filename: str | None = None,
+    max_pcs: int | None = None,
+) -> Path | None:
+    """Plot per-PC explained variance ratios and cumulative variance.
+
+    Args:
+        adata: AnnData object containing PCA results.
+        subset: Optional PCA subset suffix used by ``calculate_pca``.
+        output_dir: Directory to write the plot into.
+        filename: Optional output filename. Uses a default if not provided.
+        max_pcs: Optional cap on number of PCs to plot.
+
+    Returns:
+        Path to the saved plot, or None if explained variance is unavailable.
+    """
+    if subset:
+        pca_key = f"X_pca_{subset}"
+        default_filename = f"pca_{subset}_explained_variance.png"
+    else:
+        pca_key = "X_pca"
+        default_filename = "pca_explained_variance.png"
+
+    explained_variance_ratio = adata.uns.get(pca_key, {}).get("explained_variance_ratio")
+    if explained_variance_ratio is None:
+        logger.warning("Explained variance ratio not found in adata.uns[%s].", pca_key)
+        return None
+
+    variance = np.asarray(explained_variance_ratio, dtype=float)
+    if variance.size == 0:
+        logger.warning("Explained variance ratio for %s is empty; skipping plot.", pca_key)
+        return None
+
+    if max_pcs is not None:
+        variance = variance[: int(max_pcs)]
+
+    pcs = np.arange(1, variance.size + 1)
+    cumulative = np.cumsum(variance)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / (filename or default_filename)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(pcs, variance, color="#4C72B0", alpha=0.8, label="Explained variance")
+    ax.plot(pcs, cumulative, color="#DD8452", marker="o", label="Cumulative variance")
+    ax.set_xlabel("Principal component")
+    ax.set_ylabel("Explained variance ratio")
+    ax.set_title("PCA explained variance")
+    ax.set_xticks(pcs)
+    ax.set_ylim(0, max(1.0, cumulative.max() * 1.05))
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+    return output_path

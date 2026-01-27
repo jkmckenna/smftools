@@ -132,6 +132,7 @@ def latent_adata_core(
         plot_cp_sequence_components,
         plot_embedding_grid,
         plot_nmf_components,
+        plot_pca_explained_variance,
         plot_pca_grid,
         plot_umap_grid,
     )
@@ -283,6 +284,7 @@ def latent_adata_core(
     else:
         make_dirs([pca_dir])
         plot_pca_grid(adata, subset=SUBSET, color=plotting_layers, output_dir=pca_dir)
+        plot_pca_explained_variance(adata, subset=SUBSET, output_dir=pca_dir)
 
     # UMAP
     if umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
