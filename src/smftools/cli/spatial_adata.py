@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.logging_utils import get_logger
+from smftools.constants import LOGGING_DIR, SEQUENCE_INTEGER_ENCODING, SPATIAL_DIR
+from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
 
 logger = get_logger(__name__)
@@ -35,15 +37,13 @@ def spatial_adata(
         Path to the “current” spatial AnnData (or hmm AnnData if we skip to that).
     """
     from ..readwrite import add_or_update_column_in_csv, safe_read_h5ad
-    from .helpers import get_adata_paths
-    from .load_adata import load_adata
-    from .preprocess_adata import preprocess_adata
+    from .helpers import get_adata_paths, load_experiment_config
 
     # 1) Ensure config + basic paths via load_adata
-    loaded_adata, loaded_path, cfg = load_adata(config_path)
+    cfg = load_experiment_config(config_path)
+
     paths = get_adata_paths(cfg)
 
-    raw_path = paths.raw
     pp_path = paths.pp
     pp_dedup_path = paths.pp_dedup
     spatial_path = paths.spatial
@@ -51,47 +51,32 @@ def spatial_adata(
 
     # Stage-skipping logic for spatial
     if not getattr(cfg, "force_redo_spatial_analyses", False):
-        # If HMM exists, it's the most processed stage — reuse it.
-        if hmm_path.exists():
-            logger.info(f"HMM AnnData found: {hmm_path}\nSkipping smftools spatial")
-            return None, hmm_path
-
         # If spatial exists, we consider spatial analyses already done.
         if spatial_path.exists():
             logger.info(f"Spatial AnnData found: {spatial_path}\nSkipping smftools spatial")
             return None, spatial_path
 
-    # 2) Ensure preprocessing has been run
-    #    This will create pp/pp_dedup as needed or return them if they already exist.
-    pp_adata, pp_adata_path_ret, pp_dedup_adata, pp_dedup_adata_path_ret = preprocess_adata(
-        config_path
-    )
-
     # Helper to load from disk, reusing loaded_adata if it matches
     def _load(path: Path):
-        if loaded_adata is not None and loaded_path == path:
-            return loaded_adata
         adata, _ = safe_read_h5ad(path)
         return adata
 
     # 3) Decide which AnnData to use as the *starting point* for spatial analyses
-    # Prefer in-memory pp_dedup_adata when preprocess_adata just ran.
-    if pp_dedup_adata is not None:
-        start_adata = pp_dedup_adata
-        source_path = pp_dedup_adata_path_ret
+    if hmm_path.exists():
+        start_adata = _load(hmm_path)
+        source_path = hmm_path
+    elif spatial_path.exists():
+        start_adata = _load(spatial_path)
+        source_path = spatial_path
+    elif pp_dedup_path.exists():
+        start_adata = _load(pp_dedup_path)
+        source_path = pp_dedup_path
+    elif pp_path.exists():
+        start_adata = _load(pp_path)
+        source_path = pp_path
     else:
-        if pp_dedup_path.exists():
-            start_adata = _load(pp_dedup_path)
-            source_path = pp_dedup_path
-        elif pp_path.exists():
-            start_adata = _load(pp_path)
-            source_path = pp_path
-        elif raw_path.exists():
-            start_adata = _load(raw_path)
-            source_path = raw_path
-        else:
-            logger.warning("No suitable AnnData found for spatial analyses (need at least raw).")
-            return None, None
+        logger.warning("No suitable AnnData found for spatial analyses (need at least preprocessed).")
+        return None, None
 
     # 4) Run the spatial core
     adata_spatial, spatial_path = spatial_adata_core(
@@ -99,14 +84,9 @@ def spatial_adata(
         cfg=cfg,
         spatial_adata_path=spatial_path,
         pp_adata_path=pp_path,
-        pp_dup_rem_adata_path=pp_dedup_path,
-        pp_adata_in_memory=pp_adata,
         source_adata_path=source_path,
         config_path=config_path,
     )
-
-    # 5) Register spatial path in summary CSV
-    add_or_update_column_in_csv(cfg.summary_file, "spatial_adata", spatial_path)
 
     return adata_spatial, spatial_path
 
@@ -116,8 +96,6 @@ def spatial_adata_core(
     cfg,
     spatial_adata_path: Path,
     pp_adata_path: Path,
-    pp_dup_rem_adata_path: Path,
-    pp_adata_in_memory: Optional[ad.AnnData] = None,
     source_adata_path: Optional[Path] = None,
     config_path: Optional[str] = None,
 ) -> Tuple[ad.AnnData, Path]:
@@ -129,8 +107,6 @@ def spatial_adata_core(
     - `cfg` is the ExperimentConfig.
     - `spatial_adata_path`, `pp_adata_path`, `pp_dup_rem_adata_path` are canonical paths
       from `get_adata_paths`.
-    - `pp_adata_in_memory` optionally holds the preprocessed (non-dedup) AnnData from
-      the same run of `preprocess_adata`, to avoid re-reading from disk.
 
     Does:
     - Optional sample sheet load.
@@ -152,17 +128,17 @@ def spatial_adata_core(
     """
     import os
     import warnings
+    from datetime import datetime
     from pathlib import Path
 
     import numpy as np
     import pandas as pd
 
-    sc = require("scanpy", extra="scanpy", purpose="spatial analyses")
-
     from ..metadata import record_smftools_metadata
     from ..plotting import (
         combined_raw_clustermap,
         plot_rolling_grid,
+        plot_rolling_nn_and_layer,
         plot_spatial_autocorr_grid,
     )
     from ..preprocessing import (
@@ -171,7 +147,8 @@ def spatial_adata_core(
         reindex_references_adata,
     )
     from ..readwrite import make_dirs, safe_read_h5ad
-    from ..tools import calculate_umap
+    from ..tools import rolling_window_nn_distance
+    from ..tools.rolling_nn_distance import assign_rolling_nn_results
     from ..tools.position_stats import (
         compute_positionwise_statistics,
         plot_positionwise_matrices,
@@ -187,16 +164,30 @@ def spatial_adata_core(
     # -----------------------------
     # General setup
     # -----------------------------
+    date_str = datetime.today().strftime("%y%m%d")
+    now = datetime.now()
+    time_str = now.strftime("%H%M%S")
+    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+
     output_directory = Path(cfg.output_directory)
-    make_dirs([output_directory])
+    spatial_directory = output_directory / SPATIAL_DIR
+    logging_directory = spatial_directory / LOGGING_DIR
+
+    make_dirs([output_directory, spatial_directory])
+
+    if cfg.emit_log_file:
+        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
+        make_dirs([logging_directory])
+    else:
+        log_file = None
+
+    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     smf_modality = cfg.smf_modality
     if smf_modality == "conversion":
         deaminase = False
     else:
         deaminase = True
-
-    first_pp_run = pp_adata_in_memory is not None and pp_dup_rem_adata_path.exists()
 
     # -----------------------------
     # Optional sample sheet metadata
@@ -231,7 +222,6 @@ def spatial_adata_core(
     else:
         reindex_suffix = None
 
-    pp_dir = output_directory / "preprocessed"
     references = adata.obs[cfg.reference_column].cat.categories
 
     # ============================================================
@@ -241,7 +231,7 @@ def spatial_adata_core(
         preprocessed_version_available = pp_adata_path.exists()
 
         if preprocessed_version_available:
-            pp_clustermap_dir = pp_dir / "06_clustermaps"
+            pp_clustermap_dir = spatial_directory / "06_clustermaps"
 
             if pp_clustermap_dir.is_dir() and not getattr(
                 cfg, "force_redo_spatial_analyses", False
@@ -250,12 +240,9 @@ def spatial_adata_core(
                     f"{pp_clustermap_dir} already exists. Skipping clustermap plotting for preprocessed AnnData."
                 )
             else:
-                make_dirs([pp_dir, pp_clustermap_dir])
+                make_dirs([spatial_directory, pp_clustermap_dir])
 
-                if first_pp_run and (pp_adata_in_memory is not None):
-                    pp_adata = pp_adata_in_memory
-                else:
-                    pp_adata, _ = safe_read_h5ad(pp_adata_path)
+                pp_adata, _ = safe_read_h5ad(pp_adata_path)
 
                 # -----------------------------
                 # Optional sample sheet metadata
@@ -304,7 +291,7 @@ def spatial_adata_core(
                         0
                     ],
                     min_position_valid_fraction=cfg.min_valid_fraction_positions_in_read_vs_ref,
-                    demux_types=("double", "already"),
+                    demux_types=cfg.clustermap_demux_types_to_plot,
                     bins=None,
                     sample_mapping=None,
                     save_path=pp_clustermap_dir,
@@ -314,19 +301,18 @@ def spatial_adata_core(
                 )
 
     # ============================================================
-    # 2) Clustermaps + UMAP on *deduplicated* preprocessed AnnData
+    # 2) Clustermaps on *deduplicated* preprocessed AnnData
     # ============================================================
-    pp_dir_dedup = pp_dir / "deduplicated"
-    pp_clustermap_dir_dedup = pp_dir_dedup / "06_clustermaps"
-    pp_umap_dir = pp_dir_dedup / "07_umaps"
+    spatial_dir_dedup = spatial_directory / "deduplicated"
+    clustermap_dir_dedup = spatial_dir_dedup / "06_clustermaps"
 
     # Clustermaps on deduplicated adata
-    if pp_clustermap_dir_dedup.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if clustermap_dir_dedup.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(
-            f"{pp_clustermap_dir_dedup} already exists. Skipping clustermap plotting for deduplicated AnnData."
+            f"{clustermap_dir_dedup} already exists. Skipping clustermap plotting for deduplicated AnnData."
         )
     else:
-        make_dirs([pp_dir_dedup, pp_clustermap_dir_dedup])
+        make_dirs([spatial_dir_dedup, clustermap_dir_dedup])
         combined_raw_clustermap(
             adata,
             sample_col=cfg.sample_name_col_for_plotting,
@@ -346,53 +332,113 @@ def spatial_adata_core(
                 0
             ],
             min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
-            demux_types=("double", "already"),
+            demux_types=cfg.clustermap_demux_types_to_plot,
             bins=None,
             sample_mapping=None,
-            save_path=pp_clustermap_dir_dedup,
+            save_path=clustermap_dir_dedup,
             sort_by=cfg.spatial_clustermap_sortby,
             deaminase=deaminase,
             index_col_suffix=reindex_suffix,
         )
 
-    # UMAP / Leiden
-    if pp_umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.debug(f"{pp_umap_dir} already exists. Skipping UMAP plotting.")
+    # ============================================================
+    # 2b) Rolling NN distances + layer clustermaps
+    # ============================================================
+    pp_rolling_nn_dir = spatial_dir_dedup / "06b_rolling_nn_clustermaps"
+
+    if pp_rolling_nn_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{pp_rolling_nn_dir} already exists. Skipping rolling NN distance plots.")
     else:
-        make_dirs([pp_umap_dir])
-
-        var_filters = []
-        if smf_modality == "direct":
-            for ref in references:
-                for base in cfg.mod_target_bases:
-                    var_filters.append(f"{ref}_{base}_site")
-        elif deaminase:
-            for ref in references:
-                var_filters.append(f"{ref}_C_site")
-        else:
-            for ref in references:
-                for base in cfg.mod_target_bases:
-                    var_filters.append(f"{ref}_{base}_site")
-
-        adata = calculate_umap(
-            adata,
-            layer=cfg.layer_for_umap_plotting,
-            var_filters=var_filters,
-            n_pcs=10,
-            knn_neighbors=15,
+        make_dirs([pp_rolling_nn_dir])
+        samples = (
+            adata.obs[cfg.sample_name_col_for_plotting].astype("category").cat.categories.tolist()
         )
+        references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
 
-        sc.tl.leiden(adata, resolution=0.1, flavor="igraph", n_iterations=2)
+        for reference in references:
+            for sample in samples:
+                mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
+                    adata.obs[cfg.reference_column] == reference
+                )
+                if not mask.any():
+                    continue
 
-        sc.settings.figdir = pp_umap_dir
-        umap_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
-        umap_layers += cfg.umap_layers_to_plot
-        sc.pl.umap(adata, color=umap_layers, show=False, save=True)
+                subset = adata[mask]
+                site_mask = (
+                    adata.var[[f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]]
+                    .fillna(False)
+                    .any(axis=1)
+                )
+                subset = subset[:, site_mask].copy()
+                try:
+                    rolling_values, rolling_starts = rolling_window_nn_distance(
+                        subset,
+                        layer=cfg.rolling_nn_layer,
+                        window=cfg.rolling_nn_window,
+                        step=cfg.rolling_nn_step,
+                        min_overlap=cfg.rolling_nn_min_overlap,
+                        return_fraction=cfg.rolling_nn_return_fraction,
+                        store_obsm=cfg.rolling_nn_obsm_key,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Rolling NN distance computation failed for sample=%s ref=%s: %s",
+                        sample,
+                        reference,
+                        exc,
+                    )
+                    continue
+
+                safe_sample = str(sample).replace(os.sep, "_")
+                safe_ref = str(reference).replace(os.sep, "_")
+                parent_obsm_key = f"{cfg.rolling_nn_obsm_key}__{safe_ref}"
+                try:
+                    assign_rolling_nn_results(
+                        adata,
+                        subset,
+                        rolling_values,
+                        rolling_starts,
+                        obsm_key=parent_obsm_key,
+                        window=cfg.rolling_nn_window,
+                        step=cfg.rolling_nn_step,
+                        min_overlap=cfg.rolling_nn_min_overlap,
+                        return_fraction=cfg.rolling_nn_return_fraction,
+                        layer=cfg.rolling_nn_layer,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to merge rolling NN results for sample=%s ref=%s: %s",
+                        sample,
+                        reference,
+                        exc,
+                    )
+                adata.uns.setdefault(f"{cfg.rolling_nn_obsm_key}_reference_map", {})[
+                    reference
+                ] = parent_obsm_key
+                out_png = pp_rolling_nn_dir / f"{safe_sample}__{safe_ref}.png"
+                title = f"{sample} {reference}"
+                try:
+                    plot_rolling_nn_and_layer(
+                        subset,
+                        obsm_key=cfg.rolling_nn_obsm_key,
+                        layer_key=cfg.rolling_nn_plot_layer,
+                        max_nan_fraction=cfg.position_max_nan_threshold,
+                        var_valid_fraction_col=f"{reference}_valid_fraction",
+                        title=title,
+                        save_name=out_png,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed rolling NN plot for sample=%s ref=%s: %s",
+                        sample,
+                        reference,
+                        exc,
+                    )
 
     # ============================================================
     # 3) Spatial autocorrelation + rolling metrics
     # ============================================================
-    pp_autocorr_dir = pp_dir_dedup / "08_autocorrelations"
+    pp_autocorr_dir = spatial_dir_dedup / "08_autocorrelations"
 
     if pp_autocorr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{pp_autocorr_dir} already exists. Skipping autocorrelation plotting.")
@@ -735,10 +781,10 @@ def spatial_adata_core(
     # ============================================================
     # 4) Pearson / correlation matrices
     # ============================================================
-    pp_corr_dir = pp_dir_dedup / "09_correlation_matrices"
+    corr_dir = spatial_dir_dedup / "09_correlation_matrices"
 
-    if pp_corr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.debug(f"{pp_corr_dir} already exists. Skipping correlation matrix plotting.")
+    if corr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{corr_dir} already exists. Skipping correlation matrix plotting.")
     else:
         compute_positionwise_statistics(
             adata,
@@ -763,7 +809,7 @@ def spatial_adata_core(
             cmaps=cfg.correlation_matrix_cmaps,
             vmin=None,
             vmax=None,
-            output_dir=pp_corr_dir,
+            output_dir=corr_dir,
             output_key="positionwise_result",
         )
 

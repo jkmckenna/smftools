@@ -3,6 +3,9 @@ from __future__ import annotations
 from importlib import import_module
 
 _LAZY_ATTRS = {
+    "calculate_leiden": "smftools.tools.calculate_leiden",
+    "calculate_nmf": "smftools.tools.calculate_nmf",
+    "calculate_sequence_cp_decomposition": "smftools.tools.tensor_factorization",
     "calculate_umap": "smftools.tools.calculate_umap",
     "cluster_adata_on_methylation": "smftools.tools.cluster_adata_on_methylation",
     "combine_layers": "smftools.tools.general_tools",
@@ -11,6 +14,7 @@ _LAZY_ATTRS = {
     "calculate_relative_risk_on_activity": "smftools.tools.position_stats",
     "compute_positionwise_statistics": "smftools.tools.position_stats",
     "calculate_row_entropy": "smftools.tools.read_stats",
+    "rolling_window_nn_distance": "smftools.tools.rolling_nn_distance",
     "subset_adata": "smftools.tools.subset_adata",
 }
 

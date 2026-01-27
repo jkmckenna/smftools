@@ -15,6 +15,16 @@ autocorr_site_types:
 
 # Spatial Analysis - Clustermap params
 layer_for_clustermap_plotting: 'nan0_0minus1'
+rolling_nn_layer: "nan0_0minus1"
+rolling_nn_plot_layer: "nan0_0minus1"
+rolling_nn_window: 30
+rolling_nn_step: 2
+rolling_nn_min_overlap: 20
+rolling_nn_return_fraction: true
+rolling_nn_obsm_key: "rolling_nn_dist"
+rolling_nn_site_types: 
+  - "GpC"
+  - "CpG"
 clustermap_cmap_c: "coolwarm"
 clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "viridis"

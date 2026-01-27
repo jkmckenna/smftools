@@ -84,6 +84,112 @@ def add_demux_type_annotation(
     return adata
 
 
+def add_read_tag_annotations(
+    adata,
+    bam_files: Optional[List[str]] = None,
+    read_tags: Optional[Dict[str, Dict[str, object]]] = None,
+    tag_names: Optional[List[str]] = None,
+    include_flags: bool = True,
+    include_cigar: bool = True,
+    extract_read_tags_from_bam_callable=None,
+    samtools_backend: str | None = "auto",
+):
+    """Populate adata.obs with read tag metadata.
+
+    Args:
+        adata: AnnData to annotate (modified in-place).
+        bam_files: Optional list of BAM files to extract tags from.
+        read_tags: Optional mapping of read name to tag dict.
+        tag_names: Optional list of BAM tag names to extract (e.g. ["NM", "MD", "MM", "ML"]).
+        include_flags: Whether to add a FLAGS list column.
+        include_cigar: Whether to add the CIGAR string column.
+        extract_read_tags_from_bam_callable: Optional callable to extract tags from a BAM.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
+    Returns:
+        None (mutates adata in-place).
+    """
+    if read_tags is None:
+        read_tags = {}
+        if bam_files:
+            extractor = extract_read_tags_from_bam_callable or globals().get(
+                "extract_read_tags_from_bam"
+            )
+            if extractor is None:
+                raise ValueError(
+                    "No `read_tags` provided and `extract_read_tags_from_bam` not found."
+                )
+            for bam in bam_files:
+                bam_read_tags = extractor(
+                    bam,
+                    tag_names=tag_names,
+                    include_flags=include_flags,
+                    include_cigar=include_cigar,
+                    samtools_backend=samtools_backend,
+                )
+                if not isinstance(bam_read_tags, dict):
+                    raise ValueError(f"extract_read_tags_from_bam returned non-dict for {bam}")
+                read_tags.update(bam_read_tags)
+
+    if not read_tags:
+        return
+
+    df = pd.DataFrame.from_dict(read_tags, orient="index")
+    df_reindexed = df.reindex(adata.obs_names)
+    for column in df_reindexed.columns:
+        adata.obs[column] = df_reindexed[column].values
+
+
+def add_secondary_supplementary_alignment_flags(
+    adata,
+    bam_path: str | Path,
+    *,
+    uns_flag: str = "add_secondary_supplementary_flags_performed",
+    bypass: bool = False,
+    force_redo: bool = False,
+    samtools_backend: str | None = "auto",
+) -> None:
+    """Annotate whether reads have secondary/supplementary alignments.
+
+    Args:
+        adata: AnnData to annotate (modified in-place).
+        bam_path: Path to the aligned/sorted BAM to scan.
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        bypass: Whether to skip annotation.
+        force_redo: Whether to recompute even if ``uns_flag`` is set.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+    """
+    already = bool(adata.uns.get(uns_flag, False))
+    if (already and not force_redo) or bypass:
+        return
+
+    from .bam_functions import (
+        extract_secondary_supplementary_alignment_spans,
+        find_secondary_supplementary_read_names,
+    )
+
+    secondary_reads, supplementary_reads = find_secondary_supplementary_read_names(
+        bam_path,
+        adata.obs_names,
+        samtools_backend=samtools_backend,
+    )
+    secondary_spans, supplementary_spans = extract_secondary_supplementary_alignment_spans(
+        bam_path,
+        adata.obs_names,
+        samtools_backend=samtools_backend,
+    )
+
+    adata.obs["has_secondary_alignment"] = adata.obs_names.isin(secondary_reads)
+    adata.obs["has_supplementary_alignment"] = adata.obs_names.isin(supplementary_reads)
+    adata.obs["secondary_alignment_spans"] = [
+        secondary_spans.get(read_name) for read_name in adata.obs_names
+    ]
+    adata.obs["supplementary_alignment_spans"] = [
+        supplementary_spans.get(read_name) for read_name in adata.obs_names
+    ]
+    adata.uns[uns_flag] = True
+
+
 def add_read_length_and_mapping_qc(
     adata,
     bam_files: Optional[List[str]] = None,
@@ -104,7 +210,8 @@ def add_read_length_and_mapping_qc(
     bam_files
         Optional list of BAM files to extract metrics from. Ignored if read_metrics supplied.
     read_metrics
-        Optional dict mapping obs_name -> [read_length, read_quality, reference_length, mapped_length, mapping_quality]
+        Optional dict mapping obs_name -> [read_length, read_quality, reference_length, mapped_length,
+        mapping_quality, reference_start, reference_end]
         If provided, this will be used directly and bam_files will be ignored.
     uns_flag
         key in final_adata.uns used to record that QC was performed (kept the name with original misspelling).
@@ -154,10 +261,12 @@ def add_read_length_and_mapping_qc(
         adata.obs["reference_length"] = np.full(n, np.nan)
         adata.obs["read_quality"] = np.full(n, np.nan)
         adata.obs["mapping_quality"] = np.full(n, np.nan)
+        adata.obs["reference_start"] = np.full(n, np.nan)
+        adata.obs["reference_end"] = np.full(n, np.nan)
     else:
         # Build DF robustly
         # Convert values to lists where possible, else to [val, val, val...]
-        max_cols = 5
+        max_cols = 7
         rows = {}
         for k, v in read_metrics.items():
             if isinstance(v, (list, tuple, np.ndarray)):
@@ -179,6 +288,8 @@ def add_read_length_and_mapping_qc(
                 "reference_length",
                 "mapped_length",
                 "mapping_quality",
+                "reference_start",
+                "reference_end",
             ],
         )
 
@@ -191,6 +302,8 @@ def add_read_length_and_mapping_qc(
         adata.obs["reference_length"] = df_reindexed["reference_length"].values
         adata.obs["read_quality"] = df_reindexed["read_quality"].values
         adata.obs["mapping_quality"] = df_reindexed["mapping_quality"].values
+        adata.obs["reference_start"] = df_reindexed["reference_start"].values
+        adata.obs["reference_end"] = df_reindexed["reference_end"].values
 
     # Compute ratio columns safely (avoid divide-by-zero and preserve NaN)
     # read_length_to_reference_length_ratio

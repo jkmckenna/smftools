@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import copy
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from smftools.logging_utils import get_logger
+from smftools.constants import HMM_DIR, LOGGING_DIR
+from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
 
 # FIX: import _to_dense_np to avoid NameError
@@ -19,10 +21,128 @@ if TYPE_CHECKING:
     import torch as torch_types
 
 torch = require("torch", extra="torch", purpose="HMM CLI")
+mpl = require("matplotlib", extra="plotting", purpose="HMM plotting")
+mpl_colors = require("matplotlib.colors", extra="plotting", purpose="HMM plotting")
 
 # =============================================================================
 # Helpers: extracting training arrays
 # =============================================================================
+
+
+def _strip_hmm_layer_prefix(layer: str) -> str:
+    """Strip methbase prefixes and length suffixes from an HMM layer name.
+
+    Args:
+        layer: Full layer name (e.g., "GpC_small_accessible_patch_lengths").
+
+    Returns:
+        The base layer name without methbase prefixes or length suffixes.
+    """
+    base = layer
+    for prefix in ("Combined_", "GpC_", "CpG_", "C_", "A_"):
+        if base.startswith(prefix):
+            base = base[len(prefix) :]
+            break
+    if base.endswith("_lengths"):
+        base = base[: -len("_lengths")]
+    if base.endswith("_merged"):
+        base = base[: -len("_merged")]
+    return base
+
+
+def _resolve_feature_colormap(layer: str, cfg, default_cmap: str) -> Any:
+    """Resolve a colormap for a given HMM layer.
+
+    Args:
+        layer: Full layer name.
+        cfg: Experiment config.
+        default_cmap: Fallback colormap name.
+
+    Returns:
+        A matplotlib colormap or colormap name.
+    """
+    feature_maps = getattr(cfg, "hmm_feature_colormaps", {}) or {}
+    if not isinstance(feature_maps, dict):
+        feature_maps = {}
+
+    base = _strip_hmm_layer_prefix(layer)
+    value = feature_maps.get(layer, feature_maps.get(base))
+    if value is None:
+        return default_cmap
+
+    if isinstance(value, (list, tuple)):
+        return mpl_colors.ListedColormap(list(value))
+
+    if isinstance(value, str):
+        try:
+            mpl.colormaps.get_cmap(value)
+            return value
+        except Exception:
+            return mpl_colors.LinearSegmentedColormap.from_list(
+                f"hmm_{base}_cmap", ["#ffffff", value]
+            )
+
+    return default_cmap
+
+
+def _resolve_feature_color(layer: str, cfg, fallback_cmap: str, idx: int, total: int) -> Any:
+    """Resolve a line color for a given HMM layer."""
+    feature_maps = getattr(cfg, "hmm_feature_colormaps", {}) or {}
+    if not isinstance(feature_maps, dict):
+        feature_maps = {}
+
+    base = _strip_hmm_layer_prefix(layer)
+    value = feature_maps.get(layer, feature_maps.get(base))
+    if isinstance(value, str):
+        try:
+            mpl.colormaps.get_cmap(value)
+        except Exception:
+            return value
+        return mpl.colormaps.get_cmap(value)(0.75)
+    if isinstance(value, (list, tuple)) and value:
+        return value[-1]
+
+    cmap_obj = mpl.colormaps.get_cmap(fallback_cmap)
+    if total <= 1:
+        return cmap_obj(0.5)
+    return cmap_obj(idx / (total - 1))
+
+
+def _resolve_length_feature_ranges(layer: str, cfg, default_cmap: str) -> List[Tuple[int, int, Any]]:
+    """Resolve length-based feature ranges to colors for size contour overlays."""
+    base = _strip_hmm_layer_prefix(layer)
+    feature_sets = getattr(cfg, "hmm_feature_sets", {}) or {}
+    if not isinstance(feature_sets, dict):
+        return []
+
+    feature_key = None
+    if "accessible" in base:
+        feature_key = "accessible"
+    elif "footprint" in base:
+        feature_key = "footprint"
+
+    if feature_key is None:
+        return []
+
+    features = feature_sets.get(feature_key, {}).get("features", {})
+    if not isinstance(features, dict):
+        return []
+
+    ranges: List[Tuple[int, int, Any]] = []
+    for feature_name, bounds in features.items():
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+            continue
+        min_len, max_len = bounds
+        if max_len is None or (isinstance(max_len, (float, int)) and np.isinf(max_len)):
+            max_len = int(1e9)
+        try:
+            min_len_int = int(min_len)
+            max_len_int = int(max_len)
+        except (TypeError, ValueError):
+            continue
+        color = _resolve_feature_color(feature_name, cfg, default_cmap, 0, 1)
+        ranges.append((min_len_int, max_len_int, color))
+    return ranges
 
 
 def _get_training_matrix(
@@ -445,31 +565,27 @@ def hmm_adata(config_path: str):
     - Call hmm_adata_core(cfg, adata, paths)
     """
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths
-    from .load_adata import load_adata
-    from .preprocess_adata import preprocess_adata
-    from .spatial_adata import spatial_adata
+    from .helpers import get_adata_paths, load_experiment_config
 
     # 1) load cfg / stage paths
-    _, _, cfg = load_adata(config_path)
+    cfg = load_experiment_config(config_path)
+
     paths = get_adata_paths(cfg)
 
-    # 2) make sure upstream stages are run (they have their own skipping logic)
-    preprocess_adata(config_path)
-    spatial_ad, spatial_path = spatial_adata(config_path)
-
-    # 3) choose starting AnnData
+    # 2) choose starting AnnData
     # Prefer:
     #   - existing HMM h5ad if not forcing redo
     #   - in-memory spatial_ad from wrapper call
     #   - saved spatial / pp_dedup / pp / raw on disk
     if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply):
-        adata, _ = safe_read_h5ad(paths.hmm)
-        return adata, paths.hmm
+        logger.debug(
+            f"Skipping hmm. HMM AnnData found: {paths.hmm}"
+        )
+        return None
 
-    if spatial_ad is not None:
-        adata = spatial_ad
-        source_path = spatial_path
+    if paths.hmm.exists():
+        adata, _ = safe_read_h5ad(paths.hmm)
+        source_path = paths.hmm
     elif paths.spatial.exists():
         adata, _ = safe_read_h5ad(paths.spatial)
         source_path = paths.spatial
@@ -516,11 +632,14 @@ def hmm_adata_core(
     Does NOT decide which h5ad to start from – that is the wrapper's job.
     """
 
+    from datetime import datetime
+
     import numpy as np
 
     from ..hmm import call_hmm_peaks
     from ..metadata import record_smftools_metadata
     from ..plotting import (
+        combined_hmm_length_clustermap,
         combined_hmm_raw_clustermap,
         plot_hmm_layers_rolling_by_sample_ref,
         plot_hmm_size_contours,
@@ -528,18 +647,33 @@ def hmm_adata_core(
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
+    date_str = datetime.today().strftime("%y%m%d")
+    now = datetime.now()
+    time_str = now.strftime("%H%M%S")
+
+    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+
     smf_modality = cfg.smf_modality
     deaminase = smf_modality == "deaminase"
 
     output_directory = Path(cfg.output_directory)
-    make_dirs([output_directory])
+    hmm_directory = output_directory / HMM_DIR
+    logging_directory = hmm_directory / LOGGING_DIR
 
-    pp_dir = output_directory / "preprocessed" / "deduplicated"
+    make_dirs([output_directory, hmm_directory])
+
+    if cfg.emit_log_file:
+        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
+        make_dirs([logging_directory])
+    else:
+        log_file = None
+
+    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     # ---------------------------- HMM annotate stage ----------------------------
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):
-        hmm_models_dir = pp_dir / "10_hmm_models"
-        make_dirs([pp_dir, hmm_models_dir])
+        hmm_models_dir = hmm_directory / "10_hmm_models"
+        make_dirs([hmm_directory, hmm_models_dir])
 
         # Standard bookkeeping
         uns_key = "hmm_appended_layers"
@@ -743,6 +877,8 @@ def hmm_adata_core(
                                     uns_key=uns_key,
                                     uns_flag="hmm_annotated_combined",
                                     force_redo=force_apply,
+                                    mask_to_read_span=True,
+                                    mask_use_original_var_names=True,
                                 )
 
                                 for core_layer, dist in (
@@ -855,11 +991,11 @@ def hmm_adata_core(
             logger.info(f"HMM appended layers: {hmm_layers}")
 
     # ---------------------------- HMM peak calling stage ----------------------------
-    hmm_dir = pp_dir / "11_hmm_peak_calling"
+    hmm_dir = hmm_directory / "11_hmm_peak_calling"
     if hmm_dir.is_dir():
         pass
     else:
-        make_dirs([pp_dir, hmm_dir])
+        make_dirs([hmm_directory, hmm_dir])
 
         call_hmm_peaks(
             adata,
@@ -888,8 +1024,8 @@ def hmm_adata_core(
 
     ############################################### HMM based feature plotting ###############################################
 
-    hmm_dir = pp_dir / "12_hmm_clustermaps"
-    make_dirs([pp_dir, hmm_dir])
+    hmm_dir = hmm_directory / "12_hmm_clustermaps"
+    make_dirs([hmm_directory, hmm_dir])
 
     layers: list[str] = []
 
@@ -914,6 +1050,7 @@ def hmm_adata_core(
             pass
         else:
             make_dirs([hmm_cluster_save_dir])
+            hmm_cmap = _resolve_feature_colormap(layer, cfg, cfg.clustermap_cmap_hmm)
 
             combined_hmm_raw_clustermap(
                 adata,
@@ -924,7 +1061,7 @@ def hmm_adata_core(
                 layer_cpg=cfg.layer_for_clustermap_plotting,
                 layer_c=cfg.layer_for_clustermap_plotting,
                 layer_a=cfg.layer_for_clustermap_plotting,
-                cmap_hmm=cfg.clustermap_cmap_hmm,
+                cmap_hmm=hmm_cmap,
                 cmap_gpc=cfg.clustermap_cmap_gpc,
                 cmap_cpg=cfg.clustermap_cmap_cpg,
                 cmap_c=cfg.clustermap_cmap_c,
@@ -935,7 +1072,7 @@ def hmm_adata_core(
                     0
                 ],
                 min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
-                demux_types=("double", "already"),
+                demux_types=cfg.clustermap_demux_types_to_plot,
                 save_path=hmm_cluster_save_dir,
                 normalize_hmm=False,
                 sort_by=cfg.hmm_clustermap_sortby,  # options: 'gpc', 'cpg', 'gpc_cpg', 'none', or 'obs:<column>'
@@ -945,12 +1082,68 @@ def hmm_adata_core(
                 index_col_suffix=cfg.reindexed_var_suffix,
             )
 
-    hmm_dir = pp_dir / "13_hmm_bulk_traces"
+    hmm_length_dir = hmm_directory / "12b_hmm_length_clustermaps"
+    make_dirs([hmm_directory, hmm_length_dir])
+
+    length_layers: list[str] = []
+    length_layer_roots = list(
+        getattr(cfg, "hmm_clustermap_length_layers", cfg.hmm_clustermap_feature_layers)
+    )
+
+    for base in cfg.hmm_methbases:
+        length_layers.extend([f"{base}_{layer}_lengths" for layer in length_layer_roots])
+
+    if getattr(cfg, "hmm_run_multichannel", True) and len(cfg.hmm_methbases) >= 2:
+        length_layers.extend([f"Combined_{layer}_lengths" for layer in length_layer_roots])
+
+    if cfg.cpg:
+        length_layers.extend(["CpG_cpg_patch_lengths"])
+
+    for layer in length_layers:
+        hmm_cluster_save_dir = hmm_length_dir / layer
+        if hmm_cluster_save_dir.is_dir():
+            pass
+        else:
+            make_dirs([hmm_cluster_save_dir])
+            length_cmap = _resolve_feature_colormap(layer, cfg, "Greens")
+            length_feature_ranges = _resolve_length_feature_ranges(layer, cfg, "Greens")
+
+            combined_hmm_length_clustermap(
+                adata,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                length_layer=layer,
+                layer_gpc=cfg.layer_for_clustermap_plotting,
+                layer_cpg=cfg.layer_for_clustermap_plotting,
+                layer_c=cfg.layer_for_clustermap_plotting,
+                layer_a=cfg.layer_for_clustermap_plotting,
+                cmap_lengths=length_cmap,
+                cmap_gpc=cfg.clustermap_cmap_gpc,
+                cmap_cpg=cfg.clustermap_cmap_cpg,
+                cmap_c=cfg.clustermap_cmap_c,
+                cmap_a=cfg.clustermap_cmap_a,
+                min_quality=cfg.read_quality_filter_thresholds[0],
+                min_length=cfg.read_len_filter_thresholds[0],
+                min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[
+                    0
+                ],
+                min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                save_path=hmm_cluster_save_dir,
+                sort_by=cfg.hmm_clustermap_sortby,
+                bins=None,
+                deaminase=deaminase,
+                min_signal=0,
+                index_col_suffix=cfg.reindexed_var_suffix,
+                length_feature_ranges=length_feature_ranges,
+            )
+
+    hmm_dir = hmm_directory / "13_hmm_bulk_traces"
 
     if hmm_dir.is_dir():
         logger.debug(f"{hmm_dir} already exists.")
     else:
-        make_dirs([pp_dir, hmm_dir])
+        make_dirs([hmm_directory, hmm_dir])
         from ..plotting import plot_hmm_layers_rolling_by_sample_ref
 
         bulk_hmm_layers = [
@@ -958,6 +1151,10 @@ def hmm_adata_core(
             for layer in hmm_layers
             if not any(s in layer for s in ("_lengths", "_states", "_posterior"))
         ]
+        layer_colors = {
+            layer: _resolve_feature_color(layer, cfg, "tab20", idx, len(bulk_hmm_layers))
+            for idx, layer in enumerate(bulk_hmm_layers)
+        }
         saved = plot_hmm_layers_rolling_by_sample_ref(
             adata,
             layers=bulk_hmm_layers,
@@ -969,14 +1166,15 @@ def hmm_adata_core(
             output_dir=hmm_dir,
             save=True,
             show_raw=False,
+            layer_colors=layer_colors,
         )
 
-    hmm_dir = pp_dir / "14_hmm_fragment_distributions"
+    hmm_dir = hmm_directory / "14_hmm_fragment_distributions"
 
     if hmm_dir.is_dir():
         logger.debug(f"{hmm_dir} already exists.")
     else:
-        make_dirs([pp_dir, hmm_dir])
+        make_dirs([hmm_directory, hmm_dir])
         from ..plotting import plot_hmm_size_contours
 
         if smf_modality == "deaminase":
@@ -1001,6 +1199,8 @@ def hmm_adata_core(
         for layer, max in fragments:
             save_path = hmm_dir / layer
             make_dirs([save_path])
+            layer_cmap = _resolve_feature_colormap(layer, cfg, "Greens")
+            feature_ranges = _resolve_length_feature_ranges(layer, cfg, "Greens")
 
             figs = plot_hmm_size_contours(
                 adata,
@@ -1016,8 +1216,9 @@ def hmm_adata_core(
                 dpi=200,
                 smoothing_sigma=(10, 10),
                 normalize_after_smoothing=True,
-                cmap="Greens",
+                cmap=layer_cmap,
                 log_scale_z=True,
+                feature_ranges=tuple(feature_ranges),
             )
     ########################################################################################################################
 

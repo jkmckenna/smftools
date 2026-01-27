@@ -60,6 +60,20 @@ stages:
         notes: "Mapping quality score."
         requires: []
         optional_inputs: []
+      reference_start:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "0-based reference start position for the alignment."
+        requires: []
+        optional_inputs: []
+      reference_end:
+        dtype: "float"
+        created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
+        modified_by: []
+        notes: "0-based reference end position (exclusive) for the alignment."
+        requires: []
+        optional_inputs: []
       read_length_to_reference_length_ratio:
         dtype: "float"
         created_by: "smftools.informatics.h5ad_functions.add_read_length_and_mapping_qc"
@@ -179,7 +193,7 @@ stages:
     obs:
       leiden:
         dtype: "category"
-        created_by: "smftools.tools.calculate_umap"
+        created_by: "smftools.tools.calculate_leiden"
         modified_by: []
         notes: "Leiden cluster assignments."
         requires: [["obsm.X_umap"]]

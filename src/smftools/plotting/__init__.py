@@ -3,9 +3,18 @@ from __future__ import annotations
 from importlib import import_module
 
 _LAZY_ATTRS = {
+    "combined_hmm_length_clustermap": "smftools.plotting.general_plotting",
     "combined_hmm_raw_clustermap": "smftools.plotting.general_plotting",
     "combined_raw_clustermap": "smftools.plotting.general_plotting",
+    "plot_rolling_nn_and_layer": "smftools.plotting.general_plotting",
     "plot_hmm_layers_rolling_by_sample_ref": "smftools.plotting.general_plotting",
+    "plot_nmf_components": "smftools.plotting.general_plotting",
+    "plot_cp_sequence_components": "smftools.plotting.general_plotting",
+    "plot_embedding": "smftools.plotting.general_plotting",
+    "plot_read_span_quality_clustermaps": "smftools.plotting.general_plotting",
+    "plot_pca": "smftools.plotting.general_plotting",
+    "plot_sequence_integer_encoding_clustermaps": "smftools.plotting.general_plotting",
+    "plot_umap": "smftools.plotting.general_plotting",
     "plot_bar_relative_risk": "smftools.plotting.position_stats",
     "plot_positionwise_matrix": "smftools.plotting.position_stats",
     "plot_positionwise_matrix_grid": "smftools.plotting.position_stats",

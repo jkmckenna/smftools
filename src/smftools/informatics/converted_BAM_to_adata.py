@@ -19,6 +19,23 @@ from smftools.constants import (
     MODKIT_EXTRACT_SEQUENCE_BASES,
     MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE,
     MODKIT_EXTRACT_SEQUENCE_PADDING_BASE,
+    H5_DIR,
+    BAM_SUFFIX,
+    SEQUENCE_INTEGER_ENCODING,
+    SEQUENCE_INTEGER_DECODING,
+    DEMUX_TYPE,
+    REFERENCE,
+    REFERENCE_STRAND,
+    REFERENCE_DATASET_STRAND,
+    SAMPLE,
+    BARCODE,
+    STRAND,
+    DATASET,
+    READ_MISMATCH_TREND,
+    READ_MAPPING_DIRECTION,
+    MISMATCH_INTEGER_ENCODING,
+    BASE_QUALITY_SCORES,
+    READ_SPAN_MASK
 )
 from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
@@ -26,7 +43,7 @@ from smftools.optional_imports import require
 from ..readwrite import make_dirs
 from .bam_functions import count_aligned_reads, extract_base_identities
 from .binarize_converted_base_identities import binarize_converted_base_identities
-from .fasta_functions import find_conversion_sites
+from .fasta_functions import find_conversion_sites, get_native_references
 
 logger = get_logger(__name__)
 
@@ -152,7 +169,7 @@ def converted_BAM_to_adata(
     logger.debug(f"Using device: {device}")
 
     ## Set Up Directories and File Paths
-    h5_dir = output_dir / "h5ads"
+    h5_dir = output_dir / H5_DIR
     tmp_dir = output_dir / "tmp"
     final_adata = None
     final_adata_path = h5_dir / f"{experiment_name}.h5ad.gz"
@@ -166,7 +183,7 @@ def converted_BAM_to_adata(
     bam_files = sorted(
         p
         for p in split_dir.iterdir()
-        if p.is_file() and p.suffix == ".bam" and "unclassified" not in p.name
+        if p.is_file() and p.suffix == BAM_SUFFIX and "unclassified" not in p.name
     )
 
     bam_path_list = bam_files
@@ -184,6 +201,17 @@ def converted_BAM_to_adata(
         bam_path_list, bam_files, mapping_threshold, samtools_backend
     )
 
+    # Get converted record sequences:
+    converted_FASTA_record_seq_map = get_native_references(converted_FASTA)
+    # Pad the record sequences
+    for record, [record_length, seq] in converted_FASTA_record_seq_map.items():
+        if max_reference_length > record_length:
+            pad_number = max_reference_length - record_length
+            record_length += pad_number
+            seq += 'N'*pad_number
+            converted_FASTA_record_seq_map[record] = [record_length, seq]
+
+
     ## Process BAMs in Parallel
     final_adata = process_bams_parallel(
         bam_path_list,
@@ -197,12 +225,12 @@ def converted_BAM_to_adata(
         device,
         deaminase_footprinting,
         samtools_backend,
+        converted_FASTA_record_seq_map,
     )
 
-    final_adata.uns["sequence_integer_encoding_map"] = dict(
-        MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
-    )
-    final_adata.uns["sequence_integer_decoding_map"] = {
+    final_adata.uns[f"{SEQUENCE_INTEGER_ENCODING}_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
+    final_adata.uns[f"{MISMATCH_INTEGER_ENCODING}_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
+    final_adata.uns[f"{SEQUENCE_INTEGER_DECODING}_map"] = {
         str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
     }
 
@@ -213,6 +241,11 @@ def converted_BAM_to_adata(
         final_adata.uns[f"{chromosome}_FASTA_sequence"] = seq
         final_adata.uns["References"][f"{chromosome}_FASTA_sequence"] = seq
 
+    if not deaminase_footprinting:
+        for record, [_length, seq] in converted_FASTA_record_seq_map.items():
+            if "unconverted" not in record:
+                final_adata.var[f"{record}_top_strand_FASTA_base"] = list(seq)
+
     final_adata.obs_names_make_unique()
     cols = final_adata.obs.columns
 
@@ -222,9 +255,9 @@ def converted_BAM_to_adata(
 
     consensus_bases = MODKIT_EXTRACT_SEQUENCE_BASES[:4]  # ignore N/PAD for consensus
     consensus_base_ints = [MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT[base] for base in consensus_bases]
-    for ref_group in final_adata.obs["Reference_dataset_strand"].cat.categories:
-        group_subset = final_adata[final_adata.obs["Reference_dataset_strand"] == ref_group]
-        encoded_sequences = group_subset.layers["sequence_integer_encoding"]
+    for ref_group in final_adata.obs[REFERENCE_DATASET_STRAND].cat.categories:
+        group_subset = final_adata[final_adata.obs[REFERENCE_DATASET_STRAND] == ref_group]
+        encoded_sequences = group_subset.layers[SEQUENCE_INTEGER_ENCODING]
         layer_counts = [
             np.sum(encoded_sequences == base_int, axis=0) for base_int in consensus_base_ints
         ]
@@ -241,8 +274,8 @@ def converted_BAM_to_adata(
         )
 
     if input_already_demuxed:
-        final_adata.obs["demux_type"] = ["already"] * final_adata.shape[0]
-        final_adata.obs["demux_type"] = final_adata.obs["demux_type"].astype("category")
+        final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
+        final_adata.obs[DEMUX_TYPE] = final_adata.obs[DEMUX_TYPE].astype("category")
     else:
         from .h5ad_functions import add_demux_type_annotation
 
@@ -517,6 +550,7 @@ def process_single_bam(
     device: torch.device,
     deaminase_footprinting: bool,
     samtools_backend: str | None,
+    converted_FASTA_record_seq_map: dict[str, tuple[int, str]], 
 ) -> ad.AnnData | None:
     """Process a single BAM file into per-record AnnData objects.
 
@@ -531,6 +565,7 @@ def process_single_bam(
         device: Torch device used for binarization.
         deaminase_footprinting: Whether direct deamination chemistry was used.
         samtools_backend: Samtools backend choice for alignment parsing.
+        converted_FASTA_record_seq_map: record to seq map
 
     Returns:
         anndata.AnnData | None: Concatenated AnnData object or None if no data.
@@ -549,13 +584,20 @@ def process_single_bam(
         chromosome = record_info.chromosome
         current_length = record_info.sequence_length
         mod_type, strand = record_info.conversion, record_info.strand
-        sequence = chromosome_FASTA_dict[chromosome][0]
+        non_converted_sequence = chromosome_FASTA_dict[chromosome][0]
+        record_sequence = converted_FASTA_record_seq_map[record][1]
 
         # Extract Base Identities
-        fwd_bases, rev_bases, mismatch_counts_per_read, mismatch_trend_per_read = (
-            extract_base_identities(
-                bam, record, range(current_length), max_reference_length, sequence, samtools_backend
-            )
+        (
+            fwd_bases,
+            rev_bases,
+            mismatch_counts_per_read,
+            mismatch_trend_per_read,
+            mismatch_base_identities,
+            base_quality_scores,
+            read_span_masks,
+        ) = extract_base_identities(
+            bam, record, range(current_length), max_reference_length, record_sequence, samtools_backend
         )
         mismatch_trend_series = pd.Series(mismatch_trend_per_read)
 
@@ -658,25 +700,47 @@ def process_single_bam(
         encoded_matrix = np.vstack(
             [encoded_reads.get(read_name, default_sequence) for read_name in sorted_index]
         )
+        default_mismatch_sequence = np.full(
+            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int16
+        )
+        if current_length < sequence_length:
+            default_mismatch_sequence[current_length:] = SEQUENCE_ENCODING_CONFIG.padding_value
+        mismatch_encoded_matrix = np.vstack(
+            [
+                mismatch_base_identities.get(read_name, default_mismatch_sequence)
+                for read_name in sorted_index
+            ]
+        )
+        default_quality_sequence = np.full(sequence_length, -1, dtype=np.int16)
+        quality_matrix = np.vstack(
+            [
+                base_quality_scores.get(read_name, default_quality_sequence)
+                for read_name in sorted_index
+            ]
+        )
+        default_read_span = np.zeros(sequence_length, dtype=np.int16)
+        read_span_matrix = np.vstack(
+            [read_span_masks.get(read_name, default_read_span) for read_name in sorted_index]
+        )
 
         # Convert to AnnData
         X = bin_df.values.astype(np.float32)
         adata = ad.AnnData(X)
         adata.obs_names = bin_df.index.astype(str)
         adata.var_names = bin_df.columns.astype(str)
-        adata.obs["Sample"] = [sample] * len(adata)
+        adata.obs[SAMPLE] = [sample] * len(adata)
         try:
             barcode = sample.split("barcode")[1]
         except Exception:
             barcode = np.nan
-        adata.obs["Barcode"] = [int(barcode)] * len(adata)
-        adata.obs["Barcode"] = adata.obs["Barcode"].astype(str)
-        adata.obs["Reference"] = [chromosome] * len(adata)
-        adata.obs["Strand"] = [strand] * len(adata)
-        adata.obs["Dataset"] = [mod_type] * len(adata)
-        adata.obs["Reference_dataset_strand"] = [f"{chromosome}_{mod_type}_{strand}"] * len(adata)
-        adata.obs["Reference_strand"] = [f"{chromosome}_{strand}"] * len(adata)
-        adata.obs["Read_mismatch_trend"] = adata.obs_names.map(mismatch_trend_series)
+        adata.obs[BARCODE] = [int(barcode)] * len(adata)
+        adata.obs[BARCODE] = adata.obs[BARCODE].astype(str)
+        adata.obs[REFERENCE] = [chromosome] * len(adata)
+        adata.obs[STRAND] = [strand] * len(adata)
+        adata.obs[DATASET] = [mod_type] * len(adata)
+        adata.obs[REFERENCE_DATASET_STRAND] = [f"{chromosome}_{mod_type}_{strand}"] * len(adata)
+        adata.obs[REFERENCE_STRAND] = [f"{chromosome}_{strand}"] * len(adata)
+        adata.obs[READ_MISMATCH_TREND] = adata.obs_names.map(mismatch_trend_series)
 
         read_mapping_direction = []
         for read_id in adata.obs_names:
@@ -687,10 +751,13 @@ def process_single_bam(
             else:
                 read_mapping_direction.append("unk")
 
-        adata.obs["Read_mapping_direction"] = read_mapping_direction
+        adata.obs[READ_MAPPING_DIRECTION] = read_mapping_direction
 
         # Attach integer sequence encoding to layers
-        adata.layers["sequence_integer_encoding"] = encoded_matrix
+        adata.layers[SEQUENCE_INTEGER_ENCODING] = encoded_matrix
+        adata.layers[MISMATCH_INTEGER_ENCODING] = mismatch_encoded_matrix
+        adata.layers[BASE_QUALITY_SCORES] = quality_matrix
+        adata.layers[READ_SPAN_MASK] = read_span_matrix
 
         adata_list.append(adata)
 
@@ -718,6 +785,7 @@ def worker_function(
     device: torch.device,
     deaminase_footprinting: bool,
     samtools_backend: str | None,
+    converted_FASTA_record_seq_map: dict[str, tuple[int, str]],
     progress_queue,
     log_level: int,
     log_file: Path | None,
@@ -736,6 +804,7 @@ def worker_function(
         device: Torch device used for binarization.
         deaminase_footprinting: Whether direct deamination chemistry was used.
         samtools_backend: Samtools backend choice for alignment parsing.
+        converted_FASTA_record_seq_map: record to sequence map
         progress_queue: Queue used to signal completion.
         log_level: Logging level to configure in workers.
         log_file: Optional log file path.
@@ -783,6 +852,7 @@ def worker_function(
             device,
             deaminase_footprinting,
             samtools_backend,
+            converted_FASTA_record_seq_map,
         )
 
         if adata is not None:
@@ -814,6 +884,7 @@ def process_bams_parallel(
     device: torch.device,
     deaminase_footprinting: bool,
     samtools_backend: str | None,
+    converted_FASTA_record_seq_map: dict[str, tuple[int, str]],
 ) -> ad.AnnData | None:
     """Process BAM files in parallel and concatenate the resulting AnnData.
 
@@ -829,6 +900,7 @@ def process_bams_parallel(
         device: Torch device used for binarization.
         deaminase_footprinting: Whether direct deamination chemistry was used.
         samtools_backend: Samtools backend choice for alignment parsing.
+        converted_FASTA_record_seq_map: map from converted record name to the converted reference length and sequence.
 
     Returns:
         anndata.AnnData | None: Concatenated AnnData or None if no H5ADs produced.
@@ -863,6 +935,7 @@ def process_bams_parallel(
                         device,
                         deaminase_footprinting,
                         samtools_backend,
+                        converted_FASTA_record_seq_map,
                         progress_queue,
                         log_level,
                         log_file,

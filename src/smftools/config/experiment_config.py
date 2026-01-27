@@ -12,6 +12,7 @@ from smftools.constants import (
     BAM_SUFFIX,
     BARCODE_BOTH_ENDS,
     CONVERSIONS,
+    LOAD_DIR,
     MOD_LIST,
     MOD_MAP,
     REF_COL,
@@ -664,6 +665,8 @@ class ExperimentConfig:
     # General I/O
     input_data_path: Optional[str] = None
     output_directory: Optional[str] = None
+    emit_log_file: Optional[bool] = True
+    log_level: Optional[str] = "INFO"
     fasta: Optional[str] = None
     bam_suffix: str = BAM_SUFFIX
     recursive_input_search: bool = True
@@ -736,6 +739,7 @@ class ExperimentConfig:
     aligner_args: Optional[List[str]] = None
     make_bigwigs: bool = False
     make_beds: bool = False
+    annotate_secondary_supplementary: bool = True
     samtools_backend: str = "auto"
     bedtools_backend: str = "auto"
     bigwig_backend: str = "auto"
@@ -747,6 +751,9 @@ class ExperimentConfig:
     # General Plotting
     sample_name_col_for_plotting: Optional[str] = "Barcode"
     rows_per_qc_histogram_grid: int = 12
+    clustermap_demux_types_to_plot: List[str] = field(
+        default_factory=lambda: ["single", "double", "already"]
+    )
 
     # Preprocessing - Read length and quality filter params
     read_coord_filter: Optional[Sequence[float]] = field(default_factory=lambda: [None, None])
@@ -816,6 +823,9 @@ class ExperimentConfig:
     duplicate_detection_site_types: List[str] = field(
         default_factory=lambda: ["GpC", "CpG", "ambiguous_GpC_CpG"]
     )
+    duplicate_detection_demux_types_to_use: List[str] = field(
+        default_factory=lambda: ["single", "double", "already"]
+    )
     duplicate_detection_distance_threshold: float = 0.07
     hamming_vs_metric_keys: List[str] = field(default_factory=lambda: ["Fraction_C_site_modified"])
     duplicate_detection_keep_best_metric: str = "read_quality"
@@ -827,6 +837,9 @@ class ExperimentConfig:
 
     # Preprocessing - Position QC
     position_max_nan_threshold: float = 0.1
+    mismatch_frequency_range: Sequence[float] = field(default_factory=lambda: [0.05, 0.95])
+    mismatch_frequency_layer: str = "mismatch_integer_encoding"
+    mismatch_frequency_read_span_layer: str = "read_span_mask"
 
     # Spatial Analysis - Clustermap params
     layer_for_clustermap_plotting: Optional[str] = "nan0_0minus1"
@@ -835,6 +848,14 @@ class ExperimentConfig:
     clustermap_cmap_cpg: Optional[str] = "coolwarm"
     clustermap_cmap_a: Optional[str] = "coolwarm"
     spatial_clustermap_sortby: Optional[str] = "gpc"
+    rolling_nn_layer: Optional[str] = "nan0_0minus1"
+    rolling_nn_plot_layer: Optional[str] = "nan0_0minus1"
+    rolling_nn_window: int = 15
+    rolling_nn_step: int = 2
+    rolling_nn_min_overlap: int = 10
+    rolling_nn_return_fraction: bool = True
+    rolling_nn_obsm_key: str = "rolling_nn_dist"
+    rolling_nn_site_types: Optional[List[str]] = None
 
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = "nan_half"
@@ -883,9 +904,13 @@ class ExperimentConfig:
     accessible_patches: Optional[bool] = True
     cpg: Optional[bool] = False
     hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
+    hmm_feature_colormaps: Dict[str, Any] = field(default_factory=dict)
     hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 60)])
     clustermap_cmap_hmm: Optional[str] = "coolwarm"
     hmm_clustermap_feature_layers: List[str] = field(
+        default_factory=lambda: ["all_accessible_features"]
+    )
+    hmm_clustermap_length_layers: List[str] = field(
         default_factory=lambda: ["all_accessible_features"]
     )
     hmm_clustermap_sortby: Optional[str] = "hmm"
@@ -906,6 +931,8 @@ class ExperimentConfig:
     invert_adata: bool = False
     bypass_append_binary_layer_by_base_context: bool = False
     force_redo_append_binary_layer_by_base_context: bool = False
+    bypass_append_mismatch_frequency_sites: bool = False
+    force_redo_append_mismatch_frequency_sites: bool = False
     bypass_calculate_read_modification_stats: bool = False
     force_redo_calculate_read_modification_stats: bool = False
     bypass_filter_reads_on_modification_thresholds: bool = False
@@ -1110,7 +1137,7 @@ class ExperimentConfig:
 
         # Demultiplexing output path
         split_dir = merged.get("split_dir", SPLIT_DIR)
-        split_path = output_dir / split_dir
+        split_path = output_dir / LOAD_DIR / split_dir
 
         # final normalization
         if "strands" in merged:
@@ -1197,6 +1224,9 @@ class ExperimentConfig:
         # Final normalization of hmm_feature_sets and canonical local variables
         merged["hmm_feature_sets"] = normalize_hmm_feature_sets(merged.get("hmm_feature_sets", {}))
         hmm_feature_sets = merged.get("hmm_feature_sets", {})
+        hmm_feature_colormaps = merged.get("hmm_feature_colormaps", {})
+        if not isinstance(hmm_feature_colormaps, dict):
+            hmm_feature_colormaps = {}
         hmm_annotation_threshold = merged.get("hmm_annotation_threshold", 0.5)
         hmm_batch_size = int(merged.get("hmm_batch_size", 1024))
         hmm_use_viterbi = bool(merged.get("hmm_use_viterbi", False))
@@ -1210,6 +1240,9 @@ class ExperimentConfig:
         hmm_merge_layer_features = _parse_list(merged.get("hmm_merge_layer_features", None))
         hmm_clustermap_feature_layers = _parse_list(
             merged.get("hmm_clustermap_feature_layers", "all_accessible_features")
+        )
+        hmm_clustermap_length_layers = _parse_list(
+            merged.get("hmm_clustermap_length_layers", hmm_clustermap_feature_layers)
         )
 
         hmm_fit_strategy = str(merged.get("hmm_fit_strategy", "per_group")).strip()
@@ -1231,6 +1264,7 @@ class ExperimentConfig:
 
         # instantiate dataclass
         instance = cls(
+            annotate_secondary_supplementary=merged.get("annotate_secondary_supplementary", True),
             smf_modality=merged.get("smf_modality"),
             input_data_path=input_data_path,
             recursive_input_search=merged.get("recursive_input_search"),
@@ -1257,6 +1291,8 @@ class ExperimentConfig:
             trim=merged.get("trim", TRIM),
             input_already_demuxed=merged.get("input_already_demuxed", False),
             threads=merged.get("threads"),
+            emit_log_file=merged.get("emit_log_file", True),
+            log_level=merged.get("log_level", "INFO"),
             sample_sheet_path=merged.get("sample_sheet_path"),
             sample_sheet_mapping_column=merged.get("sample_sheet_mapping_column"),
             delete_intermediate_bams=merged.get("delete_intermediate_bams", False),
@@ -1313,6 +1349,9 @@ class ExperimentConfig:
             ),
             reindexing_offsets=merged.get("reindexing_offsets", {None: None}),
             reindexed_var_suffix=merged.get("reindexed_var_suffix", "reindexed"),
+            clustermap_demux_types_to_plot=merged.get(
+                "clustermap_demux_types_to_plot", ["single", "double", "already"]
+            ),
             layer_for_clustermap_plotting=merged.get(
                 "layer_for_clustermap_plotting", "nan0_0minus1"
             ),
@@ -1321,6 +1360,14 @@ class ExperimentConfig:
             clustermap_cmap_cpg=merged.get("clustermap_cmap_cpg", "coolwarm"),
             clustermap_cmap_a=merged.get("clustermap_cmap_a", "coolwarm"),
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
+            rolling_nn_layer=merged.get("rolling_nn_layer", "nan0_0minus1"),
+            rolling_nn_plot_layer=merged.get("rolling_nn_plot_layer", "nan0_0minus1"),
+            rolling_nn_window=merged.get("rolling_nn_window", 15),
+            rolling_nn_step=merged.get("rolling_nn_step", 2),
+            rolling_nn_min_overlap=merged.get("rolling_nn_min_overlap", 10),
+            rolling_nn_return_fraction=merged.get("rolling_nn_return_fraction", True),
+            rolling_nn_obsm_key=merged.get("rolling_nn_obsm_key", "rolling_nn_dist"),
+            rolling_nn_site_types=merged.get("rolling_nn_site_types", None),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
             umap_layers_to_plot=merged.get(
                 "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]
@@ -1347,6 +1394,7 @@ class ExperimentConfig:
             hmm_emission_adapt_tol=hmm_emission_adapt_tol,
             hmm_dtype=merged.get("hmm_dtype", "float64"),
             hmm_feature_sets=hmm_feature_sets,
+            hmm_feature_colormaps=hmm_feature_colormaps,
             hmm_annotation_threshold=hmm_annotation_threshold,
             hmm_batch_size=hmm_batch_size,
             hmm_use_viterbi=hmm_use_viterbi,
@@ -1355,6 +1403,7 @@ class ExperimentConfig:
             hmm_merge_layer_features=hmm_merge_layer_features,
             clustermap_cmap_hmm=merged.get("clustermap_cmap_hmm", "coolwarm"),
             hmm_clustermap_feature_layers=hmm_clustermap_feature_layers,
+            hmm_clustermap_length_layers=hmm_clustermap_length_layers,
             hmm_clustermap_sortby=merged.get("hmm_clustermap_sortby", "hmm"),
             hmm_peak_feature_configs=hmm_peak_feature_configs,
             footprints=merged.get("footprints", None),
@@ -1389,6 +1438,9 @@ class ExperimentConfig:
             ),
             duplicate_detection_site_types=merged.get(
                 "duplicate_detection_site_types", ["GpC", "CpG", "ambiguous_GpC_CpG"]
+            ),
+            duplicate_detection_demux_types_to_use=merged.get(
+                "duplicate_detection_demux_types_to_use", ["single", "double", "already"]
             ),
             duplicate_detection_distance_threshold=merged.get(
                 "duplicate_detection_distance_threshold", 0.07

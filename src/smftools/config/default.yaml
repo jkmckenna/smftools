@@ -78,6 +78,7 @@ aligner_args:
 # Sorted BAM and BED specific handling
 make_bigwigs: False # Whether to make coverage bigwigs
 make_beds: False # Whether to make beds from the aligned bams
+annotate_secondary_supplementary: True # Whether to annotate reads with secondary/supplementary alignments from the aligned BAM
 samtools_backend: auto # auto|python|cli for samtools-compatible operations
 bedtools_backend: auto # auto|python|cli for bedtools-compatible operations
 bigwig_backend: auto # auto|python|cli for bedGraphToBigWig conversion
@@ -90,6 +91,12 @@ trim: False # dorado adapter and barcode removal during demultiplexing
 mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
 reference_column: 'Reference_strand'
 sample_column: 'Experiment_name_and_barcode'
+
+# Plotting params
+clustermap_demux_types_to_plot: 
+  - "single"
+  - "double"
+  - "already"
 
 ######## smftools preprocess params #########
 # Read length, quality, and mapping filtering params
@@ -141,6 +148,10 @@ duplicate_detection_site_types: # Site types to consider for duplicate detection
   - "CpG"
   - "ambiguous_GpC_CpG"
 duplicate_detection_distance_threshold: 0.07 # Hamming distance based similarity threshold to use for marking duplicate reads.
+duplicate_detection_demux_types_to_use: 
+  - "single"
+  - "double"
+  - "already"
 hamming_vs_metric_keys: # Metrics to plot the hamming distance against.
   - Fraction_C_site_modified
 duplicate_detection_keep_best_metric: "read_quality" # Obs metric to use to keep a representative read from a read duplicate cluster
@@ -152,6 +163,11 @@ duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkag
 
 # Position QC params
 position_max_nan_threshold: 0.1 # The maximum amount of nans to tolerate in a column
+mismatch_frequency_range:
+  - 0.01
+  - 0.99
+mismatch_frequency_layer: "mismatch_integer_encoding"
+mismatch_frequency_read_span_layer: "read_span_mask"
 
 ######## smftools spatial params #########
 invert_adata: False # Whether to invert the AnnData along the positions axis.
@@ -170,6 +186,9 @@ clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
+rolling_nn_site_types: 
+  - "GpC"
+  - "CpG"
 
 # Spatial Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'
@@ -244,6 +263,18 @@ hmm_feature_sets:
       mid_accessible_patch: [20, 40]
       large_accessible_patch: [40, 110]
       nucleosome_depleted_region: [110, inf]
+hmm_feature_colormaps:
+  small_accessible_patch: "#A5D6A7"
+  mid_accessible_patch: "#2E7D32"
+  large_accessible_patch: "#006400"
+  nucleosome_depleted_region: "#00441B"
+  all_accessible_features: "#2E7D32"
+  small_bound_stretch: "#1E88E5"
+  medium_bound_stretch: "#6A1B9A"
+  large_bound_stretch: "#FB8C00"
+  putative_nucleosome: "#6D4C41"
+  all_footprint_features: "#6A1B9A"
+  cpg_patch: "#6D4C41"
 hmm_merge_layer_features:
   - ["all_accessible_features", 60]
 clustermap_cmap_hmm: "coolwarm"
@@ -260,6 +291,11 @@ hmm_clustermap_feature_layers:
   - medium_bound_stretch
   - putative_nucleosome
   - large_bound_stretch
+  - all_footprint_features
+hmm_clustermap_length_layers:
+  - all_accessible_features
+  - all_accessible_features_merged
+  - all_footprint_features
 hmm_clustermap_sortby: "hmm"
 hmm_peak_feature_configs:
   all_accessible_features:

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Un
 import numpy as np
 from tqdm import tqdm
 
+from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
@@ -32,6 +33,20 @@ logger = get_logger(__name__)
 
 _PROGRESS_RE = re.compile(r"Output records written:\s*(\d+)")
 _EMPTY_RE = re.compile(r"^\s*$")
+_BAM_FLAG_BITS: Tuple[Tuple[int, str], ...] = (
+    (0x1, "paired"),
+    (0x2, "proper_pair"),
+    (0x4, "unmapped"),
+    (0x8, "mate_unmapped"),
+    (0x10, "reverse"),
+    (0x20, "mate_reverse"),
+    (0x40, "read1"),
+    (0x80, "read2"),
+    (0x100, "secondary"),
+    (0x200, "qc_fail"),
+    (0x400, "duplicate"),
+    (0x800, "supplementary"),
+)
 
 
 def _require_pysam() -> "pysam_types":
@@ -260,6 +275,7 @@ def _index_bam_with_samtools(bam_path: Union[str, Path], threads: Optional[int] 
 def align_and_sort_BAM(
     fasta,
     input,
+    output,
     cfg,
 ):
     """
@@ -279,10 +295,9 @@ def align_and_sort_BAM(
     input_suffix = input.suffix
     input_as_fastq = input.with_name(input.stem + ".fastq")
 
-    output_path_minus_suffix = cfg.output_directory / input.stem
-
-    aligned_BAM = output_path_minus_suffix.with_name(output_path_minus_suffix.stem + "_aligned")
+    aligned_BAM = output.parent / output.stem
     aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
+
     aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
     aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
 
@@ -1168,7 +1183,7 @@ def demux_and_index_BAM(
 
 def extract_base_identities(
     bam_file,
-    chromosome,
+    record,
     positions,
     max_reference_length,
     sequence,
@@ -1179,7 +1194,7 @@ def extract_base_identities(
 
     Parameters:
         bam_file (str): Path to the BAM file.
-        chromosome (str): Name of the reference chromosome.
+        record (str): Name of the reference record.
         positions (list): Positions to extract (0-based).
         max_reference_length (int): Maximum reference length for padding.
         sequence (str): The sequence of the record fasta
@@ -1187,6 +1202,11 @@ def extract_base_identities(
     Returns:
         dict: Base identities from forward mapped reads.
         dict: Base identities from reverse mapped reads.
+        dict: Mismatch counts per read.
+        dict: Mismatch trends per read.
+        dict: Integer-encoded mismatch bases per read.
+        dict: Base quality scores per read aligned to reference positions.
+        dict: Read span masks per read (1 within span, 0 outside).
     """
     logger.debug("Extracting nucleotide identities for each read using extract_base_identities")
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
@@ -1195,9 +1215,24 @@ def extract_base_identities(
     fwd_base_identities = defaultdict(lambda: np.full(max_reference_length, "N", dtype="<U1"))
     rev_base_identities = defaultdict(lambda: np.full(max_reference_length, "N", dtype="<U1"))
     mismatch_counts_per_read = defaultdict(lambda: defaultdict(Counter))
+    mismatch_base_identities = defaultdict(
+        lambda: np.full(
+            max_reference_length,
+            MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"],
+            dtype=np.int16,
+        )
+    )
+    base_quality_scores = defaultdict(lambda: np.full(max_reference_length, -1, dtype=np.int16))
+    read_span_masks = defaultdict(lambda: np.zeros(max_reference_length, dtype=np.int8))
 
     backend_choice = _resolve_samtools_backend(samtools_backend)
     ref_seq = sequence.upper()
+    sequence_length = len(sequence)
+
+    def _encode_mismatch_base(base: str) -> int:
+        return MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT.get(
+            base.upper(), MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"]
+        )
 
     if backend_choice == "python":
         logger.debug("Extracting base identities using python")
@@ -1205,26 +1240,45 @@ def extract_base_identities(
         # print(f"{timestamp} Reading reads from {chromosome} BAM file: {bam_file}")
         with pysam_mod.AlignmentFile(str(bam_file), "rb") as bam:
             total_reads = bam.mapped
-            for read in bam.fetch(chromosome):
+            for read in bam.fetch(record):
                 if not read.is_mapped:
                     continue  # Skip unmapped reads
 
                 read_name = read.query_name
                 query_sequence = read.query_sequence
+                query_qualities = read.query_qualities or []
                 base_dict = rev_base_identities if read.is_reverse else fwd_base_identities
+
+                # Init arrays for each read in each dict
+                mismatch_base_identities[read_name]
+                base_quality_scores[read_name]
+                read_span_masks[read_name]
+
+                if read.reference_start is not None and read.reference_end is not None:
+                    span_end = min(read.reference_end, max_reference_length)
+                    read_span_masks[read_name][read.reference_start:span_end] = 1
 
                 # Use get_aligned_pairs directly with positions filtering
                 aligned_pairs = read.get_aligned_pairs(matches_only=True)
 
                 for read_position, reference_position in aligned_pairs:
+                    if reference_position is None or read_position is None:
+                        continue
                     read_base = query_sequence[read_position]
                     ref_base = ref_seq[reference_position]
                     if reference_position in positions:
                         base_dict[read_name][reference_position] = read_base
+                        if read_position < len(query_qualities):
+                            base_quality_scores[read_name][reference_position] = query_qualities[
+                                read_position
+                            ]
 
                     # Track mismatches (excluding Ns)
                     if read_base != ref_base and read_base != "N" and ref_base != "N":
                         mismatch_counts_per_read[read_name][ref_base][read_base] += 1
+                        mismatch_base_identities[read_name][reference_position] = (
+                            _encode_mismatch_base(read_base)
+                        )
     else:
         bam_path = Path(bam_file)
         logger.debug("Extracting base identities using samtools")
@@ -1247,7 +1301,14 @@ def extract_base_identities(
                 elif op in {"H", "P"}:
                     continue
 
-        cmd = ["samtools", "view", "-F", "4", str(bam_path), chromosome]
+        def _reference_span_from_cigar(cigar: str) -> int:
+            span = 0
+            for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+                if op in {"M", "D", "N", "=", "X"}:
+                    span += int(length_str)
+            return span
+
+        cmd = ["samtools", "view", "-F", "4", str(bam_path), record]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -1261,9 +1322,21 @@ def extract_base_identities(
             pos = int(fields[3])
             cigar = fields[5]
             query_sequence = fields[9]
+            qual_string = fields[10]
             if cigar == "*" or query_sequence == "*":
                 continue
             base_dict = rev_base_identities if (flag & 16) else fwd_base_identities
+            mismatch_base_identities[read_name]
+            base_quality_scores[read_name]
+            read_span_masks[read_name]
+            qualities = (
+                [ord(ch) - 33 for ch in qual_string] if qual_string and qual_string != "*" else []
+            )
+            ref_start = pos - 1
+            ref_end = ref_start + _reference_span_from_cigar(cigar)
+            span_end = min(ref_end, max_reference_length)
+            if ref_start < max_reference_length:
+                read_span_masks[read_name][ref_start:span_end] = 1
             for read_pos, ref_pos in _iter_aligned_pairs(cigar, pos - 1):
                 if read_pos >= len(query_sequence) or ref_pos >= len(ref_seq):
                     continue
@@ -1271,8 +1344,11 @@ def extract_base_identities(
                 ref_base = ref_seq[ref_pos]
                 if ref_pos in positions:
                     base_dict[read_name][ref_pos] = read_base
+                    if read_pos < len(qualities):
+                        base_quality_scores[read_name][ref_pos] = qualities[read_pos]
                 if read_base != ref_base and read_base != "N" and ref_base != "N":
                     mismatch_counts_per_read[read_name][ref_base][read_base] += 1
+                    mismatch_base_identities[read_name][ref_pos] = _encode_mismatch_base(read_base)
         rc = proc.wait()
         if rc != 0:
             stderr = proc.stderr.read() if proc.stderr else ""
@@ -1293,11 +1369,19 @@ def extract_base_identities(
         else:
             mismatch_trend_per_read[read_name] = "none"
 
+    if sequence_length < max_reference_length:
+        padding_value = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["PAD"]
+        for mismatch_values in mismatch_base_identities.values():
+            mismatch_values[sequence_length:] = padding_value
+
     return (
         dict(fwd_base_identities),
         dict(rev_base_identities),
         dict(mismatch_counts_per_read),
         mismatch_trend_per_read,
+        dict(mismatch_base_identities),
+        dict(base_quality_scores),
+        dict(read_span_masks),
     )
 
 
@@ -1312,7 +1396,7 @@ def extract_read_features_from_bam(
 
     Returns:
         Mapping of read name to [read_length, read_median_qscore, reference_length,
-        mapped_length, mapping_quality].
+        mapped_length, mapping_quality, reference_start, reference_end].
     """
     logger.debug(
         "Extracting read metrics from BAM using extract_read_features_from_bam: %s",
@@ -1336,12 +1420,16 @@ def extract_read_features_from_bam(
                 reference_length = reference_lengths.get(read.reference_name, float("nan"))
                 mapped_length = sum(end - start for start, end in read.get_blocks())
                 mapping_quality = float(read.mapping_quality)
+                reference_start = float(read.reference_start)
+                reference_end = float(read.reference_end)
                 read_metrics[read.query_name] = [
                     float(read.query_length),
                     median_read_quality,
                     float(reference_length),
                     float(mapped_length),
                     mapping_quality,
+                    reference_start,
+                    reference_end,
                 ]
         return read_metrics
 
@@ -1371,6 +1459,14 @@ def extract_read_features_from_bam(
             if op in {"M", "=", "X"}:
                 mapped += length
         return mapped
+
+    def _reference_span_from_cigar(cigar: str) -> int:
+        reference_span = 0
+        for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+            length = int(length_str)
+            if op in {"M", "D", "N", "=", "X"}:
+                reference_span += length
+        return reference_span
 
     header_cp = subprocess.run(
         ["samtools", "view", "-H", str(bam_path)],
@@ -1402,6 +1498,7 @@ def extract_read_features_from_bam(
         reference_name = fields[2]
         mapping_quality = float(fields[4])
         cigar = fields[5]
+        reference_start = float(int(fields[3]) - 1)
         sequence = fields[9]
         quality = fields[10]
         if sequence == "*":
@@ -1415,12 +1512,18 @@ def extract_read_features_from_bam(
             median_read_quality = float(np.median(phreds))
         reference_length = float(reference_lengths.get(reference_name, float("nan")))
         mapped_length = float(_mapped_length_from_cigar(cigar)) if cigar != "*" else 0.0
+        if cigar != "*":
+            reference_end = float(reference_start + _reference_span_from_cigar(cigar))
+        else:
+            reference_end = float("nan")
         read_metrics[read_name] = [
             read_length,
             median_read_quality,
             reference_length,
             mapped_length,
             mapping_quality,
+            reference_start,
+            reference_end,
         ]
 
     rc = proc.wait()
@@ -1429,6 +1532,250 @@ def extract_read_features_from_bam(
         raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
 
     return read_metrics
+
+
+def extract_read_tags_from_bam(
+    bam_file_path: str | Path,
+    tag_names: Iterable[str] | None = None,
+    include_flags: bool = True,
+    include_cigar: bool = True,
+    samtools_backend: str | None = "auto",
+) -> Dict[str, Dict[str, object]]:
+    """Extract per-read tag metadata from a BAM file.
+
+    Args:
+        bam_file_path: Path to the BAM file.
+        tag_names: Iterable of BAM tag names to extract (e.g., ["NM", "MD", "MM", "ML"]).
+            If None, only flags/cigar are populated.
+        include_flags: Whether to include a list of flag names for each read.
+        include_cigar: Whether to include the CIGAR string for each read.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
+    Returns:
+        Mapping of read name to a dict of extracted tag values.
+    """
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    tag_names_list = [tag.upper() for tag in tag_names] if tag_names else []
+    read_tags: Dict[str, Dict[str, object]] = {}
+
+    def _decode_flags(flag: int) -> list[str]:
+        return [name for bit, name in _BAM_FLAG_BITS if flag & bit]
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(bam_file_path), "rb") as bam_file:
+            for read in bam_file.fetch(until_eof=True):
+                if not read.query_name:
+                    continue
+                tag_map: Dict[str, object] = {}
+                if include_cigar:
+                    tag_map["CIGAR"] = read.cigarstring
+                if include_flags:
+                    tag_map["FLAGS"] = _decode_flags(read.flag)
+                for tag in tag_names_list:
+                    try:
+                        tag_map[tag] = read.get_tag(tag)
+                    except Exception:
+                        tag_map[tag] = None
+                read_tags[read.query_name] = tag_map
+    else:
+        cmd = ["samtools", "view", "-F", "4", str(bam_file_path)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if not line.strip() or line.startswith("@"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 11:
+                continue
+            read_name = fields[0]
+            flag = int(fields[1])
+            cigar = fields[5]
+            tag_map: Dict[str, object] = {}
+            if include_cigar:
+                tag_map["CIGAR"] = cigar
+            if include_flags:
+                tag_map["FLAGS"] = _decode_flags(flag)
+            if tag_names_list:
+                raw_tags = fields[11:]
+                parsed_tags: Dict[str, str] = {}
+                for raw_tag in raw_tags:
+                    parts = raw_tag.split(":", 2)
+                    if len(parts) == 3:
+                        tag_name, _tag_type, value = parts
+                        parsed_tags[tag_name.upper()] = value
+                for tag in tag_names_list:
+                    tag_map[tag] = parsed_tags.get(tag)
+            read_tags[read_name] = tag_map
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+
+    return read_tags
+
+
+def find_secondary_supplementary_read_names(
+    bam_file_path: str | Path,
+    read_names: Iterable[str],
+    samtools_backend: str | None = "auto",
+) -> tuple[set[str], set[str]]:
+    """Find read names with secondary or supplementary alignments in a BAM.
+
+    Args:
+        bam_file_path: Path to the BAM file to scan.
+        read_names: Iterable of read names to check.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
+    Returns:
+        Tuple of (secondary_read_names, supplementary_read_names).
+    """
+    target_names = set(read_names)
+    if not target_names:
+        return set(), set()
+
+    secondary_reads: set[str] = set()
+    supplementary_reads: set[str] = set()
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(bam_file_path), "rb") as bam_file:
+            for read in bam_file.fetch(until_eof=True):
+                if not read.query_name or read.query_name not in target_names:
+                    continue
+                if read.is_secondary:
+                    secondary_reads.add(read.query_name)
+                if read.is_supplementary:
+                    supplementary_reads.add(read.query_name)
+    else:
+        def _collect(flag: int) -> set[str]:
+            cmd = ["samtools", "view", "-f", str(flag), str(bam_file_path)]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert proc.stdout is not None
+            hits: set[str] = set()
+            for line in proc.stdout:
+                if not line.strip() or line.startswith("@"):
+                    continue
+                read_name = line.split("\t", 1)[0]
+                if read_name in target_names:
+                    hits.add(read_name)
+            rc = proc.wait()
+            if rc != 0:
+                stderr = proc.stderr.read() if proc.stderr else ""
+                raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+            return hits
+
+        secondary_reads = _collect(0x100)
+        supplementary_reads = _collect(0x800)
+
+    return secondary_reads, supplementary_reads
+
+
+def extract_secondary_supplementary_alignment_spans(
+    bam_file_path: str | Path,
+    read_names: Iterable[str],
+    samtools_backend: str | None = "auto",
+) -> tuple[dict[str, list[tuple[float, float, float]]], dict[str, list[tuple[float, float, float]]]]:
+    """Extract reference/read span data for secondary/supplementary alignments.
+
+    Args:
+        bam_file_path: Path to the BAM file to scan.
+        read_names: Iterable of read names to check.
+        samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+
+    Returns:
+        Tuple of (secondary_spans, supplementary_spans) where each mapping contains
+        read names mapped to lists of (reference_start, reference_end, read_span).
+    """
+    target_names = set(read_names)
+    if not target_names:
+        return {}, {}
+
+    secondary_spans: dict[str, list[tuple[float, float, float]]] = {}
+    supplementary_spans: dict[str, list[tuple[float, float, float]]] = {}
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(bam_file_path), "rb") as bam_file:
+            for read in bam_file.fetch(until_eof=True):
+                if not read.query_name or read.query_name not in target_names:
+                    continue
+                if not (read.is_secondary or read.is_supplementary):
+                    continue
+                reference_start = (
+                    float(read.reference_start)
+                    if read.reference_start is not None
+                    else float("nan")
+                )
+                reference_end = (
+                    float(read.reference_end) if read.reference_end is not None else float("nan")
+                )
+                read_span = (
+                    float(read.query_alignment_length)
+                    if read.query_alignment_length is not None
+                    else float("nan")
+                )
+                if read.is_secondary:
+                    secondary_spans.setdefault(read.query_name, []).append(
+                        (reference_start, reference_end, read_span)
+                    )
+                if read.is_supplementary:
+                    supplementary_spans.setdefault(read.query_name, []).append(
+                        (reference_start, reference_end, read_span)
+                    )
+        return secondary_spans, supplementary_spans
+
+    def _mapped_length_from_cigar(cigar: str) -> int:
+        mapped = 0
+        for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+            length = int(length_str)
+            if op in {"M", "=", "X"}:
+                mapped += length
+        return mapped
+
+    def _reference_span_from_cigar(cigar: str) -> int:
+        reference_span = 0
+        for length_str, op in re.findall(r"(\d+)([MIDNSHP=XB])", cigar):
+            length = int(length_str)
+            if op in {"M", "D", "N", "=", "X"}:
+                reference_span += length
+        return reference_span
+
+    def _collect(flag: int) -> dict[str, list[tuple[float, float, float]]]:
+        cmd = ["samtools", "view", "-f", str(flag), str(bam_file_path)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        spans: dict[str, list[tuple[float, float, float]]] = {}
+        for line in proc.stdout:
+            if not line.strip() or line.startswith("@"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 11:
+                continue
+            read_name = fields[0]
+            if read_name not in target_names:
+                continue
+            cigar = fields[5]
+            reference_start = float(int(fields[3]) - 1)
+            if cigar != "*":
+                reference_end = float(reference_start + _reference_span_from_cigar(cigar))
+                read_span = float(_mapped_length_from_cigar(cigar))
+            else:
+                reference_end = float("nan")
+                read_span = float("nan")
+            spans.setdefault(read_name, []).append((reference_start, reference_end, read_span))
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+        return spans
+
+    secondary_spans = _collect(0x100)
+    supplementary_spans = _collect(0x800)
+
+    return secondary_spans, supplementary_spans
 
 
 def extract_readnames_from_bam(aligned_BAM, samtools_backend: str | None = "auto"):

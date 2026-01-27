@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.logging_utils import get_logger
+from smftools.constants import LOGGING_DIR, PREPROCESS_DIR
+from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
@@ -36,30 +38,23 @@ def preprocess_adata(
         Path to preprocessed, duplicate-removed AnnData.
     """
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths
-    from .load_adata import load_adata
+    from .helpers import get_adata_paths, load_experiment_config
 
     # 1) Ensure config is loaded and at least *some* AnnData stage exists
-    loaded_adata, loaded_path, cfg = load_adata(config_path)
+    cfg = load_experiment_config(config_path)
 
     # 2) Compute canonical paths
     paths = get_adata_paths(cfg)
     raw_path = paths.raw
     pp_path = paths.pp
     pp_dedup_path = paths.pp_dedup
-    spatial_path = paths.spatial
-    hmm_path = paths.hmm
 
     raw_exists = raw_path.exists()
     pp_exists = pp_path.exists()
     pp_dedup_exists = pp_dedup_path.exists()
-    spatial_exists = spatial_path.exists()
-    hmm_exists = hmm_path.exists()
 
-    # Helper: reuse loaded_adata if it matches the path we want, else read from disk
+    # Helper: read from disk
     def _load(path: Path):
-        if loaded_adata is not None and loaded_path == path:
-            return loaded_adata
         adata, _ = safe_read_h5ad(path)
         return adata
 
@@ -68,19 +63,9 @@ def preprocess_adata(
     # -----------------------------
     if getattr(cfg, "force_redo_preprocessing", False):
         logger.info(
-            "Forcing full redo of preprocessing workflow, starting from latest stage AnnData available."
+            "Forcing full redo of preprocessing workflow."
         )
-
-        if hmm_exists:
-            adata = _load(hmm_path)
-            source_path = hmm_path
-        elif spatial_exists:
-            adata = _load(spatial_path)
-            source_path = spatial_path
-        elif pp_dedup_exists:
-            adata = _load(pp_dedup_path)
-            source_path = pp_dedup_path
-        elif pp_exists:
+        if pp_exists:
             adata = _load(pp_path)
             source_path = pp_path
         elif raw_exists:
@@ -135,26 +120,16 @@ def preprocess_adata(
     # Case C: normal behavior (no explicit redo flags)
     # -----------------------------
 
-    # If HMM exists, preprocessing is considered “done enough”
-    if hmm_exists:
-        logger.debug(f"Skipping preprocessing. HMM AnnData found: {hmm_path}")
-        return (None, None, None, None)
-
-    # If spatial exists, also skip re-preprocessing by default
-    if spatial_exists:
-        logger.debug(f"Skipping preprocessing. Spatial AnnData found: {spatial_path}")
-        return (None, None, None, None)
-
     # If pp_dedup exists, just return paths (no recomputation)
     if pp_dedup_exists:
-        logger.debug(
+        logger.info(
             f"Skipping preprocessing. Preprocessed deduplicated AnnData found: {pp_dedup_path}"
         )
         return (None, pp_path, None, pp_dedup_path)
 
     # If pp exists but pp_dedup does not, load pp and run core
     if pp_exists:
-        logger.debug(f"Preprocessed AnnData found: {pp_path}")
+        logger.info(f"Preprocessed AnnData found: {pp_path}")
         adata = _load(pp_path)
         source_path = pp_path
         pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
@@ -218,13 +193,19 @@ def preprocess_adata_core(
     pp_dup_rem_adata_path : Path
         Path where pp_dedup_adata was written.
     """
+    from datetime import datetime
     from pathlib import Path
 
     from ..metadata import record_smftools_metadata
-    from ..plotting import plot_read_qc_histograms
+    from ..plotting import (
+        plot_read_qc_histograms,
+        plot_read_span_quality_clustermaps,
+        plot_sequence_integer_encoding_clustermaps,
+    )
     from ..preprocessing import (
         append_base_context,
         append_binary_layer_by_base_context,
+        append_mismatch_frequency_sites,
         binarize_adata,
         binarize_on_Youden,
         calculate_complexity_II,
@@ -235,22 +216,39 @@ def preprocess_adata_core(
         filter_reads_on_length_quality_mapping,
         filter_reads_on_modification_thresholds,
         flag_duplicate_reads,
+        invert_adata,
         load_sample_sheet,
+        reindex_references_adata
     )
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
     ################################### 1) Load existing  ###################################
+    date_str = datetime.today().strftime("%y%m%d")
+    now = datetime.now()
+    time_str = now.strftime("%H%M%S")
+
+    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality  # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
     output_directory = Path(
         cfg.output_directory
     )  # Path to the output directory to make for the analysis. Necessary.
-    make_dirs([output_directory])
+    preprocess_directory = output_directory / PREPROCESS_DIR
+    logging_directory = preprocess_directory / LOGGING_DIR
+
+    make_dirs([output_directory, preprocess_directory])
+
+    if cfg.emit_log_file:
+        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
+        make_dirs([logging_directory])
+    else:
+        log_file = None
+
+    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     ######### Begin Preprocessing #########
-    pp_dir = output_directory / "preprocessed"
-
     ## Load sample sheet metadata based on barcode mapping ##
     if getattr(cfg, "sample_sheet_path", None):
         load_sample_sheet(
@@ -264,12 +262,12 @@ def preprocess_adata_core(
         pass
 
     # Adding read length, read quality, reference length, mapped_length, and mapping quality metadata to adata object.
-    pp_length_qc_dir = pp_dir / "01_Read_length_and_quality_QC_metrics"
+    pp_length_qc_dir = preprocess_directory / "01_Read_length_and_quality_QC_metrics"
 
     if pp_length_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         logger.debug(f"{pp_length_qc_dir} already exists. Skipping read level QC plotting.")
     else:
-        make_dirs([pp_dir, pp_length_qc_dir])
+        make_dirs([preprocess_directory, pp_length_qc_dir])
         plot_read_qc_histograms(
             adata,
             pp_length_qc_dir,
@@ -292,12 +290,12 @@ def preprocess_adata_core(
     )
     print(adata.shape)
 
-    pp_length_qc_dir = pp_dir / "02_Read_length_and_quality_QC_metrics_post_filtering"
+    pp_length_qc_dir = preprocess_directory / "02_Read_length_and_quality_QC_metrics_post_filtering"
 
     if pp_length_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         logger.debug(f"{pp_length_qc_dir} already exists. Skipping read level QC plotting.")
     else:
-        make_dirs([pp_dir, pp_length_qc_dir])
+        make_dirs([preprocess_directory, pp_length_qc_dir])
         plot_read_qc_histograms(
             adata,
             pp_length_qc_dir,
@@ -310,7 +308,7 @@ def preprocess_adata_core(
     if smf_modality == "direct":
         native = True
         if cfg.fit_position_methylation_thresholds:
-            pp_Youden_dir = pp_dir / "02B_Position_wide_Youden_threshold_performance"
+            pp_Youden_dir = preprocess_directory / "02B_Position_wide_Youden_threshold_performance"
             make_dirs([pp_Youden_dir])
             # Calculate positional methylation thresholds for mod calls
             calculate_position_Youden(
@@ -359,7 +357,6 @@ def preprocess_adata_core(
     )
 
     ############### Add base context to each position for each Reference_strand and calculate read level methylation/deamination stats ###############
-    # Additionally, store base_context level binary modification arrays in adata.obsm
     append_base_context(
         adata,
         ref_column=cfg.reference_column,
@@ -378,17 +375,18 @@ def preprocess_adata_core(
         cfg.mod_target_bases,
         bypass=cfg.bypass_calculate_read_modification_stats,
         force_redo=cfg.force_redo_calculate_read_modification_stats,
+        smf_modality=cfg.smf_modality,
     )
 
     ### Make a dir for outputting sample level read modification metrics before filtering ###
-    pp_meth_qc_dir = pp_dir / "03_read_modification_QC_metrics"
+    pp_meth_qc_dir = preprocess_directory / "03_read_modification_QC_metrics"
 
     if pp_meth_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         logger.debug(
             f"{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting."
         )
     else:
-        make_dirs([pp_dir, pp_meth_qc_dir])
+        make_dirs([preprocess_directory, pp_meth_qc_dir])
         obs_to_plot = ["Raw_modification_signal"]
         if any(base in cfg.mod_target_bases for base in ["GpC", "CpG", "C"]):
             obs_to_plot += [
@@ -422,14 +420,14 @@ def preprocess_adata_core(
         force_redo=cfg.force_redo_filter_reads_on_modification_thresholds,
     )
 
-    pp_meth_qc_dir = pp_dir / "04_read_modification_QC_metrics_post_filtering"
+    pp_meth_qc_dir = preprocess_directory / "04_read_modification_QC_metrics_post_filtering"
 
     if pp_meth_qc_dir.is_dir() and not cfg.force_redo_preprocessing:
         logger.debug(
             f"{pp_meth_qc_dir} already exists. Skipping read level methylation QC plotting."
         )
     else:
-        make_dirs([pp_dir, pp_meth_qc_dir])
+        make_dirs([preprocess_directory, pp_meth_qc_dir])
         obs_to_plot = ["Raw_modification_signal"]
         if any(base in cfg.mod_target_bases for base in ["GpC", "CpG", "C"]):
             obs_to_plot += [
@@ -489,7 +487,7 @@ def preprocess_adata_core(
             for site_type in cfg.duplicate_detection_site_types:
                 var_filters_sets += [[f"{ref}_{site_type}_site", f"position_in_{ref}"]]
 
-        pp_dup_qc_dir = pp_dir / "05_read_duplication_QC_metrics"
+        pp_dup_qc_dir = preprocess_directory / "05_read_duplication_QC_metrics"
 
         make_dirs([pp_dup_qc_dir])
 
@@ -514,7 +512,7 @@ def preprocess_adata_core(
             hierarchical_linkage=cfg.duplicate_detection_hierarchical_linkage,
             hierarchical_metric="euclidean",
             hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors,
-            demux_types=("double", "already"),
+            demux_types=cfg.duplicate_detection_demux_types_to_use,
             demux_col="demux_type",
         )
 
@@ -540,6 +538,135 @@ def preprocess_adata_core(
     else:
         adata_unique = adata
     ########################################################################################################################
+
+    # -----------------------------
+    # Optional inversion along positions axis
+    # -----------------------------
+    if getattr(cfg, "invert_adata", False):
+        adata = invert_adata(adata)
+
+    # -----------------------------
+    # Optional reindexing by reference
+    # -----------------------------
+    reindex_references_adata(
+        adata,
+        reference_col=cfg.reference_column,
+        offsets=cfg.reindexing_offsets,
+        new_col=cfg.reindexed_var_suffix,
+    )
+
+    ############################################### Append mismatch frequency per position ###############################################
+    append_mismatch_frequency_sites(
+        adata_unique,
+        ref_column=cfg.reference_column,
+        mismatch_layer=cfg.mismatch_frequency_layer,
+        read_span_layer=cfg.mismatch_frequency_read_span_layer,
+        mismatch_frequency_range=cfg.mismatch_frequency_range,
+        bypass=cfg.bypass_append_mismatch_frequency_sites,
+        force_redo=cfg.force_redo_append_mismatch_frequency_sites,
+    )
+
+    ############################################### Plot integer sequence encoding clustermaps ###############################################
+    if "sequence_integer_encoding" not in adata.layers:
+        logger.debug(
+            "sequence_integer_encoding layer not found; skipping integer encoding clustermaps."
+        )
+    else:
+        pp_seq_clustermap_dir = preprocess_directory / "06_sequence_integer_encoding_clustermaps"
+        if pp_seq_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(
+                f"{pp_seq_clustermap_dir} already exists. Skipping sequence integer encoding clustermaps."
+            )
+        else:
+            make_dirs([pp_seq_clustermap_dir])
+            plot_sequence_integer_encoding_clustermaps(
+                adata,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                min_quality=None,
+                min_length=None,
+                min_mapped_length_to_reference_length_ratio=None,
+                sort_by="none",
+                max_unknown_fraction=0.5,
+                save_path=pp_seq_clustermap_dir,
+                show_position_axis=True,
+            )
+
+        pp_dedup_seq_clustermap_dir = (
+            preprocess_directory / "deduplicated" / "06_sequence_integer_encoding_clustermaps"
+        )
+        if pp_dedup_seq_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(
+                f"{pp_dedup_seq_clustermap_dir} already exists. Skipping sequence integer encoding clustermaps."
+            )
+        else:
+            make_dirs([pp_dedup_seq_clustermap_dir])
+            plot_sequence_integer_encoding_clustermaps(
+                adata_unique,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                min_quality=None,
+                min_length=None,
+                min_mapped_length_to_reference_length_ratio=None,
+                sort_by="none",
+                max_unknown_fraction=0.5,
+                save_path=pp_dedup_seq_clustermap_dir,
+                show_position_axis=True,
+            )
+
+    ############################################### Plot read span mask + base quality clustermaps ###############################################
+    quality_layer = None
+    if "base_quality_scores" in adata.layers:
+        quality_layer = "base_quality_scores"
+    elif "base_qualities" in adata.layers:
+        quality_layer = "base_qualities"
+
+    if "read_span_mask" not in adata.layers or quality_layer is None:
+        logger.debug(
+            "read_span_mask and base quality layers not found; skipping read span/base quality clustermaps."
+        )
+    else:
+        pp_span_quality_dir = preprocess_directory / "07_read_span_quality_clustermaps"
+        if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(
+                f"{pp_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
+            )
+        else:
+            make_dirs([pp_span_quality_dir])
+            plot_read_span_quality_clustermaps(
+                adata,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                quality_layer=quality_layer,
+                read_span_layer="read_span_mask",
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                save_path=pp_span_quality_dir,
+                show_position_axis=True,
+                max_nan_fraction=0.5,
+            )
+
+        pp_dedup_span_quality_dir = (
+            preprocess_directory / "deduplicated" / "07_read_span_quality_clustermaps"
+        )
+        if pp_dedup_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(
+                f"{pp_dedup_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
+            )
+        elif quality_layer in adata_unique.layers and "read_span_mask" in adata_unique.layers:
+            make_dirs([pp_dedup_span_quality_dir])
+            plot_read_span_quality_clustermaps(
+                adata_unique,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                quality_layer=quality_layer,
+                read_span_layer="read_span_mask",
+                demux_types=cfg.clustermap_demux_types_to_plot,
+                save_path=pp_dedup_span_quality_dir,
+                show_position_axis=True,
+                max_nan_fraction=0.5,
+            )
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:

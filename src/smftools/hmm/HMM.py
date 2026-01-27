@@ -144,6 +144,83 @@ def _safe_int_coords(var_names) -> Tuple[np.ndarray, bool]:
         return np.arange(len(var_names), dtype=int), False
 
 
+def mask_layers_outside_read_span(
+    adata,
+    layers: Sequence[str],
+    *,
+    start_key: str = "reference_start",
+    end_key: str = "reference_end",
+    use_original_var_names: bool = True,
+) -> List[str]:
+    """Mask layer values outside read reference spans with NaN.
+
+    This uses integer coordinate comparisons against either ``adata.var["Original_var_names"]``
+    (when present) or ``adata.var_names``. Values strictly less than ``start_key`` or greater
+    than ``end_key`` are set to NaN for each read.
+
+    Args:
+        adata: AnnData object to modify in-place.
+        layers: Layer names to mask.
+        start_key: obs column holding reference start positions.
+        end_key: obs column holding reference end positions.
+        use_original_var_names: Use ``adata.var["Original_var_names"]`` when available.
+
+    Returns:
+        List of layer names that were masked.
+    """
+    if not layers:
+        return []
+
+    if start_key not in adata.obs or end_key not in adata.obs:
+        raise KeyError(f"Missing {start_key!r} or {end_key!r} in adata.obs.")
+
+    coord_source = adata.var_names
+    if use_original_var_names and "Original_var_names" in adata.var:
+        orig = np.asarray(adata.var["Original_var_names"])
+        if orig.size == adata.n_vars:
+            try:
+                orig_numeric = np.asarray(orig, dtype=float)
+            except (TypeError, ValueError):
+                orig_numeric = None
+            if orig_numeric is not None and np.isfinite(orig_numeric).any():
+                coord_source = orig
+
+    coords, _ = _safe_int_coords(coord_source)
+    if coords.shape[0] != adata.n_vars:
+        raise ValueError("Coordinate source length does not match adata.n_vars.")
+
+    try:
+        starts = np.asarray(adata.obs[start_key], dtype=float)
+        ends = np.asarray(adata.obs[end_key], dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Start/end positions must be numeric.") from exc
+
+    masked = []
+    for layer in layers:
+        if layer not in adata.layers:
+            raise KeyError(f"Layer {layer!r} not found in adata.layers.")
+
+        arr = np.asarray(adata.layers[layer])
+        if not np.issubdtype(arr.dtype, np.floating):
+            arr = arr.astype(float, copy=True)
+
+        for i in range(adata.n_obs):
+            start = starts[i]
+            end = ends[i]
+            if not np.isfinite(start) or not np.isfinite(end):
+                continue
+            start_i = int(start)
+            end_i = int(end)
+            row_mask = (coords < start_i) | (coords > end_i)
+            if row_mask.any():
+                arr[i, row_mask] = np.nan
+
+        adata.layers[layer] = arr
+        masked.append(layer)
+
+    return masked
+
+
 def _logsumexp(x: torch.Tensor, dim: int) -> torch.Tensor:
     """Compute log-sum-exp in a numerically stable way.
 
@@ -1064,6 +1141,8 @@ class BaseHMM(nn.Module):
         uns_key: str = "hmm_appended_layers",
         uns_flag: str = "hmm_annotated",
         force_redo: bool = False,
+        mask_to_read_span: bool = True,
+        mask_use_original_var_names: bool = True,
         device: Optional[Union[str, torch.device]] = None,
         **kwargs,
     ):
@@ -1085,6 +1164,8 @@ class BaseHMM(nn.Module):
             uns_key: .uns key to track appended layers.
             uns_flag: .uns flag to mark annotations.
             force_redo: Whether to overwrite existing layers.
+            mask_to_read_span: Whether to mask appended layers outside read spans.
+            mask_use_original_var_names: Use ``adata.var["Original_var_names"]`` when available.
             device: Device specifier.
             **kwargs: Additional parameters for specialized workflows.
 
@@ -1244,6 +1325,13 @@ class BaseHMM(nn.Module):
                 adata.layers[f"{nm}_lengths"] = self._write_lengths_for_binary_layer(
                     np.asarray(adata.layers[nm])
                 )
+
+        if mask_to_read_span and appended:
+            mask_layers_outside_read_span(
+                adata,
+                appended,
+                use_original_var_names=mask_use_original_var_names,
+            )
 
         adata.uns[uns_key] = appended
         adata.uns[uns_flag] = True

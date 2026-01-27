@@ -133,23 +133,23 @@ def append_base_context(
                 adata.var[f"{ref}_{site_type}_valid_coverage"] = (
                     (adata.var[f"{ref}_{site_type}"]) & (adata.var[f"position_in_{ref}"])
                 )
-                if native:
-                    adata.obsm[f"{ref}_{site_type}_valid_coverage"] = adata[
-                        :, adata.var[f"{ref}_{site_type}_valid_coverage"]
-                    ].layers["binarized_methylation"]
-                else:
-                    adata.obsm[f"{ref}_{site_type}_valid_coverage"] = adata[
-                        :, adata.var[f"{ref}_{site_type}_valid_coverage"]
-                    ].X
-            else:
-                pass
+            #     if native:
+            #         adata.obsm[f"{ref}_{site_type}_valid_coverage"] = adata[
+            #             :, adata.var[f"{ref}_{site_type}_valid_coverage"]
+            #         ].layers["binarized_methylation"]
+            #     else:
+            #         adata.obsm[f"{ref}_{site_type}_valid_coverage"] = adata[
+            #             :, adata.var[f"{ref}_{site_type}_valid_coverage"]
+            #         ].X
+            # else:
+            #     pass
 
-            if native:
-                adata.obsm[f"{ref}_{site_type}"] = adata[:, adata.var[f"{ref}_{site_type}"]].layers[
-                    "binarized_methylation"
-                ]
-            else:
-                adata.obsm[f"{ref}_{site_type}"] = adata[:, adata.var[f"{ref}_{site_type}"]].X
+            # if native:
+            #     adata.obsm[f"{ref}_{site_type}"] = adata[:, adata.var[f"{ref}_{site_type}"]].layers[
+            #         "binarized_methylation"
+            #     ]
+            # else:
+            #     adata.obsm[f"{ref}_{site_type}"] = adata[:, adata.var[f"{ref}_{site_type}"]].X
 
     # mark as done
     adata.uns[uns_flag] = True

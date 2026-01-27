@@ -106,6 +106,8 @@ def test_extract_read_features_from_bam_python_backend(monkeypatch, tmp_path):
             self.mapping_quality = 60
             self.query_length = 4
             self.query_name = "read1"
+            self.reference_start = 5
+            self.reference_end = 9
 
         def get_blocks(self):
             return [(0, 2), (2, 4)]
@@ -133,7 +135,7 @@ def test_extract_read_features_from_bam_python_backend(monkeypatch, tmp_path):
     bam_path = tmp_path / "sample.bam"
     bam_path.write_text("stub")
     metrics = bam_functions.extract_read_features_from_bam(bam_path, samtools_backend="python")
-    assert metrics["read1"] == [4.0, 25.0, 100.0, 4.0, 60.0]
+    assert metrics["read1"] == [4.0, 25.0, 100.0, 4.0, 60.0, 5.0, 9.0]
 
 
 def test_extract_read_features_from_bam_cli_backend(monkeypatch, tmp_path):
@@ -165,4 +167,4 @@ def test_extract_read_features_from_bam_cli_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(bam_functions.shutil, "which", lambda name: "/usr/bin/samtools")
 
     metrics = bam_functions.extract_read_features_from_bam(bam_path, samtools_backend="cli")
-    assert metrics["read1"] == [10.0, 40.0, 100.0, 10.0, 60.0]
+    assert metrics["read1"] == [10.0, 40.0, 100.0, 10.0, 60.0, 0.0, 10.0]
