@@ -143,11 +143,8 @@ def plot_nmf_components(
     if components.ndim != 2:
         raise ValueError(f"NMF components must be 2D; got shape {components.shape}.")
 
-    feature_labels = (
-        np.asarray(adata.var_names).astype(str)
-        if adata.shape[1] == components.shape[0]
-        else np.array([str(i) for i in range(components.shape[0])])
-    )
+    all_positions = np.arange(components.shape[0])
+    feature_labels = all_positions.astype(str)
 
     nonzero_mask = np.any(components != 0, axis=1)
     if not np.any(nonzero_mask):
@@ -155,14 +152,14 @@ def plot_nmf_components(
         return {}
 
     components = components[nonzero_mask]
-    feature_labels = feature_labels[nonzero_mask]
+    feature_positions = all_positions[nonzero_mask]
 
     if max_features and components.shape[0] > max_features:
         scores = np.nanmax(components, axis=1)
         top_idx = np.argsort(scores)[-max_features:]
         top_idx = np.sort(top_idx)
         components = components[top_idx]
-        feature_labels = feature_labels[top_idx]
+        feature_positions = feature_positions[top_idx]
         logger.info(
             "Downsampled NMF features from %s to %s for plotting.",
             nonzero_mask.sum(),
@@ -170,6 +167,7 @@ def plot_nmf_components(
         )
 
     n_features, n_components = components.shape
+    feature_labels = feature_positions.astype(str)
     component_labels = [f"C{i + 1}" for i in range(n_components)]
 
     heatmap_width = max(8, min(20, n_features / 60))
@@ -183,24 +181,28 @@ def plot_nmf_components(
         xticklabels=feature_labels if n_features <= 60 else False,
         yticklabels=component_labels,
     )
-    ax.set_xlabel("Feature")
+    ax.set_xlabel("Position index")
     ax.set_ylabel("NMF component")
+    if n_features > 60:
+        tick_positions = _fixed_tick_positions(n_features, min(20, n_features))
+        ax.set_xticks(tick_positions + 0.5)
+        ax.set_xticklabels(feature_positions[tick_positions].astype(str), rotation=90, fontsize=8)
     fig.tight_layout()
     heatmap_path = output_path / heatmap_name
     fig.savefig(heatmap_path, dpi=200)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(max(8, min(20, n_features / 50)), 3.5))
-    x = np.arange(n_features)
+    x = feature_positions
     for idx, label in enumerate(component_labels):
         ax.scatter(x, components[:, idx], label=label, s=14, alpha=0.75)
-    ax.set_xlabel("Feature index")
+    ax.set_xlabel("Position index")
     ax.set_ylabel("Component weight")
     if n_features <= 60:
         ax.set_xticks(x)
         ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
-    ax.legend(loc="upper right", frameon=False)
-    fig.tight_layout()
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False)
+    fig.tight_layout(rect=[0, 0, 0.82, 1])
     lineplot_path = output_path / lineplot_name
     fig.savefig(lineplot_path, dpi=200)
     plt.close(fig)
@@ -248,11 +250,8 @@ def plot_pca_components(
     if components.ndim != 2:
         raise ValueError(f"PCA components must be 2D; got shape {components.shape}.")
 
-    feature_labels = (
-        np.asarray(adata.var_names).astype(str)
-        if adata.shape[1] == components.shape[0]
-        else np.array([str(i) for i in range(components.shape[0])])
-    )
+    all_positions = np.arange(components.shape[0])
+    feature_labels = all_positions.astype(str)
 
     nonzero_mask = np.any(components != 0, axis=1)
     if not np.any(nonzero_mask):
@@ -260,14 +259,14 @@ def plot_pca_components(
         return {}
 
     components = components[nonzero_mask]
-    feature_labels = feature_labels[nonzero_mask]
+    feature_positions = all_positions[nonzero_mask]
 
     if max_features and components.shape[0] > max_features:
         scores = np.nanmax(np.abs(components), axis=1)
         top_idx = np.argsort(scores)[-max_features:]
         top_idx = np.sort(top_idx)
         components = components[top_idx]
-        feature_labels = feature_labels[top_idx]
+        feature_positions = feature_positions[top_idx]
         logger.info(
             "Downsampled PCA features from %s to %s for plotting.",
             nonzero_mask.sum(),
@@ -275,6 +274,7 @@ def plot_pca_components(
         )
 
     n_features, n_components = components.shape
+    feature_labels = feature_positions.astype(str)
     component_labels = [f"PC{i + 1}" for i in range(n_components)]
 
     heatmap_width = max(8, min(20, n_features / 60))
@@ -289,24 +289,28 @@ def plot_pca_components(
         xticklabels=feature_labels if n_features <= 60 else False,
         yticklabels=component_labels,
     )
-    ax.set_xlabel("Feature")
+    ax.set_xlabel("Position index")
     ax.set_ylabel("PCA component")
+    if n_features > 60:
+        tick_positions = _fixed_tick_positions(n_features, min(20, n_features))
+        ax.set_xticks(tick_positions + 0.5)
+        ax.set_xticklabels(feature_positions[tick_positions].astype(str), rotation=90, fontsize=8)
     fig.tight_layout()
     heatmap_path = output_path / heatmap_name
     fig.savefig(heatmap_path, dpi=200)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(max(8, min(20, n_features / 50)), 3.5))
-    x = np.arange(n_features)
+    x = feature_positions
     for idx, label in enumerate(component_labels):
         ax.scatter(x, components[:, idx], label=label, s=14, alpha=0.75)
-    ax.set_xlabel("Feature index")
+    ax.set_xlabel("Position index")
     ax.set_ylabel("Loading")
     if n_features <= 60:
         ax.set_xticks(x)
         ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
-    ax.legend(loc="upper right", frameon=False)
-    fig.tight_layout()
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False)
+    fig.tight_layout(rect=[0, 0, 0.82, 1])
     lineplot_path = output_path / lineplot_name
     fig.savefig(lineplot_path, dpi=200)
     plt.close(fig)
