@@ -163,9 +163,17 @@ def add_secondary_supplementary_alignment_flags(
     if (already and not force_redo) or bypass:
         return
 
-    from .bam_functions import find_secondary_supplementary_read_names
+    from .bam_functions import (
+        extract_secondary_supplementary_alignment_spans,
+        find_secondary_supplementary_read_names,
+    )
 
     secondary_reads, supplementary_reads = find_secondary_supplementary_read_names(
+        bam_path,
+        adata.obs_names,
+        samtools_backend=samtools_backend,
+    )
+    secondary_spans, supplementary_spans = extract_secondary_supplementary_alignment_spans(
         bam_path,
         adata.obs_names,
         samtools_backend=samtools_backend,
@@ -173,6 +181,12 @@ def add_secondary_supplementary_alignment_flags(
 
     adata.obs["has_secondary_alignment"] = adata.obs_names.isin(secondary_reads)
     adata.obs["has_supplementary_alignment"] = adata.obs_names.isin(supplementary_reads)
+    adata.obs["secondary_alignment_spans"] = [
+        secondary_spans.get(read_name) for read_name in adata.obs_names
+    ]
+    adata.obs["supplementary_alignment_spans"] = [
+        supplementary_spans.get(read_name) for read_name in adata.obs_names
+    ]
     adata.uns[uns_flag] = True
 
 
