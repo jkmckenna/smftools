@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+import anndata as ad
+
+from smftools.tools import calculate_umap
+
+
+@pytest.mark.unit
+def test_calculate_umap_outputs() -> None:
+    pytest.importorskip("umap")
+    pytest.importorskip("pynndescent")
+
+    rng = np.random.default_rng(0)
+    data = rng.random((12, 6))
+    adata = ad.AnnData(data)
+    adata.layers["nan_half"] = data.copy()
+
+    calculate_umap(adata, n_pcs=3, knn_neighbors=4)
+
+    assert adata.obsm["X_pca"].shape == (12, 3)
+    assert adata.obsm["X_umap"].shape == (12, 2)
+    assert adata.obsp["distances"].shape == (12, 12)
+    assert adata.obsp["connectivities"].shape == (12, 12)
+    assert adata.varm["PCs"].shape == (6, 3)
+
+
+@pytest.mark.unit
+def test_plot_embedding_writes_file(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("seaborn")
+
+    from smftools.plotting import plot_embedding
+
+    rng = np.random.default_rng(1)
+    data = rng.random((8, 4))
+    adata = ad.AnnData(data)
+    adata.obsm["X_umap"] = rng.random((8, 2))
+    adata.obs["group"] = pd.Categorical(["a", "b", "a", "b", "a", "b", "a", "b"])
+
+    outputs = plot_embedding(adata, basis="umap", color="group", output_dir=tmp_path)
+    assert outputs["group"].exists()

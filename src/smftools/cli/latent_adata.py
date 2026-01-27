@@ -8,7 +8,6 @@ import anndata as ad
 
 from smftools.constants import LOGGING_DIR, SEQUENCE_INTEGER_ENCODING, LATENT_DIR
 from smftools.logging_utils import get_logger, setup_logging
-from smftools.optional_imports import require
 
 logger = get_logger(__name__)
 
@@ -126,12 +125,13 @@ def latent_adata_core(
     import numpy as np
     import pandas as pd
 
-    sc = require("scanpy", extra="scanpy", purpose="spatial analyses")
-
     from ..metadata import record_smftools_metadata
     from ..plotting import (
         plot_cp_sequence_components,
+        plot_embedding,
         plot_nmf_components,
+        plot_pca,
+        plot_umap,
     )
     from ..preprocessing import (
         invert_adata,
@@ -140,6 +140,7 @@ def latent_adata_core(
     )
     from ..readwrite import make_dirs, safe_read_h5ad
     from ..tools import (
+        calculate_leiden,
         calculate_nmf,
         calculate_sequence_cp_decomposition,
         calculate_umap,
@@ -247,13 +248,12 @@ def latent_adata_core(
             knn_neighbors=15,
         )
 
-        sc.tl.leiden(adata, resolution=0.1, flavor="igraph", n_iterations=2)
+        calculate_leiden(adata, resolution=0.1)
 
-        sc.settings.figdir = umap_dir
         umap_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
         umap_layers += cfg.umap_layers_to_plot
-        sc.pl.umap(adata, color=umap_layers, show=False, save=True)
-        sc.pl.pca(adata, color=umap_layers, show=False, save=True)
+        plot_umap(adata, color=umap_layers, output_dir=umap_dir)
+        plot_pca(adata, color=umap_layers, output_dir=umap_dir)
 
     # NMF
     if nmf_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
@@ -266,10 +266,9 @@ def latent_adata_core(
             var_filters=var_filters,
             n_components=5,
         )
-        sc.settings.figdir = nmf_dir
         nmf_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
         nmf_layers += cfg.umap_layers_to_plot
-        sc.pl.embedding(adata, basis="nmf", color=nmf_layers, show=False, save=True)
+        plot_embedding(adata, basis="nmf", color=nmf_layers, output_dir=nmf_dir)
         plot_nmf_components(adata, output_dir=nmf_dir)
 
     # CP decomposition using sequence integer encoding (no var filters)
@@ -290,12 +289,9 @@ def latent_adata_core(
             components_key="H_cp_sequence",
             uns_key="cp_sequence",
         )
-        sc.settings.figdir = nmf_sequence_dir
         nmf_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
         nmf_layers += cfg.umap_layers_to_plot
-        sc.pl.embedding(
-            adata, basis="cp_sequence", color=nmf_layers, show=False, save=True
-        )
+        plot_embedding(adata, basis="cp_sequence", color=nmf_layers, output_dir=nmf_sequence_dir)
         plot_cp_sequence_components(
             adata,
             output_dir=nmf_sequence_dir,

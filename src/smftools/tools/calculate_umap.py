@@ -19,6 +19,7 @@ def calculate_umap(
     knn_neighbors: int = 100,
     overwrite: bool = True,
     threads: int = 8,
+    random_state: int | None = 0,
 ) -> "ad.AnnData":
     """Compute PCA, neighbors, and UMAP embeddings.
 
@@ -37,9 +38,10 @@ def calculate_umap(
     import os
 
     import numpy as np
-
-    sc = require("scanpy", extra="scanpy", purpose="UMAP calculation")
-    from scipy.sparse import issparse
+    import scipy.linalg as spla
+    import scipy.sparse as sp
+    umap = require("umap", extra="umap", purpose="UMAP calculation")
+    pynndescent = require("pynndescent", extra="umap", purpose="KNN graph computation")
 
     os.environ["OMP_NUM_THREADS"] = str(threads)
 
@@ -59,7 +61,7 @@ def calculate_umap(
     # Step 2: NaN handling inside layer
     if layer:
         data = adata_subset.layers[layer]
-        if not issparse(data):
+        if not sp.issparse(data):
             if np.isnan(data).any():
                 logger.warning("NaNs detected, filling with 0.5 before PCA + neighbors.")
                 data = np.nan_to_num(data, nan=0.5)
@@ -75,18 +77,98 @@ def calculate_umap(
     if "X_umap" not in adata_subset.obsm or overwrite:
         n_pcs = min(adata_subset.shape[1], n_pcs)
         logger.info("Running PCA with n_pcs=%s", n_pcs)
-        sc.pp.pca(adata_subset, layer=layer)
-        logger.info("Running neighborhood graph")
-        sc.pp.neighbors(adata_subset, use_rep="X_pca", n_pcs=n_pcs, n_neighbors=knn_neighbors)
+
+        if layer:
+            matrix = adata_subset.layers[layer]
+        else:
+            matrix = adata_subset.X
+
+        if sp.issparse(matrix):
+            logger.warning("Converting sparse matrix to dense for PCA.")
+            matrix = matrix.toarray()
+
+        matrix = np.asarray(matrix, dtype=float)
+        mean = matrix.mean(axis=0)
+        centered = matrix - mean
+
+        if centered.shape[0] == 0 or centered.shape[1] == 0:
+            raise ValueError("PCA requires a non-empty matrix.")
+
+        if n_pcs <= 0:
+            raise ValueError("n_pcs must be positive.")
+
+        if centered.shape[1] <= n_pcs:
+            n_pcs = centered.shape[1]
+
+        if centered.shape[0] < n_pcs:
+            n_pcs = centered.shape[0]
+
+        u, s, vt = spla.svd(centered, full_matrices=False)
+
+        u = u[:, :n_pcs]
+        s = s[:n_pcs]
+        vt = vt[:n_pcs]
+
+        adata_subset.obsm["X_pca"] = u * s
+        adata_subset.varm["PCs"] = vt.T
+
+        logger.info("Running neighborhood graph with pynndescent (n_neighbors=%s)", knn_neighbors)
+        n_neighbors = min(knn_neighbors, max(1, adata_subset.n_obs - 1))
+        nn_index = pynndescent.NNDescent(
+            adata_subset.obsm["X_pca"],
+            n_neighbors=n_neighbors,
+            metric="euclidean",
+            random_state=random_state,
+            n_jobs=threads,
+        )
+        knn_indices, knn_dists = nn_index.neighbor_graph
+
+        rows = np.repeat(np.arange(adata_subset.n_obs), n_neighbors)
+        cols = knn_indices.reshape(-1)
+        distances = sp.coo_matrix(
+            (knn_dists.reshape(-1), (rows, cols)),
+            shape=(adata_subset.n_obs, adata_subset.n_obs),
+        ).tocsr()
+        adata_subset.obsp["distances"] = distances
+
         logger.info("Running UMAP")
-        sc.tl.umap(adata_subset)
+        umap_model = umap.UMAP(
+            n_neighbors=n_neighbors,
+            n_components=2,
+            metric="euclidean",
+            random_state=random_state,
+        )
+        adata_subset.obsm["X_umap"] = umap_model.fit_transform(adata_subset.obsm["X_pca"])
+
+        try:
+            from umap.umap_ import fuzzy_simplicial_set
+
+            fuzzy_result = fuzzy_simplicial_set(
+                adata_subset.obsm["X_pca"],
+                n_neighbors=n_neighbors,
+                random_state=random_state,
+                metric="euclidean",
+                knn_indices=knn_indices,
+                knn_dists=knn_dists,
+            )
+            connectivities = fuzzy_result[0] if isinstance(fuzzy_result, tuple) else fuzzy_result
+        except TypeError:
+            connectivities = umap_model.graph_
+
+        adata_subset.obsp["connectivities"] = connectivities
 
     # Step 4: Store results in original adata
     adata.obsm["X_pca"] = adata_subset.obsm["X_pca"]
     adata.obsm["X_umap"] = adata_subset.obsm["X_umap"]
     adata.obsp["distances"] = adata_subset.obsp["distances"]
     adata.obsp["connectivities"] = adata_subset.obsp["connectivities"]
-    adata.uns["neighbors"] = adata_subset.uns["neighbors"]
+    adata.uns["neighbors"] = {
+        "params": {
+            "n_neighbors": knn_neighbors,
+            "method": "pynndescent",
+            "metric": "euclidean",
+        }
+    }
 
     # Fix varm["PCs"] shape mismatch
     pc_matrix = np.zeros((adata.shape[1], adata_subset.varm["PCs"].shape[1]))

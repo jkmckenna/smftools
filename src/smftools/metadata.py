@@ -12,7 +12,7 @@ from typing import Any, Iterable, Optional
 from ._version import __version__
 from .schema import SCHEMA_REGISTRY_RESOURCE, SCHEMA_REGISTRY_VERSION
 
-_DEPENDENCIES = ("anndata", "numpy", "pandas", "scanpy", "torch")
+_DEPENDENCIES = ("anndata", "numpy", "pandas", "umap-learn", "pynndescent", "torch")
 
 
 def _iso_timestamp() -> str:
