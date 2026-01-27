@@ -283,8 +283,17 @@ def latent_adata_core(
         logger.debug(f"{pca_dir} already exists. Skipping PCA calculation and plotting.")
     else:
         make_dirs([pca_dir])
+        import matplotlib.pyplot as plt
         plot_pca_grid(adata, subset=SUBSET, color=plotting_layers, output_dir=pca_dir)
         plot_pca_explained_variance(adata, subset=SUBSET, output_dir=pca_dir)
+
+        # Component plotting
+        title = "Component Loadings"
+        save_path = pca_dir / title + ".png"
+        for i in range(10):
+            pc = adata.varm["PCs"][:, i] 
+            plt.scatter(adata.var_names, pc, label=f"PC{i+1}")
+        plt.savefig(save_path)
 
     # UMAP
     if umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
