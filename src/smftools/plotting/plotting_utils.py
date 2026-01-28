@@ -5,9 +5,12 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
 sns = require("seaborn", extra="plotting", purpose="plot styling")
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -186,6 +189,7 @@ def clean_barplot(
         y_label: Y-axis label.
         y_ticks: Optional y-axis ticks.
     """
+    logger.debug("Formatting barplot '%s' with %s values.", title, len(mean_values))
     x = np.arange(len(mean_values))
     ax.bar(x, mean_values, color="gray", width=1.0, align="edge")
     ax.set_xlim(0, len(mean_values))

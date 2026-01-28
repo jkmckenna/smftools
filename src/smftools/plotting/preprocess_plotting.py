@@ -7,12 +7,15 @@ import numpy as np
 import pandas as pd
 import scipy.cluster.hierarchy as sch
 
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
 colors = require("matplotlib.colors", extra="plotting", purpose="plot rendering")
 patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
 plt = require("matplotlib.pyplot", extra="plotting", purpose="plot rendering")
 sns = require("seaborn", extra="plotting", purpose="plot styling")
+
+logger = get_logger(__name__)
 
 DNA_5COLOR_PALETTE = {
     "A": "#00A000",  # green
@@ -81,6 +84,7 @@ def plot_sequence_integer_encoding_clustermaps(
     Returns:
         List of dictionaries with per-plot metadata and output paths.
     """
+    logger.info("Plotting sequence integer encoding clustermaps.")
 
     def _mask_or_true(series_name: str, predicate):
         if series_name not in adata.obs:
@@ -442,6 +446,7 @@ def plot_sequence_integer_encoding_clustermaps(
                 out_file = save_path / f"{safe_name}.png"
                 fig.savefig(out_file, dpi=300, bbox_inches="tight")
                 plt.close(fig)
+                logger.info("Saved sequence encoding clustermap to %s.", out_file)
             else:
                 plt.show()
 
@@ -511,6 +516,7 @@ def plot_read_span_quality_clustermaps(
     Returns:
         List of dictionaries with per-plot metadata and output paths.
     """
+    logger.info("Plotting read span and quality clustermaps.")
 
     def _mask_or_true(series_name: str, predicate):
         if series_name not in adata.obs:
@@ -705,6 +711,7 @@ def plot_read_span_quality_clustermaps(
                 out_file = save_path / f"{safe_name}.png"
                 fig.savefig(out_file, dpi=300, bbox_inches="tight")
                 plt.close(fig)
+                logger.info("Saved read span/quality clustermap to %s.", out_file)
             else:
                 plt.show()
 
@@ -755,6 +762,7 @@ def plot_mismatch_base_frequency_by_position(
     Returns:
         List of dictionaries with per-plot metadata and output paths.
     """
+    logger.info("Plotting mismatch base frequency by position.")
 
     def _mask_or_true(series_name: str, predicate):
         if series_name not in adata.obs:
@@ -944,6 +952,7 @@ def plot_mismatch_base_frequency_by_position(
                 out_file = save_path / f"{safe_name}.png"
                 fig.savefig(out_file, dpi=300, bbox_inches="tight")
                 plt.close(fig)
+                logger.info("Saved mismatch base frequency plot to %s.", out_file)
             else:
                 plt.show()
 

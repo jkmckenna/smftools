@@ -47,6 +47,7 @@ def plot_nmf_components(
     Returns:
         Dict[str, Path]: Paths to created plots (keys: ``heatmap`` and ``lineplot``).
     """
+    logger.info("Plotting NMF components to %s.", output_dir)
     if suffix:
         components_key = f"{components_key}_{suffix}"
 
@@ -112,6 +113,7 @@ def plot_nmf_components(
     heatmap_path = output_path / heatmap_name
     fig.savefig(heatmap_path, dpi=200)
     plt.close(fig)
+    logger.info("Saved NMF heatmap to %s.", heatmap_path)
 
     fig, ax = plt.subplots(figsize=(max(8, min(20, n_features / 50)), 3.5))
     x = feature_positions
@@ -127,6 +129,7 @@ def plot_nmf_components(
     lineplot_path = output_path / lineplot_name
     fig.savefig(lineplot_path, dpi=200)
     plt.close(fig)
+    logger.info("Saved NMF line plot to %s.", lineplot_path)
 
     return {"heatmap": heatmap_path, "lineplot": lineplot_path}
 
@@ -154,6 +157,7 @@ def plot_pca_components(
     Returns:
         Dict[str, Path]: Paths to created plots (keys: ``heatmap`` and ``lineplot``).
     """
+    logger.info("Plotting PCA components to %s.", output_dir)
     if suffix:
         components_key = f"{components_key}_{suffix}"
 
@@ -219,6 +223,7 @@ def plot_pca_components(
     heatmap_path = output_path / heatmap_name
     fig.savefig(heatmap_path, dpi=200)
     plt.close(fig)
+    logger.info("Saved PCA heatmap to %s.", heatmap_path)
 
     fig, ax = plt.subplots(figsize=(max(8, min(20, n_features / 50)), 3.5))
     x = feature_positions
@@ -234,6 +239,7 @@ def plot_pca_components(
     lineplot_path = output_path / lineplot_name
     fig.savefig(lineplot_path, dpi=200)
     plt.close(fig)
+    logger.info("Saved PCA line plot to %s.", lineplot_path)
 
     return {"heatmap": heatmap_path, "lineplot": lineplot_path}
 
@@ -264,6 +270,7 @@ def plot_cp_sequence_components(
     Returns:
         Dict[str, Path]: Paths to generated plots.
     """
+    logger.info("Plotting CP sequence components to %s.", output_dir)
     if suffix:
         components_key = f"{components_key}_{suffix}"
         base_factors_key = f"{base_factors_key}_{suffix}"
@@ -311,6 +318,7 @@ def plot_cp_sequence_components(
     heatmap_path = output_path / heatmap_name
     fig.savefig(heatmap_path, dpi=200)
     plt.close(fig)
+    logger.info("Saved CP sequence heatmap to %s.", heatmap_path)
 
     fig, ax = plt.subplots(figsize=(max(8, min(20, n_positions / 50)), 3.5))
     x = feature_positions
@@ -323,6 +331,7 @@ def plot_cp_sequence_components(
     lineplot_path = output_path / lineplot_name
     fig.savefig(lineplot_path, dpi=200)
     plt.close(fig)
+    logger.info("Saved CP sequence line plot to %s.", lineplot_path)
 
     outputs = {"heatmap": heatmap_path, "lineplot": lineplot_path}
 
@@ -355,6 +364,7 @@ def plot_cp_sequence_components(
             fig.savefig(base_path, dpi=200)
             plt.close(fig)
             outputs["base_factors"] = base_path
+            logger.info("Saved CP base factors plot to %s.", base_path)
 
     return outputs
 
@@ -393,6 +403,7 @@ def plot_embedding(
     Returns:
         Dict[str, Path]: Mapping of color keys to saved plot paths.
     """
+    logger.info("Plotting %s embedding to %s.", basis, output_dir)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     embedding = _resolve_embedding(adata, basis)
@@ -455,6 +466,7 @@ def plot_embedding(
         output_file = output_path / f"{filename_prefix}_{safe_key}.png"
         fig.savefig(output_file, dpi=200)
         plt.close(fig)
+        logger.info("Saved %s embedding plot to %s.", basis, output_file)
         saved[color_key] = output_file
 
     return saved
@@ -496,6 +508,7 @@ def plot_embedding_grid(
     Returns:
         Path to the saved grid image, or None if no valid color keys exist.
     """
+    logger.info("Plotting %s embedding grid to %s.", basis, output_dir)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     embedding = _resolve_embedding(adata, basis)
@@ -586,6 +599,7 @@ def plot_embedding_grid(
     output_file = output_path / f"{filename_prefix}_grid.png"
     fig.savefig(output_file, dpi=200)
     plt.close(fig)
+    logger.info("Saved %s embedding grid to %s.", basis, output_file)
     return output_file
 
 
@@ -598,6 +612,7 @@ def plot_umap(
     point_size: float = 12,
     alpha: float = 0.8,
 ) -> Dict[str, Path]:
+    logger.info("Plotting UMAP embedding to %s.", output_dir)
     return plot_embedding(adata, basis="umap", color=color, output_dir=output_dir, prefix=prefix)
 
 
@@ -611,6 +626,7 @@ def plot_umap_grid(
     point_size: float = 12,
     alpha: float = 0.8,
 ) -> Path | None:
+    logger.info("Plotting UMAP embedding grid to %s.", output_dir)
     return plot_embedding_grid(
         adata,
         basis="umap",
@@ -632,6 +648,7 @@ def plot_pca(
     point_size: float = 12,
     alpha: float = 0.8,
 ) -> Dict[str, Path]:
+    logger.info("Plotting PCA embedding to %s.", output_dir)
     return plot_embedding(adata, basis="pca", color=color, output_dir=output_dir, prefix=prefix)
 
 
@@ -645,6 +662,7 @@ def plot_pca_grid(
     point_size: float = 12,
     alpha: float = 0.8,
 ) -> Path | None:
+    logger.info("Plotting PCA embedding grid to %s.", output_dir)
     return plot_embedding_grid(
         adata,
         basis="pca",
@@ -679,6 +697,7 @@ def plot_pca_explained_variance(
     Returns:
         Path to the saved plot, or None if explained variance is unavailable.
     """
+    logger.info("Plotting PCA explained variance to %s.", output_dir)
     if subset:
         pca_key = f"{pca_key}_{subset}"
     if suffix:
@@ -719,5 +738,6 @@ def plot_pca_explained_variance(
     out_file = output_path / f"{pca_key}_explained_variance.png"
     fig.savefig(out_file, dpi=200)
     plt.close(fig)
+    logger.info("Saved PCA explained variance plot to %s.", out_file)
 
     return out_file

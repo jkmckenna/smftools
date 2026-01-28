@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import scipy.cluster.hierarchy as sch
 
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 from smftools.plotting.plotting_utils import (
     _fixed_tick_positions,
@@ -21,6 +22,8 @@ from smftools.plotting.plotting_utils import (
 plt = require("matplotlib.pyplot", extra="plotting", purpose="plot rendering")
 grid_spec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plotting")
 sns = require("seaborn", extra="plotting", purpose="plot styling")
+
+logger = get_logger(__name__)
 
 
 def plot_rolling_nn_and_layer(
@@ -79,6 +82,8 @@ def plot_rolling_nn_and_layer(
     """
     if max_nan_fraction is not None and not (0 <= max_nan_fraction <= 1):
         raise ValueError("max_nan_fraction must be between 0 and 1.")
+
+    logger.info("Plotting rolling NN distances with layer '%s'.", layer_key)
 
     def _apply_xticks(ax, labels, step):
         if labels is None or len(labels) == 0:
@@ -263,6 +268,7 @@ def plot_rolling_nn_and_layer(
     if save_name is not None:
         fname = os.path.join(save_name)
         plt.savefig(fname, dpi=200, bbox_inches="tight")
+        logger.info("Saved rolling NN/layer plot to %s.", fname)
     else:
         plt.show()
 
@@ -320,6 +326,7 @@ def combined_raw_clustermap(
     results : list[dict]
         One entry per (sample, ref) plot with matrices + bin metadata.
     """
+    logger.info("Plotting combined raw clustermaps.")
     if fill_nan_strategy not in {"none", "value", "col_mean"}:
         raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
 
@@ -384,8 +391,10 @@ def combined_raw_clustermap(
             row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
 
             if not bool(row_mask.any()):
-                print(
-                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
+                logger.warning(
+                    "No reads for %s - %s after read quality and length filtering.",
+                    display_sample,
+                    ref,
                 )
                 continue
 
@@ -400,13 +409,17 @@ def combined_raw_clustermap(
                         if col_mask.any():
                             subset = subset[:, col_mask].copy()
                         else:
-                            print(
-                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
+                            logger.warning(
+                                "No positions left after valid_fraction filter for %s - %s.",
+                                display_sample,
+                                ref,
                             )
                             continue
 
                 if subset.shape[0] == 0:
-                    print(f"No reads left after filtering for {display_sample} - {ref}")
+                    logger.warning(
+                        "No reads left after filtering for %s - %s.", display_sample, ref
+                    )
                     continue
 
                 if bins is None:
@@ -695,7 +708,7 @@ def combined_raw_clustermap(
                         )
 
                 if not blocks:
-                    print(f"No matrices to plot for {display_sample} - {ref}")
+                    logger.warning("No matrices to plot for %s - %s.", display_sample, ref)
                     continue
 
                 gs_dim = len(blocks)
@@ -741,7 +754,7 @@ def combined_raw_clustermap(
                     out_file = save_path / f"{safe_name}.png"
                     fig.savefig(out_file, dpi=300)
                     plt.close(fig)
-                    print(f"Saved: {out_file}")
+                    logger.info("Saved combined raw clustermap to %s.", out_file)
                 else:
                     plt.show()
 
@@ -758,9 +771,9 @@ def combined_raw_clustermap(
                     rec[f"{blk['name']}_labels"] = list(map(str, blk["labels"]))
                 results.append(rec)
 
-                print(f"Summary for {display_sample} - {ref}:")
+                logger.info("Summary for %s - %s:", display_sample, ref)
                 for bin_label, percent in percentages.items():
-                    print(f"  - {bin_label}: {percent:.1f}%")
+                    logger.info("  - %s: %.1f%%", bin_label, percent)
 
             except Exception:
                 import traceback

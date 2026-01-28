@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import scipy.cluster.hierarchy as sch
 
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 from smftools.plotting.plotting_utils import (
     _layer_to_numpy,
@@ -27,6 +28,8 @@ pdf_backend = require(
     purpose="PDF output",
 )
 PdfPages = pdf_backend.PdfPages
+
+logger = get_logger(__name__)
 
 
 def plot_hmm_size_contours(
@@ -68,6 +71,7 @@ def plot_hmm_size_contours(
     Other args are the same as prior function.
     """
     feature_ranges = tuple(feature_ranges or ())
+    logger.info("Plotting HMM size contours%s.", f" -> {save_path}" if save_path else "")
 
     def _resolve_length_color(length: int, fallback: str) -> Tuple[float, float, float, float]:
         for min_len, max_len, color in feature_ranges:
@@ -376,6 +380,7 @@ def plot_hmm_size_contours(
                 fname = f"hmm_size_page_{p + 1:03d}.png"
                 out = os.path.join(save_path, fname)
                 fig.savefig(out, dpi=dpi, bbox_inches="tight")
+                logger.info("Saved HMM size contour page to %s.", out)
 
     # multipage PDF if requested
     if save_path is not None and save_pdf:
@@ -383,7 +388,7 @@ def plot_hmm_size_contours(
         with PdfPages(pdf_file) as pp:
             for fig in figs:
                 pp.savefig(fig, bbox_inches="tight")
-        print(f"Saved multipage PDF: {pdf_file}")
+        logger.info("Saved HMM size contour PDF to %s.", pdf_file)
 
     return figs
 
@@ -497,6 +502,7 @@ def combined_hmm_raw_clustermap(
 
     NaN fill strategy is applied in-memory for clustering/plotting only.
     """
+    logger.info("Plotting combined HMM raw clustermaps.")
     if fill_nan_strategy not in {"none", "value", "col_mean"}:
         raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
 
@@ -556,8 +562,10 @@ def combined_hmm_raw_clustermap(
             row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
 
             if not bool(row_mask.any()):
-                print(
-                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
+                logger.warning(
+                    "No reads for %s - %s after read quality and length filtering.",
+                    display_sample,
+                    ref,
                 )
                 continue
 
@@ -572,13 +580,17 @@ def combined_hmm_raw_clustermap(
                         if col_mask.any():
                             subset = subset[:, col_mask].copy()
                         else:
-                            print(
-                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
+                            logger.warning(
+                                "No positions left after valid_fraction filter for %s - %s.",
+                                display_sample,
+                                ref,
                             )
                             continue
 
                 if subset.shape[0] == 0:
-                    print(f"No reads left after filtering for {display_sample} - {ref}")
+                    logger.warning(
+                        "No reads left after filtering for %s - %s.", display_sample, ref
+                    )
                     continue
 
                 if bins is None:
@@ -818,7 +830,7 @@ def combined_hmm_raw_clustermap(
                         else None
                     )
                 else:
-                    print(f"No HMM matrices to plot for {display_sample} - {ref}")
+                    logger.warning("No HMM matrices to plot for %s - %s.", display_sample, ref)
                     continue
 
                 blocks = [
@@ -969,15 +981,14 @@ def combined_hmm_raw_clustermap(
                     out_file = save_path / f"{safe_name}.png"
                     plt.savefig(out_file, dpi=300)
                     plt.close(fig)
+                    logger.info("Saved combined HMM raw clustermap to %s.", out_file)
                 else:
                     plt.show()
 
                 results.append((sample, ref))
 
             except Exception:
-                import traceback
-
-                traceback.print_exc()
+                logger.exception("Failed to plot combined HMM raw clustermap for %s/%s.", sample, ref)
                 continue
 
     return results
@@ -1024,6 +1035,7 @@ def combined_hmm_length_clustermap(
     Length-based feature ranges map integer lengths into subclass colors for accessible
     and footprint layers. Raw methylation panels are included when available.
     """
+    logger.info("Plotting combined HMM length clustermaps.")
     if fill_nan_strategy not in {"none", "value", "col_mean"}:
         raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
 
@@ -1084,8 +1096,10 @@ def combined_hmm_length_clustermap(
             row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
 
             if not bool(row_mask.any()):
-                print(
-                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
+                logger.warning(
+                    "No reads for %s - %s after read quality and length filtering.",
+                    display_sample,
+                    ref,
                 )
                 continue
 
@@ -1100,13 +1114,17 @@ def combined_hmm_length_clustermap(
                         if col_mask.any():
                             subset = subset[:, col_mask].copy()
                         else:
-                            print(
-                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
+                            logger.warning(
+                                "No positions left after valid_fraction filter for %s - %s.",
+                                display_sample,
+                                ref,
                             )
                             continue
 
                 if subset.shape[0] == 0:
-                    print(f"No reads left after filtering for {display_sample} - {ref}")
+                    logger.warning(
+                        "No reads left after filtering for %s - %s.", display_sample, ref
+                    )
                     continue
 
                 if bins is None:
@@ -1330,7 +1348,9 @@ def combined_hmm_length_clustermap(
                     length_matrix = np.vstack(stacked_lengths)
                     length_matrix_raw = np.vstack(stacked_lengths_raw)
                 else:
-                    print(f"No length matrices to plot for {display_sample} - {ref}")
+                    logger.warning(
+                        "No length matrices to plot for %s - %s.", display_sample, ref
+                    )
                     continue
 
                 blocks = []
@@ -1437,7 +1457,7 @@ def combined_hmm_length_clustermap(
                     )
 
                 if not blocks:
-                    print(f"No matrices to plot for {display_sample} - {ref}")
+                    logger.warning("No matrices to plot for %s - %s.", display_sample, ref)
                     continue
 
                 n_panels = len(blocks)
@@ -1491,16 +1511,19 @@ def combined_hmm_length_clustermap(
                     out_file = save_path / f"{safe_name}.png"
                     plt.savefig(out_file, dpi=300)
                     plt.close(fig)
+                    logger.info("Saved combined HMM length clustermap to %s.", out_file)
                 else:
                     plt.show()
 
                 results.append((sample, ref))
 
             except Exception:
-                import traceback
-
-                traceback.print_exc()
-                print(f"Failed {sample} - {ref} - {length_layer}")
+                logger.exception(
+                    "Failed combined HMM length clustermap for %s - %s - %s.",
+                    sample,
+                    ref,
+                    length_layer,
+                )
 
     return results
 
@@ -1574,6 +1597,7 @@ def plot_hmm_layers_rolling_by_sample_ref(
     saved_files : list[str]
         list of saved filenames (may be empty if save=False).
     """
+    logger.info("Plotting rolling HMM layers by sample/ref.")
 
     if sample_col not in adata.obs.columns or ref_col not in adata.obs.columns:
         raise ValueError(
@@ -1774,6 +1798,7 @@ def plot_hmm_layers_rolling_by_sample_ref(
             fname = os.path.join(outdir, f"hmm_layers_rolling_page{page + 1}.png")
             plt.savefig(fname, bbox_inches="tight", dpi=dpi)
             saved_files.append(fname)
+            logger.info("Saved HMM layers rolling plot to %s.", fname)
         else:
             plt.show()
         plt.close(fig)
