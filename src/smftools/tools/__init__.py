@@ -6,6 +6,8 @@ _LAZY_ATTRS = {
     "calculate_leiden": "smftools.tools.calculate_leiden",
     "calculate_nmf": "smftools.tools.calculate_nmf",
     "calculate_sequence_cp_decomposition": "smftools.tools.tensor_factorization",
+    "calculate_pca": "smftools.tools.calculate_pca",
+    "calculate_knn": "smftools.tools.calculate_knn",
     "calculate_umap": "smftools.tools.calculate_umap",
     "cluster_adata_on_methylation": "smftools.tools.cluster_adata_on_methylation",
     "combine_layers": "smftools.tools.general_tools",

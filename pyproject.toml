@@ -147,6 +147,7 @@ torch = [
 all = [
     # cluster
     "fastcluster",
+    "igraph"
     "leidenalg",
 
     # informatics
@@ -172,6 +173,7 @@ all = [
     "omegaconf",
     "scikit-learn>=1.0.2",
     "shap",
+    "tensorly",
     "torch>=1.9.0",
     "wandb",
 

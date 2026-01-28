@@ -108,23 +108,30 @@ def plot_nmf_components(
     *,
     output_dir: Path | str,
     components_key: str = "H_nmf",
-    heatmap_name: str = "nmf_H_heatmap.png",
-    lineplot_name: str = "nmf_H_lineplot.png",
+    suffix: str | None = None,
+    heatmap_name: str = "heatmap.png",
+    lineplot_name: str = "lineplot.png",
     max_features: int = 2000,
 ) -> Dict[str, Path]:
-    """Plot NMF component weights as a heatmap and per-component line plot.
+    """Plot NMF component weights as a heatmap and per-component scatter plot.
 
     Args:
         adata: AnnData object containing NMF results.
         output_dir: Directory to write plots into.
         components_key: Key in ``adata.varm`` storing the H matrix.
         heatmap_name: Filename for the heatmap plot.
-        lineplot_name: Filename for the line plot.
+        lineplot_name: Filename for the scatter plot.
         max_features: Maximum number of features to plot (top-weighted by component).
 
     Returns:
         Dict[str, Path]: Paths to created plots (keys: ``heatmap`` and ``lineplot``).
     """
+    if suffix:
+        components_key = f"{components_key}_{suffix}"
+
+    heatmap_name = f"{components_key}_{heatmap_name}"
+    lineplot_name = f"{components_key}_{lineplot_name}"
+
     if components_key not in adata.varm:
         logger.warning("NMF components key '%s' not found in adata.varm.", components_key)
         return {}
@@ -136,11 +143,8 @@ def plot_nmf_components(
     if components.ndim != 2:
         raise ValueError(f"NMF components must be 2D; got shape {components.shape}.")
 
-    feature_labels = (
-        np.asarray(adata.var_names).astype(str)
-        if adata.shape[1] == components.shape[0]
-        else np.array([str(i) for i in range(components.shape[0])])
-    )
+    all_positions = np.arange(components.shape[0])
+    feature_labels = all_positions.astype(str)
 
     nonzero_mask = np.any(components != 0, axis=1)
     if not np.any(nonzero_mask):
@@ -148,14 +152,14 @@ def plot_nmf_components(
         return {}
 
     components = components[nonzero_mask]
-    feature_labels = feature_labels[nonzero_mask]
+    feature_positions = all_positions[nonzero_mask]
 
     if max_features and components.shape[0] > max_features:
         scores = np.nanmax(components, axis=1)
         top_idx = np.argsort(scores)[-max_features:]
         top_idx = np.sort(top_idx)
         components = components[top_idx]
-        feature_labels = feature_labels[top_idx]
+        feature_positions = feature_positions[top_idx]
         logger.info(
             "Downsampled NMF features from %s to %s for plotting.",
             nonzero_mask.sum(),
@@ -163,6 +167,7 @@ def plot_nmf_components(
         )
 
     n_features, n_components = components.shape
+    feature_labels = feature_positions.astype(str)
     component_labels = [f"C{i + 1}" for i in range(n_components)]
 
     heatmap_width = max(8, min(20, n_features / 60))
@@ -176,24 +181,136 @@ def plot_nmf_components(
         xticklabels=feature_labels if n_features <= 60 else False,
         yticklabels=component_labels,
     )
-    ax.set_xlabel("Feature")
+    ax.set_xlabel("Position index")
     ax.set_ylabel("NMF component")
+    if n_features > 60:
+        tick_positions = _fixed_tick_positions(n_features, min(20, n_features))
+        ax.set_xticks(tick_positions + 0.5)
+        ax.set_xticklabels(feature_positions[tick_positions].astype(str), rotation=90, fontsize=8)
     fig.tight_layout()
     heatmap_path = output_path / heatmap_name
     fig.savefig(heatmap_path, dpi=200)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(max(8, min(20, n_features / 50)), 3.5))
-    x = np.arange(n_features)
+    x = feature_positions
     for idx, label in enumerate(component_labels):
-        ax.plot(x, components[:, idx], label=label, linewidth=1.5)
-    ax.set_xlabel("Feature index")
+        ax.scatter(x, components[:, idx], label=label, s=14, alpha=0.75)
+    ax.set_xlabel("Position index")
     ax.set_ylabel("Component weight")
     if n_features <= 60:
         ax.set_xticks(x)
         ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
-    ax.legend(loc="upper right", frameon=False)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False)
+    fig.tight_layout(rect=[0, 0, 0.82, 1])
+    lineplot_path = output_path / lineplot_name
+    fig.savefig(lineplot_path, dpi=200)
+    plt.close(fig)
+
+    return {"heatmap": heatmap_path, "lineplot": lineplot_path}
+
+
+def plot_pca_components(
+    adata: "ad.AnnData",
+    *,
+    output_dir: Path | str,
+    components_key: str = "PCs",
+    suffix: str | None = None,
+    heatmap_name: str = "heatmap.png",
+    lineplot_name: str = "lineplot.png",
+    max_features: int = 2000,
+) -> Dict[str, Path]:
+    """Plot PCA loadings as a heatmap and per-component scatter plot.
+
+    Args:
+        adata: AnnData object containing PCA results.
+        output_dir: Directory to write plots into.
+        components_key: Key in ``adata.varm`` storing the PCA loadings.
+        heatmap_name: Filename for the heatmap plot.
+        lineplot_name: Filename for the scatter plot.
+        max_features: Maximum number of features to plot (top-weighted by component).
+
+    Returns:
+        Dict[str, Path]: Paths to created plots (keys: ``heatmap`` and ``lineplot``).
+    """
+    if suffix:
+        components_key = f"{components_key}_{suffix}"
+
+    heatmap_name = f"{components_key}_{heatmap_name}"
+    lineplot_name = f"{components_key}_{lineplot_name}"
+
+    if components_key not in adata.varm:
+        logger.warning("PCA components key '%s' not found in adata.varm.", components_key)
+        return {}
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    components = np.asarray(adata.varm[components_key])
+    if components.ndim != 2:
+        raise ValueError(f"PCA components must be 2D; got shape {components.shape}.")
+
+    all_positions = np.arange(components.shape[0])
+    feature_labels = all_positions.astype(str)
+
+    nonzero_mask = np.any(components != 0, axis=1)
+    if not np.any(nonzero_mask):
+        logger.warning("PCA components are all zeros; skipping plot generation.")
+        return {}
+
+    components = components[nonzero_mask]
+    feature_positions = all_positions[nonzero_mask]
+
+    if max_features and components.shape[0] > max_features:
+        scores = np.nanmax(np.abs(components), axis=1)
+        top_idx = np.argsort(scores)[-max_features:]
+        top_idx = np.sort(top_idx)
+        components = components[top_idx]
+        feature_positions = feature_positions[top_idx]
+        logger.info(
+            "Downsampled PCA features from %s to %s for plotting.",
+            nonzero_mask.sum(),
+            components.shape[0],
+        )
+
+    n_features, n_components = components.shape
+    feature_labels = feature_positions.astype(str)
+    component_labels = [f"PC{i + 1}" for i in range(n_components)]
+
+    heatmap_width = max(8, min(20, n_features / 60))
+    heatmap_height = max(2.5, 0.6 * n_components + 1.5)
+    fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
+    sns.heatmap(
+        components.T,
+        ax=ax,
+        cmap="coolwarm",
+        center=0,
+        cbar_kws={"label": "Loading"},
+        xticklabels=feature_labels if n_features <= 60 else False,
+        yticklabels=component_labels,
+    )
+    ax.set_xlabel("Position index")
+    ax.set_ylabel("PCA component")
+    if n_features > 60:
+        tick_positions = _fixed_tick_positions(n_features, min(20, n_features))
+        ax.set_xticks(tick_positions + 0.5)
+        ax.set_xticklabels(feature_positions[tick_positions].astype(str), rotation=90, fontsize=8)
     fig.tight_layout()
+    heatmap_path = output_path / heatmap_name
+    fig.savefig(heatmap_path, dpi=200)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(max(8, min(20, n_features / 50)), 3.5))
+    x = feature_positions
+    for idx, label in enumerate(component_labels):
+        ax.scatter(x, components[:, idx], label=label, s=14, alpha=0.75)
+    ax.set_xlabel("Position index")
+    ax.set_ylabel("Loading")
+    if n_features <= 60:
+        ax.set_xticks(x)
+        ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False)
+    fig.tight_layout(rect=[0, 0, 0.82, 1])
     lineplot_path = output_path / lineplot_name
     fig.savefig(lineplot_path, dpi=200)
     plt.close(fig)
@@ -238,11 +355,16 @@ def plot_cp_sequence_components(
     if components.ndim != 2:
         raise ValueError(f"CP position factors must be 2D; got shape {components.shape}.")
 
-    feature_labels = (
-        np.asarray(adata.var_names).astype(str)
-        if adata.shape[1] == components.shape[0]
-        else np.array([str(i) for i in range(components.shape[0])])
-    )
+    position_indices = np.arange(components.shape[0])
+    valid_mask = np.isfinite(components).any(axis=1)
+    if not np.all(valid_mask):
+        dropped = int(np.sum(~valid_mask))
+        logger.info(
+            "Dropping %s CP positions with no finite weights before plotting.",
+            dropped,
+        )
+        components = components[valid_mask]
+        position_indices = position_indices[valid_mask]
 
     if max_positions and components.shape[0] > max_positions:
         original_count = components.shape[0]
@@ -250,50 +372,55 @@ def plot_cp_sequence_components(
         top_idx = np.argsort(scores)[-max_positions:]
         top_idx = np.sort(top_idx)
         components = components[top_idx]
-        feature_labels = feature_labels[top_idx]
+        position_indices = position_indices[top_idx]
         logger.info(
             "Downsampled CP positions from %s to %s for plotting.",
             original_count,
             max_positions,
         )
 
-    n_positions, n_components = components.shape
-    component_labels = [f"C{i + 1}" for i in range(n_components)]
+    outputs = {}
+    if components.size == 0:
+        logger.warning("No finite CP position factors available; skipping position plots.")
+    else:
+        n_positions, n_components = components.shape
+        component_labels = [f"C{i + 1}" for i in range(n_components)]
 
-    heatmap_width = max(8, min(20, n_positions / 60))
-    heatmap_height = max(2.5, 0.6 * n_components + 1.5)
-    fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
-    sns.heatmap(
-        components.T,
-        ax=ax,
-        cmap="viridis",
-        cbar_kws={"label": "Component weight"},
-        xticklabels=feature_labels if n_positions <= 60 else False,
-        yticklabels=component_labels,
-    )
-    ax.set_xlabel("Position")
-    ax.set_ylabel("CP component")
-    fig.tight_layout()
-    heatmap_path = output_path / heatmap_name
-    fig.savefig(heatmap_path, dpi=200)
-    plt.close(fig)
+        heatmap_width = max(8, min(20, n_positions / 60))
+        heatmap_height = max(2.5, 0.6 * n_components + 1.5)
+        fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
+        sns.heatmap(
+            components.T,
+            ax=ax,
+            cmap="viridis",
+            cbar_kws={"label": "Component weight"},
+            xticklabels=position_indices if n_positions <= 60 else False,
+            yticklabels=component_labels,
+        )
+        ax.set_xlabel("Position index")
+        ax.set_ylabel("CP component")
+        fig.tight_layout()
+        heatmap_path = output_path / heatmap_name
+        fig.savefig(heatmap_path, dpi=200)
+        plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(max(8, min(20, n_positions / 50)), 3.5))
-    x = np.arange(n_positions)
-    for idx, label in enumerate(component_labels):
-        ax.plot(x, components[:, idx], label=label, linewidth=1.5)
-    ax.set_xlabel("Position index")
-    ax.set_ylabel("Component weight")
-    if n_positions <= 60:
-        ax.set_xticks(x)
-        ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
-    ax.legend(loc="upper right", frameon=False)
-    fig.tight_layout()
-    lineplot_path = output_path / lineplot_name
-    fig.savefig(lineplot_path, dpi=200)
-    plt.close(fig)
+        fig, ax = plt.subplots(figsize=(max(8, min(20, n_positions / 50)), 3.5))
+        x = position_indices
+        for idx, label in enumerate(component_labels):
+            ax.scatter(x, components[:, idx], label=label, s=20, alpha=0.8)
+        ax.set_xlabel("Position index")
+        ax.set_ylabel("Component weight")
+        if n_positions <= 60:
+            ax.set_xticks(x)
+            ax.set_xticklabels([str(pos) for pos in x], rotation=90, fontsize=8)
+        ax.legend(loc="upper right", frameon=False)
+        fig.tight_layout()
+        lineplot_path = output_path / lineplot_name
+        fig.savefig(lineplot_path, dpi=200)
+        plt.close(fig)
 
-    outputs = {"heatmap": heatmap_path, "lineplot": lineplot_path}
+        outputs["heatmap"] = heatmap_path
+        outputs["lineplot"] = lineplot_path
     if uns_key in adata.uns:
         base_factors = adata.uns[uns_key].get("base_factors")
         base_labels = adata.uns[uns_key].get("base_labels")
@@ -2663,7 +2790,9 @@ def plot_sequence_integer_encoding_clustermaps(
                 if show_position_axis or xtick_step is not None:
                     mismatch_ax.set_xlabel("Position")
 
-            fig.suptitle(f"{sample} - {ref}")
+            n_reads = matrix.shape[0]
+
+            fig.suptitle(f"{sample} - {ref} - {n_reads} reads")
             fig.tight_layout(rect=(0, 0, 1, 0.95))
 
             out_file = None
@@ -2925,7 +3054,8 @@ def plot_read_span_quality_clustermaps(
                 if show_position_axis or xtick_step is not None:
                     axis.set_xlabel("Position")
 
-            fig.suptitle(f"{sample} - {ref}")
+            n_reads = quality_matrix.shape[0]
+            fig.suptitle(f"{sample} - {ref} - {n_reads} reads")
             fig.tight_layout(rect=(0, 0, 1, 0.95))
 
             out_file = None
@@ -3348,21 +3478,292 @@ def plot_embedding(
     return saved
 
 
+def _grid_dimensions(n_items: int, ncols: int | None) -> tuple[int, int]:
+    if n_items < 1:
+        return 0, 0
+    if ncols is None:
+        ncols = 2 if n_items > 1 else 1
+    ncols = max(1, min(ncols, n_items))
+    nrows = int(math.ceil(n_items / ncols))
+    return nrows, ncols
+
+
+def plot_embedding_grid(
+    adata: "ad.AnnData",
+    *,
+    basis: str,
+    color: str | Sequence[str],
+    output_dir: Path | str,
+    prefix: str | None = None,
+    ncols: int | None = None,
+    point_size: float = 12,
+    alpha: float = 0.8,
+) -> Path | None:
+    """Plot a 2D embedding grid with legends to the right of each subplot.
+
+    Args:
+        adata: AnnData object with ``obsm['X_<basis>']``.
+        basis: Embedding basis name (e.g., ``'umap'``, ``'pca'``).
+        color: Obs column name or list of names to color by.
+        output_dir: Directory to save plots.
+        prefix: Optional filename prefix.
+        ncols: Number of columns in the grid.
+        point_size: Marker size for scatter plots.
+        alpha: Marker transparency.
+
+    Returns:
+        Path to the saved grid image, or None if no valid color keys exist.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    embedding = _resolve_embedding(adata, basis)
+    colors = [color] if isinstance(color, str) else list(color)
+
+    valid_colors = []
+    for color_key in colors:
+        if color_key not in adata.obs:
+            logger.warning("Color key '%s' not found in adata.obs; skipping.", color_key)
+            continue
+        valid_colors.append(color_key)
+
+    if not valid_colors:
+        return None
+
+    nrows, ncols = _grid_dimensions(len(valid_colors), ncols)
+    plot_width = 4.8
+    legend_width = 2.4
+    plot_height = 4.2
+    fig = plt.figure(
+        figsize=(ncols * (plot_width + legend_width), nrows * plot_height),
+    )
+    width_ratios = [plot_width, legend_width] * ncols
+    grid = gridspec.GridSpec(
+        nrows,
+        ncols * 2,
+        figure=fig,
+        width_ratios=width_ratios,
+        wspace=0.08,
+        hspace=0.35,
+    )
+
+    for idx, color_key in enumerate(valid_colors):
+        row = idx // ncols
+        col = idx % ncols
+        ax = fig.add_subplot(grid[row, col * 2])
+        legend_ax = fig.add_subplot(grid[row, col * 2 + 1])
+        legend_ax.axis("off")
+
+        values = adata.obs[color_key]
+        if pd.api.types.is_categorical_dtype(values) or values.dtype == object:
+            categories = pd.Categorical(values)
+            label_strings = categories.categories.astype(str)
+            palette = sns.color_palette("tab20", n_colors=len(label_strings))
+            color_map = dict(zip(label_strings, palette))
+            codes = categories.codes
+            mapped = np.empty(len(codes), dtype=object)
+            valid = codes >= 0
+            if np.any(valid):
+                valid_codes = codes[valid]
+                mapped_values = np.empty(len(valid_codes), dtype=object)
+                for i, idx_code in enumerate(valid_codes):
+                    mapped_values[i] = palette[idx_code]
+                mapped[valid] = mapped_values
+            mapped[~valid] = "#bdbdbd"
+            ax.scatter(
+                embedding[:, 0],
+                embedding[:, 1],
+                c=list(mapped),
+                s=point_size,
+                alpha=alpha,
+                linewidths=0,
+            )
+            handles = [
+                patches.Patch(color=color_map[label], label=str(label)) for label in label_strings
+            ]
+            legend_ax.legend(
+                handles=handles,
+                loc="center left",
+                bbox_to_anchor=(0.0, 0.5),
+                fontsize=8,
+                frameon=False,
+                title=str(color_key),
+            )
+        else:
+            values_float = values.astype(float)
+
+            scatter = ax.scatter(
+                embedding[:, 0],
+                embedding[:, 1],
+                c=values_float,
+                cmap="viridis",
+                s=point_size,
+                alpha=alpha,
+                linewidths=0,
+            )
+
+            colorbar = fig.colorbar(
+                scatter,
+                ax=ax,
+                fraction=0.04,   # ← thickness (default ~0.15)
+                pad=0.02,        # gap from plot
+                shrink=0.9,      # slightly shorter
+                aspect=30        # larger = thinner
+            )
+
+            # Ticks (5 evenly spaced)
+            vmin, vmax = np.nanmin(values_float), np.nanmax(values_float)
+            ticks = np.linspace(vmin, vmax, 5)
+            colorbar.set_ticks(ticks)
+            colorbar.ax.tick_params(labelsize=8, length=2)
+            colorbar.set_label(str(color_key), fontsize=9)
+
+        ax.set_xlabel(f"Component 1")
+        ax.set_ylabel(f"Component 2")
+        ax.set_title(f"{color_key}")
+
+    filename_prefix = prefix or basis
+    output_file = output_path / f"{filename_prefix}_grid.png"
+    fig.suptitle(f"{basis}")
+    fig.tight_layout()
+    fig.savefig(output_file, dpi=200)
+    plt.close(fig)
+    return output_file
+
+
 def plot_umap(
     adata: "ad.AnnData",
     *,
+    subset: str | None = None,
     color: str | Sequence[str],
     output_dir: Path | str,
 ) -> Dict[str, Path]:
     """Plot UMAP embedding with scanpy-style color options."""
-    return plot_embedding(adata, basis="umap", color=color, output_dir=output_dir, prefix="umap")
+    if subset:
+        basis = f"umap_{subset}"
+    else:
+        basis = "umap"
+    return plot_embedding(adata, basis=basis, color=color, output_dir=output_dir, prefix=basis)
+
+
+def plot_umap_grid(
+    adata: "ad.AnnData",
+    *,
+    subset: str | None = None,
+    color: str | Sequence[str],
+    output_dir: Path | str,
+    ncols: int | None = None,
+) -> Path | None:
+    """Plot UMAP embedding grid with scanpy-style color options."""
+    if subset:
+        basis = f"umap_{subset}"
+    else:
+        basis = "umap"
+    return plot_embedding_grid(
+        adata,
+        basis=basis,
+        color=color,
+        output_dir=output_dir,
+        prefix=basis,
+        ncols=ncols,
+    )
 
 
 def plot_pca(
     adata: "ad.AnnData",
     *,
+    subset: str | None = None,
     color: str | Sequence[str],
     output_dir: Path | str,
 ) -> Dict[str, Path]:
     """Plot PCA embedding with scanpy-style color options."""
-    return plot_embedding(adata, basis="pca", color=color, output_dir=output_dir, prefix="pca")
+    if subset:
+        basis = f"pca_{subset}"
+    else:
+        basis = "pca"
+    return plot_embedding(adata, basis=basis, color=color, output_dir=output_dir, prefix=basis)
+
+
+def plot_pca_grid(
+    adata: "ad.AnnData",
+    *,
+    subset: str | None = None,
+    color: str | Sequence[str],
+    output_dir: Path | str,
+    ncols: int | None = None,
+) -> Path | None:
+    """Plot PCA embedding grid with scanpy-style color options."""
+    if subset:
+        basis = f"pca_{subset}"
+    else:
+        basis = "pca"
+    return plot_embedding_grid(
+        adata,
+        basis=basis,
+        color=color,
+        output_dir=output_dir,
+        prefix=basis,
+        ncols=ncols,
+    )
+
+
+def plot_pca_explained_variance(
+    adata: "ad.AnnData",
+    *,
+    subset: str | None = None,
+    output_dir: Path | str,
+    filename: str | None = None,
+    max_pcs: int | None = None,
+) -> Path | None:
+    """Plot per-PC explained variance ratios and cumulative variance.
+
+    Args:
+        adata: AnnData object containing PCA results.
+        subset: Optional PCA subset suffix used by ``calculate_pca``.
+        output_dir: Directory to write the plot into.
+        filename: Optional output filename. Uses a default if not provided.
+        max_pcs: Optional cap on number of PCs to plot.
+
+    Returns:
+        Path to the saved plot, or None if explained variance is unavailable.
+    """
+    if subset:
+        pca_key = f"X_pca_{subset}"
+        default_filename = f"pca_{subset}_explained_variance.png"
+    else:
+        pca_key = "X_pca"
+        default_filename = "pca_explained_variance.png"
+
+    explained_variance_ratio = adata.uns.get(pca_key, {}).get("explained_variance_ratio")
+    if explained_variance_ratio is None:
+        logger.warning("Explained variance ratio not found in adata.uns[%s].", pca_key)
+        return None
+
+    variance = np.asarray(explained_variance_ratio, dtype=float)
+    if variance.size == 0:
+        logger.warning("Explained variance ratio for %s is empty; skipping plot.", pca_key)
+        return None
+
+    if max_pcs is not None:
+        variance = variance[: int(max_pcs)]
+
+    pcs = np.arange(1, variance.size + 1)
+    cumulative = np.cumsum(variance)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / (filename or default_filename)
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(pcs, variance, color="#4C72B0", alpha=0.8, label="Explained variance")
+    ax.plot(pcs, cumulative, color="#DD8452", marker="o", label="Cumulative variance")
+    ax.set_xlabel("Principal component")
+    ax.set_ylabel("Explained variance ratio")
+    ax.set_title("PCA explained variance")
+    ax.set_xticks(pcs)
+    ax.set_ylim(0, max(1.0, cumulative.max() * 1.05))
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+    return output_path

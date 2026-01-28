@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
@@ -13,174 +13,84 @@ logger = get_logger(__name__)
 
 def calculate_umap(
     adata: "ad.AnnData",
-    layer: str | None = "nan_half",
-    var_filters: Sequence[str] | None = None,
-    n_pcs: int = 15,
-    knn_neighbors: int = 100,
+    obsm: str | None = "X_pca",
     overwrite: bool = True,
     threads: int = 8,
     random_state: int | None = 0,
+    output_suffix: str | None = None,
 ) -> "ad.AnnData":
-    """Compute PCA, neighbors, and UMAP embeddings.
-
-    Args:
-        adata: AnnData object to update.
-        layer: Layer name to use for PCA/UMAP (``None`` uses ``adata.X``).
-        var_filters: Optional list of var masks to subset features.
-        n_pcs: Number of principal components.
-        knn_neighbors: Number of neighbors for the graph.
-        overwrite: Whether to recompute embeddings if they exist.
-        threads: Number of OMP threads for computation.
-
-    Returns:
-        anndata.AnnData: Updated AnnData object.
-    """
-    import os
+    """Compute UMAP embedding from an `.obsm` embedding, and store connectivities."""
 
     import numpy as np
-    import scipy.linalg as spla
     import scipy.sparse as sp
 
+    if obsm is None:
+        raise ValueError("obsm must be a key in adata.obsm (e.g., 'X_pca').")
+
+    if obsm not in adata.obsm:
+        raise KeyError(f"`{obsm}` not found in adata.obsm. Available: {list(adata.obsm.keys())}")
+
     umap = require("umap", extra="umap", purpose="UMAP calculation")
-    pynndescent = require("pynndescent", extra="umap", purpose="KNN graph computation")
 
-    os.environ["OMP_NUM_THREADS"] = str(threads)
+    output_obsm = f"X_umap_{output_suffix}" if output_suffix else "X_umap"
+    conn_key = f"connectivities_{obsm}"
 
-    # Step 1: Apply var filter
-    if var_filters:
-        subset_mask = np.logical_or.reduce([adata.var[f].values for f in var_filters])
-        adata_subset = adata[:, subset_mask].copy()
-        logger.info(
-            "Subsetting adata: retained %s features based on filters %s",
-            adata_subset.shape[1],
-            var_filters,
-        )
+    # Decide n_neighbors: prefer stored KNN params, else UMAP default-ish
+    n_neighbors = None
+    knn_uns_key = f"knn_distances_{obsm}"
+    if knn_uns_key in adata.uns:
+        params = adata.uns[knn_uns_key].get("params", {})
+        n_neighbors = params.get("n_neighbors_used", params.get("n_neighbors", None))
+    if n_neighbors is None:
+        n_neighbors = 15  # reasonable default if KNN wasn't precomputed
+        logger.warning("No %r found in adata.uns; defaulting n_neighbors=%d for UMAP.", knn_uns_key, n_neighbors)
+
+    # Build input matrix X and handle NaNs locally
+    X = adata.obsm[obsm]
+    if sp.issparse(X):
+        # UMAP can accept sparse CSR; keep it sparse
+        pass
     else:
-        adata_subset = adata.copy()
-        logger.info("No var filters provided. Using all features.")
+        X = np.asarray(X)
+        if np.isnan(X).any():
+            logger.warning("NaNs detected in %s; filling NaNs with 0.5 for UMAP.", obsm)
+            X = np.nan_to_num(X, nan=0.5)
 
-    # Step 2: NaN handling inside layer
-    if layer:
-        data = adata_subset.layers[layer]
-        if not sp.issparse(data):
-            if np.isnan(data).any():
-                logger.warning("NaNs detected, filling with 0.5 before PCA + neighbors.")
-                data = np.nan_to_num(data, nan=0.5)
-                adata_subset.layers[layer] = data
-            else:
-                logger.info("No NaNs detected.")
-        else:
-            logger.info(
-                "Sparse matrix detected; skipping NaN check (sparse formats typically do not store NaNs)."
-            )
+    if (not overwrite) and (output_obsm in adata.obsm) and (conn_key in adata.obsp):
+        logger.info("UMAP + connectivities already exist and overwrite=False; skipping.")
+        return adata
 
-    # Step 3: PCA + neighbors + UMAP on subset
-    if "X_umap" not in adata_subset.obsm or overwrite:
-        n_pcs = min(adata_subset.shape[1], n_pcs)
-        logger.info("Running PCA with n_pcs=%s", n_pcs)
+    logger.info("Running UMAP (obsm=%s, n_neighbors=%d, metric=euclidean)", obsm, n_neighbors)
 
-        if layer:
-            matrix = adata_subset.layers[layer]
-        else:
-            matrix = adata_subset.X
+    # Note: umap-learn uses numba threading; n_jobs controls parallelism in UMAP
+    # and is ignored when random_state is set (umap-learn behavior).
+    umap_model = umap.UMAP(
+        n_neighbors=int(n_neighbors),
+        n_components=2,
+        metric="euclidean",
+        random_state=random_state,
+        n_jobs=int(threads),
+    )
 
-        if sp.issparse(matrix):
-            logger.warning("Converting sparse matrix to dense for PCA.")
-            matrix = matrix.toarray()
+    embedding = umap_model.fit_transform(X)
+    adata.obsm[output_obsm] = embedding
 
-        matrix = np.asarray(matrix, dtype=float)
-        mean = matrix.mean(axis=0)
-        centered = matrix - mean
+    # UMAP's computed fuzzy graph
+    connectivities = getattr(umap_model, "graph_", None)
+    if connectivities is not None:
+        adata.obsp[conn_key] = connectivities.tocsr() if sp.issparse(connectivities) else connectivities
+    else:
+        logger.warning("UMAP model did not expose graph_; connectivities not stored.")
 
-        if centered.shape[0] == 0 or centered.shape[1] == 0:
-            raise ValueError("PCA requires a non-empty matrix.")
-
-        if n_pcs <= 0:
-            raise ValueError("n_pcs must be positive.")
-
-        if centered.shape[1] <= n_pcs:
-            n_pcs = centered.shape[1]
-
-        if centered.shape[0] < n_pcs:
-            n_pcs = centered.shape[0]
-
-        u, s, vt = spla.svd(centered, full_matrices=False)
-
-        u = u[:, :n_pcs]
-        s = s[:n_pcs]
-        vt = vt[:n_pcs]
-
-        adata_subset.obsm["X_pca"] = u * s
-        adata_subset.varm["PCs"] = vt.T
-
-        logger.info("Running neighborhood graph with pynndescent (n_neighbors=%s)", knn_neighbors)
-        n_neighbors = min(knn_neighbors, max(1, adata_subset.n_obs - 1))
-        nn_index = pynndescent.NNDescent(
-            adata_subset.obsm["X_pca"],
-            n_neighbors=n_neighbors,
-            metric="euclidean",
-            random_state=random_state,
-            n_jobs=threads,
-        )
-        knn_indices, knn_dists = nn_index.neighbor_graph
-
-        rows = np.repeat(np.arange(adata_subset.n_obs), n_neighbors)
-        cols = knn_indices.reshape(-1)
-        distances = sp.coo_matrix(
-            (knn_dists.reshape(-1), (rows, cols)),
-            shape=(adata_subset.n_obs, adata_subset.n_obs),
-        ).tocsr()
-        adata_subset.obsp["distances"] = distances
-
-        logger.info("Running UMAP")
-        umap_model = umap.UMAP(
-            n_neighbors=n_neighbors,
-            n_components=2,
-            metric="euclidean",
-            random_state=random_state,
-        )
-        adata_subset.obsm["X_umap"] = umap_model.fit_transform(adata_subset.obsm["X_pca"])
-
-        try:
-            from umap.umap_ import fuzzy_simplicial_set
-
-            fuzzy_result = fuzzy_simplicial_set(
-                adata_subset.obsm["X_pca"],
-                n_neighbors=n_neighbors,
-                random_state=random_state,
-                metric="euclidean",
-                knn_indices=knn_indices,
-                knn_dists=knn_dists,
-            )
-            connectivities = fuzzy_result[0] if isinstance(fuzzy_result, tuple) else fuzzy_result
-        except TypeError:
-            connectivities = umap_model.graph_
-
-        adata_subset.obsp["connectivities"] = connectivities
-
-    # Step 4: Store results in original adata
-    adata.obsm["X_pca"] = adata_subset.obsm["X_pca"]
-    adata.obsm["X_umap"] = adata_subset.obsm["X_umap"]
-    adata.obsp["distances"] = adata_subset.obsp["distances"]
-    adata.obsp["connectivities"] = adata_subset.obsp["connectivities"]
-    adata.uns["neighbors"] = {
+    adata.uns[output_obsm] = {
         "params": {
-            "n_neighbors": knn_neighbors,
-            "method": "pynndescent",
+            "obsm": obsm,
+            "n_neighbors": int(n_neighbors),
             "metric": "euclidean",
+            "random_state": random_state,
+            "n_jobs": int(threads),
         }
     }
 
-    # Fix varm["PCs"] shape mismatch
-    pc_matrix = np.zeros((adata.shape[1], adata_subset.varm["PCs"].shape[1]))
-    if var_filters:
-        subset_mask = np.logical_or.reduce([adata.var[f].values for f in var_filters])
-        pc_matrix[subset_mask, :] = adata_subset.varm["PCs"]
-    else:
-        pc_matrix = adata_subset.varm["PCs"]  # No subsetting case
-
-    adata.varm["PCs"] = pc_matrix
-
-    logger.info("Stored: adata.obsm['X_pca'] and adata.obsm['X_umap']")
-
+    logger.info("Stored: adata.obsm[%s]=%s", output_obsm, embedding.shape)
     return adata
