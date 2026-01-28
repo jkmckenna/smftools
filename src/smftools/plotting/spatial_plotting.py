@@ -35,6 +35,8 @@ def plot_rolling_nn_and_layer(
     max_nan_fraction: float | None = None,
     var_valid_fraction_col: str | None = None,
     var_nan_fraction_col: str | None = None,
+    read_span_layer: str | None = "read_span_mask",
+    outside_read_color: str = "#bdbdbd",
     figsize: tuple[float, float] = (14, 10),
     right_panel_var_mask=None,  # optional boolean mask over subset.var to reduce width
     robust: bool = True,
@@ -64,6 +66,8 @@ def plot_rolling_nn_and_layer(
         max_nan_fraction: Maximum allowed NaN fraction per position (filtering columns).
         var_valid_fraction_col: ``subset.var`` column with valid fractions (1 - NaN fraction).
         var_nan_fraction_col: ``subset.var`` column with NaN fractions.
+        read_span_layer: Layer name with read span mask; 0 values are treated as outside read.
+        outside_read_color: Color used to show positions outside each read.
         figsize: Figure size for the combined plot.
         right_panel_var_mask: Optional boolean mask over ``subset.var`` for the right panel.
         robust: Use robust color scaling in seaborn.
@@ -159,8 +163,22 @@ def plot_rolling_nn_and_layer(
             raise ValueError("right_panel_var_mask must align with subset.var_names.")
         L_df = L_df.loc[:, right_panel_var_mask]
 
+    read_span_mask = None
+    if read_span_layer and read_span_layer in subset.layers:
+        span = subset.layers[read_span_layer]
+        span = span.toarray() if hasattr(span, "toarray") else np.asarray(span)
+        span_df = pd.DataFrame(
+            span[valid], index=subset.obs_names[valid], columns=subset.var_names
+        )
+        span_df.index = span_df.index.astype(str)
+        if right_panel_var_mask is not None:
+            span_df = span_df.loc[:, right_panel_var_mask]
+        read_span_mask = span_df.loc[ordered_index].to_numpy() == 0
+
     L_ord = L_df.loc[ordered_index]
     L_plot = L_ord.fillna(fill_layer_value)
+    if read_span_mask is not None:
+        L_plot = L_plot.mask(read_span_mask)
 
     fig = plt.figure(figsize=figsize)
     gs = fig.add_gridspec(
@@ -224,10 +242,14 @@ def plot_rolling_nn_and_layer(
         y_ticks=[0.0, 0.5, 1.0],
     )
 
+    layer_cmap = plt.get_cmap("coolwarm").copy()
+    if read_span_mask is not None:
+        layer_cmap.set_bad(outside_read_color)
+
     sns.heatmap(
         L_plot,
         ax=ax2,
-        cmap="coolwarm",
+        cmap=layer_cmap,
         xticklabels=False,
         yticklabels=False,
         robust=robust,
