@@ -6,7 +6,7 @@ from typing import Optional, Sequence, Tuple
 
 import anndata as ad
 
-from smftools.constants import LATENT_DIR, LOGGING_DIR, SEQUENCE_INTEGER_ENCODING
+from smftools.constants import LATENT_DIR, LOGGING_DIR, SEQUENCE_INTEGER_ENCODING, REFERENCE_STRAND
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -286,7 +286,11 @@ def latent_adata_core(
     umap_dir = latent_dir_dedup / f"01_umap_{SUBSET}"
     nmf_dir = latent_dir_dedup / f"01_nmf_{SUBSET}"
 
-    plotting_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
+    mod_site_layers = []
+    for mod_base in cfg.mod_target_bases:
+        mod_site_layers += [f"Modified_{mod_base}_site_count", f"Fraction_{mod_base}_site_modified"]
+
+    plotting_layers = [cfg.sample_name_col_for_plotting, REFERENCE_STRAND] + mod_site_layers
     plotting_layers += cfg.umap_layers_to_plot
 
     mod_sites_mask = _build_mod_sites_var_filter_mask(
@@ -341,14 +345,6 @@ def latent_adata_core(
         plot_pca_explained_variance(adata, subset=SUBSET, output_dir=pca_dir)
         plot_pca_components(adata, output_dir=pca_dir, suffix=SUBSET)
 
-        # # Component plotting
-        # title = "Component Loadings"
-        # save_path = pca_dir / (title + ".png")
-        # for i in range(10):
-        #     pc = adata.varm["PCs"][:, i] 
-        #     plt.scatter(adata.var_names, pc, label=f"PC{i+1}")
-        # plt.savefig(save_path)
-
     # UMAP
     if umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{umap_dir} already exists. Skipping UMAP plotting.")
@@ -373,9 +369,6 @@ def latent_adata_core(
     pca_dir = latent_dir_dedup / f"01_pca_{SUBSET}"
     umap_dir = latent_dir_dedup / f"01_umap_{SUBSET}"
     nmf_dir = latent_dir_dedup / f"01_nmf_{SUBSET}"
-
-    plotting_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
-    plotting_layers += cfg.umap_layers_to_plot
 
     valid_sites = _build_reference_position_mask(adata, references)
 
