@@ -9,6 +9,7 @@ from smftools.optional_imports import require
 
 if TYPE_CHECKING:
     import anndata as ad
+    import numpy as np
 
 logger = get_logger(__name__)
 
@@ -16,7 +17,7 @@ logger = get_logger(__name__)
 def calculate_nmf(
     adata: "ad.AnnData",
     layer: str | None = "nan_half",
-    var_filters: Sequence[str] | None = None,
+    var_mask: "np.ndarray | Sequence[bool] | None" = None,
     n_components: int = 2,
     max_iter: int = 200,
     random_state: int = 0,
@@ -31,7 +32,7 @@ def calculate_nmf(
     Args:
         adata: AnnData object to update.
         layer: Layer name to use for NMF (``None`` uses ``adata.X``).
-        var_filters: Optional list of var masks to subset features.
+        var_mask: Optional boolean mask to subset features.
         n_components: Number of NMF components to compute.
         max_iter: Maximum number of NMF iterations.
         random_state: Random seed for the NMF initializer.
@@ -62,17 +63,21 @@ def calculate_nmf(
         logger.info("NMF embedding present without components; recomputing to store components.")
 
     subset_mask = None
-    if var_filters:
-        subset_mask = np.logical_or.reduce([adata.var[f].values for f in var_filters])
+    if var_mask is not None:
+        subset_mask = np.asarray(var_mask, dtype=bool)
+        if subset_mask.ndim != 1 or subset_mask.shape[0] != adata.n_vars:
+            raise ValueError(
+                "var_mask must be a 1D boolean array with length matching adata.n_vars."
+            )
         adata_subset = adata[:, subset_mask].copy()
         logger.info(
             "Subsetting adata: retained %s features based on filters %s",
             adata_subset.shape[1],
-            var_filters,
+            "var_mask",
         )
     else:
         adata_subset = adata.copy()
-        logger.info("No var filters provided. Using all features.")
+        logger.info("No var_mask provided. Using all features.")
 
     data = adata_subset.layers[layer] if layer else adata_subset.X
     if issparse(data):
@@ -113,7 +118,7 @@ def calculate_nmf(
         "max_iter": max_iter,
         "random_state": random_state,
         "layer": layer,
-        "var_filters": list(var_filters) if var_filters else None,
+        "var_mask_provided": var_mask is not None,
         "components_key": components_key,
     }
 

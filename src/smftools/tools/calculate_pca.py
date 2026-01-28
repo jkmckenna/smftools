@@ -7,6 +7,7 @@ from smftools.optional_imports import require
 
 if TYPE_CHECKING:
     import anndata as ad
+    import numpy as np
 
 logger = get_logger(__name__)
 
@@ -14,7 +15,7 @@ logger = get_logger(__name__)
 def calculate_pca(
     adata: "ad.AnnData",
     layer: str | None = "nan_half",
-    var_filters: Sequence[str] | None = None,
+    var_mask: "np.ndarray | Sequence[bool] | None" = None,
     n_pcs: int = 15,
     overwrite: bool = True,
     output_suffix: str | None = None,
@@ -33,27 +34,24 @@ def calculate_pca(
         return adata
 
     # --- Build feature subset mask (over vars) ---
-    if var_filters:
-        missing = [f for f in var_filters if f not in adata.var.columns]
-        if missing:
-            raise KeyError(f"var_filters not found in adata.var: {missing}")
-
-        masks = []
-        for f in var_filters:
-            m = np.asarray(adata.var[f].values)
-            if m.dtype != bool:
-                m = m.astype(bool)
-            masks.append(m)
-
-        subset_mask = np.logical_or.reduce(masks)
+    if var_mask is not None:
+        subset_mask = np.asarray(var_mask, dtype=bool)
+        if subset_mask.ndim != 1 or subset_mask.shape[0] != adata.n_vars:
+            raise ValueError(
+                "var_mask must be a 1D boolean array with length matching adata.n_vars."
+            )
         n_vars_used = int(subset_mask.sum())
         if n_vars_used == 0:
-            raise ValueError(f"var_filters={var_filters} retained 0 features.")
-        logger.info("Subsetting vars: retained %d / %d features from filters %s", n_vars_used, adata.n_vars, var_filters)
+            raise ValueError("var_mask retained 0 features.")
+        logger.info(
+            "Subsetting vars: retained %d / %d features from var_mask",
+            n_vars_used,
+            adata.n_vars,
+        )
     else:
         subset_mask = slice(None)
         n_vars_used = adata.n_vars
-        logger.info("No var_filters provided; using all %d features.", adata.n_vars)
+        logger.info("No var_mask provided; using all %d features.", adata.n_vars)
 
     # --- Pull matrix view ---
     if layer is None:
@@ -151,7 +149,7 @@ def calculate_pca(
     adata.uns[obsm_output] = {
         "params": {
             "layer": layer_used,
-            "var_filters": list(var_filters) if var_filters else None,
+            "var_mask_provided": var_mask is not None,
             "n_pcs_requested": n_pcs_requested,
             "n_pcs_used": int(n_pcs_used),
             "used_sklearn": used_sklearn,
