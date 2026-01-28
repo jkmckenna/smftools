@@ -347,7 +347,7 @@ def latent_adata_core(
     # ============================================================
     # 3) Tensor factorization of OHE sequences with mask layer
     # ============================================================
-    SUBSET = "sequence"
+    SUBSET = "full_ohe_sequence_N_masked"
 
     cp_sequence_dir = latent_dir_dedup / f"02_cp_{SUBSET}"
 
