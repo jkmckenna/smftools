@@ -366,9 +366,53 @@ def latent_adata_core(
         plot_nmf_components(adata, output_dir=nmf_dir)
 
     # ============================================================
-    # 3) Tensor factorization of full OHE sequences with mask layer
+    # 3) CP PARAFAC factorization of full OHE sequences with mask layer
     # ============================================================
     SUBSET = "full_ohe_sequence_N_masked"
+
+    cp_sequence_dir = latent_dir_dedup / f"02_cp_{SUBSET}"
+
+    # Calculate CP tensor factorization
+    if SEQUENCE_INTEGER_ENCODING not in adata.layers:
+        logger.warning(
+            "Layer %s not found; skipping sequence integer encoding CP.",
+            SEQUENCE_INTEGER_ENCODING,
+        )
+    else:
+        adata = calculate_sequence_cp_decomposition(
+            adata,
+            layer=SEQUENCE_INTEGER_ENCODING,
+            var_mask=_build_reference_position_mask(adata, references),
+            var_mask_name="shared_reference_positions",
+            rank=5,
+            embedding_key=f"X_cp_{SUBSET}",
+            components_key=f"H_cp_{SUBSET}",
+            uns_key=f"cp_{SUBSET}",
+            non_negative=False,
+        )
+
+    # CP decomposition using sequence integer encoding (no var filters)
+    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{cp_sequence_dir} already exists. Skipping sequence CP plotting.")
+    else:
+        make_dirs([cp_sequence_dir])
+        plot_embedding_grid(
+            adata,
+            basis=f"cp_{SUBSET}",
+            color=plotting_layers,
+            output_dir=cp_sequence_dir,
+        )
+        plot_cp_sequence_components(
+            adata,
+            output_dir=cp_sequence_dir,
+            components_key=f"H_cp_{SUBSET}",
+            uns_key=f"cp_{SUBSET}",
+        )
+
+    # ============================================================
+    # 4) Non-negative CP PARAFAC factorization of full OHE sequences with mask layer
+    # ============================================================
+    SUBSET = "full_ohe_sequence_N_masked_non_negative"
 
     cp_sequence_dir = latent_dir_dedup / f"02_cp_{SUBSET}"
 
