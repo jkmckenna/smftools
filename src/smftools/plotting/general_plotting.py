@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from smftools.logging_utils import get_logger
+
 from smftools.plotting.hmm_plotting import (
     combined_hmm_length_clustermap,
     combined_hmm_raw_clustermap,
@@ -25,6 +27,8 @@ from smftools.plotting.spatial_plotting import (
     combined_raw_clustermap,
     plot_rolling_nn_and_layer,
 )
+
+logger = get_logger(__name__)
 
 __all__ = [
     "combined_hmm_length_clustermap",

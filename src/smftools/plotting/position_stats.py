@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
+
+logger = get_logger(__name__)
 
 
 def plot_volcano_relative_risk(
@@ -29,10 +32,11 @@ def plot_volcano_relative_risk(
 
     plt = require("matplotlib.pyplot", extra="plotting", purpose="relative risk plots")
 
+    logger.info("Plotting volcano relative risk plots.")
     for ref, group_results in results_dict.items():
         for group_label, (results_df, _) in group_results.items():
             if results_df.empty:
-                print(f"Skipping empty results for {ref} / {group_label}")
+                logger.warning("Skipping empty results for %s / %s.", ref, group_label)
                 continue
 
             # Split by site type
@@ -100,7 +104,7 @@ def plot_volcano_relative_risk(
                 )
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
-                print(f"Saved: {out_file}")
+                logger.info("Saved volcano relative risk plot to %s.", out_file)
 
             plt.show()
 
@@ -131,10 +135,11 @@ def plot_bar_relative_risk(
 
     plt = require("matplotlib.pyplot", extra="plotting", purpose="relative risk plots")
 
+    logger.info("Plotting bar relative risk plots.")
     for ref, group_data in results_dict.items():
         for group_label, (df, _) in group_data.items():
             if df.empty:
-                print(f"Skipping empty result for {ref} / {group_label}")
+                logger.warning("Skipping empty result for %s / %s.", ref, group_label)
                 continue
 
             df = df.copy()
@@ -206,7 +211,7 @@ def plot_bar_relative_risk(
                 )
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
-                print(f"📁 Saved: {out_file}")
+                logger.info("Saved bar relative risk plot to %s.", out_file)
 
             plt.show()
 
@@ -239,6 +244,8 @@ def plot_positionwise_matrix(
 
     plt = require("matplotlib.pyplot", extra="plotting", purpose="position stats plots")
     sns = require("seaborn", extra="plotting", purpose="position stats plots")
+
+    logger.info("Plotting positionwise matrices for key '%s'.", key)
 
     def find_closest_index(index, target):
         """Find the index value closest to a target value."""
@@ -357,7 +364,9 @@ def plot_positionwise_matrix(
                         va="center",
                         fontsize=10,
                     )
-                    print(f"Error plotting line for {highlight_axis}={pos}: {e}")
+                    logger.warning(
+                        "Error plotting line for %s=%s: %s", highlight_axis, pos, e
+                    )
 
             line_ax.set_title(f"{highlight_axis.capitalize()} Profile(s)")
             line_ax.set_xlabel(f"{'Column' if highlight_axis == 'row' else 'Row'} position")
@@ -373,7 +382,7 @@ def plot_positionwise_matrix(
             safe_name = group.replace("=", "").replace("__", "_").replace(",", "_")
             out_file = os.path.join(save_path, f"{key}_{safe_name}.png")
             plt.savefig(out_file, dpi=300)
-            print(f"📁 Saved: {out_file}")
+            logger.info("Saved positionwise matrix plot to %s.", out_file)
 
         plt.show()
 
@@ -423,6 +432,7 @@ def plot_positionwise_matrix_grid(
     grid_spec = require("matplotlib.gridspec", extra="plotting", purpose="position stats plots")
     GridSpec = grid_spec.GridSpec
 
+    logger.info("Plotting positionwise matrix grid for key '%s'.", key)
     matrices = adata.uns[key]
     group_labels = list(matrices.keys())
 
@@ -515,7 +525,7 @@ def plot_positionwise_matrix_grid(
             os.makedirs(save_path, exist_ok=True)
             fname = outer_label.replace("_", "").replace("=", "") + ".png"
             plt.savefig(os.path.join(save_path, fname), dpi=300, bbox_inches="tight")
-            print(f"Saved {fname}")
+            logger.info("Saved positionwise matrix grid plot to %s.", fname)
 
         plt.close(fig)
 
@@ -527,4 +537,4 @@ def plot_positionwise_matrix_grid(
         for outer_label in parsed["outer"].unique():
             plot_one_grid(outer_label)
 
-    print("Finished plotting all grids.")
+    logger.info("Finished plotting all grids.")
