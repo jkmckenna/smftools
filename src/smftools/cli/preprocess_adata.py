@@ -574,7 +574,7 @@ def preprocess_adata_core(
     elif not adata_unique.uns.get("mismatch_integer_encoding_map"):
         logger.debug("Mismatch encoding map not found; skipping mismatch base frequency plots.")
     else:
-        pp_mismatch_base_freq_dir = preprocess_directory / "08_mismatch_base_frequency_plots"
+        pp_mismatch_base_freq_dir = preprocess_directory / "deduplicated" / "08_mismatch_base_frequency_plots"
         if pp_mismatch_base_freq_dir.is_dir() and not cfg.force_redo_preprocessing:
             logger.debug(
                 f"{pp_mismatch_base_freq_dir} already exists. Skipping mismatch base frequency plots."
@@ -587,7 +587,7 @@ def preprocess_adata_core(
                 reference_col=cfg.reference_column,
                 mismatch_layer=cfg.mismatch_frequency_layer,
                 read_span_layer=cfg.mismatch_frequency_read_span_layer,
-                exclude_mod_sites=cfg.mismatch_base_frequency_exclude_mod_sites,
+                exclude_mod_sites=True, #cfg.mismatch_base_frequency_exclude_mod_sites,
                 mod_site_bases=cfg.mod_target_bases,
                 save_path=pp_mismatch_base_freq_dir,
             )

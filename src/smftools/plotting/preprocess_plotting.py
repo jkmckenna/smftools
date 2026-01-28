@@ -935,7 +935,7 @@ def plot_mismatch_base_frequency_by_position(
             for base_label in sorted(base_freqs.keys()):
                 normalized_base = base_label if base_label in {"A", "C", "G", "T"} else "OTHER"
                 color = DNA_5COLOR_PALETTE.get(normalized_base, DNA_5COLOR_PALETTE["OTHER"])
-                ax.plot(positions, base_freqs[base_label], label=base_label, color=color, linewidth=1)
+                ax.scatter(positions, base_freqs[base_label], label=base_label, color=color, linewidth=1)
 
             ax.set_yscale("log")
             ax.set_xlabel("Position")
