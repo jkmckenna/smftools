@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
-from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
+from smftools.constants import BASE_QUALITY_SCORES, MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
 from smftools.logging_utils import get_logger
 
 if TYPE_CHECKING:
@@ -19,6 +19,7 @@ def append_mismatch_frequency_sites(
     ref_column: str = "Reference_strand",
     mismatch_layer: str = "mismatch_integer_encoding",
     read_span_layer: str = "read_span_mask",
+    quality_layer: str | None = None,
     mismatch_frequency_range: Sequence[float] | None = (0.05, 0.95),
     uns_flag: str = "append_mismatch_frequency_sites_performed",
     force_redo: bool = False,
@@ -31,6 +32,7 @@ def append_mismatch_frequency_sites(
         ref_column: Obs column defining reference categories.
         mismatch_layer: Layer containing mismatch integer encodings.
         read_span_layer: Layer containing read span masks (1=covered, 0=not covered).
+        quality_layer: Layer containing base quality scores for Q-value based error rates.
         mismatch_frequency_range: Lower/upper bounds (inclusive) for variable site flagging.
         uns_flag: Flag in ``adata.uns`` indicating prior completion.
         force_redo: Whether to rerun even if ``uns_flag`` is set.
@@ -72,6 +74,16 @@ def append_mismatch_frequency_sites(
             "Read span mask '%s' not found; mismatch frequencies will be computed over all reads.",
             read_span_layer,
         )
+
+    if quality_layer is None:
+        if BASE_QUALITY_SCORES in adata.layers:
+            quality_layer = BASE_QUALITY_SCORES
+        elif "base_qualities" in adata.layers:
+            quality_layer = "base_qualities"
+
+    if quality_layer is not None and quality_layer not in adata.layers:
+        logger.debug("Quality layer '%s' not found; falling back to range flagging.", quality_layer)
+        quality_layer = None
 
     references = adata.obs[ref_column].cat.categories
     n_vars = adata.shape[1]
@@ -125,11 +137,28 @@ def append_mismatch_frequency_sites(
         )
         frequency_values = np.where(ref_position_mask.values, frequency_values, np.nan)
 
-        variable_flags = (
-            (frequency_values >= lower_bound)
-            & (frequency_values <= upper_bound)
-            & ref_position_mask.values
-        )
+        mean_error_rate: np.ndarray | None = None
+        if quality_layer is not None:
+            quality_matrix = np.asarray(adata.layers[quality_layer][ref_mask]).astype(float)
+            quality_matrix[quality_matrix < 0] = np.nan
+            if has_span_mask:
+                quality_matrix = np.where(coverage_mask, quality_matrix, np.nan)
+            error_matrix = np.power(10.0, -quality_matrix / 10.0)
+            mean_error_rate = np.nanmean(error_matrix, axis=0)
+            mean_error_rate = np.where(ref_position_mask.values, mean_error_rate, np.nan)
+
+        if mean_error_rate is None:
+            variable_flags = (
+                (frequency_values >= lower_bound)
+                & (frequency_values <= upper_bound)
+                & ref_position_mask.values
+            )
+        else:
+            variable_flags = (
+                (frequency_values > mean_error_rate)
+                & ref_position_mask.values
+                & np.isfinite(mean_error_rate)
+            )
 
         base_counts_by_int: dict[int, np.ndarray] = {}
         for base_int in base_int_to_label:

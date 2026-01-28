@@ -17,6 +17,15 @@ def test_append_mismatch_frequency_sites_adds_expected_vars():
         dtype=np.int16,
     )
     read_span_mask = np.ones_like(mismatch_matrix, dtype=np.int16)
+    quality_matrix = np.array(
+        [
+            [30, 2, 20],  # ref1 read1
+            [30, 2, 20],  # ref1 read2
+            [10, 10, 10],  # ref2 read1
+            [10, 10, 10],  # ref2 read2
+        ],
+        dtype=np.int16,
+    )
 
     obs = pd.DataFrame({"Reference_strand": ["ref1", "ref1", "ref2", "ref2"]})
     obs["Reference_strand"] = obs["Reference_strand"].astype("category")
@@ -27,6 +36,7 @@ def test_append_mismatch_frequency_sites_adds_expected_vars():
     adata = ad.AnnData(X=np.zeros(mismatch_matrix.shape), obs=obs, var=var)
     adata.layers["mismatch_integer_encoding"] = mismatch_matrix
     adata.layers["read_span_mask"] = read_span_mask
+    adata.layers["base_quality_scores"] = quality_matrix
     adata.uns["mismatch_integer_encoding_map"] = mismatch_map
 
     append_mismatch_frequency_sites(
@@ -34,7 +44,7 @@ def test_append_mismatch_frequency_sites_adds_expected_vars():
         ref_column="Reference_strand",
         mismatch_layer="mismatch_integer_encoding",
         read_span_layer="read_span_mask",
-        mismatch_frequency_range=(0.4, 0.6),
+        quality_layer="base_quality_scores",
     )
 
     assert "ref1_mismatch_frequency" in adata.var
@@ -53,7 +63,7 @@ def test_append_mismatch_frequency_sites_adds_expected_vars():
         equal_nan=True,
     )
 
-    assert adata.var["ref1_variable_sequence_site"].tolist() == [True, True, False]
+    assert adata.var["ref1_variable_sequence_site"].tolist() == [True, False, False]
     assert adata.var["ref2_variable_sequence_site"].tolist() == [False, False, True]
 
     assert adata.var["ref1_mismatch_base_frequencies"].iloc[0] == [("A", 0.5)]
