@@ -793,6 +793,12 @@ def plot_mismatch_base_frequency_by_position(
 
         return mod_mask
 
+    def _get_reference_base_series(subset, ref_name: str) -> pd.Series | None:
+        for col in ("Reference_strand_FASTA_sequence_base", f"{ref_name}_FASTA_sequence_base"):
+            if col in subset.var.columns:
+                return subset.var[col].astype("string")
+        return None
+
     if mismatch_layer not in adata.layers:
         raise KeyError(f"Layer '{mismatch_layer}' not found in adata.layers")
 
@@ -807,6 +813,8 @@ def plot_mismatch_base_frequency_by_position(
     }
     if not base_int_to_label:
         raise ValueError("Mismatch encoding map missing base labels.")
+
+    base_label_to_int = {label: int_val for int_val, label in base_int_to_label.items()}
 
     results: List[Dict[str, Any]] = []
     save_path = Path(save_path) if save_path is not None else None
@@ -863,10 +871,24 @@ def plot_mismatch_base_frequency_by_position(
             if read_span_layer in subset.layers:
                 span_matrix = np.asarray(subset.layers[read_span_layer])
                 coverage_mask = span_matrix > 0
-                coverage_counts = coverage_mask.sum(axis=0).astype(float)
             else:
                 coverage_mask = np.ones_like(mismatch_matrix, dtype=bool)
-                coverage_counts = np.full(mismatch_matrix.shape[1], mismatch_matrix.shape[0])
+
+            ref_bases = _get_reference_base_series(subset, str(ref))
+            ref_lower = str(ref).lower()
+            if ref_bases is not None:
+                target_base = None
+                if "top" in ref_lower:
+                    target_base = "C"
+                elif "bottom" in ref_lower:
+                    target_base = "G"
+                if target_base in base_label_to_int:
+                    target_int = base_label_to_int[target_base]
+                    ref_base_mask = np.asarray(ref_bases.values == target_base, dtype=bool)
+                    ignore_mask = (mismatch_matrix == target_int) & ref_base_mask[None, :]
+                    coverage_mask = coverage_mask & ~ignore_mask
+
+            coverage_counts = coverage_mask.sum(axis=0).astype(float)
 
             ref_position_mask = subset.var.get(f"position_in_{ref}")
             if ref_position_mask is None:

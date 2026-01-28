@@ -82,3 +82,39 @@ def test_plot_mismatch_base_frequency_by_position_excludes_mod_sites(tmp_path):
     assert len(results) == 4
     for entry in results:
         assert entry["n_positions"] == 2
+
+
+def test_plot_mismatch_base_frequency_by_position_ignores_strand_base_mismatches(tmp_path):
+    matplotlib.use("Agg")
+
+    mismatch_matrix = np.array(
+        [
+            [1, 0, 2],
+            [1, 3, 0],
+            [0, 2, 1],
+            [3, 2, 0],
+        ]
+    )
+    adata = ad.AnnData(X=np.zeros((4, 3)))
+    adata.layers["mismatch_integer_encoding"] = mismatch_matrix
+    adata.layers["read_span_mask"] = np.ones_like(mismatch_matrix)
+    adata.obs["Sample_Names"] = pd.Categorical(["S1", "S1", "S1", "S1"])
+    adata.obs["Reference_strand"] = pd.Categorical(
+        ["ref_top", "ref_top", "ref_bottom", "ref_bottom"]
+    )
+    adata.var_names = [f"pos{i}" for i in range(3)]
+    adata.var["Reference_strand_FASTA_sequence_base"] = pd.Series(["C", "G", "A"])
+    adata.uns["mismatch_integer_encoding_map"] = {
+        "A": 0,
+        "C": 1,
+        "G": 2,
+        "T": 3,
+        "N": 4,
+        "PAD": 5,
+    }
+
+    results = plot_mismatch_base_frequency_by_position(adata, save_path=tmp_path)
+
+    assert len(results) == 2
+    for entry in results:
+        assert entry["n_positions"] == 2
