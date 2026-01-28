@@ -840,6 +840,7 @@ class ExperimentConfig:
     mismatch_frequency_range: Sequence[float] = field(default_factory=lambda: [0.05, 0.95])
     mismatch_frequency_layer: str = "mismatch_integer_encoding"
     mismatch_frequency_read_span_layer: str = "read_span_mask"
+    mismatch_base_frequency_exclude_mod_sites: bool = False
 
     # Spatial Analysis - Clustermap params
     layer_for_clustermap_plotting: Optional[str] = "nan0_0minus1"

@@ -14,6 +14,7 @@ _LAZY_ATTRS = {
     "plot_embedding": "smftools.plotting.latent_plotting",
     "plot_embedding_grid": "smftools.plotting.latent_plotting",
     "plot_read_span_quality_clustermaps": "smftools.plotting.preprocess_plotting",
+    "plot_mismatch_base_frequency_by_position": "smftools.plotting.preprocess_plotting",
     "plot_pca": "smftools.plotting.latent_plotting",
     "plot_pca_grid": "smftools.plotting.latent_plotting",
     "plot_pca_explained_variance": "smftools.plotting.latent_plotting",

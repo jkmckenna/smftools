@@ -196,6 +196,7 @@ def preprocess_adata_core(
 
     from ..metadata import record_smftools_metadata
     from ..plotting import (
+        plot_mismatch_base_frequency_by_position,
         plot_read_qc_histograms,
         plot_read_span_quality_clustermaps,
         plot_sequence_integer_encoding_clustermaps,
@@ -563,6 +564,33 @@ def preprocess_adata_core(
         bypass=cfg.bypass_append_mismatch_frequency_sites,
         force_redo=cfg.force_redo_append_mismatch_frequency_sites,
     )
+
+    ############################################### Plot mismatch base frequencies ###############################################
+    if cfg.mismatch_frequency_layer not in adata_unique.layers:
+        logger.debug(
+            "Mismatch layer '%s' not found; skipping mismatch base frequency plots.",
+            cfg.mismatch_frequency_layer,
+        )
+    elif not adata_unique.uns.get("mismatch_integer_encoding_map"):
+        logger.debug("Mismatch encoding map not found; skipping mismatch base frequency plots.")
+    else:
+        pp_mismatch_base_freq_dir = preprocess_directory / "08_mismatch_base_frequency_plots"
+        if pp_mismatch_base_freq_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(
+                f"{pp_mismatch_base_freq_dir} already exists. Skipping mismatch base frequency plots."
+            )
+        else:
+            make_dirs([pp_mismatch_base_freq_dir])
+            plot_mismatch_base_frequency_by_position(
+                adata_unique,
+                sample_col=cfg.sample_name_col_for_plotting,
+                reference_col=cfg.reference_column,
+                mismatch_layer=cfg.mismatch_frequency_layer,
+                read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                exclude_mod_sites=cfg.mismatch_base_frequency_exclude_mod_sites,
+                mod_site_bases=cfg.mod_target_bases,
+                save_path=pp_mismatch_base_freq_dir,
+            )
 
     ############################################### Plot integer sequence encoding clustermaps ###############################################
     if "sequence_integer_encoding" not in adata.layers:
