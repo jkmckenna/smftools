@@ -1881,6 +1881,10 @@ def modkit_extract_to_adata(
                     f"{record}_{strand}_{mapping_dir}_consensus_sequence_from_all_samples"
                 ] = consensus_sequence_list
 
+    from .h5ad_functions import append_reference_strand_quality_stats
+
+    append_reference_strand_quality_stats(final_adata)
+
     if input_already_demuxed:
         final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
         final_adata.obs[DEMUX_TYPE] = final_adata.obs[DEMUX_TYPE].astype("category")
