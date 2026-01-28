@@ -168,6 +168,7 @@ mismatch_frequency_range:
   - 0.99
 mismatch_frequency_layer: "mismatch_integer_encoding"
 mismatch_frequency_read_span_layer: "read_span_mask"
+mismatch_base_frequency_exclude_mod_sites: False
 
 ######## smftools spatial params #########
 invert_adata: False # Whether to invert the AnnData along the positions axis.

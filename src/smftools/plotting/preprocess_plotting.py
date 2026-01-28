@@ -720,3 +720,218 @@ def plot_read_span_quality_clustermaps(
             )
 
     return results
+
+
+def plot_mismatch_base_frequency_by_position(
+    adata,
+    sample_col: str = "Sample_Names",
+    reference_col: str = "Reference_strand",
+    mismatch_layer: str = "mismatch_integer_encoding",
+    read_span_layer: str = "read_span_mask",
+    exclude_mod_sites: bool = False,
+    mod_site_bases: Sequence[str] | None = None,
+    min_quality: float | None = None,
+    min_length: int | None = None,
+    min_mapped_length_to_reference_length_ratio: float | None = None,
+    demux_types: Sequence[str] = ("single", "double", "already"),
+    save_path: str | Path | None = None,
+) -> List[Dict[str, Any]]:
+    """Plot mismatch base frequencies by position per sample/reference.
+
+    Args:
+        adata: AnnData with mismatch integer encoding layer.
+        sample_col: Column in ``adata.obs`` that identifies samples.
+        reference_col: Column in ``adata.obs`` that identifies references.
+        mismatch_layer: Layer name containing mismatch integer encodings.
+        read_span_layer: Layer name containing read-span masks.
+        exclude_mod_sites: Whether to exclude annotated modification sites.
+        mod_site_bases: Base-context labels used to build mod-site masks (e.g., ``["GpC", "CpG"]``).
+        min_quality: Optional minimum read quality filter.
+        min_length: Optional minimum mapped length filter.
+        min_mapped_length_to_reference_length_ratio: Optional min length ratio filter.
+        demux_types: Allowed ``demux_type`` values, if present in ``adata.obs``.
+        save_path: Optional output directory for saving plots.
+
+    Returns:
+        List of dictionaries with per-plot metadata and output paths.
+    """
+
+    def _mask_or_true(series_name: str, predicate):
+        if series_name not in adata.obs:
+            return pd.Series(True, index=adata.obs.index)
+        s = adata.obs[series_name]
+        try:
+            return predicate(s)
+        except Exception:
+            return pd.Series(True, index=s.index)
+
+    def _build_mod_site_mask(subset, ref_name: str) -> np.ndarray | None:
+        if not exclude_mod_sites or not mod_site_bases:
+            return None
+
+        mod_site_cols = [f"{ref_name}_{base}_site" for base in mod_site_bases]
+        missing_required = [col for col in mod_site_cols if col not in subset.var.columns]
+        if missing_required:
+            return None
+
+        extra_cols = []
+        if any(base in {"GpC", "CpG"} for base in mod_site_bases):
+            ambiguous_col = f"{ref_name}_ambiguous_GpC_CpG_site"
+            if ambiguous_col in subset.var.columns:
+                extra_cols.append(ambiguous_col)
+
+        mod_site_cols.extend(extra_cols)
+        mod_site_cols = list(dict.fromkeys(mod_site_cols))
+
+        mod_masks = [np.asarray(subset.var[col].values, dtype=bool) for col in mod_site_cols]
+        mod_mask = mod_masks[0] if len(mod_masks) == 1 else np.logical_or.reduce(mod_masks)
+
+        position_col = f"position_in_{ref_name}"
+        if position_col in subset.var.columns:
+            position_mask = np.asarray(subset.var[position_col].values, dtype=bool)
+            mod_mask = np.logical_and(mod_mask, position_mask)
+
+        return mod_mask
+
+    if mismatch_layer not in adata.layers:
+        raise KeyError(f"Layer '{mismatch_layer}' not found in adata.layers")
+
+    mismatch_map = adata.uns.get("mismatch_integer_encoding_map", {}) or {}
+    if not mismatch_map:
+        raise KeyError("Mismatch encoding map not found in adata.uns")
+
+    base_int_to_label = {
+        int(value): str(base)
+        for base, value in mismatch_map.items()
+        if base not in {"N", "PAD"} and isinstance(value, (int, np.integer))
+    }
+    if not base_int_to_label:
+        raise ValueError("Mismatch encoding map missing base labels.")
+
+    results: List[Dict[str, Any]] = []
+    save_path = Path(save_path) if save_path is not None else None
+    if save_path is not None:
+        save_path.mkdir(parents=True, exist_ok=True)
+
+    for col in (sample_col, reference_col):
+        if col not in adata.obs:
+            raise KeyError(f"{col} not in adata.obs")
+        if not isinstance(adata.obs[col].dtype, pd.CategoricalDtype):
+            adata.obs[col] = adata.obs[col].astype("category")
+
+    for ref in adata.obs[reference_col].cat.categories:
+        for sample in adata.obs[sample_col].cat.categories:
+            qmask = _mask_or_true(
+                "read_quality",
+                (lambda s: s >= float(min_quality))
+                if (min_quality is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lm_mask = _mask_or_true(
+                "mapped_length",
+                (lambda s: s >= float(min_length))
+                if (min_length is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lrr_mask = _mask_or_true(
+                "mapped_length_to_reference_length_ratio",
+                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
+                if (min_mapped_length_to_reference_length_ratio is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            demux_mask = _mask_or_true(
+                "demux_type",
+                (lambda s: s.astype("string").isin(list(demux_types)))
+                if (demux_types is not None)
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+
+            row_mask = (
+                (adata.obs[reference_col] == ref)
+                & (adata.obs[sample_col] == sample)
+                & qmask
+                & lm_mask
+                & lrr_mask
+                & demux_mask
+            )
+            if not bool(row_mask.any()):
+                continue
+
+            subset = adata[row_mask, :].copy()
+            mismatch_matrix = np.asarray(subset.layers[mismatch_layer])
+
+            if read_span_layer in subset.layers:
+                span_matrix = np.asarray(subset.layers[read_span_layer])
+                coverage_mask = span_matrix > 0
+                coverage_counts = coverage_mask.sum(axis=0).astype(float)
+            else:
+                coverage_mask = np.ones_like(mismatch_matrix, dtype=bool)
+                coverage_counts = np.full(mismatch_matrix.shape[1], mismatch_matrix.shape[0])
+
+            ref_position_mask = subset.var.get(f"position_in_{ref}")
+            if ref_position_mask is None:
+                position_mask = np.ones(mismatch_matrix.shape[1], dtype=bool)
+            else:
+                position_mask = np.asarray(ref_position_mask.values, dtype=bool)
+
+            mod_site_mask = _build_mod_site_mask(subset, str(ref))
+            if mod_site_mask is not None:
+                position_mask = position_mask & ~mod_site_mask
+
+            position_mask = position_mask & (coverage_counts > 0)
+            if not np.any(position_mask):
+                continue
+
+            positions = np.arange(mismatch_matrix.shape[1])[position_mask]
+            base_freqs: Dict[str, np.ndarray] = {}
+            for base_int, base_label in base_int_to_label.items():
+                base_counts = ((mismatch_matrix == base_int) & coverage_mask).sum(axis=0)
+                freq = np.divide(
+                    base_counts,
+                    coverage_counts,
+                    out=np.full(mismatch_matrix.shape[1], np.nan, dtype=float),
+                    where=coverage_counts > 0,
+                )
+                freq = np.where(freq > 0, freq, np.nan)
+                freq = freq[position_mask]
+                if np.all(np.isnan(freq)):
+                    continue
+                base_freqs[base_label] = freq
+
+            if not base_freqs:
+                continue
+
+            fig, ax = plt.subplots(figsize=(12, 4))
+            for base_label in sorted(base_freqs.keys()):
+                normalized_base = base_label if base_label in {"A", "C", "G", "T"} else "OTHER"
+                color = DNA_5COLOR_PALETTE.get(normalized_base, DNA_5COLOR_PALETTE["OTHER"])
+                ax.plot(positions, base_freqs[base_label], label=base_label, color=color, linewidth=1)
+
+            ax.set_yscale("log")
+            ax.set_xlabel("Position")
+            ax.set_ylabel("Mismatch frequency")
+            ax.set_title(f"{sample} - {ref} mismatch base frequencies")
+            ax.legend(title="Mismatch base", ncol=4, fontsize=9)
+            fig.tight_layout()
+
+            out_file = None
+            if save_path is not None:
+                safe_name = f"{ref}__{sample}__mismatch_base_frequency".replace("=", "").replace(
+                    ",", "_"
+                )
+                out_file = save_path / f"{safe_name}.png"
+                fig.savefig(out_file, dpi=300, bbox_inches="tight")
+                plt.close(fig)
+            else:
+                plt.show()
+
+            results.append(
+                {
+                    "reference": str(ref),
+                    "sample": str(sample),
+                    "n_positions": int(positions.size),
+                    "output_path": str(out_file) if out_file is not None else None,
+                }
+            )
+
+    return results
