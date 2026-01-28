@@ -149,9 +149,18 @@ def plot_sequence_integer_encoding_clustermaps(
             return None
 
         mod_site_cols = [f"{ref_name}_{base}_site" for base in mod_site_bases]
-        missing = [col for col in mod_site_cols if col not in subset.var.columns]
-        if missing:
+        missing_required = [col for col in mod_site_cols if col not in subset.var.columns]
+        if missing_required:
             return None
+
+        extra_cols = []
+        if any(base in {"GpC", "CpG"} for base in mod_site_bases):
+            ambiguous_col = f"{ref_name}_ambiguous_GpC_CpG_site"
+            if ambiguous_col in subset.var.columns:
+                extra_cols.append(ambiguous_col)
+
+        mod_site_cols.extend(extra_cols)
+        mod_site_cols = list(dict.fromkeys(mod_site_cols))
 
         mod_masks = [np.asarray(subset.var[col].values, dtype=bool) for col in mod_site_cols]
         mod_mask = mod_masks[0] if len(mod_masks) == 1 else np.logical_or.reduce(mod_masks)
