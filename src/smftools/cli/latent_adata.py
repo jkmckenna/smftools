@@ -366,7 +366,7 @@ def latent_adata_core(
         plot_nmf_components(adata, output_dir=nmf_dir)
 
     # ============================================================
-    # 3) Tensor factorization of OHE sequences with mask layer
+    # 3) Tensor factorization of full OHE sequences with mask layer
     # ============================================================
     SUBSET = "full_ohe_sequence_N_masked"
 
