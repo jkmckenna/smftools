@@ -73,6 +73,7 @@ def calculate_sequence_cp_decomposition(
     backend: str = "pytorch",
     show_progress: bool = False,
     init: str = "random",
+    non_negative: bool = False,
 ) -> "ad.AnnData":
     """Compute CP decomposition on one-hot encoded sequence data with masking.
 
@@ -91,6 +92,7 @@ def calculate_sequence_cp_decomposition(
         bases: Bases to one-hot encode (in order).
         backend: Tensorly backend to use (``numpy`` or ``pytorch``).
         show_progress: Whether to display progress during factorization if supported.
+        non_negative: Whether to request a non-negative CP decomposition.
 
     Returns:
         Updated AnnData object containing the CP decomposition outputs.
@@ -104,6 +106,10 @@ def calculate_sequence_cp_decomposition(
 
     tensorly = require("tensorly", extra="ml-base", purpose="CP decomposition")
     from tensorly.decomposition import parafac
+    try:
+        from tensorly.decomposition import non_negative_parafac
+    except ImportError:
+        non_negative_parafac = None
 
     tensorly.set_backend(backend)
 
@@ -149,10 +155,21 @@ def calculate_sequence_cp_decomposition(
     }
     import inspect
 
-    if "verbose" in inspect.signature(parafac).parameters:
+    decomposition_fn = parafac
+    if non_negative:
+        if non_negative_parafac is not None:
+            decomposition_fn = non_negative_parafac
+        elif "non_negative" in inspect.signature(parafac).parameters:
+            parafac_kwargs["non_negative"] = True
+        else:
+            raise ValueError(
+                "Non-negative CP decomposition requested but tensorly does not support it."
+            )
+
+    if "verbose" in inspect.signature(decomposition_fn).parameters:
         parafac_kwargs["verbose"] = show_progress
 
-    cp = parafac(one_hot, **parafac_kwargs)
+    cp = decomposition_fn(one_hot, **parafac_kwargs)
 
     if backend == "pytorch":
         weights = cp.weights.detach().cpu().numpy()
@@ -185,6 +202,7 @@ def calculate_sequence_cp_decomposition(
         "base_labels": list(bases),
         "backend": backend,
         "device": str(device),
+        "non_negative": non_negative,
         "var_mask_name": var_mask_name,
         "var_mask_count": int(np.sum(mask_indices)) if mask_indices is not None else None,
     }
