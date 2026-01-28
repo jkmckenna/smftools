@@ -356,6 +356,15 @@ def plot_cp_sequence_components(
         raise ValueError(f"CP position factors must be 2D; got shape {components.shape}.")
 
     position_indices = np.arange(components.shape[0])
+    valid_mask = np.isfinite(components).any(axis=1)
+    if not np.all(valid_mask):
+        dropped = int(np.sum(~valid_mask))
+        logger.info(
+            "Dropping %s CP positions with no finite weights before plotting.",
+            dropped,
+        )
+        components = components[valid_mask]
+        position_indices = position_indices[valid_mask]
 
     if max_positions and components.shape[0] > max_positions:
         original_count = components.shape[0]
@@ -370,43 +379,48 @@ def plot_cp_sequence_components(
             max_positions,
         )
 
-    n_positions, n_components = components.shape
-    component_labels = [f"C{i + 1}" for i in range(n_components)]
+    outputs = {}
+    if components.size == 0:
+        logger.warning("No finite CP position factors available; skipping position plots.")
+    else:
+        n_positions, n_components = components.shape
+        component_labels = [f"C{i + 1}" for i in range(n_components)]
 
-    heatmap_width = max(8, min(20, n_positions / 60))
-    heatmap_height = max(2.5, 0.6 * n_components + 1.5)
-    fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
-    sns.heatmap(
-        components.T,
-        ax=ax,
-        cmap="viridis",
-        cbar_kws={"label": "Component weight"},
-        xticklabels=position_indices if n_positions <= 60 else False,
-        yticklabels=component_labels,
-    )
-    ax.set_xlabel("Position index")
-    ax.set_ylabel("CP component")
-    fig.tight_layout()
-    heatmap_path = output_path / heatmap_name
-    fig.savefig(heatmap_path, dpi=200)
-    plt.close(fig)
+        heatmap_width = max(8, min(20, n_positions / 60))
+        heatmap_height = max(2.5, 0.6 * n_components + 1.5)
+        fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
+        sns.heatmap(
+            components.T,
+            ax=ax,
+            cmap="viridis",
+            cbar_kws={"label": "Component weight"},
+            xticklabels=position_indices if n_positions <= 60 else False,
+            yticklabels=component_labels,
+        )
+        ax.set_xlabel("Position index")
+        ax.set_ylabel("CP component")
+        fig.tight_layout()
+        heatmap_path = output_path / heatmap_name
+        fig.savefig(heatmap_path, dpi=200)
+        plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(max(8, min(20, n_positions / 50)), 3.5))
-    x = position_indices
-    for idx, label in enumerate(component_labels):
-        ax.scatter(x, components[:, idx], label=label, s=20, alpha=0.8)
-    ax.set_xlabel("Position index")
-    ax.set_ylabel("Component weight")
-    if n_positions <= 60:
-        ax.set_xticks(x)
-        ax.set_xticklabels([str(pos) for pos in x], rotation=90, fontsize=8)
-    ax.legend(loc="upper right", frameon=False)
-    fig.tight_layout()
-    lineplot_path = output_path / lineplot_name
-    fig.savefig(lineplot_path, dpi=200)
-    plt.close(fig)
+        fig, ax = plt.subplots(figsize=(max(8, min(20, n_positions / 50)), 3.5))
+        x = position_indices
+        for idx, label in enumerate(component_labels):
+            ax.scatter(x, components[:, idx], label=label, s=20, alpha=0.8)
+        ax.set_xlabel("Position index")
+        ax.set_ylabel("Component weight")
+        if n_positions <= 60:
+            ax.set_xticks(x)
+            ax.set_xticklabels([str(pos) for pos in x], rotation=90, fontsize=8)
+        ax.legend(loc="upper right", frameon=False)
+        fig.tight_layout()
+        lineplot_path = output_path / lineplot_name
+        fig.savefig(lineplot_path, dpi=200)
+        plt.close(fig)
 
-    outputs = {"heatmap": heatmap_path, "lineplot": lineplot_path}
+        outputs["heatmap"] = heatmap_path
+        outputs["lineplot"] = lineplot_path
     if uns_key in adata.uns:
         base_factors = adata.uns[uns_key].get("base_factors")
         base_labels = adata.uns[uns_key].get("base_labels")
