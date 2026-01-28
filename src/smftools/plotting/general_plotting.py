@@ -355,11 +355,7 @@ def plot_cp_sequence_components(
     if components.ndim != 2:
         raise ValueError(f"CP position factors must be 2D; got shape {components.shape}.")
 
-    feature_labels = (
-        np.asarray(adata.var_names).astype(str)
-        if adata.shape[1] == components.shape[0]
-        else np.array([str(i) for i in range(components.shape[0])])
-    )
+    position_indices = np.arange(components.shape[0])
 
     if max_positions and components.shape[0] > max_positions:
         original_count = components.shape[0]
@@ -367,7 +363,7 @@ def plot_cp_sequence_components(
         top_idx = np.argsort(scores)[-max_positions:]
         top_idx = np.sort(top_idx)
         components = components[top_idx]
-        feature_labels = feature_labels[top_idx]
+        position_indices = position_indices[top_idx]
         logger.info(
             "Downsampled CP positions from %s to %s for plotting.",
             original_count,
@@ -385,10 +381,10 @@ def plot_cp_sequence_components(
         ax=ax,
         cmap="viridis",
         cbar_kws={"label": "Component weight"},
-        xticklabels=feature_labels if n_positions <= 60 else False,
+        xticklabels=position_indices if n_positions <= 60 else False,
         yticklabels=component_labels,
     )
-    ax.set_xlabel("Position")
+    ax.set_xlabel("Position index")
     ax.set_ylabel("CP component")
     fig.tight_layout()
     heatmap_path = output_path / heatmap_name
@@ -396,14 +392,14 @@ def plot_cp_sequence_components(
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(max(8, min(20, n_positions / 50)), 3.5))
-    x = np.arange(n_positions)
+    x = position_indices
     for idx, label in enumerate(component_labels):
-        ax.plot(x, components[:, idx], label=label, linewidth=1.5)
+        ax.scatter(x, components[:, idx], label=label, s=20, alpha=0.8)
     ax.set_xlabel("Position index")
     ax.set_ylabel("Component weight")
     if n_positions <= 60:
         ax.set_xticks(x)
-        ax.set_xticklabels(feature_labels, rotation=90, fontsize=8)
+        ax.set_xticklabels([str(pos) for pos in x], rotation=90, fontsize=8)
     ax.legend(loc="upper right", frameon=False)
     fig.tight_layout()
     lineplot_path = output_path / lineplot_name
