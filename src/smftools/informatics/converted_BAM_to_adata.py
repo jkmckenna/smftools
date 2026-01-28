@@ -321,15 +321,17 @@ def process_conversion_sites(
     conversion_types = conversions[1:]
 
     # Process the unconverted sequence once
+    # modification dict is keyed by mod type (ie unconverted, 5mC, 6mA)
+    # modification_dict[unconverted] points to a dictionary keyed by unconverted record.id keys.
+    # This then maps to [sequence_length, [], [], unconverted sequence, unconverted complement]
     modification_dict[unconverted] = find_conversion_sites(
         converted_FASTA, unconverted, conversions, deaminase_footprinting
     )
-    # Above points to record_dict[record.id] = [sequence_length, [], [], sequence, complement] with only unconverted record.id keys
 
-    # Get **max sequence length** from unconverted records
+    # Get max sequence length from unconverted records
     max_reference_length = max(values[0] for values in modification_dict[unconverted].values())
 
-    # Add **unconverted records** to `record_FASTA_dict`
+    # Add unconverted records to `record_FASTA_dict`
     for record, values in modification_dict[unconverted].items():
         sequence_length, top_coords, bottom_coords, sequence, complement = values
 
@@ -358,25 +360,34 @@ def process_conversion_sites(
             )
 
     # Process converted records
+    # For each conversion type (ie 5mC, 6mA), add the conversion type as a key to modification_dict.
+    # This points to a dictionary keyed by the unconverted record id key.
+    # This points to [sequence_length, top_strand_coordinates, bottom_strand_coordinates, unconverted sequence, unconverted complement]
     for conversion in conversion_types:
         modification_dict[conversion] = find_conversion_sites(
             converted_FASTA, conversion, conversions, deaminase_footprinting
         )
-        # Above points to record_dict[record.id] = [sequence_length, top_strand_coordinates, bottom_strand_coordinates, sequence, complement] with only unconverted record.id keys
 
+        # Iterate over the unconverted record ids in mod_dict, as well as the 
+        # [sequence_length, top_strand_coordinates, bottom_strand_coordinates, unconverted sequence, unconverted complement] for the conversion type
         for record, values in modification_dict[conversion].items():
             sequence_length, top_coords, bottom_coords, sequence, complement = values
 
             if not deaminase_footprinting:
-                chromosome = record.split(f"_{unconverted}_")[0]  # Extract chromosome name
+                # For conversion smf, make the chromosome name the base record name
+                chromosome = record.split(f"_{unconverted}_")[0]
             else:
+                # For deaminase smf, make the chromosome and record name the same
                 chromosome = record
 
-            # Add **both strands** for converted records
+            # Add both strands for converted records
             for strand in ["top", "bottom"]:
+                # Generate converted/unconverted record names that are found in the converted FASTA
                 converted_name = f"{chromosome}_{conversion}_{strand}"
                 unconverted_name = f"{chromosome}_{unconverted}_top"
 
+                # Use the converted FASTA record names as keys to a dict that points to RecordFastaInfo objects.
+                # These objects will contain the unconverted sequence/complement. 
                 record_FASTA_dict[converted_name] = RecordFastaInfo(
                     sequence=sequence + "N" * (max_reference_length - sequence_length),
                     complement=complement + "N" * (max_reference_length - sequence_length),
@@ -577,16 +588,19 @@ def process_single_bam(
     """
     adata_list: list[ad.AnnData] = []
 
+    # Iterate over BAM records that passed filtering.
     for record in records_to_analyze:
         sample = bam.stem
         record_info = record_FASTA_dict[record]
         chromosome = record_info.chromosome
         current_length = record_info.sequence_length
+        # Note, mod_type and strand are only correctly load for conversion smf and not deaminase
+        # However, these variables are only used for conversion smf and not deaminase, so works.
         mod_type, strand = record_info.conversion, record_info.strand
         non_converted_sequence = chromosome_FASTA_dict[chromosome][0]
         record_sequence = converted_FASTA_record_seq_map[record][1]
 
-        # Extract Base Identities
+        # Extract Base Identities for forward and reverse mapped reads.
         (
             fwd_bases,
             rev_bases,
@@ -615,13 +629,12 @@ def process_single_bam(
         merged_bin = {}
 
         # Binarize the Base Identities if they exist
+        # Note, mod_type is always unconverted and strand is always top currently for deaminase smf. this works for now.
         if fwd_bases:
             fwd_bin = binarize_converted_base_identities(
                 fwd_bases,
                 strand,
                 mod_type,
-                bam,
-                device,
                 deaminase_footprinting,
                 mismatch_trend_per_read,
             )
@@ -632,8 +645,6 @@ def process_single_bam(
                 rev_bases,
                 strand,
                 mod_type,
-                bam,
-                device,
                 deaminase_footprinting,
                 mismatch_trend_per_read,
             )
@@ -742,9 +753,33 @@ def process_single_bam(
         adata.obs[REFERENCE] = [chromosome] * len(adata)
         adata.obs[STRAND] = [strand] * len(adata)
         adata.obs[DATASET] = [mod_type] * len(adata)
-        adata.obs[REFERENCE_DATASET_STRAND] = [f"{chromosome}_{mod_type}_{strand}"] * len(adata)
-        adata.obs[REFERENCE_STRAND] = [f"{chromosome}_{strand}"] * len(adata)
         adata.obs[READ_MISMATCH_TREND] = adata.obs_names.map(mismatch_trend_series)
+
+        # Currently, deaminase footprinting uses mismatch trend to define the strand.
+        if deaminase_footprinting:
+            is_ct = adata.obs[READ_MISMATCH_TREND] == "C->T"
+            is_ga = adata.obs[READ_MISMATCH_TREND] == "G->A"
+
+            adata.obs.loc[is_ct, STRAND] = "top"
+            adata.obs.loc[is_ga, STRAND] = "bottom"
+        # Currently, conversion footprinting uses strand to define the mismatch trend.
+        else:
+            is_top = adata.obs[STRAND] == "top"
+            is_bottom = adata.obs[STRAND] == "bottom"
+
+            adata.obs.loc[is_top, READ_MISMATCH_TREND] = "C->T"
+            adata.obs.loc[is_bottom, READ_MISMATCH_TREND] = "G->A"
+
+        adata.obs[REFERENCE_DATASET_STRAND] = (
+            adata.obs[REFERENCE].astype(str) + "_" +
+            adata.obs[DATASET].astype(str) + "_" +
+            adata.obs[STRAND].astype(str)
+        )
+
+        adata.obs[REFERENCE_STRAND] = (
+            adata.obs[REFERENCE].astype(str) + "_" +
+            adata.obs[STRAND].astype(str)
+        )
 
         read_mapping_direction = []
         for read_id in adata.obs_names:

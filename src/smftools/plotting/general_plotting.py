@@ -2790,7 +2790,9 @@ def plot_sequence_integer_encoding_clustermaps(
                 if show_position_axis or xtick_step is not None:
                     mismatch_ax.set_xlabel("Position")
 
-            fig.suptitle(f"{sample} - {ref}")
+            n_reads = matrix.shape[0]
+
+            fig.suptitle(f"{sample} - {ref} - {n_reads} reads")
             fig.tight_layout(rect=(0, 0, 1, 0.95))
 
             out_file = None
@@ -3052,7 +3054,8 @@ def plot_read_span_quality_clustermaps(
                 if show_position_axis or xtick_step is not None:
                     axis.set_xlabel("Position")
 
-            fig.suptitle(f"{sample} - {ref}")
+            n_reads = quality_matrix.shape[0]
+            fig.suptitle(f"{sample} - {ref} - {n_reads} reads")
             fig.tight_layout(rect=(0, 0, 1, 0.95))
 
             out_file = None

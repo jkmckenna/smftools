@@ -110,7 +110,7 @@ read_len_to_ref_ratio_filter_thresholds:
   - null
   - null
 read_quality_filter_thresholds:
-  - 15
+  - 10
   - null
 read_mapping_quality_filter_thresholds:
   - null
@@ -130,7 +130,7 @@ read_mod_filtering_a_thresholds:
   - 0.025
   - 0.975
 read_mod_filtering_use_other_c_as_background: False
-min_valid_fraction_positions_in_read_vs_ref: 0.5
+min_valid_fraction_positions_in_read_vs_ref: 0.2
 
 # Plotting params for read length histograms
 obs_to_plot_pp_qc:
@@ -162,7 +162,7 @@ duplicate_detection_hierarchical_linkage: "average" # Method for hierarchical cl
 duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkage based duplicate detection.
 
 # Position QC params
-position_max_nan_threshold: 0.1 # The maximum amount of nans to tolerate in a column
+position_max_nan_threshold: 0.8 # The maximum amount of nans to tolerate in a column
 mismatch_frequency_range:
   - 0.01
   - 0.99

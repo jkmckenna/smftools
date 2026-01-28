@@ -51,7 +51,7 @@ def append_base_context(
         site_types += ["A_site"]
 
     for ref in references:
-        # Assess if the strand is the top or bottom strand converted
+        # Assess if the modified strand is the top or bottom strand.
         if "top" in ref:
             strand = "top"
         elif "bottom" in ref:
