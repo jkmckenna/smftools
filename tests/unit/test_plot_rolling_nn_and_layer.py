@@ -23,6 +23,14 @@ def test_plot_rolling_nn_and_layer_filters_nan_fraction(monkeypatch, tmp_path):
             [0.0, 1.0, 1.0, np.nan],
         ]
     )
+    adata.layers["read_span_mask"] = np.array(
+        [
+            [1, 0, 1, 0],
+            [1, 1, 0, 0],
+            [0, 1, 1, 1],
+        ],
+        dtype=float,
+    )
     adata.obsm["rolling_nn_dist"] = np.array(
         [
             [0.1, np.nan],
@@ -59,3 +67,6 @@ def test_plot_rolling_nn_and_layer_filters_nan_fraction(monkeypatch, tmp_path):
 
     assert len(captured) == 2
     assert captured[1].shape[1] == 2
+    assert np.isnan(captured[1][0, 1])
+    assert np.isnan(captured[1][1, 1])
+    assert np.isnan(captured[1][2, 0])
