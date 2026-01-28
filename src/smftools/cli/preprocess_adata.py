@@ -591,6 +591,32 @@ def preprocess_adata_core(
                 show_position_axis=True,
             )
 
+        if "mismatch_integer_encoding" in adata.layers:
+            pp_mismatch_clustermap_dir = (
+                preprocess_directory / "06_mismatch_integer_encoding_clustermaps_no_mod_sites"
+            )
+            if pp_mismatch_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
+                logger.debug(
+                    f"{pp_mismatch_clustermap_dir} already exists. Skipping mismatch clustermaps without mod sites."
+                )
+            else:
+                make_dirs([pp_mismatch_clustermap_dir])
+                plot_sequence_integer_encoding_clustermaps(
+                    adata,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    demux_types=cfg.clustermap_demux_types_to_plot,
+                    min_quality=None,
+                    min_length=None,
+                    min_mapped_length_to_reference_length_ratio=None,
+                    sort_by="none",
+                    max_unknown_fraction=0.5,
+                    save_path=pp_mismatch_clustermap_dir,
+                    show_position_axis=True,
+                    exclude_mod_sites=True,
+                    mod_site_bases=cfg.mod_target_bases,
+                )
+
         pp_dedup_seq_clustermap_dir = (
             preprocess_directory / "deduplicated" / "06_sequence_integer_encoding_clustermaps"
         )
@@ -613,6 +639,35 @@ def preprocess_adata_core(
                 save_path=pp_dedup_seq_clustermap_dir,
                 show_position_axis=True,
             )
+
+        if "mismatch_integer_encoding" in adata_unique.layers:
+            pp_dedup_mismatch_clustermap_dir = (
+                preprocess_directory
+                / "deduplicated"
+                / "06_mismatch_integer_encoding_clustermaps_no_mod_sites"
+            )
+            if pp_dedup_mismatch_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
+                logger.debug(
+                    f"{pp_dedup_mismatch_clustermap_dir} already exists. "
+                    "Skipping mismatch clustermaps without mod sites."
+                )
+            else:
+                make_dirs([pp_dedup_mismatch_clustermap_dir])
+                plot_sequence_integer_encoding_clustermaps(
+                    adata_unique,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    demux_types=cfg.clustermap_demux_types_to_plot,
+                    min_quality=None,
+                    min_length=None,
+                    min_mapped_length_to_reference_length_ratio=None,
+                    sort_by="none",
+                    max_unknown_fraction=0.5,
+                    save_path=pp_dedup_mismatch_clustermap_dir,
+                    show_position_axis=True,
+                    exclude_mod_sites=True,
+                    mod_site_bases=cfg.mod_target_bases,
+                )
 
     ############################################### Plot read span mask + base quality clustermaps ###############################################
     quality_layer = None
