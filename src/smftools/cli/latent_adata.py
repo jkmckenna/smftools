@@ -388,6 +388,7 @@ def latent_adata_core(
             embedding_key=f"X_cp_{SUBSET}",
             components_key=f"H_cp_{SUBSET}",
             uns_key=f"cp_{SUBSET}",
+            non_negative=True,
         )
 
     # CP decomposition using sequence integer encoding (no var filters)
