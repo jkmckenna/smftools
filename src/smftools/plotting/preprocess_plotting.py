@@ -802,9 +802,8 @@ def plot_mismatch_base_frequency_by_position(
         return mod_mask
 
     def _get_reference_base_series(subset, ref_name: str) -> pd.Series | None:
-        for col in ("Reference_strand_FASTA_sequence_base", f"{ref_name}_FASTA_sequence_base"):
-            if col in subset.var.columns:
-                return subset.var[col].astype("string")
+        if f"{ref_name}_strand_FASTA_base" in subset.var.columns:
+            return subset.var[f"{ref_name}_strand_FASTA_base"].astype("string")
         return None
 
     if mismatch_layer not in adata.layers:
@@ -883,6 +882,7 @@ def plot_mismatch_base_frequency_by_position(
                 coverage_mask = np.ones_like(mismatch_matrix, dtype=bool)
 
             ref_bases = _get_reference_base_series(subset, str(ref))
+            logger.debug(f"Unconverted reference sequence for {ref}: {ref_bases.values}")
             ref_lower = str(ref).lower()
             if ref_bases is not None:
                 target_base = None
@@ -890,8 +890,11 @@ def plot_mismatch_base_frequency_by_position(
                     target_base = "C"
                 elif "bottom" in ref_lower:
                     target_base = "G"
+                else:
+                    logger.debug(f"Could not find strand in {ref_lower}")
                 if target_base in base_label_to_int:
                     target_int = base_label_to_int[target_base]
+                    logger.debug(f"Ignoring {target_base} site mismatches in {ref} that yield a mismatch ambiguous to conversion")
                     ref_base_mask = np.asarray(ref_bases.values == target_base, dtype=bool)
                     ignore_mask = (mismatch_matrix == target_int) & ref_base_mask[None, :]
                     coverage_mask = coverage_mask & ~ignore_mask
