@@ -29,6 +29,8 @@ def plot_sequence_integer_encoding_clustermaps(
     reference_col: str = "Reference_strand",
     layer: str = "sequence_integer_encoding",
     mismatch_layer: str = "mismatch_integer_encoding",
+    exclude_mod_sites: bool = False,
+    mod_site_bases: Sequence[str] | None = None,
     min_quality: float | None = 20,
     min_length: int | None = 200,
     min_mapped_length_to_reference_length_ratio: float | None = 0,
@@ -55,6 +57,8 @@ def plot_sequence_integer_encoding_clustermaps(
         reference_col: Column in ``adata.obs`` that identifies references.
         layer: Layer name containing integer-encoded sequences.
         mismatch_layer: Optional layer name containing mismatch integer encodings.
+        exclude_mod_sites: Whether to exclude annotated modification sites.
+        mod_site_bases: Base-context labels used to build mod-site masks (e.g., ``["GpC", "CpG"]``).
         min_quality: Optional minimum read quality filter.
         min_length: Optional minimum mapped length filter.
         min_mapped_length_to_reference_length_ratio: Optional min length ratio filter.
@@ -140,6 +144,25 @@ def plot_sequence_integer_encoding_clustermaps(
             return None
         return max(1, int(np.ceil(n_positions / position_axis_tick_target)))
 
+    def _build_mod_site_mask(subset, ref_name: str) -> np.ndarray | None:
+        if not exclude_mod_sites or not mod_site_bases:
+            return None
+
+        mod_site_cols = [f"{ref_name}_{base}_site" for base in mod_site_bases]
+        missing = [col for col in mod_site_cols if col not in subset.var.columns]
+        if missing:
+            return None
+
+        mod_masks = [np.asarray(subset.var[col].values, dtype=bool) for col in mod_site_cols]
+        mod_mask = mod_masks[0] if len(mod_masks) == 1 else np.logical_or.reduce(mod_masks)
+
+        position_col = f"position_in_{ref_name}"
+        if position_col in subset.var.columns:
+            position_mask = np.asarray(subset.var[position_col].values, dtype=bool)
+            mod_mask = np.logical_and(mod_mask, position_mask)
+
+        return mod_mask
+
     for ref in adata.obs[reference_col].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
             qmask = _mask_or_true(
@@ -183,6 +206,16 @@ def plot_sequence_integer_encoding_clustermaps(
             mismatch_matrix = None
             if mismatch_layer in subset.layers:
                 mismatch_matrix = np.asarray(subset.layers[mismatch_layer])
+
+            mod_site_mask = _build_mod_site_mask(subset, str(ref))
+            if mod_site_mask is not None:
+                keep_columns = ~mod_site_mask
+                if not np.any(keep_columns):
+                    continue
+                matrix = matrix[:, keep_columns]
+                subset = subset[:, keep_columns].copy()
+                if mismatch_matrix is not None:
+                    mismatch_matrix = mismatch_matrix[:, keep_columns]
 
             if max_unknown_fraction is not None:
                 unknown_mask = np.isin(matrix, np.asarray(unknown_values))
