@@ -61,6 +61,8 @@ def test_plot_sequence_integer_encoding_clustermaps_excludes_mod_sites(tmp_path)
 
     adata.var["R1_GpC_site"] = np.array([True, False, True, False, False])
     adata.var["R2_GpC_site"] = np.array([False, True, False, True, False])
+    adata.var["R1_ambiguous_GpC_CpG_site"] = np.array([False, False, False, False, True])
+    adata.var["R2_ambiguous_GpC_CpG_site"] = np.array([False, False, False, False, True])
     adata.var["position_in_R1"] = np.ones(5, dtype=bool)
     adata.var["position_in_R2"] = np.ones(5, dtype=bool)
 
@@ -77,4 +79,4 @@ def test_plot_sequence_integer_encoding_clustermaps_excludes_mod_sites(tmp_path)
     assert len(results) == 4
     for entry in results:
         assert entry["output_path"] is not None
-        assert entry["n_positions"] == 3
+        assert entry["n_positions"] == 2
