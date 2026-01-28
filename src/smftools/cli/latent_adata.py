@@ -257,9 +257,9 @@ def latent_adata_core(
     latent_dir_dedup = latent_directory / "deduplicated"
     
     # ============================================================
-    # 2) PCA/UMAP/NMF at modified base sites
+    # 2) PCA/UMAP/NMF at valid modified base sites shared across references
     # ============================================================
-    SUBSET = "mod_sites"
+    SUBSET = "shared_valid_mod_sites_binary_mod_arrays"
 
     pca_dir = latent_dir_dedup / f"01_pca_{SUBSET}"
     umap_dir = latent_dir_dedup / f"01_umap_{SUBSET}"
