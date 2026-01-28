@@ -48,6 +48,27 @@ def _build_mod_sites_var_filter_mask(
     return np.logical_and.reduce(ref_masks)
 
 
+def _build_reference_position_mask(
+    adata: ad.AnnData,
+    references: Sequence[str],
+) -> "np.ndarray":
+    """Build a boolean var mask for positions valid across references."""
+    import numpy as np
+
+    ref_masks = []
+    for ref in references:
+        position_col = f"position_in_{ref}"
+        if position_col not in adata.var.columns:
+            raise KeyError(f"var_filters not found in adata.var: {position_col}")
+        position_mask = np.asarray(adata.var[position_col].values, dtype=bool)
+        ref_masks.append(position_mask)
+
+    if not ref_masks:
+        return np.ones(adata.n_vars, dtype=bool)
+
+    return np.logical_and.reduce(ref_masks)
+
+
 def latent_adata(
     config_path: str,
 ) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
@@ -361,6 +382,8 @@ def latent_adata_core(
         adata = calculate_sequence_cp_decomposition(
             adata,
             layer=SEQUENCE_INTEGER_ENCODING,
+            var_mask=_build_reference_position_mask(adata, references),
+            var_mask_name="shared_reference_positions",
             rank=5,
             embedding_key=f"X_cp_{SUBSET}",
             components_key=f"H_cp_{SUBSET}",
