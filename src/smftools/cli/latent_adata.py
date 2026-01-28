@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import anndata as ad
 
@@ -10,6 +10,42 @@ from smftools.constants import LATENT_DIR, LOGGING_DIR, SEQUENCE_INTEGER_ENCODIN
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
+
+
+def _build_mod_sites_var_filter_mask(
+    adata: ad.AnnData,
+    references: Sequence[str],
+    cfg,
+    smf_modality: str,
+    deaminase: bool,
+) -> "np.ndarray":
+    """Build a boolean var mask for mod sites across references."""
+    import numpy as np
+
+    ref_masks = []
+    for ref in references:
+        if smf_modality == "direct":
+            mod_site_cols = [f"{ref}_{base}_site" for base in cfg.mod_target_bases]
+        elif deaminase:
+            mod_site_cols = [f"{ref}_C_site"]
+        else:
+            mod_site_cols = [f"{ref}_{base}_site" for base in cfg.mod_target_bases]
+
+        position_col = f"position_in_{ref}"
+        required_cols = mod_site_cols + [position_col]
+        missing = [col for col in required_cols if col not in adata.var.columns]
+        if missing:
+            raise KeyError(f"var_filters not found in adata.var: {missing}")
+
+        mod_masks = [np.asarray(adata.var[col].values, dtype=bool) for col in mod_site_cols]
+        mod_mask = mod_masks[0] if len(mod_masks) == 1 else np.logical_or.reduce(mod_masks)
+        position_mask = np.asarray(adata.var[position_col].values, dtype=bool)
+        ref_masks.append(np.logical_and(mod_mask, position_mask))
+
+    if not ref_masks:
+        return np.ones(adata.n_vars, dtype=bool)
+
+    return np.logical_and.reduce(ref_masks)
 
 
 def latent_adata(
@@ -232,24 +268,19 @@ def latent_adata_core(
     plotting_layers = ["leiden", cfg.sample_name_col_for_plotting, "Reference_strand"]
     plotting_layers += cfg.umap_layers_to_plot
 
-    var_filters = []
-    if smf_modality == "direct":
-        for ref in references:
-            for base in cfg.mod_target_bases:
-                var_filters.append(f"{ref}_{base}_site")
-    elif deaminase:
-        for ref in references:
-            var_filters.append(f"{ref}_C_site")
-    else:
-        for ref in references:
-            for base in cfg.mod_target_bases:
-                var_filters.append(f"{ref}_{base}_site")
+    mod_sites_mask = _build_mod_sites_var_filter_mask(
+        adata=adata,
+        references=references,
+        cfg=cfg,
+        smf_modality=smf_modality,
+        deaminase=deaminase,
+    )
 
     # PCA calculation
     adata = calculate_pca(
         adata,
         layer=cfg.layer_for_umap_plotting,
-        var_filters=var_filters,
+        var_mask=mod_sites_mask,
         n_pcs=10,
         output_suffix=SUBSET,
     )
@@ -275,7 +306,7 @@ def latent_adata_core(
     adata = calculate_nmf(
         adata,
         layer=cfg.layer_for_umap_plotting,
-        var_filters=var_filters,
+        var_mask=mod_sites_mask,
         n_components=5,
         suffix=SUBSET,
     )
