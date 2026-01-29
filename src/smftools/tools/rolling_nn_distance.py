@@ -366,9 +366,11 @@ def annotate_zero_hamming_segments(
             target_i = target_indexer[read_i]
             target_j = target_indexer[read_j]
             for seg_start, seg_end in record["segments"]:
-                seg_slice = var_indexer[seg_start:seg_end]
-                target_layer[target_i, seg_slice] = 1
-                target_layer[target_j, seg_slice] = 1
+                parent_positions = var_indexer[seg_start:seg_end]
+                parent_start = int(parent_positions.min())
+                parent_end = int(parent_positions.max())
+                target_layer[target_i, parent_start : parent_end + 1] = 1
+                target_layer[target_j, parent_start : parent_end + 1] = 1
         target.layers[binary_layer_key] = target_layer
         target.uns[f"{binary_layer_key}_source"] = output_uns_key
     return records
