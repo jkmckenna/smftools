@@ -205,6 +205,7 @@ def preprocess_adata_core(
         append_base_context,
         append_binary_layer_by_base_context,
         append_mismatch_frequency_sites,
+        append_sequence_mismatch_annotations,
         binarize_adata,
         binarize_on_Youden,
         calculate_complexity_II,
@@ -476,6 +477,16 @@ def preprocess_adata_core(
         force_redo=cfg.force_redo_append_binary_layer_by_base_context,
         from_valid_sites_only=True,
     )
+
+    ############### Reference variant position annotation ###########################
+    seq1_col, seq2_col = getattr(cfg, "references_to_align_for_variant_annotation", [None, None])
+    if seq1_col and seq2_col:
+        append_sequence_mismatch_annotations(
+            adata,
+            seq1_col,
+            seq2_col
+        )
+
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != "direct":
