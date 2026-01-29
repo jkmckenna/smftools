@@ -369,7 +369,7 @@ def spatial_adata_core(
                 )
                 subset = subset[:, site_mask].copy()
                 try:
-                    collect_zero_pairs = getattr(cfg, "rolling_nn_collect_zero_pairs", False)
+                    collect_zero_pairs = getattr(cfg, "rolling_nn_collect_zero_pairs", True)
                     zero_pairs_uns_key = getattr(cfg, "rolling_nn_zero_pairs_uns_key", None)
                     rolling_values, rolling_starts = rolling_window_nn_distance(
                         subset,
