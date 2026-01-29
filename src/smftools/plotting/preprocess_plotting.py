@@ -151,6 +151,9 @@ def plot_sequence_integer_encoding_clustermaps(
     def _build_mod_site_mask(var_frame, ref_name: str) -> np.ndarray | None:
         if not exclude_mod_sites or not mod_site_bases:
             return None
+        
+        if hasattr(var_frame, "var"):
+            var_frame = var_frame.var
 
         mod_site_cols = [f"{ref_name}_{base}_site" for base in mod_site_bases]
         missing_required = [col for col in mod_site_cols if col not in var_frame.columns]
