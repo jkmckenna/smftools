@@ -857,6 +857,11 @@ class ExperimentConfig:
     rolling_nn_return_fraction: bool = True
     rolling_nn_obsm_key: str = "rolling_nn_dist"
     rolling_nn_site_types: Optional[List[str]] = None
+    rolling_nn_write_zero_pairs_csvs: bool = True
+    rolling_nn_zero_pairs_uns_key: Optional[str] = None
+    rolling_nn_zero_pairs_segments_key: Optional[str] = None
+    rolling_nn_zero_pairs_layer_key: Optional[str] = None
+    rolling_nn_zero_pairs_refine: bool = True
 
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = "nan_half"
@@ -1369,6 +1374,17 @@ class ExperimentConfig:
             rolling_nn_return_fraction=merged.get("rolling_nn_return_fraction", True),
             rolling_nn_obsm_key=merged.get("rolling_nn_obsm_key", "rolling_nn_dist"),
             rolling_nn_site_types=merged.get("rolling_nn_site_types", None),
+            rolling_nn_write_zero_pairs_csvs=merged.get(
+                "rolling_nn_write_zero_pairs_csvs", True
+            ),
+            rolling_nn_zero_pairs_uns_key=merged.get("rolling_nn_zero_pairs_uns_key", None),
+            rolling_nn_zero_pairs_segments_key=merged.get(
+                "rolling_nn_zero_pairs_segments_key", None
+            ),
+            rolling_nn_zero_pairs_layer_key=merged.get(
+                "rolling_nn_zero_pairs_layer_key", None
+            ),
+            rolling_nn_zero_pairs_refine=merged.get("rolling_nn_zero_pairs_refine", True),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
             umap_layers_to_plot=merged.get(
                 "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]

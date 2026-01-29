@@ -152,6 +152,10 @@ def spatial_adata_core(
     )
     from ..readwrite import make_dirs, safe_read_h5ad
     from ..tools import annotate_zero_hamming_segments, rolling_window_nn_distance
+    from ..tools.rolling_nn_distance import (
+        zero_hamming_segments_to_dataframe,
+        zero_pairs_to_dataframe,
+    )
     from ..tools.position_stats import (
         compute_positionwise_statistics,
         plot_positionwise_matrices,
@@ -425,6 +429,12 @@ def spatial_adata_core(
                     )
                     parent_zero_pairs_key = f"{parent_obsm_key}__zero_pairs"
                     zero_pairs_data = subset.uns.get(resolved_zero_pairs_key)
+                    rolling_zero_pairs_out_dir = (
+                        spatial_dir_dedup / "06b_rolling_nn_zero_pairs"
+                    )
+                    write_zero_pairs_csvs = getattr(
+                        cfg, "rolling_nn_write_zero_pairs_csvs", True
+                    )
                     if zero_pairs_data is not None:
                         adata.uns[parent_zero_pairs_key] = zero_pairs_data
                         for suffix in (
@@ -441,6 +451,24 @@ def spatial_adata_core(
                         adata.uns.setdefault(
                             f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
                         ).setdefault(map_key, {})["zero_pairs_key"] = parent_zero_pairs_key
+                        if write_zero_pairs_csvs:
+                            try:
+                                make_dirs([rolling_zero_pairs_out_dir])
+                                zero_pairs_df = zero_pairs_to_dataframe(
+                                    subset, resolved_zero_pairs_key
+                                )
+                                zero_pairs_df.to_csv(
+                                    rolling_zero_pairs_out_dir
+                                    / f"{safe_sample}__{safe_ref}__zero_pairs_windows.csv",
+                                    index=False,
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to write zero-pairs CSV for sample=%s ref=%s: %s",
+                                    sample,
+                                    reference,
+                                    exc,
+                                )
                     else:
                         logger.warning(
                             "Zero-pair data missing for sample=%s ref=%s (key=%s).",
@@ -459,7 +487,7 @@ def spatial_adata_core(
                         f"{parent_obsm_key}__zero_span",
                     )
                     try:
-                        annotate_zero_hamming_segments(
+                        segment_records = annotate_zero_hamming_segments(
                             subset,
                             zero_pairs_uns_key=zero_pairs_uns_key,
                             output_uns_key=segments_uns_key,
@@ -474,6 +502,24 @@ def spatial_adata_core(
                         ).setdefault(map_key, {}).update(
                             {"segments_key": segments_uns_key, "layer_key": layer_key}
                         )
+                        if write_zero_pairs_csvs:
+                            try:
+                                make_dirs([rolling_zero_pairs_out_dir])
+                                segments_df = zero_hamming_segments_to_dataframe(
+                                    segment_records, subset.var_names.to_numpy()
+                                )
+                                segments_df.to_csv(
+                                    rolling_zero_pairs_out_dir
+                                    / f"{safe_sample}__{safe_ref}__zero_pairs_segments.csv",
+                                    index=False,
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to write zero-pair segments CSV for sample=%s ref=%s: %s",
+                                    sample,
+                                    reference,
+                                    exc,
+                                )
                     except Exception as exc:
                         logger.warning(
                             "Failed to annotate zero-pair segments for sample=%s ref=%s: %s",

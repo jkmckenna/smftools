@@ -7,6 +7,8 @@ from smftools.tools.rolling_nn_distance import (
     assign_rolling_nn_results,
     rolling_window_nn_distance,
     rolling_window_nn_distance_by_group,
+    zero_hamming_segments_to_dataframe,
+    zero_pairs_to_dataframe,
 )
 
 
@@ -233,6 +235,62 @@ def test_assign_rolling_nn_results_to_parent():
     assert parent.uns["rolling_nn_parent_starts"].tolist() == [0]
     assert parent.uns["rolling_nn_parent_centers"].tolist() == [1.5]
     assert parent.uns["rolling_nn_parent_window"] == 4
+
+
+def test_zero_pairs_and_segments_to_dataframe():
+    X = np.array(
+        [
+            [1.0, 1.0, np.nan, 0.0],
+            [1.0, 1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 1.0],
+        ]
+    )
+    adata = ad.AnnData(X)
+
+    rolling_window_nn_distance(
+        adata,
+        window=2,
+        step=2,
+        min_overlap=2,
+        return_fraction=True,
+        store_obsm="rolling_nn_dist",
+        collect_zero_pairs=True,
+        zero_pairs_uns_key="rolling_nn_zero_pairs",
+    )
+
+    pairs_df = zero_pairs_to_dataframe(adata, "rolling_nn_zero_pairs")
+    assert not pairs_df.empty
+    assert set(pairs_df.columns) == {
+        "window_index",
+        "window_start",
+        "window_end",
+        "read_i",
+        "read_j",
+        "read_i_name",
+        "read_j_name",
+    }
+
+    records = annotate_zero_hamming_segments(
+        adata,
+        zero_pairs_uns_key="rolling_nn_zero_pairs",
+        output_uns_key="zero_hamming_segments",
+        layer=None,
+        min_overlap=2,
+        refine_segments=True,
+    )
+
+    segments_df = zero_hamming_segments_to_dataframe(records, adata.var_names.to_numpy())
+    assert set(segments_df.columns) == {
+        "read_i",
+        "read_j",
+        "read_i_name",
+        "read_j_name",
+        "segment_start",
+        "segment_end_exclusive",
+        "segment_end_inclusive",
+        "segment_start_label",
+        "segment_end_label",
+    }
 
 
 def test_zero_pairs_collection_and_annotation():
