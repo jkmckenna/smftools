@@ -590,6 +590,7 @@ def preprocess_adata_core(
                 exclude_mod_sites=True, #cfg.mismatch_base_frequency_exclude_mod_sites,
                 mod_site_bases=cfg.mod_target_bases,
                 save_path=pp_mismatch_base_freq_dir,
+                plot_zscores=True,
             )
 
     ############################################### Plot integer sequence encoding clustermaps ###############################################

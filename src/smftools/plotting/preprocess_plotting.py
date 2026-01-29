@@ -1005,7 +1005,7 @@ def plot_mismatch_base_frequency_by_position(
                 for base_label in sorted(zscore_freqs.keys()):
                     normalized_base = base_label if base_label in {"A", "C", "G", "T"} else "OTHER"
                     color = DNA_5COLOR_PALETTE.get(normalized_base, DNA_5COLOR_PALETTE["OTHER"])
-                    zscore_ax.plot(positions, zscore_freqs[base_label], label=base_label, color=color)
+                    zscore_ax.scatter(positions, zscore_freqs[base_label], label=base_label, color=color)
                 zscore_ax.axhline(0.0, color="black", linestyle="--", linewidth=1)
                 zscore_ax.set_xlabel("Position")
                 zscore_ax.set_ylabel("Z-score")
