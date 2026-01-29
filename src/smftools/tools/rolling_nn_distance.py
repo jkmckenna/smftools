@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING, Optional, Tuple
 
 import numpy as np
 
+from math import floor
+
 from smftools.logging_utils import get_logger
 
 if TYPE_CHECKING:
@@ -16,13 +18,11 @@ def _window_center_coordinates(adata, starts: np.ndarray, window: int) -> np.nda
     """
     Compute window center coordinates using AnnData var positions.
 
-    Prefers ``adata.var["Original_var_names"]`` when available and aligned; otherwise uses
-    ``adata.var_names``. If coordinates are numeric, return the mean coordinate per window.
+    If coordinates are numeric, return the mean coordinate per window.
     If not numeric, return the midpoint label for each window.
     """
     coord_source = adata.var_names
-    if "Original_var_names" in adata.var and adata.var["Original_var_names"].shape[0] == adata.n_vars:
-        coord_source = adata.var["Original_var_names"]
+
     coords = np.asarray(coord_source)
     if coords.size == 0:
         return np.array([], dtype=float)
@@ -30,7 +30,7 @@ def _window_center_coordinates(adata, starts: np.ndarray, window: int) -> np.nda
     try:
         coords_numeric = coords.astype(float)
         return np.array(
-            [np.nanmean(coords_numeric[s : s + window]) for s in starts], dtype=float
+            [floor(np.nanmean(coords_numeric[s : s + window])) for s in starts], dtype=float
         )
     except Exception:
         mid = np.clip(starts + (window // 2), 0, coords.size - 1)
