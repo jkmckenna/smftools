@@ -7,6 +7,7 @@ _LAZY_ATTRS = {
     "combined_hmm_raw_clustermap": "smftools.plotting.hmm_plotting",
     "combined_raw_clustermap": "smftools.plotting.spatial_plotting",
     "plot_rolling_nn_and_layer": "smftools.plotting.spatial_plotting",
+    "plot_zero_hamming_pair_counts": "smftools.plotting.spatial_plotting",
     "plot_zero_hamming_span_and_layer": "smftools.plotting.spatial_plotting",
     "plot_hmm_layers_rolling_by_sample_ref": "smftools.plotting.hmm_plotting",
     "plot_nmf_components": "smftools.plotting.latent_plotting",

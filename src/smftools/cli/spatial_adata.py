@@ -141,6 +141,7 @@ def spatial_adata_core(
         combined_raw_clustermap,
         plot_rolling_grid,
         plot_rolling_nn_and_layer,
+        plot_zero_hamming_pair_counts,
         plot_zero_hamming_span_and_layer,
         plot_spatial_autocorr_grid,
     )
@@ -394,6 +395,7 @@ def spatial_adata_core(
 
                 safe_sample = str(sample).replace(os.sep, "_")
                 safe_ref = str(reference).replace(os.sep, "_")
+                map_key = f"{safe_sample}__{safe_ref}"
                 parent_obsm_key = f"{cfg.rolling_nn_obsm_key}__{safe_ref}"
                 try:
                     assign_rolling_nn_results(
@@ -416,6 +418,36 @@ def spatial_adata_core(
                         exc,
                     )
                 if collect_zero_pairs:
+                    resolved_zero_pairs_key = (
+                        zero_pairs_uns_key
+                        if zero_pairs_uns_key is not None
+                        else f"{cfg.rolling_nn_obsm_key}_zero_pairs"
+                    )
+                    parent_zero_pairs_key = f"{parent_obsm_key}__zero_pairs"
+                    zero_pairs_data = subset.uns.get(resolved_zero_pairs_key)
+                    if zero_pairs_data is not None:
+                        adata.uns[parent_zero_pairs_key] = zero_pairs_data
+                        for suffix in (
+                            "starts",
+                            "window",
+                            "step",
+                            "min_overlap",
+                            "return_fraction",
+                            "layer",
+                        ):
+                            value = subset.uns.get(f"{resolved_zero_pairs_key}_{suffix}")
+                            if value is not None:
+                                adata.uns[f"{parent_zero_pairs_key}_{suffix}"] = value
+                        adata.uns.setdefault(
+                            f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
+                        ).setdefault(map_key, {})["zero_pairs_key"] = parent_zero_pairs_key
+                    else:
+                        logger.warning(
+                            "Zero-pair data missing for sample=%s ref=%s (key=%s).",
+                            sample,
+                            reference,
+                            resolved_zero_pairs_key,
+                        )
                     segments_uns_key = getattr(
                         cfg,
                         "rolling_nn_zero_pairs_segments_key",
@@ -439,10 +471,9 @@ def spatial_adata_core(
                         )
                         adata.uns.setdefault(
                             f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
-                        )[f"{safe_sample}__{safe_ref}"] = {
-                            "segments_key": segments_uns_key,
-                            "layer_key": layer_key,
-                        }
+                        ).setdefault(map_key, {}).update(
+                            {"segments_key": segments_uns_key, "layer_key": layer_key}
+                        )
                     except Exception as exc:
                         logger.warning(
                             "Failed to annotate zero-pair segments for sample=%s ref=%s: %s",
@@ -545,6 +576,37 @@ def spatial_adata_core(
                             reference,
                             exc,
                         )
+                    zero_pairs_key = map_entry.get("zero_pairs_key")
+                    if zero_pairs_key and zero_pairs_key in adata.uns:
+                        subset.uns[zero_pairs_key] = adata.uns[zero_pairs_key]
+                        for suffix in (
+                            "starts",
+                            "window",
+                            "step",
+                            "min_overlap",
+                            "return_fraction",
+                            "layer",
+                        ):
+                            meta_key = f"{zero_pairs_key}_{suffix}"
+                            if meta_key in adata.uns:
+                                subset.uns[meta_key] = adata.uns[meta_key]
+                        counts_png = (
+                            pp_zero_hamming_dir / f"{safe_sample}__{safe_ref}__zero_pairs.png"
+                        )
+                        try:
+                            plot_zero_hamming_pair_counts(
+                                subset,
+                                zero_pairs_uns_key=zero_pairs_key,
+                                title=title,
+                                save_name=counts_png,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed zero-pair count plot for sample=%s ref=%s: %s",
+                                sample,
+                                reference,
+                                exc,
+                            )
         else:
             logger.debug("No zero-pair map found; skipping zero-Hamming span clustermaps.")
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from math import floor
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence
 
@@ -511,6 +512,123 @@ def plot_zero_hamming_span_and_layer(
         plt.show()
 
     return ordered_index
+
+
+def _window_center_labels(var_names: Sequence, starts: np.ndarray, window: int) -> list[str]:
+    coords = np.asarray(var_names)
+    if coords.size == 0:
+        return []
+    try:
+        coords_numeric = coords.astype(float)
+        centers = np.array(
+            [floor(np.nanmean(coords_numeric[s : s + window])) for s in starts], dtype=float
+        )
+        return [str(c) for c in centers]
+    except Exception:
+        mid = np.clip(starts + (window // 2), 0, coords.size - 1)
+        return [str(coords[idx]) for idx in mid]
+
+
+def plot_zero_hamming_pair_counts(
+    subset,
+    zero_pairs_uns_key: str,
+    meta_cols: tuple[str, ...] = ("Reference_strand", "Sample"),
+    col_cluster: bool = False,
+    figsize: tuple[float, float] = (14, 10),
+    robust: bool = True,
+    title: str | None = None,
+    xtick_step: int | None = None,
+    xtick_rotation: int = 90,
+    xtick_fontsize: int = 8,
+    save_name: str | None = None,
+):
+    """
+    Plot a heatmap of zero-Hamming pair counts per read across rolling windows.
+
+    Args:
+        subset: AnnData subset containing zero-pair window data in ``.uns``.
+        zero_pairs_uns_key: Key in ``subset.uns`` with zero-pair window data.
+        meta_cols: Obs columns used for row color annotations.
+        col_cluster: Whether to cluster columns in the heatmap.
+        figsize: Figure size for the plot.
+        robust: Use robust color scaling in seaborn.
+        title: Optional figure title (suptitle).
+        xtick_step: Spacing between x-axis tick labels.
+        xtick_rotation: Rotation for x-axis tick labels.
+        xtick_fontsize: Font size for x-axis tick labels.
+        save_name: Optional output path for saving the plot.
+    """
+    if zero_pairs_uns_key not in subset.uns:
+        raise KeyError(f"Missing zero-pair data in subset.uns[{zero_pairs_uns_key!r}].")
+
+    zero_pairs_by_window = subset.uns[zero_pairs_uns_key]
+    starts = np.asarray(subset.uns.get(f"{zero_pairs_uns_key}_starts", []))
+    window = int(subset.uns.get(f"{zero_pairs_uns_key}_window", 0))
+
+    n_windows = len(zero_pairs_by_window)
+    counts = np.zeros((subset.n_obs, n_windows), dtype=int)
+
+    for wi, pairs in enumerate(zero_pairs_by_window):
+        if pairs is None or len(pairs) == 0:
+            continue
+        pair_arr = np.asarray(pairs, dtype=int)
+        if pair_arr.size == 0:
+            continue
+        if pair_arr.ndim != 2 or pair_arr.shape[1] != 2:
+            raise ValueError("Zero-pair entries must be arrays of shape (n, 2).")
+        np.add.at(counts[:, wi], pair_arr[:, 0], 1)
+        np.add.at(counts[:, wi], pair_arr[:, 1], 1)
+
+    if starts.size == n_windows and window > 0:
+        labels = _window_center_labels(subset.var_names, starts, window)
+    else:
+        labels = [str(i) for i in range(n_windows)]
+
+    counts_df = pd.DataFrame(
+        counts, index=subset.obs_names.astype(str), columns=labels
+    )
+    meta = subset.obs.loc[counts_df.index, list(meta_cols)].copy()
+    meta.index = meta.index.astype(str)
+    row_colors = make_row_colors(meta)
+
+    def _apply_xticks(ax, labels, step):
+        if labels is None or len(labels) == 0:
+            ax.set_xticks([])
+            return
+        if step is None or step <= 0:
+            step = max(1, len(labels) // 10)
+        ticks = np.arange(0, len(labels), step)
+        ax.set_xticks(ticks + 0.5)
+        ax.set_xticklabels(
+            [labels[i] for i in ticks],
+            rotation=xtick_rotation,
+            fontsize=xtick_fontsize,
+        )
+
+    g = sns.clustermap(
+        counts_df,
+        cmap="viridis",
+        col_cluster=col_cluster,
+        row_cluster=True,
+        row_colors=row_colors,
+        xticklabels=False,
+        yticklabels=False,
+        figsize=figsize,
+        robust=robust,
+    )
+    _apply_xticks(g.ax_heatmap, labels, xtick_step)
+
+    if title:
+        g.fig.suptitle(title)
+
+    if save_name is not None:
+        fname = os.path.join(save_name)
+        g.fig.savefig(fname, dpi=200, bbox_inches="tight")
+        logger.info("Saved zero-Hamming pair count plot to %s.", fname)
+    else:
+        plt.show()
+
+    return g
 
 
 def combined_raw_clustermap(
