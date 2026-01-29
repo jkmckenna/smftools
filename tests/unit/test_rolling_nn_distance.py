@@ -37,6 +37,7 @@ def test_rolling_window_nn_distance_basic():
 
     assert "rolling_nn_dist" in adata.obsm
     assert "rolling_nn_dist_starts" in adata.uns
+    assert adata.uns["rolling_nn_dist_centers"].tolist() == [1.5]
     assert adata.uns["rolling_nn_dist_window"] == 4
     assert adata.uns["rolling_nn_dist_min_overlap"] == 2
 
@@ -230,6 +231,7 @@ def test_assign_rolling_nn_results_to_parent():
     np.testing.assert_allclose(parent.obsm["rolling_nn_parent"][[0, 2], :], values, rtol=1e-6)
     assert np.isnan(parent.obsm["rolling_nn_parent"][[1, 3], :]).all()
     assert parent.uns["rolling_nn_parent_starts"].tolist() == [0]
+    assert parent.uns["rolling_nn_parent_centers"].tolist() == [1.5]
     assert parent.uns["rolling_nn_parent_window"] == 4
 
 
