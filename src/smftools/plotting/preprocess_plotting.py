@@ -764,7 +764,8 @@ def plot_mismatch_base_frequency_by_position(
         save_path: Optional output directory for saving plots.
 
     Returns:
-        List of dictionaries with per-plot metadata and output paths.
+        List of dictionaries with per-plot metadata and output paths. Includes
+        a pooled-samples entry per reference.
     """
     logger.info("Plotting mismatch base frequency by position.")
 
@@ -829,6 +830,15 @@ def plot_mismatch_base_frequency_by_position(
 
     base_label_to_int = {label: int_val for int_val, label in base_int_to_label.items()}
 
+    def _pooled_label(sample_categories: Sequence[str]) -> str:
+        base_label = "pooled_samples"
+        if base_label not in sample_categories:
+            return base_label
+        suffix = 1
+        while f"{base_label}_{suffix}" in sample_categories:
+            suffix += 1
+        return f"{base_label}_{suffix}"
+
     results: List[Dict[str, Any]] = []
     save_path = Path(save_path) if save_path is not None else None
     if save_path is not None:
@@ -839,6 +849,9 @@ def plot_mismatch_base_frequency_by_position(
             raise KeyError(f"{col} not in adata.obs")
         if not isinstance(adata.obs[col].dtype, pd.CategoricalDtype):
             adata.obs[col] = adata.obs[col].astype("category")
+
+    sample_categories = [str(sample) for sample in adata.obs[sample_col].cat.categories]
+    pooled_sample = _pooled_label(sample_categories)
 
     for ref in adata.obs[reference_col].cat.categories:
         ref_name = str(ref)
@@ -872,7 +885,7 @@ def plot_mismatch_base_frequency_by_position(
         summary_df = pd.DataFrame(summary_data)
         mean_positional_error = adata.var[f"{ref}_mean_error_rate"].values
         std_positional_error = adata.var[f"{ref}_std_error_rate"].values
-        for sample in adata.obs[sample_col].cat.categories:
+        for sample in [*sample_categories, pooled_sample]:
             qmask = _mask_or_true(
                 "read_quality",
                 (lambda s: s >= float(min_quality))
@@ -898,14 +911,9 @@ def plot_mismatch_base_frequency_by_position(
                 else (lambda s: pd.Series(True, index=s.index)),
             )
 
-            row_mask = (
-                (adata.obs[reference_col] == ref)
-                & (adata.obs[sample_col] == sample)
-                & qmask
-                & lm_mask
-                & lrr_mask
-                & demux_mask
-            )
+            row_mask = (adata.obs[reference_col] == ref) & qmask & lm_mask & lrr_mask & demux_mask
+            if sample != pooled_sample:
+                row_mask = row_mask & (adata.obs[sample_col] == sample)
             if not bool(row_mask.any()):
                 continue
 
