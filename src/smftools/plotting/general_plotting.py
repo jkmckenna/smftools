@@ -26,6 +26,7 @@ from smftools.plotting.preprocess_plotting import (
 from smftools.plotting.spatial_plotting import (
     combined_raw_clustermap,
     plot_rolling_nn_and_layer,
+    plot_zero_hamming_span_and_layer,
 )
 
 logger = get_logger(__name__)
@@ -35,6 +36,7 @@ __all__ = [
     "combined_hmm_raw_clustermap",
     "combined_raw_clustermap",
     "plot_rolling_nn_and_layer",
+    "plot_zero_hamming_span_and_layer",
     "plot_hmm_layers_rolling_by_sample_ref",
     "plot_nmf_components",
     "plot_pca_components",
