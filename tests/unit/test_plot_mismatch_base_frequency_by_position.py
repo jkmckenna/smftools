@@ -167,3 +167,9 @@ def test_plot_mismatch_base_frequency_by_position_with_zscores(tmp_path):
     assert len(results) == 1
     assert results[0]["quality_layer"] == "base_quality_scores"
     assert Path(results[0]["output_path"]).is_file()
+    summary_path = tmp_path / "R1__mismatch_base_frequency_summary.csv"
+    assert summary_path.is_file()
+    summary_df = pd.read_csv(summary_path)
+    assert "var_names_position" in summary_df.columns
+    assert "S1_max_zscore" in summary_df.columns
+    assert "S1_max_zscore_base" in summary_df.columns

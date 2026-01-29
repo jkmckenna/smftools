@@ -148,30 +148,30 @@ def plot_sequence_integer_encoding_clustermaps(
             return None
         return max(1, int(np.ceil(n_positions / position_axis_tick_target)))
 
-    def _build_mod_site_mask(subset, ref_name: str) -> np.ndarray | None:
+    def _build_mod_site_mask(var_frame, ref_name: str) -> np.ndarray | None:
         if not exclude_mod_sites or not mod_site_bases:
             return None
 
         mod_site_cols = [f"{ref_name}_{base}_site" for base in mod_site_bases]
-        missing_required = [col for col in mod_site_cols if col not in subset.var.columns]
+        missing_required = [col for col in mod_site_cols if col not in var_frame.columns]
         if missing_required:
             return None
 
         extra_cols = []
         if any(base in {"GpC", "CpG"} for base in mod_site_bases):
             ambiguous_col = f"{ref_name}_ambiguous_GpC_CpG_site"
-            if ambiguous_col in subset.var.columns:
+            if ambiguous_col in var_frame.columns:
                 extra_cols.append(ambiguous_col)
 
         mod_site_cols.extend(extra_cols)
         mod_site_cols = list(dict.fromkeys(mod_site_cols))
 
-        mod_masks = [np.asarray(subset.var[col].values, dtype=bool) for col in mod_site_cols]
+        mod_masks = [np.asarray(var_frame[col].values, dtype=bool) for col in mod_site_cols]
         mod_mask = mod_masks[0] if len(mod_masks) == 1 else np.logical_or.reduce(mod_masks)
 
         position_col = f"position_in_{ref_name}"
-        if position_col in subset.var.columns:
-            position_mask = np.asarray(subset.var[position_col].values, dtype=bool)
+        if position_col in var_frame.columns:
+            position_mask = np.asarray(var_frame[position_col].values, dtype=bool)
             mod_mask = np.logical_and(mod_mask, position_mask)
 
         return mod_mask
@@ -777,30 +777,30 @@ def plot_mismatch_base_frequency_by_position(
         except Exception:
             return pd.Series(True, index=s.index)
 
-    def _build_mod_site_mask(subset, ref_name: str) -> np.ndarray | None:
+    def _build_mod_site_mask(var_frame, ref_name: str) -> np.ndarray | None:
         if not exclude_mod_sites or not mod_site_bases:
             return None
 
         mod_site_cols = [f"{ref_name}_{base}_site" for base in mod_site_bases]
-        missing_required = [col for col in mod_site_cols if col not in subset.var.columns]
+        missing_required = [col for col in mod_site_cols if col not in var_frame.columns]
         if missing_required:
             return None
 
         extra_cols = []
         if any(base in {"GpC", "CpG"} for base in mod_site_bases):
             ambiguous_col = f"{ref_name}_ambiguous_GpC_CpG_site"
-            if ambiguous_col in subset.var.columns:
+            if ambiguous_col in var_frame.columns:
                 extra_cols.append(ambiguous_col)
 
         mod_site_cols.extend(extra_cols)
         mod_site_cols = list(dict.fromkeys(mod_site_cols))
 
-        mod_masks = [np.asarray(subset.var[col].values, dtype=bool) for col in mod_site_cols]
+        mod_masks = [np.asarray(var_frame[col].values, dtype=bool) for col in mod_site_cols]
         mod_mask = mod_masks[0] if len(mod_masks) == 1 else np.logical_or.reduce(mod_masks)
 
         position_col = f"position_in_{ref_name}"
-        if position_col in subset.var.columns:
-            position_mask = np.asarray(subset.var[position_col].values, dtype=bool)
+        if position_col in var_frame.columns:
+            position_mask = np.asarray(var_frame[position_col].values, dtype=bool)
             mod_mask = np.logical_and(mod_mask, position_mask)
 
         return mod_mask
@@ -841,6 +841,35 @@ def plot_mismatch_base_frequency_by_position(
             adata.obs[col] = adata.obs[col].astype("category")
 
     for ref in adata.obs[reference_col].cat.categories:
+        ref_name = str(ref)
+        base_mask = np.ones(adata.n_vars, dtype=bool)
+        position_col = f"position_in_{ref_name}"
+        if position_col in adata.var.columns:
+            base_mask = np.asarray(adata.var[position_col].values, dtype=bool)
+
+        base_mod_mask = _build_mod_site_mask(adata.var, ref_name)
+        if base_mod_mask is not None:
+            base_mask = base_mask & ~base_mod_mask
+
+        summary_data = {
+            "var_names_position": np.asarray(adata.var_names)[base_mask],
+        }
+        if "Original_var_names" in adata.var.columns:
+            summary_data["original_var_names_position"] = np.asarray(
+                adata.var["Original_var_names"]
+            )[base_mask]
+        reindexed_col = f"{ref_name}_reindexed"
+        if reindexed_col in adata.var.columns:
+            summary_data["reindexed_var_names_position"] = np.asarray(adata.var[reindexed_col])[
+                base_mask
+            ]
+        ref_sequence_col = f"{ref_name}_strand_FASTA_base"
+        if ref_sequence_col in adata.var.columns:
+            summary_data["reference_sequence_base"] = np.asarray(adata.var[ref_sequence_col])[
+                base_mask
+            ]
+
+        summary_df = pd.DataFrame(summary_data)
         mean_positional_error = adata.var[f"{ref}_mean_error_rate"].values
         std_positional_error = adata.var[f"{ref}_std_error_rate"].values
         for sample in adata.obs[sample_col].cat.categories:
@@ -915,7 +944,7 @@ def plot_mismatch_base_frequency_by_position(
             else:
                 position_mask = np.asarray(ref_position_mask.values, dtype=bool)
 
-            mod_site_mask = _build_mod_site_mask(subset, str(ref))
+            mod_site_mask = _build_mod_site_mask(subset.var, str(ref))
             if mod_site_mask is not None:
                 position_mask = position_mask & ~mod_site_mask
 
@@ -971,6 +1000,27 @@ def plot_mismatch_base_frequency_by_position(
                     if np.all(np.isnan(zscores)):
                         continue
                     zscore_freqs[base_label] = zscores
+            if plot_zscores and save_path is not None:
+                full_max = np.full(adata.n_vars, np.nan, dtype=float)
+                full_base = np.full(adata.n_vars, None, dtype=object)
+                if zscore_freqs:
+                    base_labels = sorted(zscore_freqs.keys())
+                    zscore_stack = []
+                    for base_label in base_labels:
+                        full_z = np.full(adata.n_vars, np.nan, dtype=float)
+                        full_z[position_mask] = zscore_freqs[base_label]
+                        zscore_stack.append(full_z)
+                    zscore_stack = np.vstack(zscore_stack)
+                    all_nan = np.all(np.isnan(zscore_stack), axis=0)
+                    safe_stack = np.where(np.isnan(zscore_stack), -np.inf, zscore_stack)
+                    with np.errstate(invalid="ignore"):
+                        full_max = np.nanmax(zscore_stack, axis=0)
+                    max_idx = np.argmax(safe_stack, axis=0)
+                    full_base = np.array([base_labels[idx] for idx in max_idx], dtype=object)
+                    full_max[all_nan] = np.nan
+                    full_base[all_nan] = None
+                summary_df[f"{sample}_max_zscore"] = full_max[base_mask]
+                summary_df[f"{sample}_max_zscore_base"] = full_base[base_mask]
 
             if plot_zscores:
                 fig, axes = plt.subplots(nrows=2, figsize=(12, 7), sharex=True)
@@ -1034,5 +1084,13 @@ def plot_mismatch_base_frequency_by_position(
                     "output_path": str(out_file) if out_file is not None else None,
                 }
             )
+
+        if save_path is not None and not summary_df.empty:
+            safe_ref = f"{ref_name}__mismatch_base_frequency_summary".replace("=", "").replace(
+                ",", "_"
+            )
+            summary_file = save_path / f"{safe_ref}.csv"
+            summary_df.to_csv(summary_file, index=False)
+            logger.info("Saved mismatch base frequency summary to %s.", summary_file)
 
     return results
