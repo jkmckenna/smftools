@@ -325,18 +325,22 @@ def annotate_zero_hamming_segments(
     adata.uns[output_uns_key] = records
     if binary_layer_key is not None:
         target = parent_adata if parent_adata is not None else adata
-        target_layer = np.zeros((target.n_obs, values.shape[1]), dtype=np.uint8)
+        target_layer = np.zeros((target.n_obs, target.n_vars), dtype=np.uint8)
         target_indexer = target.obs_names.get_indexer(obs_names)
         if (target_indexer < 0).any():
             raise ValueError("Provided parent_adata does not contain all subset obs names.")
+        var_indexer = target.var_names.get_indexer(adata.var_names)
+        if (var_indexer < 0).any():
+            raise ValueError("Provided parent_adata does not contain all subset var names.")
         for record in records:
             read_i = int(record["read_i"])
             read_j = int(record["read_j"])
             target_i = target_indexer[read_i]
             target_j = target_indexer[read_j]
             for seg_start, seg_end in record["segments"]:
-                target_layer[target_i, seg_start:seg_end] = 1
-                target_layer[target_j, seg_start:seg_end] = 1
+                seg_slice = var_indexer[seg_start:seg_end]
+                target_layer[target_i, seg_slice] = 1
+                target_layer[target_j, seg_slice] = 1
         target.layers[binary_layer_key] = target_layer
         target.uns[f"{binary_layer_key}_source"] = output_uns_key
     return records
