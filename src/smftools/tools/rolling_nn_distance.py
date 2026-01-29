@@ -14,6 +14,127 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def zero_pairs_to_dataframe(adata, zero_pairs_uns_key: str) -> "pd.DataFrame":
+    """
+    Build a DataFrame of zero-Hamming pairs per window.
+
+    Args:
+        adata: AnnData containing zero-pair window data in ``adata.uns``.
+        zero_pairs_uns_key: Key for zero-pair window data in ``adata.uns``.
+
+    Returns:
+        DataFrame with one row per zero-Hamming pair per window.
+    """
+    import pandas as pd
+
+    if zero_pairs_uns_key not in adata.uns:
+        raise KeyError(f"Missing zero-pair data in adata.uns[{zero_pairs_uns_key!r}].")
+
+    zero_pairs_by_window = adata.uns[zero_pairs_uns_key]
+    starts = np.asarray(adata.uns.get(f"{zero_pairs_uns_key}_starts"))
+    window = int(adata.uns.get(f"{zero_pairs_uns_key}_window", 0))
+    if starts.size == 0 or window <= 0:
+        raise ValueError("Zero-pair metadata missing starts/window information.")
+
+    obs_names = np.asarray(adata.obs_names, dtype=object)
+    rows = []
+    for wi, pairs in enumerate(zero_pairs_by_window):
+        if pairs is None or len(pairs) == 0:
+            continue
+        start = int(starts[wi])
+        end = start + window
+        for read_i, read_j in pairs:
+            read_i = int(read_i)
+            read_j = int(read_j)
+            rows.append(
+                {
+                    "window_index": wi,
+                    "window_start": start,
+                    "window_end": end,
+                    "read_i": read_i,
+                    "read_j": read_j,
+                    "read_i_name": str(obs_names[read_i]),
+                    "read_j_name": str(obs_names[read_j]),
+                }
+            )
+
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "window_index",
+            "window_start",
+            "window_end",
+            "read_i",
+            "read_j",
+            "read_i_name",
+            "read_j_name",
+        ],
+    )
+
+
+def zero_hamming_segments_to_dataframe(
+    records: list[dict],
+    var_names: np.ndarray,
+) -> "pd.DataFrame":
+    """
+    Build a DataFrame of merged/refined zero-Hamming segments.
+
+    Args:
+        records: Output records from ``annotate_zero_hamming_segments``.
+        var_names: AnnData var names for labeling segment coordinates.
+
+    Returns:
+        DataFrame with one row per zero-Hamming segment.
+    """
+    import pandas as pd
+
+    var_names = np.asarray(var_names, dtype=object)
+
+    def _label_at(idx: int) -> Optional[str]:
+        if 0 <= idx < var_names.size:
+            return str(var_names[idx])
+        return None
+
+    rows = []
+    for record in records:
+        read_i = int(record["read_i"])
+        read_j = int(record["read_j"])
+        read_i_name = record.get("read_i_name")
+        read_j_name = record.get("read_j_name")
+        for seg_start, seg_end in record.get("segments", []):
+            seg_start = int(seg_start)
+            seg_end = int(seg_end)
+            end_inclusive = max(seg_start, seg_end - 1)
+            rows.append(
+                {
+                    "read_i": read_i,
+                    "read_j": read_j,
+                    "read_i_name": read_i_name,
+                    "read_j_name": read_j_name,
+                    "segment_start": seg_start,
+                    "segment_end_exclusive": seg_end,
+                    "segment_end_inclusive": end_inclusive,
+                    "segment_start_label": _label_at(seg_start),
+                    "segment_end_label": _label_at(end_inclusive),
+                }
+            )
+
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "read_i",
+            "read_j",
+            "read_i_name",
+            "read_j_name",
+            "segment_start",
+            "segment_end_exclusive",
+            "segment_end_inclusive",
+            "segment_start_label",
+            "segment_end_label",
+        ],
+    )
+
+
 def _window_center_coordinates(adata, starts: np.ndarray, window: int) -> np.ndarray:
     """
     Compute window center coordinates using AnnData var positions.
