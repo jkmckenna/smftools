@@ -36,7 +36,7 @@ def test_plot_mismatch_base_frequency_by_position_writes_files(tmp_path):
 
     results = plot_mismatch_base_frequency_by_position(adata, save_path=tmp_path)
 
-    assert len(results) == 4
+    assert len(results) == 6
     for entry in results:
         assert entry["output_path"] is not None
         assert Path(entry["output_path"]).is_file()
@@ -79,7 +79,7 @@ def test_plot_mismatch_base_frequency_by_position_excludes_mod_sites(tmp_path):
         mod_site_bases=["GpC"],
     )
 
-    assert len(results) == 4
+    assert len(results) == 6
     for entry in results:
         assert entry["n_positions"] == 2
 
@@ -115,7 +115,7 @@ def test_plot_mismatch_base_frequency_by_position_ignores_strand_base_mismatches
 
     results = plot_mismatch_base_frequency_by_position(adata, save_path=tmp_path)
 
-    assert len(results) == 2
+    assert len(results) == 4
     for entry in results:
         assert entry["n_positions"] == 2
 
@@ -164,12 +164,15 @@ def test_plot_mismatch_base_frequency_by_position_with_zscores(tmp_path):
         plot_zscores=True,
     )
 
-    assert len(results) == 1
-    assert results[0]["quality_layer"] == "base_quality_scores"
-    assert Path(results[0]["output_path"]).is_file()
+    assert len(results) == 2
+    for entry in results:
+        assert entry["quality_layer"] == "base_quality_scores"
+        assert Path(entry["output_path"]).is_file()
     summary_path = tmp_path / "R1__mismatch_base_frequency_summary.csv"
     assert summary_path.is_file()
     summary_df = pd.read_csv(summary_path)
     assert "var_names_position" in summary_df.columns
     assert "S1_max_zscore" in summary_df.columns
     assert "S1_max_zscore_base" in summary_df.columns
+    assert "pooled_samples_max_zscore" in summary_df.columns
+    assert "pooled_samples_max_zscore_base" in summary_df.columns
