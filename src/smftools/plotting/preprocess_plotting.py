@@ -919,9 +919,8 @@ def plot_mismatch_base_frequency_by_position(
 
             positions = np.arange(mismatch_matrix.shape[1])[position_mask]
             mean_errors = mean_positional_error[position_mask]
+            normalized_mean_errors = mean_errors / 3 # This is a conservative normalization against variant specific error rate
             std_errors = std_positional_error[position_mask]
-            lower = mean_errors - std_errors
-            upper = mean_errors + std_errors
             base_freqs: Dict[str, np.ndarray] = {}
             for base_int, base_label in base_int_to_label.items():
                 base_counts = ((mismatch_matrix == base_int) & coverage_mask).sum(axis=0)
@@ -946,15 +945,15 @@ def plot_mismatch_base_frequency_by_position(
                 color = DNA_5COLOR_PALETTE.get(normalized_base, DNA_5COLOR_PALETTE["OTHER"])
                 ax.scatter(positions, base_freqs[base_label], label=base_label, color=color, linewidth=1)
 
-            ax.plot(positions, mean_errors, label="Mean error rate")
-            ax.fill_between(
-                positions,
-                np.full_like(positions, lower, dtype=float),
-                np.full_like(positions, upper, dtype=float),
-                color="black",
-                alpha=0.12,
-                label="±1 std error",
-            )
+            ax.plot(positions, normalized_mean_errors, label="Mean error rate", color="black", linestyle="--")
+            # ax.fill_between(
+            #     positions,
+            #     np.full_like(positions, lower, dtype=float),
+            #     np.full_like(positions, upper, dtype=float),
+            #     color="black",
+            #     alpha=0.12,
+            #     label="±1 std error",
+            # )
 
             ax.set_yscale("log")
             ax.set_xlabel("Position")
