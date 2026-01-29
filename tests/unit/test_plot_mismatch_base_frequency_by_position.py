@@ -118,3 +118,52 @@ def test_plot_mismatch_base_frequency_by_position_ignores_strand_base_mismatches
     assert len(results) == 2
     for entry in results:
         assert entry["n_positions"] == 2
+
+
+def test_plot_mismatch_base_frequency_by_position_with_zscores(tmp_path):
+    matplotlib.use("Agg")
+
+    mismatch_matrix = np.array(
+        [
+            [0, 1, 2, 3],
+            [1, 2, 3, 0],
+            [2, 3, 0, 1],
+            [3, 0, 1, 2],
+        ]
+    )
+    quality_matrix = np.array(
+        [
+            [30, 30, 30, 30],
+            [30, 30, 30, 30],
+            [30, 30, 30, 30],
+            [30, 30, 30, 30],
+        ],
+        dtype=float,
+    )
+    adata = ad.AnnData(X=np.zeros((4, 4)))
+    adata.layers["mismatch_integer_encoding"] = mismatch_matrix
+    adata.layers["read_span_mask"] = np.ones_like(mismatch_matrix)
+    adata.layers["base_quality_scores"] = quality_matrix
+    adata.obs["Sample_Names"] = pd.Categorical(["S1", "S1", "S1", "S1"])
+    adata.obs["Reference_strand"] = pd.Categorical(["R1", "R1", "R1", "R1"])
+    adata.var_names = [f"pos{i}" for i in range(4)]
+    adata.uns["mismatch_integer_encoding_map"] = {
+        "A": 0,
+        "C": 1,
+        "G": 2,
+        "T": 3,
+        "N": 4,
+        "PAD": 5,
+    }
+    adata.var["R1_mean_error_rate"] = np.full(4, 0.01)
+    adata.var["R1_std_error_rate"] = np.full(4, 0.005)
+
+    results = plot_mismatch_base_frequency_by_position(
+        adata,
+        save_path=tmp_path,
+        plot_zscores=True,
+    )
+
+    assert len(results) == 1
+    assert results[0]["quality_layer"] == "base_quality_scores"
+    assert Path(results[0]["output_path"]).is_file()

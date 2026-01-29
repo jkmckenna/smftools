@@ -735,6 +735,8 @@ def plot_mismatch_base_frequency_by_position(
     reference_col: str = "Reference_strand",
     mismatch_layer: str = "mismatch_integer_encoding",
     read_span_layer: str = "read_span_mask",
+    quality_layer: str = "base_quality_scores",
+    plot_zscores: bool = False,
     exclude_mod_sites: bool = False,
     mod_site_bases: Sequence[str] | None = None,
     min_quality: float | None = None,
@@ -751,6 +753,8 @@ def plot_mismatch_base_frequency_by_position(
         reference_col: Column in ``adata.obs`` that identifies references.
         mismatch_layer: Layer name containing mismatch integer encodings.
         read_span_layer: Layer name containing read-span masks.
+        quality_layer: Layer name containing base-quality scores used for z-scores.
+        plot_zscores: Whether to plot quality-normalized z-scores in a separate panel.
         exclude_mod_sites: Whether to exclude annotated modification sites.
         mod_site_bases: Base-context labels used to build mod-site masks (e.g., ``["GpC", "CpG"]``).
         min_quality: Optional minimum read quality filter.
@@ -808,6 +812,8 @@ def plot_mismatch_base_frequency_by_position(
 
     if mismatch_layer not in adata.layers:
         raise KeyError(f"Layer '{mismatch_layer}' not found in adata.layers")
+    if plot_zscores and quality_layer not in adata.layers:
+        raise KeyError(f"Layer '{quality_layer}' not found in adata.layers")
 
     mismatch_map = adata.uns.get("mismatch_integer_encoding_map", {}) or {}
     if not mismatch_map:
@@ -939,7 +945,41 @@ def plot_mismatch_base_frequency_by_position(
             if not base_freqs:
                 continue
 
-            fig, ax = plt.subplots(figsize=(12, 4))
+            zscore_freqs: Dict[str, np.ndarray] = {}
+            if plot_zscores:
+                quality_matrix = np.asarray(subset.layers[quality_layer]).astype(float)
+                quality_matrix[quality_matrix < 0] = np.nan
+                valid_quality = coverage_mask & ~np.isnan(quality_matrix)
+                error_probs = np.power(10.0, -quality_matrix / 10.0)
+                error_probs = np.where(valid_quality, error_probs, 0.0)
+                variant_probs = error_probs / 3.0
+                variance = (variant_probs * (1.0 - variant_probs)).sum(axis=0)
+                variance = variance[position_mask]
+                variance = np.where(variance > 0, variance, np.nan)
+
+                for base_int, base_label in base_int_to_label.items():
+                    base_counts = ((mismatch_matrix == base_int) & coverage_mask).sum(axis=0).astype(float)
+                    expected_counts = variant_probs.sum(axis=0)
+                    expected_counts = expected_counts[position_mask]
+                    observed_counts = base_counts[position_mask]
+                    zscores = np.divide(
+                        observed_counts - expected_counts,
+                        np.sqrt(variance),
+                        out=np.full_like(expected_counts, np.nan, dtype=float),
+                        where=~np.isnan(variance),
+                    )
+                    if np.all(np.isnan(zscores)):
+                        continue
+                    zscore_freqs[base_label] = zscores
+
+            if plot_zscores:
+                fig, axes = plt.subplots(nrows=2, figsize=(12, 7), sharex=True)
+                ax = axes[0]
+                zscore_ax = axes[1]
+            else:
+                fig, ax = plt.subplots(figsize=(12, 4))
+                zscore_ax = None
+
             for base_label in sorted(base_freqs.keys()):
                 normalized_base = base_label if base_label in {"A", "C", "G", "T"} else "OTHER"
                 color = DNA_5COLOR_PALETTE.get(normalized_base, DNA_5COLOR_PALETTE["OTHER"])
@@ -960,6 +1000,17 @@ def plot_mismatch_base_frequency_by_position(
             ax.set_ylabel("Mismatch frequency")
             ax.set_title(f"{sample} - {ref} mismatch base frequencies")
             ax.legend(title="Mismatch base", ncol=4, fontsize=9)
+
+            if plot_zscores and zscore_ax is not None and zscore_freqs:
+                for base_label in sorted(zscore_freqs.keys()):
+                    normalized_base = base_label if base_label in {"A", "C", "G", "T"} else "OTHER"
+                    color = DNA_5COLOR_PALETTE.get(normalized_base, DNA_5COLOR_PALETTE["OTHER"])
+                    zscore_ax.plot(positions, zscore_freqs[base_label], label=base_label, color=color)
+                zscore_ax.axhline(0.0, color="black", linestyle="--", linewidth=1)
+                zscore_ax.set_xlabel("Position")
+                zscore_ax.set_ylabel("Z-score")
+                zscore_ax.set_title(f"{sample} - {ref} quality-normalized mismatch z-scores")
+                zscore_ax.legend(title="Mismatch base", ncol=4, fontsize=9)
             fig.tight_layout()
 
             out_file = None
@@ -979,6 +1030,7 @@ def plot_mismatch_base_frequency_by_position(
                     "reference": str(ref),
                     "sample": str(sample),
                     "n_positions": int(positions.size),
+                    "quality_layer": quality_layer if plot_zscores else None,
                     "output_path": str(out_file) if out_file is not None else None,
                 }
             )
