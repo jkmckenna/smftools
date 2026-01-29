@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 
 from smftools.tools.rolling_nn_distance import (
+    annotate_zero_hamming_segments,
     assign_rolling_nn_results,
     rolling_window_nn_distance,
     rolling_window_nn_distance_by_group,
@@ -230,3 +231,81 @@ def test_assign_rolling_nn_results_to_parent():
     assert np.isnan(parent.obsm["rolling_nn_parent"][[1, 3], :]).all()
     assert parent.uns["rolling_nn_parent_starts"].tolist() == [0]
     assert parent.uns["rolling_nn_parent_window"] == 4
+
+
+def test_zero_pairs_collection_and_annotation():
+    X = np.array(
+        [
+            [1.0, 0.0, 1.0, np.nan],
+            [1.0, 0.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+        ]
+    )
+    adata = ad.AnnData(X)
+
+    rolling_window_nn_distance(
+        adata,
+        window=3,
+        step=1,
+        min_overlap=2,
+        return_fraction=True,
+        store_obsm="rolling_nn_dist",
+        collect_zero_pairs=True,
+        zero_pairs_uns_key="rolling_nn_zero_pairs",
+    )
+
+    assert "rolling_nn_zero_pairs" in adata.uns
+    assert len(adata.uns["rolling_nn_zero_pairs"]) == 2
+    first_window_pairs = adata.uns["rolling_nn_zero_pairs"][0]
+    assert first_window_pairs.shape == (1, 2)
+    assert np.array_equal(first_window_pairs[0], np.array([0, 1]))
+
+    records = annotate_zero_hamming_segments(
+        adata,
+        output_uns_key="zero_hamming_segments",
+        refine_segments=True,
+    )
+
+    assert records
+    record = records[0]
+    assert record["read_i"] == 0
+    assert record["read_j"] == 1
+    assert record["segments"] == [(0, 4)]
+
+
+def test_zero_pairs_annotation_to_parent_layer():
+    X = np.array(
+        [
+            [1.0, 0.0, 1.0, np.nan],
+            [1.0, 0.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 0.0],
+        ]
+    )
+    parent = ad.AnnData(X)
+    subset = parent[[0, 1]].copy()
+
+    rolling_window_nn_distance(
+        subset,
+        window=3,
+        step=1,
+        min_overlap=2,
+        return_fraction=True,
+        store_obsm=None,
+        collect_zero_pairs=True,
+        zero_pairs_uns_key="rolling_nn_zero_pairs",
+    )
+
+    annotate_zero_hamming_segments(
+        subset,
+        zero_pairs_uns_key="rolling_nn_zero_pairs",
+        output_uns_key="zero_hamming_segments",
+        binary_layer_key="zero_span",
+        parent_adata=parent,
+    )
+
+    assert "zero_span" in parent.layers
+    expected = np.zeros_like(X, dtype=np.uint8)
+    expected[0, 0:4] = 1
+    expected[1, 0:4] = 1
+    np.testing.assert_array_equal(parent.layers["zero_span"], expected)

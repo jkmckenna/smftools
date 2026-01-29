@@ -149,7 +149,7 @@ def spatial_adata_core(
         reindex_references_adata,
     )
     from ..readwrite import make_dirs, safe_read_h5ad
-    from ..tools import rolling_window_nn_distance
+    from ..tools import annotate_zero_hamming_segments, rolling_window_nn_distance
     from ..tools.position_stats import (
         compute_positionwise_statistics,
         plot_positionwise_matrices,
@@ -369,6 +369,8 @@ def spatial_adata_core(
                 )
                 subset = subset[:, site_mask].copy()
                 try:
+                    collect_zero_pairs = getattr(cfg, "rolling_nn_collect_zero_pairs", False)
+                    zero_pairs_uns_key = getattr(cfg, "rolling_nn_zero_pairs_uns_key", None)
                     rolling_values, rolling_starts = rolling_window_nn_distance(
                         subset,
                         layer=cfg.rolling_nn_layer,
@@ -377,6 +379,8 @@ def spatial_adata_core(
                         min_overlap=cfg.rolling_nn_min_overlap,
                         return_fraction=cfg.rolling_nn_return_fraction,
                         store_obsm=cfg.rolling_nn_obsm_key,
+                        collect_zero_pairs=collect_zero_pairs,
+                        zero_pairs_uns_key=zero_pairs_uns_key,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -410,6 +414,41 @@ def spatial_adata_core(
                         reference,
                         exc,
                     )
+                if collect_zero_pairs:
+                    segments_uns_key = getattr(
+                        cfg,
+                        "rolling_nn_zero_pairs_segments_key",
+                        f"{parent_obsm_key}__zero_hamming_segments",
+                    )
+                    layer_key = getattr(
+                        cfg,
+                        "rolling_nn_zero_pairs_layer_key",
+                        f"{parent_obsm_key}__zero_span",
+                    )
+                    try:
+                        annotate_zero_hamming_segments(
+                            subset,
+                            zero_pairs_uns_key=zero_pairs_uns_key,
+                            output_uns_key=segments_uns_key,
+                            layer=cfg.rolling_nn_layer,
+                            min_overlap=cfg.rolling_nn_min_overlap,
+                            refine_segments=getattr(cfg, "rolling_nn_zero_pairs_refine", True),
+                            binary_layer_key=layer_key,
+                            parent_adata=adata,
+                        )
+                        adata.uns.setdefault(
+                            f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
+                        )[f"{safe_sample}__{safe_ref}"] = {
+                            "segments_key": segments_uns_key,
+                            "layer_key": layer_key,
+                        }
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to annotate zero-pair segments for sample=%s ref=%s: %s",
+                            sample,
+                            reference,
+                            exc,
+                        )
                 adata.uns.setdefault(f"{cfg.rolling_nn_obsm_key}_reference_map", {})[reference] = (
                     parent_obsm_key
                 )
