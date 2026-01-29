@@ -100,6 +100,13 @@ def plot_rolling_nn_and_layer(
             fontsize=xtick_fontsize,
         )
 
+    def _format_labels(values):
+        values = np.asarray(values)
+        if np.issubdtype(values.dtype, np.number):
+            if np.all(np.isfinite(values)) and np.all(np.isclose(values, np.round(values))):
+                values = np.round(values).astype(int)
+        return [str(v) for v in values]
+
     X = subset.obsm[obsm_key]
     valid = ~np.all(np.isnan(X), axis=1)
 
@@ -224,18 +231,20 @@ def plot_rolling_nn_and_layer(
         robust=robust,
         cbar_ax=ax1_cbar,
     )
-    starts = subset.uns.get(f"{obsm_key}_starts")
-    if starts is not None:
-        starts = np.asarray(starts)
-        window_labels = [str(s) for s in starts]
+    label_source = subset.uns.get(f"{obsm_key}_centers")
+    if label_source is None:
+        label_source = subset.uns.get(f"{obsm_key}_starts")
+    if label_source is not None:
+        label_source = np.asarray(label_source)
+        window_labels = _format_labels(label_source)
         try:
             col_idx = X_ord.columns.to_numpy()
             if np.issubdtype(col_idx.dtype, np.number):
                 col_idx = col_idx.astype(int)
-                if col_idx.size and col_idx.max() < len(starts):
-                    window_labels = [str(s) for s in starts[col_idx]]
+                if col_idx.size and col_idx.max() < len(label_source):
+                    window_labels = _format_labels(label_source[col_idx])
         except Exception:
-            window_labels = [str(s) for s in starts]
+            window_labels = _format_labels(label_source)
         _apply_xticks(ax1, window_labels, xtick_step)
 
     methylation_fraction = _methylation_fraction_for_layer(L_ord.to_numpy(), layer_key)

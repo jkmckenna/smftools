@@ -12,6 +12,31 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _window_center_coordinates(adata, starts: np.ndarray, window: int) -> np.ndarray:
+    """
+    Compute window center coordinates using AnnData var positions.
+
+    Prefers ``adata.var["Original_var_names"]`` when available and aligned; otherwise uses
+    ``adata.var_names``. If coordinates are numeric, return the mean coordinate per window.
+    If not numeric, return the midpoint label for each window.
+    """
+    coord_source = adata.var_names
+    if "Original_var_names" in adata.var and adata.var["Original_var_names"].shape[0] == adata.n_vars:
+        coord_source = adata.var["Original_var_names"]
+    coords = np.asarray(coord_source)
+    if coords.size == 0:
+        return np.array([], dtype=float)
+
+    try:
+        coords_numeric = coords.astype(float)
+        return np.array(
+            [np.nanmean(coords_numeric[s : s + window]) for s in starts], dtype=float
+        )
+    except Exception:
+        mid = np.clip(starts + (window // 2), 0, coords.size - 1)
+        return coords[mid]
+
+
 def _pack_bool_to_u64(B: np.ndarray) -> np.ndarray:
     """
     Pack a boolean (or 0/1) matrix (n, w) into uint64 blocks (n, ceil(w/64)).
@@ -73,6 +98,8 @@ def rolling_window_nn_distance(
         Nearest-neighbor distance per read per window (NaN if no valid neighbor).
     starts : (n_windows,) int
         Window start indices in var-space.
+    centers : (n_windows,) array-like
+        Window center coordinates derived from AnnData var positions (stored in ``.uns``).
     """
     X = adata.layers[layer] if layer is not None else adata.X
     X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
@@ -176,6 +203,7 @@ def rolling_window_nn_distance(
     if store_obsm is not None:
         adata.obsm[store_obsm] = out
         adata.uns[f"{store_obsm}_starts"] = starts
+        adata.uns[f"{store_obsm}_centers"] = _window_center_coordinates(adata, starts, window)
         adata.uns[f"{store_obsm}_window"] = int(window)
         adata.uns[f"{store_obsm}_step"] = int(step)
         adata.uns[f"{store_obsm}_min_overlap"] = int(min_overlap)
@@ -390,6 +418,9 @@ def assign_rolling_nn_results(
     if obsm_key not in parent_adata.obsm:
         parent_adata.obsm[obsm_key] = np.full((n_obs, n_windows), np.nan, dtype=float)
         parent_adata.uns[f"{obsm_key}_starts"] = starts
+        parent_adata.uns[f"{obsm_key}_centers"] = _window_center_coordinates(
+            subset_adata, starts, window
+        )
         parent_adata.uns[f"{obsm_key}_window"] = int(window)
         parent_adata.uns[f"{obsm_key}_step"] = int(step)
         parent_adata.uns[f"{obsm_key}_min_overlap"] = int(min_overlap)
@@ -407,6 +438,13 @@ def assign_rolling_nn_results(
             raise ValueError(
                 f"Existing obsm[{obsm_key!r}] has different window starts than new values."
             )
+        existing_centers = parent_adata.uns.get(f"{obsm_key}_centers")
+        if existing_centers is not None:
+            expected_centers = _window_center_coordinates(subset_adata, starts, window)
+            if not np.array_equal(existing_centers, expected_centers):
+                raise ValueError(
+                    f"Existing obsm[{obsm_key!r}] has different window centers than new values."
+                )
 
     parent_indexer = parent_adata.obs_names.get_indexer(subset_adata.obs_names)
     if (parent_indexer < 0).any():
