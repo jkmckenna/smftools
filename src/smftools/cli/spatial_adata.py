@@ -141,6 +141,7 @@ def spatial_adata_core(
         combined_raw_clustermap,
         plot_rolling_grid,
         plot_rolling_nn_and_layer,
+        plot_zero_hamming_span_and_layer,
         plot_spatial_autocorr_grid,
     )
     from ..preprocessing import (
@@ -471,6 +472,81 @@ def spatial_adata_core(
                         reference,
                         exc,
                     )
+
+    # ============================================================
+    # 3) Spatial autocorrelation + rolling metrics
+    # ============================================================
+    # 2c) Zero-Hamming span clustermaps
+    # ============================================================
+    pp_zero_hamming_dir = spatial_dir_dedup / "06c_zero_hamming_span_clustermaps"
+
+    if pp_zero_hamming_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+        logger.debug(f"{pp_zero_hamming_dir} already exists. Skipping zero-Hamming plots.")
+    else:
+        zero_pairs_map = adata.uns.get(f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {})
+        if zero_pairs_map:
+            make_dirs([pp_zero_hamming_dir])
+            samples = (
+                adata.obs[cfg.sample_name_col_for_plotting]
+                .astype("category")
+                .cat.categories.tolist()
+            )
+            references = (
+                adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
+            )
+            for reference in references:
+                for sample in samples:
+                    mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
+                        adata.obs[cfg.reference_column] == reference
+                    )
+                    if not mask.any():
+                        continue
+
+                    safe_sample = str(sample).replace(os.sep, "_")
+                    safe_ref = str(reference).replace(os.sep, "_")
+                    map_key = f"{safe_sample}__{safe_ref}"
+                    map_entry = zero_pairs_map.get(map_key)
+                    if not map_entry:
+                        continue
+
+                    layer_key = map_entry.get("layer_key")
+                    if not layer_key or layer_key not in adata.layers:
+                        logger.warning(
+                            "Zero-Hamming span layer %s missing for sample=%s ref=%s.",
+                            layer_key,
+                            sample,
+                            reference,
+                        )
+                        continue
+
+                    subset = adata[mask]
+                    site_mask = (
+                        adata.var[[f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]]
+                        .fillna(False)
+                        .any(axis=1)
+                    )
+                    subset = subset[:, site_mask].copy()
+                    title = f"{sample} {reference}"
+                    out_png = pp_zero_hamming_dir / f"{safe_sample}__{safe_ref}.png"
+                    try:
+                        plot_zero_hamming_span_and_layer(
+                            subset,
+                            span_layer_key=layer_key,
+                            layer_key=cfg.rolling_nn_plot_layer,
+                            max_nan_fraction=cfg.position_max_nan_threshold,
+                            var_valid_fraction_col=f"{reference}_valid_fraction",
+                            title=title,
+                            save_name=out_png,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed zero-Hamming span plot for sample=%s ref=%s: %s",
+                            sample,
+                            reference,
+                            exc,
+                        )
+        else:
+            logger.debug("No zero-pair map found; skipping zero-Hamming span clustermaps.")
 
     # ============================================================
     # 3) Spatial autocorrelation + rolling metrics
