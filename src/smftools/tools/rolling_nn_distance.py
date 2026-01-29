@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import ast
-import json
-from typing import TYPE_CHECKING, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import numpy as np
 
@@ -57,6 +55,8 @@ def rolling_window_nn_distance(
     block_rows: int = 256,
     block_cols: int = 2048,
     store_obsm: Optional[str] = "rolling_nn_dist",
+    collect_zero_pairs: bool = False,
+    zero_pairs_uns_key: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Rolling-window nearest-neighbor distance per read, overlap-aware.
@@ -91,6 +91,8 @@ def rolling_window_nn_distance(
     nW = len(starts)
     out = np.full((n, nW), np.nan, dtype=float)
 
+    zero_pairs_by_window = [] if collect_zero_pairs else None
+
     for wi, s in enumerate(starts):
         wX = X[:, s : s + window]  # (n, window)
 
@@ -105,6 +107,8 @@ def rolling_window_nn_distance(
         V64 = _pack_bool_to_u64(V.astype(bool))
 
         best = np.full(n, np.inf, dtype=float)
+
+        window_pairs = [] if collect_zero_pairs else None
 
         for i0 in range(0, n, block_rows):
             i1 = min(n, i0 + block_rows)
@@ -149,10 +153,25 @@ def rolling_window_nn_distance(
 
                 local_best = np.minimum(local_best, dist.min(axis=1))
 
+                if collect_zero_pairs:
+                    zero_mask = ok & (mismatch_counts == 0)
+                    if np.any(zero_mask):
+                        i_idx, j_idx = np.where(zero_mask)
+                        gi = i0 + i_idx
+                        gj = j0 + j_idx
+                        keep = gi < gj
+                        if np.any(keep):
+                            window_pairs.append(np.stack([gi[keep], gj[keep]], axis=1))
+
             best[i0:i1] = local_best
 
         best[~np.isfinite(best)] = np.nan
         out[:, wi] = best
+        if collect_zero_pairs:
+            if window_pairs:
+                zero_pairs_by_window.append(np.vstack(window_pairs))
+            else:
+                zero_pairs_by_window.append(np.empty((0, 2), dtype=int))
 
     if store_obsm is not None:
         adata.obsm[store_obsm] = out
@@ -162,8 +181,165 @@ def rolling_window_nn_distance(
         adata.uns[f"{store_obsm}_min_overlap"] = int(min_overlap)
         adata.uns[f"{store_obsm}_return_fraction"] = bool(return_fraction)
         adata.uns[f"{store_obsm}_layer"] = layer if layer is not None else "X"
+    if collect_zero_pairs:
+        if zero_pairs_uns_key is None:
+            zero_pairs_uns_key = (
+                f"{store_obsm}_zero_pairs" if store_obsm is not None else "rolling_nn_zero_pairs"
+            )
+        adata.uns[zero_pairs_uns_key] = zero_pairs_by_window
+        adata.uns[f"{zero_pairs_uns_key}_starts"] = starts
+        adata.uns[f"{zero_pairs_uns_key}_window"] = int(window)
+        adata.uns[f"{zero_pairs_uns_key}_step"] = int(step)
+        adata.uns[f"{zero_pairs_uns_key}_min_overlap"] = int(min_overlap)
+        adata.uns[f"{zero_pairs_uns_key}_return_fraction"] = bool(return_fraction)
+        adata.uns[f"{zero_pairs_uns_key}_layer"] = layer if layer is not None else "X"
 
     return out, starts
+
+
+def annotate_zero_hamming_segments(
+    adata,
+    zero_pairs_uns_key: Optional[str] = None,
+    output_uns_key: str = "zero_hamming_segments",
+    layer: Optional[str] = None,
+    min_overlap: Optional[int] = None,
+    refine_segments: bool = True,
+    binary_layer_key: Optional[str] = None,
+    parent_adata: Optional["ad.AnnData"] = None,
+) -> list[dict]:
+    """
+    Merge zero-Hamming windows into maximal segments and annotate onto AnnData.
+
+    Args:
+        adata: AnnData containing zero-pair window data in ``.uns``.
+        zero_pairs_uns_key: Key for zero-pair window data in ``adata.uns``.
+        output_uns_key: Key to store merged/refined segments in ``adata.uns``.
+        layer: Layer to use for refinement (defaults to adata.X).
+        min_overlap: Minimum overlap required to keep a refined segment.
+        refine_segments: Whether to refine merged windows to maximal segments.
+        binary_layer_key: Layer key to store a binary span annotation.
+        parent_adata: Parent AnnData to receive the binary layer (defaults to adata).
+
+    Returns:
+        List of segment records stored in ``adata.uns[output_uns_key]``.
+    """
+    if zero_pairs_uns_key is None:
+        candidate_keys = [key for key in adata.uns if key.endswith("_zero_pairs")]
+        if len(candidate_keys) == 1:
+            zero_pairs_uns_key = candidate_keys[0]
+        elif not candidate_keys:
+            raise KeyError("No zero-pair data found in adata.uns.")
+        else:
+            raise KeyError(
+                "Multiple zero-pair keys found in adata.uns; please specify zero_pairs_uns_key."
+            )
+
+    if zero_pairs_uns_key not in adata.uns:
+        raise KeyError(f"Missing zero-pair data in adata.uns[{zero_pairs_uns_key!r}].")
+
+    zero_pairs_by_window = adata.uns[zero_pairs_uns_key]
+    starts = np.asarray(adata.uns.get(f"{zero_pairs_uns_key}_starts"))
+    window = int(adata.uns.get(f"{zero_pairs_uns_key}_window", 0))
+    if starts.size == 0 or window <= 0:
+        raise ValueError("Zero-pair metadata missing starts/window information.")
+
+    if min_overlap is None:
+        min_overlap = int(adata.uns.get(f"{zero_pairs_uns_key}_min_overlap", 1))
+
+    X = adata.layers[layer] if layer is not None else adata.X
+    X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
+    observed = ~np.isnan(X)
+    values = (np.where(observed, X, 0.0) > 0).astype(np.uint8)
+
+    pair_segments: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for wi, pairs in enumerate(zero_pairs_by_window):
+        if pairs is None or len(pairs) == 0:
+            continue
+        start = int(starts[wi])
+        end = start + window
+        for i, j in pairs:
+            key = (int(i), int(j))
+            pair_segments.setdefault(key, []).append((start, end))
+
+    def _merge_segments(segments: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        if not segments:
+            return []
+        segments = sorted(segments, key=lambda seg: seg[0])
+        merged = [segments[0]]
+        for seg_start, seg_end in segments[1:]:
+            last_start, last_end = merged[-1]
+            if seg_start <= last_end:
+                merged[-1] = (last_start, max(last_end, seg_end))
+            else:
+                merged.append((seg_start, seg_end))
+        return merged
+
+    def _refine_segment(
+        read_i: int,
+        read_j: int,
+        start: int,
+        end: int,
+    ) -> Optional[tuple[int, int]]:
+        if not refine_segments:
+            return (start, end)
+        left = start
+        right = end
+        while left > 0:
+            idx = left - 1
+            if observed[read_i, idx] and observed[read_j, idx]:
+                if values[read_i, idx] != values[read_j, idx]:
+                    break
+            left -= 1
+        n_vars = values.shape[1]
+        while right < n_vars:
+            idx = right
+            if observed[read_i, idx] and observed[read_j, idx]:
+                if values[read_i, idx] != values[read_j, idx]:
+                    break
+            right += 1
+        overlap = np.sum(observed[read_i, left:right] & observed[read_j, left:right])
+        if overlap < min_overlap:
+            return None
+        return (left, right)
+
+    records: list[dict] = []
+    obs_names = adata.obs_names
+    for (read_i, read_j), segments in pair_segments.items():
+        merged = _merge_segments(segments)
+        refined_segments = []
+        for seg_start, seg_end in merged:
+            refined = _refine_segment(read_i, read_j, seg_start, seg_end)
+            if refined is not None:
+                refined_segments.append(refined)
+        if refined_segments:
+            records.append(
+                {
+                    "read_i": read_i,
+                    "read_j": read_j,
+                    "read_i_name": str(obs_names[read_i]),
+                    "read_j_name": str(obs_names[read_j]),
+                    "segments": refined_segments,
+                }
+            )
+
+    adata.uns[output_uns_key] = records
+    if binary_layer_key is not None:
+        target = parent_adata if parent_adata is not None else adata
+        target_layer = np.zeros((target.n_obs, values.shape[1]), dtype=np.uint8)
+        target_indexer = target.obs_names.get_indexer(obs_names)
+        if (target_indexer < 0).any():
+            raise ValueError("Provided parent_adata does not contain all subset obs names.")
+        for record in records:
+            read_i = int(record["read_i"])
+            read_j = int(record["read_j"])
+            target_i = target_indexer[read_i]
+            target_j = target_indexer[read_j]
+            for seg_start, seg_end in record["segments"]:
+                target_layer[target_i, seg_start:seg_end] = 1
+                target_layer[target_j, seg_start:seg_end] = 1
+        target.layers[binary_layer_key] = target_layer
+        target.uns[f"{binary_layer_key}_source"] = output_uns_key
+    return records
 
 
 def assign_rolling_nn_results(
