@@ -22,14 +22,13 @@ def _build_mod_sites_var_filter_mask(
     """Build a boolean var mask for mod sites across references."""
     import numpy as np
 
+    mod_target_bases = _expand_mod_target_bases(cfg.mod_target_bases)
     ref_masks = []
     for ref in references:
-        if smf_modality == "direct":
-            mod_site_cols = [f"{ref}_{base}_site" for base in cfg.mod_target_bases]
-        elif deaminase:
+        if deaminase and smf_modality != "direct":
             mod_site_cols = [f"{ref}_C_site"]
         else:
-            mod_site_cols = [f"{ref}_{base}_site" for base in cfg.mod_target_bases]
+            mod_site_cols = [f"{ref}_{base}_site" for base in mod_target_bases]
 
         position_col = f"position_in_{ref}"
         required_cols = mod_site_cols + [position_col]
@@ -46,6 +45,50 @@ def _build_mod_sites_var_filter_mask(
         return np.ones(adata.n_vars, dtype=bool)
 
     return np.logical_and.reduce(ref_masks)
+
+
+def _build_shared_valid_non_mod_sites_mask(
+    adata: ad.AnnData,
+    references: Sequence[str],
+    cfg,
+    smf_modality: str,
+    deaminase: bool,
+) -> "np.ndarray":
+    """Build a boolean var mask for shared valid positions without mod sites."""
+    import numpy as np
+
+    shared_position_mask = _build_reference_position_mask(adata, references)
+    if not references:
+        return shared_position_mask
+
+    mod_target_bases = _expand_mod_target_bases(cfg.mod_target_bases)
+    ref_mod_masks = []
+    for ref in references:
+        if deaminase and smf_modality != "direct":
+            mod_site_cols = [f"{ref}_C_site"]
+        else:
+            mod_site_cols = [f"{ref}_{base}_site" for base in mod_target_bases]
+
+        required_cols = mod_site_cols
+        missing = [col for col in required_cols if col not in adata.var.columns]
+        if missing:
+            raise KeyError(f"var_filters not found in adata.var: {missing}")
+
+        mod_masks = [np.asarray(adata.var[col].values, dtype=bool) for col in mod_site_cols]
+        ref_mod_masks.append(mod_masks[0] if len(mod_masks) == 1 else np.logical_or.reduce(mod_masks))
+
+    any_mod_mask = np.logical_or.reduce(ref_mod_masks) if ref_mod_masks else np.zeros(
+        adata.n_vars, dtype=bool
+    )
+    return np.logical_and(shared_position_mask, np.logical_not(any_mod_mask))
+
+
+def _expand_mod_target_bases(mod_target_bases: Sequence[str]) -> list[str]:
+    """Ensure ambiguous GpC/CpG sites are included when requested."""
+    bases = list(mod_target_bases)
+    if any(base in {"GpC", "CpG"} for base in bases) and "ambiguous_GpC_CpG" not in bases:
+        bases.append("ambiguous_GpC_CpG")
+    return bases
 
 
 def _build_reference_position_mask(
@@ -308,6 +351,13 @@ def latent_adata_core(
         smf_modality=smf_modality,
         deaminase=deaminase,
     )
+    non_mod_sites_mask = _build_shared_valid_non_mod_sites_mask(
+        adata=adata,
+        references=references,
+        cfg=cfg,
+        smf_modality=smf_modality,
+        deaminase=deaminase,
+    )
 
     # PCA calculation
     adata = calculate_pca(
@@ -544,7 +594,7 @@ def latent_adata_core(
         adata = calculate_sequence_cp_decomposition(
             adata,
             layer=SEQUENCE_INTEGER_ENCODING,
-            var_mask=~mod_sites_mask,
+            var_mask=non_mod_sites_mask,
             var_mask_name="non_mod_site_reference_positions",
             rank=2,
             embedding_key=f"X_cp_{SUBSET}",
@@ -588,7 +638,7 @@ def latent_adata_core(
         adata = calculate_sequence_cp_decomposition(
             adata,
             layer=SEQUENCE_INTEGER_ENCODING,
-            var_mask=~mod_sites_mask,
+            var_mask=non_mod_sites_mask,
             var_mask_name="non_mod_site_reference_positions",
             rank=2,
             embedding_key=f"X_cp_{SUBSET}",
