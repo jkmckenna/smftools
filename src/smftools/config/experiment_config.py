@@ -851,9 +851,9 @@ class ExperimentConfig:
     spatial_clustermap_sortby: Optional[str] = "gpc"
     rolling_nn_layer: Optional[str] = "nan0_0minus1"
     rolling_nn_plot_layer: Optional[str] = "nan0_0minus1"
-    rolling_nn_window: int = 15
-    rolling_nn_step: int = 2
-    rolling_nn_min_overlap: int = 10
+    rolling_nn_window: int = 10
+    rolling_nn_step: int = 1
+    rolling_nn_min_overlap: int = 8
     rolling_nn_return_fraction: bool = True
     rolling_nn_obsm_key: str = "rolling_nn_dist"
     rolling_nn_site_types: Optional[List[str]] = None
