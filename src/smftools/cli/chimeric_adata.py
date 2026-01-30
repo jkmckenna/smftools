@@ -41,11 +41,10 @@ def chimeric_adata(
     hmm_path = paths.hmm
     latent_path = paths.latent
 
-    # Stage-skipping logic for spatial
+    # Stage-skipping logic
     if not getattr(cfg, "force_redo_chimeric_analyses", False):
-        # If spatial exists, we consider spatial analyses already done.
-        if spatial_path.exists():
-            logger.info(f"Chimeric AnnData found: {spatial_path}\nSkipping smftools chimerix")
+        if chimeric_path.exists():
+            logger.info(f"Chimeric AnnData found: {chimeric_path}\nSkipping smftools chimeric")
             return None, spatial_path
 
     # Helper to load from disk, reusing loaded_adata if it matches
@@ -53,7 +52,7 @@ def chimeric_adata(
         adata, _ = safe_read_h5ad(path)
         return adata
 
-    # 3) Decide which AnnData to use as the *starting point* for spatial analyses
+    # 3) Decide which AnnData to use as the *starting point* for  analyses
     if hmm_path.exists():
         start_adata = _load(hmm_path)
         source_path = hmm_path
@@ -81,7 +80,7 @@ def chimeric_adata(
         )
         return None, None
 
-    # 4) Run the spatial core
+    # 4) Run the core
     adata_chimeric, chimeric_path = chimeric_adata_core(
         adata=start_adata,
         cfg=cfg,

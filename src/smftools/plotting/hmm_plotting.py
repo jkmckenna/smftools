@@ -19,9 +19,12 @@ from smftools.plotting.plotting_utils import (
     normalized_mean,
 )
 
+gridspec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plotting")
+patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
+sns = require("seaborn", extra="plotting", purpose="plot styling")
+
 plt = require("matplotlib.pyplot", extra="plotting", purpose="HMM plots")
 mpl_colors = require("matplotlib.colors", extra="plotting", purpose="HMM plots")
-grid_spec = require("matplotlib.gridspec", extra="plotting", purpose="HMM plots")
 pdf_backend = require(
     "matplotlib.backends.backend_pdf",
     extra="plotting",
@@ -482,6 +485,7 @@ def combined_hmm_raw_clustermap(
     bins: Optional[Dict[str, Any]] = None,
     deaminase: bool = False,
     min_signal: float = 0.0,
+    # ---- fixed tick label controls (counts, not spacing)
     n_xticks_hmm: int = 10,
     n_xticks_any_c: int = 8,
     n_xticks_gpc: int = 8,
@@ -502,7 +506,6 @@ def combined_hmm_raw_clustermap(
 
     NaN fill strategy is applied in-memory for clustering/plotting only.
     """
-    logger.info("Plotting combined HMM raw clustermaps.")
     if fill_nan_strategy not in {"none", "value", "col_mean"}:
         raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
 
@@ -514,6 +517,7 @@ def combined_hmm_raw_clustermap(
         idx = np.unique(idx)
         return idx.tolist(), labels[idx].tolist()
 
+    # Helper: build a True mask if filter is inactive or column missing
     def _mask_or_true(series_name: str, predicate):
         """Return a mask from predicate or an all-True mask."""
         if series_name not in adata.obs:
@@ -522,6 +526,7 @@ def combined_hmm_raw_clustermap(
         try:
             return predicate(s)
         except Exception:
+            # Fallback: all True if bad dtype / predicate failure
             return pd.Series(True, index=adata.obs.index)
 
     results = []
@@ -529,7 +534,9 @@ def combined_hmm_raw_clustermap(
 
     for ref in adata.obs[reference_col].cat.categories:
         for sample in adata.obs[sample_col].cat.categories:
+            # Optionally remap sample label for display
             display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
+            # Row-level masks (obs)
             qmask = _mask_or_true(
                 "read_quality",
                 (lambda s: s >= float(min_quality))
@@ -562,16 +569,16 @@ def combined_hmm_raw_clustermap(
             row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
 
             if not bool(row_mask.any()):
-                logger.warning(
-                    "No reads for %s - %s after read quality and length filtering.",
-                    display_sample,
-                    ref,
+                print(
+                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
                 )
                 continue
 
             try:
+                # ---- subset reads ----
                 subset = adata[row_mask, :].copy()
 
+                # Column-level mask (var)
                 if min_position_valid_fraction is not None:
                     valid_key = f"{ref}_valid_fraction"
                     if valid_key in subset.var:
@@ -580,24 +587,22 @@ def combined_hmm_raw_clustermap(
                         if col_mask.any():
                             subset = subset[:, col_mask].copy()
                         else:
-                            logger.warning(
-                                "No positions left after valid_fraction filter for %s - %s.",
-                                display_sample,
-                                ref,
+                            print(
+                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
                             )
                             continue
 
                 if subset.shape[0] == 0:
-                    logger.warning(
-                        "No reads left after filtering for %s - %s.", display_sample, ref
-                    )
+                    print(f"No reads left after filtering for {display_sample} - {ref}")
                     continue
 
+                # ---- bins ----
                 if bins is None:
                     bins_temp = {"All": np.ones(subset.n_obs, dtype=bool)}
                 else:
                     bins_temp = bins
 
+                # ---- site masks (robust) ----
                 def _sites(*keys):
                     """Return indices for the first matching site key."""
                     for k in keys:
@@ -610,6 +615,8 @@ def combined_hmm_raw_clustermap(
                 any_c_sites = _sites(f"{ref}_any_C_site", f"{ref}_C_site")
                 any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
 
+                # ---- labels via _select_labels ----
+                # HMM uses *all* columns
                 hmm_sites = np.arange(subset.n_vars, dtype=int)
                 hmm_labels = _select_labels(subset, hmm_sites, ref, index_col_suffix)
                 gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
@@ -617,6 +624,7 @@ def combined_hmm_raw_clustermap(
                 any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
                 any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
 
+                # storage
                 stacked_hmm = []
                 stacked_hmm_raw = []
                 stacked_any_c = []
@@ -633,6 +641,7 @@ def combined_hmm_raw_clustermap(
                 percentages = {}
                 last_idx = 0
 
+                # ---------------- process bins ----------------
                 for bin_label, bin_filter in bins_temp.items():
                     sb = subset[bin_filter].copy()
                     n = sb.n_obs
@@ -642,6 +651,7 @@ def combined_hmm_raw_clustermap(
                     pct = (n / total_reads) * 100 if total_reads else 0
                     percentages[bin_label] = pct
 
+                    # ---- sorting ----
                     if sort_by.startswith("obs:"):
                         colname = sort_by.split("obs:")[1]
                         order = np.argsort(sb.obs[colname].values)
@@ -701,44 +711,41 @@ def combined_hmm_raw_clustermap(
                         linkage = sch.linkage(gpc_matrix, method="ward")
                         order = sch.leaves_list(linkage)
 
-                    elif sort_by == "hmm" and hmm_feature_layer in sb.layers:
-                        hmm_matrix_raw = _layer_to_numpy(
+                    elif sort_by == "hmm" and hmm_sites.size:
+                        hmm_matrix = _layer_to_numpy(
                             sb,
                             hmm_feature_layer,
-                            None,
-                            fill_nan_strategy="none",
+                            hmm_sites,
+                            fill_nan_strategy=fill_nan_strategy,
                             fill_nan_value=fill_nan_value,
                         )
-                        normalized = normalized_mean(hmm_matrix_raw)
-                        linkage = sch.linkage(normalized, method="ward")
+                        linkage = sch.linkage(hmm_matrix, method="ward")
                         order = sch.leaves_list(linkage)
-
-                    elif sort_by == "none":
-                        order = np.arange(n)
 
                     else:
                         order = np.arange(n)
 
                     sb = sb[order]
 
-                    hmm_matrix = _layer_to_numpy(
-                        sb,
-                        hmm_feature_layer,
-                        hmm_sites,
-                        fill_nan_strategy=fill_nan_strategy,
-                        fill_nan_value=fill_nan_value,
+                    # ---- collect matrices ----
+                    stacked_hmm.append(
+                        _layer_to_numpy(
+                            sb,
+                            hmm_feature_layer,
+                            None,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
                     )
-                    stacked_hmm.append(hmm_matrix)
                     stacked_hmm_raw.append(
                         _layer_to_numpy(
                             sb,
                             hmm_feature_layer,
-                            hmm_sites,
+                            None,
                             fill_nan_strategy="none",
                             fill_nan_value=fill_nan_value,
                         )
                     )
-
                     if any_c_sites.size:
                         stacked_any_c.append(
                             _layer_to_numpy(
@@ -821,150 +828,111 @@ def combined_hmm_raw_clustermap(
                     last_idx += n
                     bin_boundaries.append(last_idx)
 
-                if stacked_hmm:
-                    hmm_matrix = np.vstack(stacked_hmm)
-                    hmm_matrix_raw = np.vstack(stacked_hmm_raw)
-                    hmm_mean = (
-                        _methylation_fraction_for_layer(hmm_matrix_raw, hmm_feature_layer)
-                        if hmm_matrix_raw.size
-                        else None
-                    )
-                else:
-                    logger.warning("No HMM matrices to plot for %s - %s.", display_sample, ref)
-                    continue
+                # ---------------- stack ----------------
+                hmm_matrix = np.vstack(stacked_hmm)
+                hmm_matrix_raw = np.vstack(stacked_hmm_raw)
+                mean_hmm = (
+                    normalized_mean(hmm_matrix_raw)
+                    if normalize_hmm
+                    else np.nanmean(hmm_matrix_raw, axis=0)
+                )
+                hmm_plot_matrix = hmm_matrix_raw
+                hmm_plot_cmap = _build_hmm_feature_cmap(cmap_hmm)
 
-                blocks = [
-                    dict(
-                        name="hmm",
-                        matrix=hmm_matrix,
-                        mean=hmm_mean,
-                        labels=hmm_labels,
-                        cmap=cmap_hmm,
-                        n_xticks=n_xticks_hmm,
-                        title=f"HMM {signal_type} signal",
-                    )
+                panels = [
+                    (
+                        f"HMM - {hmm_feature_layer}",
+                        hmm_plot_matrix,
+                        hmm_labels,
+                        hmm_plot_cmap,
+                        mean_hmm,
+                        n_xticks_hmm,
+                    ),
                 ]
 
                 if stacked_any_c:
-                    any_c_matrix = np.vstack(stacked_any_c)
-                    any_c_matrix_raw = np.vstack(stacked_any_c_raw)
-                    mean_any_c = (
-                        _methylation_fraction_for_layer(any_c_matrix_raw, layer_c)
-                        if any_c_matrix_raw.size
-                        else None
-                    )
-                    blocks.append(
-                        dict(
-                            name="c",
-                            matrix=any_c_matrix,
-                            mean=mean_any_c,
-                            labels=any_c_labels,
-                            cmap=cmap_c,
-                            n_xticks=n_xticks_any_c,
-                            title="any C site Modification Signal",
-                        )
-                    )
-                if stacked_gpc:
-                    gpc_matrix = np.vstack(stacked_gpc)
-                    gpc_matrix_raw = np.vstack(stacked_gpc_raw)
-                    mean_gpc = (
-                        _methylation_fraction_for_layer(gpc_matrix_raw, layer_gpc)
-                        if gpc_matrix_raw.size
-                        else None
-                    )
-                    blocks.append(
-                        dict(
-                            name="gpc",
-                            matrix=gpc_matrix,
-                            mean=mean_gpc,
-                            labels=gpc_labels,
-                            cmap=cmap_gpc,
-                            n_xticks=n_xticks_gpc,
-                            title="GpC Modification Signal",
-                        )
-                    )
-                if stacked_cpg:
-                    cpg_matrix = np.vstack(stacked_cpg)
-                    cpg_matrix_raw = np.vstack(stacked_cpg_raw)
-                    mean_cpg = (
-                        _methylation_fraction_for_layer(cpg_matrix_raw, layer_cpg)
-                        if cpg_matrix_raw.size
-                        else None
-                    )
-                    blocks.append(
-                        dict(
-                            name="cpg",
-                            matrix=cpg_matrix,
-                            mean=mean_cpg,
-                            labels=cpg_labels,
-                            cmap=cmap_cpg,
-                            n_xticks=n_xticks_cpg,
-                            title="CpG Modification Signal",
-                        )
-                    )
-                if stacked_any_a:
-                    any_a_matrix = np.vstack(stacked_any_a)
-                    any_a_matrix_raw = np.vstack(stacked_any_a_raw)
-                    mean_any_a = (
-                        _methylation_fraction_for_layer(any_a_matrix_raw, layer_a)
-                        if any_a_matrix_raw.size
-                        else None
-                    )
-                    blocks.append(
-                        dict(
-                            name="a",
-                            matrix=any_a_matrix,
-                            mean=mean_any_a,
-                            labels=any_a_labels,
-                            cmap=cmap_a,
-                            n_xticks=n_xticks_a,
-                            title="any A site Modification Signal",
+                    m = np.vstack(stacked_any_c)
+                    m_raw = np.vstack(stacked_any_c_raw)
+                    panels.append(
+                        (
+                            "C",
+                            m,
+                            any_c_labels,
+                            cmap_c,
+                            _methylation_fraction_for_layer(m_raw, layer_c),
+                            n_xticks_any_c,
                         )
                     )
 
-                n_panels = len(blocks)
-                fig = plt.figure(figsize=(5.5 * n_panels, 11))
-                gs = grid_spec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
+                if stacked_gpc:
+                    m = np.vstack(stacked_gpc)
+                    m_raw = np.vstack(stacked_gpc_raw)
+                    panels.append(
+                        (
+                            "GpC",
+                            m,
+                            gpc_labels,
+                            cmap_gpc,
+                            _methylation_fraction_for_layer(m_raw, layer_gpc),
+                            n_xticks_gpc,
+                        )
+                    )
+
+                if stacked_cpg:
+                    m = np.vstack(stacked_cpg)
+                    m_raw = np.vstack(stacked_cpg_raw)
+                    panels.append(
+                        (
+                            "CpG",
+                            m,
+                            cpg_labels,
+                            cmap_cpg,
+                            _methylation_fraction_for_layer(m_raw, layer_cpg),
+                            n_xticks_cpg,
+                        )
+                    )
+
+                if stacked_any_a:
+                    m = np.vstack(stacked_any_a)
+                    m_raw = np.vstack(stacked_any_a_raw)
+                    panels.append(
+                        (
+                            "A",
+                            m,
+                            any_a_labels,
+                            cmap_a,
+                            _methylation_fraction_for_layer(m_raw, layer_a),
+                            n_xticks_a,
+                        )
+                    )
+
+                # ---------------- plotting ----------------
+                n_panels = len(panels)
+                fig = plt.figure(figsize=(4.5 * n_panels, 10))
+                gs = gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
                 fig.suptitle(
-                    f"{display_sample} - {ref} - {total_reads} reads",
-                    fontsize=14,
-                    y=0.97,
+                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=14, y=0.98
                 )
 
                 axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
                 axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
 
-                for i, blk in enumerate(blocks):
-                    matrix = blk["matrix"]
-                    mean = blk["mean"]
-                    labels = np.asarray(blk["labels"], dtype=str)
-                    n_ticks = blk["n_xticks"]
-                    cmap = blk["cmap"]
-                    title = blk["title"]
-                    norm = None
+                for i, (name, matrix, labels, cmap, mean_vec, n_ticks) in enumerate(panels):
+                    # ---- your clean barplot ----
+                    clean_barplot(axes_bar[i], mean_vec, name)
 
-                    if blk["name"] == "hmm":
-                        hmm_cmap = _build_hmm_feature_cmap(cmap)
-                        heatmap_kwargs = dict(
-                            cmap=hmm_cmap,
-                            ax=axes_heat[i],
-                            yticklabels=False,
-                            cbar=False,
-                        )
-                        if normalize_hmm:
-                            heatmap_kwargs.update(vmin=0.0, vmax=1.0)
-                        sns.heatmap(matrix, **heatmap_kwargs)
-                    else:
-                        sns.heatmap(
-                            matrix,
-                            cmap=cmap,
-                            ax=axes_heat[i],
-                            yticklabels=False,
-                            cbar=False,
-                        )
+                    # ---- heatmap ----
+                    heatmap_kwargs = dict(
+                        cmap=cmap,
+                        ax=axes_heat[i],
+                        yticklabels=False,
+                        cbar=False,
+                    )
+                    if name.startswith("HMM -"):
+                        heatmap_kwargs.update(vmin=0.0, vmax=1.0)
+                    sns.heatmap(matrix, **heatmap_kwargs)
 
-                    clean_barplot(axes_bar[i], mean, title)
-
+                    # ---- xticks ----
                     xtick_pos, xtick_labels = pick_xticks(np.asarray(labels), n_ticks)
                     axes_heat[i].set_xticks(xtick_pos)
                     axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=8)
@@ -981,17 +949,14 @@ def combined_hmm_raw_clustermap(
                     out_file = save_path / f"{safe_name}.png"
                     plt.savefig(out_file, dpi=300)
                     plt.close(fig)
-                    logger.info("Saved combined HMM raw clustermap to %s.", out_file)
                 else:
                     plt.show()
 
-                results.append((sample, ref))
-
             except Exception:
-                logger.exception("Failed to plot combined HMM raw clustermap for %s/%s.", sample, ref)
-                continue
+                import traceback
 
-    return results
+                traceback.print_exc()
+                continue
 
 
 def combined_hmm_length_clustermap(
@@ -1035,7 +1000,6 @@ def combined_hmm_length_clustermap(
     Length-based feature ranges map integer lengths into subclass colors for accessible
     and footprint layers. Raw methylation panels are included when available.
     """
-    logger.info("Plotting combined HMM length clustermaps.")
     if fill_nan_strategy not in {"none", "value", "col_mean"}:
         raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
 
@@ -1096,10 +1060,8 @@ def combined_hmm_length_clustermap(
             row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
 
             if not bool(row_mask.any()):
-                logger.warning(
-                    "No reads for %s - %s after read quality and length filtering.",
-                    display_sample,
-                    ref,
+                print(
+                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
                 )
                 continue
 
@@ -1114,17 +1076,13 @@ def combined_hmm_length_clustermap(
                         if col_mask.any():
                             subset = subset[:, col_mask].copy()
                         else:
-                            logger.warning(
-                                "No positions left after valid_fraction filter for %s - %s.",
-                                display_sample,
-                                ref,
+                            print(
+                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
                             )
                             continue
 
                 if subset.shape[0] == 0:
-                    logger.warning(
-                        "No reads left after filtering for %s - %s.", display_sample, ref
-                    )
+                    print(f"No reads left after filtering for {display_sample} - {ref}")
                     continue
 
                 if bins is None:
@@ -1179,7 +1137,6 @@ def combined_hmm_length_clustermap(
                     if sort_by.startswith("obs:"):
                         colname = sort_by.split("obs:")[1]
                         order = np.argsort(sb.obs[colname].values)
-
                     elif sort_by == "gpc" and gpc_sites.size:
                         gpc_matrix = _layer_to_numpy(
                             sb,
@@ -1190,7 +1147,6 @@ def combined_hmm_length_clustermap(
                         )
                         linkage = sch.linkage(gpc_matrix, method="ward")
                         order = sch.leaves_list(linkage)
-
                     elif sort_by == "cpg" and cpg_sites.size:
                         cpg_matrix = _layer_to_numpy(
                             sb,
@@ -1201,7 +1157,6 @@ def combined_hmm_length_clustermap(
                         )
                         linkage = sch.linkage(cpg_matrix, method="ward")
                         order = sch.leaves_list(linkage)
-
                     elif sort_by == "c" and any_c_sites.size:
                         any_c_matrix = _layer_to_numpy(
                             sb,
@@ -1212,7 +1167,6 @@ def combined_hmm_length_clustermap(
                         )
                         linkage = sch.linkage(any_c_matrix, method="ward")
                         order = sch.leaves_list(linkage)
-
                     elif sort_by == "a" and any_a_sites.size:
                         any_a_matrix = _layer_to_numpy(
                             sb,
@@ -1223,7 +1177,6 @@ def combined_hmm_length_clustermap(
                         )
                         linkage = sch.linkage(any_a_matrix, method="ward")
                         order = sch.leaves_list(linkage)
-
                     elif sort_by == "gpc_cpg" and gpc_sites.size and cpg_sites.size:
                         gpc_matrix = _layer_to_numpy(
                             sb,
@@ -1234,10 +1187,16 @@ def combined_hmm_length_clustermap(
                         )
                         linkage = sch.linkage(gpc_matrix, method="ward")
                         order = sch.leaves_list(linkage)
-
-                    elif sort_by == "none":
-                        order = np.arange(n)
-
+                    elif sort_by == "hmm" and length_sites.size:
+                        length_matrix = _layer_to_numpy(
+                            sb,
+                            length_layer,
+                            length_sites,
+                            fill_nan_strategy=fill_nan_strategy,
+                            fill_nan_value=fill_nan_value,
+                        )
+                        linkage = sch.linkage(length_matrix, method="ward")
+                        order = sch.leaves_list(linkage)
                     else:
                         order = np.arange(n)
 
@@ -1247,7 +1206,7 @@ def combined_hmm_length_clustermap(
                         _layer_to_numpy(
                             sb,
                             length_layer,
-                            length_sites,
+                            None,
                             fill_nan_strategy=fill_nan_strategy,
                             fill_nan_value=fill_nan_value,
                         )
@@ -1256,12 +1215,11 @@ def combined_hmm_length_clustermap(
                         _layer_to_numpy(
                             sb,
                             length_layer,
-                            length_sites,
+                            None,
                             fill_nan_strategy="none",
                             fill_nan_value=fill_nan_value,
                         )
                     )
-
                     if any_c_sites.size:
                         stacked_any_c.append(
                             _layer_to_numpy(
@@ -1344,146 +1302,104 @@ def combined_hmm_length_clustermap(
                     last_idx += n
                     bin_boundaries.append(last_idx)
 
-                if stacked_lengths:
-                    length_matrix = np.vstack(stacked_lengths)
-                    length_matrix_raw = np.vstack(stacked_lengths_raw)
-                else:
-                    logger.warning(
-                        "No length matrices to plot for %s - %s.", display_sample, ref
-                    )
-                    continue
+                length_matrix = np.vstack(stacked_lengths)
+                length_matrix_raw = np.vstack(stacked_lengths_raw)
+                capped_lengths = np.where(length_matrix_raw > 1, 1.0, length_matrix_raw)
+                mean_lengths = np.nanmean(capped_lengths, axis=0)
+                length_plot_matrix = length_matrix_raw
+                length_plot_cmap = cmap_lengths
+                length_plot_norm = None
 
-                blocks = []
-                if length_matrix.size:
-                    if feature_ranges:
-                        mapped = _map_length_matrix_to_subclasses(length_matrix, feature_ranges)
-                        cmap, norm = _build_length_feature_cmap(feature_ranges)
-                        length_matrix = mapped
-                    else:
-                        cmap = cmap_lengths
-                        norm = None
-                    blocks.append(
-                        dict(
-                            name="lengths",
-                            matrix=length_matrix,
-                            mean=None,
-                            labels=length_labels,
-                            cmap=cmap,
-                            n_xticks=n_xticks_lengths,
-                            title=f"HMM length ({signal_type})",
-                            norm=norm,
-                        )
+                if feature_ranges:
+                    length_plot_matrix = _map_length_matrix_to_subclasses(
+                        length_matrix_raw, feature_ranges
                     )
+                    length_plot_cmap, length_plot_norm = _build_length_feature_cmap(feature_ranges)
+
+                panels = [
+                    (
+                        f"HMM lengths - {length_layer}",
+                        length_plot_matrix,
+                        length_labels,
+                        length_plot_cmap,
+                        mean_lengths,
+                        n_xticks_lengths,
+                        length_plot_norm,
+                    ),
+                ]
 
                 if stacked_any_c:
-                    any_c_matrix = np.vstack(stacked_any_c)
-                    any_c_matrix_raw = np.vstack(stacked_any_c_raw)
-                    mean_any_c = (
-                        _methylation_fraction_for_layer(any_c_matrix_raw, layer_c)
-                        if any_c_matrix_raw.size
-                        else None
-                    )
-                    blocks.append(
-                        dict(
-                            name="c",
-                            matrix=any_c_matrix,
-                            mean=mean_any_c,
-                            labels=any_c_labels,
-                            cmap=cmap_c,
-                            n_xticks=n_xticks_any_c,
-                            title="any C site Modification Signal",
-                            norm=None,
+                    m = np.vstack(stacked_any_c)
+                    m_raw = np.vstack(stacked_any_c_raw)
+                    panels.append(
+                        (
+                            "C",
+                            m,
+                            any_c_labels,
+                            cmap_c,
+                            _methylation_fraction_for_layer(m_raw, layer_c),
+                            n_xticks_any_c,
+                            None,
                         )
                     )
+
                 if stacked_gpc:
-                    gpc_matrix = np.vstack(stacked_gpc)
-                    gpc_matrix_raw = np.vstack(stacked_gpc_raw)
-                    mean_gpc = (
-                        _methylation_fraction_for_layer(gpc_matrix_raw, layer_gpc)
-                        if gpc_matrix_raw.size
-                        else None
-                    )
-                    blocks.append(
-                        dict(
-                            name="gpc",
-                            matrix=gpc_matrix,
-                            mean=mean_gpc,
-                            labels=gpc_labels,
-                            cmap=cmap_gpc,
-                            n_xticks=n_xticks_gpc,
-                            title="GpC Modification Signal",
-                            norm=None,
+                    m = np.vstack(stacked_gpc)
+                    m_raw = np.vstack(stacked_gpc_raw)
+                    panels.append(
+                        (
+                            "GpC",
+                            m,
+                            gpc_labels,
+                            cmap_gpc,
+                            _methylation_fraction_for_layer(m_raw, layer_gpc),
+                            n_xticks_gpc,
+                            None,
                         )
                     )
+
                 if stacked_cpg:
-                    cpg_matrix = np.vstack(stacked_cpg)
-                    cpg_matrix_raw = np.vstack(stacked_cpg_raw)
-                    mean_cpg = (
-                        _methylation_fraction_for_layer(cpg_matrix_raw, layer_cpg)
-                        if cpg_matrix_raw.size
-                        else None
-                    )
-                    blocks.append(
-                        dict(
-                            name="cpg",
-                            matrix=cpg_matrix,
-                            mean=mean_cpg,
-                            labels=cpg_labels,
-                            cmap=cmap_cpg,
-                            n_xticks=n_xticks_cpg,
-                            title="CpG Modification Signal",
-                            norm=None,
+                    m = np.vstack(stacked_cpg)
+                    m_raw = np.vstack(stacked_cpg_raw)
+                    panels.append(
+                        (
+                            "CpG",
+                            m,
+                            cpg_labels,
+                            cmap_cpg,
+                            _methylation_fraction_for_layer(m_raw, layer_cpg),
+                            n_xticks_cpg,
+                            None,
                         )
                     )
+
                 if stacked_any_a:
-                    any_a_matrix = np.vstack(stacked_any_a)
-                    any_a_matrix_raw = np.vstack(stacked_any_a_raw)
-                    mean_any_a = (
-                        _methylation_fraction_for_layer(any_a_matrix_raw, layer_a)
-                        if any_a_matrix_raw.size
-                        else None
-                    )
-                    blocks.append(
-                        dict(
-                            name="a",
-                            matrix=any_a_matrix,
-                            mean=mean_any_a,
-                            labels=any_a_labels,
-                            cmap=cmap_a,
-                            n_xticks=n_xticks_a,
-                            title="any A site Modification Signal",
-                            norm=None,
+                    m = np.vstack(stacked_any_a)
+                    m_raw = np.vstack(stacked_any_a_raw)
+                    panels.append(
+                        (
+                            "A",
+                            m,
+                            any_a_labels,
+                            cmap_a,
+                            _methylation_fraction_for_layer(m_raw, layer_a),
+                            n_xticks_a,
+                            None,
                         )
                     )
 
-                if not blocks:
-                    logger.warning("No matrices to plot for %s - %s.", display_sample, ref)
-                    continue
-
-                n_panels = len(blocks)
-                fig = plt.figure(figsize=(5.5 * n_panels, 11))
-                gs = grid_spec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
+                n_panels = len(panels)
+                fig = plt.figure(figsize=(4.5 * n_panels, 10))
+                gs = gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
                 fig.suptitle(
-                    f"{display_sample} - {ref} - {total_reads} reads",
-                    fontsize=14,
-                    y=0.97,
+                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=14, y=0.98
                 )
 
                 axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
                 axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
 
-                for i, blk in enumerate(blocks):
-                    matrix = blk["matrix"]
-                    mean = blk["mean"]
-                    labels = np.asarray(blk["labels"], dtype=str)
-                    n_ticks = blk["n_xticks"]
-                    cmap = blk["cmap"]
-                    norm = blk.get("norm")
-
-                    if mean is not None:
-                        clean_barplot(axes_bar[i], mean, blk["title"])
-                    else:
-                        axes_bar[i].axis("off")
+                for i, (name, matrix, labels, cmap, mean_vec, n_ticks, norm) in enumerate(panels):
+                    clean_barplot(axes_bar[i], mean_vec, name)
 
                     heatmap_kwargs = dict(
                         cmap=cmap,
@@ -1511,19 +1427,16 @@ def combined_hmm_length_clustermap(
                     out_file = save_path / f"{safe_name}.png"
                     plt.savefig(out_file, dpi=300)
                     plt.close(fig)
-                    logger.info("Saved combined HMM length clustermap to %s.", out_file)
                 else:
                     plt.show()
 
                 results.append((sample, ref))
 
             except Exception:
-                logger.exception(
-                    "Failed combined HMM length clustermap for %s - %s - %s.",
-                    sample,
-                    ref,
-                    length_layer,
-                )
+                import traceback
+
+                traceback.print_exc()
+                print(f"Failed {sample} - {ref} - {length_layer}")
 
     return results
 

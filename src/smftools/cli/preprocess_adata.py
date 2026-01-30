@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import LOGGING_DIR, PREPROCESS_DIR, READ_SPAN_MASK
+from smftools.constants import LOGGING_DIR, PREPROCESS_DIR, READ_SPAN_MASK, DEMUX_TYPE, BASE_QUALITY_SCORES
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -470,6 +470,21 @@ def preprocess_adata_core(
         from_valid_sites_only=True,
     )
 
+    # -----------------------------
+    # Optional inversion along positions axis
+    # -----------------------------
+    if getattr(cfg, "invert_adata", False):
+        adata = invert_adata(adata)
+
+    # -----------------------------
+    # Optional reindexing by reference
+    # -----------------------------
+    reindex_references_adata(
+        adata,
+        reference_col=cfg.reference_column,
+        offsets=cfg.reindexing_offsets,
+        new_col=cfg.reindexed_var_suffix,
+    )
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != "direct":
@@ -506,7 +521,7 @@ def preprocess_adata_core(
             hierarchical_metric="euclidean",
             hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors,
             demux_types=cfg.duplicate_detection_demux_types_to_use,
-            demux_col="demux_type",
+            demux_col=DEMUX_TYPE,
         )
 
         # Use the flagged duplicate read groups and perform complexity analysis
@@ -532,26 +547,10 @@ def preprocess_adata_core(
         adata_unique = adata
     ########################################################################################################################
 
-    # -----------------------------
-    # Optional inversion along positions axis
-    # -----------------------------
-    if getattr(cfg, "invert_adata", False):
-        adata = invert_adata(adata)
-
-    # -----------------------------
-    # Optional reindexing by reference
-    # -----------------------------
-    reindex_references_adata(
-        adata,
-        reference_col=cfg.reference_column,
-        offsets=cfg.reindexing_offsets,
-        new_col=cfg.reindexed_var_suffix,
-    )
-
     ############################################### Plot read span mask + base quality clustermaps ###############################################
     quality_layer = None
-    if "base_quality_scores" in adata.layers:
-        quality_layer = "base_quality_scores"
+    if BASE_QUALITY_SCORES in adata.layers:
+        quality_layer = BASE_QUALITY_SCORES
     elif "base_qualities" in adata.layers:
         quality_layer = "base_qualities"
 

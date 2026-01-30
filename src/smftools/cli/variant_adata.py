@@ -11,7 +11,6 @@ from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
-
 def variant_adata(
     config_path: str,
 ) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
@@ -42,11 +41,10 @@ def variant_adata(
     hmm_path = paths.hmm
     latent_path = paths.latent
 
-    # Stage-skipping logic for spatial
+    # Stage-skipping logic
     if not getattr(cfg, "force_redo_variant_analyses", False):
-        # If spatial exists, we consider spatial analyses already done.
-        if spatial_path.exists():
-            logger.info(f"Variant AnnData found: {spatial_path}\nSkipping smftools variant")
+        if variant_path.exists():
+            logger.info(f"Variant AnnData found: {variant_path}\nSkipping smftools variant")
             return None, spatial_path
 
     # Helper to load from disk, reusing loaded_adata if it matches
@@ -54,7 +52,7 @@ def variant_adata(
         adata, _ = safe_read_h5ad(path)
         return adata
 
-    # 3) Decide which AnnData to use as the *starting point* for spatial analyses
+    # 3) Decide which AnnData to use as the *starting point* for  analyses
     if hmm_path.exists():
         start_adata = _load(hmm_path)
         source_path = hmm_path
@@ -82,7 +80,7 @@ def variant_adata(
         )
         return None, None
 
-    # 4) Run the spatial core
+    # 4) Run the core
     adata_variant, variant_path = variant_adata_core(
         adata=start_adata,
         cfg=cfg,

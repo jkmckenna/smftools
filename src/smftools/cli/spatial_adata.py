@@ -6,9 +6,8 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import LOGGING_DIR, SEQUENCE_INTEGER_ENCODING, SPATIAL_DIR
+from smftools.constants import LOGGING_DIR, SPATIAL_DIR
 from smftools.logging_utils import get_logger, setup_logging
-from smftools.optional_imports import require
 
 logger = get_logger(__name__)
 
