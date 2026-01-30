@@ -491,9 +491,9 @@ def plot_embedding(
             )
             fig.colorbar(scatter, ax=ax, label=color_key)
 
-        ax.set_xlabel(f"{basis.upper()} 1")
-        ax.set_ylabel(f"{basis.upper()} 2")
-        ax.set_title(f"{basis.upper()} colored by {color_key}")
+        ax.set_xlabel(f"Component 1")
+        ax.set_ylabel(f"Component 2")
+        ax.set_title(f"{color_key}")
         fig.tight_layout()
 
         filename_prefix = prefix or basis
@@ -623,9 +623,9 @@ def plot_embedding_grid(
             )
             fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.02, shrink=0.9)
 
-        ax.set_xlabel(f"{basis.upper()} 1")
-        ax.set_ylabel(f"{basis.upper()} 2")
-        ax.set_title(f"{basis.upper()} colored by {color_key}")
+        ax.set_xlabel(f"Component 1")
+        ax.set_ylabel(f"Component 2")
+        ax.set_title(f"{color_key}")
 
     fig.tight_layout()
 

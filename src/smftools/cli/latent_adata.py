@@ -58,7 +58,7 @@ def _build_shared_valid_non_mod_sites_mask(
     import numpy as np
 
     shared_position_mask = _build_reference_position_mask(adata, references)
-    if not references:
+    if len(references) == 0:
         return shared_position_mask
 
     mod_target_bases = _expand_mod_target_bases(cfg.mod_target_bases)
