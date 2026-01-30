@@ -862,6 +862,7 @@ class ExperimentConfig:
     rolling_nn_zero_pairs_segments_key: Optional[str] = None
     rolling_nn_zero_pairs_layer_key: Optional[str] = None
     rolling_nn_zero_pairs_refine: bool = True
+    rolling_nn_zero_pairs_merge_gap: int = 0
 
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = "nan_half"
@@ -1381,6 +1382,7 @@ class ExperimentConfig:
             ),
             rolling_nn_zero_pairs_layer_key=merged.get("rolling_nn_zero_pairs_layer_key", None),
             rolling_nn_zero_pairs_refine=merged.get("rolling_nn_zero_pairs_refine", True),
+            rolling_nn_zero_pairs_merge_gap=merged.get("rolling_nn_zero_pairs_merge_gap", 0),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
             umap_layers_to_plot=merged.get(
                 "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]

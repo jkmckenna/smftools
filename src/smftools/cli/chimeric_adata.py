@@ -332,6 +332,7 @@ def chimeric_adata_core(
                             layer=rolling_nn_layer,
                             min_overlap=cfg.rolling_nn_min_overlap,
                             refine_segments=getattr(cfg, "rolling_nn_zero_pairs_refine", True),
+                            merge_gap=getattr(cfg, "rolling_nn_zero_pairs_merge_gap", 0),
                             binary_layer_key=layer_key,
                             parent_adata=adata,
                         )
