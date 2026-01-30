@@ -352,6 +352,7 @@ def annotate_zero_hamming_segments(
     layer: Optional[str] = None,
     min_overlap: Optional[int] = None,
     refine_segments: bool = True,
+    merge_gap: int = 0,
     binary_layer_key: Optional[str] = None,
     parent_adata: Optional["ad.AnnData"] = None,
 ) -> list[dict]:
@@ -365,6 +366,7 @@ def annotate_zero_hamming_segments(
         layer: Layer to use for refinement (defaults to adata.X).
         min_overlap: Minimum overlap required to keep a refined segment.
         refine_segments: Whether to refine merged windows to maximal segments.
+        merge_gap: Merge segments with gaps of at most this size (in positions).
         binary_layer_key: Layer key to store a binary span annotation.
         parent_adata: Parent AnnData to receive the binary layer (defaults to adata).
 
@@ -409,6 +411,8 @@ def annotate_zero_hamming_segments(
             key = (int(i), int(j))
             pair_segments.setdefault(key, []).append((start, end))
 
+    merge_gap = max(int(merge_gap), 0)
+
     def _merge_segments(segments: list[tuple[int, int]]) -> list[tuple[int, int]]:
         if not segments:
             return []
@@ -416,7 +420,7 @@ def annotate_zero_hamming_segments(
         merged = [segments[0]]
         for seg_start, seg_end in segments[1:]:
             last_start, last_end = merged[-1]
-            if seg_start <= last_end:
+            if seg_start <= last_end + merge_gap:
                 merged[-1] = (last_start, max(last_end, seg_end))
             else:
                 merged.append((seg_start, seg_end))

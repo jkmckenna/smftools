@@ -204,6 +204,7 @@ rolling_nn_zero_pairs_uns_key: null
 rolling_nn_zero_pairs_segments_key: null
 rolling_nn_zero_pairs_layer_key: null
 rolling_nn_zero_pairs_refine: true
+rolling_nn_zero_pairs_merge_gap: 0
 
 # Latent Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'

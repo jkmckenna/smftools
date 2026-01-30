@@ -333,6 +333,29 @@ def test_zero_pairs_collection_and_annotation():
     assert record["segments"] == [(0, 4)]
 
 
+def test_zero_pairs_merge_gap_combines_adjacent_segments():
+    X = np.zeros((2, 6), dtype=float)
+    adata = ad.AnnData(X)
+    adata.uns["zero_pairs"] = [
+        np.array([[0, 1]]),
+        np.array([[0, 1]]),
+    ]
+    adata.uns["zero_pairs_starts"] = np.array([0, 3])
+    adata.uns["zero_pairs_window"] = 2
+    adata.uns["zero_pairs_min_overlap"] = 1
+
+    records = annotate_zero_hamming_segments(
+        adata,
+        zero_pairs_uns_key="zero_pairs",
+        output_uns_key="zero_hamming_segments",
+        refine_segments=False,
+        merge_gap=1,
+    )
+
+    assert records
+    assert records[0]["segments"] == [(0, 5)]
+
+
 def test_zero_pairs_annotation_to_parent_layer():
     X = np.array(
         [
