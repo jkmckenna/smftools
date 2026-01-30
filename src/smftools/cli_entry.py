@@ -15,6 +15,8 @@ from .cli.spatial_adata import spatial_adata
 from .cli.variant_adata import variant_adata
 from .cli.chimeric_adata import chimeric_adata
 
+from .cli.recipes import full_flow
+
 from .informatics.pod5_functions import subsample_pod5
 from .logging_utils import get_logger, setup_logging
 from .readwrite import concatenate_h5ads
@@ -67,7 +69,7 @@ def cli(log_file: Path | None, log_level: str):
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def load(config_path):
-    """Load and process data from CONFIG_PATH."""
+    """Load raw data into AnnData."""
     load_adata(config_path)
 
 
@@ -78,7 +80,7 @@ def load(config_path):
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def preprocess(config_path):
-    """Preprocess data from CONFIG_PATH."""
+    """Preprocessing."""
     preprocess_adata(config_path)
 
 
@@ -89,7 +91,7 @@ def preprocess(config_path):
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def spatial(config_path):
-    """Process data from CONFIG_PATH."""
+    """Spatial signal analysis"""
     spatial_adata(config_path)
 
 
@@ -100,7 +102,7 @@ def spatial(config_path):
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def hmm(config_path):
-    """Process data from CONFIG_PATH."""
+    """HMM feature annotations and plotting"""
     hmm_adata(config_path)
 
 
@@ -111,7 +113,7 @@ def hmm(config_path):
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def latent(config_path):
-    """Process data from CONFIG_PATH."""
+    """Latent representations of signal"""
     latent_adata(config_path)
 
 
@@ -122,7 +124,7 @@ def latent(config_path):
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def variant(config_path):
-    """Process data from CONFIG_PATH."""
+    """Sequence variation analyses"""
     variant_adata(config_path)
 
 
@@ -133,8 +135,19 @@ def variant(config_path):
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def chimeric(config_path):
-    """Process data from CONFIG_PATH."""
+    """Finding putative PCR chimeras"""
     chimeric_adata(config_path)
+
+
+##########################################
+
+
+####### Recipes ###########
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
+def full(config_path):
+    """Workflow: load preprocess spatial variant chimeric hmm latent"""
+    full_flow(config_path)
 
 
 ##########################################
