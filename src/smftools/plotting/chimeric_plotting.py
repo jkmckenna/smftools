@@ -625,3 +625,55 @@ def plot_zero_hamming_pair_counts(
         plt.show()
 
     return g
+
+
+def plot_segment_length_histogram(
+    raw_lengths: np.ndarray,
+    filtered_lengths: np.ndarray,
+    bins: int = 30,
+    title: str | None = None,
+    raw_label: str = "All segments",
+    filtered_label: str = "Filtered segments",
+    figsize: tuple[float, float] = (8, 4),
+    save_name: str | None = None,
+):
+    """
+    Plot an overlay histogram of segment lengths for raw vs filtered spans.
+
+    Args:
+        raw_lengths: Array of raw segment lengths.
+        filtered_lengths: Array of filtered segment lengths.
+        bins: Number of histogram bins.
+        title: Optional plot title.
+        raw_label: Label for raw segment histogram.
+        filtered_label: Label for filtered segment histogram.
+        figsize: Size of the matplotlib figure.
+        save_name: Optional output path for saving the plot.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    if raw_lengths.size:
+        ax.hist(raw_lengths, bins=bins, alpha=0.6, label=raw_label, edgecolor="black")
+    if filtered_lengths.size:
+        ax.hist(
+            filtered_lengths,
+            bins=bins,
+            alpha=0.6,
+            label=filtered_label,
+            edgecolor="black",
+        )
+    ax.set_xlabel("Segment length")
+    ax.set_ylabel("Count")
+    if title:
+        ax.set_title(title)
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.3)
+
+    if save_name is not None:
+        fname = os.path.join(save_name)
+        fig.savefig(fname, dpi=200, bbox_inches="tight")
+        logger.info("Saved segment length histogram to %s.", fname)
+    else:
+        plt.show()
+
+    plt.close(fig)
+    return fig

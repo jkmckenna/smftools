@@ -359,6 +359,7 @@ def annotate_zero_hamming_segments(
     binary_overlap_mode: str = "binary",
     binary_overlap_value: Optional[int] = None,
     parent_adata: Optional["ad.AnnData"] = None,
+    store_records: bool = True,
 ) -> list[dict]:
     """
     Merge zero-Hamming windows into maximal segments and annotate onto AnnData.
@@ -380,7 +381,8 @@ def annotate_zero_hamming_segments(
         parent_adata: Parent AnnData to receive the binary layer (defaults to adata).
 
     Returns:
-        List of segment records stored in ``adata.uns[output_uns_key]``.
+        List of segment records stored in ``adata.uns[output_uns_key]`` (unless
+        ``store_records`` is False).
     """
     if zero_pairs_uns_key is None:
         candidate_keys = [key for key in adata.uns if key.endswith("_zero_pairs")]
@@ -519,7 +521,8 @@ def annotate_zero_hamming_segments(
                 }
             )
 
-    adata.uns[output_uns_key] = records
+    if store_records:
+        adata.uns[output_uns_key] = records
     if binary_layer_key is not None:
         target = parent_adata if parent_adata is not None else adata
         target_layer = np.zeros((target.n_obs, target.n_vars), dtype=np.uint16)
@@ -552,6 +555,181 @@ def annotate_zero_hamming_segments(
             ).astype(np.uint16)
         target.uns[f"{binary_layer_key}_source"] = output_uns_key
     return records
+
+
+def segments_to_per_read_dataframe(
+    records: list[dict],
+    var_names: np.ndarray,
+) -> "pd.DataFrame":
+    """
+    Build a per-read DataFrame of zero-Hamming segments.
+
+    Args:
+        records: Output records from ``annotate_zero_hamming_segments``.
+        var_names: AnnData var names for labeling segment coordinates.
+
+    Returns:
+        DataFrame with one row per segment per read.
+    """
+    import pandas as pd
+
+    var_names = np.asarray(var_names, dtype=object)
+
+    def _label_at(idx: int) -> Optional[str]:
+        if 0 <= idx < var_names.size:
+            return str(var_names[idx])
+        return None
+
+    rows = []
+    for record in records:
+        read_i = int(record["read_i"])
+        read_j = int(record["read_j"])
+        read_i_name = record.get("read_i_name")
+        read_j_name = record.get("read_j_name")
+        for seg_start, seg_end in record.get("segments", []):
+            seg_start = int(seg_start)
+            seg_end = int(seg_end)
+            end_inclusive = max(seg_start, seg_end - 1)
+            start_label = _label_at(seg_start)
+            end_label = _label_at(end_inclusive)
+            rows.append(
+                {
+                    "read_id": read_i,
+                    "partner_id": read_j,
+                    "read_name": read_i_name,
+                    "partner_name": read_j_name,
+                    "segment_start": seg_start,
+                    "segment_end_exclusive": seg_end,
+                    "segment_end_inclusive": end_inclusive,
+                    "segment_start_label": start_label,
+                    "segment_end_label": end_label,
+                }
+            )
+            rows.append(
+                {
+                    "read_id": read_j,
+                    "partner_id": read_i,
+                    "read_name": read_j_name,
+                    "partner_name": read_i_name,
+                    "segment_start": seg_start,
+                    "segment_end_exclusive": seg_end,
+                    "segment_end_inclusive": end_inclusive,
+                    "segment_start_label": start_label,
+                    "segment_end_label": end_label,
+                }
+            )
+
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "read_id",
+            "partner_id",
+            "read_name",
+            "partner_name",
+            "segment_start",
+            "segment_end_exclusive",
+            "segment_end_inclusive",
+            "segment_start_label",
+            "segment_end_label",
+        ],
+    )
+
+
+def select_top_segments_per_read(
+    records: list[dict],
+    var_names: np.ndarray,
+    max_segments_per_read: Optional[int] = None,
+    max_segment_overlap: Optional[int] = None,
+    min_span: Optional[float] = None,
+) -> tuple["pd.DataFrame", "pd.DataFrame"]:
+    """
+    Select top segments per read from distinct partner pairs.
+
+    Args:
+        records: Output records from ``annotate_zero_hamming_segments``.
+        var_names: AnnData var names for labeling segment coordinates.
+        max_segments_per_read: Maximum number of segments to keep per read.
+        max_segment_overlap: Maximum allowed overlap between kept segments.
+        min_span: Minimum span length to keep (var-name coordinate if numeric, else index span).
+
+    Returns:
+        Tuple of (raw per-read segments, filtered per-read segments).
+    """
+    import pandas as pd
+
+    raw_df = segments_to_per_read_dataframe(records, var_names)
+    if raw_df.empty:
+        raw_df = raw_df.copy()
+        raw_df["segment_length_index"] = pd.Series(dtype=int)
+        raw_df["segment_length_label"] = pd.Series(dtype=float)
+        return raw_df, raw_df.copy()
+
+    def _span_length(row) -> float:
+        try:
+            start = float(row["segment_start_label"])
+            end = float(row["segment_end_label"])
+            return abs(end - start)
+        except (TypeError, ValueError):
+            return float(row["segment_end_exclusive"] - row["segment_start"])
+
+    raw_df = raw_df.copy()
+    raw_df["segment_length_index"] = (
+        raw_df["segment_end_exclusive"] - raw_df["segment_start"]
+    ).astype(int)
+    raw_df["segment_length_label"] = raw_df.apply(_span_length, axis=1)
+    if min_span is not None:
+        raw_df = raw_df[raw_df["segment_length_label"] >= float(min_span)]
+
+    if raw_df.empty:
+        return raw_df, raw_df.copy()
+
+    def _segment_overlap(a, b) -> int:
+        return max(0, min(a[1], b[1]) - max(a[0], b[0]))
+
+    filtered_rows = []
+    max_segments = max_segments_per_read
+    for read_id, read_df in raw_df.groupby("read_id", sort=False):
+        per_partner = (
+            read_df.sort_values(
+                ["segment_length_label", "segment_start"],
+                ascending=[False, True],
+            )
+            .groupby("partner_id", sort=False)
+            .head(1)
+        )
+        ordered = per_partner.sort_values(
+            ["segment_length_label", "segment_start"],
+            ascending=[False, True],
+        ).itertuples(index=False)
+        selected = []
+        for row in ordered:
+            if max_segments is not None and len(selected) >= max_segments:
+                break
+            seg = (row.segment_start, row.segment_end_exclusive)
+            if max_segment_overlap is not None:
+                if any(
+                    _segment_overlap(seg, (s.segment_start, s.segment_end_exclusive))
+                    > max_segment_overlap
+                    for s in selected
+                ):
+                    continue
+            selected.append(row)
+        for row in selected:
+            filtered_rows.append(row._asdict())
+
+    filtered_df = pd.DataFrame(filtered_rows, columns=raw_df.columns)
+    if not filtered_df.empty:
+        filtered_df["selection_rank"] = (
+            filtered_df.sort_values(
+                ["read_id", "segment_length_label", "segment_start"],
+                ascending=[True, False, True],
+            )
+            .groupby("read_id", sort=False)
+            .cumcount()
+            + 1
+        )
+
+    return raw_df, filtered_df
 
 
 def assign_rolling_nn_results(

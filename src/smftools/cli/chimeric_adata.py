@@ -120,6 +120,7 @@ def chimeric_adata_core(
     from ..metadata import record_smftools_metadata
     from ..plotting import (
         plot_rolling_nn_and_layer,
+        plot_segment_length_histogram,
         plot_zero_hamming_pair_counts,
         plot_zero_hamming_span_and_layer,
     )
@@ -127,7 +128,11 @@ def chimeric_adata_core(
         load_sample_sheet,
     )
     from ..readwrite import make_dirs
-    from ..tools import annotate_zero_hamming_segments, rolling_window_nn_distance
+    from ..tools import (
+        annotate_zero_hamming_segments,
+        rolling_window_nn_distance,
+        select_top_segments_per_read,
+    )
     from ..tools.rolling_nn_distance import (
         assign_rolling_nn_results,
         zero_hamming_segments_to_dataframe,
@@ -347,6 +352,9 @@ def chimeric_adata_core(
                                 cfg, "rolling_nn_zero_pairs_layer_overlap_value", None
                             ),
                             parent_adata=adata,
+                            store_records=getattr(
+                                cfg, "rolling_nn_zero_pairs_segments_keep_uns", True
+                            ),
                         )
                         adata.uns.setdefault(
                             f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
@@ -367,6 +375,65 @@ def chimeric_adata_core(
                             except Exception as exc:
                                 logger.warning(
                                     "Failed to write zero-pair segments CSV for sample=%s ref=%s: %s",
+                                    sample,
+                                    reference,
+                                    exc,
+                                )
+                        top_segments_per_read = getattr(
+                            cfg, "rolling_nn_zero_pairs_top_segments_per_read", None
+                        )
+                        if top_segments_per_read is not None:
+                            raw_df, filtered_df = select_top_segments_per_read(
+                                segment_records,
+                                subset.var_names.to_numpy(),
+                                max_segments_per_read=top_segments_per_read,
+                                max_segment_overlap=getattr(
+                                    cfg, "rolling_nn_zero_pairs_top_segments_max_overlap", None
+                                ),
+                                min_span=getattr(
+                                    cfg, "rolling_nn_zero_pairs_top_segments_min_span", None
+                                ),
+                            )
+                            if getattr(
+                                cfg, "rolling_nn_zero_pairs_top_segments_write_csvs", True
+                            ):
+                                try:
+                                    make_dirs([rolling_zero_pairs_out_dir])
+                                    filtered_df.to_csv(
+                                        rolling_zero_pairs_out_dir
+                                        / f"{safe_sample}__{safe_ref}__zero_pairs_top_segments_per_read.csv",
+                                        index=False,
+                                    )
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Failed to write top segments CSV for sample=%s ref=%s: %s",
+                                        sample,
+                                        reference,
+                                        exc,
+                                    )
+                            histogram_dir = rolling_zero_pairs_out_dir / "segment_histograms"
+                            try:
+                                make_dirs([histogram_dir])
+                                raw_lengths = raw_df["segment_length_label"].to_numpy()
+                                filtered_lengths = filtered_df[
+                                    "segment_length_label"
+                                ].to_numpy()
+                                hist_title = f"{sample} {reference}"
+                                plot_segment_length_histogram(
+                                    raw_lengths,
+                                    filtered_lengths,
+                                    bins=getattr(
+                                        cfg,
+                                        "rolling_nn_zero_pairs_segment_histogram_bins",
+                                        30,
+                                    ),
+                                    title=hist_title,
+                                    save_name=histogram_dir
+                                    / f"{safe_sample}__{safe_ref}__segment_lengths.png",
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to plot segment length histogram for sample=%s ref=%s: %s",
                                     sample,
                                     reference,
                                     exc,
@@ -512,6 +579,32 @@ def chimeric_adata_core(
     # ============================================================
     # 5) Save AnnData
     # ============================================================
+    zero_pairs_map_key = f"{cfg.rolling_nn_obsm_key}_zero_pairs_map"
+    zero_pairs_map = adata.uns.get(zero_pairs_map_key, {})
+    if not getattr(cfg, "rolling_nn_zero_pairs_keep_uns", True):
+        for entry in zero_pairs_map.values():
+            zero_pairs_key = entry.get("zero_pairs_key")
+            if zero_pairs_key and zero_pairs_key in adata.uns:
+                del adata.uns[zero_pairs_key]
+                for suffix in (
+                    "starts",
+                    "window",
+                    "step",
+                    "min_overlap",
+                    "return_fraction",
+                    "layer",
+                ):
+                    meta_key = f"{zero_pairs_key}_{suffix}"
+                    if meta_key in adata.uns:
+                        del adata.uns[meta_key]
+        if zero_pairs_map_key in adata.uns:
+            del adata.uns[zero_pairs_map_key]
+    if not getattr(cfg, "rolling_nn_zero_pairs_segments_keep_uns", True):
+        for entry in zero_pairs_map.values():
+            segments_key = entry.get("segments_key")
+            if segments_key and segments_key in adata.uns:
+                del adata.uns[segments_key]
+
     if not paths.chimeric.exists():
         logger.info("Saving chimeric analyzed AnnData")
         record_smftools_metadata(

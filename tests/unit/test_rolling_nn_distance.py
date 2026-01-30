@@ -7,6 +7,7 @@ from smftools.tools.rolling_nn_distance import (
     assign_rolling_nn_results,
     rolling_window_nn_distance,
     rolling_window_nn_distance_by_group,
+    select_top_segments_per_read,
     zero_hamming_segments_to_dataframe,
     zero_pairs_to_dataframe,
 )
@@ -392,3 +393,36 @@ def test_zero_pairs_annotation_to_parent_layer():
     expected[0, 0:4] = 1
     expected[1, 0:4] = 1
     np.testing.assert_array_equal(parent.layers["zero_span"], expected)
+
+
+def test_select_top_segments_per_read_limits_overlap_and_partners():
+    records = [
+        {
+            "read_i": 0,
+            "read_j": 1,
+            "read_i_name": "r0",
+            "read_j_name": "r1",
+            "segments": [(0, 5), (12, 15)],
+        },
+        {
+            "read_i": 0,
+            "read_j": 2,
+            "read_i_name": "r0",
+            "read_j_name": "r2",
+            "segments": [(6, 11)],
+        },
+    ]
+    var_names = np.array([str(i) for i in range(20)])
+    raw_df, filtered_df = select_top_segments_per_read(
+        records,
+        var_names,
+        max_segments_per_read=2,
+        max_segment_overlap=0,
+        min_span=3,
+    )
+
+    assert not raw_df.empty
+    assert not filtered_df.empty
+    read0 = filtered_df[filtered_df["read_id"] == 0]
+    assert set(read0["partner_id"]) == {1, 2}
+    assert read0["selection_rank"].max() == 2
