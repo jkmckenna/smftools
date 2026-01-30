@@ -333,7 +333,19 @@ def chimeric_adata_core(
                             min_overlap=cfg.rolling_nn_min_overlap,
                             refine_segments=getattr(cfg, "rolling_nn_zero_pairs_refine", True),
                             merge_gap=getattr(cfg, "rolling_nn_zero_pairs_merge_gap", 0),
+                            max_segments_per_read=getattr(
+                                cfg, "rolling_nn_zero_pairs_max_segments_per_read", None
+                            ),
+                            max_segment_overlap=getattr(
+                                cfg, "rolling_nn_zero_pairs_max_overlap", None
+                            ),
                             binary_layer_key=layer_key,
+                            binary_overlap_mode=getattr(
+                                cfg, "rolling_nn_zero_pairs_layer_overlap_mode", "binary"
+                            ),
+                            binary_overlap_value=getattr(
+                                cfg, "rolling_nn_zero_pairs_layer_overlap_value", None
+                            ),
                             parent_adata=adata,
                         )
                         adata.uns.setdefault(

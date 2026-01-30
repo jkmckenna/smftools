@@ -353,7 +353,11 @@ def annotate_zero_hamming_segments(
     min_overlap: Optional[int] = None,
     refine_segments: bool = True,
     merge_gap: int = 0,
+    max_segments_per_read: Optional[int] = None,
+    max_segment_overlap: Optional[int] = None,
     binary_layer_key: Optional[str] = None,
+    binary_overlap_mode: str = "binary",
+    binary_overlap_value: Optional[int] = None,
     parent_adata: Optional["ad.AnnData"] = None,
 ) -> list[dict]:
     """
@@ -367,7 +371,12 @@ def annotate_zero_hamming_segments(
         min_overlap: Minimum overlap required to keep a refined segment.
         refine_segments: Whether to refine merged windows to maximal segments.
         merge_gap: Merge segments with gaps of at most this size (in positions).
+        max_segments_per_read: Maximum number of segments to retain per read pair.
+        max_segment_overlap: Maximum allowed overlap between retained segments (inclusive, in
+            var-index coordinates).
         binary_layer_key: Layer key to store a binary span annotation.
+        binary_overlap_mode: Layer overlap behavior ("binary", "sum", or "clip").
+        binary_overlap_value: Maximum value to retain when using "clip" mode.
         parent_adata: Parent AnnData to receive the binary layer (defaults to adata).
 
     Returns:
@@ -395,6 +404,14 @@ def annotate_zero_hamming_segments(
 
     if min_overlap is None:
         min_overlap = int(adata.uns.get(f"{zero_pairs_uns_key}_min_overlap", 1))
+
+    binary_overlap_mode = str(binary_overlap_mode).lower()
+    if binary_overlap_mode not in {"binary", "sum", "clip"}:
+        raise ValueError(
+            "binary_overlap_mode must be one of 'binary', 'sum', or 'clip'."
+        )
+    if binary_overlap_mode == "clip" and binary_overlap_value is None:
+        raise ValueError("binary_overlap_value is required when binary_overlap_mode='clip'.")
 
     X = adata.layers[layer] if layer is not None else adata.X
     X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
@@ -454,6 +471,33 @@ def annotate_zero_hamming_segments(
             return None
         return (left, right)
 
+    def _segment_length(segment: tuple[int, int]) -> int:
+        return int(segment[1]) - int(segment[0])
+
+    def _segment_overlap(first: tuple[int, int], second: tuple[int, int]) -> int:
+        return max(0, min(first[1], second[1]) - max(first[0], second[0]))
+
+    def _select_segments(segments: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        if not segments:
+            return []
+        if max_segments_per_read is None and max_segment_overlap is None:
+            return segments
+        ordered = sorted(
+            segments,
+            key=lambda seg: (_segment_length(seg), -seg[0]),
+            reverse=True,
+        )
+        max_segments = len(ordered) if max_segments_per_read is None else max_segments_per_read
+        if max_segment_overlap is None:
+            return ordered[:max_segments]
+        selected: list[tuple[int, int]] = []
+        for segment in ordered:
+            if len(selected) >= max_segments:
+                break
+            if all(_segment_overlap(segment, other) <= max_segment_overlap for other in selected):
+                selected.append(segment)
+        return selected
+
     records: list[dict] = []
     obs_names = adata.obs_names
     for (read_i, read_j), segments in pair_segments.items():
@@ -463,6 +507,7 @@ def annotate_zero_hamming_segments(
             refined = _refine_segment(read_i, read_j, seg_start, seg_end)
             if refined is not None:
                 refined_segments.append(refined)
+        refined_segments = _select_segments(refined_segments)
         if refined_segments:
             records.append(
                 {
@@ -477,7 +522,7 @@ def annotate_zero_hamming_segments(
     adata.uns[output_uns_key] = records
     if binary_layer_key is not None:
         target = parent_adata if parent_adata is not None else adata
-        target_layer = np.zeros((target.n_obs, target.n_vars), dtype=np.uint8)
+        target_layer = np.zeros((target.n_obs, target.n_vars), dtype=np.uint16)
         target_indexer = target.obs_names.get_indexer(obs_names)
         if (target_indexer < 0).any():
             raise ValueError("Provided parent_adata does not contain all subset obs names.")
@@ -493,9 +538,18 @@ def annotate_zero_hamming_segments(
                 parent_positions = var_indexer[seg_start:seg_end]
                 parent_start = int(parent_positions.min())
                 parent_end = int(parent_positions.max())
-                target_layer[target_i, parent_start : parent_end + 1] = 1
-                target_layer[target_j, parent_start : parent_end + 1] = 1
-        target.layers[binary_layer_key] = target_layer
+                target_layer[target_i, parent_start : parent_end + 1] += 1
+                target_layer[target_j, parent_start : parent_end + 1] += 1
+        if binary_overlap_mode == "binary":
+            target.layers[binary_layer_key] = (target_layer > 0).astype(np.uint8)
+        elif binary_overlap_mode == "sum":
+            target.layers[binary_layer_key] = target_layer.astype(np.uint16)
+        else:
+            target.layers[binary_layer_key] = np.clip(
+                target_layer,
+                0,
+                int(binary_overlap_value),
+            ).astype(np.uint16)
         target.uns[f"{binary_layer_key}_source"] = output_uns_key
     return records
 

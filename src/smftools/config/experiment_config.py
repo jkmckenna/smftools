@@ -863,6 +863,10 @@ class ExperimentConfig:
     rolling_nn_zero_pairs_layer_key: Optional[str] = None
     rolling_nn_zero_pairs_refine: bool = True
     rolling_nn_zero_pairs_merge_gap: int = 0
+    rolling_nn_zero_pairs_max_segments_per_read: Optional[int] = None
+    rolling_nn_zero_pairs_max_overlap: Optional[int] = None
+    rolling_nn_zero_pairs_layer_overlap_mode: str = "binary"
+    rolling_nn_zero_pairs_layer_overlap_value: Optional[int] = None
 
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = "nan_half"
@@ -1383,6 +1387,18 @@ class ExperimentConfig:
             rolling_nn_zero_pairs_layer_key=merged.get("rolling_nn_zero_pairs_layer_key", None),
             rolling_nn_zero_pairs_refine=merged.get("rolling_nn_zero_pairs_refine", True),
             rolling_nn_zero_pairs_merge_gap=merged.get("rolling_nn_zero_pairs_merge_gap", 0),
+            rolling_nn_zero_pairs_max_segments_per_read=merged.get(
+                "rolling_nn_zero_pairs_max_segments_per_read", None
+            ),
+            rolling_nn_zero_pairs_max_overlap=merged.get(
+                "rolling_nn_zero_pairs_max_overlap", None
+            ),
+            rolling_nn_zero_pairs_layer_overlap_mode=merged.get(
+                "rolling_nn_zero_pairs_layer_overlap_mode", "binary"
+            ),
+            rolling_nn_zero_pairs_layer_overlap_value=merged.get(
+                "rolling_nn_zero_pairs_layer_overlap_value", None
+            ),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
             umap_layers_to_plot=merged.get(
                 "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]
