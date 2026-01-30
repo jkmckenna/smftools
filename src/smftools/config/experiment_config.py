@@ -867,6 +867,13 @@ class ExperimentConfig:
     rolling_nn_zero_pairs_max_overlap: Optional[int] = None
     rolling_nn_zero_pairs_layer_overlap_mode: str = "binary"
     rolling_nn_zero_pairs_layer_overlap_value: Optional[int] = None
+    rolling_nn_zero_pairs_keep_uns: bool = True
+    rolling_nn_zero_pairs_segments_keep_uns: bool = True
+    rolling_nn_zero_pairs_top_segments_per_read: Optional[int] = None
+    rolling_nn_zero_pairs_top_segments_max_overlap: Optional[int] = None
+    rolling_nn_zero_pairs_top_segments_min_span: Optional[float] = None
+    rolling_nn_zero_pairs_top_segments_write_csvs: bool = True
+    rolling_nn_zero_pairs_segment_histogram_bins: int = 30
 
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = "nan_half"
@@ -1398,6 +1405,25 @@ class ExperimentConfig:
             ),
             rolling_nn_zero_pairs_layer_overlap_value=merged.get(
                 "rolling_nn_zero_pairs_layer_overlap_value", None
+            ),
+            rolling_nn_zero_pairs_keep_uns=merged.get("rolling_nn_zero_pairs_keep_uns", True),
+            rolling_nn_zero_pairs_segments_keep_uns=merged.get(
+                "rolling_nn_zero_pairs_segments_keep_uns", True
+            ),
+            rolling_nn_zero_pairs_top_segments_per_read=merged.get(
+                "rolling_nn_zero_pairs_top_segments_per_read", None
+            ),
+            rolling_nn_zero_pairs_top_segments_max_overlap=merged.get(
+                "rolling_nn_zero_pairs_top_segments_max_overlap", None
+            ),
+            rolling_nn_zero_pairs_top_segments_min_span=merged.get(
+                "rolling_nn_zero_pairs_top_segments_min_span", None
+            ),
+            rolling_nn_zero_pairs_top_segments_write_csvs=merged.get(
+                "rolling_nn_zero_pairs_top_segments_write_csvs", True
+            ),
+            rolling_nn_zero_pairs_segment_histogram_bins=merged.get(
+                "rolling_nn_zero_pairs_segment_histogram_bins", 30
             ),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
             umap_layers_to_plot=merged.get(
