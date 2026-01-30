@@ -36,7 +36,7 @@ def spatial_adata(
     spatial_adata_path : Path | None
         Path to the “current” spatial AnnData (or hmm AnnData if we skip to that).
     """
-    from ..readwrite import add_or_update_column_in_csv, safe_read_h5ad
+    from ..readwrite import safe_read_h5ad
     from .helpers import get_adata_paths, load_experiment_config
 
     # 1) Ensure config + basic paths via load_adata
@@ -47,7 +47,10 @@ def spatial_adata(
     pp_path = paths.pp
     pp_dedup_path = paths.pp_dedup
     spatial_path = paths.spatial
+    chimeric_path = paths.chimeric
+    variant_path = paths.variant
     hmm_path = paths.hmm
+    latent_path = paths.latent
 
     # Stage-skipping logic for spatial
     if not getattr(cfg, "force_redo_spatial_analyses", False):
@@ -65,9 +68,18 @@ def spatial_adata(
     if hmm_path.exists():
         start_adata = _load(hmm_path)
         source_path = hmm_path
+    elif latent_path.exists():
+        start_adata = _load(latent_path)
+        source_path = latent_path
     elif spatial_path.exists():
         start_adata = _load(spatial_path)
         source_path = spatial_path
+    elif chimeric_path.exists():
+        start_adata = _load(chimeric_path)
+        source_path = chimeric_path
+    elif variant_path.exists():
+        start_adata = _load(variant_path)
+        source_path = variant_path
     elif pp_dedup_path.exists():
         start_adata = _load(pp_dedup_path)
         source_path = pp_dedup_path
@@ -140,9 +152,6 @@ def spatial_adata_core(
     from ..plotting import (
         combined_raw_clustermap,
         plot_rolling_grid,
-        plot_rolling_nn_and_layer,
-        plot_zero_hamming_pair_counts,
-        plot_zero_hamming_span_and_layer,
         plot_spatial_autocorr_grid,
     )
     from ..preprocessing import (
@@ -151,16 +160,10 @@ def spatial_adata_core(
         reindex_references_adata,
     )
     from ..readwrite import make_dirs, safe_read_h5ad
-    from ..tools import annotate_zero_hamming_segments, rolling_window_nn_distance
-    from ..tools.rolling_nn_distance import (
-        zero_hamming_segments_to_dataframe,
-        zero_pairs_to_dataframe,
-    )
     from ..tools.position_stats import (
         compute_positionwise_statistics,
         plot_positionwise_matrices,
     )
-    from ..tools.rolling_nn_distance import assign_rolling_nn_results
     from ..tools.spatial_autocorrelation import (
         analyze_autocorr_matrix,
         binary_autocorrelation_with_spacing,
@@ -233,13 +236,13 @@ def spatial_adata_core(
     references = adata.obs[cfg.reference_column].cat.categories
 
     # ============================================================
-    # 1) Clustermaps (non-direct modalities) on *preprocessed* data
+    # 1) Clustermaps (non-direct modalities) on preprocessed adata
     # ============================================================
     if smf_modality != "direct":
         preprocessed_version_available = pp_adata_path.exists()
 
         if preprocessed_version_available:
-            pp_clustermap_dir = spatial_directory / "06_clustermaps"
+            pp_clustermap_dir = spatial_directory / "01_clustermaps"
 
             if pp_clustermap_dir.is_dir() and not getattr(
                 cfg, "force_redo_spatial_analyses", False
@@ -307,10 +310,10 @@ def spatial_adata_core(
                 )
 
     # ============================================================
-    # 2) Clustermaps on *deduplicated* preprocessed AnnData
+    # 2) Clustermaps on deduplicated preprocessed AnnDatas
     # ============================================================
     spatial_dir_dedup = spatial_directory / "deduplicated"
-    clustermap_dir_dedup = spatial_dir_dedup / "06_clustermaps"
+    clustermap_dir_dedup = spatial_dir_dedup / "01_clustermaps"
 
     # Clustermaps on deduplicated adata
     if clustermap_dir_dedup.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
@@ -346,320 +349,9 @@ def spatial_adata_core(
         )
 
     # ============================================================
-    # 2b) Rolling NN distances + layer clustermaps
-    # ============================================================
-    pp_rolling_nn_dir = spatial_dir_dedup / "06b_rolling_nn_clustermaps"
-
-    if pp_rolling_nn_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.debug(f"{pp_rolling_nn_dir} already exists. Skipping rolling NN distance plots.")
-    else:
-        make_dirs([pp_rolling_nn_dir])
-        samples = (
-            adata.obs[cfg.sample_name_col_for_plotting].astype("category").cat.categories.tolist()
-        )
-        references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
-
-        for reference in references:
-            for sample in samples:
-                mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
-                    adata.obs[cfg.reference_column] == reference
-                )
-                if not mask.any():
-                    continue
-
-                subset = adata[mask]
-                site_mask = (
-                    adata.var[[f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]]
-                    .fillna(False)
-                    .any(axis=1)
-                )
-                subset = subset[:, site_mask].copy()
-                try:
-                    collect_zero_pairs = getattr(cfg, "rolling_nn_collect_zero_pairs", True)
-                    zero_pairs_uns_key = getattr(cfg, "rolling_nn_zero_pairs_uns_key", None)
-                    rolling_values, rolling_starts = rolling_window_nn_distance(
-                        subset,
-                        layer=cfg.rolling_nn_layer,
-                        window=cfg.rolling_nn_window,
-                        step=cfg.rolling_nn_step,
-                        min_overlap=cfg.rolling_nn_min_overlap,
-                        return_fraction=cfg.rolling_nn_return_fraction,
-                        store_obsm=cfg.rolling_nn_obsm_key,
-                        collect_zero_pairs=collect_zero_pairs,
-                        zero_pairs_uns_key=zero_pairs_uns_key,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Rolling NN distance computation failed for sample=%s ref=%s: %s",
-                        sample,
-                        reference,
-                        exc,
-                    )
-                    continue
-
-                safe_sample = str(sample).replace(os.sep, "_")
-                safe_ref = str(reference).replace(os.sep, "_")
-                map_key = f"{safe_sample}__{safe_ref}"
-                parent_obsm_key = f"{cfg.rolling_nn_obsm_key}__{safe_ref}"
-                try:
-                    assign_rolling_nn_results(
-                        adata,
-                        subset,
-                        rolling_values,
-                        rolling_starts,
-                        obsm_key=parent_obsm_key,
-                        window=cfg.rolling_nn_window,
-                        step=cfg.rolling_nn_step,
-                        min_overlap=cfg.rolling_nn_min_overlap,
-                        return_fraction=cfg.rolling_nn_return_fraction,
-                        layer=cfg.rolling_nn_layer,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to merge rolling NN results for sample=%s ref=%s: %s",
-                        sample,
-                        reference,
-                        exc,
-                    )
-                if collect_zero_pairs:
-                    resolved_zero_pairs_key = (
-                        zero_pairs_uns_key
-                        if zero_pairs_uns_key is not None
-                        else f"{cfg.rolling_nn_obsm_key}_zero_pairs"
-                    )
-                    parent_zero_pairs_key = f"{parent_obsm_key}__zero_pairs"
-                    zero_pairs_data = subset.uns.get(resolved_zero_pairs_key)
-                    rolling_zero_pairs_out_dir = (
-                        spatial_dir_dedup / "06b_rolling_nn_zero_pairs"
-                    )
-                    write_zero_pairs_csvs = getattr(
-                        cfg, "rolling_nn_write_zero_pairs_csvs", True
-                    )
-                    if zero_pairs_data is not None:
-                        adata.uns[parent_zero_pairs_key] = zero_pairs_data
-                        for suffix in (
-                            "starts",
-                            "window",
-                            "step",
-                            "min_overlap",
-                            "return_fraction",
-                            "layer",
-                        ):
-                            value = subset.uns.get(f"{resolved_zero_pairs_key}_{suffix}")
-                            if value is not None:
-                                adata.uns[f"{parent_zero_pairs_key}_{suffix}"] = value
-                        adata.uns.setdefault(
-                            f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
-                        ).setdefault(map_key, {})["zero_pairs_key"] = parent_zero_pairs_key
-                        if write_zero_pairs_csvs:
-                            try:
-                                make_dirs([rolling_zero_pairs_out_dir])
-                                zero_pairs_df = zero_pairs_to_dataframe(
-                                    subset, resolved_zero_pairs_key
-                                )
-                                zero_pairs_df.to_csv(
-                                    rolling_zero_pairs_out_dir
-                                    / f"{safe_sample}__{safe_ref}__zero_pairs_windows.csv",
-                                    index=False,
-                                )
-                            except Exception as exc:
-                                logger.warning(
-                                    "Failed to write zero-pairs CSV for sample=%s ref=%s: %s",
-                                    sample,
-                                    reference,
-                                    exc,
-                                )
-                    else:
-                        logger.warning(
-                            "Zero-pair data missing for sample=%s ref=%s (key=%s).",
-                            sample,
-                            reference,
-                            resolved_zero_pairs_key,
-                        )
-                    segments_uns_key = getattr(
-                        cfg,
-                        "rolling_nn_zero_pairs_segments_key",
-                        f"{parent_obsm_key}__zero_hamming_segments",
-                    )
-                    layer_key = getattr(
-                        cfg,
-                        "rolling_nn_zero_pairs_layer_key",
-                        f"{parent_obsm_key}__zero_span",
-                    )
-                    try:
-                        segment_records = annotate_zero_hamming_segments(
-                            subset,
-                            zero_pairs_uns_key=zero_pairs_uns_key,
-                            output_uns_key=segments_uns_key,
-                            layer=cfg.rolling_nn_layer,
-                            min_overlap=cfg.rolling_nn_min_overlap,
-                            refine_segments=getattr(cfg, "rolling_nn_zero_pairs_refine", True),
-                            binary_layer_key=layer_key,
-                            parent_adata=adata,
-                        )
-                        adata.uns.setdefault(
-                            f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
-                        ).setdefault(map_key, {}).update(
-                            {"segments_key": segments_uns_key, "layer_key": layer_key}
-                        )
-                        if write_zero_pairs_csvs:
-                            try:
-                                make_dirs([rolling_zero_pairs_out_dir])
-                                segments_df = zero_hamming_segments_to_dataframe(
-                                    segment_records, subset.var_names.to_numpy()
-                                )
-                                segments_df.to_csv(
-                                    rolling_zero_pairs_out_dir
-                                    / f"{safe_sample}__{safe_ref}__zero_pairs_segments.csv",
-                                    index=False,
-                                )
-                            except Exception as exc:
-                                logger.warning(
-                                    "Failed to write zero-pair segments CSV for sample=%s ref=%s: %s",
-                                    sample,
-                                    reference,
-                                    exc,
-                                )
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to annotate zero-pair segments for sample=%s ref=%s: %s",
-                            sample,
-                            reference,
-                            exc,
-                        )
-                adata.uns.setdefault(f"{cfg.rolling_nn_obsm_key}_reference_map", {})[reference] = (
-                    parent_obsm_key
-                )
-                out_png = pp_rolling_nn_dir / f"{safe_sample}__{safe_ref}.png"
-                title = f"{sample} {reference}"
-                try:
-                    plot_rolling_nn_and_layer(
-                        subset,
-                        obsm_key=cfg.rolling_nn_obsm_key,
-                        layer_key=cfg.rolling_nn_plot_layer,
-                        max_nan_fraction=cfg.position_max_nan_threshold,
-                        var_valid_fraction_col=f"{reference}_valid_fraction",
-                        title=title,
-                        save_name=out_png,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed rolling NN plot for sample=%s ref=%s: %s",
-                        sample,
-                        reference,
-                        exc,
-                    )
-
-    # ============================================================
     # 3) Spatial autocorrelation + rolling metrics
     # ============================================================
-    # 2c) Zero-Hamming span clustermaps
-    # ============================================================
-    pp_zero_hamming_dir = spatial_dir_dedup / "06c_zero_hamming_span_clustermaps"
-
-    if pp_zero_hamming_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.debug(f"{pp_zero_hamming_dir} already exists. Skipping zero-Hamming plots.")
-    else:
-        zero_pairs_map = adata.uns.get(f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {})
-        if zero_pairs_map:
-            make_dirs([pp_zero_hamming_dir])
-            samples = (
-                adata.obs[cfg.sample_name_col_for_plotting]
-                .astype("category")
-                .cat.categories.tolist()
-            )
-            references = (
-                adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
-            )
-            for reference in references:
-                for sample in samples:
-                    mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
-                        adata.obs[cfg.reference_column] == reference
-                    )
-                    if not mask.any():
-                        continue
-
-                    safe_sample = str(sample).replace(os.sep, "_")
-                    safe_ref = str(reference).replace(os.sep, "_")
-                    map_key = f"{safe_sample}__{safe_ref}"
-                    map_entry = zero_pairs_map.get(map_key)
-                    if not map_entry:
-                        continue
-
-                    layer_key = map_entry.get("layer_key")
-                    if not layer_key or layer_key not in adata.layers:
-                        logger.warning(
-                            "Zero-Hamming span layer %s missing for sample=%s ref=%s.",
-                            layer_key,
-                            sample,
-                            reference,
-                        )
-                        continue
-
-                    subset = adata[mask]
-                    site_mask = (
-                        adata.var[[f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]]
-                        .fillna(False)
-                        .any(axis=1)
-                    )
-                    subset = subset[:, site_mask].copy()
-                    title = f"{sample} {reference}"
-                    out_png = pp_zero_hamming_dir / f"{safe_sample}__{safe_ref}.png"
-                    try:
-                        plot_zero_hamming_span_and_layer(
-                            subset,
-                            span_layer_key=layer_key,
-                            layer_key=cfg.rolling_nn_plot_layer,
-                            max_nan_fraction=cfg.position_max_nan_threshold,
-                            var_valid_fraction_col=f"{reference}_valid_fraction",
-                            title=title,
-                            save_name=out_png,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed zero-Hamming span plot for sample=%s ref=%s: %s",
-                            sample,
-                            reference,
-                            exc,
-                        )
-                    zero_pairs_key = map_entry.get("zero_pairs_key")
-                    if zero_pairs_key and zero_pairs_key in adata.uns:
-                        subset.uns[zero_pairs_key] = adata.uns[zero_pairs_key]
-                        for suffix in (
-                            "starts",
-                            "window",
-                            "step",
-                            "min_overlap",
-                            "return_fraction",
-                            "layer",
-                        ):
-                            meta_key = f"{zero_pairs_key}_{suffix}"
-                            if meta_key in adata.uns:
-                                subset.uns[meta_key] = adata.uns[meta_key]
-                        counts_png = (
-                            pp_zero_hamming_dir / f"{safe_sample}__{safe_ref}__zero_pairs.png"
-                        )
-                        try:
-                            plot_zero_hamming_pair_counts(
-                                subset,
-                                zero_pairs_uns_key=zero_pairs_key,
-                                title=title,
-                                save_name=counts_png,
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "Failed zero-pair count plot for sample=%s ref=%s: %s",
-                                sample,
-                                reference,
-                                exc,
-                            )
-        else:
-            logger.debug("No zero-pair map found; skipping zero-Hamming span clustermaps.")
-
-    # ============================================================
-    # 3) Spatial autocorrelation + rolling metrics
-    # ============================================================
-    pp_autocorr_dir = spatial_dir_dedup / "08_autocorrelations"
+    pp_autocorr_dir = spatial_dir_dedup / "02_autocorrelations"
 
     if pp_autocorr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{pp_autocorr_dir} already exists. Skipping autocorrelation plotting.")
@@ -1002,7 +694,7 @@ def spatial_adata_core(
     # ============================================================
     # 4) Pearson / correlation matrices
     # ============================================================
-    corr_dir = spatial_dir_dedup / "09_correlation_matrices"
+    corr_dir = spatial_dir_dedup / "03_correlation_matrices"
 
     if corr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{corr_dir} already exists. Skipping correlation matrix plotting.")
@@ -1035,10 +727,10 @@ def spatial_adata_core(
         )
 
     # ============================================================
-    # 5) Save spatial AnnData
+    # 4) Save spatial AnnData
     # ============================================================
     if (not spatial_adata_path.exists()) or getattr(cfg, "force_redo_spatial_analyses", False):
-        logger.info("Saving spatial analyzed AnnData (post preprocessing and duplicate removal).")
+        logger.info("Saving spatial analyzed AnnData.")
         record_smftools_metadata(
             adata,
             step_name="spatial",

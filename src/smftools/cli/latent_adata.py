@@ -100,6 +100,8 @@ def latent_adata(
     pp_path = paths.pp
     pp_dedup_path = paths.pp_dedup
     spatial_path = paths.spatial
+    chimeric_path = paths.chimeric
+    variant_path = paths.variant
     hmm_path = paths.hmm
     latent_path = paths.latent
 
@@ -116,15 +118,21 @@ def latent_adata(
         return adata
 
     # 3) Decide which AnnData to use as the *starting point* for latent analyses
-    if latent_path.exists():
-        start_adata = _load(latent_path)
-        source_path = latent_path
-    elif hmm_path.exists():
+    if hmm_path.exists():
         start_adata = _load(hmm_path)
         source_path = hmm_path
+    elif latent_path.exists():
+        start_adata = _load(latent_path)
+        source_path = latent_path
     elif spatial_path.exists():
         start_adata = _load(spatial_path)
         source_path = spatial_path
+    elif chimeric_path.exists():
+        start_adata = _load(chimeric_path)
+        source_path = chimeric_path
+    elif variant_path.exists():
+        start_adata = _load(variant_path)
+        source_path = variant_path
     elif pp_dedup_path.exists():
         start_adata = _load(pp_dedup_path)
         source_path = pp_dedup_path
@@ -199,7 +207,7 @@ def latent_adata_core(
         load_sample_sheet,
         reindex_references_adata,
     )
-    from ..readwrite import make_dirs, safe_read_h5ad
+    from ..readwrite import make_dirs
     from ..tools import (
         calculate_leiden,
         calculate_nmf,
@@ -359,16 +367,16 @@ def latent_adata_core(
         make_dirs([nmf_dir])
 
         plot_embedding_grid(adata, basis=f"nmf_{SUBSET}", color=plotting_layers, output_dir=nmf_dir)
-        plot_nmf_components(adata, output_dir=nmf_dir)
+        plot_nmf_components(adata, output_dir=nmf_dir, suffix=SUBSET)
 
     # ============================================================
     # 3) PCA/UMAP/NMF at valid base site integer encodings shared across references
     # ============================================================
     SUBSET = "shared_valid_ref_sites_integer_sequence_encodings"
 
-    pca_dir = latent_dir_dedup / f"01_pca_{SUBSET}"
-    umap_dir = latent_dir_dedup / f"01_umap_{SUBSET}"
-    nmf_dir = latent_dir_dedup / f"01_nmf_{SUBSET}"
+    pca_dir = latent_dir_dedup / f"02_pca_{SUBSET}"
+    umap_dir = latent_dir_dedup / f"02_umap_{SUBSET}"
+    nmf_dir = latent_dir_dedup / f"02_nmf_{SUBSET}"
 
     valid_sites = _build_reference_position_mask(adata, references)
 
@@ -408,7 +416,7 @@ def latent_adata_core(
     )
 
     # PCA
-    if pca_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if pca_dir.is_dir() and not getattr(cfg, "force_redo_latent_analyses", False):
         logger.debug(f"{pca_dir} already exists. Skipping PCA calculation and plotting.")
     else:
         make_dirs([pca_dir])
@@ -416,36 +424,28 @@ def latent_adata_core(
         plot_pca_explained_variance(adata, subset=SUBSET, output_dir=pca_dir)
         plot_pca_components(adata, output_dir=pca_dir, suffix=SUBSET)
 
-        # # Component plotting
-        # title = "Component Loadings"
-        # save_path = pca_dir / (title + ".png")
-        # for i in range(10):
-        #     pc = adata.varm["PCs"][:, i] 
-        #     plt.scatter(adata.var_names, pc, label=f"PC{i+1}")
-        # plt.savefig(save_path)
-
     # UMAP
-    if umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if umap_dir.is_dir() and not getattr(cfg, "force_redo_latent_analyses", False):
         logger.debug(f"{umap_dir} already exists. Skipping UMAP plotting.")
     else:
         make_dirs([umap_dir])
         plot_umap_grid(adata, subset=SUBSET, color=plotting_layers, output_dir=umap_dir)
 
     # NMF
-    if nmf_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if nmf_dir.is_dir() and not getattr(cfg, "force_redo_latent_analyses", False):
         logger.debug(f"{nmf_dir} already exists. Skipping NMF plotting.")
     else:
         make_dirs([nmf_dir])
 
         plot_embedding_grid(adata, basis=f"nmf_{SUBSET}", color=plotting_layers, output_dir=nmf_dir)
-        plot_nmf_components(adata, output_dir=nmf_dir)
+        plot_nmf_components(adata, output_dir=nmf_dir, suffix=SUBSET)
 
     # ============================================================
     # 3) CP PARAFAC factorization of shared mod site OHE sequences with mask layer
     # ============================================================
     SUBSET = "shared_valid_mod_sites_ohe_sequence_N_masked"
 
-    cp_sequence_dir = latent_dir_dedup / f"02_cp_{SUBSET}"
+    cp_sequence_dir = latent_dir_dedup / f"03_cp_{SUBSET}"
 
     # Calculate CP tensor factorization
     if SEQUENCE_INTEGER_ENCODING not in adata.layers:
@@ -467,7 +467,7 @@ def latent_adata_core(
         )
 
     # CP decomposition using sequence integer encoding (no var filters)
-    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_latent_analyses", False):
         logger.debug(f"{cp_sequence_dir} already exists. Skipping sequence CP plotting.")
     else:
         make_dirs([cp_sequence_dir])
@@ -489,7 +489,7 @@ def latent_adata_core(
     # ============================================================
     SUBSET = "shared_valid_mod_sites_ohe_sequence_N_masked_non_negative"
 
-    cp_sequence_dir = latent_dir_dedup / f"02_cp_{SUBSET}"
+    cp_sequence_dir = latent_dir_dedup / f"04_cp_{SUBSET}"
 
     # Calculate CP tensor factorization
     if SEQUENCE_INTEGER_ENCODING not in adata.layers:
@@ -511,7 +511,7 @@ def latent_adata_core(
         )
 
     # CP decomposition using sequence integer encoding (no var filters)
-    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_latent_analyses", False):
         logger.debug(f"{cp_sequence_dir} already exists. Skipping sequence CP plotting.")
     else:
         make_dirs([cp_sequence_dir])
@@ -532,7 +532,7 @@ def latent_adata_core(
     # ============================================================
     SUBSET = "non_mod_site_ohe_sequence_N_masked"
 
-    cp_sequence_dir = latent_dir_dedup / f"03_cp_{SUBSET}"
+    cp_sequence_dir = latent_dir_dedup / f"05_cp_{SUBSET}"
 
     # Calculate CP tensor factorization
     if SEQUENCE_INTEGER_ENCODING not in adata.layers:
@@ -554,7 +554,7 @@ def latent_adata_core(
         )
 
     # CP decomposition using sequence integer encoding (no var filters)
-    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_latent_analyses", False):
         logger.debug(f"{cp_sequence_dir} already exists. Skipping sequence CP plotting.")
     else:
         make_dirs([cp_sequence_dir])
@@ -576,7 +576,7 @@ def latent_adata_core(
     # ============================================================
     SUBSET = "non_mod_site_ohe_sequence_N_masked_non_negative"
 
-    cp_sequence_dir = latent_dir_dedup / f"03_cp_{SUBSET}"
+    cp_sequence_dir = latent_dir_dedup / f"06_cp_{SUBSET}"
 
     # Calculate CP tensor factorization
     if SEQUENCE_INTEGER_ENCODING not in adata.layers:
@@ -598,7 +598,7 @@ def latent_adata_core(
         )
 
     # CP decomposition using sequence integer encoding (no var filters)
-    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_latent_analyses", False):
         logger.debug(f"{cp_sequence_dir} already exists. Skipping sequence CP plotting.")
     else:
         make_dirs([cp_sequence_dir])
@@ -620,7 +620,7 @@ def latent_adata_core(
     # ============================================================
     SUBSET = "full_ohe_sequence_N_masked"
 
-    cp_sequence_dir = latent_dir_dedup / f"03_cp_{SUBSET}"
+    cp_sequence_dir = latent_dir_dedup / f"07_cp_{SUBSET}"
 
     # Calculate CP tensor factorization
     if SEQUENCE_INTEGER_ENCODING not in adata.layers:
@@ -642,7 +642,7 @@ def latent_adata_core(
         )
 
     # CP decomposition using sequence integer encoding (no var filters)
-    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_latent_analyses", False):
         logger.debug(f"{cp_sequence_dir} already exists. Skipping sequence CP plotting.")
     else:
         make_dirs([cp_sequence_dir])
@@ -664,7 +664,7 @@ def latent_adata_core(
     # ============================================================
     SUBSET = "full_ohe_sequence_N_masked_non_negative"
 
-    cp_sequence_dir = latent_dir_dedup / f"03_cp_{SUBSET}"
+    cp_sequence_dir = latent_dir_dedup / f"08_cp_{SUBSET}"
 
     # Calculate CP tensor factorization
     if SEQUENCE_INTEGER_ENCODING not in adata.layers:
@@ -686,7 +686,7 @@ def latent_adata_core(
         )
 
     # CP decomposition using sequence integer encoding (no var filters)
-    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if cp_sequence_dir.is_dir() and not getattr(cfg, "force_redo_latent_analyses", False):
         logger.debug(f"{cp_sequence_dir} already exists. Skipping sequence CP plotting.")
     else:
         make_dirs([cp_sequence_dir])
@@ -706,8 +706,8 @@ def latent_adata_core(
     # ============================================================
     # 10) Save latent AnnData
     # ============================================================
-    if (not latent_adata_path.exists()) or getattr(cfg, "force_redo_latent_analyses", False):
-        logger.info("Saving latent analyzed AnnData (post preprocessing and duplicate removal).")
+    if not latent_adata_path.exists():
+        logger.info("Saving latent analyzed AnnData")
         record_smftools_metadata(
             adata,
             step_name="latent",

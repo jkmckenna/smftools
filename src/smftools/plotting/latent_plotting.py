@@ -606,6 +606,7 @@ def plot_embedding_grid(
 def plot_umap(
     adata: "ad.AnnData",
     *,
+    subset: str | None = None,
     color: str | Sequence[str],
     output_dir: Path | str,
     prefix: str | None = None,
@@ -613,12 +614,19 @@ def plot_umap(
     alpha: float = 0.8,
 ) -> Dict[str, Path]:
     logger.info("Plotting UMAP embedding to %s.", output_dir)
-    return plot_embedding(adata, basis="umap", color=color, output_dir=output_dir, prefix=prefix)
+    
+    if subset:
+        umap_key = f"umap_{subset}"
+    else:
+        umap_key = "umap"
+
+    return plot_embedding(adata, basis=umap_key, color=color, output_dir=output_dir, prefix=prefix)
 
 
 def plot_umap_grid(
     adata: "ad.AnnData",
     *,
+    subset: str | None = None,
     color: str | Sequence[str],
     output_dir: Path | str,
     prefix: str | None = None,
@@ -627,9 +635,15 @@ def plot_umap_grid(
     alpha: float = 0.8,
 ) -> Path | None:
     logger.info("Plotting UMAP embedding grid to %s.", output_dir)
+
+    if subset:
+        umap_key = f"umap_{subset}"
+    else:
+        umap_key = "umap"
+
     return plot_embedding_grid(
         adata,
-        basis="umap",
+        basis=umap_key,
         color=color,
         output_dir=output_dir,
         prefix=prefix,
@@ -642,6 +656,7 @@ def plot_umap_grid(
 def plot_pca(
     adata: "ad.AnnData",
     *,
+    subset: str | None = None,
     color: str | Sequence[str],
     output_dir: Path | str,
     prefix: str | None = None,
@@ -649,12 +664,17 @@ def plot_pca(
     alpha: float = 0.8,
 ) -> Dict[str, Path]:
     logger.info("Plotting PCA embedding to %s.", output_dir)
-    return plot_embedding(adata, basis="pca", color=color, output_dir=output_dir, prefix=prefix)
+    if subset:
+        pca_key = f"pca_{subset}"
+    else:
+        pca_key = "pca"
+    return plot_embedding(adata, basis=pca_key, color=color, output_dir=output_dir, prefix=prefix)
 
 
 def plot_pca_grid(
     adata: "ad.AnnData",
     *,
+    subset: str | None = None,
     color: str | Sequence[str],
     output_dir: Path | str,
     prefix: str | None = None,
@@ -662,10 +682,17 @@ def plot_pca_grid(
     point_size: float = 12,
     alpha: float = 0.8,
 ) -> Path | None:
+    
     logger.info("Plotting PCA embedding grid to %s.", output_dir)
+
+    if subset:
+        pca_key = f"pca_{subset}"
+    else:
+        pca_key = "pca"
+
     return plot_embedding_grid(
         adata,
-        basis="pca",
+        basis=pca_key,
         color=color,
         output_dir=output_dir,
         prefix=prefix,
@@ -698,6 +725,7 @@ def plot_pca_explained_variance(
         Path to the saved plot, or None if explained variance is unavailable.
     """
     logger.info("Plotting PCA explained variance to %s.", output_dir)
+
     if subset:
         pca_key = f"{pca_key}_{subset}"
     if suffix:

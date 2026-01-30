@@ -12,6 +12,9 @@ from .cli.latent_adata import latent_adata
 from .cli.load_adata import load_adata
 from .cli.preprocess_adata import preprocess_adata
 from .cli.spatial_adata import spatial_adata
+from .cli.variant_adata import variant_adata
+from .cli.chimeric_adata import chimeric_adata
+
 from .informatics.pod5_functions import subsample_pod5
 from .logging_utils import get_logger, setup_logging
 from .readwrite import concatenate_h5ads
@@ -110,6 +113,28 @@ def hmm(config_path):
 def latent(config_path):
     """Process data from CONFIG_PATH."""
     latent_adata(config_path)
+
+
+##########################################
+
+
+####### Variant ###########
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
+def variant(config_path):
+    """Process data from CONFIG_PATH."""
+    variant_adata(config_path)
+
+
+##########################################
+
+
+####### Chimeric ###########
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
+def chimeric(config_path):
+    """Process data from CONFIG_PATH."""
+    chimeric_adata(config_path)
 
 
 ##########################################

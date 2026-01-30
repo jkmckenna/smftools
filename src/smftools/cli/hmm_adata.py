@@ -586,9 +586,18 @@ def hmm_adata(config_path: str):
     if paths.hmm.exists():
         adata, _ = safe_read_h5ad(paths.hmm)
         source_path = paths.hmm
+    elif paths.latent.exists():
+        adata, _ = safe_read_h5ad(paths.latent)
+        source_path = paths.latent
     elif paths.spatial.exists():
         adata, _ = safe_read_h5ad(paths.spatial)
         source_path = paths.spatial
+    elif paths.chimeric.exists():
+        adata, _ = safe_read_h5ad(paths.chimeric)
+        source_path = paths.chimeric
+    elif paths.variant.exists():
+        adata, _ = safe_read_h5ad(paths.variant)
+        source_path = paths.variant
     elif paths.pp_dedup.exists():
         adata, _ = safe_read_h5ad(paths.pp_dedup)
         source_path = paths.pp_dedup
