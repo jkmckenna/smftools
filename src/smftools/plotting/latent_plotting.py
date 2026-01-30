@@ -248,12 +248,14 @@ def plot_cp_sequence_components(
     adata: "ad.AnnData",
     *,
     output_dir: Path | str,
-    components_key: str = "cp_factors",
-    base_factors_key: str = "cp_base_factors",
+    components_key: str = "H_cp_sequence",
+    uns_key: str = "cp_sequence",
+    base_factors_key: str | None = None,
     suffix: str | None = None,
-    heatmap_name: str = "heatmap.png",
-    lineplot_name: str = "lineplot.png",
-    base_factors_name: str = "base_factors.png",
+    heatmap_name: str = "cp_sequence_position_heatmap.png",
+    lineplot_name: str = "cp_sequence_position_lineplot.png",
+    base_factors_name: str = "cp_sequence_base_weights.png",
+    max_positions: int = 2000,
 ) -> Dict[str, Path]:
     """Plot CP sequence components as heatmaps and line plots.
 
@@ -261,11 +263,13 @@ def plot_cp_sequence_components(
         adata: AnnData object with CP decomposition in ``varm`` and ``uns``.
         output_dir: Directory to write plots into.
         components_key: Key in ``adata.varm`` for position factors.
-        base_factors_key: Key in ``adata.uns`` for base factors.
+        uns_key: Key in ``adata.uns`` for CP metadata (base factors/labels).
+        base_factors_key: Optional key in ``adata.uns`` for base factors.
         suffix: Optional suffix appended to the component keys.
         heatmap_name: Filename for the heatmap plot.
         lineplot_name: Filename for the line plot.
         base_factors_name: Filename for the base factors plot.
+        max_positions: Maximum number of positions to plot.
 
     Returns:
         Dict[str, Path]: Paths to generated plots.
@@ -273,7 +277,9 @@ def plot_cp_sequence_components(
     logger.info("Plotting CP sequence components to %s.", output_dir)
     if suffix:
         components_key = f"{components_key}_{suffix}"
-        base_factors_key = f"{base_factors_key}_{suffix}"
+        if base_factors_key is not None:
+            base_factors_key = f"{base_factors_key}_{suffix}"
+        uns_key = f"{uns_key}_{suffix}"
 
     heatmap_name = f"{components_key}_{heatmap_name}"
     lineplot_name = f"{components_key}_{lineplot_name}"
@@ -288,56 +294,85 @@ def plot_cp_sequence_components(
 
     components = np.asarray(adata.varm[components_key])
     if components.ndim != 2:
-        raise ValueError(f"CP components must be 2D; got shape {components.shape}.")
+        raise ValueError(f"CP position factors must be 2D; got shape {components.shape}.")
 
-    n_positions, n_components = components.shape
-    if n_positions == 0 or n_components == 0:
-        logger.warning("CP components are empty; skipping plot generation.")
-        return {}
+    position_indices = np.arange(components.shape[0])
+    valid_mask = np.isfinite(components).any(axis=1)
+    if not np.all(valid_mask):
+        dropped = int(np.sum(~valid_mask))
+        logger.info("Dropping %s CP positions with no finite weights before plotting.", dropped)
+        components = components[valid_mask]
+        position_indices = position_indices[valid_mask]
 
-    feature_positions = np.arange(n_positions)
-    component_labels = [f"C{i + 1}" for i in range(n_components)]
+    if max_positions and components.shape[0] > max_positions:
+        original_count = components.shape[0]
+        scores = np.nanmax(np.abs(components), axis=1)
+        top_idx = np.argsort(scores)[-max_positions:]
+        top_idx = np.sort(top_idx)
+        components = components[top_idx]
+        position_indices = position_indices[top_idx]
+        logger.info(
+            "Downsampled CP positions from %s to %s for plotting.",
+            original_count,
+            max_positions,
+        )
 
-    heatmap_width = max(8, min(20, n_positions / 60))
-    heatmap_height = max(2.5, 0.6 * n_components + 1.5)
-    fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
-    sns.heatmap(
-        components.T,
-        ax=ax,
-        cmap="viridis",
-        cbar_kws={"label": "Component weight"},
-        xticklabels=False,
-        yticklabels=component_labels,
-    )
-    ax.set_xlabel("Position index")
-    ax.set_ylabel("CP component")
-    tick_positions = _fixed_tick_positions(n_positions, min(20, n_positions))
-    ax.set_xticks(tick_positions + 0.5)
-    ax.set_xticklabels(feature_positions[tick_positions].astype(str), rotation=90, fontsize=8)
-    fig.tight_layout()
-    heatmap_path = output_path / heatmap_name
-    fig.savefig(heatmap_path, dpi=200)
-    plt.close(fig)
-    logger.info("Saved CP sequence heatmap to %s.", heatmap_path)
+    outputs: Dict[str, Path] = {}
+    if components.size == 0:
+        logger.warning("No finite CP position factors available; skipping position plots.")
+    else:
+        n_positions, n_components = components.shape
+        component_labels = [f"C{i + 1}" for i in range(n_components)]
 
-    fig, ax = plt.subplots(figsize=(max(8, min(20, n_positions / 50)), 3.5))
-    x = feature_positions
-    for idx, label in enumerate(component_labels):
-        ax.plot(x, components[:, idx], label=label, linewidth=1)
-    ax.set_xlabel("Position index")
-    ax.set_ylabel("Component weight")
-    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), frameon=False)
-    fig.tight_layout(rect=[0, 0, 0.82, 1])
-    lineplot_path = output_path / lineplot_name
-    fig.savefig(lineplot_path, dpi=200)
-    plt.close(fig)
-    logger.info("Saved CP sequence line plot to %s.", lineplot_path)
+        heatmap_width = max(8, min(20, n_positions / 60))
+        heatmap_height = max(2.5, 0.6 * n_components + 1.5)
+        fig, ax = plt.subplots(figsize=(heatmap_width, heatmap_height))
+        sns.heatmap(
+            components.T,
+            ax=ax,
+            cmap="viridis",
+            cbar_kws={"label": "Component weight"},
+            xticklabels=position_indices if n_positions <= 60 else False,
+            yticklabels=component_labels,
+        )
+        ax.set_xlabel("Position index")
+        ax.set_ylabel("CP component")
+        fig.tight_layout()
+        heatmap_path = output_path / heatmap_name
+        fig.savefig(heatmap_path, dpi=200)
+        plt.close(fig)
+        logger.info("Saved CP sequence heatmap to %s.", heatmap_path)
 
-    outputs = {"heatmap": heatmap_path, "lineplot": lineplot_path}
+        fig, ax = plt.subplots(figsize=(max(8, min(20, n_positions / 50)), 3.5))
+        x = position_indices
+        for idx, label in enumerate(component_labels):
+            ax.scatter(x, components[:, idx], label=label, s=20, alpha=0.8)
+        ax.set_xlabel("Position index")
+        ax.set_ylabel("Component weight")
+        if n_positions <= 60:
+            ax.set_xticks(x)
+            ax.set_xticklabels([str(pos) for pos in x], rotation=90, fontsize=8)
+        ax.legend(loc="upper right", frameon=False)
+        fig.tight_layout()
+        lineplot_path = output_path / lineplot_name
+        fig.savefig(lineplot_path, dpi=200)
+        plt.close(fig)
+        logger.info("Saved CP sequence line plot to %s.", lineplot_path)
 
-    if base_factors_key in adata.uns:
-        base_factors = np.asarray(adata.uns[base_factors_key])
-        base_labels = adata.uns.get("cp_base_labels", None)
+        outputs["heatmap"] = heatmap_path
+        outputs["lineplot"] = lineplot_path
+
+    base_factors = None
+    base_labels = None
+    if uns_key in adata.uns and isinstance(adata.uns[uns_key], dict):
+        base_factors = adata.uns[uns_key].get("base_factors")
+        base_labels = adata.uns[uns_key].get("base_labels")
+    if base_factors is None and base_factors_key:
+        base_factors = adata.uns.get(base_factors_key)
+        base_labels = adata.uns.get("cp_base_labels")
+
+    if base_factors is not None:
+        base_factors = np.asarray(base_factors)
         if base_factors.ndim != 2 or base_factors.shape[0] == 0:
             logger.warning(
                 "CP base factors must be 2D and non-empty; got shape %s.",
