@@ -70,3 +70,52 @@ def test_plot_rolling_nn_and_layer_filters_nan_fraction(monkeypatch, tmp_path):
     assert np.isnan(captured[1][0, 1])
     assert np.isnan(captured[1][1, 1])
     assert np.isnan(captured[1][2, 0])
+
+
+def test_plot_rolling_nn_and_layer_keeps_nan_windows(monkeypatch, tmp_path):
+    matplotlib.use("Agg")
+
+    adata = ad.AnnData(X=np.zeros((2, 3)))
+    adata.obs["Sample"] = pd.Categorical(["S1", "S1"])
+    adata.obs["Reference_strand"] = pd.Categorical(["R1", "R1"])
+    adata.var_names = [f"pos{i}" for i in range(3)]
+    adata.layers["nan0_0minus1"] = np.array(
+        [
+            [0.0, 1.0, np.nan],
+            [1.0, 0.0, np.nan],
+        ]
+    )
+    adata.obsm["rolling_nn_dist"] = np.array(
+        [
+            [np.nan, 0.2],
+            [np.nan, 0.3],
+        ]
+    )
+    adata.uns["rolling_nn_dist_starts"] = np.array([0, 1])
+
+    captured = []
+
+    def fake_heatmap(data, ax=None, **kwargs):
+        captured.append(np.asarray(data))
+        return ax
+
+    def fake_clustermap(data, **kwargs):
+        return SimpleNamespace(
+            dendrogram_row=SimpleNamespace(reordered_ind=list(range(data.shape[0]))),
+            fig=plt.figure(),
+        )
+
+    monkeypatch.setattr("smftools.plotting.general_plotting.sns.heatmap", fake_heatmap)
+    monkeypatch.setattr("smftools.plotting.general_plotting.sns.clustermap", fake_clustermap)
+
+    plot_rolling_nn_and_layer(
+        adata,
+        obsm_key="rolling_nn_dist",
+        layer_key="nan0_0minus1",
+        fill_nn_with_colmax=False,
+        drop_all_nan_windows=False,
+        save_name=tmp_path / "plot.png",
+    )
+
+    assert len(captured) == 2
+    assert np.isnan(captured[0][:, 0]).all()

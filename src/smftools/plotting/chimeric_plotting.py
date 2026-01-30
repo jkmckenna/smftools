@@ -38,6 +38,7 @@ def plot_rolling_nn_and_layer(
     var_nan_fraction_col: str | None = None,
     read_span_layer: str | None = "read_span_mask",
     outside_read_color: str = "#bdbdbd",
+    nn_nan_color: str = "#bdbdbd",
     figsize: tuple[float, float] = (14, 10),
     right_panel_var_mask=None,  # optional boolean mask over subset.var to reduce width
     robust: bool = True,
@@ -69,6 +70,7 @@ def plot_rolling_nn_and_layer(
         var_nan_fraction_col: ``subset.var`` column with NaN fractions.
         read_span_layer: Layer name with read span mask; 0 values are treated as outside read.
         outside_read_color: Color used to show positions outside each read.
+        nn_nan_color: Color used for NaNs in the rolling NN heatmap.
         figsize: Figure size for the combined plot.
         right_panel_var_mask: Optional boolean mask over ``subset.var`` for the right panel.
         robust: Use robust color scaling in seaborn.
@@ -112,19 +114,21 @@ def plot_rolling_nn_and_layer(
     if drop_all_nan_windows:
         X_df = X_df.loc[:, ~X_df.isna().all(axis=0)]
 
-    X_df_filled = X_df.copy()
+    col_max = X_df.max(axis=0, skipna=True).fillna(0)
+    X_df_cluster = X_df.fillna(col_max)
+    X_df_cluster.index = X_df_cluster.index.astype(str)
     if fill_nn_with_colmax:
-        col_max = X_df_filled.max(axis=0, skipna=True)
-        X_df_filled = X_df_filled.fillna(col_max)
+        X_df_display = X_df_cluster
+    else:
+        X_df_display = X_df.copy()
+        X_df_display.index = X_df_display.index.astype(str)
 
-    X_df_filled.index = X_df_filled.index.astype(str)
-
-    meta = subset.obs.loc[X_df.index, list(meta_cols)].copy()
+    meta = subset.obs.loc[X_df_cluster.index, list(meta_cols)].copy()
     meta.index = meta.index.astype(str)
     row_colors = make_row_colors(meta)
 
     g = sns.clustermap(
-        X_df_filled,
+        X_df_cluster,
         cmap="viridis",
         col_cluster=col_cluster,
         row_cluster=True,
@@ -134,10 +138,10 @@ def plot_rolling_nn_and_layer(
         robust=robust,
     )
     row_order = g.dendrogram_row.reordered_ind
-    ordered_index = X_df_filled.index[row_order]
+    ordered_index = X_df_cluster.index[row_order]
     plt.close(g.fig)
 
-    X_ord = X_df_filled.loc[ordered_index]
+    X_ord = X_df_display.loc[ordered_index]
 
     L = subset.layers[layer_key]
     L = L.toarray() if hasattr(L, "toarray") else np.asarray(L)
@@ -217,10 +221,12 @@ def plot_rolling_nn_and_layer(
         y_ticks=None,
     )
 
+    nn_cmap = plt.get_cmap("viridis").copy()
+    nn_cmap.set_bad(nn_nan_color)
     sns.heatmap(
         X_ord,
         ax=ax1,
-        cmap="viridis",
+        cmap=nn_cmap,
         xticklabels=False,
         yticklabels=False,
         robust=robust,
