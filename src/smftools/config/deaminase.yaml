@@ -39,6 +39,9 @@ autocorr_site_types:
 correlation_matrix_site_types:
   - "C_site"
 
+rolling_nn_site_types: 
+- "C"
+
 # ######## smftools hmm params #########
 cpg: False # whether to use the default HMM endogenous CpG patch params
 hmm_methbases:
