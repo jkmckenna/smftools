@@ -162,6 +162,10 @@ def chimeric_adata_core(
         deaminase = False
     else:
         deaminase = True
+    if smf_modality == "direct":
+        rolling_nn_layer = "binarized_methylation"
+    else:
+        rolling_nn_layer = None
 
     # -----------------------------
     # Optional sample sheet metadata
@@ -200,18 +204,24 @@ def chimeric_adata_core(
                     continue
 
                 subset = adata[mask]
-                site_mask = (
-                    adata.var[[f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]]
-                    .fillna(False)
-                    .any(axis=1)
-                )
+                position_col = f"position_in_{reference}"
+                site_cols = [f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]
+                missing_cols = [
+                    col for col in [position_col, *site_cols] if col not in adata.var.columns
+                ]
+                if missing_cols:
+                    raise KeyError(
+                        f"Required site mask columns missing in adata.var: {missing_cols}"
+                    )
+                mod_site_mask = adata.var[site_cols].fillna(False).any(axis=1)
+                site_mask = mod_site_mask & adata.var[position_col].fillna(False)
                 subset = subset[:, site_mask].copy()
                 try:
                     collect_zero_pairs = getattr(cfg, "rolling_nn_collect_zero_pairs", True)
                     zero_pairs_uns_key = getattr(cfg, "rolling_nn_zero_pairs_uns_key", None)
                     rolling_values, rolling_starts = rolling_window_nn_distance(
                         subset,
-                        layer=cfg.rolling_nn_layer,
+                        layer=rolling_nn_layer,
                         window=cfg.rolling_nn_window,
                         step=cfg.rolling_nn_step,
                         min_overlap=cfg.rolling_nn_min_overlap,
@@ -244,7 +254,7 @@ def chimeric_adata_core(
                         step=cfg.rolling_nn_step,
                         min_overlap=cfg.rolling_nn_min_overlap,
                         return_fraction=cfg.rolling_nn_return_fraction,
-                        layer=cfg.rolling_nn_layer,
+                        layer=rolling_nn_layer,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -319,7 +329,7 @@ def chimeric_adata_core(
                             subset,
                             zero_pairs_uns_key=resolved_zero_pairs_key,
                             output_uns_key=segments_uns_key,
-                            layer=cfg.rolling_nn_layer,
+                            layer=rolling_nn_layer,
                             min_overlap=cfg.rolling_nn_min_overlap,
                             refine_segments=getattr(cfg, "rolling_nn_zero_pairs_refine", True),
                             binary_layer_key=layer_key,
@@ -365,6 +375,8 @@ def chimeric_adata_core(
                         subset,
                         obsm_key=cfg.rolling_nn_obsm_key,
                         layer_key=cfg.rolling_nn_plot_layer,
+                        fill_nn_with_colmax=False,
+                        drop_all_nan_windows=False,
                         max_nan_fraction=cfg.position_max_nan_threshold,
                         var_valid_fraction_col=f"{reference}_valid_fraction",
                         title=title,
@@ -421,11 +433,17 @@ def chimeric_adata_core(
                         continue
 
                     subset = adata[mask]
-                    site_mask = (
-                        adata.var[[f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]]
-                        .fillna(False)
-                        .any(axis=1)
-                    )
+                    position_col = f"position_in_{reference}"
+                    site_cols = [f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]
+                    missing_cols = [
+                        col for col in [position_col, *site_cols] if col not in adata.var.columns
+                    ]
+                    if missing_cols:
+                        raise KeyError(
+                            f"Required site mask columns missing in adata.var: {missing_cols}"
+                        )
+                    mod_site_mask = adata.var[site_cols].fillna(False).any(axis=1)
+                    site_mask = mod_site_mask & adata.var[position_col].fillna(False)
                     subset = subset[:, site_mask].copy()
                     title = f"{sample} {reference}"
                     out_png = zero_hamming_dir / f"{safe_sample}__{safe_ref}.png"
