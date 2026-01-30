@@ -6,7 +6,13 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import LOGGING_DIR, PREPROCESS_DIR, READ_SPAN_MASK, DEMUX_TYPE, BASE_QUALITY_SCORES
+from smftools.constants import (
+    BASE_QUALITY_SCORES,
+    DEMUX_TYPE,
+    LOGGING_DIR,
+    PREPROCESS_DIR,
+    READ_SPAN_MASK,
+)
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)

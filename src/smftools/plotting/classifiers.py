@@ -167,7 +167,9 @@ def plot_feature_importances_or_saliency(
                 y_label = "Feature Importance"
             else:
                 if tensors is None or ref not in tensors or suffix not in tensors[ref]:
-                    logger.warning("No input data provided for NN saliency for %s. Skipping.", model_key)
+                    logger.warning(
+                        "No input data provided for NN saliency for %s. Skipping.", model_key
+                    )
                     continue
                 input_tensor = tensors[ref][suffix]
                 model.eval()

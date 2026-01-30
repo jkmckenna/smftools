@@ -16,6 +16,7 @@ sns = require("seaborn", extra="plotting", purpose="plot styling")
 
 logger = get_logger(__name__)
 
+
 def plot_read_span_quality_clustermaps(
     adata,
     sample_col: str = "Sample_Names",

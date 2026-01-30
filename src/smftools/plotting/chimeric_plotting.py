@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from math import floor
 from pathlib import Path
-from typing import  Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -177,9 +177,7 @@ def plot_rolling_nn_and_layer(
     if read_span_layer and read_span_layer in subset.layers:
         span = subset.layers[read_span_layer]
         span = span.toarray() if hasattr(span, "toarray") else np.asarray(span)
-        span_df = pd.DataFrame(
-            span[valid], index=subset.obs_names[valid], columns=subset.var_names
-        )
+        span_df = pd.DataFrame(span[valid], index=subset.obs_names[valid], columns=subset.var_names)
         span_df.index = span_df.index.astype(str)
         if right_panel_var_mask is not None:
             span_df = span_df.loc[:, right_panel_var_mask]
@@ -417,9 +415,7 @@ def plot_zero_hamming_span_and_layer(
     if read_span_layer and read_span_layer in subset.layers:
         span_mask = subset.layers[read_span_layer]
         span_mask = span_mask.toarray() if hasattr(span_mask, "toarray") else np.asarray(span_mask)
-        span_mask_df = pd.DataFrame(
-            span_mask, index=subset.obs_names, columns=subset.var_names
-        )
+        span_mask_df = pd.DataFrame(span_mask, index=subset.obs_names, columns=subset.var_names)
         span_mask_df.index = span_mask_df.index.astype(str)
         if max_nan_fraction is not None and nan_mask is not None:
             span_mask_df = span_mask_df.loc[:, nan_mask]
@@ -580,9 +576,7 @@ def plot_zero_hamming_pair_counts(
     else:
         labels = [str(i) for i in range(n_windows)]
 
-    counts_df = pd.DataFrame(
-        counts, index=subset.obs_names.astype(str), columns=labels
-    )
+    counts_df = pd.DataFrame(counts, index=subset.obs_names.astype(str), columns=labels)
     meta = subset.obs.loc[counts_df.index, list(meta_cols)].copy()
     meta.index = meta.index.astype(str)
     row_colors = make_row_colors(meta)

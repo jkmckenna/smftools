@@ -33,9 +33,7 @@ def test_plot_zero_hamming_pair_counts_builds_counts(monkeypatch, tmp_path):
             {"ax_heatmap": ax, "fig": fig},
         )()
 
-    monkeypatch.setattr(
-        "smftools.plotting.spatial_plotting.sns.clustermap", fake_clustermap
-    )
+    monkeypatch.setattr("smftools.plotting.spatial_plotting.sns.clustermap", fake_clustermap)
 
     plot_zero_hamming_pair_counts(
         adata,

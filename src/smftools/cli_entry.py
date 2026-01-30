@@ -7,16 +7,14 @@ from typing import Sequence
 import click
 import pandas as pd
 
+from .cli.chimeric_adata import chimeric_adata
 from .cli.hmm_adata import hmm_adata
 from .cli.latent_adata import latent_adata
 from .cli.load_adata import load_adata
 from .cli.preprocess_adata import preprocess_adata
+from .cli.recipes import full_flow
 from .cli.spatial_adata import spatial_adata
 from .cli.variant_adata import variant_adata
-from .cli.chimeric_adata import chimeric_adata
-
-from .cli.recipes import full_flow
-
 from .informatics.pod5_functions import subsample_pod5
 from .logging_utils import get_logger, setup_logging
 from .readwrite import concatenate_h5ads

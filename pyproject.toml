@@ -147,7 +147,7 @@ torch = [
 all = [
     # cluster
     "fastcluster",
-    "igraph"
+    "igraph",
     "leidenalg",
 
     # informatics

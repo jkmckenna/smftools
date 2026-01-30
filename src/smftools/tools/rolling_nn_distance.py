@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+from math import floor
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import numpy as np
-
-from math import floor
 
 from smftools.logging_utils import get_logger
 

@@ -297,7 +297,9 @@ def spatial_adata_core(
                     cmap_a=cfg.clustermap_cmap_a,
                     min_quality=cfg.read_quality_filter_thresholds[0],
                     min_length=cfg.read_len_filter_thresholds[0],
-                    min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+                    min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[
+                        0
+                    ],
                     min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
                     demux_types=cfg.clustermap_demux_types_to_plot,
                     bins=None,
@@ -336,7 +338,9 @@ def spatial_adata_core(
             cmap_a=cfg.clustermap_cmap_a,
             min_quality=cfg.read_quality_filter_thresholds[0],
             min_length=cfg.read_len_filter_thresholds[0],
-            min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+            min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[
+                0
+            ],
             min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
             demux_types=cfg.clustermap_demux_types_to_plot,
             bins=None,

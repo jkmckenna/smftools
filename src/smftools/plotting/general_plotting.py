@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from smftools.logging_utils import get_logger
-
+from smftools.plotting.chimeric_plotting import (
+    plot_rolling_nn_and_layer,
+    plot_zero_hamming_pair_counts,
+    plot_zero_hamming_span_and_layer,
+)
 from smftools.plotting.hmm_plotting import (
     combined_hmm_length_clustermap,
     combined_hmm_raw_clustermap,
@@ -25,13 +29,6 @@ from smftools.plotting.preprocess_plotting import (
 from smftools.plotting.spatial_plotting import (
     combined_raw_clustermap,
 )
-
-from smftools.plotting.chimeric_plotting import (
-    plot_rolling_nn_and_layer,
-    plot_zero_hamming_pair_counts,
-    plot_zero_hamming_span_and_layer,
-)
-
 from smftools.plotting.variant_plotting import (
     plot_sequence_integer_encoding_clustermaps,
 )

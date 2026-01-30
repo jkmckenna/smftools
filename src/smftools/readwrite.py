@@ -478,7 +478,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                     cats_str = cats.astype(str)
                     df[col] = pd.Categorical(ser.astype(str), categories=cats_str)
                     if verbose:
-                        logger.debug(f"  coerced categorical column '{which}.{col}' -> string categories")
+                        logger.debug(
+                            f"  coerced categorical column '{which}.{col}' -> string categories"
+                        )
                     if which == "obs":
                         report["obs_converted_columns"].append(col)
                     else:
@@ -598,7 +600,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                         clean[k + "_str"] = str(v)
                         backed_up.append(k)
                         if verbose:
-                            logger.debug(f"  uns['{k}'] stored as string under '{k}_str' (backed up).")
+                            logger.debug(
+                                f"  uns['{k}'] stored as string under '{k}_str' (backed up)."
+                            )
                         report["uns_backed_up_keys"].append(k)
                     except Exception as e:
                         msg = f"uns['{k}'] could not be preserved: {e}"
@@ -1260,7 +1264,9 @@ def safe_read_h5ad(
                         adata.layers[layer_name] = np.asarray(val)
                         report["restored_layers"].append((layer_name, full))
                         if verbose:
-                            logger.debug(f"[safe_read_h5ad] restored layers['{layer_name}'] from {full}")
+                            logger.debug(
+                                f"[safe_read_h5ad] restored layers['{layer_name}'] from {full}"
+                            )
                     except Exception as e:
                         report["errors"].append(
                             f"Failed to restore layers['{layer_name}'] from {full}: {e}"
@@ -1275,7 +1281,9 @@ def safe_read_h5ad(
                         adata.obsm[obsm_name] = np.asarray(val)
                         report["restored_obsm"].append((obsm_name, full))
                         if verbose:
-                            logger.debug(f"[safe_read_h5ad] restored obsm['{obsm_name}'] from {full}")
+                            logger.debug(
+                                f"[safe_read_h5ad] restored obsm['{obsm_name}'] from {full}"
+                            )
                     except Exception as e:
                         report["errors"].append(
                             f"Failed to restore obsm['{obsm_name}'] from {full}: {e}"
@@ -1290,7 +1298,9 @@ def safe_read_h5ad(
                         adata.varm[varm_name] = np.asarray(val)
                         report["restored_varm"].append((varm_name, full))
                         if verbose:
-                            logger.debug(f"[safe_read_h5ad] restored varm['{varm_name}'] from {full}")
+                            logger.debug(
+                                f"[safe_read_h5ad] restored varm['{varm_name}'] from {full}"
+                            )
                     except Exception as e:
                         report["errors"].append(
                             f"Failed to restore varm['{varm_name}'] from {full}: {e}"

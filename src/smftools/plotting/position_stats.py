@@ -364,9 +364,7 @@ def plot_positionwise_matrix(
                         va="center",
                         fontsize=10,
                     )
-                    logger.warning(
-                        "Error plotting line for %s=%s: %s", highlight_axis, pos, e
-                    )
+                    logger.warning("Error plotting line for %s=%s: %s", highlight_axis, pos, e)
 
             line_ax.set_title(f"{highlight_axis.capitalize()} Profile(s)")
             line_ax.set_xlabel(f"{'Column' if highlight_axis == 'row' else 'Row'} position")

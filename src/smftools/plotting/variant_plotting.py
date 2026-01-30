@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Sequence, List
+from typing import Any, Dict, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -25,6 +25,7 @@ DNA_5COLOR_PALETTE = {
     "T": "#FF0000",  # red
     "OTHER": "#808080",  # gray (N, PAD, unknown)
 }
+
 
 def plot_mismatch_base_frequency_by_position(
     adata,
@@ -236,7 +237,9 @@ def plot_mismatch_base_frequency_by_position(
                     logger.debug(f"Could not find strand in {ref_lower}")
                 if target_base in base_label_to_int:
                     target_int = base_label_to_int[target_base]
-                    logger.debug(f"Ignoring {target_base} site mismatches in {ref} that yield a mismatch ambiguous to conversion")
+                    logger.debug(
+                        f"Ignoring {target_base} site mismatches in {ref} that yield a mismatch ambiguous to conversion"
+                    )
                     ref_base_mask = np.asarray(ref_bases.values == target_base, dtype=bool)
                     ignore_mask = (mismatch_matrix == target_int) & ref_base_mask[None, :]
                     coverage_mask = coverage_mask & ~ignore_mask
@@ -259,7 +262,9 @@ def plot_mismatch_base_frequency_by_position(
 
             positions = np.arange(mismatch_matrix.shape[1])[position_mask]
             mean_errors = mean_positional_error[position_mask]
-            normalized_mean_errors = mean_errors / 3 # This is a conservative normalization against variant specific error rate
+            normalized_mean_errors = (
+                mean_errors / 3
+            )  # This is a conservative normalization against variant specific error rate
             std_errors = std_positional_error[position_mask]
             base_freqs: Dict[str, np.ndarray] = {}
             for base_int, base_label in base_int_to_label.items():
@@ -292,7 +297,9 @@ def plot_mismatch_base_frequency_by_position(
                 variance = np.where(variance > 0, variance, np.nan)
 
                 for base_int, base_label in base_int_to_label.items():
-                    base_counts = ((mismatch_matrix == base_int) & coverage_mask).sum(axis=0).astype(float)
+                    base_counts = (
+                        ((mismatch_matrix == base_int) & coverage_mask).sum(axis=0).astype(float)
+                    )
                     expected_counts = variant_probs.sum(axis=0)
                     expected_counts = expected_counts[position_mask]
                     observed_counts = base_counts[position_mask]
@@ -338,9 +345,17 @@ def plot_mismatch_base_frequency_by_position(
             for base_label in sorted(base_freqs.keys()):
                 normalized_base = base_label if base_label in {"A", "C", "G", "T"} else "OTHER"
                 color = DNA_5COLOR_PALETTE.get(normalized_base, DNA_5COLOR_PALETTE["OTHER"])
-                ax.scatter(positions, base_freqs[base_label], label=base_label, color=color, linewidth=1)
+                ax.scatter(
+                    positions, base_freqs[base_label], label=base_label, color=color, linewidth=1
+                )
 
-            ax.plot(positions, normalized_mean_errors, label="Mean error rate", color="black", linestyle="--")
+            ax.plot(
+                positions,
+                normalized_mean_errors,
+                label="Mean error rate",
+                color="black",
+                linestyle="--",
+            )
             # ax.fill_between(
             #     positions,
             #     np.full_like(positions, lower, dtype=float),
@@ -360,7 +375,9 @@ def plot_mismatch_base_frequency_by_position(
                 for base_label in sorted(zscore_freqs.keys()):
                     normalized_base = base_label if base_label in {"A", "C", "G", "T"} else "OTHER"
                     color = DNA_5COLOR_PALETTE.get(normalized_base, DNA_5COLOR_PALETTE["OTHER"])
-                    zscore_ax.scatter(positions, zscore_freqs[base_label], label=base_label, color=color)
+                    zscore_ax.scatter(
+                        positions, zscore_freqs[base_label], label=base_label, color=color
+                    )
                 zscore_ax.axhline(0.0, color="black", linestyle="--", linewidth=1)
                 zscore_ax.set_xlabel("Position")
                 zscore_ax.set_ylabel("Z-score")
@@ -526,7 +543,7 @@ def plot_sequence_integer_encoding_clustermaps(
     def _build_mod_site_mask(var_frame, ref_name: str) -> np.ndarray | None:
         if not exclude_mod_sites or not mod_site_bases:
             return None
-        
+
         if hasattr(var_frame, "var"):
             var_frame = var_frame.var
 
@@ -841,4 +858,3 @@ def plot_sequence_integer_encoding_clustermaps(
             )
 
     return results
-

@@ -82,9 +82,7 @@ def append_sequence_mismatch_annotations(
         types.append([mismatch.event for mismatch in mismatches])
         identities.append(
             [
-                _format_mismatch_identity(
-                    mismatch.event, mismatch.seq1_base, mismatch.seq2_base
-                )
+                _format_mismatch_identity(mismatch.event, mismatch.seq1_base, mismatch.seq2_base)
                 for mismatch in mismatches
             ]
         )
@@ -93,4 +91,3 @@ def append_sequence_mismatch_annotations(
     adata.var[f"{output_prefix}_mismatch_types"] = types
     adata.var[f"{output_prefix}_mismatch_identities"] = identities
     adata.uns[uns_flag] = True
-

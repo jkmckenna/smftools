@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import LOGGING_DIR, CHIMERIC_DIR
+from smftools.constants import CHIMERIC_DIR, LOGGING_DIR
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -106,7 +106,7 @@ def chimeric_adata_core(
     - `cfg` is the ExperimentConfig.
 
     Does:
-    - 
+    -
     - Save AnnData.
     """
     import os
@@ -129,10 +129,10 @@ def chimeric_adata_core(
     from ..readwrite import make_dirs
     from ..tools import annotate_zero_hamming_segments, rolling_window_nn_distance
     from ..tools.rolling_nn_distance import (
+        assign_rolling_nn_results,
         zero_hamming_segments_to_dataframe,
         zero_pairs_to_dataframe,
     )
-    from ..tools.rolling_nn_distance import assign_rolling_nn_results
     from .helpers import write_gz_h5ad
 
     # -----------------------------
@@ -261,12 +261,8 @@ def chimeric_adata_core(
                     )
                     parent_zero_pairs_key = f"{parent_obsm_key}__zero_pairs"
                     zero_pairs_data = subset.uns.get(resolved_zero_pairs_key)
-                    rolling_zero_pairs_out_dir = (
-                        rolling_nn_dir / "01_rolling_nn_zero_pairs"
-                    )
-                    write_zero_pairs_csvs = getattr(
-                        cfg, "rolling_nn_write_zero_pairs_csvs", True
-                    )
+                    rolling_zero_pairs_out_dir = rolling_nn_dir / "01_rolling_nn_zero_pairs"
+                    write_zero_pairs_csvs = getattr(cfg, "rolling_nn_write_zero_pairs_csvs", True)
                     if zero_pairs_data is not None:
                         adata.uns[parent_zero_pairs_key] = zero_pairs_data
                         for suffix in (
@@ -398,9 +394,7 @@ def chimeric_adata_core(
                 .astype("category")
                 .cat.categories.tolist()
             )
-            references = (
-                adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
-            )
+            references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
             for reference in references:
                 for sample in samples:
                     mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
@@ -466,9 +460,7 @@ def chimeric_adata_core(
                             meta_key = f"{zero_pairs_key}_{suffix}"
                             if meta_key in adata.uns:
                                 subset.uns[meta_key] = adata.uns[meta_key]
-                        counts_png = (
-                            zero_hamming_dir / f"{safe_sample}__{safe_ref}__zero_pairs.png"
-                        )
+                        counts_png = zero_hamming_dir / f"{safe_sample}__{safe_ref}__zero_pairs.png"
                         try:
                             plot_zero_hamming_pair_counts(
                                 subset,

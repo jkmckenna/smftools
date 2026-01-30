@@ -30,7 +30,11 @@ def calculate_pca(
     varm_output = f"PCs_{output_suffix}" if output_suffix else "PCs"
 
     if not overwrite and obsm_output in adata.obsm and varm_output in adata.varm:
-        logger.info("PCA outputs already exist and overwrite=False; skipping (%s, %s).", obsm_output, varm_output)
+        logger.info(
+            "PCA outputs already exist and overwrite=False; skipping (%s, %s).",
+            obsm_output,
+            varm_output,
+        )
         return adata
 
     # --- Build feature subset mask (over vars) ---
@@ -59,7 +63,9 @@ def calculate_pca(
         layer_used = None
     else:
         if layer not in adata.layers:
-            raise KeyError(f"Layer {layer!r} not found in adata.layers. Available: {list(adata.layers.keys())}")
+            raise KeyError(
+                f"Layer {layer!r} not found in adata.layers. Available: {list(adata.layers.keys())}"
+            )
         matrix = adata.layers[layer]
         layer_used = layer
 
@@ -97,15 +103,17 @@ def calculate_pca(
             # If you *need* centered PCA on sparse, you'd need different machinery.
             logger.info("Running TruncatedSVD (sparse) with n_components=%d", n_pcs_used)
             model = TruncatedSVD(n_components=n_pcs_used, random_state=0)
-            scores = model.fit_transform(X)                    # (n_obs, n_pcs)
-            loadings = model.components_.T                     # (n_vars_used, n_pcs)
+            scores = model.fit_transform(X)  # (n_obs, n_pcs)
+            loadings = model.components_.T  # (n_vars_used, n_pcs)
             mean = None
             explained_variance_ratio = getattr(model, "explained_variance_ratio_", None)
         else:
-            logger.info("Running sklearn PCA with n_components=%d (svd_solver=randomized)", n_pcs_used)
+            logger.info(
+                "Running sklearn PCA with n_components=%d (svd_solver=randomized)", n_pcs_used
+            )
             model = PCA(n_components=n_pcs_used, svd_solver="randomized", random_state=0)
-            scores = model.fit_transform(X)                    # (n_obs, n_pcs)
-            loadings = model.components_.T                     # (n_vars_used, n_pcs)
+            scores = model.fit_transform(X)  # (n_obs, n_pcs)
+            loadings = model.components_.T  # (n_vars_used, n_pcs)
             mean = model.mean_
             explained_variance_ratio = model.explained_variance_ratio_
 
@@ -121,7 +129,9 @@ def calculate_pca(
 
         import scipy.linalg as spla
 
-        logger.warning("sklearn PCA unavailable; falling back to full SVD (can be slow). Reason: %s", e)
+        logger.warning(
+            "sklearn PCA unavailable; falling back to full SVD (can be slow). Reason: %s", e
+        )
         Xd = np.asarray(X, dtype=np.float64)
         mean = Xd.mean(axis=0)
         centered = Xd - mean
@@ -160,5 +170,11 @@ def calculate_pca(
         "mean": mean.tolist() if (mean is not None and isinstance(mean, np.ndarray)) else None,
     }
 
-    logger.info("Stored PCA: adata.obsm[%s] (%s) and adata.varm[%s] (%s)", obsm_output, scores.shape, varm_output, pc_matrix.shape)
+    logger.info(
+        "Stored PCA: adata.obsm[%s] (%s) and adata.varm[%s] (%s)",
+        obsm_output,
+        scores.shape,
+        varm_output,
+        pc_matrix.shape,
+    )
     return adata

@@ -608,8 +608,7 @@ def plot_embedding_grid(
                 linewidths=0,
             )
             handles = [
-                patches.Patch(color=color_map[label], label=str(label))
-                for label in label_strings
+                patches.Patch(color=color_map[label], label=str(label)) for label in label_strings
             ]
             legend_ax.legend(handles=handles, loc="center left", fontsize=8, frameon=False)
         else:
@@ -649,7 +648,7 @@ def plot_umap(
     alpha: float = 0.8,
 ) -> Dict[str, Path]:
     logger.info("Plotting UMAP embedding to %s.", output_dir)
-    
+
     if subset:
         umap_key = f"umap_{subset}"
     else:
@@ -717,7 +716,6 @@ def plot_pca_grid(
     point_size: float = 12,
     alpha: float = 0.8,
 ) -> Path | None:
-    
     logger.info("Plotting PCA embedding grid to %s.", output_dir)
 
     if subset:

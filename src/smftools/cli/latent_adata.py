@@ -6,7 +6,7 @@ from typing import Optional, Sequence, Tuple
 
 import anndata as ad
 
-from smftools.constants import LATENT_DIR, LOGGING_DIR, SEQUENCE_INTEGER_ENCODING, REFERENCE_STRAND
+from smftools.constants import LATENT_DIR, LOGGING_DIR, REFERENCE_STRAND, SEQUENCE_INTEGER_ENCODING
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -174,7 +174,7 @@ def latent_adata_core(
     Does:
     - Optional sample sheet load.
     - Optional inversion & reindexing.
-    - PCA/KNN/UMAP/Leiden/NMP/PARAFAC 
+    - PCA/KNN/UMAP/Leiden/NMP/PARAFAC
     - Save latent AnnData to `latent_adata_path`.
 
     Returns
@@ -209,12 +209,12 @@ def latent_adata_core(
     )
     from ..readwrite import make_dirs
     from ..tools import (
+        calculate_knn,
         calculate_leiden,
         calculate_nmf,
+        calculate_pca,
         calculate_sequence_cp_decomposition,
         calculate_umap,
-        calculate_pca,
-        calculate_knn,
     )
     from .helpers import write_gz_h5ad
 
@@ -284,7 +284,7 @@ def latent_adata_core(
     references = adata.obs[cfg.reference_column].cat.categories
 
     latent_dir_dedup = latent_directory / "deduplicated"
-    
+
     # ============================================================
     # 2) PCA/UMAP/NMF at valid modified base site binary encodings shared across references
     # ============================================================

@@ -54,7 +54,9 @@ def calculate_knn(
     if sp.issparse(data):
         # Convert to float32 for pynndescent/numba friendliness if needed
         data = data.astype(np.float32)
-        logger.info("Sparse embedding detected (%s). Proceeding without NaN check.", type(data).__name__)
+        logger.info(
+            "Sparse embedding detected (%s). Proceeding without NaN check.", type(data).__name__
+        )
     else:
         data = np.asarray(data)
         if np.isnan(data).any():
@@ -74,7 +76,9 @@ def calculate_knn(
 
     logger.info(
         "Running pynndescent KNN (obsm=%s, n_neighbors=%d, metric=euclidean, n_jobs=%d)",
-        obsm, n_neighbors, threads
+        obsm,
+        n_neighbors,
+        threads,
     )
 
     nn_index = pynndescent.NNDescent(

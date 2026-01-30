@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
 from pathlib import Path
+from typing import Optional, Tuple
 
 import anndata as ad
 
+from ..cli.chimeric_adata import chimeric_adata
 from ..cli.hmm_adata import hmm_adata
 from ..cli.latent_adata import latent_adata
 from ..cli.load_adata import load_adata
 from ..cli.preprocess_adata import preprocess_adata
 from ..cli.spatial_adata import spatial_adata
 from ..cli.variant_adata import variant_adata
-from ..cli.chimeric_adata import chimeric_adata
+
 
 def full_flow(
     config_path: str,

@@ -122,9 +122,7 @@ def append_reference_strand_quality_stats(
 
     ref_values = adata.obs[ref_column]
     references = (
-        ref_values.cat.categories
-        if hasattr(ref_values, "cat")
-        else pd.Index(pd.unique(ref_values))
+        ref_values.cat.categories if hasattr(ref_values, "cat") else pd.Index(pd.unique(ref_values))
     )
     n_vars = adata.shape[1]
     has_span_mask = read_span_layer in adata.layers

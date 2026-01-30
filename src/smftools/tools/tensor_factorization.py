@@ -106,6 +106,7 @@ def calculate_sequence_cp_decomposition(
 
     tensorly = require("tensorly", extra="ml-base", purpose="CP decomposition")
     from tensorly.decomposition import parafac
+
     try:
         from tensorly.decomposition import non_negative_parafac
     except ImportError:

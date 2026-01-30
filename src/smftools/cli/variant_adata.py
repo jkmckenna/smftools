@@ -11,6 +11,7 @@ from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
+
 def variant_adata(
     config_path: str,
 ) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
@@ -123,12 +124,11 @@ def variant_adata_core(
         plot_sequence_integer_encoding_clustermaps,
     )
     from ..preprocessing import (
-        load_sample_sheet,
-        append_sequence_mismatch_annotations,
         append_mismatch_frequency_sites,
+        append_sequence_mismatch_annotations,
+        load_sample_sheet,
     )
     from ..readwrite import make_dirs
-
     from .helpers import write_gz_h5ad
 
     # -----------------------------
@@ -176,12 +176,8 @@ def variant_adata_core(
     # ============================================================
     seq1_col, seq2_col = getattr(cfg, "references_to_align_for_variant_annotation", [None, None])
     if seq1_col and seq2_col:
-        append_sequence_mismatch_annotations(
-            adata,
-            seq1_col,
-            seq2_col
-        )
- 
+        append_sequence_mismatch_annotations(adata, seq1_col, seq2_col)
+
     ############################################### Append mismatch frequency per position ###############################################
     append_mismatch_frequency_sites(
         adata,
@@ -202,7 +198,9 @@ def variant_adata_core(
     elif not adata.uns.get("mismatch_integer_encoding_map"):
         logger.debug("Mismatch encoding map not found; skipping mismatch base frequency plots.")
     else:
-        mismatch_base_freq_dir = variant_directory / "deduplicated" / "01_mismatch_base_frequency_plots"
+        mismatch_base_freq_dir = (
+            variant_directory / "deduplicated" / "01_mismatch_base_frequency_plots"
+        )
         if mismatch_base_freq_dir.is_dir() and not cfg.force_redo_preprocessing:
             logger.debug(
                 f"{mismatch_base_freq_dir} already exists. Skipping mismatch base frequency plots."
@@ -215,7 +213,7 @@ def variant_adata_core(
                 reference_col=cfg.reference_column,
                 mismatch_layer=cfg.mismatch_frequency_layer,
                 read_span_layer=cfg.mismatch_frequency_read_span_layer,
-                exclude_mod_sites=True, #cfg.mismatch_base_frequency_exclude_mod_sites,
+                exclude_mod_sites=True,  # cfg.mismatch_base_frequency_exclude_mod_sites,
                 mod_site_bases=cfg.mod_target_bases,
                 save_path=mismatch_base_freq_dir,
                 plot_zscores=True,
