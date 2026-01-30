@@ -17,7 +17,7 @@ This command takes a user passed config file handling:
 
 ## Preprocess Usage
 
-This command performs preprocessing on the anndata object. It automatically runs the load command under the hood if starting from raw data.
+This command performs preprocessing on the anndata object.
 
 ```shell
 smftools preprocess "/Path_to_experiment_config.csv"
@@ -25,25 +25,59 @@ smftools preprocess "/Path_to_experiment_config.csv"
 
 ![](_static/smftools_preprocessing_diagram.png)
 
+
+## Variant Usage
+
+This command performs DNA sequence variation based analyses on the anndata object.
+
+```shell
+smftools variant "/Path_to_experiment_config.csv"
+```
+
+## Chimeric Usage
+
+This command performs putative PCR chimera detection on the anndata object.
+
+```shell
+smftools chimeric "/Path_to_experiment_config.csv"
+```
+
 ## Spatial Usage
 
-This command performs spatial analysis on the anndata object. It automatically runs the load command and preprocessing under the hood if they have not been already run.
+This command performs spatial analysis on the anndata object.
 
 ```shell
 smftools spatial "/Path_to_experiment_config.csv"
 ```
 
-- Currently Includes: Position X Position correlation matrices, clustering, dimensionality reduction, spatial autocorrelation. 
+- Currently Includes: Position X Position correlation matrices, read x position clustermaps, and spatial autocorrelation. 
 
 ## HMM Usage
 
-This command performs hmm based feature annotation on the anndata object. It automatically runs the load command and preprocessing under the hood if they have not been already run.
+This command performs hmm based feature annotation on the anndata object.
 
 ```shell
 smftools hmm "/Path_to_experiment_config.csv"
 ```
 
 - Main outputs wills be stored in adata.layers
+
+
+## Latent Usage
+
+This command constructs various latent representations of the anndata object.
+
+```shell
+smftools latent "/Path_to_experiment_config.csv"
+```
+
+## Full Usage
+
+This command is a wrapper that sequentially runs load, preprocess, variant, chimeric, spatial, hmm, latent workflows.
+
+```shell
+smftools full "/Path_to_experiment_config.csv"
+```
 
 ## Batch Usage
 
