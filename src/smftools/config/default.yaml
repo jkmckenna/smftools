@@ -204,10 +204,10 @@ rolling_nn_zero_pairs_uns_key: null
 rolling_nn_zero_pairs_segments_key: null
 rolling_nn_zero_pairs_layer_key: null
 rolling_nn_zero_pairs_refine: true
-rolling_nn_zero_pairs_merge_gap: 0
-rolling_nn_zero_pairs_max_segments_per_read: null
-rolling_nn_zero_pairs_max_overlap: null
-rolling_nn_zero_pairs_layer_overlap_mode: "binary"
+rolling_nn_zero_pairs_merge_gap: 1
+rolling_nn_zero_pairs_max_segments_per_read: 2
+rolling_nn_zero_pairs_max_overlap: 5
+rolling_nn_zero_pairs_layer_overlap_mode: "sum"
 rolling_nn_zero_pairs_layer_overlap_value: null
 
 # Latent Analysis - UMAP/Leiden params
