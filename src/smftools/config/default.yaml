@@ -211,9 +211,9 @@ rolling_nn_zero_pairs_layer_overlap_mode: "sum"
 rolling_nn_zero_pairs_layer_overlap_value: null
 rolling_nn_zero_pairs_keep_uns: true
 rolling_nn_zero_pairs_segments_keep_uns: true
-rolling_nn_zero_pairs_top_segments_per_read: null
-rolling_nn_zero_pairs_top_segments_max_overlap: null
-rolling_nn_zero_pairs_top_segments_min_span: null
+rolling_nn_zero_pairs_top_segments_per_read: 3
+rolling_nn_zero_pairs_top_segments_max_overlap: 5
+rolling_nn_zero_pairs_top_segments_min_span: 300
 rolling_nn_zero_pairs_top_segments_write_csvs: true
 rolling_nn_zero_pairs_segment_histogram_bins: 30
 
