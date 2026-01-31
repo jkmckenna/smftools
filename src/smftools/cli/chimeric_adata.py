@@ -636,6 +636,7 @@ def chimeric_adata_core(
     # 3) Rolling NN + two-layer clustermaps
     # ============================================================
     rolling_nn_layers_dir = chimeric_directory / "03_rolling_nn_two_layer_clustermaps"
+    zero_pairs_map = adata.uns.get(f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {})
 
     if rolling_nn_layers_dir.is_dir() and not getattr(cfg, "force_redo_chimeric_analyses", False):
         logger.debug(
@@ -668,6 +669,7 @@ def chimeric_adata_core(
                     safe_sample = str(sample).replace(os.sep, "_")
                     safe_ref = str(reference).replace(os.sep, "_")
                     parent_obsm_key = f"{cfg.rolling_nn_obsm_key}__{safe_ref}"
+                    map_key = f"{safe_sample}__{safe_ref}"
 
                     subset = adata[mask]
                     position_col = f"position_in_{reference}"
@@ -683,7 +685,10 @@ def chimeric_adata_core(
                     site_mask = mod_site_mask & adata.var[position_col].fillna(False)
                     subset = subset[:, site_mask].copy()
 
-                    if parent_obsm_key not in subset.obsm:
+                    if (
+                        parent_obsm_key not in subset.obsm
+                        and cfg.rolling_nn_obsm_key not in subset.obsm
+                    ):
                         logger.warning(
                             "Rolling NN results missing for sample=%s ref=%s (key=%s).",
                             sample,
@@ -691,8 +696,41 @@ def chimeric_adata_core(
                             parent_obsm_key,
                         )
                         continue
+                    plot_layers_resolved = list(plot_layers)
+                    map_entry = zero_pairs_map.get(map_key, {})
+                    zero_hamming_layer_key = map_entry.get("per_read_layer_key")
+                    if zero_hamming_layer_key and len(plot_layers_resolved) == 2:
+                        plot_layers_resolved[1] = zero_hamming_layer_key
+                    elif (
+                        ZERO_HAMMING_DISTANCE_SPANS in subset.layers
+                        and len(plot_layers_resolved) == 2
+                    ):
+                        plot_layers_resolved[1] = ZERO_HAMMING_DISTANCE_SPANS
+
+                    if (
+                        cfg.rolling_nn_obsm_key not in subset.obsm
+                        and parent_obsm_key in subset.obsm
+                    ):
+                        subset.obsm[cfg.rolling_nn_obsm_key] = subset.obsm[parent_obsm_key]
+                        for suffix in (
+                            "starts",
+                            "centers",
+                            "window",
+                            "step",
+                            "min_overlap",
+                            "return_fraction",
+                            "layer",
+                        ):
+                            parent_key = f"{parent_obsm_key}_{suffix}"
+                            if parent_key in adata.uns:
+                                subset.uns.setdefault(
+                                    f"{cfg.rolling_nn_obsm_key}_{suffix}", adata.uns[parent_key]
+                                )
+
                     missing_layers = [
-                        layer_key for layer_key in plot_layers if layer_key not in subset.layers
+                        layer_key
+                        for layer_key in plot_layers_resolved
+                        if layer_key not in subset.layers
                     ]
                     if missing_layers:
                         logger.warning(
@@ -708,8 +746,8 @@ def chimeric_adata_core(
                     try:
                         plot_rolling_nn_and_two_layers(
                             subset,
-                            obsm_key=parent_obsm_key,
-                            layer_keys=plot_layers,
+                            obsm_key=cfg.rolling_nn_obsm_key,
+                            layer_keys=plot_layers_resolved,
                             max_nan_fraction=cfg.position_max_nan_threshold,
                             var_valid_fraction_col=f"{reference}_valid_fraction",
                             title=title,
