@@ -346,16 +346,64 @@ def chimeric_adata_core(
                             ),
                         )
                         per_read_layer_key = f"{parent_obsm_key}__top_segments_span"
+                        per_read_obs_key = f"{parent_obsm_key}__top_segments"
                         assign_per_read_segments_layer(
                             parent_adata=adata,
                             subset_adata=subset,
                             per_read_segments=filtered_df,
                             layer_key=per_read_layer_key,
                         )
+                        if per_read_obs_key in adata.obs:
+                            per_read_obs_series = adata.obs[per_read_obs_key].copy()
+                            per_read_obs_series = per_read_obs_series.apply(
+                                lambda value: value if isinstance(value, list) else []
+                            )
+                        else:
+                            per_read_obs_series = pd.Series(
+                                [list() for _ in range(adata.n_obs)],
+                                index=adata.obs_names,
+                                dtype=object,
+                            )
+                        if not filtered_df.empty:
+                            for read_id, read_df in filtered_df.groupby(
+                                "read_id", sort=False
+                            ):
+                                read_index = int(read_id)
+                                if read_index < 0 or read_index >= subset.n_obs:
+                                    continue
+                                tuples = []
+                                for row in read_df.itertuples(index=False):
+                                    start_label = row.segment_start_label
+                                    end_label = row.segment_end_label
+                                    if (
+                                        start_label is None
+                                        or end_label is None
+                                        or pd.isna(start_label)
+                                        or pd.isna(end_label)
+                                    ):
+                                        start_val = int(row.segment_start)
+                                        end_val = int(row.segment_end_exclusive)
+                                    else:
+                                        start_val = start_label
+                                        end_val = end_label
+                                    tuples.append(
+                                        (
+                                            start_val,
+                                            end_val,
+                                            int(row.partner_id),
+                                        )
+                                    )
+                                per_read_obs_series.at[
+                                    subset.obs_names[read_index]
+                                ] = tuples
+                        adata.obs[per_read_obs_key] = per_read_obs_series
                         adata.uns.setdefault(
                             f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
                         ).setdefault(map_key, {}).update(
-                            {"per_read_layer_key": per_read_layer_key}
+                            {
+                                "per_read_layer_key": per_read_layer_key,
+                                "per_read_obs_key": per_read_obs_key,
+                            }
                         )
                         if getattr(cfg, "rolling_nn_zero_pairs_top_segments_write_csvs", True):
                             try:
