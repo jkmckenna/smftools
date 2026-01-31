@@ -613,7 +613,6 @@ def chimeric_adata_core(
                         plot_zero_hamming_span_and_layer(
                             subset,
                             span_layer_key=layer_key,
-                            obsm_key=cfg.rolling_nn_obsm_key,
                             layer_key=cfg.rolling_nn_plot_layer,
                             max_nan_fraction=cfg.position_max_nan_threshold,
                             var_valid_fraction_col=f"{reference}_valid_fraction",
