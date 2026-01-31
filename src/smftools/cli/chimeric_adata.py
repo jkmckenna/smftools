@@ -626,35 +626,6 @@ def chimeric_adata_core(
                             reference,
                             exc,
                         )
-                    zero_pairs_key = map_entry.get("zero_pairs_key")
-                    if zero_pairs_key and zero_pairs_key in adata.uns:
-                        subset.uns[zero_pairs_key] = adata.uns[zero_pairs_key]
-                        for suffix in (
-                            "starts",
-                            "window",
-                            "step",
-                            "min_overlap",
-                            "return_fraction",
-                            "layer",
-                        ):
-                            meta_key = f"{zero_pairs_key}_{suffix}"
-                            if meta_key in adata.uns:
-                                subset.uns[meta_key] = adata.uns[meta_key]
-                        counts_png = zero_hamming_dir / f"{safe_sample}__{safe_ref}__zero_pairs.png"
-                        try:
-                            plot_zero_hamming_pair_counts(
-                                subset,
-                                zero_pairs_uns_key=zero_pairs_key,
-                                title=title,
-                                save_name=counts_png,
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "Failed zero-pair count plot for sample=%s ref=%s: %s",
-                                sample,
-                                reference,
-                                exc,
-                            )
         else:
             logger.debug("No zero-pair map found; skipping zero-Hamming span clustermaps.")
 
