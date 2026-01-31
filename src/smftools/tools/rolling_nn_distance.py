@@ -519,8 +519,10 @@ def assign_per_read_segments_layer(
     Args:
         parent_adata: AnnData that should receive the span layer.
         subset_adata: AnnData used to compute per-read segments.
-        per_read_segments: DataFrame with ``read_id``, ``segment_start``, and
-            ``segment_end_exclusive`` columns.
+    per_read_segments: DataFrame with ``read_id``, ``segment_start``, and
+            ``segment_end_exclusive`` columns. If ``segment_start_label`` and
+            ``segment_end_label`` are present and numeric, they are used to
+            map segments using label coordinates.
         layer_key: Name of the layer to store in ``parent_adata.layers``.
     """
     import pandas as pd
@@ -544,6 +546,23 @@ def assign_per_read_segments_layer(
     if (parent_var_indexer < 0).any():
         raise ValueError("Subset AnnData contains vars not present in parent AnnData.")
 
+    label_indexer = None
+    label_columns = {"segment_start_label", "segment_end_label"}
+    if label_columns.issubset(per_read_segments.columns):
+        try:
+            parent_label_values = [int(label) for label in parent_adata.var_names]
+            label_indexer = {label: idx for idx, label in enumerate(parent_label_values)}
+        except (TypeError, ValueError):
+            label_indexer = None
+
+    def _label_to_index(value: object) -> Optional[int]:
+        if label_indexer is None or value is None or pd.isna(value):
+            return None
+        try:
+            return label_indexer.get(int(value))
+        except (TypeError, ValueError):
+            return None
+
     for row in per_read_segments.itertuples(index=False):
         read_id = int(row.read_id)
         seg_start = int(row.segment_start)
@@ -553,11 +572,19 @@ def assign_per_read_segments_layer(
         target_read = parent_obs_indexer[read_id]
         if target_read < 0:
             raise ValueError("Segment read_id not found in parent AnnData.")
-        parent_positions = parent_var_indexer[seg_start:seg_end]
-        if parent_positions.size == 0:
-            continue
-        parent_start = int(parent_positions.min())
-        parent_end = int(parent_positions.max())
+
+        label_start = _label_to_index(getattr(row, "segment_start_label", None))
+        label_end = _label_to_index(getattr(row, "segment_end_label", None))
+        if label_start is not None and label_end is not None:
+            parent_start = min(label_start, label_end)
+            parent_end = max(label_start, label_end)
+        else:
+            parent_positions = parent_var_indexer[seg_start:seg_end]
+            if parent_positions.size == 0:
+                continue
+            parent_start = int(parent_positions.min())
+            parent_end = int(parent_positions.max())
+
         target_layer[target_read, parent_start : parent_end + 1] += 1
 
     parent_adata.layers[layer_key] = target_layer

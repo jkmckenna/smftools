@@ -4,6 +4,7 @@ import pandas as pd
 
 from smftools.tools.rolling_nn_distance import (
     annotate_zero_hamming_segments,
+    assign_per_read_segments_layer,
     assign_rolling_nn_results,
     rolling_window_nn_distance,
     rolling_window_nn_distance_by_group,
@@ -426,3 +427,28 @@ def test_select_top_segments_per_read_limits_overlap_and_partners():
     read0 = filtered_df[filtered_df["read_id"] == 0]
     assert set(read0["partner_id"]) == {1, 2}
     assert read0["selection_rank"].max() == 2
+
+
+def test_assign_per_read_segments_layer_uses_label_spans():
+    parent = ad.AnnData(X=np.zeros((1, 5)))
+    parent.obs_names = ["read1"]
+    parent.var_names = ["10", "11", "12", "13", "14"]
+    subset = parent.copy()
+
+    per_read_segments = pd.DataFrame(
+        [
+            {
+                "read_id": 0,
+                "segment_start": 0,
+                "segment_end_exclusive": 1,
+                "segment_start_label": "11",
+                "segment_end_label": "13",
+            }
+        ]
+    )
+
+    assign_per_read_segments_layer(parent, subset, per_read_segments, layer_key="top_segments")
+
+    expected = np.zeros((1, 5), dtype=np.uint16)
+    expected[0, 1:4] = 1
+    np.testing.assert_array_equal(parent.layers["top_segments"], expected)
