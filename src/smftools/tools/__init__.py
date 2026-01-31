@@ -19,6 +19,7 @@ _LAZY_ATTRS = {
     "align_sequences_with_mismatches": "smftools.tools.sequence_alignment",
     "rolling_window_nn_distance": "smftools.tools.rolling_nn_distance",
     "annotate_zero_hamming_segments": "smftools.tools.rolling_nn_distance",
+    "assign_per_read_segments_layer": "smftools.tools.rolling_nn_distance",
     "select_top_segments_per_read": "smftools.tools.rolling_nn_distance",
     "subset_adata": "smftools.tools.subset_adata",
 }
