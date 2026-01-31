@@ -43,6 +43,68 @@ def _build_top_segments_obs_tuples(
     return tuples
 
 
+def _build_zero_hamming_span_layer_from_obs(
+    adata: ad.AnnData,
+    obs_key: str,
+    layer_key: str,
+) -> None:
+    """
+    Populate a count-based span layer from per-read obs tuples.
+
+    Args:
+        adata: AnnData to receive/update the layer.
+        obs_key: obs column containing ``(start_label, end_label, partner)`` tuples.
+        layer_key: Name of the layer to create/update.
+    """
+    import numpy as np
+    import pandas as pd
+
+    if obs_key not in adata.obs:
+        return
+
+    try:
+        label_indexer = {int(label): idx for idx, label in enumerate(adata.var_names)}
+    except (TypeError, ValueError):
+        logger.warning(
+            "Unable to build span layer %s: adata.var_names are not numeric labels.",
+            layer_key,
+        )
+        return
+
+    if layer_key in adata.layers:
+        target_layer = np.asarray(adata.layers[layer_key])
+        if target_layer.shape != (adata.n_obs, adata.n_vars):
+            target_layer = np.zeros((adata.n_obs, adata.n_vars), dtype=np.uint16)
+    else:
+        target_layer = np.zeros((adata.n_obs, adata.n_vars), dtype=np.uint16)
+
+    for obs_idx, spans in enumerate(adata.obs[obs_key].tolist()):
+        if not isinstance(spans, list):
+            continue
+        for span in spans:
+            if span is None or len(span) < 2:
+                continue
+            start_val, end_val = span[0], span[1]
+            if start_val is None or end_val is None:
+                continue
+            if pd.isna(start_val) or pd.isna(end_val):
+                continue
+            try:
+                start_label = int(start_val)
+                end_label = int(end_val)
+            except (TypeError, ValueError):
+                continue
+            if start_label not in label_indexer or end_label not in label_indexer:
+                continue
+            start_idx = label_indexer[start_label]
+            end_idx = label_indexer[end_label]
+            if start_idx > end_idx:
+                start_idx, end_idx = end_idx, start_idx
+            target_layer[obs_idx, start_idx : end_idx + 1] += 1
+
+    adata.layers[layer_key] = target_layer
+
+
 def chimeric_adata(
     config_path: str,
 ) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
@@ -161,7 +223,6 @@ def chimeric_adata_core(
     from ..readwrite import make_dirs
     from ..tools import (
         annotate_zero_hamming_segments,
-        assign_per_read_segments_layer,
         rolling_window_nn_distance,
         select_top_segments_per_read,
     )
@@ -376,14 +437,8 @@ def chimeric_adata_core(
                                 cfg, "rolling_nn_zero_pairs_top_segments_min_span", None
                             ),
                         )
-                        per_read_layer_key = f"{parent_obsm_key}__top_segments_span"
+                        per_read_layer_key = "zero_hamming_distance_spans"
                         per_read_obs_key = f"{parent_obsm_key}__top_segments"
-                        assign_per_read_segments_layer(
-                            parent_adata=adata,
-                            subset_adata=subset,
-                            per_read_segments=filtered_df,
-                            layer_key=per_read_layer_key,
-                        )
                         if per_read_obs_key in adata.obs:
                             per_read_obs_series = adata.obs[per_read_obs_key].copy()
                             per_read_obs_series = per_read_obs_series.apply(
@@ -410,6 +465,11 @@ def chimeric_adata_core(
                                     subset.obs_names[read_index]
                                 ] = tuples
                         adata.obs[per_read_obs_key] = per_read_obs_series
+                        _build_zero_hamming_span_layer_from_obs(
+                            adata=adata,
+                            obs_key=per_read_obs_key,
+                            layer_key=per_read_layer_key,
+                        )
                         adata.uns.setdefault(
                             f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
                         ).setdefault(map_key, {}).update(
