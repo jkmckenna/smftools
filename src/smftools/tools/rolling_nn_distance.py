@@ -355,11 +355,6 @@ def annotate_zero_hamming_segments(
     merge_gap: int = 0,
     max_segments_per_read: Optional[int] = None,
     max_segment_overlap: Optional[int] = None,
-    binary_layer_key: Optional[str] = None,
-    binary_overlap_mode: str = "binary",
-    binary_overlap_value: Optional[int] = None,
-    parent_adata: Optional["ad.AnnData"] = None,
-    store_records: bool = True,
 ) -> list[dict]:
     """
     Merge zero-Hamming windows into maximal segments and annotate onto AnnData.
@@ -375,14 +370,9 @@ def annotate_zero_hamming_segments(
         max_segments_per_read: Maximum number of segments to retain per read pair.
         max_segment_overlap: Maximum allowed overlap between retained segments (inclusive, in
             var-index coordinates).
-        binary_layer_key: Layer key to store a binary span annotation.
-        binary_overlap_mode: Layer overlap behavior ("binary", "sum", or "clip").
-        binary_overlap_value: Maximum value to retain when using "clip" mode.
-        parent_adata: Parent AnnData to receive the binary layer (defaults to adata).
 
     Returns:
-        List of segment records stored in ``adata.uns[output_uns_key]`` (unless
-        ``store_records`` is False).
+        List of segment records stored in ``adata.uns[output_uns_key]``.
     """
     if zero_pairs_uns_key is None:
         candidate_keys = [key for key in adata.uns if key.endswith("_zero_pairs")]
@@ -406,14 +396,6 @@ def annotate_zero_hamming_segments(
 
     if min_overlap is None:
         min_overlap = int(adata.uns.get(f"{zero_pairs_uns_key}_min_overlap", 1))
-
-    binary_overlap_mode = str(binary_overlap_mode).lower()
-    if binary_overlap_mode not in {"binary", "sum", "clip"}:
-        raise ValueError(
-            "binary_overlap_mode must be one of 'binary', 'sum', or 'clip'."
-        )
-    if binary_overlap_mode == "clip" and binary_overlap_value is None:
-        raise ValueError("binary_overlap_value is required when binary_overlap_mode='clip'.")
 
     X = adata.layers[layer] if layer is not None else adata.X
     X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
@@ -521,40 +503,64 @@ def annotate_zero_hamming_segments(
                 }
             )
 
-    if store_records:
-        adata.uns[output_uns_key] = records
-    if binary_layer_key is not None:
-        target = parent_adata if parent_adata is not None else adata
-        target_layer = np.zeros((target.n_obs, target.n_vars), dtype=np.uint16)
-        target_indexer = target.obs_names.get_indexer(obs_names)
-        if (target_indexer < 0).any():
-            raise ValueError("Provided parent_adata does not contain all subset obs names.")
-        var_indexer = target.var_names.get_indexer(adata.var_names)
-        if (var_indexer < 0).any():
-            raise ValueError("Provided parent_adata does not contain all subset var names.")
-        for record in records:
-            read_i = int(record["read_i"])
-            read_j = int(record["read_j"])
-            target_i = target_indexer[read_i]
-            target_j = target_indexer[read_j]
-            for seg_start, seg_end in record["segments"]:
-                parent_positions = var_indexer[seg_start:seg_end]
-                parent_start = int(parent_positions.min())
-                parent_end = int(parent_positions.max())
-                target_layer[target_i, parent_start : parent_end + 1] += 1
-                target_layer[target_j, parent_start : parent_end + 1] += 1
-        if binary_overlap_mode == "binary":
-            target.layers[binary_layer_key] = (target_layer > 0).astype(np.uint8)
-        elif binary_overlap_mode == "sum":
-            target.layers[binary_layer_key] = target_layer.astype(np.uint16)
-        else:
-            target.layers[binary_layer_key] = np.clip(
-                target_layer,
-                0,
-                int(binary_overlap_value),
-            ).astype(np.uint16)
-        target.uns[f"{binary_layer_key}_source"] = output_uns_key
+    adata.uns[output_uns_key] = records
     return records
+
+
+def assign_per_read_segments_layer(
+    parent_adata: "ad.AnnData",
+    subset_adata: "ad.AnnData",
+    per_read_segments: "pd.DataFrame",
+    layer_key: str,
+) -> None:
+    """
+    Assign per-read segments into a summed span layer on a parent AnnData.
+
+    Args:
+        parent_adata: AnnData that should receive the span layer.
+        subset_adata: AnnData used to compute per-read segments.
+        per_read_segments: DataFrame with ``read_id``, ``segment_start``, and
+            ``segment_end_exclusive`` columns.
+        layer_key: Name of the layer to store in ``parent_adata.layers``.
+    """
+    import pandas as pd
+
+    if per_read_segments.empty:
+        parent_adata.layers[layer_key] = np.zeros(
+            (parent_adata.n_obs, parent_adata.n_vars), dtype=np.uint16
+        )
+        return
+    required_cols = {"read_id", "segment_start", "segment_end_exclusive"}
+    missing = required_cols.difference(per_read_segments.columns)
+    if missing:
+        raise KeyError(f"per_read_segments missing required columns: {sorted(missing)}")
+
+    target_layer = np.zeros((parent_adata.n_obs, parent_adata.n_vars), dtype=np.uint16)
+
+    parent_obs_indexer = parent_adata.obs_names.get_indexer(subset_adata.obs_names)
+    if (parent_obs_indexer < 0).any():
+        raise ValueError("Subset AnnData contains obs not present in parent AnnData.")
+    parent_var_indexer = parent_adata.var_names.get_indexer(subset_adata.var_names)
+    if (parent_var_indexer < 0).any():
+        raise ValueError("Subset AnnData contains vars not present in parent AnnData.")
+
+    for row in per_read_segments.itertuples(index=False):
+        read_id = int(row.read_id)
+        seg_start = int(row.segment_start)
+        seg_end = int(row.segment_end_exclusive)
+        if seg_start >= seg_end:
+            continue
+        target_read = parent_obs_indexer[read_id]
+        if target_read < 0:
+            raise ValueError("Segment read_id not found in parent AnnData.")
+        parent_positions = parent_var_indexer[seg_start:seg_end]
+        if parent_positions.size == 0:
+            continue
+        parent_start = int(parent_positions.min())
+        parent_end = int(parent_positions.max())
+        target_layer[target_read, parent_start : parent_end + 1] += 1
+
+    parent_adata.layers[layer_key] = target_layer
 
 
 def segments_to_per_read_dataframe(

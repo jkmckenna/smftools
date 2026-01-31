@@ -635,6 +635,7 @@ def plot_segment_length_histogram(
     raw_label: str = "All segments",
     filtered_label: str = "Filtered segments",
     figsize: tuple[float, float] = (8, 4),
+    density: bool = True,
     save_name: str | None = None,
 ):
     """
@@ -648,11 +649,19 @@ def plot_segment_length_histogram(
         raw_label: Label for raw segment histogram.
         filtered_label: Label for filtered segment histogram.
         figsize: Size of the matplotlib figure.
+        density: If True, plot probabilities instead of counts.
         save_name: Optional output path for saving the plot.
     """
     fig, ax = plt.subplots(figsize=figsize)
     if raw_lengths.size:
-        ax.hist(raw_lengths, bins=bins, alpha=0.6, label=raw_label, edgecolor="black")
+        ax.hist(
+            raw_lengths,
+            bins=bins,
+            alpha=0.6,
+            label=raw_label,
+            edgecolor="black",
+            density=density,
+        )
     if filtered_lengths.size:
         ax.hist(
             filtered_lengths,
@@ -660,9 +669,10 @@ def plot_segment_length_histogram(
             alpha=0.6,
             label=filtered_label,
             edgecolor="black",
+            density=density,
         )
     ax.set_xlabel("Segment length")
-    ax.set_ylabel("Count")
+    ax.set_ylabel("Probability" if density else "Count")
     if title:
         ax.set_title(title)
     ax.legend()
