@@ -12,6 +12,37 @@ from smftools.logging_utils import get_logger, setup_logging
 logger = get_logger(__name__)
 
 
+def _build_top_segments_obs_tuples(
+    read_df: "pd.DataFrame",
+    obs_names: "pd.Index",
+) -> list[tuple[int, int, str]]:
+    """
+    Build per-read top-segment tuples with integer spans and partner names.
+
+    Args:
+        read_df: DataFrame for a single read containing segment and partner fields.
+        obs_names: AnnData obs names used to resolve partner indices.
+
+    Returns:
+        List of ``(segment_start, segment_end_exclusive, partner_name)`` tuples.
+    """
+    import pandas as pd
+
+    tuples: list[tuple[int, int, str]] = []
+    for row in read_df.itertuples(index=False):
+        start_val = int(row.segment_start)
+        end_val = int(row.segment_end_exclusive)
+        partner_name = row.partner_name
+        if partner_name is None or pd.isna(partner_name):
+            partner_id = int(row.partner_id)
+            if 0 <= partner_id < len(obs_names):
+                partner_name = str(obs_names[partner_id])
+            else:
+                partner_name = str(partner_id)
+        tuples.append((start_val, end_val, str(partner_name)))
+    return tuples
+
+
 def chimeric_adata(
     config_path: str,
 ) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
@@ -371,28 +402,10 @@ def chimeric_adata_core(
                                 read_index = int(read_id)
                                 if read_index < 0 or read_index >= subset.n_obs:
                                     continue
-                                tuples = []
-                                for row in read_df.itertuples(index=False):
-                                    start_label = row.segment_start_label
-                                    end_label = row.segment_end_label
-                                    if (
-                                        start_label is None
-                                        or end_label is None
-                                        or pd.isna(start_label)
-                                        or pd.isna(end_label)
-                                    ):
-                                        start_val = int(row.segment_start)
-                                        end_val = int(row.segment_end_exclusive)
-                                    else:
-                                        start_val = start_label
-                                        end_val = end_label
-                                    tuples.append(
-                                        (
-                                            start_val,
-                                            end_val,
-                                            int(row.partner_id),
-                                        )
-                                    )
+                                tuples = _build_top_segments_obs_tuples(
+                                    read_df,
+                                    subset.obs_names,
+                                )
                                 per_read_obs_series.at[
                                     subset.obs_names[read_index]
                                 ] = tuples
