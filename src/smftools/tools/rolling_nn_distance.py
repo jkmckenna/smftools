@@ -352,6 +352,7 @@ def annotate_zero_hamming_segments(
     layer: Optional[str] = None,
     min_overlap: Optional[int] = None,
     refine_segments: bool = True,
+    max_nan_run: Optional[int] = None,
     merge_gap: int = 0,
     max_segments_per_read: Optional[int] = None,
     max_segment_overlap: Optional[int] = None,
@@ -366,6 +367,8 @@ def annotate_zero_hamming_segments(
         layer: Layer to use for refinement (defaults to adata.X).
         min_overlap: Minimum overlap required to keep a refined segment.
         refine_segments: Whether to refine merged windows to maximal segments.
+        max_nan_run: Maximum consecutive NaN positions allowed when expanding segments.
+            If reached, expansion stops before the NaN run. Set to ``None`` to ignore NaNs.
         merge_gap: Merge segments with gaps of at most this size (in positions).
         max_segments_per_read: Maximum number of segments to retain per read pair.
         max_segment_overlap: Maximum allowed overlap between retained segments (inclusive, in
@@ -401,6 +404,7 @@ def annotate_zero_hamming_segments(
     X = X.toarray() if hasattr(X, "toarray") else np.asarray(X)
     observed = ~np.isnan(X)
     values = (np.where(observed, X, 0.0) > 0).astype(np.uint8)
+    max_nan_run = None if max_nan_run is None else max(int(max_nan_run), 1)
 
     pair_segments: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for wi, pairs in enumerate(zero_pairs_by_window):
@@ -437,17 +441,31 @@ def annotate_zero_hamming_segments(
             return (start, end)
         left = start
         right = end
+        nan_run = 0
         while left > 0:
             idx = left - 1
-            if observed[read_i, idx] and observed[read_j, idx]:
+            both_observed = observed[read_i, idx] and observed[read_j, idx]
+            if both_observed:
+                nan_run = 0
                 if values[read_i, idx] != values[read_j, idx]:
+                    break
+            else:
+                nan_run += 1
+                if max_nan_run is not None and nan_run >= max_nan_run:
                     break
             left -= 1
         n_vars = values.shape[1]
+        nan_run = 0
         while right < n_vars:
             idx = right
-            if observed[read_i, idx] and observed[read_j, idx]:
+            both_observed = observed[read_i, idx] and observed[read_j, idx]
+            if both_observed:
+                nan_run = 0
                 if values[read_i, idx] != values[read_j, idx]:
+                    break
+            else:
+                nan_run += 1
+                if max_nan_run is not None and nan_run >= max_nan_run:
                     break
             right += 1
         overlap = np.sum(observed[read_i, left:right] & observed[read_j, left:right])

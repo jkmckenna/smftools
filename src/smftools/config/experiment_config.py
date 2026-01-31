@@ -862,6 +862,7 @@ class ExperimentConfig:
     rolling_nn_zero_pairs_segments_key: Optional[str] = None
     rolling_nn_zero_pairs_layer_key: Optional[str] = None
     rolling_nn_zero_pairs_refine: bool = True
+    rolling_nn_zero_pairs_max_nan_run: Optional[int] = None
     rolling_nn_zero_pairs_merge_gap: int = 0
     rolling_nn_zero_pairs_max_segments_per_read: Optional[int] = None
     rolling_nn_zero_pairs_max_overlap: Optional[int] = None
@@ -1393,6 +1394,9 @@ class ExperimentConfig:
             ),
             rolling_nn_zero_pairs_layer_key=merged.get("rolling_nn_zero_pairs_layer_key", None),
             rolling_nn_zero_pairs_refine=merged.get("rolling_nn_zero_pairs_refine", True),
+            rolling_nn_zero_pairs_max_nan_run=merged.get(
+                "rolling_nn_zero_pairs_max_nan_run", None
+            ),
             rolling_nn_zero_pairs_merge_gap=merged.get("rolling_nn_zero_pairs_merge_gap", 0),
             rolling_nn_zero_pairs_max_segments_per_read=merged.get(
                 "rolling_nn_zero_pairs_max_segments_per_read", None
