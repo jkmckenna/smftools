@@ -289,10 +289,12 @@ def plot_rolling_nn_and_layer(
 def plot_zero_hamming_span_and_layer(
     subset,
     span_layer_key: str,
+    obsm_key: str = "rolling_nn_dist",
     layer_key: str = "nan0_0minus1",
     meta_cols: tuple[str, ...] = ("Reference_strand", "Sample"),
     col_cluster: bool = False,
     fill_span_value: float = 0.0,
+    fill_nn_with_colmax: bool = True,
     fill_layer_value: float = 0.0,
     drop_all_nan_positions: bool = True,
     max_nan_fraction: float | None = None,
@@ -300,6 +302,7 @@ def plot_zero_hamming_span_and_layer(
     var_nan_fraction_col: str | None = None,
     read_span_layer: str | None = "read_span_mask",
     outside_read_color: str = "#bdbdbd",
+    nn_nan_color: str = "#bdbdbd",
     span_color: str = "#2ca25f",
     figsize: tuple[float, float] = (14, 10),
     robust: bool = True,
@@ -315,10 +318,12 @@ def plot_zero_hamming_span_and_layer(
     Args:
         subset: AnnData subset with zero-Hamming span annotations stored in ``layers``.
         span_layer_key: Layer name with the binary zero-Hamming span mask.
+        obsm_key: Key in ``subset.obsm`` containing rolling NN distances.
         layer_key: Layer name to plot alongside the span mask.
         meta_cols: Obs columns used for row color annotations.
         col_cluster: Whether to cluster columns in the span mask clustermap.
         fill_span_value: Value to fill NaNs in the span mask.
+        fill_nn_with_colmax: Fill NaNs in rolling NN distances with per-column max values.
         fill_layer_value: Value to fill NaNs in the layer heatmap.
         drop_all_nan_positions: Drop positions that are all NaN in the span mask.
         max_nan_fraction: Maximum allowed NaN fraction per position (filtering columns).
@@ -326,6 +331,7 @@ def plot_zero_hamming_span_and_layer(
         var_nan_fraction_col: ``subset.var`` column with NaN fractions.
         read_span_layer: Layer name with read span mask; 0 values are treated as outside read.
         outside_read_color: Color used to show positions outside each read.
+        nn_nan_color: Color used for NaNs in the rolling NN heatmap.
         span_color: Color for zero-Hamming span mask values.
         figsize: Figure size for the combined plot.
         robust: Use robust color scaling in seaborn.
@@ -357,6 +363,13 @@ def plot_zero_hamming_span_and_layer(
             rotation=xtick_rotation,
             fontsize=xtick_fontsize,
         )
+
+    def _format_labels(values):
+        values = np.asarray(values)
+        if np.issubdtype(values.dtype, np.number):
+            if np.all(np.isfinite(values)) and np.all(np.isclose(values, np.round(values))):
+                values = np.round(values).astype(int)
+        return [str(v) for v in values]
 
     span = subset.layers[span_layer_key]
     span = span.toarray() if hasattr(span, "toarray") else np.asarray(span)
@@ -409,6 +422,22 @@ def plot_zero_hamming_span_and_layer(
 
     span_ord = span_df_filled.loc[ordered_index]
 
+    X = subset.obsm[obsm_key]
+    X_df = pd.DataFrame(X, index=subset.obs_names)
+    X_df.index = X_df.index.astype(str)
+
+    if drop_all_nan_positions:
+        X_df = X_df.loc[:, ~X_df.isna().all(axis=0)]
+
+    col_max = X_df.max(axis=0, skipna=True).fillna(0)
+    X_df_cluster = X_df.fillna(col_max)
+    if fill_nn_with_colmax:
+        X_df_display = X_df_cluster
+    else:
+        X_df_display = X_df.copy()
+
+    X_ord = X_df_display.loc[ordered_index]
+
     layer = subset.layers[layer_key]
     layer = layer.toarray() if hasattr(layer, "toarray") else np.asarray(layer)
     layer_df = pd.DataFrame(layer, index=subset.obs_names, columns=subset.var_names)
@@ -427,6 +456,10 @@ def plot_zero_hamming_span_and_layer(
             span_mask_df = span_mask_df.loc[:, nan_mask]
         read_span_mask = span_mask_df.loc[ordered_index].to_numpy() == 0
 
+    span_plot = span_ord.copy()
+    if read_span_mask is not None:
+        span_plot = span_plot.mask(read_span_mask)
+
     layer_ord = layer_df.loc[ordered_index]
     layer_plot = layer_ord.fillna(fill_layer_value)
     if read_span_mask is not None:
@@ -435,8 +468,8 @@ def plot_zero_hamming_span_and_layer(
     fig = plt.figure(figsize=figsize)
     gs = fig.add_gridspec(
         2,
-        4,
-        width_ratios=[1, 0.05, 1, 0.05],
+        6,
+        width_ratios=[1, 0.05, 1, 0.05, 1, 0.05],
         height_ratios=[1, 6],
         wspace=0.2,
         hspace=0.05,
@@ -446,12 +479,16 @@ def plot_zero_hamming_span_and_layer(
     ax1_cbar = fig.add_subplot(gs[1, 1])
     ax2 = fig.add_subplot(gs[1, 2])
     ax2_cbar = fig.add_subplot(gs[1, 3])
+    ax3 = fig.add_subplot(gs[1, 4])
+    ax3_cbar = fig.add_subplot(gs[1, 5])
     ax1_bar = fig.add_subplot(gs[0, 0], sharex=ax1)
     ax2_bar = fig.add_subplot(gs[0, 2], sharex=ax2)
+    ax3_bar = fig.add_subplot(gs[0, 4], sharex=ax3)
     fig.add_subplot(gs[0, 1]).axis("off")
     fig.add_subplot(gs[0, 3]).axis("off")
+    fig.add_subplot(gs[0, 5]).axis("off")
 
-    mean_span = np.nanmean(span_ord.to_numpy(), axis=0)
+    mean_span = np.nanmean(span_plot.to_numpy(), axis=0)
     clean_barplot(
         ax1_bar,
         mean_span,
@@ -461,9 +498,19 @@ def plot_zero_hamming_span_and_layer(
         y_ticks=[0.0, 0.5, 1.0],
     )
 
-    methylation_fraction = _methylation_fraction_for_layer(layer_ord.to_numpy(), layer_key)
+    mean_nn = np.nanmean(X_ord.to_numpy(), axis=0)
     clean_barplot(
         ax2_bar,
+        mean_nn,
+        obsm_key,
+        y_max=None,
+        y_label="Mean distance",
+        y_ticks=None,
+    )
+
+    methylation_fraction = _methylation_fraction_for_layer(layer_plot.to_numpy(), layer_key)
+    clean_barplot(
+        ax3_bar,
         methylation_fraction,
         layer_key,
         y_max=1.0,
@@ -471,8 +518,11 @@ def plot_zero_hamming_span_and_layer(
         y_ticks=[0.0, 0.5, 1.0],
     )
 
+    if read_span_mask is not None:
+        span_cmap.set_bad(outside_read_color)
+
     sns.heatmap(
-        span_ord,
+        span_plot,
         ax=ax1,
         cmap=span_cmap,
         norm=span_norm,
@@ -482,22 +532,51 @@ def plot_zero_hamming_span_and_layer(
         cbar_ax=ax1_cbar,
     )
 
-    layer_cmap = plt.get_cmap("coolwarm").copy()
-    if read_span_mask is not None:
-        layer_cmap.set_bad(outside_read_color)
-
+    nn_cmap = plt.get_cmap("viridis").copy()
+    nn_cmap.set_bad(nn_nan_color)
     sns.heatmap(
-        layer_plot,
+        X_ord,
         ax=ax2,
-        cmap=layer_cmap,
+        cmap=nn_cmap,
         xticklabels=False,
         yticklabels=False,
         robust=robust,
         cbar_ax=ax2_cbar,
     )
 
+    layer_cmap = plt.get_cmap("coolwarm").copy()
+    if read_span_mask is not None:
+        layer_cmap.set_bad(outside_read_color)
+
+    sns.heatmap(
+        layer_plot,
+        ax=ax3,
+        cmap=layer_cmap,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax3_cbar,
+    )
+
     _apply_xticks(ax1, [str(x) for x in span_ord.columns], xtick_step)
-    _apply_xticks(ax2, [str(x) for x in layer_plot.columns], xtick_step)
+    label_source = subset.uns.get(f"{obsm_key}_centers")
+    if label_source is None:
+        label_source = subset.uns.get(f"{obsm_key}_starts")
+    if label_source is not None:
+        label_source = np.asarray(label_source)
+        window_labels = _format_labels(label_source)
+        try:
+            col_idx = X_ord.columns.to_numpy()
+            if np.issubdtype(col_idx.dtype, np.number):
+                col_idx = col_idx.astype(int)
+                if col_idx.size and col_idx.max() < len(label_source):
+                    window_labels = _format_labels(label_source[col_idx])
+        except Exception:
+            window_labels = _format_labels(label_source)
+        _apply_xticks(ax2, window_labels, xtick_step)
+    else:
+        _apply_xticks(ax2, [str(x) for x in X_ord.columns], xtick_step)
+    _apply_xticks(ax3, [str(x) for x in layer_plot.columns], xtick_step)
 
     if title:
         fig.suptitle(title)
