@@ -3,6 +3,7 @@ from __future__ import annotations
 from smftools.logging_utils import get_logger
 from smftools.plotting.chimeric_plotting import (
     plot_rolling_nn_and_layer,
+    plot_rolling_nn_and_two_layers,
     plot_segment_length_histogram,
     plot_zero_hamming_pair_counts,
     plot_zero_hamming_span_and_layer,
@@ -41,6 +42,7 @@ __all__ = [
     "combined_hmm_raw_clustermap",
     "combined_raw_clustermap",
     "plot_rolling_nn_and_layer",
+    "plot_rolling_nn_and_two_layers",
     "plot_segment_length_histogram",
     "plot_zero_hamming_pair_counts",
     "plot_zero_hamming_span_and_layer",

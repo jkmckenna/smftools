@@ -851,6 +851,9 @@ class ExperimentConfig:
     spatial_clustermap_sortby: Optional[str] = "gpc"
     rolling_nn_layer: Optional[str] = "nan0_0minus1"
     rolling_nn_plot_layer: Optional[str] = "nan0_0minus1"
+    rolling_nn_plot_layers: List[str] = field(
+        default_factory=lambda: ["nan0_0minus1", "nan0_0minus1"]
+    )
     rolling_nn_window: int = 10
     rolling_nn_step: int = 1
     rolling_nn_min_overlap: int = 8
@@ -1381,6 +1384,9 @@ class ExperimentConfig:
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
             rolling_nn_layer=merged.get("rolling_nn_layer", "nan0_0minus1"),
             rolling_nn_plot_layer=merged.get("rolling_nn_plot_layer", "nan0_0minus1"),
+            rolling_nn_plot_layers=merged.get(
+                "rolling_nn_plot_layers", ["nan0_0minus1", "nan0_0minus1"]
+            ),
             rolling_nn_window=merged.get("rolling_nn_window", 15),
             rolling_nn_step=merged.get("rolling_nn_step", 2),
             rolling_nn_min_overlap=merged.get("rolling_nn_min_overlap", 10),

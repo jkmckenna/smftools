@@ -286,6 +286,292 @@ def plot_rolling_nn_and_layer(
     return ordered_index
 
 
+def plot_rolling_nn_and_two_layers(
+    subset,
+    obsm_key: str = "rolling_nn_dist",
+    layer_keys: Sequence[str] = ("nan0_0minus1", "nan0_0minus1"),
+    meta_cols: tuple[str, ...] = ("Reference_strand", "Sample"),
+    col_cluster: bool = False,
+    fill_nn_with_colmax: bool = True,
+    fill_layer_value: float = 0.0,
+    drop_all_nan_windows: bool = True,
+    max_nan_fraction: float | None = None,
+    var_valid_fraction_col: str | None = None,
+    var_nan_fraction_col: str | None = None,
+    read_span_layer: str | None = "read_span_mask",
+    outside_read_color: str = "#bdbdbd",
+    nn_nan_color: str = "#bdbdbd",
+    figsize: tuple[float, float] = (20, 10),
+    layer_var_mask=None,
+    robust: bool = True,
+    title: str | None = None,
+    xtick_step: int | None = None,
+    xtick_rotation: int = 90,
+    xtick_fontsize: int = 8,
+    save_name: str | None = None,
+):
+    """
+    Plot rolling NN distances alongside two layer clustermaps.
+
+    Args:
+        subset: AnnData subset with rolling NN distances stored in ``obsm``.
+        obsm_key: Key in ``subset.obsm`` containing rolling NN distances.
+        layer_keys: Two layer names to plot alongside rolling NN distances.
+        meta_cols: Obs columns used for row color annotations.
+        col_cluster: Whether to cluster columns in the rolling NN clustermap.
+        fill_nn_with_colmax: Fill NaNs in rolling NN distances with per-column max values.
+        fill_layer_value: Fill NaNs in the layer heatmaps with this value.
+        drop_all_nan_windows: Drop rolling windows that are all NaN.
+        max_nan_fraction: Maximum allowed NaN fraction per position (filtering columns).
+        var_valid_fraction_col: ``subset.var`` column with valid fractions (1 - NaN fraction).
+        var_nan_fraction_col: ``subset.var`` column with NaN fractions.
+        read_span_layer: Layer name with read span mask; 0 values are treated as outside read.
+        outside_read_color: Color used to show positions outside each read.
+        nn_nan_color: Color used for NaNs in the rolling NN heatmap.
+        figsize: Figure size for the combined plot.
+        layer_var_mask: Optional boolean mask over ``subset.var`` for the layer panels.
+        robust: Use robust color scaling in seaborn.
+        title: Optional figure title (suptitle).
+        xtick_step: Spacing between x-axis tick labels.
+        xtick_rotation: Rotation for x-axis tick labels.
+        xtick_fontsize: Font size for x-axis tick labels.
+        save_name: Optional output path for saving the plot.
+    """
+    if len(layer_keys) != 2:
+        raise ValueError("layer_keys must contain exactly two layer names.")
+    if max_nan_fraction is not None and not (0 <= max_nan_fraction <= 1):
+        raise ValueError("max_nan_fraction must be between 0 and 1.")
+
+    layer_key_one, layer_key_two = layer_keys
+    logger.info(
+        "Plotting rolling NN distances with layers '%s' and '%s'.",
+        layer_key_one,
+        layer_key_two,
+    )
+
+    def _apply_xticks(ax, labels, step):
+        if labels is None or len(labels) == 0:
+            ax.set_xticks([])
+            return
+        if step is None or step <= 0:
+            step = max(1, len(labels) // 10)
+        ticks = np.arange(0, len(labels), step)
+        ax.set_xticks(ticks + 0.5)
+        ax.set_xticklabels(
+            [labels[i] for i in ticks],
+            rotation=xtick_rotation,
+            fontsize=xtick_fontsize,
+        )
+
+    def _format_labels(values):
+        values = np.asarray(values)
+        if np.issubdtype(values.dtype, np.number):
+            if np.all(np.isfinite(values)) and np.all(np.isclose(values, np.round(values))):
+                values = np.round(values).astype(int)
+        return [str(v) for v in values]
+
+    X = subset.obsm[obsm_key]
+    valid = ~np.all(np.isnan(X), axis=1)
+
+    X_df = pd.DataFrame(X[valid], index=subset.obs_names[valid])
+    if drop_all_nan_windows:
+        X_df = X_df.loc[:, ~X_df.isna().all(axis=0)]
+
+    col_max = X_df.max(axis=0, skipna=True).fillna(0)
+    X_df_cluster = X_df.fillna(col_max)
+    X_df_cluster.index = X_df_cluster.index.astype(str)
+    if fill_nn_with_colmax:
+        X_df_display = X_df_cluster
+    else:
+        X_df_display = X_df.copy()
+        X_df_display.index = X_df_display.index.astype(str)
+
+    meta = subset.obs.loc[X_df_cluster.index, list(meta_cols)].copy()
+    meta.index = meta.index.astype(str)
+    row_colors = make_row_colors(meta)
+
+    g = sns.clustermap(
+        X_df_cluster,
+        cmap="viridis",
+        col_cluster=col_cluster,
+        row_cluster=True,
+        row_colors=row_colors,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+    )
+    row_order = g.dendrogram_row.reordered_ind
+    ordered_index = X_df_cluster.index[row_order]
+    plt.close(g.fig)
+
+    X_ord = X_df_display.loc[ordered_index]
+
+    if layer_var_mask is not None:
+        if hasattr(layer_var_mask, "values"):
+            layer_var_mask = layer_var_mask.values
+        layer_var_mask = np.asarray(layer_var_mask, dtype=bool)
+
+    if max_nan_fraction is not None:
+        nan_fraction = None
+        if var_nan_fraction_col and var_nan_fraction_col in subset.var:
+            nan_fraction = pd.to_numeric(
+                subset.var[var_nan_fraction_col], errors="coerce"
+            ).to_numpy()
+        elif var_valid_fraction_col and var_valid_fraction_col in subset.var:
+            valid_fraction = pd.to_numeric(
+                subset.var[var_valid_fraction_col], errors="coerce"
+            ).to_numpy()
+            nan_fraction = 1 - valid_fraction
+        if nan_fraction is not None:
+            nan_mask = nan_fraction <= max_nan_fraction
+            if layer_var_mask is None:
+                layer_var_mask = nan_mask
+            else:
+                layer_var_mask = layer_var_mask & nan_mask
+
+    if layer_var_mask is not None and layer_var_mask.size != subset.n_vars:
+        raise ValueError("layer_var_mask must align with subset.var_names.")
+
+    read_span_mask = None
+    if read_span_layer and read_span_layer in subset.layers:
+        span = subset.layers[read_span_layer]
+        span = span.toarray() if hasattr(span, "toarray") else np.asarray(span)
+        span_df = pd.DataFrame(span[valid], index=subset.obs_names[valid], columns=subset.var_names)
+        span_df.index = span_df.index.astype(str)
+        if layer_var_mask is not None:
+            span_df = span_df.loc[:, layer_var_mask]
+        read_span_mask = span_df.loc[ordered_index].to_numpy() == 0
+
+    def _layer_df_for_key(layer_key: str) -> pd.DataFrame:
+        layer = subset.layers[layer_key]
+        layer = layer.toarray() if hasattr(layer, "toarray") else np.asarray(layer)
+        layer_df = pd.DataFrame(layer[valid], index=subset.obs_names[valid], columns=subset.var_names)
+        layer_df.index = layer_df.index.astype(str)
+        if layer_var_mask is not None:
+            layer_df = layer_df.loc[:, layer_var_mask]
+        return layer_df.loc[ordered_index]
+
+    layer_df_one = _layer_df_for_key(layer_key_one)
+    layer_df_two = _layer_df_for_key(layer_key_two)
+
+    layer_plot_one = layer_df_one.fillna(fill_layer_value)
+    layer_plot_two = layer_df_two.fillna(fill_layer_value)
+    if read_span_mask is not None:
+        layer_plot_one = layer_plot_one.mask(read_span_mask)
+        layer_plot_two = layer_plot_two.mask(read_span_mask)
+
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(
+        2,
+        6,
+        width_ratios=[1, 0.05, 1, 0.05, 1, 0.05],
+        height_ratios=[1, 6],
+        wspace=0.2,
+        hspace=0.05,
+    )
+
+    ax1 = fig.add_subplot(gs[1, 0])
+    ax1_cbar = fig.add_subplot(gs[1, 1])
+    ax2 = fig.add_subplot(gs[1, 2])
+    ax2_cbar = fig.add_subplot(gs[1, 3])
+    ax3 = fig.add_subplot(gs[1, 4])
+    ax3_cbar = fig.add_subplot(gs[1, 5])
+    ax1_bar = fig.add_subplot(gs[0, 0], sharex=ax1)
+    ax2_bar = fig.add_subplot(gs[0, 2], sharex=ax2)
+    ax3_bar = fig.add_subplot(gs[0, 4], sharex=ax3)
+    fig.add_subplot(gs[0, 1]).axis("off")
+    fig.add_subplot(gs[0, 3]).axis("off")
+    fig.add_subplot(gs[0, 5]).axis("off")
+
+    mean_nn = np.nanmean(X_ord.to_numpy(), axis=0)
+    clean_barplot(
+        ax1_bar,
+        mean_nn,
+        obsm_key,
+        y_max=None,
+        y_label="Mean distance",
+        y_ticks=None,
+    )
+
+    nn_cmap = plt.get_cmap("viridis").copy()
+    nn_cmap.set_bad(nn_nan_color)
+    sns.heatmap(
+        X_ord,
+        ax=ax1,
+        cmap=nn_cmap,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax1_cbar,
+    )
+    label_source = subset.uns.get(f"{obsm_key}_centers")
+    if label_source is None:
+        label_source = subset.uns.get(f"{obsm_key}_starts")
+    if label_source is not None:
+        label_source = np.asarray(label_source)
+        window_labels = _format_labels(label_source)
+        try:
+            col_idx = X_ord.columns.to_numpy()
+            if np.issubdtype(col_idx.dtype, np.number):
+                col_idx = col_idx.astype(int)
+                if col_idx.size and col_idx.max() < len(label_source):
+                    window_labels = _format_labels(label_source[col_idx])
+        except Exception:
+            window_labels = _format_labels(label_source)
+        _apply_xticks(ax1, window_labels, xtick_step)
+
+    for ax_bar, layer_df, layer_key in (
+        (ax2_bar, layer_df_one, layer_key_one),
+        (ax3_bar, layer_df_two, layer_key_two),
+    ):
+        methylation_fraction = _methylation_fraction_for_layer(layer_df.to_numpy(), layer_key)
+        clean_barplot(
+            ax_bar,
+            methylation_fraction,
+            layer_key,
+            y_max=1.0,
+            y_label="Methylation fraction",
+            y_ticks=[0.0, 0.5, 1.0],
+        )
+
+    layer_cmap = plt.get_cmap("coolwarm").copy()
+    if read_span_mask is not None:
+        layer_cmap.set_bad(outside_read_color)
+
+    sns.heatmap(
+        layer_plot_one,
+        ax=ax2,
+        cmap=layer_cmap,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax2_cbar,
+    )
+    sns.heatmap(
+        layer_plot_two,
+        ax=ax3,
+        cmap=layer_cmap,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax3_cbar,
+    )
+    _apply_xticks(ax2, [str(x) for x in layer_plot_one.columns], xtick_step)
+    _apply_xticks(ax3, [str(x) for x in layer_plot_two.columns], xtick_step)
+
+    if title:
+        fig.suptitle(title)
+
+    if save_name is not None:
+        fname = os.path.join(save_name)
+        plt.savefig(fname, dpi=200, bbox_inches="tight")
+        logger.info("Saved rolling NN/layer pair plot to %s.", fname)
+    else:
+        plt.show()
+
+    return ordered_index
+
+
 def plot_zero_hamming_span_and_layer(
     subset,
     span_layer_key: str,
