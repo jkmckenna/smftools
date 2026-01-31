@@ -213,6 +213,7 @@ def chimeric_adata_core(
     from ..metadata import record_smftools_metadata
     from ..plotting import (
         plot_rolling_nn_and_layer,
+        plot_rolling_nn_and_two_layers,
         plot_segment_length_histogram,
         plot_zero_hamming_pair_counts,
         plot_zero_hamming_span_and_layer,
@@ -630,7 +631,98 @@ def chimeric_adata_core(
             logger.debug("No zero-pair map found; skipping zero-Hamming span clustermaps.")
 
     # ============================================================
-    # 5) Save AnnData
+    # 3) Rolling NN + two-layer clustermaps
+    # ============================================================
+    rolling_nn_layers_dir = chimeric_directory / "03_rolling_nn_two_layer_clustermaps"
+
+    if rolling_nn_layers_dir.is_dir() and not getattr(cfg, "force_redo_chimeric_analyses", False):
+        logger.debug(
+            "%s already exists. Skipping rolling NN two-layer clustermaps.",
+            rolling_nn_layers_dir,
+        )
+    else:
+        plot_layers = list(getattr(cfg, "rolling_nn_plot_layers", []) or [])
+        if len(plot_layers) != 2:
+            logger.warning(
+                "rolling_nn_plot_layers should list exactly two layers; got %s. Skipping.",
+                plot_layers,
+            )
+        else:
+            make_dirs([rolling_nn_layers_dir])
+            samples = (
+                adata.obs[cfg.sample_name_col_for_plotting]
+                .astype("category")
+                .cat.categories.tolist()
+            )
+            references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
+            for reference in references:
+                for sample in samples:
+                    mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & (
+                        adata.obs[cfg.reference_column] == reference
+                    )
+                    if not mask.any():
+                        continue
+
+                    safe_sample = str(sample).replace(os.sep, "_")
+                    safe_ref = str(reference).replace(os.sep, "_")
+                    parent_obsm_key = f"{cfg.rolling_nn_obsm_key}__{safe_ref}"
+
+                    subset = adata[mask]
+                    position_col = f"position_in_{reference}"
+                    site_cols = [f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]
+                    missing_cols = [
+                        col for col in [position_col, *site_cols] if col not in adata.var.columns
+                    ]
+                    if missing_cols:
+                        raise KeyError(
+                            f"Required site mask columns missing in adata.var: {missing_cols}"
+                        )
+                    mod_site_mask = adata.var[site_cols].fillna(False).any(axis=1)
+                    site_mask = mod_site_mask & adata.var[position_col].fillna(False)
+                    subset = subset[:, site_mask].copy()
+
+                    if parent_obsm_key not in subset.obsm:
+                        logger.warning(
+                            "Rolling NN results missing for sample=%s ref=%s (key=%s).",
+                            sample,
+                            reference,
+                            parent_obsm_key,
+                        )
+                        continue
+                    missing_layers = [
+                        layer_key for layer_key in plot_layers if layer_key not in subset.layers
+                    ]
+                    if missing_layers:
+                        logger.warning(
+                            "Layer(s) %s missing for sample=%s ref=%s.",
+                            missing_layers,
+                            sample,
+                            reference,
+                        )
+                        continue
+
+                    out_png = rolling_nn_layers_dir / f"{safe_sample}__{safe_ref}.png"
+                    title = f"{sample} {reference}"
+                    try:
+                        plot_rolling_nn_and_two_layers(
+                            subset,
+                            obsm_key=parent_obsm_key,
+                            layer_keys=plot_layers,
+                            max_nan_fraction=cfg.position_max_nan_threshold,
+                            var_valid_fraction_col=f"{reference}_valid_fraction",
+                            title=title,
+                            save_name=out_png,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed rolling NN two-layer plot for sample=%s ref=%s: %s",
+                            sample,
+                            reference,
+                            exc,
+                        )
+
+    # ============================================================
+    # 4) Save AnnData
     # ============================================================
     zero_pairs_map_key = f"{cfg.rolling_nn_obsm_key}_zero_pairs_map"
     zero_pairs_map = adata.uns.get(zero_pairs_map_key, {})

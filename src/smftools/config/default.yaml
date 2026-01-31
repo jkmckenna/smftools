@@ -191,6 +191,9 @@ spatial_clustermap_sortby: "gpc"
 # Spatial analysis - Rolling NN Hamming
 rolling_nn_layer: "nan0_0minus1"
 rolling_nn_plot_layer: "nan0_0minus1"
+rolling_nn_plot_layers:
+  - "nan0_0minus1"
+  - "nan0_0minus1"
 rolling_nn_window: 10
 rolling_nn_step: 1
 rolling_nn_min_overlap: 8
