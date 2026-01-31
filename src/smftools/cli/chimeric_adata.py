@@ -30,8 +30,8 @@ def _build_top_segments_obs_tuples(
 
     tuples: list[tuple[int, int, str]] = []
     for row in read_df.itertuples(index=False):
-        start_val = int(row.segment_start)
-        end_val = int(row.segment_end_exclusive)
+        start_val = int(row.segment_start_label)
+        end_val = int(row.segment_end_label)
         partner_name = row.partner_name
         if partner_name is None or pd.isna(partner_name):
             partner_id = int(row.partner_id)
