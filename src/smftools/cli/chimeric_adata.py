@@ -393,6 +393,7 @@ def chimeric_adata_core(
                         layer=rolling_nn_layer,
                         min_overlap=cfg.rolling_nn_min_overlap,
                         refine_segments=getattr(cfg, "rolling_nn_zero_pairs_refine", True),
+                        max_nan_run=getattr(cfg, "rolling_nn_zero_pairs_max_nan_run", None),
                         merge_gap=getattr(cfg, "rolling_nn_zero_pairs_merge_gap", 0),
                         max_segments_per_read=getattr(
                             cfg, "rolling_nn_zero_pairs_max_segments_per_read", None
