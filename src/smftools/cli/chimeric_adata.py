@@ -11,6 +11,8 @@ from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
+ZERO_HAMMING_DISTANCE_SPANS = "zero_hamming_distance_spans"
+
 
 def _build_top_segments_obs_tuples(
     read_df: "pd.DataFrame",
@@ -439,7 +441,7 @@ def chimeric_adata_core(
                                 cfg, "rolling_nn_zero_pairs_top_segments_min_span", None
                             ),
                         )
-                        per_read_layer_key = "zero_hamming_distance_spans"
+                        per_read_layer_key = ZERO_HAMMING_DISTANCE_SPANS
                         per_read_obs_key = f"{parent_obsm_key}__top_segments"
                         if per_read_obs_key in adata.obs:
                             per_read_obs_series = adata.obs[per_read_obs_key].copy()
