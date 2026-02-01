@@ -1211,6 +1211,124 @@ def plot_delta_hamming_summary(
     return ordered_index
 
 
+def plot_span_length_distributions(
+    subset,
+    self_span_layer_key: str = "zero_hamming_distance_spans",
+    cross_span_layer_key: str = "cross_sample_zero_hamming_distance_spans",
+    delta_span_layer_key: str = "delta_zero_hamming_distance_spans",
+    read_span_layer: str | None = "read_span_mask",
+    bins: int = 30,
+    self_color: str = "#2ca25f",
+    cross_color: str = "#e6550d",
+    delta_color: str = "#756bb1",
+    figsize: tuple[float, float] = (10, 6),
+    title: str | None = None,
+    save_name: str | None = None,
+):
+    """
+    Overlay probability histograms of contiguous span lengths from three layers.
+
+    Span length is measured in base-pair coordinates using ``subset.var_names``.
+    Positions outside the valid read span (where ``read_span_layer == 0``) are
+    excluded before detecting contiguous runs.
+
+    Args:
+        subset: AnnData subset containing the span layers.
+        self_span_layer_key: Layer with within-sample zero-Hamming spans.
+        cross_span_layer_key: Layer with cross-sample zero-Hamming spans.
+        delta_span_layer_key: Layer with delta (self - cross) spans.
+        read_span_layer: Layer with read span mask; 0 = outside read.
+        bins: Number of histogram bins.
+        self_color: Histogram color for self spans.
+        cross_color: Histogram color for cross spans.
+        delta_color: Histogram color for delta spans.
+        figsize: Figure size.
+        title: Figure title.
+        save_name: Output path.
+    """
+
+    def _extract_span_lengths(layer_arr, positions, read_mask):
+        """Extract lengths (in bp) of contiguous runs of 1 in each row."""
+        lengths = []
+        for i in range(layer_arr.shape[0]):
+            row = layer_arr[i].copy()
+            if read_mask is not None:
+                row[~read_mask[i]] = 0
+            # Find contiguous runs of 1
+            diff = np.diff(np.concatenate(([0], row.astype(np.int8), [0])))
+            starts = np.where(diff == 1)[0]
+            ends = np.where(diff == -1)[0]
+            for s, e in zip(starts, ends):
+                if e > s:
+                    span_bp = float(positions[e - 1] - positions[s])
+                    if span_bp > 0:
+                        lengths.append(span_bp)
+        return np.array(lengths, dtype=float)
+
+    # Parse genomic positions from var_names
+    try:
+        positions = np.array(subset.var_names, dtype=float)
+    except (ValueError, TypeError):
+        positions = np.arange(subset.n_vars, dtype=float)
+
+    # Read span mask
+    read_mask = None
+    if read_span_layer and read_span_layer in subset.layers:
+        rsm = subset.layers[read_span_layer]
+        rsm = rsm.toarray() if hasattr(rsm, "toarray") else np.asarray(rsm)
+        read_mask = rsm.astype(bool)
+
+    entries = []
+    for layer_key, color, label in (
+        (self_span_layer_key, self_color, "Self"),
+        (cross_span_layer_key, cross_color, "Cross"),
+        (delta_span_layer_key, delta_color, "Delta"),
+    ):
+        if layer_key not in subset.layers:
+            continue
+        arr = subset.layers[layer_key]
+        arr = arr.toarray() if hasattr(arr, "toarray") else np.asarray(arr)
+        span_lengths = _extract_span_lengths(arr, positions, read_mask)
+        entries.append((label, color, span_lengths))
+
+    if not entries:
+        logger.warning("No span layers found for span length distribution plot.")
+        return
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for label, color, span_lengths in entries:
+        if len(span_lengths) == 0:
+            ax.axhline(0, color=color, label=f"{label} (n=0)")
+            continue
+        ax.hist(
+            span_lengths,
+            bins=bins,
+            density=True,
+            alpha=0.5,
+            color=color,
+            label=f"{label} (n={len(span_lengths)})",
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+    ax.set_xlabel("Span length (bp)")
+    ax.set_ylabel("Probability density")
+    ax.legend()
+
+    if title:
+        ax.set_title(title)
+
+    if save_name is not None:
+        fname = os.path.join(save_name)
+        plt.savefig(fname, dpi=200, bbox_inches="tight")
+        logger.info("Saved span length distribution plot to %s.", fname)
+    else:
+        plt.show()
+
+    plt.close(fig)
+
+
 def _window_center_labels(var_names: Sequence, starts: np.ndarray, window: int) -> list[str]:
     coords = np.asarray(var_names)
     if coords.size == 0:

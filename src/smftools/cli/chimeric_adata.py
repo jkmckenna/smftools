@@ -218,6 +218,7 @@ def chimeric_adata_core(
         plot_rolling_nn_and_layer,
         plot_rolling_nn_and_two_layers,
         plot_segment_length_histogram,
+        plot_span_length_distributions,
         plot_zero_hamming_pair_counts,
         plot_zero_hamming_span_and_layer,
     )
@@ -1256,6 +1257,90 @@ def chimeric_adata_core(
                                 reference,
                                 exc,
                             )
+
+    # ============================================================
+    # Span length distribution histograms
+    # ============================================================
+    if getattr(cfg, "cross_sample_analysis", False):
+        span_hist_dir = chimeric_directory / "span_length_distributions"
+        if span_hist_dir.is_dir() and not getattr(cfg, "force_redo_chimeric_analyses", False):
+            logger.debug("Span length distribution dir exists. Skipping.")
+        else:
+            _self_key = ZERO_HAMMING_DISTANCE_SPANS
+            _cross_key = "cross_sample_zero_hamming_distance_spans"
+            _delta_key = "delta_zero_hamming_distance_spans"
+            has_layers = (
+                _self_key in adata.layers
+                and _cross_key in adata.layers
+                and _delta_key in adata.layers
+            )
+            if has_layers:
+                make_dirs([span_hist_dir])
+                samples = (
+                    adata.obs[cfg.sample_name_col_for_plotting]
+                    .astype("category")
+                    .cat.categories.tolist()
+                )
+                references = (
+                    adata.obs[cfg.reference_column]
+                    .astype("category")
+                    .cat.categories.tolist()
+                )
+                for reference in references:
+                    ref_mask = adata.obs[cfg.reference_column] == reference
+                    position_col = f"position_in_{reference}"
+                    site_cols = [
+                        f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types
+                    ]
+                    missing_cols = [
+                        col
+                        for col in [position_col, *site_cols]
+                        if col not in adata.var.columns
+                    ]
+                    if missing_cols:
+                        continue
+                    mod_site_mask = adata.var[site_cols].fillna(False).any(axis=1)
+                    site_mask = mod_site_mask & adata.var[position_col].fillna(False)
+
+                    for sample in samples:
+                        sample_mask = (
+                            (adata.obs[cfg.sample_name_col_for_plotting] == sample)
+                            & ref_mask
+                        )
+                        if not sample_mask.any():
+                            continue
+
+                        safe_sample = str(sample).replace(os.sep, "_")
+                        safe_ref = str(reference).replace(os.sep, "_")
+                        plot_subset = adata[sample_mask][:, site_mask].copy()
+
+                        title = f"{sample} {reference} (n={int(sample_mask.sum())})"
+                        out_png = span_hist_dir / f"{safe_sample}__{safe_ref}.png"
+                        try:
+                            plot_span_length_distributions(
+                                plot_subset,
+                                self_span_layer_key=_self_key,
+                                cross_span_layer_key=_cross_key,
+                                delta_span_layer_key=_delta_key,
+                                bins=getattr(
+                                    cfg,
+                                    "rolling_nn_zero_pairs_segment_histogram_bins",
+                                    30,
+                                ),
+                                title=title,
+                                save_name=out_png,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Span length distribution plot failed for sample=%s ref=%s: %s",
+                                sample,
+                                reference,
+                                exc,
+                            )
+            else:
+                logger.debug(
+                    "Span length distribution: missing required layers, skipping."
+                )
 
     # ============================================================
     # 4) Save AnnData

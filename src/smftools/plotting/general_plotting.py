@@ -6,6 +6,7 @@ from smftools.plotting.chimeric_plotting import (
     plot_rolling_nn_and_layer,
     plot_rolling_nn_and_two_layers,
     plot_segment_length_histogram,
+    plot_span_length_distributions,
     plot_zero_hamming_pair_counts,
     plot_zero_hamming_span_and_layer,
 )
