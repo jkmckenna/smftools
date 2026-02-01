@@ -43,7 +43,11 @@ def calculate_umap(
         n_neighbors = params.get("n_neighbors_used", params.get("n_neighbors", None))
     if n_neighbors is None:
         n_neighbors = 15  # reasonable default if KNN wasn't precomputed
-        logger.warning("No %r found in adata.uns; defaulting n_neighbors=%d for UMAP.", knn_uns_key, n_neighbors)
+        logger.warning(
+            "No %r found in adata.uns; defaulting n_neighbors=%d for UMAP.",
+            knn_uns_key,
+            n_neighbors,
+        )
 
     # Build input matrix X and handle NaNs locally
     X = adata.obsm[obsm]
@@ -78,7 +82,9 @@ def calculate_umap(
     # UMAP's computed fuzzy graph
     connectivities = getattr(umap_model, "graph_", None)
     if connectivities is not None:
-        adata.obsp[conn_key] = connectivities.tocsr() if sp.issparse(connectivities) else connectivities
+        adata.obsp[conn_key] = (
+            connectivities.tocsr() if sp.issparse(connectivities) else connectivities
+        )
     else:
         logger.warning("UMAP model did not expose graph_; connectivities not stored.")
 

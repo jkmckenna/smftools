@@ -7,7 +7,7 @@ from typing import Iterable, Union
 
 import numpy as np
 
-from smftools.constants import HMM_DIR, LOAD_DIR, LOGGING_DIR, PREPROCESS_DIR, SPATIAL_DIR
+from smftools.constants import LOAD_DIR, LOGGING_DIR
 from smftools.logging_utils import get_logger, setup_logging
 
 from .helpers import AdataPaths
@@ -105,7 +105,7 @@ def load_adata(config_path: str):
     from datetime import datetime
     from importlib import resources
 
-    from ..readwrite import add_or_update_column_in_csv, make_dirs
+    from ..readwrite import make_dirs
     from .helpers import get_adata_paths, load_experiment_config
 
     # -----------------------------

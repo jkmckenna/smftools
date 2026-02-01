@@ -6,7 +6,13 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import LOGGING_DIR, PREPROCESS_DIR
+from smftools.constants import (
+    BASE_QUALITY_SCORES,
+    DEMUX_TYPE,
+    LOGGING_DIR,
+    PREPROCESS_DIR,
+    READ_SPAN_MASK,
+)
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -175,10 +181,6 @@ def preprocess_adata_core(
     - `pp_adata_path` and `pp_dup_rem_adata_path` are the target output paths for
       preprocessed and preprocessed+deduplicated AnnData.
 
-    Does NOT:
-    - Decide which stage to load from (that's the wrapper's job).
-    - Decide whether to skip entirely; it always runs its steps, but individual
-      sub-steps may skip based on `cfg.bypass_*` or directory existence.
 
     Returns
     -------
@@ -198,12 +200,10 @@ def preprocess_adata_core(
     from ..plotting import (
         plot_read_qc_histograms,
         plot_read_span_quality_clustermaps,
-        plot_sequence_integer_encoding_clustermaps,
     )
     from ..preprocessing import (
         append_base_context,
         append_binary_layer_by_base_context,
-        append_mismatch_frequency_sites,
         binarize_adata,
         binarize_on_Youden,
         calculate_complexity_II,
@@ -476,6 +476,22 @@ def preprocess_adata_core(
         from_valid_sites_only=True,
     )
 
+    # -----------------------------
+    # Optional inversion along positions axis
+    # -----------------------------
+    if getattr(cfg, "invert_adata", False):
+        adata = invert_adata(adata)
+
+    # -----------------------------
+    # Optional reindexing by reference
+    # -----------------------------
+    reindex_references_adata(
+        adata,
+        reference_col=cfg.reference_column,
+        offsets=cfg.reindexing_offsets,
+        new_col=cfg.reindexed_var_suffix,
+    )
+
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != "direct":
         references = adata.obs[cfg.reference_column].cat.categories
@@ -511,7 +527,7 @@ def preprocess_adata_core(
             hierarchical_metric="euclidean",
             hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors,
             demux_types=cfg.duplicate_detection_demux_types_to_use,
-            demux_col="demux_type",
+            demux_col=DEMUX_TYPE,
         )
 
         # Use the flagged duplicate read groups and perform complexity analysis
@@ -537,96 +553,19 @@ def preprocess_adata_core(
         adata_unique = adata
     ########################################################################################################################
 
-    # -----------------------------
-    # Optional inversion along positions axis
-    # -----------------------------
-    if getattr(cfg, "invert_adata", False):
-        adata = invert_adata(adata)
-
-    # -----------------------------
-    # Optional reindexing by reference
-    # -----------------------------
-    reindex_references_adata(
-        adata,
-        reference_col=cfg.reference_column,
-        offsets=cfg.reindexing_offsets,
-        new_col=cfg.reindexed_var_suffix,
-    )
-
-    ############################################### Append mismatch frequency per position ###############################################
-    append_mismatch_frequency_sites(
-        adata_unique,
-        ref_column=cfg.reference_column,
-        mismatch_layer=cfg.mismatch_frequency_layer,
-        read_span_layer=cfg.mismatch_frequency_read_span_layer,
-        mismatch_frequency_range=cfg.mismatch_frequency_range,
-        bypass=cfg.bypass_append_mismatch_frequency_sites,
-        force_redo=cfg.force_redo_append_mismatch_frequency_sites,
-    )
-
-    ############################################### Plot integer sequence encoding clustermaps ###############################################
-    if "sequence_integer_encoding" not in adata.layers:
-        logger.debug(
-            "sequence_integer_encoding layer not found; skipping integer encoding clustermaps."
-        )
-    else:
-        pp_seq_clustermap_dir = preprocess_directory / "06_sequence_integer_encoding_clustermaps"
-        if pp_seq_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
-            logger.debug(
-                f"{pp_seq_clustermap_dir} already exists. Skipping sequence integer encoding clustermaps."
-            )
-        else:
-            make_dirs([pp_seq_clustermap_dir])
-            plot_sequence_integer_encoding_clustermaps(
-                adata,
-                sample_col=cfg.sample_name_col_for_plotting,
-                reference_col=cfg.reference_column,
-                demux_types=cfg.clustermap_demux_types_to_plot,
-                min_quality=None,
-                min_length=None,
-                min_mapped_length_to_reference_length_ratio=None,
-                sort_by="none",
-                max_unknown_fraction=0.5,
-                save_path=pp_seq_clustermap_dir,
-                show_position_axis=True,
-            )
-
-        pp_dedup_seq_clustermap_dir = (
-            preprocess_directory / "deduplicated" / "06_sequence_integer_encoding_clustermaps"
-        )
-        if pp_dedup_seq_clustermap_dir.is_dir() and not cfg.force_redo_preprocessing:
-            logger.debug(
-                f"{pp_dedup_seq_clustermap_dir} already exists. Skipping sequence integer encoding clustermaps."
-            )
-        else:
-            make_dirs([pp_dedup_seq_clustermap_dir])
-            plot_sequence_integer_encoding_clustermaps(
-                adata_unique,
-                sample_col=cfg.sample_name_col_for_plotting,
-                reference_col=cfg.reference_column,
-                demux_types=cfg.clustermap_demux_types_to_plot,
-                min_quality=None,
-                min_length=None,
-                min_mapped_length_to_reference_length_ratio=None,
-                sort_by="none",
-                max_unknown_fraction=0.5,
-                save_path=pp_dedup_seq_clustermap_dir,
-                show_position_axis=True,
-            )
-
     ############################################### Plot read span mask + base quality clustermaps ###############################################
     quality_layer = None
-    if "base_quality_scores" in adata.layers:
-        quality_layer = "base_quality_scores"
+    if BASE_QUALITY_SCORES in adata.layers:
+        quality_layer = BASE_QUALITY_SCORES
     elif "base_qualities" in adata.layers:
         quality_layer = "base_qualities"
 
-    if "read_span_mask" not in adata.layers or quality_layer is None:
+    if READ_SPAN_MASK not in adata.layers or quality_layer is None:
         logger.debug(
             "read_span_mask and base quality layers not found; skipping read span/base quality clustermaps."
         )
     else:
-        pp_span_quality_dir = preprocess_directory / "07_read_span_quality_clustermaps"
+        pp_span_quality_dir = preprocess_directory / "06_read_span_and_quality_clustermaps"
         if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
             logger.debug(
                 f"{pp_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
@@ -638,7 +577,7 @@ def preprocess_adata_core(
                 sample_col=cfg.sample_name_col_for_plotting,
                 reference_col=cfg.reference_column,
                 quality_layer=quality_layer,
-                read_span_layer="read_span_mask",
+                read_span_layer=READ_SPAN_MASK,
                 demux_types=cfg.clustermap_demux_types_to_plot,
                 save_path=pp_span_quality_dir,
                 show_position_axis=True,
@@ -646,20 +585,20 @@ def preprocess_adata_core(
             )
 
         pp_dedup_span_quality_dir = (
-            preprocess_directory / "deduplicated" / "07_read_span_quality_clustermaps"
+            preprocess_directory / "deduplicated" / "06_read_span_and_quality_clustermaps"
         )
         if pp_dedup_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
             logger.debug(
                 f"{pp_dedup_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
             )
-        elif quality_layer in adata_unique.layers and "read_span_mask" in adata_unique.layers:
+        elif quality_layer in adata_unique.layers and READ_SPAN_MASK in adata_unique.layers:
             make_dirs([pp_dedup_span_quality_dir])
             plot_read_span_quality_clustermaps(
                 adata_unique,
                 sample_col=cfg.sample_name_col_for_plotting,
                 reference_col=cfg.reference_column,
                 quality_layer=quality_layer,
-                read_span_layer="read_span_mask",
+                read_span_layer=READ_SPAN_MASK,
                 demux_types=cfg.clustermap_demux_types_to_plot,
                 save_path=pp_dedup_span_quality_dir,
                 show_position_axis=True,

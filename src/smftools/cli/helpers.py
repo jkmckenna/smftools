@@ -5,7 +5,16 @@ from pathlib import Path
 
 import anndata as ad
 
-from smftools.constants import H5_DIR, HMM_DIR, LATENT_DIR, LOAD_DIR, PREPROCESS_DIR, SPATIAL_DIR
+from smftools.constants import (
+    CHIMERIC_DIR,
+    H5_DIR,
+    HMM_DIR,
+    LATENT_DIR,
+    LOAD_DIR,
+    PREPROCESS_DIR,
+    SPATIAL_DIR,
+    VARIANT_DIR,
+)
 
 from ..metadata import write_runtime_schema_yaml
 from ..readwrite import safe_write_h5ad
@@ -19,6 +28,8 @@ class AdataPaths:
     spatial: Path
     hmm: Path
     latent: Path
+    variant: Path
+    chimeric: Path
 
 
 def get_adata_paths(cfg) -> AdataPaths:
@@ -27,8 +38,8 @@ def get_adata_paths(cfg) -> AdataPaths:
     """
     output_directory = Path(cfg.output_directory)
 
+    # Raw and Preprocessed adata file pathes will have set names.
     raw = output_directory / LOAD_DIR / H5_DIR / f"{cfg.experiment_name}.h5ad.gz"
-
     pp = output_directory / PREPROCESS_DIR / H5_DIR / f"{cfg.experiment_name}_preprocessed.h5ad.gz"
 
     if cfg.smf_modality == "direct":
@@ -44,9 +55,12 @@ def get_adata_paths(cfg) -> AdataPaths:
 
     pp_dedup_base = pp_dedup.name.removesuffix(".h5ad.gz")
 
+    # All of the following just append a new suffix to the preprocessesed_deduplicated base name
     spatial = output_directory / SPATIAL_DIR / H5_DIR / f"{pp_dedup_base}_spatial.h5ad.gz"
     hmm = output_directory / HMM_DIR / H5_DIR / f"{pp_dedup_base}_hmm.h5ad.gz"
     latent = output_directory / LATENT_DIR / H5_DIR / f"{pp_dedup_base}_latent.h5ad.gz"
+    variant = output_directory / VARIANT_DIR / H5_DIR / f"{pp_dedup_base}_variant.h5ad.gz"
+    chimeric = output_directory / CHIMERIC_DIR / H5_DIR / f"{pp_dedup_base}_chimeric.h5ad.gz"
 
     return AdataPaths(
         raw=raw,
@@ -55,6 +69,8 @@ def get_adata_paths(cfg) -> AdataPaths:
         spatial=spatial,
         hmm=hmm,
         latent=latent,
+        variant=variant,
+        chimeric=chimeric,
     )
 
 

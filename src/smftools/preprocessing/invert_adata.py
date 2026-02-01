@@ -32,6 +32,7 @@ def invert_adata(
     already = bool(adata.uns.get(uns_flag, False))
     if already and not force_redo:
         # QC already performed; nothing to do
+        logger.info("Inversion already performed")
         return adata
 
     logger.info("Inverting AnnData along the column axis...")

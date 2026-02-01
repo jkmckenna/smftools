@@ -272,6 +272,10 @@ def converted_BAM_to_adata(
             consensus_sequence_list
         )
 
+    from .h5ad_functions import append_reference_strand_quality_stats
+
+    append_reference_strand_quality_stats(final_adata)
+
     if input_already_demuxed:
         final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
         final_adata.obs[DEMUX_TYPE] = final_adata.obs[DEMUX_TYPE].astype("category")
@@ -368,7 +372,7 @@ def process_conversion_sites(
             converted_FASTA, conversion, conversions, deaminase_footprinting
         )
 
-        # Iterate over the unconverted record ids in mod_dict, as well as the 
+        # Iterate over the unconverted record ids in mod_dict, as well as the
         # [sequence_length, top_strand_coordinates, bottom_strand_coordinates, unconverted sequence, unconverted complement] for the conversion type
         for record, values in modification_dict[conversion].items():
             sequence_length, top_coords, bottom_coords, sequence, complement = values
@@ -387,7 +391,7 @@ def process_conversion_sites(
                 unconverted_name = f"{chromosome}_{unconverted}_top"
 
                 # Use the converted FASTA record names as keys to a dict that points to RecordFastaInfo objects.
-                # These objects will contain the unconverted sequence/complement. 
+                # These objects will contain the unconverted sequence/complement.
                 record_FASTA_dict[converted_name] = RecordFastaInfo(
                     sequence=sequence + "N" * (max_reference_length - sequence_length),
                     complement=complement + "N" * (max_reference_length - sequence_length),
@@ -771,14 +775,15 @@ def process_single_bam(
             adata.obs.loc[is_bottom, READ_MISMATCH_TREND] = "G->A"
 
         adata.obs[REFERENCE_DATASET_STRAND] = (
-            adata.obs[REFERENCE].astype(str) + "_" +
-            adata.obs[DATASET].astype(str) + "_" +
-            adata.obs[STRAND].astype(str)
+            adata.obs[REFERENCE].astype(str)
+            + "_"
+            + adata.obs[DATASET].astype(str)
+            + "_"
+            + adata.obs[STRAND].astype(str)
         )
 
         adata.obs[REFERENCE_STRAND] = (
-            adata.obs[REFERENCE].astype(str) + "_" +
-            adata.obs[STRAND].astype(str)
+            adata.obs[REFERENCE].astype(str) + "_" + adata.obs[STRAND].astype(str)
         )
 
         read_mapping_direction = []

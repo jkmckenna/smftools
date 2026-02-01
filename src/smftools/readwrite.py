@@ -9,6 +9,10 @@ import anndata as ad
 import pandas as pd
 from Bio import SeqIO
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 
 ######################################################################################################
 ## Datetime functionality
@@ -474,7 +478,9 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                     cats_str = cats.astype(str)
                     df[col] = pd.Categorical(ser.astype(str), categories=cats_str)
                     if verbose:
-                        print(f"  coerced categorical column '{which}.{col}' -> string categories")
+                        logger.debug(
+                            f"  coerced categorical column '{which}.{col}' -> string categories"
+                        )
                     if which == "obs":
                         report["obs_converted_columns"].append(col)
                     else:
@@ -489,7 +495,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                             report["var_backed_up_columns"].append(col)
                     df[col] = ser.astype(str)
                     if verbose:
-                        print(
+                        logger.debug(
                             f"  coerced categorical column '{which}.{col}' -> strings (backup={backup})"
                         )
                 continue
@@ -512,7 +518,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                             report["var_backed_up_columns"].append(col)
                     df[col] = ser.values.astype(str)
                     if verbose:
-                        print(
+                        logger.debug(
                             f"  converted object column '{which}.{col}' -> strings (backup={backup})"
                         )
                     if which == "obs":
@@ -537,7 +543,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                                 report["var_backed_up_columns"].append(col)
                         df[col] = [json.dumps(v, default=str) for v in ser.values]
                         if verbose:
-                            print(
+                            logger.debug(
                                 f"  json-stringified object column '{which}.{col}' (backup={backup})"
                             )
                         if which == "obs":
@@ -554,7 +560,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                                 report["var_backed_up_columns"].append(col)
                         df[col] = ser.astype(str)
                         if verbose:
-                            print(
+                            logger.debug(
                                 f"  WARNING: column '{which}.{col}' was complex; coerced via str() (backed up)."
                             )
                         if which == "obs":
@@ -583,7 +589,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                         _backup(v, f"uns_{k}_backup")
                     backed_up.append(k)
                     if verbose:
-                        print(
+                        logger.debug(
                             f"  uns['{k}'] non-JSON -> stored '{k}_json' and backed up (backup={backup})"
                         )
                     report["uns_json_keys"].append(k)
@@ -594,15 +600,17 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                         clean[k + "_str"] = str(v)
                         backed_up.append(k)
                         if verbose:
-                            print(f"  uns['{k}'] stored as string under '{k}_str' (backed up).")
+                            logger.debug(
+                                f"  uns['{k}'] stored as string under '{k}_str' (backed up)."
+                            )
                         report["uns_backed_up_keys"].append(k)
                     except Exception as e:
                         msg = f"uns['{k}'] could not be preserved: {e}"
                         report["errors"].append(msg)
                         if verbose:
-                            print("  " + msg)
+                            logger.debug("  " + msg)
         if backed_up and verbose:
-            print(f"Sanitized .uns keys (backed up): {backed_up}")
+            logger.debug(f"Sanitized .uns keys (backed up): {backed_up}")
         return clean
 
     def _sanitize_layers_obsm(src_dict, which: str):
@@ -628,7 +636,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                         report_key = f"{which}.{k}"
                         report[converted_key].append(report_key)
                         if verbose:
-                            print(f"  {which}.{k} object array coerced to float.")
+                            logger.debug(f"  {which}.{k} object array coerced to float.")
                     except Exception:
                         try:
                             arr_i = arr.astype(int)
@@ -636,13 +644,13 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                             report_key = f"{which}.{k}"
                             report[converted_key].append(report_key)
                             if verbose:
-                                print(f"  {which}.{k} object array coerced to int.")
+                                logger.debug(f"  {which}.{k} object array coerced to int.")
                         except Exception:
                             if backup:
                                 _backup(v, f"{which}_{k}_backup")
                             report[skipped_key].append(k)
                             if verbose:
-                                print(
+                                logger.debug(
                                     f"  SKIPPING {which}.{k} (object dtype not numeric). Backed up: {backup}"
                                 )
                             continue
@@ -655,7 +663,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                 msg = f"  SKIPPING {which}.{k} due to conversion error: {e}"
                 report["errors"].append(msg)
                 if verbose:
-                    print(msg)
+                    logger.debug(msg)
                 continue
         return cleaned
 
@@ -666,7 +674,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         msg = f"Failed to sanitize obs: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.debug(msg)
         obs_clean = adata.obs.copy()
 
     try:
@@ -675,7 +683,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         msg = f"Failed to sanitize var: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.debug(msg)
         var_clean = adata.var.copy()
 
     # ---------- sanitize uns ----------
@@ -685,7 +693,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         msg = f"Failed to sanitize uns: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.debug(msg)
         uns_clean = {}
 
     # ---------- sanitize layers and obsm ----------
@@ -699,7 +707,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         msg = f"Failed to sanitize layers: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.debug(msg)
         layers_clean = {}
 
     try:
@@ -708,7 +716,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         msg = f"Failed to sanitize obsm: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.debug(msg)
         obsm_clean = {}
 
     try:
@@ -717,7 +725,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         msg = f"Failed to sanitize varm: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.debug(msg)
         varm_clean = {}
 
     # ---------- handle X ----------
@@ -729,21 +737,21 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                 X_to_use = X_arr.astype(float)
                 report["X_replaced_or_converted"] = "converted_to_float"
                 if verbose:
-                    print("Converted adata.X object-dtype -> float")
+                    logger.debug("Converted adata.X object-dtype -> float")
             except Exception:
                 if backup:
                     _backup(adata.X, "X_backup")
                 X_to_use = np.zeros_like(X_arr, dtype=float)
                 report["X_replaced_or_converted"] = "replaced_with_zeros_backup"
                 if verbose:
-                    print(
+                    logger.debug(
                         "adata.X had object dtype and couldn't be converted; replaced with zeros (backup set)."
                     )
     except Exception as e:
         msg = f"Error handling adata.X: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.debug(msg)
         X_to_use = adata.X
 
     # ---------- build lightweight AnnData copy ----------
@@ -769,71 +777,71 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         # --- write
         adata_copy.write_h5ad(path, compression=compression)
         if verbose:
-            print(f"Saved safely to {path}")
+            logger.debug(f"Saved safely to {path}")
     except Exception as e:
         msg = f"Failed to write h5ad: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.error(msg)
         raise
 
     # Print a concise interactive report
-    print("\n=== safe_write_h5ad REPORT ===")
-    print(f"Saved file: {path}")
-    print(f"Adata shape: {adata.shape}")
+    logger.info("\n=== safe_write_h5ad REPORT ===")
+    logger.info(f"Saved file: {path}")
+    logger.info(f"Adata shape: {adata.shape}")
     if report["obs_converted_columns"] or report["obs_backed_up_columns"]:
-        print(f"obs: converted columns -> {report['obs_converted_columns']}")
-        print(f"obs: backed-up columns -> {report['obs_backed_up_columns']}")
+        logger.debug(f"obs: converted columns -> {report['obs_converted_columns']}")
+        logger.debug(f"obs: backed-up columns -> {report['obs_backed_up_columns']}")
     else:
-        print("obs: no problematic columns found.")
+        logger.debug("obs: no problematic columns found.")
 
     if report["var_converted_columns"] or report["var_backed_up_columns"]:
-        print(f"var: converted columns -> {report['var_converted_columns']}")
-        print(f"var: backed-up columns -> {report['var_backed_up_columns']}")
+        logger.debug(f"var: converted columns -> {report['var_converted_columns']}")
+        logger.debug(f"var: backed-up columns -> {report['var_backed_up_columns']}")
     else:
-        print("var: no problematic columns found.")
+        logger.debug("var: no problematic columns found.")
 
     if report["uns_json_keys"] or report["uns_backed_up_keys"]:
-        print(f".uns: jsonified keys -> {report['uns_json_keys']}")
-        print(f".uns: backed-up keys -> {report['uns_backed_up_keys']}")
+        logger.debug(f".uns: jsonified keys -> {report['uns_json_keys']}")
+        logger.debug(f".uns: backed-up keys -> {report['uns_backed_up_keys']}")
     else:
-        print(".uns: no problematic keys found.")
+        logger.debug(".uns: no problematic keys found.")
 
     if report["layers_converted"] or report["layers_skipped"]:
-        print(f"layers: converted -> {report['layers_converted']}")
-        print(f"layers: skipped -> {report['layers_skipped']}")
+        logger.debug(f"layers: converted -> {report['layers_converted']}")
+        logger.debug(f"layers: skipped -> {report['layers_skipped']}")
     else:
-        print("layers: no problematic entries found.")
+        logger.debug("layers: no problematic entries found.")
 
     if report["obsm_converted"] or report["obsm_skipped"]:
-        print(f"obsm: converted -> {report['obsm_converted']}")
-        print(f"obsm: skipped -> {report['obsm_skipped']}")
+        logger.debug(f"obsm: converted -> {report['obsm_converted']}")
+        logger.debug(f"obsm: skipped -> {report['obsm_skipped']}")
     else:
-        print("obsm: no problematic entries found.")
+        logger.debug("obsm: no problematic entries found.")
 
     if report["X_replaced_or_converted"]:
-        print(f"adata.X handled: {report['X_replaced_or_converted']}")
+        logger.debug(f"adata.X handled: {report['X_replaced_or_converted']}")
     else:
-        print("adata.X: no changes.")
+        logger.debug("adata.X: no changes.")
 
     if report["errors"]:
-        print("\nWarnings / errors encountered:")
+        logger.error("\nWarnings / errors encountered:")
         for e in report["errors"]:
-            print(" -", e)
+            logger.error(" -", e)
 
-    print("=== end report ===\n")
+    logger.info("=== end report ===\n")
 
     # ---------- create CSV output directory ----------
     try:
         csv_dir = path.parent / "csvs"
         csv_dir.mkdir(exist_ok=True)
         if verbose:
-            print(f"CSV outputs will be written to: {csv_dir}")
+            logger.info(f"CSV outputs will be written to: {csv_dir}")
     except Exception as e:
         msg = f"Failed to create CSV output directory: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.error(msg)
         csv_dir = path.parent  # fallback just in case
 
     # ---------- write keys summary CSV ----------
@@ -890,6 +898,16 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                 }
             )
 
+        # obsp
+        for k, v in adata_copy.obsp.items():
+            meta_rows.append(
+                {
+                    "kind": "obsp",
+                    "name": k,
+                    "dtype": str(np.asarray(v).dtype),
+                }
+            )
+
         # uns
         for k, v in adata_copy.uns.items():
             meta_rows.append(
@@ -908,13 +926,13 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
 
         meta_df.to_csv(meta_path, index=False)
         if verbose:
-            print(f"Wrote keys summary CSV to {meta_path}")
+            logger.info(f"Wrote keys summary CSV to {meta_path}")
 
     except Exception as e:
         msg = f"Failed to write keys CSV: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.error(msg)
 
     # ---------- write full obs and var dataframes ----------
     try:
@@ -927,14 +945,14 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         adata_copy.var.to_csv(var_path, index=True)
 
         if verbose:
-            print(f"Wrote obs DataFrame to {obs_path}")
-            print(f"Wrote var DataFrame to {var_path}")
+            logger.info(f"Wrote obs DataFrame to {obs_path}")
+            logger.info(f"Wrote var DataFrame to {var_path}")
 
     except Exception as e:
         msg = f"Failed to write obs/var CSVs: {e}"
         report["errors"].append(msg)
         if verbose:
-            print(msg)
+            logger.error(msg)
 
     return report
 
@@ -1003,7 +1021,7 @@ def safe_read_h5ad(
     }
 
     if verbose:
-        print(f"[safe_read_h5ad] loading {path}")
+        logger.info(f"[safe_read_h5ad] loading {path}")
 
     # 1) load the cleaned h5ad
     try:
@@ -1013,7 +1031,7 @@ def safe_read_h5ad(
 
     # Ensure backup_dir exists (may be relative to cwd)
     if verbose:
-        print(f"[safe_read_h5ad] looking for backups in {backup_dir}")
+        logger.debug(f"[safe_read_h5ad] looking for backups in {backup_dir}")
 
     def _load_pickle_if_exists(fname):
         if os.path.exists(fname):
@@ -1024,7 +1042,7 @@ def safe_read_h5ad(
             except Exception as e:
                 report["errors"].append(f"Failed to load pickle {fname}: {e}")
                 if verbose:
-                    print(f"  error loading {fname}: {e}")
+                    logger.error(f"  error loading {fname}: {e}")
                 return None
         return None
 
@@ -1049,7 +1067,7 @@ def safe_read_h5ad(
                     report["restored_obs_columns"].append((col, bname2))
                     restored = True
                     if verbose:
-                        print(f"[safe_read_h5ad] restored obs.{col} from {bname2}")
+                        logger.debug(f"[safe_read_h5ad] restored obs.{col} from {bname2}")
                 except Exception as e:
                     report["errors"].append(f"Failed to restore obs.{col} from {bname2}: {e}")
                     restored = False
@@ -1067,7 +1085,7 @@ def safe_read_h5ad(
                         report["restored_obs_columns"].append((col, bname1))
                         restored = True
                         if verbose:
-                            print(f"[safe_read_h5ad] restored obs.{col} from {bname1}")
+                            logger.debug(f"[safe_read_h5ad] restored obs.{col} from {bname1}")
                     except Exception as e:
                         report["errors"].append(f"Failed to restore obs.{col} from {bname1}: {e}")
                         restored = False
@@ -1098,7 +1116,7 @@ def safe_read_h5ad(
                     report["restored_obs_columns"].append((col, "parsed_json"))
                     restored = True
                     if verbose:
-                        print(
+                        logger.debug(
                             f"[safe_read_h5ad] parsed obs.{col} JSON strings back to Python objects"
                         )
 
@@ -1111,7 +1129,7 @@ def safe_read_h5ad(
                     adata.obs[col] = adata.obs[col].astype(str).astype("category")
                     report["recategorized_obs"].append(col)
                     if verbose:
-                        print(
+                        logger.debug(
                             f"[safe_read_h5ad] recast obs.{col} -> categorical (n_unique={nunique})"
                         )
             except Exception as e:
@@ -1134,7 +1152,7 @@ def safe_read_h5ad(
                     report["restored_var_columns"].append((col, bname2))
                     restored = True
                     if verbose:
-                        print(f"[safe_read_h5ad] restored var.{col} from {bname2}")
+                        logger.debug(f"[safe_read_h5ad] restored var.{col} from {bname2}")
                 except Exception as e:
                     report["errors"].append(f"Failed to restore var.{col} from {bname2}: {e}")
 
@@ -1151,7 +1169,7 @@ def safe_read_h5ad(
                         report["restored_var_columns"].append((col, bname1))
                         restored = True
                         if verbose:
-                            print(f"[safe_read_h5ad] restored var.{col} from {bname1}")
+                            logger.debug(f"[safe_read_h5ad] restored var.{col} from {bname1}")
                     except Exception as e:
                         report["errors"].append(f"Failed to restore var.{col} from {bname1}: {e}")
 
@@ -1179,7 +1197,7 @@ def safe_read_h5ad(
                     adata.var[col] = pd.Series(parsed, index=adata.var.index)
                     report["restored_var_columns"].append((col, "parsed_json"))
                     if verbose:
-                        print(
+                        logger.debug(
                             f"[safe_read_h5ad] parsed var.{col} JSON strings back to Python objects"
                         )
 
@@ -1190,7 +1208,7 @@ def safe_read_h5ad(
                     adata.var[col] = adata.var[col].astype(str).astype("category")
                     report["recategorized_var"].append(col)
                     if verbose:
-                        print(
+                        logger.debug(
                             f"[safe_read_h5ad] recast var.{col} -> categorical (n_unique={nunique})"
                         )
             except Exception as e:
@@ -1208,7 +1226,7 @@ def safe_read_h5ad(
                 adata.uns[base] = parsed
                 report["parsed_uns_json_keys"].append(base)
                 if verbose:
-                    print(f"[safe_read_h5ad] parsed adata.uns['{k}'] -> adata.uns['{base}']")
+                    logger.debug(f"[safe_read_h5ad] parsed adata.uns['{k}'] -> adata.uns['{base}']")
                 # remove the _json entry
                 try:
                     del adata.uns[k]
@@ -1231,7 +1249,7 @@ def safe_read_h5ad(
             adata.uns[key] = val
             report["restored_uns_keys"].append((key, full))
             if verbose:
-                print(f"[safe_read_h5ad] restored adata.uns['{key}'] from {full}")
+                logger.debug(f"[safe_read_h5ad] restored adata.uns['{key}'] from {full}")
 
     # 5) Restore layers and obsm from backups if present
     # expected backup names: layers_<name>_backup.pkl, obsm_<name>_backup.pkl, varm_<name>_backup.pkl
@@ -1246,7 +1264,9 @@ def safe_read_h5ad(
                         adata.layers[layer_name] = np.asarray(val)
                         report["restored_layers"].append((layer_name, full))
                         if verbose:
-                            print(f"[safe_read_h5ad] restored layers['{layer_name}'] from {full}")
+                            logger.debug(
+                                f"[safe_read_h5ad] restored layers['{layer_name}'] from {full}"
+                            )
                     except Exception as e:
                         report["errors"].append(
                             f"Failed to restore layers['{layer_name}'] from {full}: {e}"
@@ -1261,7 +1281,9 @@ def safe_read_h5ad(
                         adata.obsm[obsm_name] = np.asarray(val)
                         report["restored_obsm"].append((obsm_name, full))
                         if verbose:
-                            print(f"[safe_read_h5ad] restored obsm['{obsm_name}'] from {full}")
+                            logger.debug(
+                                f"[safe_read_h5ad] restored obsm['{obsm_name}'] from {full}"
+                            )
                     except Exception as e:
                         report["errors"].append(
                             f"Failed to restore obsm['{obsm_name}'] from {full}: {e}"
@@ -1276,7 +1298,9 @@ def safe_read_h5ad(
                         adata.varm[varm_name] = np.asarray(val)
                         report["restored_varm"].append((varm_name, full))
                         if verbose:
-                            print(f"[safe_read_h5ad] restored varm['{varm_name}'] from {full}")
+                            logger.debug(
+                                f"[safe_read_h5ad] restored varm['{varm_name}'] from {full}"
+                            )
                     except Exception as e:
                         report["errors"].append(
                             f"Failed to restore varm['{varm_name}'] from {full}: {e}"
@@ -1310,7 +1334,7 @@ def safe_read_h5ad(
         if expected_missing and verbose:
             n = len(expected_missing)
             if verbose:
-                print(
+                logger.warning(
                     f"[safe_read_h5ad] note: {n} obs/var object columns may not have backups; check if their content is acceptable."
                 )
             # add to report
@@ -1318,37 +1342,37 @@ def safe_read_h5ad(
 
     # final summary print
     if verbose:
-        print("\n=== safe_read_h5ad summary ===")
+        logger.info("\n=== safe_read_h5ad summary ===")
         if report["restored_obs_columns"]:
-            print("Restored obs columns:", report["restored_obs_columns"])
+            logger.info("Restored obs columns:", report["restored_obs_columns"])
         if report["restored_var_columns"]:
-            print("Restored var columns:", report["restored_var_columns"])
+            logger.info("Restored var columns:", report["restored_var_columns"])
         if report["restored_uns_keys"]:
-            print("Restored uns keys:", report["restored_uns_keys"])
+            logger.info("Restored uns keys:", report["restored_uns_keys"])
         if report["parsed_uns_json_keys"]:
-            print("Parsed uns JSON keys:", report["parsed_uns_json_keys"])
+            logger.info("Parsed uns JSON keys:", report["parsed_uns_json_keys"])
         if report["restored_layers"]:
-            print("Restored layers:", report["restored_layers"])
+            logger.info("Restored layers:", report["restored_layers"])
         if report["restored_obsm"]:
-            print("Restored obsm:", report["restored_obsm"])
+            logger.info("Restored obsm:", report["restored_obsm"])
         if report["restored_varm"]:
-            print("Restored varm:", report["restored_varm"])
+            logger.info("Restored varm:", report["restored_varm"])
         if report["recategorized_obs"] or report["recategorized_var"]:
-            print(
+            logger.info(
                 "Recategorized columns (obs/var):",
                 report["recategorized_obs"],
                 report["recategorized_var"],
             )
         if report["missing_backups"]:
-            print(
+            logger.info(
                 "Missing backups or object columns without backups (investigate):",
                 report["missing_backups"],
             )
         if report["errors"]:
-            print("Errors encountered (see report['errors']):")
+            logger.error("Errors encountered (see report['errors']):")
             for e in report["errors"]:
-                print(" -", e)
-        print("=== end summary ===\n")
+                logger.error(" -", e)
+        logger.info("=== end summary ===\n")
 
     return adata, report
 

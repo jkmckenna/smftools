@@ -18,7 +18,7 @@ from ..hmm.HMM import _safe_int_coords, _to_dense_np, create_hmm, normalize_hmm_
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    import torch as torch_types
+    import torch
 
 torch = require("torch", extra="torch", purpose="HMM CLI")
 mpl = require("matplotlib", extra="plotting", purpose="HMM plotting")
@@ -586,9 +586,18 @@ def hmm_adata(config_path: str):
     if paths.hmm.exists():
         adata, _ = safe_read_h5ad(paths.hmm)
         source_path = paths.hmm
+    elif paths.latent.exists():
+        adata, _ = safe_read_h5ad(paths.latent)
+        source_path = paths.latent
     elif paths.spatial.exists():
         adata, _ = safe_read_h5ad(paths.spatial)
         source_path = paths.spatial
+    elif paths.chimeric.exists():
+        adata, _ = safe_read_h5ad(paths.chimeric)
+        source_path = paths.chimeric
+    elif paths.variant.exists():
+        adata, _ = safe_read_h5ad(paths.variant)
+        source_path = paths.variant
     elif paths.pp_dedup.exists():
         adata, _ = safe_read_h5ad(paths.pp_dedup)
         source_path = paths.pp_dedup
@@ -1068,7 +1077,9 @@ def hmm_adata_core(
                 cmap_a=cfg.clustermap_cmap_a,
                 min_quality=cfg.read_quality_filter_thresholds[0],
                 min_length=cfg.read_len_filter_thresholds[0],
-                min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+                min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[
+                    0
+                ],
                 min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
                 demux_types=cfg.clustermap_demux_types_to_plot,
                 save_path=hmm_cluster_save_dir,
@@ -1122,7 +1133,9 @@ def hmm_adata_core(
                 cmap_a=cfg.clustermap_cmap_a,
                 min_quality=cfg.read_quality_filter_thresholds[0],
                 min_length=cfg.read_len_filter_thresholds[0],
-                min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[0],
+                min_mapped_length_to_reference_length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds[
+                    0
+                ],
                 min_position_valid_fraction=1 - cfg.position_max_nan_threshold,
                 demux_types=cfg.clustermap_demux_types_to_plot,
                 save_path=hmm_cluster_save_dir,

@@ -168,6 +168,7 @@ mismatch_frequency_range:
   - 0.99
 mismatch_frequency_layer: "mismatch_integer_encoding"
 mismatch_frequency_read_span_layer: "read_span_mask"
+mismatch_base_frequency_exclude_mod_sites: True
 
 ######## smftools spatial params #########
 invert_adata: False # Whether to invert the AnnData along the positions axis.
@@ -186,13 +187,49 @@ clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
+
+# Spatial analysis - Rolling NN Hamming
+rolling_nn_layer: "nan0_0minus1"
+rolling_nn_plot_layer: "nan0_0minus1"
+rolling_nn_plot_layers:
+  - "nan0_0minus1"
+  - "zero_hamming_distance_spans"
+rolling_nn_window: 10
+rolling_nn_step: 1
+rolling_nn_min_overlap: 8
+rolling_nn_return_fraction: true
+rolling_nn_obsm_key: "rolling_nn_dist"
 rolling_nn_site_types: 
   - "GpC"
   - "CpG"
+rolling_nn_write_zero_pairs_csvs: true
+rolling_nn_zero_pairs_uns_key: null
+rolling_nn_zero_pairs_segments_key: null
+rolling_nn_zero_pairs_layer_key: null
+rolling_nn_zero_pairs_refine: true
+rolling_nn_zero_pairs_max_nan_run: 2
+rolling_nn_zero_pairs_merge_gap: 1
+rolling_nn_zero_pairs_max_segments_per_read: 2
+rolling_nn_zero_pairs_max_overlap: 5
+rolling_nn_zero_pairs_layer_overlap_mode: "sum"
+rolling_nn_zero_pairs_layer_overlap_value: null
+rolling_nn_zero_pairs_keep_uns: true
+rolling_nn_zero_pairs_segments_keep_uns: true
+rolling_nn_zero_pairs_top_segments_per_read: 3
+rolling_nn_zero_pairs_top_segments_max_overlap: 5
+rolling_nn_zero_pairs_top_segments_min_span: 300
+rolling_nn_zero_pairs_top_segments_write_csvs: true
+rolling_nn_zero_pairs_segment_histogram_bins: 30
 
-# Spatial Analysis - UMAP/Leiden params
+# Cross-sample rolling NN analysis
+cross_sample_analysis: true
+cross_sample_grouping_col: null
+cross_sample_random_seed: 42
+
+# Latent Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'
 umap_layers_to_plot:
+  - "leiden"
   - "mapped_length"
   - "Raw_modification_signal"
 

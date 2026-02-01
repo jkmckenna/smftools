@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
+from smftools.constants import BASE_QUALITY_SCORES, READ_SPAN_MASK, REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
@@ -82,6 +83,88 @@ def add_demux_type_annotation(
     adata.obs["demux_type"] = adata.obs["demux_type"].astype("category")
 
     return adata
+
+
+def append_reference_strand_quality_stats(
+    adata,
+    ref_column: str = REFERENCE_STRAND,
+    quality_layer: str = BASE_QUALITY_SCORES,
+    read_span_layer: str = READ_SPAN_MASK,
+    uns_flag: str = "append_reference_strand_quality_stats_performed",
+    force_redo: bool = False,
+    bypass: bool = False,
+) -> None:
+    """Append per-position quality and error rate stats for each reference strand.
+
+    Args:
+        adata: AnnData object to annotate in-place.
+        ref_column: Obs column defining reference strand groups.
+        quality_layer: Layer containing base quality scores.
+        read_span_layer: Optional layer marking covered positions (1=covered, 0=not covered).
+        uns_flag: Flag in ``adata.uns`` indicating prior completion.
+        force_redo: Whether to rerun even if ``uns_flag`` is set.
+        bypass: Whether to skip this step.
+    """
+    if bypass:
+        return
+
+    already = bool(adata.uns.get(uns_flag, False))
+    if already and not force_redo:
+        return
+
+    if ref_column not in adata.obs:
+        logger.debug("Reference column '%s' not found; skipping quality stats.", ref_column)
+        return
+
+    if quality_layer not in adata.layers:
+        logger.debug("Quality layer '%s' not found; skipping quality stats.", quality_layer)
+        return
+
+    ref_values = adata.obs[ref_column]
+    references = (
+        ref_values.cat.categories if hasattr(ref_values, "cat") else pd.Index(pd.unique(ref_values))
+    )
+    n_vars = adata.shape[1]
+    has_span_mask = read_span_layer in adata.layers
+
+    for ref in references:
+        ref_mask = ref_values == ref
+        ref_position_mask = adata.var.get(f"position_in_{ref}")
+        if ref_position_mask is None:
+            ref_position_mask = pd.Series(np.ones(n_vars, dtype=bool), index=adata.var.index)
+        else:
+            ref_position_mask = ref_position_mask.astype(bool)
+
+        mean_quality = np.full(n_vars, np.nan, dtype=float)
+        std_quality = np.full(n_vars, np.nan, dtype=float)
+        mean_error = np.full(n_vars, np.nan, dtype=float)
+        std_error = np.full(n_vars, np.nan, dtype=float)
+
+        if ref_mask.sum() > 0:
+            quality_matrix = np.asarray(adata.layers[quality_layer][ref_mask]).astype(float)
+            quality_matrix[quality_matrix < 0] = np.nan
+            if has_span_mask:
+                coverage_mask = np.asarray(adata.layers[read_span_layer][ref_mask]) > 0
+                quality_matrix = np.where(coverage_mask, quality_matrix, np.nan)
+
+            mean_quality = np.nanmean(quality_matrix, axis=0)
+            std_quality = np.nanstd(quality_matrix, axis=0)
+
+            error_matrix = np.power(10.0, -quality_matrix / 10.0)
+            mean_error = np.nanmean(error_matrix, axis=0)
+            std_error = np.nanstd(error_matrix, axis=0)
+
+        mean_quality = np.where(ref_position_mask.values, mean_quality, np.nan)
+        std_quality = np.where(ref_position_mask.values, std_quality, np.nan)
+        mean_error = np.where(ref_position_mask.values, mean_error, np.nan)
+        std_error = np.where(ref_position_mask.values, std_error, np.nan)
+
+        adata.var[f"{ref}_mean_base_quality"] = pd.Series(mean_quality, index=adata.var.index)
+        adata.var[f"{ref}_std_base_quality"] = pd.Series(std_quality, index=adata.var.index)
+        adata.var[f"{ref}_mean_error_rate"] = pd.Series(mean_error, index=adata.var.index)
+        adata.var[f"{ref}_std_error_rate"] = pd.Series(std_error, index=adata.var.index)
+
+    adata.uns[uns_flag] = True
 
 
 def add_read_tag_annotations(

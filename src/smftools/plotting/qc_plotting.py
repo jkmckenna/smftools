@@ -5,9 +5,12 @@ import os
 import numpy as np
 import pandas as pd
 
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
 plt = require("matplotlib.pyplot", extra="plotting", purpose="QC plots")
+
+logger = get_logger(__name__)
 
 
 def plot_read_qc_histograms(
@@ -53,6 +56,7 @@ def plot_read_qc_histograms(
     dpi : int
         Figure resolution.
     """
+    logger.info("Plotting read QC histograms to %s.", outdir)
     os.makedirs(outdir, exist_ok=True)
 
     if sample_key not in adata.obs.columns:
@@ -69,14 +73,14 @@ def plot_read_qc_histograms(
     is_numeric = {}
     for key in obs_keys:
         if key not in adata.obs.columns:
-            print(f"[WARN] '{key}' not found in obs; skipping.")
+            logger.warning("'%s' not found in obs; skipping.", key)
             continue
         s = adata.obs[key]
         num = pd.api.types.is_numeric_dtype(s)
         valid_keys.append(key)
         is_numeric[key] = num
     if not valid_keys:
-        print("[plot_read_qc_grid] No valid obs_keys to plot.")
+        logger.warning("No valid obs_keys to plot.")
         return
 
     # Precompute global numeric ranges (after clipping) so rows share x-axis per column
@@ -174,6 +178,7 @@ def plot_read_qc_histograms(
         page = start // rows_per_fig + 1
         out_png = os.path.join(outdir, f"qc_grid_{_sanitize(sample_key)}_page{page}.png")
         plt.savefig(out_png, bbox_inches="tight")
+        logger.info("Saved QC histogram page to %s.", out_png)
         plt.close(fig)
 
 

@@ -4,10 +4,13 @@ import os
 
 import numpy as np
 
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
 plt = require("matplotlib.pyplot", extra="plotting", purpose="model plots")
 torch = require("torch", extra="ml-base", purpose="model saliency plots")
+
+logger = get_logger(__name__)
 
 
 def plot_model_performance(metrics, save_path=None):
@@ -19,6 +22,7 @@ def plot_model_performance(metrics, save_path=None):
     """
     import os
 
+    logger.info("Plotting model performance curves.")
     for ref in metrics.keys():
         plt.figure(figsize=(12, 5))
 
@@ -58,14 +62,17 @@ def plot_model_performance(metrics, save_path=None):
             safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
             out_file = os.path.join(save_path, f"{safe_name}.png")
             plt.savefig(out_file, dpi=300)
-            print(f"📁 Saved: {out_file}")
+            logger.info("Saved model performance plot to %s.", out_file)
         plt.show()
 
         # Confusion Matrices
         for model_name, vals in metrics[ref].items():
-            print(f"Confusion Matrix for {ref} - {model_name.upper()}:")
-            print(vals["confusion_matrix"])
-            print()
+            logger.info(
+                "Confusion Matrix for %s - %s:\n%s",
+                ref,
+                model_name.upper(),
+                vals["confusion_matrix"],
+            )
 
 
 def plot_feature_importances_or_saliency(
@@ -94,6 +101,7 @@ def plot_feature_importances_or_saliency(
 
     import numpy as np
 
+    logger.info("Plotting feature importances or saliency.")
     # Select device for NN models
     device = (
         torch.device("cuda")
@@ -110,7 +118,7 @@ def plot_feature_importances_or_saliency(
             suffix = "_".join(site_config[ref]) if ref in site_config else "full"
 
         if ref not in positions or suffix not in positions[ref]:
-            print(f"Positions not found for {ref} with suffix {suffix}. Skipping {ref}.")
+            logger.warning("Positions not found for %s with suffix %s. Skipping.", ref, suffix)
             continue
 
         coords_index = positions[ref][suffix]
@@ -122,8 +130,8 @@ def plot_feature_importances_or_saliency(
         other_sites = set()
 
         if adata is None:
-            print(
-                "⚠️ AnnData object is required to classify site types. Skipping site type markers."
+            logger.warning(
+                "AnnData object is required to classify site types. Skipping site type markers."
             )
         else:
             gpc_col = f"{ref}_GpC_site"
@@ -140,7 +148,7 @@ def plot_feature_importances_or_saliency(
                     else:
                         other_sites.add(coord_int)
                 except KeyError:
-                    print(f"⚠️ Index '{idx_str}' not found in adata.var. Skipping.")
+                    logger.warning("Index '%s' not found in adata.var. Skipping.", idx_str)
                     continue
 
         for model_key, model in model_dict.items():
@@ -151,13 +159,17 @@ def plot_feature_importances_or_saliency(
                 if hasattr(model, "feature_importances_"):
                     importances = model.feature_importances_
                 else:
-                    print(f"Random Forest model {model_key} has no feature_importances_. Skipping.")
+                    logger.warning(
+                        "Random Forest model %s has no feature_importances_. Skipping.", model_key
+                    )
                     continue
                 plot_title = f"RF Feature Importances for {ref} ({model_key})"
                 y_label = "Feature Importance"
             else:
                 if tensors is None or ref not in tensors or suffix not in tensors[ref]:
-                    print(f"No input data provided for NN saliency for {model_key}. Skipping.")
+                    logger.warning(
+                        "No input data provided for NN saliency for %s. Skipping.", model_key
+                    )
                     continue
                 input_tensor = tensors[ref][suffix]
                 model.eval()
@@ -238,7 +250,7 @@ def plot_feature_importances_or_saliency(
                 )
                 out_file = os.path.join(save_path, f"{safe_name}.png")
                 plt.savefig(out_file, dpi=300)
-                print(f"📁 Saved: {out_file}")
+                logger.info("Saved feature importance plot to %s.", out_file)
 
             plt.show()
 
@@ -265,6 +277,7 @@ def plot_model_curves_from_adata(
         ylim_roc: Y-axis limits for ROC curve.
         ylim_pr: Y-axis limits for PR curve.
     """
+    logger.info("Plotting model curves from AnnData.")
     sklearn_metrics = require("sklearn.metrics", extra="ml-base", purpose="model curves")
     auc = sklearn_metrics.auc
     precision_recall_curve = sklearn_metrics.precision_recall_curve
@@ -320,7 +333,7 @@ def plot_model_curves_from_adata(
         safe_name = save_name.replace("=", "").replace("__", "_").replace(",", "_")
         out_file = os.path.join(save_path, f"{safe_name}.png")
         plt.savefig(out_file, dpi=300)
-        print(f"📁 Saved: {out_file}")
+        logger.info("Saved model curves plot to %s.", out_file)
     plt.show()
 
 
@@ -358,6 +371,7 @@ def plot_model_curves_from_adata_with_frequency_grid(
 
     import numpy as np
 
+    logger.info("Plotting model curves with frequency grid from AnnData.")
     sklearn_metrics = require("sklearn.metrics", extra="ml-base", purpose="model curves")
     auc = sklearn_metrics.auc
     precision_recall_curve = sklearn_metrics.precision_recall_curve
@@ -387,7 +401,7 @@ def plot_model_curves_from_adata_with_frequency_grid(
         neg_sample_count = desired_total - pos_sample_count
 
         if pos_sample_count > len(pos_indices) or neg_sample_count > len(neg_indices):
-            print(f"⚠️ Skipping frequency {pos_freq:.3f}: not enough samples.")
+            logger.warning("Skipping frequency %.3f: not enough samples.", pos_freq)
             continue
 
         sampled_pos = np.random.choice(pos_indices, size=pos_sample_count, replace=False)
@@ -453,5 +467,5 @@ def plot_model_curves_from_adata_with_frequency_grid(
         os.makedirs(save_path, exist_ok=True)
         out_file = os.path.join(save_path, "ROC_PR_grid.png")
         plt.savefig(out_file, dpi=300)
-        print(f"📁 Saved: {out_file}")
+        logger.info("Saved model curves frequency grid to %s.", out_file)
     plt.show()

@@ -840,6 +840,7 @@ class ExperimentConfig:
     mismatch_frequency_range: Sequence[float] = field(default_factory=lambda: [0.05, 0.95])
     mismatch_frequency_layer: str = "mismatch_integer_encoding"
     mismatch_frequency_read_span_layer: str = "read_span_mask"
+    mismatch_base_frequency_exclude_mod_sites: bool = False
 
     # Spatial Analysis - Clustermap params
     layer_for_clustermap_plotting: Optional[str] = "nan0_0minus1"
@@ -850,12 +851,38 @@ class ExperimentConfig:
     spatial_clustermap_sortby: Optional[str] = "gpc"
     rolling_nn_layer: Optional[str] = "nan0_0minus1"
     rolling_nn_plot_layer: Optional[str] = "nan0_0minus1"
-    rolling_nn_window: int = 15
-    rolling_nn_step: int = 2
-    rolling_nn_min_overlap: int = 10
+    rolling_nn_plot_layers: List[str] = field(
+        default_factory=lambda: ["nan0_0minus1", "nan0_0minus1"]
+    )
+    rolling_nn_window: int = 10
+    rolling_nn_step: int = 1
+    rolling_nn_min_overlap: int = 8
     rolling_nn_return_fraction: bool = True
     rolling_nn_obsm_key: str = "rolling_nn_dist"
     rolling_nn_site_types: Optional[List[str]] = None
+    rolling_nn_write_zero_pairs_csvs: bool = True
+    rolling_nn_zero_pairs_uns_key: Optional[str] = None
+    rolling_nn_zero_pairs_segments_key: Optional[str] = None
+    rolling_nn_zero_pairs_layer_key: Optional[str] = None
+    rolling_nn_zero_pairs_refine: bool = True
+    rolling_nn_zero_pairs_max_nan_run: Optional[int] = None
+    rolling_nn_zero_pairs_merge_gap: int = 0
+    rolling_nn_zero_pairs_max_segments_per_read: Optional[int] = None
+    rolling_nn_zero_pairs_max_overlap: Optional[int] = None
+    rolling_nn_zero_pairs_layer_overlap_mode: str = "binary"
+    rolling_nn_zero_pairs_layer_overlap_value: Optional[int] = None
+    rolling_nn_zero_pairs_keep_uns: bool = True
+    rolling_nn_zero_pairs_segments_keep_uns: bool = True
+    rolling_nn_zero_pairs_top_segments_per_read: Optional[int] = None
+    rolling_nn_zero_pairs_top_segments_max_overlap: Optional[int] = None
+    rolling_nn_zero_pairs_top_segments_min_span: Optional[float] = None
+    rolling_nn_zero_pairs_top_segments_write_csvs: bool = True
+    rolling_nn_zero_pairs_segment_histogram_bins: int = 30
+
+    # Cross-sample rolling NN analysis
+    cross_sample_analysis: bool = False
+    cross_sample_grouping_col: Optional[str] = None
+    cross_sample_random_seed: int = 42
 
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = "nan_half"
@@ -1362,12 +1389,60 @@ class ExperimentConfig:
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
             rolling_nn_layer=merged.get("rolling_nn_layer", "nan0_0minus1"),
             rolling_nn_plot_layer=merged.get("rolling_nn_plot_layer", "nan0_0minus1"),
+            rolling_nn_plot_layers=merged.get(
+                "rolling_nn_plot_layers", ["nan0_0minus1", "nan0_0minus1"]
+            ),
             rolling_nn_window=merged.get("rolling_nn_window", 15),
             rolling_nn_step=merged.get("rolling_nn_step", 2),
             rolling_nn_min_overlap=merged.get("rolling_nn_min_overlap", 10),
             rolling_nn_return_fraction=merged.get("rolling_nn_return_fraction", True),
             rolling_nn_obsm_key=merged.get("rolling_nn_obsm_key", "rolling_nn_dist"),
             rolling_nn_site_types=merged.get("rolling_nn_site_types", None),
+            rolling_nn_write_zero_pairs_csvs=merged.get("rolling_nn_write_zero_pairs_csvs", True),
+            rolling_nn_zero_pairs_uns_key=merged.get("rolling_nn_zero_pairs_uns_key", None),
+            rolling_nn_zero_pairs_segments_key=merged.get(
+                "rolling_nn_zero_pairs_segments_key", None
+            ),
+            rolling_nn_zero_pairs_layer_key=merged.get("rolling_nn_zero_pairs_layer_key", None),
+            rolling_nn_zero_pairs_refine=merged.get("rolling_nn_zero_pairs_refine", True),
+            rolling_nn_zero_pairs_max_nan_run=merged.get(
+                "rolling_nn_zero_pairs_max_nan_run", None
+            ),
+            rolling_nn_zero_pairs_merge_gap=merged.get("rolling_nn_zero_pairs_merge_gap", 0),
+            rolling_nn_zero_pairs_max_segments_per_read=merged.get(
+                "rolling_nn_zero_pairs_max_segments_per_read", None
+            ),
+            rolling_nn_zero_pairs_max_overlap=merged.get(
+                "rolling_nn_zero_pairs_max_overlap", None
+            ),
+            rolling_nn_zero_pairs_layer_overlap_mode=merged.get(
+                "rolling_nn_zero_pairs_layer_overlap_mode", "binary"
+            ),
+            rolling_nn_zero_pairs_layer_overlap_value=merged.get(
+                "rolling_nn_zero_pairs_layer_overlap_value", None
+            ),
+            rolling_nn_zero_pairs_keep_uns=merged.get("rolling_nn_zero_pairs_keep_uns", True),
+            rolling_nn_zero_pairs_segments_keep_uns=merged.get(
+                "rolling_nn_zero_pairs_segments_keep_uns", True
+            ),
+            rolling_nn_zero_pairs_top_segments_per_read=merged.get(
+                "rolling_nn_zero_pairs_top_segments_per_read", None
+            ),
+            rolling_nn_zero_pairs_top_segments_max_overlap=merged.get(
+                "rolling_nn_zero_pairs_top_segments_max_overlap", None
+            ),
+            rolling_nn_zero_pairs_top_segments_min_span=merged.get(
+                "rolling_nn_zero_pairs_top_segments_min_span", None
+            ),
+            rolling_nn_zero_pairs_top_segments_write_csvs=merged.get(
+                "rolling_nn_zero_pairs_top_segments_write_csvs", True
+            ),
+            rolling_nn_zero_pairs_segment_histogram_bins=merged.get(
+                "rolling_nn_zero_pairs_segment_histogram_bins", 30
+            ),
+            cross_sample_analysis=merged.get("cross_sample_analysis", False),
+            cross_sample_grouping_col=merged.get("cross_sample_grouping_col", None),
+            cross_sample_random_seed=merged.get("cross_sample_random_seed", 42),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
             umap_layers_to_plot=merged.get(
                 "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]

@@ -5,7 +5,10 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
+
+logger = get_logger(__name__)
 
 
 def plot_spatial_autocorr_grid(
@@ -38,6 +41,12 @@ def plot_spatial_autocorr_grid(
     """
     import os
     import warnings
+
+    logger.info(
+        "Plotting spatial autocorrelation grid to %s for site_types=%s.",
+        out_dir,
+        site_types,
+    )
 
     plt = require("matplotlib.pyplot", extra="plotting", purpose="autocorrelation plots")
 
@@ -510,10 +519,10 @@ def plot_spatial_autocorr_grid(
     try:
         combined_df.to_csv(combined_out, index=False)
     except Exception as e:
-        import warnings
-
         warnings.warn(f"Failed to write combined CSV {combined_out}: {e}")
+        logger.warning("Failed to write combined CSV %s: %s", combined_out, e)
 
+    logger.info("Saved %s autocorrelation grid pages to %s.", len(saved_pages), out_dir)
     return saved_pages
 
 
@@ -522,6 +531,7 @@ def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=16
     Plot NRL and SNR vs window center from the dataframe returned by rolling_autocorr_metrics.
     If out_png is None, returns the matplotlib Figure object; otherwise saves PNG and returns path.
     """
+    logger.info("Plotting rolling metrics%s.", f" -> {out_png}" if out_png else "")
     plt = require("matplotlib.pyplot", extra="plotting", purpose="autocorrelation plots")
 
     # sort by center
@@ -546,6 +556,7 @@ def plot_rolling_metrics(df, out_png=None, title=None, figsize=(10, 3.5), dpi=16
 
     if out_png:
         fig.savefig(out_png, bbox_inches="tight")
+        logger.info("Saved rolling metrics plot to %s.", out_png)
         if not show:
             matplotlib = require("matplotlib", extra="plotting", purpose="autocorrelation plots")
 
@@ -604,6 +615,12 @@ def plot_rolling_grid(
     """
     import os
 
+    logger.info(
+        "Plotting rolling metric grids for site=%s to %s (metrics=%s).",
+        site,
+        out_dir,
+        metrics,
+    )
     plt = require("matplotlib.pyplot", extra="plotting", purpose="autocorrelation plots")
 
     if per_metric_ylim is None:
@@ -708,6 +725,7 @@ def plot_rolling_grid(
             fig.savefig(out_png, bbox_inches="tight")
             plt.close(fig)
             saved_pages.append(out_png)
+            logger.info("Saved rolling grid page to %s.", out_png)
 
         pages_by_metric[metric] = saved_pages
 
