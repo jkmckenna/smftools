@@ -102,7 +102,7 @@ def _build_zero_hamming_span_layer_from_obs(
             end_idx = label_indexer[end_label]
             if start_idx > end_idx:
                 start_idx, end_idx = end_idx, start_idx
-            target_layer[obs_idx, start_idx : end_idx + 1] += 1
+            target_layer[obs_idx, start_idx : end_idx + 1] = 1
 
     adata.layers[layer_key] = target_layer
 
@@ -748,6 +748,8 @@ def chimeric_adata_core(
                             subset,
                             obsm_key=cfg.rolling_nn_obsm_key,
                             layer_keys=plot_layers_resolved,
+                            fill_nn_with_colmax=False,
+                            drop_all_nan_windows=False,
                             max_nan_fraction=cfg.position_max_nan_threshold,
                             var_valid_fraction_col=f"{reference}_valid_fraction",
                             title=title,

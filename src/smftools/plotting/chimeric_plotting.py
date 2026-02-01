@@ -550,7 +550,7 @@ def plot_rolling_nn_and_two_layers(
     sns.heatmap(
         layer_plot_two,
         ax=ax3,
-        cmap=layer_cmap,
+        cmap="Greens",
         xticklabels=False,
         yticklabels=False,
         robust=robust,
