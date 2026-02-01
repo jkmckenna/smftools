@@ -718,6 +718,11 @@ def plot_zero_hamming_span_and_layer(
     if read_span_mask is not None:
         layer_plot = layer_plot.mask(read_span_mask)
 
+    # Apply read span mask to span layer for barplot and heatmap
+    span_plot = span_ord.copy()
+    if read_span_mask is not None:
+        span_plot = span_plot.mask(read_span_mask)
+
     fig = plt.figure(figsize=figsize)
     gs = fig.add_gridspec(
         2,
@@ -737,7 +742,7 @@ def plot_zero_hamming_span_and_layer(
     fig.add_subplot(gs[0, 1]).axis("off")
     fig.add_subplot(gs[0, 3]).axis("off")
 
-    mean_span = np.nanmean(span_ord.to_numpy(), axis=0)
+    mean_span = np.nanmean(span_plot.to_numpy(), axis=0)
     clean_barplot(
         ax1_bar,
         mean_span,
@@ -757,8 +762,9 @@ def plot_zero_hamming_span_and_layer(
         y_ticks=[0.0, 0.5, 1.0],
     )
 
+    span_cmap.set_bad(outside_read_color)
     sns.heatmap(
-        span_ord,
+        span_plot,
         ax=ax1,
         cmap=span_cmap,
         norm=span_norm,
@@ -957,6 +963,26 @@ def plot_delta_hamming_summary(
     cross_span_ord = _span_df(cross_span_layer_key)
     delta_span_ord = delta_span_filled.loc[ordered_index]
 
+    # --- Read span mask for layer-resolution panels ---
+    read_span_outside = None
+    if read_span_layer and read_span_layer in subset.layers:
+        rsm = subset.layers[read_span_layer]
+        rsm = rsm.toarray() if hasattr(rsm, "toarray") else np.asarray(rsm)
+        rsm_df = pd.DataFrame(rsm, index=subset.obs_names, columns=subset.var_names)
+        rsm_df.index = rsm_df.index.astype(str)
+        if nan_mask is not None:
+            rsm_df = rsm_df.loc[:, nan_mask]
+        read_span_outside = rsm_df.loc[ordered_index].to_numpy() == 0
+
+    # Apply read span mask to span layers (NaN outside read → grey in heatmap, excluded from barplot)
+    self_span_plot = self_span_ord.copy()
+    cross_span_plot = cross_span_ord.copy()
+    delta_span_plot = delta_span_ord.copy()
+    if read_span_outside is not None:
+        self_span_plot = self_span_plot.mask(read_span_outside)
+        cross_span_plot = cross_span_plot.mask(read_span_outside)
+        delta_span_plot = delta_span_plot.mask(read_span_outside)
+
     # --- NN data ---
     def _nn_df(obsm_key):
         X = subset.obsm[obsm_key]
@@ -983,16 +1009,6 @@ def plot_delta_hamming_summary(
     layer_df.index = layer_df.index.astype(str)
     if nan_mask is not None:
         layer_df = layer_df.loc[:, nan_mask]
-
-    read_span_outside = None
-    if read_span_layer and read_span_layer in subset.layers:
-        rsm = subset.layers[read_span_layer]
-        rsm = rsm.toarray() if hasattr(rsm, "toarray") else np.asarray(rsm)
-        rsm_df = pd.DataFrame(rsm, index=subset.obs_names, columns=subset.var_names)
-        rsm_df.index = rsm_df.index.astype(str)
-        if nan_mask is not None:
-            rsm_df = rsm_df.loc[:, nan_mask]
-        read_span_outside = rsm_df.loc[ordered_index].to_numpy() == 0
 
     layer_ord = layer_df.loc[ordered_index]
     layer_plot = layer_ord.fillna(fill_layer_value)
@@ -1114,10 +1130,10 @@ def plot_delta_hamming_summary(
 
     _apply_xticks(ax_signal, [str(x) for x in layer_plot.columns], xtick_step)
 
-    # --- Row 2: span barplots (matched y-scale) ---
-    mean_self_span = np.nanmean(self_span_ord.to_numpy(), axis=0)
-    mean_cross_span = np.nanmean(cross_span_ord.to_numpy(), axis=0)
-    mean_delta_span = np.nanmean(delta_span_ord.to_numpy(), axis=0)
+    # --- Row 2: span barplots (matched y-scale, using read-span-masked data) ---
+    mean_self_span = np.nanmean(self_span_plot.to_numpy(), axis=0)
+    mean_cross_span = np.nanmean(cross_span_plot.to_numpy(), axis=0)
+    mean_delta_span = np.nanmean(delta_span_plot.to_numpy(), axis=0)
     span_y_max = float(
         np.nanmax(np.concatenate([mean_self_span, mean_cross_span, mean_delta_span]))
     )
@@ -1151,22 +1167,25 @@ def plot_delta_hamming_summary(
         y_ticks=span_y_ticks,
     )
 
-    # --- Row 2: span heatmaps ---
+    # --- Row 2: span heatmaps (read-span-masked, outside-read = grey) ---
     self_span_cmap = colors.ListedColormap(["white", span_color])
     self_span_norm = colors.BoundaryNorm([-0.5, 0.5, 1.5], self_span_cmap.N)
+    self_span_cmap.set_bad(outside_read_color)
     cross_span_cmap = colors.ListedColormap(["white", cross_span_color])
     cross_span_norm = colors.BoundaryNorm([-0.5, 0.5, 1.5], cross_span_cmap.N)
+    cross_span_cmap.set_bad(outside_read_color)
+    delta_cmap.set_bad(outside_read_color)
 
     sns.heatmap(
-        self_span_ord, ax=ax_self_span, cmap=self_span_cmap, norm=self_span_norm,
+        self_span_plot, ax=ax_self_span, cmap=self_span_cmap, norm=self_span_norm,
         xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_self_span_cbar,
     )
     sns.heatmap(
-        cross_span_ord, ax=ax_cross_span, cmap=cross_span_cmap, norm=cross_span_norm,
+        cross_span_plot, ax=ax_cross_span, cmap=cross_span_cmap, norm=cross_span_norm,
         xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_cross_span_cbar,
     )
     sns.heatmap(
-        delta_span_ord, ax=ax_delta_span, cmap=delta_cmap, norm=delta_norm,
+        delta_span_plot, ax=ax_delta_span, cmap=delta_cmap, norm=delta_norm,
         xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_delta_span_cbar,
     )
 
