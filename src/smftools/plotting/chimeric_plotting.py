@@ -248,7 +248,7 @@ def plot_rolling_nn_and_layer(
             window_labels = _format_labels(label_source)
         _apply_xticks(ax1, window_labels, xtick_step)
 
-    methylation_fraction = _methylation_fraction_for_layer(L_ord.to_numpy(), layer_key)
+    methylation_fraction = _methylation_fraction_for_layer(L_plot.to_numpy(), layer_key)
     clean_barplot(
         ax2_bar,
         methylation_fraction,
@@ -520,11 +520,11 @@ def plot_rolling_nn_and_two_layers(
             window_labels = _format_labels(label_source)
         _apply_xticks(ax1, window_labels, xtick_step)
 
-    for ax_bar, layer_df, layer_key in (
-        (ax2_bar, layer_df_one, layer_key_one),
-        (ax3_bar, layer_df_two, layer_key_two),
+    for ax_bar, lp, layer_key in (
+        (ax2_bar, layer_plot_one, layer_key_one),
+        (ax3_bar, layer_plot_two, layer_key_two),
     ):
-        methylation_fraction = _methylation_fraction_for_layer(layer_df.to_numpy(), layer_key)
+        methylation_fraction = _methylation_fraction_for_layer(lp.to_numpy(), layer_key)
         clean_barplot(
             ax_bar,
             methylation_fraction,
@@ -538,6 +538,10 @@ def plot_rolling_nn_and_two_layers(
     if read_span_mask is not None:
         layer_cmap.set_bad(outside_read_color)
 
+    layer2_cmap = plt.get_cmap("Greens").copy()
+    if read_span_mask is not None:
+        layer2_cmap.set_bad(outside_read_color)
+
     sns.heatmap(
         layer_plot_one,
         ax=ax2,
@@ -550,7 +554,7 @@ def plot_rolling_nn_and_two_layers(
     sns.heatmap(
         layer_plot_two,
         ax=ax3,
-        cmap="Greens",
+        cmap=layer2_cmap,
         xticklabels=False,
         yticklabels=False,
         robust=robust,
@@ -718,6 +722,11 @@ def plot_zero_hamming_span_and_layer(
     if read_span_mask is not None:
         layer_plot = layer_plot.mask(read_span_mask)
 
+    # Apply read span mask to span layer for barplot and heatmap
+    span_plot = span_ord.copy()
+    if read_span_mask is not None:
+        span_plot = span_plot.mask(read_span_mask)
+
     fig = plt.figure(figsize=figsize)
     gs = fig.add_gridspec(
         2,
@@ -737,7 +746,7 @@ def plot_zero_hamming_span_and_layer(
     fig.add_subplot(gs[0, 1]).axis("off")
     fig.add_subplot(gs[0, 3]).axis("off")
 
-    mean_span = np.nanmean(span_ord.to_numpy(), axis=0)
+    mean_span = np.nanmean(span_plot.to_numpy(), axis=0)
     clean_barplot(
         ax1_bar,
         mean_span,
@@ -757,8 +766,9 @@ def plot_zero_hamming_span_and_layer(
         y_ticks=[0.0, 0.5, 1.0],
     )
 
+    span_cmap.set_bad(outside_read_color)
     sns.heatmap(
-        span_ord,
+        span_plot,
         ax=ax1,
         cmap=span_cmap,
         norm=span_norm,
@@ -796,6 +806,527 @@ def plot_zero_hamming_span_and_layer(
         plt.show()
 
     return ordered_index
+
+
+def plot_delta_hamming_summary(
+    subset,
+    self_obsm_key: str = "rolling_nn_dist",
+    cross_obsm_key: str = "rolling_nn_dist",
+    layer_key: str = "nan0_0minus1",
+    self_span_layer_key: str = "zero_hamming_distance_spans",
+    cross_span_layer_key: str = "cross_sample_zero_hamming_distance_spans",
+    delta_span_layer_key: str = "delta_zero_hamming_distance_spans",
+    meta_cols: tuple[str, ...] = ("Reference_strand", "Sample"),
+    col_cluster: bool = False,
+    fill_nn_with_colmax: bool = True,
+    fill_layer_value: float = 0.0,
+    fill_span_value: float = 0.0,
+    drop_all_nan_windows: bool = True,
+    max_nan_fraction: float | None = None,
+    var_valid_fraction_col: str | None = None,
+    var_nan_fraction_col: str | None = None,
+    read_span_layer: str | None = "read_span_mask",
+    outside_read_color: str = "#bdbdbd",
+    nn_nan_color: str = "#bdbdbd",
+    span_color: str = "#2ca25f",
+    cross_span_color: str = "#e6550d",
+    delta_span_color: str = "#756bb1",
+    figsize: tuple[float, float] = (30, 24),
+    robust: bool = True,
+    title: str | None = None,
+    xtick_step: int | None = None,
+    xtick_rotation: int = 90,
+    xtick_fontsize: int = 8,
+    save_name: str | None = None,
+):
+    """
+    Plot a 2×3 summary: row 1 = self NN, cross NN, signal layer;
+    row 2 = self hamming spans, cross hamming spans, delta hamming spans.
+
+    Cluster order is determined by the delta hamming span layer.
+    Barplots are drawn above each clustermap.
+
+    Args:
+        subset: AnnData subset with all required obsm/layers.
+        self_obsm_key: obsm key for within-sample rolling NN distances.
+        cross_obsm_key: obsm key for cross-sample rolling NN distances.
+        layer_key: Signal layer to plot in top-right panel.
+        self_span_layer_key: Layer with within-sample zero-Hamming spans.
+        cross_span_layer_key: Layer with cross-sample zero-Hamming spans.
+        delta_span_layer_key: Layer with delta (self - cross) zero-Hamming spans.
+        meta_cols: Obs columns for row color annotations.
+        col_cluster: Cluster columns.
+        fill_nn_with_colmax: Fill NN NaNs with per-column max for display.
+        fill_layer_value: Fill NaN in signal layer.
+        fill_span_value: Fill NaN in span layers.
+        drop_all_nan_windows: Drop all-NaN rolling NN windows.
+        max_nan_fraction: Max NaN fraction filter for layer columns.
+        var_valid_fraction_col: Var column with valid fraction.
+        var_nan_fraction_col: Var column with NaN fraction.
+        read_span_layer: Layer with read span mask.
+        outside_read_color: Color for outside-read positions.
+        nn_nan_color: Color for NaN in NN heatmaps.
+        span_color: Color for self hamming span (1 values).
+        cross_span_color: Color for cross hamming span (1 values).
+        delta_span_color: Color for delta hamming span (1 values).
+        figsize: Figure size.
+        robust: Robust color scaling.
+        title: Figure suptitle.
+        xtick_step: Spacing between x-tick labels.
+        xtick_rotation: X-tick label rotation.
+        xtick_fontsize: X-tick label font size.
+        save_name: Output path.
+    """
+    logger.info(
+        "Plotting delta hamming summary: self_nn=%s cross_nn=%s delta_span=%s.",
+        self_obsm_key,
+        cross_obsm_key,
+        delta_span_layer_key,
+    )
+
+    def _apply_xticks(ax, labels, step):
+        if labels is None or len(labels) == 0:
+            ax.set_xticks([])
+            return
+        if step is None or step <= 0:
+            step = max(1, len(labels) // 10)
+        ticks = np.arange(0, len(labels), step)
+        ax.set_xticks(ticks + 0.5)
+        ax.set_xticklabels(
+            [labels[i] for i in ticks],
+            rotation=xtick_rotation,
+            fontsize=xtick_fontsize,
+        )
+
+    def _format_labels(values):
+        values = np.asarray(values)
+        if np.issubdtype(values.dtype, np.number):
+            if np.all(np.isfinite(values)) and np.all(np.isclose(values, np.round(values))):
+                values = np.round(values).astype(int)
+        return [str(v) for v in values]
+
+    # --- Determine row order from delta span layer ---
+    delta_span = subset.layers[delta_span_layer_key]
+    delta_span = delta_span.toarray() if hasattr(delta_span, "toarray") else np.asarray(delta_span)
+    delta_span_df = pd.DataFrame(delta_span, index=subset.obs_names, columns=subset.var_names)
+    delta_span_df.index = delta_span_df.index.astype(str)
+
+    # NaN fraction filtering for layer columns
+    nan_mask = None
+    if max_nan_fraction is not None:
+        nan_fraction = None
+        if var_nan_fraction_col and var_nan_fraction_col in subset.var:
+            nan_fraction = pd.to_numeric(
+                subset.var[var_nan_fraction_col], errors="coerce"
+            ).to_numpy()
+        elif var_valid_fraction_col and var_valid_fraction_col in subset.var:
+            valid_fraction = pd.to_numeric(
+                subset.var[var_valid_fraction_col], errors="coerce"
+            ).to_numpy()
+            nan_fraction = 1 - valid_fraction
+        if nan_fraction is not None:
+            nan_mask = nan_fraction <= max_nan_fraction
+            delta_span_df = delta_span_df.loc[:, nan_mask]
+
+    delta_span_filled = delta_span_df.fillna(fill_span_value)
+    delta_span_filled.index = delta_span_filled.index.astype(str)
+
+    meta = subset.obs.loc[delta_span_df.index, list(meta_cols)].copy()
+    meta.index = meta.index.astype(str)
+    row_colors = make_row_colors(meta)
+
+    delta_cmap = colors.ListedColormap(["white", delta_span_color])
+    delta_norm = colors.BoundaryNorm([-0.5, 0.5, 1.5], delta_cmap.N)
+
+    g = sns.clustermap(
+        delta_span_filled,
+        cmap=delta_cmap,
+        norm=delta_norm,
+        col_cluster=col_cluster,
+        row_cluster=True,
+        row_colors=row_colors,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+    )
+    row_order = g.dendrogram_row.reordered_ind
+    ordered_index = delta_span_filled.index[row_order]
+    plt.close(g.fig)
+
+    # --- Helper to extract + order a span layer ---
+    def _span_df(layer_key):
+        raw = subset.layers[layer_key]
+        raw = raw.toarray() if hasattr(raw, "toarray") else np.asarray(raw)
+        df = pd.DataFrame(raw, index=subset.obs_names, columns=subset.var_names)
+        df.index = df.index.astype(str)
+        if nan_mask is not None:
+            df = df.loc[:, nan_mask]
+        return df.loc[ordered_index].fillna(fill_span_value)
+
+    self_span_ord = _span_df(self_span_layer_key)
+    cross_span_ord = _span_df(cross_span_layer_key)
+    delta_span_ord = delta_span_filled.loc[ordered_index]
+
+    # --- Read span mask for layer-resolution panels ---
+    read_span_outside = None
+    if read_span_layer and read_span_layer in subset.layers:
+        rsm = subset.layers[read_span_layer]
+        rsm = rsm.toarray() if hasattr(rsm, "toarray") else np.asarray(rsm)
+        rsm_df = pd.DataFrame(rsm, index=subset.obs_names, columns=subset.var_names)
+        rsm_df.index = rsm_df.index.astype(str)
+        if nan_mask is not None:
+            rsm_df = rsm_df.loc[:, nan_mask]
+        read_span_outside = rsm_df.loc[ordered_index].to_numpy() == 0
+
+    # Apply read span mask to span layers (NaN outside read → grey in heatmap, excluded from barplot)
+    self_span_plot = self_span_ord.copy()
+    cross_span_plot = cross_span_ord.copy()
+    delta_span_plot = delta_span_ord.copy()
+    if read_span_outside is not None:
+        self_span_plot = self_span_plot.mask(read_span_outside)
+        cross_span_plot = cross_span_plot.mask(read_span_outside)
+        delta_span_plot = delta_span_plot.mask(read_span_outside)
+
+    # --- NN data ---
+    def _nn_df(obsm_key):
+        X = subset.obsm[obsm_key]
+        valid = ~np.all(np.isnan(X), axis=1)
+        df = pd.DataFrame(X, index=subset.obs_names)
+        df.index = df.index.astype(str)
+        if drop_all_nan_windows:
+            df = df.loc[:, ~df.isna().all(axis=0)]
+        col_max = df.max(axis=0, skipna=True).fillna(0)
+        df_cluster = df.fillna(col_max)
+        if fill_nn_with_colmax:
+            df_display = df_cluster
+        else:
+            df_display = df.copy()
+        return df_display.loc[ordered_index]
+
+    self_nn_ord = _nn_df(self_obsm_key)
+    cross_nn_ord = _nn_df(cross_obsm_key)
+
+    # --- Signal layer ---
+    layer_raw = subset.layers[layer_key]
+    layer_raw = layer_raw.toarray() if hasattr(layer_raw, "toarray") else np.asarray(layer_raw)
+    layer_df = pd.DataFrame(layer_raw, index=subset.obs_names, columns=subset.var_names)
+    layer_df.index = layer_df.index.astype(str)
+    if nan_mask is not None:
+        layer_df = layer_df.loc[:, nan_mask]
+
+    layer_ord = layer_df.loc[ordered_index]
+    layer_plot = layer_ord.fillna(fill_layer_value)
+    if read_span_outside is not None:
+        layer_plot = layer_plot.mask(read_span_outside)
+
+    # --- Figure layout: 5 rows × 6 cols ---
+    # row 0: barplots for top row
+    # row 1: heatmaps (self NN, cross NN, signal)
+    # row 2: spacer
+    # row 3: barplots for bottom row
+    # row 4: heatmaps (self span, cross span, delta span)
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(
+        5,
+        6,
+        width_ratios=[1, 0.05, 1, 0.05, 1, 0.05],
+        height_ratios=[1, 8, 0.8, 1, 8],
+        wspace=0.2,
+        hspace=0.05,
+    )
+
+    # Row 1 heatmaps + colorbars
+    ax_self_nn = fig.add_subplot(gs[1, 0])
+    ax_self_nn_cbar = fig.add_subplot(gs[1, 1])
+    ax_cross_nn = fig.add_subplot(gs[1, 2])
+    ax_cross_nn_cbar = fig.add_subplot(gs[1, 3])
+    ax_signal = fig.add_subplot(gs[1, 4])
+    ax_signal_cbar = fig.add_subplot(gs[1, 5])
+
+    # Row 1 barplots
+    ax_self_nn_bar = fig.add_subplot(gs[0, 0], sharex=ax_self_nn)
+    ax_cross_nn_bar = fig.add_subplot(gs[0, 2], sharex=ax_cross_nn)
+    ax_signal_bar = fig.add_subplot(gs[0, 4], sharex=ax_signal)
+    fig.add_subplot(gs[0, 1]).axis("off")
+    fig.add_subplot(gs[0, 3]).axis("off")
+    fig.add_subplot(gs[0, 5]).axis("off")
+
+    # Spacer row
+    for col in range(6):
+        fig.add_subplot(gs[2, col]).axis("off")
+
+    # Row 2 heatmaps + colorbars
+    ax_self_span = fig.add_subplot(gs[4, 0])
+    ax_self_span_cbar = fig.add_subplot(gs[4, 1])
+    ax_cross_span = fig.add_subplot(gs[4, 2])
+    ax_cross_span_cbar = fig.add_subplot(gs[4, 3])
+    ax_delta_span = fig.add_subplot(gs[4, 4])
+    ax_delta_span_cbar = fig.add_subplot(gs[4, 5])
+
+    # Row 2 barplots
+    ax_self_span_bar = fig.add_subplot(gs[3, 0], sharex=ax_self_span)
+    ax_cross_span_bar = fig.add_subplot(gs[3, 2], sharex=ax_cross_span)
+    ax_delta_span_bar = fig.add_subplot(gs[3, 4], sharex=ax_delta_span)
+    fig.add_subplot(gs[3, 1]).axis("off")
+    fig.add_subplot(gs[3, 3]).axis("off")
+    fig.add_subplot(gs[3, 5]).axis("off")
+
+    # --- Row 1: NN + signal barplots ---
+    mean_self_nn = np.nanmean(self_nn_ord.to_numpy(), axis=0)
+    mean_cross_nn = np.nanmean(cross_nn_ord.to_numpy(), axis=0)
+    nn_y_max = float(np.nanmax(np.concatenate([mean_self_nn, mean_cross_nn])))
+    if not np.isfinite(nn_y_max) or nn_y_max <= 0:
+        nn_y_max = None
+    clean_barplot(
+        ax_self_nn_bar,
+        mean_self_nn,
+        "Self NN",
+        y_max=nn_y_max,
+        y_label="Mean distance",
+        y_ticks=None,
+    )
+    clean_barplot(
+        ax_cross_nn_bar,
+        mean_cross_nn,
+        "Cross NN",
+        y_max=nn_y_max,
+        y_label="Mean distance",
+        y_ticks=None,
+    )
+    methylation_fraction = _methylation_fraction_for_layer(layer_ord.to_numpy(), layer_key)
+    clean_barplot(
+        ax_signal_bar,
+        methylation_fraction,
+        layer_key,
+        y_max=1.0,
+        y_label="Methylation fraction",
+        y_ticks=[0.0, 0.5, 1.0],
+    )
+
+    # --- Row 1: NN + signal heatmaps ---
+    nn_cmap = plt.get_cmap("viridis").copy()
+    nn_cmap.set_bad(nn_nan_color)
+
+    sns.heatmap(
+        self_nn_ord, ax=ax_self_nn, cmap=nn_cmap,
+        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_self_nn_cbar,
+    )
+    sns.heatmap(
+        cross_nn_ord, ax=ax_cross_nn, cmap=nn_cmap,
+        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_cross_nn_cbar,
+    )
+
+    layer_cmap = plt.get_cmap("coolwarm").copy()
+    if read_span_outside is not None:
+        layer_cmap.set_bad(outside_read_color)
+    sns.heatmap(
+        layer_plot, ax=ax_signal, cmap=layer_cmap,
+        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_signal_cbar,
+    )
+
+    # NN x-tick labels
+    for ax_nn, obsm_key in ((ax_self_nn, self_obsm_key), (ax_cross_nn, cross_obsm_key)):
+        label_source = subset.uns.get(f"{obsm_key}_centers")
+        if label_source is None:
+            label_source = subset.uns.get(f"{obsm_key}_starts")
+        if label_source is not None:
+            _apply_xticks(ax_nn, _format_labels(np.asarray(label_source)), xtick_step)
+
+    _apply_xticks(ax_signal, [str(x) for x in layer_plot.columns], xtick_step)
+
+    # --- Row 2: span barplots (matched y-scale, using read-span-masked data) ---
+    mean_self_span = np.nanmean(self_span_plot.to_numpy(), axis=0)
+    mean_cross_span = np.nanmean(cross_span_plot.to_numpy(), axis=0)
+    mean_delta_span = np.nanmean(delta_span_plot.to_numpy(), axis=0)
+    span_y_max = float(
+        np.nanmax(np.concatenate([mean_self_span, mean_cross_span, mean_delta_span]))
+    )
+    if not np.isfinite(span_y_max) or span_y_max <= 0:
+        span_y_max = 1.0
+    # Round up to nearest 0.1 for clean ticks
+    span_y_max = np.ceil(span_y_max * 10) / 10
+    span_y_ticks = [0.0, span_y_max / 2, span_y_max]
+    clean_barplot(
+        ax_self_span_bar,
+        mean_self_span,
+        "Self spans",
+        y_max=span_y_max,
+        y_label="Span fraction",
+        y_ticks=span_y_ticks,
+    )
+    clean_barplot(
+        ax_cross_span_bar,
+        mean_cross_span,
+        "Cross spans",
+        y_max=span_y_max,
+        y_label="Span fraction",
+        y_ticks=span_y_ticks,
+    )
+    clean_barplot(
+        ax_delta_span_bar,
+        mean_delta_span,
+        "Delta spans",
+        y_max=span_y_max,
+        y_label="Span fraction",
+        y_ticks=span_y_ticks,
+    )
+
+    # --- Row 2: span heatmaps (read-span-masked, outside-read = grey) ---
+    self_span_cmap = colors.ListedColormap(["white", span_color])
+    self_span_norm = colors.BoundaryNorm([-0.5, 0.5, 1.5], self_span_cmap.N)
+    self_span_cmap.set_bad(outside_read_color)
+    cross_span_cmap = colors.ListedColormap(["white", cross_span_color])
+    cross_span_norm = colors.BoundaryNorm([-0.5, 0.5, 1.5], cross_span_cmap.N)
+    cross_span_cmap.set_bad(outside_read_color)
+    delta_cmap.set_bad(outside_read_color)
+
+    sns.heatmap(
+        self_span_plot, ax=ax_self_span, cmap=self_span_cmap, norm=self_span_norm,
+        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_self_span_cbar,
+    )
+    sns.heatmap(
+        cross_span_plot, ax=ax_cross_span, cmap=cross_span_cmap, norm=cross_span_norm,
+        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_cross_span_cbar,
+    )
+    sns.heatmap(
+        delta_span_plot, ax=ax_delta_span, cmap=delta_cmap, norm=delta_norm,
+        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_delta_span_cbar,
+    )
+
+    col_labels = [str(x) for x in self_span_ord.columns]
+    for ax in (ax_self_span, ax_cross_span, ax_delta_span):
+        _apply_xticks(ax, col_labels, xtick_step)
+
+    if title:
+        fig.suptitle(title)
+
+    if save_name is not None:
+        fname = os.path.join(save_name)
+        plt.savefig(fname, dpi=200, bbox_inches="tight")
+        logger.info("Saved delta hamming summary plot to %s.", fname)
+    else:
+        plt.show()
+
+    plt.close(fig)
+    return ordered_index
+
+
+def plot_span_length_distributions(
+    subset,
+    self_span_layer_key: str = "zero_hamming_distance_spans",
+    cross_span_layer_key: str = "cross_sample_zero_hamming_distance_spans",
+    delta_span_layer_key: str = "delta_zero_hamming_distance_spans",
+    read_span_layer: str | None = "read_span_mask",
+    bins: int = 30,
+    self_color: str = "#2ca25f",
+    cross_color: str = "#e6550d",
+    delta_color: str = "#756bb1",
+    figsize: tuple[float, float] = (10, 6),
+    title: str | None = None,
+    save_name: str | None = None,
+):
+    """
+    Overlay probability histograms of contiguous span lengths from three layers.
+
+    Span length is measured in base-pair coordinates using ``subset.var_names``.
+    Positions outside the valid read span (where ``read_span_layer == 0``) are
+    excluded before detecting contiguous runs.
+
+    Args:
+        subset: AnnData subset containing the span layers.
+        self_span_layer_key: Layer with within-sample zero-Hamming spans.
+        cross_span_layer_key: Layer with cross-sample zero-Hamming spans.
+        delta_span_layer_key: Layer with delta (self - cross) spans.
+        read_span_layer: Layer with read span mask; 0 = outside read.
+        bins: Number of histogram bins.
+        self_color: Histogram color for self spans.
+        cross_color: Histogram color for cross spans.
+        delta_color: Histogram color for delta spans.
+        figsize: Figure size.
+        title: Figure title.
+        save_name: Output path.
+    """
+
+    def _extract_span_lengths(layer_arr, positions, read_mask):
+        """Extract lengths (in bp) of contiguous runs of 1 in each row."""
+        lengths = []
+        for i in range(layer_arr.shape[0]):
+            row = layer_arr[i].copy()
+            if read_mask is not None:
+                row[~read_mask[i]] = 0
+            # Find contiguous runs of 1
+            diff = np.diff(np.concatenate(([0], row.astype(np.int8), [0])))
+            starts = np.where(diff == 1)[0]
+            ends = np.where(diff == -1)[0]
+            for s, e in zip(starts, ends):
+                if e > s:
+                    span_bp = float(positions[e - 1] - positions[s])
+                    if span_bp > 0:
+                        lengths.append(span_bp)
+        return np.array(lengths, dtype=float)
+
+    # Parse genomic positions from var_names
+    try:
+        positions = np.array(subset.var_names, dtype=float)
+    except (ValueError, TypeError):
+        positions = np.arange(subset.n_vars, dtype=float)
+
+    # Read span mask
+    read_mask = None
+    if read_span_layer and read_span_layer in subset.layers:
+        rsm = subset.layers[read_span_layer]
+        rsm = rsm.toarray() if hasattr(rsm, "toarray") else np.asarray(rsm)
+        read_mask = rsm.astype(bool)
+
+    entries = []
+    for layer_key, color, label in (
+        (self_span_layer_key, self_color, "Self"),
+        (cross_span_layer_key, cross_color, "Cross"),
+        (delta_span_layer_key, delta_color, "Delta"),
+    ):
+        if layer_key not in subset.layers:
+            continue
+        arr = subset.layers[layer_key]
+        arr = arr.toarray() if hasattr(arr, "toarray") else np.asarray(arr)
+        span_lengths = _extract_span_lengths(arr, positions, read_mask)
+        entries.append((label, color, span_lengths))
+
+    if not entries:
+        logger.warning("No span layers found for span length distribution plot.")
+        return
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    for label, color, span_lengths in entries:
+        if len(span_lengths) == 0:
+            ax.axhline(0, color=color, label=f"{label} (n=0)")
+            continue
+        ax.hist(
+            span_lengths,
+            bins=bins,
+            density=True,
+            alpha=0.5,
+            color=color,
+            label=f"{label} (n={len(span_lengths)})",
+            edgecolor="black",
+            linewidth=0.5,
+        )
+
+    ax.set_xlabel("Span length (bp)")
+    ax.set_ylabel("Probability density")
+    ax.legend()
+
+    if title:
+        ax.set_title(title)
+
+    if save_name is not None:
+        fname = os.path.join(save_name)
+        plt.savefig(fname, dpi=200, bbox_inches="tight")
+        logger.info("Saved span length distribution plot to %s.", fname)
+    else:
+        plt.show()
+
+    plt.close(fig)
 
 
 def _window_center_labels(var_names: Sequence, starts: np.ndarray, window: int) -> list[str]:

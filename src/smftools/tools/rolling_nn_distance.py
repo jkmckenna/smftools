@@ -202,6 +202,7 @@ def rolling_window_nn_distance(
     store_obsm: Optional[str] = "rolling_nn_dist",
     collect_zero_pairs: bool = False,
     zero_pairs_uns_key: Optional[str] = None,
+    sample_labels: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Rolling-window nearest-neighbor distance per read, overlap-aware.
@@ -298,6 +299,13 @@ def rolling_window_nn_distance(
                     if jj.size:
                         dist[(jj - i0), (jj - j0)] = np.inf
 
+                # exclude same-sample comparisons when sample_labels provided
+                if sample_labels is not None:
+                    sl_i = sample_labels[i0:i1]
+                    sl_j = sample_labels[j0:j1]
+                    same_sample = sl_i[:, None] == sl_j[None, :]
+                    dist[same_sample] = np.inf
+
                 local_best = np.minimum(local_best, dist.min(axis=1))
 
                 if collect_zero_pairs:
@@ -307,6 +315,8 @@ def rolling_window_nn_distance(
                         gi = i0 + i_idx
                         gj = j0 + j_idx
                         keep = gi < gj
+                        if sample_labels is not None:
+                            keep = keep & (sample_labels[gi] != sample_labels[gj])
                         if np.any(keep):
                             window_pairs.append(np.stack([gi[keep], gj[keep]], axis=1))
 

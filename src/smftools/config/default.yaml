@@ -221,6 +221,11 @@ rolling_nn_zero_pairs_top_segments_min_span: 300
 rolling_nn_zero_pairs_top_segments_write_csvs: true
 rolling_nn_zero_pairs_segment_histogram_bins: 30
 
+# Cross-sample rolling NN analysis
+cross_sample_analysis: true
+cross_sample_grouping_col: null
+cross_sample_random_seed: 42
+
 # Latent Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'
 umap_layers_to_plot:
