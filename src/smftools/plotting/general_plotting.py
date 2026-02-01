@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from smftools.logging_utils import get_logger
 from smftools.plotting.chimeric_plotting import (
+    plot_delta_hamming_summary,
     plot_rolling_nn_and_layer,
     plot_rolling_nn_and_two_layers,
     plot_segment_length_histogram,
