@@ -503,7 +503,7 @@ def chimeric_adata_core(
                             make_dirs([histogram_dir])
                             raw_lengths = raw_df["segment_length_label"].to_numpy()
                             filtered_lengths = filtered_df["segment_length_label"].to_numpy()
-                            hist_title = f"{sample} {reference}"
+                            hist_title = f"{sample} {reference} (n={subset.n_obs})"
                             plot_segment_length_histogram(
                                 raw_lengths,
                                 filtered_lengths,
@@ -535,7 +535,10 @@ def chimeric_adata_core(
                     parent_obsm_key
                 )
                 out_png = rolling_nn_dir / f"{safe_sample}__{safe_ref}.png"
-                title = f"{sample} {reference}"
+                title = (
+                    f"{sample} {reference} (n={subset.n_obs})"
+                    f" | window={cfg.rolling_nn_window}"
+                )
                 try:
                     plot_rolling_nn_and_layer(
                         subset,
@@ -611,7 +614,7 @@ def chimeric_adata_core(
                     mod_site_mask = adata.var[site_cols].fillna(False).any(axis=1)
                     site_mask = mod_site_mask & adata.var[position_col].fillna(False)
                     subset = subset[:, site_mask].copy()
-                    title = f"{sample} {reference}"
+                    title = f"{sample} {reference} (n={subset.n_obs})"
                     out_png = zero_hamming_dir / f"{safe_sample}__{safe_ref}.png"
                     try:
                         plot_zero_hamming_span_and_layer(
@@ -743,7 +746,10 @@ def chimeric_adata_core(
                         continue
 
                     out_png = rolling_nn_layers_dir / f"{safe_sample}__{safe_ref}.png"
-                    title = f"{sample} {reference}"
+                    title = (
+                        f"{sample} {reference} (n={subset.n_obs})"
+                        f" | window={cfg.rolling_nn_window}"
+                    )
                     try:
                         plot_rolling_nn_and_two_layers(
                             subset,
@@ -1001,7 +1007,16 @@ def chimeric_adata_core(
                                     adata.uns[parent_key]
                                 )
 
-                    title = f"{sample} {reference} (cross-sample)"
+                    if grouping_col and grouping_col in adata.obs.columns:
+                        cross_pool_desc = f"cross-sample ({grouping_col}={sample_group_val})"
+                    else:
+                        cross_pool_desc = "cross-sample (all samples)"
+                    title = (
+                        f"{sample} {reference} (n={n_sample})"
+                        f" | {cross_pool_desc}"
+                        f" | subsample={len(other_indices)}"
+                        f" | window={cfg.rolling_nn_window}"
+                    )
 
                     # Plot 1: rolling NN clustermap
                     try:
@@ -1212,7 +1227,11 @@ def chimeric_adata_core(
                             )
                             continue
 
-                        title = f"{sample} {reference}"
+                        title = (
+                            f"{sample} {reference}"
+                            f" (n={int(sample_mask.sum())})"
+                            f" | window={cfg.rolling_nn_window}"
+                        )
                         out_png = delta_summary_dir / f"{safe_sample}__{safe_ref}.png"
                         try:
                             plot_delta_hamming_summary(
