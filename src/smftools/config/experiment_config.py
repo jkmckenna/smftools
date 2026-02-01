@@ -879,6 +879,11 @@ class ExperimentConfig:
     rolling_nn_zero_pairs_top_segments_write_csvs: bool = True
     rolling_nn_zero_pairs_segment_histogram_bins: int = 30
 
+    # Cross-sample rolling NN analysis
+    cross_sample_analysis: bool = False
+    cross_sample_grouping_col: Optional[str] = None
+    cross_sample_random_seed: int = 42
+
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = "nan_half"
     umap_layers_to_plot: List[str] = field(
@@ -1435,6 +1440,9 @@ class ExperimentConfig:
             rolling_nn_zero_pairs_segment_histogram_bins=merged.get(
                 "rolling_nn_zero_pairs_segment_histogram_bins", 30
             ),
+            cross_sample_analysis=merged.get("cross_sample_analysis", False),
+            cross_sample_grouping_col=merged.get("cross_sample_grouping_col", None),
+            cross_sample_random_seed=merged.get("cross_sample_random_seed", 42),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
             umap_layers_to_plot=merged.get(
                 "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]
