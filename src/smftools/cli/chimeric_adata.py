@@ -403,9 +403,7 @@ def chimeric_adata_core(
                         max_segments_per_read=getattr(
                             cfg, "rolling_nn_zero_pairs_max_segments_per_read", None
                         ),
-                        max_segment_overlap=getattr(
-                            cfg, "rolling_nn_zero_pairs_max_overlap", None
-                        ),
+                        max_segment_overlap=getattr(cfg, "rolling_nn_zero_pairs_max_overlap", None),
                     )
                     adata.uns.setdefault(
                         f"{cfg.rolling_nn_obsm_key}_zero_pairs_map", {}
@@ -457,9 +455,7 @@ def chimeric_adata_core(
                                 dtype=object,
                             )
                         if not filtered_df.empty:
-                            for read_id, read_df in filtered_df.groupby(
-                                "read_id", sort=False
-                            ):
+                            for read_id, read_df in filtered_df.groupby("read_id", sort=False):
                                 read_index = int(read_id)
                                 if read_index < 0 or read_index >= subset.n_obs:
                                     continue
@@ -467,9 +463,7 @@ def chimeric_adata_core(
                                     read_df,
                                     subset.obs_names,
                                 )
-                                per_read_obs_series.at[
-                                    subset.obs_names[read_index]
-                                ] = tuples
+                                per_read_obs_series.at[subset.obs_names[read_index]] = tuples
                         adata.obs[per_read_obs_key] = per_read_obs_series
                         _build_zero_hamming_span_layer_from_obs(
                             adata=adata,
@@ -536,10 +530,7 @@ def chimeric_adata_core(
                     parent_obsm_key
                 )
                 out_png = rolling_nn_dir / f"{safe_sample}__{safe_ref}.png"
-                title = (
-                    f"{sample} {reference} (n={subset.n_obs})"
-                    f" | window={cfg.rolling_nn_window}"
-                )
+                title = f"{sample} {reference} (n={subset.n_obs}) | window={cfg.rolling_nn_window}"
                 try:
                     plot_rolling_nn_and_layer(
                         subset,
@@ -748,8 +739,7 @@ def chimeric_adata_core(
 
                     out_png = rolling_nn_layers_dir / f"{safe_sample}__{safe_ref}.png"
                     title = (
-                        f"{sample} {reference} (n={subset.n_obs})"
-                        f" | window={cfg.rolling_nn_window}"
+                        f"{sample} {reference} (n={subset.n_obs}) | window={cfg.rolling_nn_window}"
                     )
                     try:
                         plot_rolling_nn_and_two_layers(
@@ -789,11 +779,7 @@ def chimeric_adata_core(
                 .astype("category")
                 .cat.categories.tolist()
             )
-            references = (
-                adata.obs[cfg.reference_column]
-                .astype("category")
-                .cat.categories.tolist()
-            )
+            references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
             rng = np.random.RandomState(getattr(cfg, "cross_sample_random_seed", 42))
 
             for reference in references:
@@ -814,22 +800,15 @@ def chimeric_adata_core(
                 site_mask = mod_site_mask & adata.var[position_col].fillna(False)
 
                 for sample in samples:
-                    sample_mask = (
-                        (adata.obs[cfg.sample_name_col_for_plotting] == sample) & ref_mask
-                    )
+                    sample_mask = (adata.obs[cfg.sample_name_col_for_plotting] == sample) & ref_mask
                     if not sample_mask.any():
                         continue
 
                     # Build cross-sample pool
                     grouping_col = getattr(cfg, "cross_sample_grouping_col", None)
                     if grouping_col and grouping_col in adata.obs.columns:
-                        sample_group_val = (
-                            adata.obs.loc[sample_mask, grouping_col].iloc[0]
-                        )
-                        pool_mask = (
-                            ref_mask
-                            & (adata.obs[grouping_col] == sample_group_val)
-                        )
+                        sample_group_val = adata.obs.loc[sample_mask, grouping_col].iloc[0]
+                        pool_mask = ref_mask & (adata.obs[grouping_col] == sample_group_val)
                     else:
                         pool_mask = ref_mask
 
@@ -856,7 +835,7 @@ def chimeric_adata_core(
 
                     # Build sample_labels: 0 = current sample, 1 = other
                     cross_labels = np.zeros(len(combined_indices), dtype=np.int32)
-                    cross_labels[len(sample_indices):] = 1
+                    cross_labels[len(sample_indices) :] = 1
 
                     cross_obsm_key = "cross_sample_rolling_nn_dist"
                     try:
@@ -995,18 +974,23 @@ def chimeric_adata_core(
 
                     # Copy cross-sample obsm into plot_subset
                     if parent_obsm_key in adata.obsm:
-                        plot_subset.obsm[cfg.rolling_nn_obsm_key] = (
-                            adata[sample_mask].obsm.get(parent_obsm_key)
+                        plot_subset.obsm[cfg.rolling_nn_obsm_key] = adata[sample_mask].obsm.get(
+                            parent_obsm_key
                         )
                         for suffix in (
-                            "starts", "centers", "window", "step", "min_overlap",
-                            "return_fraction", "layer",
+                            "starts",
+                            "centers",
+                            "window",
+                            "step",
+                            "min_overlap",
+                            "return_fraction",
+                            "layer",
                         ):
                             parent_key = f"{parent_obsm_key}_{suffix}"
                             if parent_key in adata.uns:
-                                plot_subset.uns[f"{cfg.rolling_nn_obsm_key}_{suffix}"] = (
-                                    adata.uns[parent_key]
-                                )
+                                plot_subset.uns[f"{cfg.rolling_nn_obsm_key}_{suffix}"] = adata.uns[
+                                    parent_key
+                                ]
 
                     if grouping_col and grouping_col in adata.obs.columns:
                         cross_pool_desc = f"cross-sample ({grouping_col}={sample_group_val})"
@@ -1109,11 +1093,7 @@ def chimeric_adata_core(
                 .astype("category")
                 .cat.categories.tolist()
             )
-            references = (
-                adata.obs[cfg.reference_column]
-                .astype("category")
-                .cat.categories.tolist()
-            )
+            references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
 
             # Build delta layer: within - cross, clamped at 0
             if (
@@ -1139,13 +1119,9 @@ def chimeric_adata_core(
                 for reference in references:
                     ref_mask = adata.obs[cfg.reference_column] == reference
                     position_col = f"position_in_{reference}"
-                    site_cols = [
-                        f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types
-                    ]
+                    site_cols = [f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]
                     missing_cols = [
-                        col
-                        for col in [position_col, *site_cols]
-                        if col not in adata.var.columns
+                        col for col in [position_col, *site_cols] if col not in adata.var.columns
                     ]
                     if missing_cols:
                         continue
@@ -1154,9 +1130,8 @@ def chimeric_adata_core(
 
                     for sample in samples:
                         sample_mask = (
-                            (adata.obs[cfg.sample_name_col_for_plotting] == sample)
-                            & ref_mask
-                        )
+                            adata.obs[cfg.sample_name_col_for_plotting] == sample
+                        ) & ref_mask
                         if not sample_mask.any():
                             continue
 
@@ -1201,14 +1176,17 @@ def chimeric_adata_core(
                             (cross_obsm_key, cross_nn_key),
                         ):
                             for suffix in (
-                                "starts", "centers", "window", "step",
-                                "min_overlap", "return_fraction", "layer",
+                                "starts",
+                                "centers",
+                                "window",
+                                "step",
+                                "min_overlap",
+                                "return_fraction",
+                                "layer",
                             ):
                                 src_k = f"{src_obsm}_{suffix}"
                                 if src_k in adata.uns:
-                                    plot_subset.uns[f"{dst_obsm}_{suffix}"] = (
-                                        adata.uns[src_k]
-                                    )
+                                    plot_subset.uns[f"{dst_obsm}_{suffix}"] = adata.uns[src_k]
 
                         # Check required span layers
                         required_layers = [
@@ -1282,20 +1260,14 @@ def chimeric_adata_core(
                     .cat.categories.tolist()
                 )
                 references = (
-                    adata.obs[cfg.reference_column]
-                    .astype("category")
-                    .cat.categories.tolist()
+                    adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
                 )
                 for reference in references:
                     ref_mask = adata.obs[cfg.reference_column] == reference
                     position_col = f"position_in_{reference}"
-                    site_cols = [
-                        f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types
-                    ]
+                    site_cols = [f"{reference}_{st}_site" for st in cfg.rolling_nn_site_types]
                     missing_cols = [
-                        col
-                        for col in [position_col, *site_cols]
-                        if col not in adata.var.columns
+                        col for col in [position_col, *site_cols] if col not in adata.var.columns
                     ]
                     if missing_cols:
                         continue
@@ -1304,9 +1276,8 @@ def chimeric_adata_core(
 
                     for sample in samples:
                         sample_mask = (
-                            (adata.obs[cfg.sample_name_col_for_plotting] == sample)
-                            & ref_mask
-                        )
+                            adata.obs[cfg.sample_name_col_for_plotting] == sample
+                        ) & ref_mask
                         if not sample_mask.any():
                             continue
 
@@ -1338,9 +1309,7 @@ def chimeric_adata_core(
                                 exc,
                             )
             else:
-                logger.debug(
-                    "Span length distribution: missing required layers, skipping."
-                )
+                logger.debug("Span length distribution: missing required layers, skipping.")
 
     # ============================================================
     # 4) Save AnnData

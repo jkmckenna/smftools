@@ -75,10 +75,12 @@ def _build_shared_valid_non_mod_sites_mask(
             raise KeyError(f"var_filters not found in adata.var: {missing}")
 
         mod_masks = [np.asarray(adata.var[col].values, dtype=bool) for col in mod_site_cols]
-        ref_mod_masks.append(mod_masks[0] if len(mod_masks) == 1 else np.logical_or.reduce(mod_masks))
+        ref_mod_masks.append(
+            mod_masks[0] if len(mod_masks) == 1 else np.logical_or.reduce(mod_masks)
+        )
 
-    any_mod_mask = np.logical_or.reduce(ref_mod_masks) if ref_mod_masks else np.zeros(
-        adata.n_vars, dtype=bool
+    any_mod_mask = (
+        np.logical_or.reduce(ref_mod_masks) if ref_mod_masks else np.zeros(adata.n_vars, dtype=bool)
     )
     return np.logical_and(shared_position_mask, np.logical_not(any_mod_mask))
 

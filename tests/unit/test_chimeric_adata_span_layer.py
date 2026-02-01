@@ -1,7 +1,6 @@
+import anndata as ad
 import numpy as np
 import pandas as pd
-
-import anndata as ad
 
 from smftools.cli.chimeric_adata import _build_zero_hamming_span_layer_from_obs
 

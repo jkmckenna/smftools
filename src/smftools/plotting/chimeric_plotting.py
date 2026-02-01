@@ -445,7 +445,9 @@ def plot_rolling_nn_and_two_layers(
     def _layer_df_for_key(layer_key: str) -> pd.DataFrame:
         layer = subset.layers[layer_key]
         layer = layer.toarray() if hasattr(layer, "toarray") else np.asarray(layer)
-        layer_df = pd.DataFrame(layer[valid], index=subset.obs_names[valid], columns=subset.var_names)
+        layer_df = pd.DataFrame(
+            layer[valid], index=subset.obs_names[valid], columns=subset.var_names
+        )
         layer_df.index = layer_df.index.astype(str)
         if layer_var_mask is not None:
             layer_df = layer_df.loc[:, layer_var_mask]
@@ -1108,20 +1110,35 @@ def plot_delta_hamming_summary(
     nn_cmap.set_bad(nn_nan_color)
 
     sns.heatmap(
-        self_nn_ord, ax=ax_self_nn, cmap=nn_cmap,
-        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_self_nn_cbar,
+        self_nn_ord,
+        ax=ax_self_nn,
+        cmap=nn_cmap,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax_self_nn_cbar,
     )
     sns.heatmap(
-        cross_nn_ord, ax=ax_cross_nn, cmap=nn_cmap,
-        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_cross_nn_cbar,
+        cross_nn_ord,
+        ax=ax_cross_nn,
+        cmap=nn_cmap,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax_cross_nn_cbar,
     )
 
     layer_cmap = plt.get_cmap("coolwarm").copy()
     if read_span_outside is not None:
         layer_cmap.set_bad(outside_read_color)
     sns.heatmap(
-        layer_plot, ax=ax_signal, cmap=layer_cmap,
-        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_signal_cbar,
+        layer_plot,
+        ax=ax_signal,
+        cmap=layer_cmap,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax_signal_cbar,
     )
 
     # NN x-tick labels
@@ -1181,16 +1198,34 @@ def plot_delta_hamming_summary(
     delta_cmap.set_bad(outside_read_color)
 
     sns.heatmap(
-        self_span_plot, ax=ax_self_span, cmap=self_span_cmap, norm=self_span_norm,
-        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_self_span_cbar,
+        self_span_plot,
+        ax=ax_self_span,
+        cmap=self_span_cmap,
+        norm=self_span_norm,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax_self_span_cbar,
     )
     sns.heatmap(
-        cross_span_plot, ax=ax_cross_span, cmap=cross_span_cmap, norm=cross_span_norm,
-        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_cross_span_cbar,
+        cross_span_plot,
+        ax=ax_cross_span,
+        cmap=cross_span_cmap,
+        norm=cross_span_norm,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax_cross_span_cbar,
     )
     sns.heatmap(
-        delta_span_plot, ax=ax_delta_span, cmap=delta_cmap, norm=delta_norm,
-        xticklabels=False, yticklabels=False, robust=robust, cbar_ax=ax_delta_span_cbar,
+        delta_span_plot,
+        ax=ax_delta_span,
+        cmap=delta_cmap,
+        norm=delta_norm,
+        xticklabels=False,
+        yticklabels=False,
+        robust=robust,
+        cbar_ax=ax_delta_span_cbar,
     )
 
     col_labels = [str(x) for x in self_span_ord.columns]
