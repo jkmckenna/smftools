@@ -248,7 +248,7 @@ def plot_rolling_nn_and_layer(
             window_labels = _format_labels(label_source)
         _apply_xticks(ax1, window_labels, xtick_step)
 
-    methylation_fraction = _methylation_fraction_for_layer(L_ord.to_numpy(), layer_key)
+    methylation_fraction = _methylation_fraction_for_layer(L_plot.to_numpy(), layer_key)
     clean_barplot(
         ax2_bar,
         methylation_fraction,
@@ -520,11 +520,11 @@ def plot_rolling_nn_and_two_layers(
             window_labels = _format_labels(label_source)
         _apply_xticks(ax1, window_labels, xtick_step)
 
-    for ax_bar, layer_df, layer_key in (
-        (ax2_bar, layer_df_one, layer_key_one),
-        (ax3_bar, layer_df_two, layer_key_two),
+    for ax_bar, lp, layer_key in (
+        (ax2_bar, layer_plot_one, layer_key_one),
+        (ax3_bar, layer_plot_two, layer_key_two),
     ):
-        methylation_fraction = _methylation_fraction_for_layer(layer_df.to_numpy(), layer_key)
+        methylation_fraction = _methylation_fraction_for_layer(lp.to_numpy(), layer_key)
         clean_barplot(
             ax_bar,
             methylation_fraction,
@@ -538,6 +538,10 @@ def plot_rolling_nn_and_two_layers(
     if read_span_mask is not None:
         layer_cmap.set_bad(outside_read_color)
 
+    layer2_cmap = plt.get_cmap("Greens").copy()
+    if read_span_mask is not None:
+        layer2_cmap.set_bad(outside_read_color)
+
     sns.heatmap(
         layer_plot_one,
         ax=ax2,
@@ -550,7 +554,7 @@ def plot_rolling_nn_and_two_layers(
     sns.heatmap(
         layer_plot_two,
         ax=ax3,
-        cmap="Greens",
+        cmap=layer2_cmap,
         xticklabels=False,
         yticklabels=False,
         robust=robust,
