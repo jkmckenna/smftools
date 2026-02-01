@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file tells coding agents (including OpenAI Codex) how to work in this repo.
+This file tells coding agents (including OpenAI Codex and Claude Code) how to work in this repo.
 
 ## Goals
 - Make minimal, correct changes.
@@ -12,21 +12,34 @@ This file tells coding agents (including OpenAI Codex) how to work in this repo.
 - Don’t refactor broadly unless asked.
 - If you’re unsure about intended behavior, look for tests/docs first.
 - Ignore all files in any directory named "archived".
+- User defined parameters exist within src/smftools/config.
+- Parameters are herited from default.yaml -> MODALITY.yaml -> user_defined_config.csv
+- Frequently used non user defined variables should exist within src/smftools/constants.py
+- Logging functionality is defined within src/smftools/logging_utils.py
+- Optional dependency handling is defined within src/smftools/optional_imports.py
+- Frequently used I/O functionality is defined within src/smftools/readwrite.py
+- CLI functionality is provided through click and is defined within:
+  - src/smftools/cli_entry.py
+  - Modules of the src/smtools/cli subpackage
+- RTD documentation organization through smftools/docs
+- Pytest testing within smftools/tests
 
 ## Project dependencies
 - A core set of dependencies is required for the project.
 - Various optional dependencies are provided for:
-    - Optional functional modules of the package (ont, plotting, ml-base, ml-extended, scanpy, qc)
-    - If a Python version of a CLI tool is preferred (Such as for Samtools, Bedtools, BedGraphToBigWig).
-    - For potential performance boosts in computation (torch)
+    - Optional functional modules of the package (ont, plotting, ml-base, ml-extended, umap, qc)
+    - If available, a Python version of a CLI tool is preferred (Such as for Samtools, Bedtools, BedGraphToBigWig).
+    - torch is listed as an extra dependency, but is currently required.
     - All dependencies can be installed with `pip install -e ".[all]"`
 
 ## Setup
-- Create env (pick one):
-  - `python -m venv .venv && source .venv/bin/activate`
-  - or `conda env create -f environment.yml && conda activate <env>`
-- Install:
-  - `pip install -e ".[dev]"`
+- Use current environment if the core dependencies are installed.
+- If dependencies are not found, create a venv in smftools/venvs/ directory:
+  - `python3 -m venv .temp-venv && source .temp-venv/bin/activate`
+- Install the core dependencies and development dependencies for testing/formatting/linting:
+  - `pip install -e ".[dev,torch]"`
+- If code is raising dependencies errors and they are in the optional dependencies:
+  - `pip install -e ".[EXTRA_DEPENDENCY_NAME]"`
 
 ## How to run checks
 - Smoke tests: `pytest -m smoke -q`
@@ -41,6 +54,11 @@ This file tells coding agents (including OpenAI Codex) how to work in this repo.
 ## Coding conventions
 - Follow existing style and module layout.
 - Prefer clear, explicit code over cleverness.
+- Prefer modular functionality to facilitate testing and future development.
+- Do not over-parametize functions when possible.
+- For function parameters that a user may want to tune, use the config management strategy.
+- Use constants.py when appropriate.
+- Annotate code blocks to describe functionality.
 - Add/adjust tests for bug fixes and new behavior.
 - Keep public APIs backward compatible unless explicitly changing them.
 - Python:
@@ -48,10 +66,10 @@ This file tells coding agents (including OpenAI Codex) how to work in this repo.
   - Use Google style docstring format.
   - Avoid heavy dependencies unless necessary.
   - Use typing.TYPE_CHECKING and annotations.
+  - In docstring of new functions, define the purpose of the function and what it does.
 
 ## Testing expectations
 - New functionality must include tests.
-- Bug fix PRs should include a regression test.
 - If tests are flaky or slow, note it and scope the change.
 
 ## Logging & secrets
