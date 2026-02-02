@@ -283,6 +283,20 @@ def chimeric_adata_core(
 
     references = adata.obs[cfg.reference_column].cat.categories
 
+    # Auto-detect variant call layer from a prior variant_adata run
+    variant_call_layer_name = None
+    variant_seq1_label = "seq1"
+    variant_seq2_label = "seq2"
+    seq1_col, seq2_col = getattr(cfg, "references_to_align_for_variant_annotation", [None, None])
+    if seq1_col and seq2_col:
+        candidate = f"{seq1_col}__{seq2_col}_variant_call"
+        if candidate in adata.layers:
+            variant_call_layer_name = candidate
+            suffix = "_strand_FASTA_base"
+            variant_seq1_label = seq1_col[: -len(suffix)] if seq1_col.endswith(suffix) else seq1_col
+            variant_seq2_label = seq2_col[: -len(suffix)] if seq2_col.endswith(suffix) else seq2_col
+            logger.info("Detected variant call layer '%s'; will overlay on span clustermaps.", variant_call_layer_name)
+
     # ============================================================
     # 1) Rolling NN distances + layer clustermaps
     # ============================================================
@@ -605,6 +619,15 @@ def chimeric_adata_core(
                         )
                     mod_site_mask = adata.var[site_cols].fillna(False).any(axis=1)
                     site_mask = mod_site_mask & adata.var[position_col].fillna(False)
+                    # Build variant call DataFrame before column filtering
+                    _variant_call_df = None
+                    if variant_call_layer_name and variant_call_layer_name in adata.layers:
+                        _vc = adata[mask].layers[variant_call_layer_name]
+                        _vc = _vc.toarray() if hasattr(_vc, "toarray") else np.asarray(_vc)
+                        _variant_call_df = pd.DataFrame(
+                            _vc, index=adata[mask].obs_names.astype(str), columns=adata.var_names,
+                        )
+
                     subset = subset[:, site_mask].copy()
                     title = f"{sample} {reference} (n={subset.n_obs})"
                     out_png = zero_hamming_dir / f"{safe_sample}__{safe_ref}.png"
@@ -615,6 +638,9 @@ def chimeric_adata_core(
                             layer_key=cfg.rolling_nn_plot_layer,
                             max_nan_fraction=cfg.position_max_nan_threshold,
                             var_valid_fraction_col=f"{reference}_valid_fraction",
+                            variant_call_data=_variant_call_df,
+                            seq1_label=variant_seq1_label,
+                            seq2_label=variant_seq2_label,
                             title=title,
                             save_name=out_png,
                         )
@@ -968,6 +994,15 @@ def chimeric_adata_core(
                                 exc,
                             )
 
+                    # Build variant call DataFrame before column filtering
+                    _cross_variant_call_df = None
+                    if variant_call_layer_name and variant_call_layer_name in adata.layers:
+                        _vc = adata[sample_mask].layers[variant_call_layer_name]
+                        _vc = _vc.toarray() if hasattr(_vc, "toarray") else np.asarray(_vc)
+                        _cross_variant_call_df = pd.DataFrame(
+                            _vc, index=adata[sample_mask].obs_names.astype(str), columns=adata.var_names,
+                        )
+
                     # --- Plots ---
                     # Use the sample-only subset for plotting
                     plot_subset = adata[sample_mask][:, site_mask].copy()
@@ -1035,6 +1070,9 @@ def chimeric_adata_core(
                                 layer_key=cfg.rolling_nn_plot_layer,
                                 max_nan_fraction=cfg.position_max_nan_threshold,
                                 var_valid_fraction_col=f"{reference}_valid_fraction",
+                                variant_call_data=_cross_variant_call_df,
+                                seq1_label=variant_seq1_label,
+                                seq2_label=variant_seq2_label,
                                 title=title,
                                 save_name=out_png,
                             )
@@ -1231,6 +1269,88 @@ def chimeric_adata_core(
                         except Exception as exc:
                             logger.warning(
                                 "Delta hamming summary plot failed for sample=%s ref=%s: %s",
+                                sample,
+                                reference,
+                                exc,
+                            )
+
+    # ============================================================
+    # Hamming span trio (self, cross, delta) — no column subsetting
+    # ============================================================
+    if getattr(cfg, "cross_sample_analysis", False):
+        span_trio_dir = chimeric_directory / "hamming_span_trio"
+
+        if span_trio_dir.is_dir() and not getattr(cfg, "force_redo_chimeric_analyses", False):
+            logger.debug("Hamming span trio dir exists. Skipping.")
+        else:
+            _self_key = ZERO_HAMMING_DISTANCE_SPANS
+            _cross_key = CROSS_SAMPLE_ZERO_HAMMING_DISTANCE_SPANS
+            _delta_key = DELTA_ZERO_HAMMING_DISTANCE_SPANS
+            has_layers = (
+                _self_key in adata.layers
+                and _cross_key in adata.layers
+                and _delta_key in adata.layers
+            )
+            if has_layers:
+                from smftools.plotting import plot_hamming_span_trio
+
+                make_dirs([span_trio_dir])
+                samples = (
+                    adata.obs[cfg.sample_name_col_for_plotting]
+                    .astype("category")
+                    .cat.categories.tolist()
+                )
+                references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
+
+                for reference in references:
+                    ref_mask = adata.obs[cfg.reference_column] == reference
+                    position_col = f"position_in_{reference}"
+                    if position_col not in adata.var.columns:
+                        continue
+                    pos_mask = adata.var[position_col].fillna(False).astype(bool)
+
+                    for sample in samples:
+                        sample_mask = (
+                            adata.obs[cfg.sample_name_col_for_plotting] == sample
+                        ) & ref_mask
+                        if not sample_mask.any():
+                            continue
+
+                        # Build variant call DataFrame (full width, no subsetting)
+                        _variant_call_df = None
+                        if variant_call_layer_name and variant_call_layer_name in adata.layers:
+                            _vc = adata[sample_mask].layers[variant_call_layer_name]
+                            _vc = _vc.toarray() if hasattr(_vc, "toarray") else np.asarray(_vc)
+                            _variant_call_df = pd.DataFrame(
+                                _vc,
+                                index=adata[sample_mask].obs_names.astype(str),
+                                columns=adata.var_names,
+                            )
+
+                        plot_subset = adata[sample_mask][:, pos_mask].copy()
+
+                        safe_sample = str(sample).replace(os.sep, "_")
+                        safe_ref = str(reference).replace(os.sep, "_")
+                        n_reads = int(sample_mask.sum())
+                        trio_title = (
+                            f"{sample} {reference} (n={n_reads})"
+                        )
+                        out_png = span_trio_dir / f"{safe_sample}__{safe_ref}.png"
+                        try:
+                            plot_hamming_span_trio(
+                                plot_subset,
+                                self_span_layer_key=_self_key,
+                                cross_span_layer_key=_cross_key,
+                                delta_span_layer_key=_delta_key,
+                                variant_call_data=_variant_call_df,
+                                seq1_label=variant_seq1_label,
+                                seq2_label=variant_seq2_label,
+                                title=trio_title,
+                                save_name=out_png,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Hamming span trio plot failed for sample=%s ref=%s: %s",
                                 sample,
                                 reference,
                                 exc,
