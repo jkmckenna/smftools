@@ -599,6 +599,12 @@ def plot_zero_hamming_span_and_layer(
     xtick_step: int | None = None,
     xtick_rotation: int = 90,
     xtick_fontsize: int = 8,
+    variant_call_data: "pd.DataFrame | None" = None,
+    seq1_label: str = "seq1",
+    seq2_label: str = "seq2",
+    ref1_marker_color: str = "white",
+    ref2_marker_color: str = "black",
+    variant_marker_size: float = 4.0,
     save_name: str | None = None,
 ):
     """
@@ -625,6 +631,15 @@ def plot_zero_hamming_span_and_layer(
         xtick_step: Spacing between x-axis tick labels.
         xtick_rotation: Rotation for x-axis tick labels.
         xtick_fontsize: Font size for x-axis tick labels.
+        variant_call_data: Optional DataFrame (obs × full var_names) with variant calls
+            (1=seq1, 2=seq2). When provided, circles are overlaid at positions that
+            overlap with the plotted columns. Built from the full-width adata before
+            column filtering so mismatch sites outside modification sites are mapped.
+        seq1_label: Label for seq1 in the legend.
+        seq2_label: Label for seq2 in the legend.
+        ref1_marker_color: Circle color for seq1 variant calls.
+        ref2_marker_color: Circle color for seq2 variant calls.
+        variant_marker_size: Size of variant call overlay circles.
         save_name: Optional output path for saving the plot.
     """
     if max_nan_fraction is not None and not (0 <= max_nan_fraction <= 1):
@@ -793,6 +808,59 @@ def plot_zero_hamming_span_and_layer(
         robust=robust,
         cbar_ax=ax2_cbar,
     )
+
+    # Overlay variant call circles on both heatmaps if data is available
+    if variant_call_data is not None:
+        plotted_cols = span_ord.columns
+        # Convert plotted column names to numeric positions for nearest-neighbour mapping
+        try:
+            plotted_positions = np.array([float(c) for c in plotted_cols])
+        except (ValueError, TypeError):
+            plotted_positions = None
+
+        if plotted_positions is not None and len(plotted_positions) > 0:
+            # Find variant call columns that have any calls
+            call_cols_mask = variant_call_data.isin([1, 2]).any(axis=0)
+            call_col_names = variant_call_data.columns[call_cols_mask]
+            try:
+                call_col_positions = np.array([float(c) for c in call_col_names])
+            except (ValueError, TypeError):
+                call_col_positions = None
+
+            if call_col_positions is not None and len(call_col_positions) > 0:
+                # Map each variant call position to the nearest plotted heatmap column
+                insert_idx = np.searchsorted(plotted_positions, call_col_positions)
+                insert_idx = np.clip(insert_idx, 0, len(plotted_positions) - 1)
+                # Also check the index to the left in case it's closer
+                left_idx = np.clip(insert_idx - 1, 0, len(plotted_positions) - 1)
+                dist_right = np.abs(plotted_positions[insert_idx] - call_col_positions)
+                dist_left = np.abs(plotted_positions[left_idx] - call_col_positions)
+                nearest_heatmap_col = np.where(dist_left < dist_right, left_idx, insert_idx)
+
+                call_sub = variant_call_data.loc[:, call_col_names]
+                call_sub.index = call_sub.index.astype(str)
+                common_rows = [r for r in ordered_index if r in call_sub.index]
+                if common_rows:
+                    call_ord = call_sub.loc[common_rows].to_numpy()
+                    row_index_map = {r: i for i, r in enumerate(ordered_index)}
+                    heatmap_row_indices = np.array([row_index_map[r] for r in common_rows])
+
+                    for call_val, marker_color, label in [
+                        (1, ref1_marker_color, f"{seq1_label} call"),
+                        (2, ref2_marker_color, f"{seq2_label} call"),
+                    ]:
+                        local_rows, local_cols = np.where(call_ord == call_val)
+                        if len(local_rows) == 0:
+                            continue
+                        plot_y = heatmap_row_indices[local_rows]
+                        plot_x = nearest_heatmap_col[local_cols]
+                        for ax in (ax1, ax2):
+                            ax.scatter(
+                                plot_x + 0.5, plot_y + 0.5,
+                                c=marker_color, s=variant_marker_size,
+                                marker="o", edgecolors="gray", linewidths=0.3, zorder=3,
+                                label=label,
+                            )
 
     _apply_xticks(ax1, [str(x) for x in span_ord.columns], xtick_step)
     _apply_xticks(ax2, [str(x) for x in layer_plot.columns], xtick_step)
@@ -1539,3 +1607,230 @@ def plot_segment_length_histogram(
 
     plt.close(fig)
     return fig
+
+
+def plot_hamming_span_trio(
+    subset,
+    self_span_layer_key: str = "zero_hamming_distance_spans",
+    cross_span_layer_key: str = "cross_sample_zero_hamming_distance_spans",
+    delta_span_layer_key: str = "delta_zero_hamming_distance_spans",
+    read_span_layer: str | None = "read_span_mask",
+    outside_read_color: str = "#bdbdbd",
+    span_color: str = "#2ca25f",
+    cross_span_color: str = "#e6550d",
+    delta_span_color: str = "#756bb1",
+    figsize: tuple[float, float] = (16, 8),
+    robust: bool = True,
+    title: str | None = None,
+    xtick_step: int | None = None,
+    xtick_rotation: int = 90,
+    xtick_fontsize: int = 8,
+    variant_call_data: "pd.DataFrame | None" = None,
+    seq1_label: str = "seq1",
+    seq2_label: str = "seq2",
+    ref1_marker_color: str = "white",
+    ref2_marker_color: str = "black",
+    variant_marker_size: float = 4.0,
+    save_name: str | None = None,
+):
+    """
+    Plot a 1×3 trio of hamming span clustermaps (self, cross, delta) with no
+    column subsetting, optionally overlaying variant call circles.
+
+    Row order is determined by hierarchical clustering on the delta span layer.
+    A barplot showing per-column mean span fraction is drawn above each panel.
+    """
+    logger.info(
+        "Plotting hamming span trio: self=%s, cross=%s, delta=%s.",
+        self_span_layer_key,
+        cross_span_layer_key,
+        delta_span_layer_key,
+    )
+
+    def _to_df(layer_key):
+        arr = subset.layers[layer_key]
+        arr = arr.toarray() if hasattr(arr, "toarray") else np.asarray(arr)
+        df = pd.DataFrame(arr, index=subset.obs_names.astype(str), columns=subset.var_names)
+        return df
+
+    def _apply_xticks(ax, labels, step):
+        if labels is None or len(labels) == 0:
+            ax.set_xticks([])
+            return
+        if step is None or step <= 0:
+            step = max(1, len(labels) // 10)
+        ticks = np.arange(0, len(labels), step)
+        ax.set_xticks(ticks + 0.5)
+        ax.set_xticklabels(
+            [labels[i] for i in ticks],
+            rotation=xtick_rotation,
+            fontsize=xtick_fontsize,
+        )
+
+    delta_df = _to_df(delta_span_layer_key)
+    self_df = _to_df(self_span_layer_key)
+    cross_df = _to_df(cross_span_layer_key)
+
+    # Drop columns that are all-zero/NaN across all three layers
+    has_data = (
+        delta_df.fillna(0).any(axis=0)
+        | self_df.fillna(0).any(axis=0)
+        | cross_df.fillna(0).any(axis=0)
+    )
+    delta_df = delta_df.loc[:, has_data]
+    self_df = self_df.loc[:, has_data]
+    cross_df = cross_df.loc[:, has_data]
+
+    # Hierarchical clustering on delta layer for row ordering
+    delta_filled = delta_df.fillna(0)
+    g = sns.clustermap(
+        delta_filled,
+        col_cluster=False,
+        row_cluster=True,
+        xticklabels=False,
+        yticklabels=False,
+    )
+    row_order = g.dendrogram_row.reordered_ind
+    ordered_index = delta_filled.index[row_order]
+    plt.close(g.fig)
+
+    # Read span mask
+    read_span_mask = None
+    if read_span_layer and read_span_layer in subset.layers:
+        rsm = subset.layers[read_span_layer]
+        rsm = rsm.toarray() if hasattr(rsm, "toarray") else np.asarray(rsm)
+        rsm_df = pd.DataFrame(rsm, index=subset.obs_names.astype(str), columns=subset.var_names)
+        rsm_df = rsm_df.loc[:, has_data]
+        read_span_mask = rsm_df.loc[ordered_index].to_numpy() == 0
+
+    panels = [
+        (self_df, span_color, self_span_layer_key, "Self spans"),
+        (cross_df, cross_span_color, cross_span_layer_key, "Cross spans"),
+        (delta_df, delta_span_color, delta_span_layer_key, "Delta spans"),
+    ]
+
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(
+        2, 3,
+        height_ratios=[1, 6],
+        wspace=0.08,
+        hspace=0.05,
+    )
+
+    axes = []
+    for col_idx, (df, color, layer_name, panel_title) in enumerate(panels):
+        ax_bar = fig.add_subplot(gs[0, col_idx])
+        ax_heat = fig.add_subplot(gs[1, col_idx])
+        axes.append(ax_heat)
+
+        ordered = df.loc[ordered_index].fillna(0)
+        plot_data = ordered.copy()
+        if read_span_mask is not None:
+            plot_data = plot_data.mask(read_span_mask)
+
+        cmap = colors.ListedColormap(["white", color])
+        norm = colors.BoundaryNorm([-0.5, 0.5, 1.5], cmap.N)
+        cmap.set_bad(outside_read_color)
+
+        mean_span = np.nanmean(plot_data.to_numpy(), axis=0)
+        clean_barplot(ax_bar, mean_span, panel_title, y_max=1.0, y_label="Span frac", y_ticks=[0.0, 0.5, 1.0])
+
+        sns.heatmap(
+            plot_data,
+            ax=ax_heat,
+            cmap=cmap,
+            norm=norm,
+            xticklabels=False,
+            yticklabels=False,
+            robust=robust,
+            cbar=False,
+        )
+        ax_heat.set_title(panel_title, fontsize=10)
+        _apply_xticks(ax_heat, [str(x) for x in ordered.columns], xtick_step)
+
+    # Overlay variant call circles on all three panels
+    if variant_call_data is not None:
+        plotted_cols = list(self_df.loc[ordered_index].columns)
+        plotted_col_set = set(plotted_cols)
+        col_to_idx = {c: i for i, c in enumerate(plotted_cols)}
+
+        call_cols_mask = variant_call_data.isin([1, 2]).any(axis=0)
+        call_col_names = variant_call_data.columns[call_cols_mask]
+
+        # Since no column subsetting, try exact match first; fall back to nearest
+        try:
+            plotted_positions = np.array([float(c) for c in plotted_cols])
+            call_col_positions = np.array([float(c) for c in call_col_names])
+            use_searchsorted = True
+        except (ValueError, TypeError):
+            use_searchsorted = False
+
+        heatmap_col_indices = {}
+        for cn in call_col_names:
+            if cn in col_to_idx:
+                heatmap_col_indices[cn] = col_to_idx[cn]
+            elif use_searchsorted:
+                pos = float(cn)
+                idx = np.searchsorted(plotted_positions, pos)
+                idx = np.clip(idx, 0, len(plotted_positions) - 1)
+                left = max(0, idx - 1)
+                if abs(plotted_positions[left] - pos) < abs(plotted_positions[idx] - pos):
+                    idx = left
+                heatmap_col_indices[cn] = idx
+
+        if heatmap_col_indices:
+            active_cols = [c for c in call_col_names if c in heatmap_col_indices]
+            call_sub = variant_call_data.loc[:, active_cols]
+            call_sub.index = call_sub.index.astype(str)
+            common_rows = [r for r in ordered_index if r in call_sub.index]
+            if common_rows:
+                call_ord = call_sub.loc[common_rows].to_numpy()
+                row_index_map = {r: i for i, r in enumerate(ordered_index)}
+                heatmap_row_indices = np.array([row_index_map[r] for r in common_rows])
+                col_idx_arr = np.array([heatmap_col_indices[c] for c in active_cols])
+
+                for call_val, marker_color, label in [
+                    (1, ref1_marker_color, f"{seq1_label} call"),
+                    (2, ref2_marker_color, f"{seq2_label} call"),
+                ]:
+                    local_rows, local_cols = np.where(call_ord == call_val)
+                    if len(local_rows) == 0:
+                        continue
+                    plot_y = heatmap_row_indices[local_rows]
+                    plot_x = col_idx_arr[local_cols]
+                    for ax in axes:
+                        ax.scatter(
+                            plot_x + 0.5, plot_y + 0.5,
+                            c=marker_color, s=variant_marker_size,
+                            marker="o", edgecolors="gray", linewidths=0.3, zorder=3,
+                            label=label,
+                        )
+
+        # Add legend to rightmost axis
+        handles, labels = axes[-1].get_legend_handles_labels()
+        seen = {}
+        unique_handles, unique_labels = [], []
+        for h, l in zip(handles, labels):
+            if l not in seen:
+                seen[l] = True
+                unique_handles.append(h)
+                unique_labels.append(l)
+        if unique_handles:
+            axes[-1].legend(
+                unique_handles, unique_labels,
+                loc="upper left", bbox_to_anchor=(1.02, 1.0),
+                fontsize=8, framealpha=0.9,
+            )
+
+    if title:
+        fig.suptitle(title, fontsize=12)
+
+    if save_name is not None:
+        fname = os.path.join(save_name)
+        fig.savefig(fname, dpi=200, bbox_inches="tight")
+        logger.info("Saved hamming span trio to %s.", fname)
+    else:
+        plt.show()
+
+    plt.close(fig)
+    return ordered_index

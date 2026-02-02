@@ -841,6 +841,9 @@ class ExperimentConfig:
     mismatch_frequency_layer: str = "mismatch_integer_encoding"
     mismatch_frequency_read_span_layer: str = "read_span_mask"
     mismatch_base_frequency_exclude_mod_sites: bool = False
+    references_to_align_for_variant_annotation: List[Optional[str]] = field(
+        default_factory=lambda: [None, None]
+    )
 
     # Spatial Analysis - Clustermap params
     layer_for_clustermap_plotting: Optional[str] = "nan0_0minus1"
@@ -1175,6 +1178,10 @@ class ExperimentConfig:
             merged["mod_target_bases"] = _parse_list(merged["mod_target_bases"])
         if "conversion_types" in merged:
             merged["conversion_types"] = _parse_list(merged["conversion_types"])
+        if "references_to_align_for_variant_annotation" in merged:
+            merged["references_to_align_for_variant_annotation"] = _parse_list(
+                merged["references_to_align_for_variant_annotation"]
+            )
 
         merged["filter_threshold"] = float(_parse_numeric(merged.get("filter_threshold", 0.8), 0.8))
         merged["m6A_threshold"] = float(_parse_numeric(merged.get("m6A_threshold", 0.7), 0.7))
@@ -1602,6 +1609,9 @@ class ExperimentConfig:
             force_redo_hmm_fit=merged.get("force_redo_hmm_fit", False),
             bypass_hmm_apply=merged.get("bypass_hmm_apply", False),
             force_redo_hmm_apply=merged.get("force_redo_hmm_apply", False),
+            references_to_align_for_variant_annotation=merged.get(
+                "references_to_align_for_variant_annotation", [None, None]
+            ),
             config_source=config_source or "<var_dict>",
         )
 

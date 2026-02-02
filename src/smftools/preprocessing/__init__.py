@@ -6,6 +6,8 @@ _LAZY_ATTRS = {
     "append_base_context": "smftools.preprocessing.append_base_context",
     "append_binary_layer_by_base_context": "smftools.preprocessing.append_binary_layer_by_base_context",
     "append_mismatch_frequency_sites": "smftools.preprocessing.append_mismatch_frequency_sites",
+    "append_variant_call_layer": "smftools.preprocessing.append_variant_call_layer",
+    "append_variant_segment_layer": "smftools.preprocessing.append_variant_call_layer",
     "append_sequence_mismatch_annotations": "smftools.preprocessing.append_sequence_mismatch_annotations",
     "binarize_adata": "smftools.preprocessing.binarize",
     "binarize_on_Youden": "smftools.preprocessing.binarize_on_Youden",
