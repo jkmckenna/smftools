@@ -883,6 +883,8 @@ def plot_variant_segment_clustermaps(
     position_axis_tick_target: int = 25,
     xtick_rotation: int = 90,
     xtick_fontsize: int = 9,
+    mismatch_type_obs_col: str | None = None,
+    mismatch_type_colors: Dict[str, str] | None = None,
 ) -> List[Dict[str, Any]]:
     """Plot variant segment heatmaps with variant call and breakpoint overlays.
 
@@ -915,6 +917,10 @@ def plot_variant_segment_clustermaps(
         position_axis_tick_target: Target number of x-axis ticks.
         xtick_rotation: Rotation angle for x-axis tick labels.
         xtick_fontsize: Font size for x-axis tick labels.
+        mismatch_type_obs_col: Optional obs column to annotate per read as an
+            adjacent categorical strip.
+        mismatch_type_colors: Optional mapping from mismatch class label to color.
+            Missing labels fall back to gray.
 
     Returns:
         List of dicts with metadata about each generated plot.
@@ -942,6 +948,15 @@ def plot_variant_segment_clustermaps(
     # Colormap: 0=no coverage, 1=seq1, 2=seq2, 3=transition zone (beige)
     seg_cmap = colors.ListedColormap([no_coverage_color, seq1_color, seq2_color, transition_color])
     seg_norm = colors.BoundaryNorm([0, 0.5, 1.5, 2.5, 3.5], seg_cmap.N)
+
+    if mismatch_type_colors is None:
+        mismatch_type_colors = {
+            "no_segment_mismatch": "#bdbdbd",
+            "left_segment_mismatch": "#d73027",
+            "right_segment_mismatch": "#4575b4",
+            "middle_segment_mismatch": "#1a9850",
+            "multi_segment_mismatch": "#f46d43",
+        }
 
     variant_call_layer = f"{output_prefix}_variant_call"
     has_variant_calls = variant_call_layer in adata.layers
@@ -1000,8 +1015,28 @@ def plot_variant_segment_clustermaps(
             if call_matrix is not None:
                 call_matrix = call_matrix[order]
 
+            row_mismatch_labels = None
+            row_mismatch_legend = []
+            if mismatch_type_obs_col is not None and mismatch_type_obs_col in subset.obs:
+                mm_series = subset.obs[mismatch_type_obs_col]
+                mm_values = mm_series.astype("string").to_numpy()[order]
+                row_mismatch_labels = []
+                for val in mm_values:
+                    if pd.isna(val):
+                        row_mismatch_labels.append("unknown")
+                    else:
+                        row_mismatch_labels.append(str(val))
+                row_mismatch_legend = list(dict.fromkeys(row_mismatch_labels))
+
             # Plot segment heatmap
-            fig, ax = plt.subplots(figsize=(16, 8))
+            if row_mismatch_labels is None:
+                fig, ax = plt.subplots(figsize=(16, 8))
+                ax_mismatch = None
+            else:
+                fig = plt.figure(figsize=(16, 8))
+                gs = fig.add_gridspec(1, 2, width_ratios=[0.6, 18], wspace=0.02)
+                ax_mismatch = fig.add_subplot(gs[0, 0])
+                ax = fig.add_subplot(gs[0, 1])
             sns.heatmap(
                 seg_matrix.astype(np.float32),
                 cmap=seg_cmap,
@@ -1010,6 +1045,32 @@ def plot_variant_segment_clustermaps(
                 yticklabels=False,
                 cbar=False,
             )
+
+            if row_mismatch_labels is not None and ax_mismatch is not None:
+                mismatch_categories = list(dict.fromkeys(row_mismatch_legend))
+                mismatch_color_list = [
+                    mismatch_type_colors.get(label, "#636363") for label in mismatch_categories
+                ]
+                mismatch_to_code = {label: i for i, label in enumerate(mismatch_categories)}
+                mismatch_codes = np.array(
+                    [mismatch_to_code[label] for label in row_mismatch_labels], dtype=np.int32
+                ).reshape(-1, 1)
+                mismatch_cmap = colors.ListedColormap(mismatch_color_list)
+                mismatch_norm = colors.BoundaryNorm(
+                    np.arange(-0.5, len(mismatch_categories) + 0.5, 1),
+                    mismatch_cmap.N,
+                )
+                ax_mismatch.imshow(
+                    mismatch_codes,
+                    cmap=mismatch_cmap,
+                    norm=mismatch_norm,
+                    aspect="auto",
+                    interpolation="nearest",
+                    origin="upper",
+                )
+                ax_mismatch.set_xticks([])
+                ax_mismatch.set_yticks([])
+                ax_mismatch.set_title("Type", fontsize=8, pad=8)
 
             # Overlay variant call circles
             if call_matrix is not None:
@@ -1100,6 +1161,14 @@ def plot_variant_segment_clustermaps(
                 plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=breakpoint_marker_color,
                            markeredgecolor="gray", markersize=5, label="Breakpoint"),
             ]
+            if row_mismatch_labels is not None:
+                for label in row_mismatch_legend:
+                    legend_elements.append(
+                        patches.Patch(
+                            facecolor=mismatch_type_colors.get(label, "#636363"),
+                            label=f"Mismatch type: {label}",
+                        )
+                    )
             ax.legend(
                 handles=legend_elements,
                 loc="upper left",

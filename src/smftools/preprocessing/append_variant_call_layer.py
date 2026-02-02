@@ -264,6 +264,7 @@ def append_variant_segment_layer(
     seq2_column: str,
     variant_call_layer: str | None = None,
     read_span_layer: str = "read_span_mask",
+    reference_col: str = "Reference_strand",
     output_prefix: str | None = None,
     uns_flag: str = "append_variant_segment_layer_performed",
     force_redo: bool = False,
@@ -288,6 +289,7 @@ def append_variant_segment_layer(
         seq2_column: Column in ``adata.var`` with the second reference base.
         variant_call_layer: Layer with per-position variant calls.  Auto-derived if None.
         read_span_layer: Layer containing read span masks.
+        reference_col: Obs column defining which reference each read is aligned to.
         output_prefix: Prefix for output layer/obs names.  Defaults to ``{seq1_column}__{seq2_column}``.
         uns_flag: Flag in ``adata.uns`` indicating prior completion.
         force_redo: Whether to rerun even if ``uns_flag`` is set.
@@ -387,6 +389,72 @@ def append_variant_segment_layer(
 
     adata.obs[f"{output_prefix}_breakpoint_count"] = breakpoint_counts
     adata.obs[f"{output_prefix}_is_chimeric"] = breakpoint_counts > 0
+
+    # Per-read chimeric flags from mismatch segments relative to each read's own reference.
+    # A mismatch segment is a contiguous run where a seq1-aligned read is labeled as seq2,
+    # or vice versa, within the read span.
+    ref_labels = adata.obs[reference_col].values
+    ref_categories = adata.obs[reference_col].cat.categories
+    suffix = "_strand_FASTA_base"
+    seq1_stem = seq1_column[: -len(suffix)] if seq1_column.endswith(suffix) else seq1_column
+    seq2_stem = seq2_column[: -len(suffix)] if seq2_column.endswith(suffix) else seq2_column
+
+    ref_to_seq: dict[str, int] = {}
+    for ref in ref_categories:
+        if ref == seq1_stem:
+            ref_to_seq[ref] = 1
+        elif ref == seq2_stem:
+            ref_to_seq[ref] = 2
+
+    chimeric_flags = np.zeros(n_obs, dtype=bool)
+    chimeric_types: list[str] = ["no_segment_mismatch"] * n_obs
+
+    for i in range(n_obs):
+        covered = np.where(span_matrix[i] > 0)[0]
+        if len(covered) == 0:
+            continue
+
+        span_start = int(covered[0])
+        span_end = int(covered[-1])
+        in_span = segment_layer[i, span_start : span_end + 1]
+
+        seq_id = ref_to_seq.get(ref_labels[i])
+        if seq_id is None:
+            continue
+
+        mismatch_value = 2 if seq_id == 1 else 1
+        mismatch_mask = in_span == mismatch_value
+        if not np.any(mismatch_mask):
+            continue
+
+        starts = np.where(mismatch_mask & ~np.r_[False, mismatch_mask[:-1]])[0]
+        ends = np.where(mismatch_mask & ~np.r_[mismatch_mask[1:], False])[0]
+        n_segments = len(starts)
+        chimeric_flags[i] = True
+
+        if n_segments >= 2:
+            chimeric_types[i] = "multi_segment_mismatch"
+        else:
+            start = int(starts[0])
+            end = int(ends[0])
+            if start == 0:
+                chimeric_types[i] = "left_segment_mismatch"
+            elif end == (len(in_span) - 1):
+                chimeric_types[i] = "right_segment_mismatch"
+            else:
+                chimeric_types[i] = "middle_segment_mismatch"
+
+    adata.obs["chimeric_variant_sites"] = chimeric_flags
+    adata.obs["chimeric_variant_sites_type"] = pd.Categorical(
+        chimeric_types,
+        categories=[
+            "no_segment_mismatch",
+            "left_segment_mismatch",
+            "right_segment_mismatch",
+            "middle_segment_mismatch",
+            "multi_segment_mismatch",
+        ],
+    )
 
     n_chimeric = int(np.sum(breakpoint_counts > 0))
     logger.info(
