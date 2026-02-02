@@ -122,10 +122,13 @@ def variant_adata_core(
     from ..plotting import (
         plot_mismatch_base_frequency_by_position,
         plot_sequence_integer_encoding_clustermaps,
+        plot_variant_segment_clustermaps,
     )
     from ..preprocessing import (
         append_mismatch_frequency_sites,
         append_sequence_mismatch_annotations,
+        append_variant_call_layer,
+        append_variant_segment_layer,
         load_sample_sheet,
     )
     from ..readwrite import make_dirs
@@ -188,6 +191,68 @@ def variant_adata_core(
         bypass=cfg.bypass_append_mismatch_frequency_sites,
         force_redo=cfg.force_redo_append_mismatch_frequency_sites,
     )
+
+    # ============================================================
+    # 2) Per-read variant call layer at reference mismatch sites
+    # ============================================================
+    if seq1_col and seq2_col:
+        # For conversion SMF, derive converted column names so variant calling
+        # compares read bases against the converted reference (which reads are mapped to).
+        # Unconverted: "{chrom}_{strand}_strand_FASTA_base"
+        # Converted:   "{chrom}_{conversion}_{strand}_{strand}_strand_FASTA_base"
+        # e.g. "6B6_top_strand_FASTA_base" -> "6B6_5mC_top_top_strand_FASTA_base"
+        def _find_converted_column(unconverted_col: str, var_columns) -> str | None:
+            """Find the converted FASTA column corresponding to an unconverted one.
+
+            Unconverted columns follow the pattern ``{chromosome}_{strand}_strand_FASTA_base``.
+            Converted columns follow ``{chromosome}_{conversion}_{strand}_{strand}_strand_FASTA_base``
+            (e.g. ``6B6_5mC_top_top_strand_FASTA_base`` for unconverted ``6B6_top_strand_FASTA_base``).
+            """
+            suffix = "_strand_FASTA_base"
+            if not unconverted_col.endswith(suffix):
+                return None
+            stem = unconverted_col[: -len(suffix)]  # e.g. "6B6_top"
+            # Parse strand from end of stem: "6B6_top" -> strand="top", chrom="6B6"
+            for strand in ("top", "bottom"):
+                if stem.endswith(f"_{strand}"):
+                    chrom = stem[: -len(f"_{strand}")]
+                    # Converted column: {chrom}_{conversion}_{strand}_{strand}_strand_FASTA_base
+                    # The strand appears twice: once in the record name, once in the suffix.
+                    prefix = f"{chrom}_"
+                    end = f"_{strand}_{strand}{suffix}"
+                    candidates = [
+                        c for c in var_columns
+                        if c.startswith(prefix) and c.endswith(end) and c != unconverted_col
+                    ]
+                    if len(candidates) == 1:
+                        return candidates[0]
+                    if len(candidates) > 1:
+                        logger.info("Multiple converted column candidates for '%s': %s", unconverted_col, candidates)
+                        return candidates[0]
+                    break
+            return None
+
+        seq1_conv = _find_converted_column(seq1_col, adata.var.columns)
+        seq2_conv = _find_converted_column(seq2_col, adata.var.columns)
+        if seq1_conv and seq2_conv:
+            logger.info("Using converted columns: '%s', '%s'", seq1_conv, seq2_conv)
+
+        append_variant_call_layer(
+            adata,
+            seq1_column=seq1_col,
+            seq2_column=seq2_col,
+            seq1_converted_column=seq1_conv,
+            seq2_converted_column=seq2_conv,
+            read_span_layer=cfg.mismatch_frequency_read_span_layer,
+            reference_col=cfg.reference_column,
+        )
+
+        append_variant_segment_layer(
+            adata,
+            seq1_column=seq1_col,
+            seq2_column=seq2_col,
+            read_span_layer=cfg.mismatch_frequency_read_span_layer,
+        )
 
     ############################################### Plot mismatch base frequencies ###############################################
     if cfg.mismatch_frequency_layer not in adata.layers:
@@ -275,6 +340,32 @@ def variant_adata_core(
                     show_position_axis=True,
                     exclude_mod_sites=True,
                     mod_site_bases=cfg.mod_target_bases,
+                )
+
+    # ============================================================
+    # 4) Variant segment clustermaps
+    # ============================================================
+    if seq1_col and seq2_col:
+        segment_layer_name = f"{seq1_col}__{seq2_col}_variant_segments"
+        if segment_layer_name in adata.layers:
+            segment_dir = variant_directory / "deduplicated" / "04_variant_segment_clustermaps"
+            if segment_dir.exists():
+                logger.info(
+                    "Variant segment clustermaps already exist at %s; skipping.",
+                    segment_dir,
+                )
+            else:
+                make_dirs([segment_dir])
+                plot_variant_segment_clustermaps(
+                    adata,
+                    seq1_column=seq1_col,
+                    seq2_column=seq2_col,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    variant_segment_layer=segment_layer_name,
+                    read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                    save_path=segment_dir,
+                    show_position_axis=True,
                 )
 
     # ============================================================
