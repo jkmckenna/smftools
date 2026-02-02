@@ -1,9 +1,10 @@
 # AGENTS.md
 
-This file tells coding agents (including OpenAI Codex and Claude Code) how to work in this repo.
+This file tells coding agents (including OpenAI's Codex, Anthropic's Claude Code, and Google's Gemini) how to work in this repo.
 
-Coding agents can only read from AGENTS.md or Claude.md files.
-Agents can not edit AGENTS.md or Claude.md files.
+- For AGENTS.md or CLAUDE.md files:
+  - Agents can read from these files.
+  - Agents can never edit these files.
 
 ## Goals
 - Make minimal, correct changes.
@@ -12,15 +13,17 @@ Agents can not edit AGENTS.md or Claude.md files.
 - Generate production grade, scalable code.
 
 ## Prompt interface
-- When asked about a problem or task, first describe the plan to handle the task.
-- Keep taking prompts until the plan is validated.
+- When asked about a problem or task, first read all files relevent to the task's scope.
+- Describe the problem given the context.
+- Formulate a plan to address the problem within scope.
+- Refine the plan with user input.
 - Implement code after being told to proceed.
 
 ## Repo orientation
 - Read existing patterns before inventing new ones.
 - Don’t refactor broadly unless asked.
-- If you’re unsure about intended behavior, look for tests/docs first.
-- If behavior is not clear after tests/docs, look at the Click commands section in this file.
+- If you’re unsure about intended behavior, look for tests or docs first.
+- If behavior is not clear after reading tests and docs, look at the Click commands section in this file.
 - Ignore all files in any directory named "archived".
 - User defined parameters exist within src/smftools/config.
 - Parameters are herited from default.yaml -> MODALITY.yaml -> user_defined_config.csv
