@@ -252,6 +252,7 @@ def variant_adata_core(
             seq1_column=seq1_col,
             seq2_column=seq2_col,
             read_span_layer=cfg.mismatch_frequency_read_span_layer,
+            reference_col=cfg.reference_column,
         )
 
     ############################################### Plot mismatch base frequencies ###############################################
@@ -366,6 +367,31 @@ def variant_adata_core(
                     read_span_layer=cfg.mismatch_frequency_read_span_layer,
                     save_path=segment_dir,
                     show_position_axis=True,
+                )
+
+            segment_type_dir = (
+                variant_directory
+                / "deduplicated"
+                / "05_variant_segment_clustermaps_with_mismatch_type"
+            )
+            if segment_type_dir.exists():
+                logger.info(
+                    "Variant segment mismatch-type clustermaps already exist at %s; skipping.",
+                    segment_type_dir,
+                )
+            else:
+                make_dirs([segment_type_dir])
+                plot_variant_segment_clustermaps(
+                    adata,
+                    seq1_column=seq1_col,
+                    seq2_column=seq2_col,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    variant_segment_layer=segment_layer_name,
+                    read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                    save_path=segment_type_dir,
+                    show_position_axis=True,
+                    mismatch_type_obs_col="chimeric_variant_sites_type",
                 )
 
     # ============================================================
