@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from smftools.tools import calculate_umap
+from smftools.tools import calculate_pca, calculate_umap
 
 
 @pytest.mark.unit
@@ -20,12 +20,12 @@ def test_calculate_umap_outputs() -> None:
     adata = ad.AnnData(data)
     adata.layers["nan_half"] = data.copy()
 
-    calculate_umap(adata, n_pcs=3, knn_neighbors=4)
+    calculate_pca(adata, n_pcs=3)
+    calculate_umap(adata, obsm="X_pca")
 
     assert adata.obsm["X_pca"].shape == (12, 3)
     assert adata.obsm["X_umap"].shape == (12, 2)
-    assert adata.obsp["distances"].shape == (12, 12)
-    assert adata.obsp["connectivities"].shape == (12, 12)
+    assert adata.obsp["connectivities_X_pca"].shape == (12, 12)
     assert adata.varm["PCs"].shape == (6, 3)
 
 
@@ -53,7 +53,7 @@ def test_plot_embedding_handles_ndarray_palette(
     pytest.importorskip("matplotlib")
     pytest.importorskip("seaborn")
 
-    import smftools.plotting.general_plotting as general_plotting
+    import smftools.plotting.latent_plotting as latent_plotting
 
     rng = np.random.default_rng(2)
     data = rng.random((6, 4))
@@ -61,14 +61,14 @@ def test_plot_embedding_handles_ndarray_palette(
     adata.obsm["X_umap"] = rng.random((6, 2))
     adata.obs["group"] = pd.Categorical(["a", "b", "a", "b", "a", "b"])
 
-    original_palette = general_plotting.sns.color_palette
+    original_palette = latent_plotting.sns.color_palette
 
     def _ndarray_palette(name: str, n_colors: int) -> np.ndarray:
         return np.array(original_palette(name, n_colors=n_colors))
 
-    monkeypatch.setattr(general_plotting.sns, "color_palette", _ndarray_palette)
+    monkeypatch.setattr(latent_plotting.sns, "color_palette", _ndarray_palette)
 
-    outputs = general_plotting.plot_embedding(
+    outputs = latent_plotting.plot_embedding(
         adata, basis="umap", color="group", output_dir=tmp_path
     )
     assert outputs["group"].exists()
@@ -108,8 +108,7 @@ def test_plot_pca_explained_variance_writes_file(tmp_path: Path) -> None:
     rng = np.random.default_rng(4)
     data = rng.random((10, 6))
     adata = ad.AnnData(data)
-    adata.obsm["X_pca"] = rng.random((10, 4))
-    adata.uns["X_pca"] = {"explained_variance_ratio": np.array([0.4, 0.3, 0.2, 0.1])}
+    adata.uns["pca"] = {"variance_ratio": np.array([0.4, 0.3, 0.2, 0.1])}
 
     output = plot_pca_explained_variance(adata, output_dir=tmp_path)
     assert output is not None

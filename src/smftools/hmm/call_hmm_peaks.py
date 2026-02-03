@@ -51,7 +51,7 @@ def call_hmm_peaks(
         raise KeyError(f"obs column '{ref_column}' not found")
 
     # Ensure categorical for predictable ref iteration
-    if not pd.api.types.is_categorical_dtype(adata.obs[ref_column]):
+    if not isinstance(adata.obs[ref_column].dtype, pd.CategoricalDtype):
         adata.obs[ref_column] = adata.obs[ref_column].astype("category")
 
     # Optional: drop duplicate obs columns once to avoid Pandas/AnnData view quirks

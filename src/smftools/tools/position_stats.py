@@ -320,12 +320,12 @@ def compute_positionwise_statistics(
 
     # samples / refs
     sseries = adata.obs[sample_col]
-    if not pd.api.types.is_categorical_dtype(sseries):
+    if not isinstance(sseries.dtype, pd.CategoricalDtype):
         sseries = sseries.astype("category")
     samples = list(sseries.cat.categories)
 
     rseries = adata.obs[ref_col]
-    if not pd.api.types.is_categorical_dtype(rseries):
+    if not isinstance(rseries.dtype, pd.CategoricalDtype):
         rseries = rseries.astype("category")
     references = list(rseries.cat.categories)
 
@@ -509,12 +509,12 @@ def plot_positionwise_matrices(
 
     # canonicalize sample/ref order
     sseries = adata.obs[sample_col]
-    if not pd.api.types.is_categorical_dtype(sseries):
+    if not isinstance(sseries.dtype, pd.CategoricalDtype):
         sseries = sseries.astype("category")
     samples = list(sseries.cat.categories)
 
     rseries = adata.obs[ref_col]
-    if not pd.api.types.is_categorical_dtype(rseries):
+    if not isinstance(rseries.dtype, pd.CategoricalDtype):
         rseries = rseries.astype("category")
     references = list(rseries.cat.categories)
 

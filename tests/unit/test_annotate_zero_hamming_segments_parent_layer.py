@@ -1,7 +1,11 @@
 import anndata as ad
 import numpy as np
 
-from smftools.tools.rolling_nn_distance import annotate_zero_hamming_segments
+from smftools.tools.rolling_nn_distance import (
+    annotate_zero_hamming_segments,
+    assign_per_read_segments_layer,
+    segments_to_per_read_dataframe,
+)
 
 
 def test_annotate_zero_hamming_segments_parent_layer_maps_vars():
@@ -16,16 +20,16 @@ def test_annotate_zero_hamming_segments_parent_layer_maps_vars():
     subset.uns["zero_pairs_window"] = 2
     subset.uns["zero_pairs_min_overlap"] = 1
 
-    annotate_zero_hamming_segments(
+    records = annotate_zero_hamming_segments(
         subset,
         zero_pairs_uns_key="zero_pairs",
         output_uns_key="segments",
         layer="nan0_0minus1",
         min_overlap=1,
         refine_segments=False,
-        binary_layer_key="zero_span",
-        parent_adata=parent,
     )
+    per_read_segments = segments_to_per_read_dataframe(records, subset.var_names.to_numpy())
+    assign_per_read_segments_layer(parent, subset, per_read_segments, layer_key="zero_span")
 
     assert "zero_span" in parent.layers
     target = parent.layers["zero_span"]
@@ -46,16 +50,16 @@ def test_annotate_zero_hamming_segments_parent_layer_fills_gaps():
     subset.uns["zero_pairs_window"] = 2
     subset.uns["zero_pairs_min_overlap"] = 1
 
-    annotate_zero_hamming_segments(
+    records = annotate_zero_hamming_segments(
         subset,
         zero_pairs_uns_key="zero_pairs",
         output_uns_key="segments",
         layer="nan0_0minus1",
         min_overlap=1,
         refine_segments=False,
-        binary_layer_key="zero_span",
-        parent_adata=parent,
     )
+    per_read_segments = segments_to_per_read_dataframe(records, subset.var_names.to_numpy())
+    assign_per_read_segments_layer(parent, subset, per_read_segments, layer_key="zero_span")
 
     assert "zero_span" in parent.layers
     target = parent.layers["zero_span"]
@@ -101,7 +105,7 @@ def test_annotate_zero_hamming_segments_overlap_counts_layer():
     subset.uns["zero_pairs_window"] = 2
     subset.uns["zero_pairs_min_overlap"] = 1
 
-    annotate_zero_hamming_segments(
+    records = annotate_zero_hamming_segments(
         subset,
         zero_pairs_uns_key="zero_pairs",
         output_uns_key="segments",
@@ -110,10 +114,9 @@ def test_annotate_zero_hamming_segments_overlap_counts_layer():
         refine_segments=True,
         max_segments_per_read=2,
         max_segment_overlap=10,
-        binary_layer_key="zero_span",
-        binary_overlap_mode="sum",
-        parent_adata=parent,
     )
+    per_read_segments = segments_to_per_read_dataframe(records, subset.var_names.to_numpy())
+    assign_per_read_segments_layer(parent, subset, per_read_segments, layer_key="zero_span")
 
     target = parent.layers["zero_span"]
     assert np.all(target == 2)

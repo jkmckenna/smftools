@@ -52,8 +52,8 @@ def test_plot_zero_hamming_span_and_layer_filters_nan_fraction(monkeypatch, tmp_
             fig=plt.figure(),
         )
 
-    monkeypatch.setattr("smftools.plotting.general_plotting.sns.heatmap", fake_heatmap)
-    monkeypatch.setattr("smftools.plotting.general_plotting.sns.clustermap", fake_clustermap)
+    monkeypatch.setattr("smftools.plotting.chimeric_plotting.sns.heatmap", fake_heatmap)
+    monkeypatch.setattr("smftools.plotting.chimeric_plotting.sns.clustermap", fake_clustermap)
 
     plot_zero_hamming_span_and_layer(
         adata,

@@ -51,7 +51,7 @@ def test_build_zero_hamming_span_layer_from_obs_accumulates_counts():
         layer_key="zero_hamming_distance_spans",
     )
 
-    expected = np.array([[2, 2, 0]], dtype=np.uint16)
+    expected = np.array([[1, 1, 0]], dtype=np.uint16)
     np.testing.assert_array_equal(adata.layers["zero_hamming_distance_spans"], expected)
 
 

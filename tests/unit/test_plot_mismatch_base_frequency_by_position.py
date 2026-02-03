@@ -25,6 +25,12 @@ def test_plot_mismatch_base_frequency_by_position_writes_files(tmp_path):
     adata.obs["Sample_Names"] = pd.Categorical(["S1", "S1", "S2", "S2"])
     adata.obs["Reference_strand"] = pd.Categorical(["R1", "R2", "R1", "R2"])
     adata.var_names = [f"pos{i}" for i in range(5)]
+    adata.var["R1_mean_error_rate"] = np.full(5, 0.01)
+    adata.var["R1_std_error_rate"] = np.full(5, 0.005)
+    adata.var["R2_mean_error_rate"] = np.full(5, 0.01)
+    adata.var["R2_std_error_rate"] = np.full(5, 0.005)
+    adata.var["R1_strand_FASTA_base"] = np.array(["A", "C", "G", "T", "A"])
+    adata.var["R2_strand_FASTA_base"] = np.array(["A", "C", "G", "T", "A"])
     adata.uns["mismatch_integer_encoding_map"] = {
         "A": 0,
         "C": 1,
@@ -59,6 +65,12 @@ def test_plot_mismatch_base_frequency_by_position_excludes_mod_sites(tmp_path):
     adata.obs["Sample_Names"] = pd.Categorical(["S1", "S1", "S2", "S2"])
     adata.obs["Reference_strand"] = pd.Categorical(["R1", "R2", "R1", "R2"])
     adata.var_names = [f"pos{i}" for i in range(5)]
+    adata.var["R1_mean_error_rate"] = np.full(5, 0.01)
+    adata.var["R1_std_error_rate"] = np.full(5, 0.005)
+    adata.var["R2_mean_error_rate"] = np.full(5, 0.01)
+    adata.var["R2_std_error_rate"] = np.full(5, 0.005)
+    adata.var["R1_strand_FASTA_base"] = np.array(["A", "C", "G", "T", "A"])
+    adata.var["R2_strand_FASTA_base"] = np.array(["A", "C", "G", "T", "A"])
     adata.uns["mismatch_integer_encoding_map"] = {
         "A": 0,
         "C": 1,
@@ -103,7 +115,12 @@ def test_plot_mismatch_base_frequency_by_position_ignores_strand_base_mismatches
         ["ref_top", "ref_top", "ref_bottom", "ref_bottom"]
     )
     adata.var_names = [f"pos{i}" for i in range(3)]
-    adata.var["Reference_strand_FASTA_sequence_base"] = pd.Series(["C", "G", "A"])
+    adata.var["ref_top_strand_FASTA_base"] = np.array(["C", "G", "A"])
+    adata.var["ref_bottom_strand_FASTA_base"] = np.array(["C", "G", "A"])
+    adata.var["ref_top_mean_error_rate"] = np.full(3, 0.01)
+    adata.var["ref_top_std_error_rate"] = np.full(3, 0.005)
+    adata.var["ref_bottom_mean_error_rate"] = np.full(3, 0.01)
+    adata.var["ref_bottom_std_error_rate"] = np.full(3, 0.005)
     adata.uns["mismatch_integer_encoding_map"] = {
         "A": 0,
         "C": 1,
@@ -157,6 +174,7 @@ def test_plot_mismatch_base_frequency_by_position_with_zscores(tmp_path):
     }
     adata.var["R1_mean_error_rate"] = np.full(4, 0.01)
     adata.var["R1_std_error_rate"] = np.full(4, 0.005)
+    adata.var["R1_strand_FASTA_base"] = np.array(["A", "C", "G", "T"])
 
     results = plot_mismatch_base_frequency_by_position(
         adata,
