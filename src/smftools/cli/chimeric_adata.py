@@ -14,6 +14,47 @@ logger = get_logger(__name__)
 ZERO_HAMMING_DISTANCE_SPANS = "zero_hamming_distance_spans"
 
 
+def _max_positive_span_length(delta_row: "np.ndarray") -> int:
+    """Return the max contiguous run length where delta span values are > 0."""
+    import numpy as np
+
+    values = np.asarray(delta_row)
+    if values.ndim != 1 or values.size == 0:
+        return 0
+
+    positive_mask = values > 0
+    if not np.any(positive_mask):
+        return 0
+
+    transitions = np.diff(positive_mask.astype(np.int8))
+    starts = np.flatnonzero(transitions == 1) + 1
+    ends = np.flatnonzero(transitions == -1) + 1
+
+    if positive_mask[0]:
+        starts = np.r_[0, starts]
+    if positive_mask[-1]:
+        ends = np.r_[ends, positive_mask.size]
+
+    return int(np.max(ends - starts))
+
+
+def _compute_chimeric_by_mod_hamming_distance(
+    delta_layer: "np.ndarray",
+    span_threshold: int,
+) -> "np.ndarray":
+    """Flag reads with any delta-hamming span strictly larger than ``span_threshold``."""
+    import numpy as np
+
+    delta_values = np.asarray(delta_layer)
+    if delta_values.ndim != 2:
+        raise ValueError("delta_layer must be a 2D array with shape (n_obs, n_vars).")
+
+    flags = np.zeros(delta_values.shape[0], dtype=bool)
+    for obs_idx, row in enumerate(delta_values):
+        flags[obs_idx] = _max_positive_span_length(row) > span_threshold
+    return flags
+
+
 def _build_top_segments_obs_tuples(
     read_df: "pd.DataFrame",
     obs_names: "pd.Index",
@@ -1146,12 +1187,31 @@ def chimeric_adata_core(
                 )
                 delta_layer = np.clip(within_layer - cross_layer, 0, None)
                 adata.layers[DELTA_ZERO_HAMMING_DISTANCE_SPANS] = delta_layer
+                threshold = getattr(cfg, "delta_hamming_chimeric_span_threshold", 200)
+                try:
+                    threshold = int(threshold)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Invalid delta_hamming_chimeric_span_threshold=%s; using default 200.",
+                        threshold,
+                    )
+                    threshold = 200
+                if threshold < 0:
+                    logger.warning(
+                        "delta_hamming_chimeric_span_threshold=%s is negative; clamping to 0.",
+                        threshold,
+                    )
+                    threshold = 0
+                adata.obs["chimeric_by_mod_hamming_distance"] = (
+                    _compute_chimeric_by_mod_hamming_distance(delta_layer, threshold)
+                )
             else:
                 logger.warning(
                     "Cannot compute delta: missing %s or %s layer.",
                     ZERO_HAMMING_DISTANCE_SPANS,
                     CROSS_SAMPLE_ZERO_HAMMING_DISTANCE_SPANS,
                 )
+                adata.obs["chimeric_by_mod_hamming_distance"] = False
 
             if DELTA_ZERO_HAMMING_DISTANCE_SPANS in adata.layers:
                 for reference in references:
