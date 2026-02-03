@@ -886,6 +886,7 @@ class ExperimentConfig:
     cross_sample_analysis: bool = False
     cross_sample_grouping_col: Optional[str] = None
     cross_sample_random_seed: int = 42
+    delta_hamming_chimeric_span_threshold: int = 200
 
     # Spatial Analysis - UMAP/Leiden params
     layer_for_umap_plotting: Optional[str] = "nan_half"
@@ -1446,6 +1447,9 @@ class ExperimentConfig:
             cross_sample_analysis=merged.get("cross_sample_analysis", False),
             cross_sample_grouping_col=merged.get("cross_sample_grouping_col", None),
             cross_sample_random_seed=merged.get("cross_sample_random_seed", 42),
+            delta_hamming_chimeric_span_threshold=merged.get(
+                "delta_hamming_chimeric_span_threshold", 200
+            ),
             layer_for_umap_plotting=merged.get("layer_for_umap_plotting", "nan_half"),
             umap_layers_to_plot=merged.get(
                 "umap_layers_to_plot", ["mapped_length", "Raw_modification_signal"]

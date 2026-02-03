@@ -225,6 +225,7 @@ rolling_nn_zero_pairs_segment_histogram_bins: 30
 cross_sample_analysis: true
 cross_sample_grouping_col: null
 cross_sample_random_seed: 42
+delta_hamming_chimeric_span_threshold: 200
 
 # Latent Analysis - UMAP/Leiden params
 layer_for_umap_plotting: 'nan_half'
