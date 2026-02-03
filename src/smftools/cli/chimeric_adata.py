@@ -682,6 +682,9 @@ def chimeric_adata_core(
                             variant_call_data=_variant_call_df,
                             seq1_label=variant_seq1_label,
                             seq2_label=variant_seq2_label,
+                            ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                            ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                            variant_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                             title=title,
                             save_name=out_png,
                         )
@@ -1114,6 +1117,9 @@ def chimeric_adata_core(
                                 variant_call_data=_cross_variant_call_df,
                                 seq1_label=variant_seq1_label,
                                 seq2_label=variant_seq2_label,
+                                ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                                ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                                variant_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                                 title=title,
                                 save_name=out_png,
                             )
@@ -1405,6 +1411,9 @@ def chimeric_adata_core(
                                 variant_call_data=_variant_call_df,
                                 seq1_label=variant_seq1_label,
                                 seq2_label=variant_seq2_label,
+                                ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                                ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                                variant_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                                 title=trio_title,
                                 save_name=out_png,
                             )

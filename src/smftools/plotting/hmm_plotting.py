@@ -35,6 +35,151 @@ PdfPages = pdf_backend.PdfPages
 logger = get_logger(__name__)
 
 
+def _local_sites_to_global_indices(
+    adata,
+    subset,
+    local_sites: np.ndarray,
+) -> np.ndarray:
+    """Translate subset-local column indices into global ``adata.var`` indices."""
+    local_sites = np.asarray(local_sites, dtype=int)
+    if local_sites.size == 0:
+        return local_sites
+    subset_to_global = adata.var_names.get_indexer(subset.var_names)
+    global_sites = subset_to_global[local_sites]
+    if np.any(global_sites < 0):
+        missing = int(np.sum(global_sites < 0))
+        logger.warning(
+            "Could not map %d plotted positions back to full var index; skipping those points.",
+            missing,
+        )
+        global_sites = global_sites[global_sites >= 0]
+    return global_sites
+
+
+def _overlay_variant_calls_on_panels(
+    adata,
+    reference: str,
+    ordered_obs_names: list,
+    panels_with_indices: list,
+    seq1_color: str = "white",
+    seq2_color: str = "black",
+    marker_size: float = 4.0,
+) -> bool:
+    """
+    Overlay variant call circles on heatmap panels using nearest-neighbor mapping.
+
+    This function maps variant call column indices to the nearest displayed column
+    in each panel, using var index space for mapping. This handles both regular
+    var_names and reindexed label coordinates.
+
+    Parameters
+    ----------
+    adata : AnnData
+        The AnnData containing variant call layers (should be full adata, not subset).
+    reference : str
+        Reference name used to auto-detect the variant call layer.
+    ordered_obs_names : list
+        Obs names in display order (rows of the heatmap).
+    panels_with_indices : list of (ax, site_indices)
+        Each entry is a matplotlib axes and the var indices for that panel's columns.
+    seq1_color, seq2_color : str
+        Colors for seq1 (value 1) and seq2 (value 2) variant calls.
+    marker_size : float
+        Size of the circle markers.
+
+    Returns
+    -------
+    bool
+        True if overlay was applied to at least one panel.
+    """
+    # Auto-detect variant call layer - find any layer ending with _variant_call
+    vc_layer_key = None
+    for key in adata.layers:
+        if key.endswith("_variant_call"):
+            vc_layer_key = key
+            break
+
+    if vc_layer_key is None:
+        return False
+
+    # Build row index mapping
+    obs_name_to_idx = {str(name): i for i, name in enumerate(adata.obs_names)}
+    common_obs = [str(name) for name in ordered_obs_names if str(name) in obs_name_to_idx]
+    if not common_obs:
+        return False
+
+    obs_idx = [obs_name_to_idx[name] for name in common_obs]
+    row_index_map = {str(name): i for i, name in enumerate(ordered_obs_names)}
+    heatmap_row_indices = np.array([row_index_map[name] for name in common_obs])
+
+    # Get variant call matrix for the ordered obs
+    vc_data = adata.layers[vc_layer_key]
+    if hasattr(vc_data, "toarray"):
+        vc_data = vc_data.toarray()
+    vc_matrix = np.asarray(vc_data)[obs_idx, :]
+
+    # Find columns with actual variant calls (value 1 or 2)
+    has_calls = np.isin(vc_matrix, [1, 2]).any(axis=0)
+    call_col_indices = np.where(has_calls)[0]
+
+    if len(call_col_indices) == 0:
+        return False
+
+    call_sub = vc_matrix[:, call_col_indices]
+
+    applied = False
+    for ax, site_indices in panels_with_indices:
+        site_indices = np.asarray(site_indices)
+        if site_indices.size == 0:
+            continue
+
+        # Use nearest-neighbor mapping in var index space
+        # site_indices are the var indices displayed in this panel (sorted by position)
+        # call_col_indices are var indices where calls exist
+        # Map each call to the nearest displayed site index
+
+        # Sort site indices for searchsorted
+        sorted_order = np.argsort(site_indices)
+        sorted_sites = site_indices[sorted_order]
+
+        # Find nearest site for each call
+        insert_idx = np.searchsorted(sorted_sites, call_col_indices)
+        insert_idx = np.clip(insert_idx, 0, len(sorted_sites) - 1)
+        left_idx = np.clip(insert_idx - 1, 0, len(sorted_sites) - 1)
+
+        dist_right = np.abs(sorted_sites[insert_idx].astype(float) - call_col_indices.astype(float))
+        dist_left = np.abs(sorted_sites[left_idx].astype(float) - call_col_indices.astype(float))
+        nearest_sorted = np.where(dist_left < dist_right, left_idx, insert_idx)
+
+        # Map back to original (unsorted) heatmap column positions
+        nearest_heatmap_col = sorted_order[nearest_sorted]
+
+        # Plot circles for each variant value
+        for call_val, color in [(1, seq1_color), (2, seq2_color)]:
+            local_rows, local_cols = np.where(call_sub == call_val)
+            if len(local_rows) == 0:
+                continue
+
+            plot_y = heatmap_row_indices[local_rows]
+            plot_x = nearest_heatmap_col[local_cols]
+
+            ax.scatter(
+                plot_x + 0.5,
+                plot_y + 0.5,
+                c=color,
+                s=marker_size,
+                marker="o",
+                edgecolors="gray",
+                linewidths=0.3,
+                zorder=3,
+            )
+        applied = True
+
+    if applied:
+        logger.info("Overlaid variant calls from layer '%s'.", vc_layer_key)
+    return applied
+
+
 def plot_hmm_size_contours(
     adata,
     length_layer: str,
@@ -494,6 +639,10 @@ def combined_hmm_raw_clustermap(
     index_col_suffix: str | None = None,
     fill_nan_strategy: str = "value",
     fill_nan_value: float = -1,
+    overlay_variant_calls: bool = False,
+    variant_overlay_seq1_color: str = "white",
+    variant_overlay_seq2_color: str = "black",
+    variant_overlay_marker_size: float = 4.0,
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
@@ -635,6 +784,7 @@ def combined_hmm_raw_clustermap(
                 stacked_cpg_raw = []
                 stacked_any_a = []
                 stacked_any_a_raw = []
+                ordered_obs_names = []
 
                 row_labels, bin_labels, bin_boundaries = [], [], []
                 total_reads = subset.n_obs
@@ -726,6 +876,7 @@ def combined_hmm_raw_clustermap(
                         order = np.arange(n)
 
                     sb = sb[order]
+                    ordered_obs_names.extend(sb.obs_names.tolist())
 
                     # ---- collect matrices ----
                     stacked_hmm.append(
@@ -940,6 +1091,42 @@ def combined_hmm_raw_clustermap(
                     for boundary in bin_boundaries[:-1]:
                         axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
 
+                if overlay_variant_calls and ordered_obs_names:
+                    try:
+                        # Map panel sites from subset-local coordinates to full adata indices
+                        hmm_sites_global = _local_sites_to_global_indices(adata, subset, hmm_sites)
+                        any_c_sites_global = _local_sites_to_global_indices(adata, subset, any_c_sites)
+                        gpc_sites_global = _local_sites_to_global_indices(adata, subset, gpc_sites)
+                        cpg_sites_global = _local_sites_to_global_indices(adata, subset, cpg_sites)
+                        any_a_sites_global = _local_sites_to_global_indices(adata, subset, any_a_sites)
+
+                        # Build panels_with_indices using site indices for each panel
+                        # Map panel names to their site index arrays
+                        name_to_sites = {
+                            f"HMM - {hmm_feature_layer}": hmm_sites_global,
+                            "C": any_c_sites_global,
+                            "GpC": gpc_sites_global,
+                            "CpG": cpg_sites_global,
+                            "A": any_a_sites_global,
+                        }
+                        panels_with_indices = []
+                        for idx, (name, *_rest) in enumerate(panels):
+                            sites = name_to_sites.get(name)
+                            if sites is not None and len(sites) > 0:
+                                panels_with_indices.append((axes_heat[idx], sites))
+                        if panels_with_indices:
+                            _overlay_variant_calls_on_panels(
+                                adata,
+                                ref,
+                                ordered_obs_names,
+                                panels_with_indices,
+                                seq1_color=variant_overlay_seq1_color,
+                                seq2_color=variant_overlay_seq2_color,
+                                marker_size=variant_overlay_marker_size,
+                            )
+                    except Exception as overlay_err:
+                        logger.warning("Variant overlay failed for %s - %s: %s", sample, ref, overlay_err)
+
                 plt.tight_layout()
 
                 if save_path:
@@ -993,6 +1180,10 @@ def combined_hmm_length_clustermap(
     fill_nan_strategy: str = "value",
     fill_nan_value: float = -1,
     length_feature_ranges: Optional[Sequence[Tuple[int, int, Any]]] = None,
+    overlay_variant_calls: bool = False,
+    variant_overlay_seq1_color: str = "white",
+    variant_overlay_seq2_color: str = "black",
+    variant_overlay_marker_size: float = 4.0,
 ):
     """
     Plot clustermaps for length-encoded HMM feature layers with optional subclass colors.
@@ -1119,6 +1310,7 @@ def combined_hmm_length_clustermap(
                 stacked_cpg_raw = []
                 stacked_any_a = []
                 stacked_any_a_raw = []
+                ordered_obs_names = []
 
                 row_labels, bin_labels, bin_boundaries = [], [], []
                 total_reads = subset.n_obs
@@ -1201,6 +1393,7 @@ def combined_hmm_length_clustermap(
                         order = np.arange(n)
 
                     sb = sb[order]
+                    ordered_obs_names.extend(sb.obs_names.tolist())
 
                     stacked_lengths.append(
                         _layer_to_numpy(
@@ -1417,6 +1610,43 @@ def combined_hmm_length_clustermap(
 
                     for boundary in bin_boundaries[:-1]:
                         axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
+
+                if overlay_variant_calls and ordered_obs_names:
+                    try:
+                        # Map panel sites from subset-local coordinates to full adata indices
+                        length_sites_global = _local_sites_to_global_indices(
+                            adata, subset, length_sites
+                        )
+                        any_c_sites_global = _local_sites_to_global_indices(adata, subset, any_c_sites)
+                        gpc_sites_global = _local_sites_to_global_indices(adata, subset, gpc_sites)
+                        cpg_sites_global = _local_sites_to_global_indices(adata, subset, cpg_sites)
+                        any_a_sites_global = _local_sites_to_global_indices(adata, subset, any_a_sites)
+
+                        # Build panels_with_indices using site indices for each panel
+                        name_to_sites = {
+                            f"HMM lengths - {length_layer}": length_sites_global,
+                            "C": any_c_sites_global,
+                            "GpC": gpc_sites_global,
+                            "CpG": cpg_sites_global,
+                            "A": any_a_sites_global,
+                        }
+                        panels_with_indices = []
+                        for idx, (name, *_rest) in enumerate(panels):
+                            sites = name_to_sites.get(name)
+                            if sites is not None and len(sites) > 0:
+                                panels_with_indices.append((axes_heat[idx], sites))
+                        if panels_with_indices:
+                            _overlay_variant_calls_on_panels(
+                                adata,
+                                ref,
+                                ordered_obs_names,
+                                panels_with_indices,
+                                seq1_color=variant_overlay_seq1_color,
+                                seq2_color=variant_overlay_seq2_color,
+                                marker_size=variant_overlay_marker_size,
+                            )
+                    except Exception as overlay_err:
+                        logger.warning("Variant overlay failed for %s - %s: %s", sample, ref, overlay_err)
 
                 plt.tight_layout()
 

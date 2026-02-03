@@ -366,6 +366,9 @@ def variant_adata_core(
                     variant_segment_layer=segment_layer_name,
                     read_span_layer=cfg.mismatch_frequency_read_span_layer,
                     save_path=segment_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                     show_position_axis=True,
                 )
 
@@ -390,6 +393,9 @@ def variant_adata_core(
                     variant_segment_layer=segment_layer_name,
                     read_span_layer=cfg.mismatch_frequency_read_span_layer,
                     save_path=segment_type_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                     show_position_axis=True,
                     mismatch_type_obs_col="chimeric_variant_sites_type",
                 )
