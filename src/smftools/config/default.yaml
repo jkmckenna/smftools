@@ -189,7 +189,7 @@ clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
 
 # Clustermap variant params
-overlay_variant_calls: true
+overlay_variant_calls: false
 variant_overlay_seq1_color: "black"
 variant_overlay_seq2_color: "white"
 variant_overlay_marker_size: 4.0
@@ -323,21 +323,13 @@ hmm_merge_layer_features:
   - ["all_accessible_features", 60]
 clustermap_cmap_hmm: "coolwarm"
 hmm_clustermap_feature_layers:
-  - all_accessible_features
   - all_accessible_features_merged
-  - small_accessible_patch
-  - mid_accessible_patch
-  - large_accessible_patch
-  - large_accessible_patch_merged
-  - nucleosome_depleted_region
   - nucleosome_depleted_region_merged
   - small_bound_stretch
   - medium_bound_stretch
   - putative_nucleosome
-  - large_bound_stretch
   - all_footprint_features
 hmm_clustermap_length_layers:
-  - all_accessible_features
   - all_accessible_features_merged
   - all_footprint_features
 hmm_clustermap_sortby: "hmm"
