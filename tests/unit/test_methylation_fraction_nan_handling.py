@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 
 from smftools.plotting.plotting_utils import methylation_fraction

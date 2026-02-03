@@ -53,8 +53,8 @@ def test_plot_rolling_nn_and_layer_filters_nan_fraction(monkeypatch, tmp_path):
             fig=plt.figure(),
         )
 
-    monkeypatch.setattr("smftools.plotting.general_plotting.sns.heatmap", fake_heatmap)
-    monkeypatch.setattr("smftools.plotting.general_plotting.sns.clustermap", fake_clustermap)
+    monkeypatch.setattr("smftools.plotting.chimeric_plotting.sns.heatmap", fake_heatmap)
+    monkeypatch.setattr("smftools.plotting.chimeric_plotting.sns.clustermap", fake_clustermap)
 
     plot_rolling_nn_and_layer(
         adata,
@@ -105,8 +105,8 @@ def test_plot_rolling_nn_and_layer_keeps_nan_windows(monkeypatch, tmp_path):
             fig=plt.figure(),
         )
 
-    monkeypatch.setattr("smftools.plotting.general_plotting.sns.heatmap", fake_heatmap)
-    monkeypatch.setattr("smftools.plotting.general_plotting.sns.clustermap", fake_clustermap)
+    monkeypatch.setattr("smftools.plotting.chimeric_plotting.sns.heatmap", fake_heatmap)
+    monkeypatch.setattr("smftools.plotting.chimeric_plotting.sns.clustermap", fake_clustermap)
 
     plot_rolling_nn_and_layer(
         adata,

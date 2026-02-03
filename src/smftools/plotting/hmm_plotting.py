@@ -1761,7 +1761,7 @@ def plot_hmm_layers_rolling_by_sample_ref(
 
     if samples is None:
         sseries = adata.obs[sample_col]
-        if not pd.api.types.is_categorical_dtype(sseries):
+        if not isinstance(sseries.dtype, pd.CategoricalDtype):
             sseries = sseries.astype("category")
         samples_all = list(sseries.cat.categories)
     else:
@@ -1769,7 +1769,7 @@ def plot_hmm_layers_rolling_by_sample_ref(
 
     if references is None:
         rseries = adata.obs[ref_col]
-        if not pd.api.types.is_categorical_dtype(rseries):
+        if not isinstance(rseries.dtype, pd.CategoricalDtype):
             rseries = rseries.astype("category")
         refs_all = list(rseries.cat.categories)
     else:

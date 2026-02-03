@@ -107,7 +107,7 @@ def plot_spatial_autocorr_grid(
     if sample_col not in adata.obs:
         raise KeyError(f"sample_col '{sample_col}' not present in adata.obs")
     samples = adata.obs[sample_col]
-    if not pd.api.types.is_categorical_dtype(samples):
+    if not isinstance(samples.dtype, pd.CategoricalDtype):
         samples = samples.astype("category")
     sample_levels = list(samples.cat.categories)
 
@@ -116,7 +116,7 @@ def plot_spatial_autocorr_grid(
         raise KeyError(f"reference_col '{reference_col}' not present in adata.obs")
     if references is None:
         refs_series = adata.obs[reference_col]
-        if not pd.api.types.is_categorical_dtype(refs_series):
+        if not isinstance(refs_series.dtype, pd.CategoricalDtype):
             refs_series = refs_series.astype("category")
         references = list(refs_series.cat.categories)
     references = list(references)

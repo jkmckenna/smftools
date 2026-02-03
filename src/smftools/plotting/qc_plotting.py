@@ -64,7 +64,7 @@ def plot_read_qc_histograms(
 
     # Ensure sample_key is categorical for stable ordering
     samples = adata.obs[sample_key]
-    if not pd.api.types.is_categorical_dtype(samples):
+    if not isinstance(samples.dtype, pd.CategoricalDtype):
         samples = samples.astype("category")
     sample_levels = list(samples.cat.categories)
 
