@@ -1,6 +1,6 @@
 import numpy as np
 
-from smftools.plotting.general_plotting import _map_length_matrix_to_subclasses
+from smftools.plotting.hmm_plotting import _map_length_matrix_to_subclasses
 
 
 def test_map_length_matrix_to_subclasses():

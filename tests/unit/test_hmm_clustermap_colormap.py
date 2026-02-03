@@ -5,7 +5,7 @@ matplotlib.use("Agg")
 import numpy as np
 from matplotlib import colors
 
-from smftools.plotting.general_plotting import _build_hmm_feature_cmap
+from smftools.plotting.hmm_plotting import _build_hmm_feature_cmap
 
 
 def test_build_hmm_feature_cmap_sets_zero_and_nan_colors():
