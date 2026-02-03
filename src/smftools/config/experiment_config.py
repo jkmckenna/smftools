@@ -852,6 +852,10 @@ class ExperimentConfig:
     clustermap_cmap_cpg: Optional[str] = "coolwarm"
     clustermap_cmap_a: Optional[str] = "coolwarm"
     spatial_clustermap_sortby: Optional[str] = "gpc"
+    overlay_variant_calls: bool = False
+    variant_overlay_seq1_color: str = "white"
+    variant_overlay_seq2_color: str = "black"
+    variant_overlay_marker_size: float = 4.0
     rolling_nn_layer: Optional[str] = "nan0_0minus1"
     rolling_nn_plot_layer: Optional[str] = "nan0_0minus1"
     rolling_nn_plot_layers: List[str] = field(
@@ -1395,6 +1399,10 @@ class ExperimentConfig:
             clustermap_cmap_cpg=merged.get("clustermap_cmap_cpg", "coolwarm"),
             clustermap_cmap_a=merged.get("clustermap_cmap_a", "coolwarm"),
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
+            overlay_variant_calls=_parse_bool(merged.get("overlay_variant_calls", False)),
+            variant_overlay_seq1_color=merged.get("variant_overlay_seq1_color", "white"),
+            variant_overlay_seq2_color=merged.get("variant_overlay_seq2_color", "black"),
+            variant_overlay_marker_size=float(merged.get("variant_overlay_marker_size", 4.0)),
             rolling_nn_layer=merged.get("rolling_nn_layer", "nan0_0minus1"),
             rolling_nn_plot_layer=merged.get("rolling_nn_plot_layer", "nan0_0minus1"),
             rolling_nn_plot_layers=merged.get(

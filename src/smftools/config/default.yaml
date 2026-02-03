@@ -188,6 +188,12 @@ clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
 
+# Clustermap variant params
+overlay_variant_calls: true
+variant_overlay_seq1_color: "black"
+variant_overlay_seq2_color: "white"
+variant_overlay_marker_size: 4.0
+
 # Spatial analysis - Rolling NN Hamming
 rolling_nn_layer: "nan0_0minus1"
 rolling_nn_plot_layer: "nan0_0minus1"
