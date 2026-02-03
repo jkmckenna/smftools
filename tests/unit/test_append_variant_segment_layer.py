@@ -74,7 +74,15 @@ def test_append_variant_segment_layer_adds_chimeric_variant_site_labels() -> Non
         reference_col="Reference_strand",
     )
 
-    assert adata.obs["chimeric_variant_sites"].tolist() == [False, True, True, True, True, True, False]
+    assert adata.obs["chimeric_variant_sites"].tolist() == [
+        False,
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+    ]
 
     observed_types = adata.obs["chimeric_variant_sites_type"].tolist()
     assert observed_types[0] == "no_segment_mismatch"

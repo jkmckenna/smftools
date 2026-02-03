@@ -930,9 +930,7 @@ def plot_variant_segment_clustermaps(
         variant_segment_layer = f"{output_prefix}_variant_segments"
 
     if variant_segment_layer not in adata.layers:
-        logger.warning(
-            "Variant segment layer '%s' not found; skipping.", variant_segment_layer
-        )
+        logger.warning("Variant segment layer '%s' not found; skipping.", variant_segment_layer)
         return []
 
     if save_path is not None:
@@ -1153,13 +1151,42 @@ def plot_variant_segment_clustermaps(
                 patches.Patch(facecolor=seq1_color, label=f"{seq1_label} segment"),
                 patches.Patch(facecolor=seq2_color, label=f"{seq2_label} segment"),
                 patches.Patch(facecolor=transition_color, label="Transition zone"),
-                patches.Patch(facecolor=no_coverage_color, edgecolor="gray", linewidth=0.5, label="No coverage"),
-                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref1_marker_color,
-                           markeredgecolor="gray", markersize=5, label=f"{seq1_label} call"),
-                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref2_marker_color,
-                           markeredgecolor="gray", markersize=5, label=f"{seq2_label} call"),
-                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=breakpoint_marker_color,
-                           markeredgecolor="gray", markersize=5, label="Breakpoint"),
+                patches.Patch(
+                    facecolor=no_coverage_color,
+                    edgecolor="gray",
+                    linewidth=0.5,
+                    label="No coverage",
+                ),
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor=ref1_marker_color,
+                    markeredgecolor="gray",
+                    markersize=5,
+                    label=f"{seq1_label} call",
+                ),
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor=ref2_marker_color,
+                    markeredgecolor="gray",
+                    markersize=5,
+                    label=f"{seq2_label} call",
+                ),
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor=breakpoint_marker_color,
+                    markeredgecolor="gray",
+                    markersize=5,
+                    label="Breakpoint",
+                ),
             ]
             if row_mismatch_labels is not None:
                 for label in row_mismatch_legend:

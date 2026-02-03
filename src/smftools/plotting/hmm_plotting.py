@@ -1095,10 +1095,14 @@ def combined_hmm_raw_clustermap(
                     try:
                         # Map panel sites from subset-local coordinates to full adata indices
                         hmm_sites_global = _local_sites_to_global_indices(adata, subset, hmm_sites)
-                        any_c_sites_global = _local_sites_to_global_indices(adata, subset, any_c_sites)
+                        any_c_sites_global = _local_sites_to_global_indices(
+                            adata, subset, any_c_sites
+                        )
                         gpc_sites_global = _local_sites_to_global_indices(adata, subset, gpc_sites)
                         cpg_sites_global = _local_sites_to_global_indices(adata, subset, cpg_sites)
-                        any_a_sites_global = _local_sites_to_global_indices(adata, subset, any_a_sites)
+                        any_a_sites_global = _local_sites_to_global_indices(
+                            adata, subset, any_a_sites
+                        )
 
                         # Build panels_with_indices using site indices for each panel
                         # Map panel names to their site index arrays
@@ -1125,7 +1129,9 @@ def combined_hmm_raw_clustermap(
                                 marker_size=variant_overlay_marker_size,
                             )
                     except Exception as overlay_err:
-                        logger.warning("Variant overlay failed for %s - %s: %s", sample, ref, overlay_err)
+                        logger.warning(
+                            "Variant overlay failed for %s - %s: %s", sample, ref, overlay_err
+                        )
 
                 plt.tight_layout()
 
@@ -1617,10 +1623,14 @@ def combined_hmm_length_clustermap(
                         length_sites_global = _local_sites_to_global_indices(
                             adata, subset, length_sites
                         )
-                        any_c_sites_global = _local_sites_to_global_indices(adata, subset, any_c_sites)
+                        any_c_sites_global = _local_sites_to_global_indices(
+                            adata, subset, any_c_sites
+                        )
                         gpc_sites_global = _local_sites_to_global_indices(adata, subset, gpc_sites)
                         cpg_sites_global = _local_sites_to_global_indices(adata, subset, cpg_sites)
-                        any_a_sites_global = _local_sites_to_global_indices(adata, subset, any_a_sites)
+                        any_a_sites_global = _local_sites_to_global_indices(
+                            adata, subset, any_a_sites
+                        )
 
                         # Build panels_with_indices using site indices for each panel
                         name_to_sites = {
@@ -1646,7 +1656,9 @@ def combined_hmm_length_clustermap(
                                 marker_size=variant_overlay_marker_size,
                             )
                     except Exception as overlay_err:
-                        logger.warning("Variant overlay failed for %s - %s: %s", sample, ref, overlay_err)
+                        logger.warning(
+                            "Variant overlay failed for %s - %s: %s", sample, ref, overlay_err
+                        )
 
                 plt.tight_layout()
 

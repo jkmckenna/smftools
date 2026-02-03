@@ -221,13 +221,18 @@ def variant_adata_core(
                     prefix = f"{chrom}_"
                     end = f"_{strand}_{strand}{suffix}"
                     candidates = [
-                        c for c in var_columns
+                        c
+                        for c in var_columns
                         if c.startswith(prefix) and c.endswith(end) and c != unconverted_col
                     ]
                     if len(candidates) == 1:
                         return candidates[0]
                     if len(candidates) > 1:
-                        logger.info("Multiple converted column candidates for '%s': %s", unconverted_col, candidates)
+                        logger.info(
+                            "Multiple converted column candidates for '%s': %s",
+                            unconverted_col,
+                            candidates,
+                        )
                         return candidates[0]
                     break
             return None

@@ -336,7 +336,10 @@ def chimeric_adata_core(
             suffix = "_strand_FASTA_base"
             variant_seq1_label = seq1_col[: -len(suffix)] if seq1_col.endswith(suffix) else seq1_col
             variant_seq2_label = seq2_col[: -len(suffix)] if seq2_col.endswith(suffix) else seq2_col
-            logger.info("Detected variant call layer '%s'; will overlay on span clustermaps.", variant_call_layer_name)
+            logger.info(
+                "Detected variant call layer '%s'; will overlay on span clustermaps.",
+                variant_call_layer_name,
+            )
 
     # ============================================================
     # 1) Rolling NN distances + layer clustermaps
@@ -666,7 +669,9 @@ def chimeric_adata_core(
                         _vc = adata[mask].layers[variant_call_layer_name]
                         _vc = _vc.toarray() if hasattr(_vc, "toarray") else np.asarray(_vc)
                         _variant_call_df = pd.DataFrame(
-                            _vc, index=adata[mask].obs_names.astype(str), columns=adata.var_names,
+                            _vc,
+                            index=adata[mask].obs_names.astype(str),
+                            columns=adata.var_names,
                         )
 
                     subset = subset[:, site_mask].copy()
@@ -1044,7 +1049,9 @@ def chimeric_adata_core(
                         _vc = adata[sample_mask].layers[variant_call_layer_name]
                         _vc = _vc.toarray() if hasattr(_vc, "toarray") else np.asarray(_vc)
                         _cross_variant_call_df = pd.DataFrame(
-                            _vc, index=adata[sample_mask].obs_names.astype(str), columns=adata.var_names,
+                            _vc,
+                            index=adata[sample_mask].obs_names.astype(str),
+                            columns=adata.var_names,
                         )
 
                     # --- Plots ---
@@ -1117,9 +1124,15 @@ def chimeric_adata_core(
                                 variant_call_data=_cross_variant_call_df,
                                 seq1_label=variant_seq1_label,
                                 seq2_label=variant_seq2_label,
-                                ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
-                                ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
-                                variant_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                                ref1_marker_color=getattr(
+                                    cfg, "variant_overlay_seq1_color", "white"
+                                ),
+                                ref2_marker_color=getattr(
+                                    cfg, "variant_overlay_seq2_color", "black"
+                                ),
+                                variant_marker_size=getattr(
+                                    cfg, "variant_overlay_marker_size", 4.0
+                                ),
                                 title=title,
                                 save_name=out_png,
                             )
@@ -1366,7 +1379,9 @@ def chimeric_adata_core(
                     .astype("category")
                     .cat.categories.tolist()
                 )
-                references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
+                references = (
+                    adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
+                )
 
                 for reference in references:
                     ref_mask = adata.obs[cfg.reference_column] == reference
@@ -1398,9 +1413,7 @@ def chimeric_adata_core(
                         safe_sample = str(sample).replace(os.sep, "_")
                         safe_ref = str(reference).replace(os.sep, "_")
                         n_reads = int(sample_mask.sum())
-                        trio_title = (
-                            f"{sample} {reference} (n={n_reads})"
-                        )
+                        trio_title = f"{sample} {reference} (n={n_reads})"
                         out_png = span_trio_dir / f"{safe_sample}__{safe_ref}.png"
                         try:
                             plot_hamming_span_trio(
@@ -1411,9 +1424,15 @@ def chimeric_adata_core(
                                 variant_call_data=_variant_call_df,
                                 seq1_label=variant_seq1_label,
                                 seq2_label=variant_seq2_label,
-                                ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
-                                ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
-                                variant_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                                ref1_marker_color=getattr(
+                                    cfg, "variant_overlay_seq1_color", "white"
+                                ),
+                                ref2_marker_color=getattr(
+                                    cfg, "variant_overlay_seq2_color", "black"
+                                ),
+                                variant_marker_size=getattr(
+                                    cfg, "variant_overlay_marker_size", 4.0
+                                ),
                                 title=trio_title,
                                 save_name=out_png,
                             )
