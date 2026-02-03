@@ -152,7 +152,12 @@ def append_variant_call_layer(
         elif ref == seq2_stem:
             ref_to_seq[ref] = 2
         else:
-            logger.debug("Reference '%s' does not match seq1 stem '%s' or seq2 stem '%s'.", ref, seq1_stem, seq2_stem)
+            logger.debug(
+                "Reference '%s' does not match seq1 stem '%s' or seq2 stem '%s'.",
+                ref,
+                seq1_stem,
+                seq2_stem,
+            )
     logger.info("Reference-to-sequence mapping: %s", ref_to_seq)
 
     # Build per-reference acceptable base sets.
@@ -161,10 +166,16 @@ def append_variant_call_layer(
     use_converted = bool(seq1_converted_column and seq2_converted_column)
     if use_converted:
         if seq1_converted_column not in adata.var:
-            logger.warning("Converted column '%s' not in adata.var; falling back to unconverted.", seq1_converted_column)
+            logger.warning(
+                "Converted column '%s' not in adata.var; falling back to unconverted.",
+                seq1_converted_column,
+            )
             use_converted = False
         elif seq2_converted_column not in adata.var:
-            logger.warning("Converted column '%s' not in adata.var; falling back to unconverted.", seq2_converted_column)
+            logger.warning(
+                "Converted column '%s' not in adata.var; falling back to unconverted.",
+                seq2_converted_column,
+            )
             use_converted = False
         else:
             conv1_bases = adata.var[seq1_converted_column].values
@@ -309,7 +320,9 @@ def append_variant_segment_layer(
         variant_call_layer = f"{output_prefix}_variant_call"
 
     if variant_call_layer not in adata.layers:
-        logger.warning("Variant call layer '%s' not found; skipping segment layer.", variant_call_layer)
+        logger.warning(
+            "Variant call layer '%s' not found; skipping segment layer.", variant_call_layer
+        )
         return
 
     has_span = read_span_layer in adata.layers
