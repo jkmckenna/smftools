@@ -1,10 +1,9 @@
-import pytest
 import anndata as ad
 import numpy as np
 import pandas as pd
+import pytest
 
 from smftools.tools.rolling_nn_distance import (
-
     annotate_zero_hamming_segments,
     assign_per_read_segments_layer,
     assign_rolling_nn_results,

@@ -1,6 +1,5 @@
-import pytest
 import matplotlib
-
+import pytest
 
 matplotlib.use("Agg")
 

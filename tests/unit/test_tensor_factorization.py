@@ -6,7 +6,6 @@ import pytest
 
 from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
 from smftools.tools.tensor_factorization import (
-
     build_sequence_one_hot_and_mask,
     calculate_sequence_cp_decomposition,
 )

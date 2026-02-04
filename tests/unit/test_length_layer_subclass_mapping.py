@@ -1,5 +1,5 @@
-import pytest
 import numpy as np
+import pytest
 
 from smftools.plotting.hmm_plotting import _map_length_matrix_to_subclasses
 
