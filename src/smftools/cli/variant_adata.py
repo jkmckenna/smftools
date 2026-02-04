@@ -221,13 +221,18 @@ def variant_adata_core(
                     prefix = f"{chrom}_"
                     end = f"_{strand}_{strand}{suffix}"
                     candidates = [
-                        c for c in var_columns
+                        c
+                        for c in var_columns
                         if c.startswith(prefix) and c.endswith(end) and c != unconverted_col
                     ]
                     if len(candidates) == 1:
                         return candidates[0]
                     if len(candidates) > 1:
-                        logger.info("Multiple converted column candidates for '%s': %s", unconverted_col, candidates)
+                        logger.info(
+                            "Multiple converted column candidates for '%s': %s",
+                            unconverted_col,
+                            candidates,
+                        )
                         return candidates[0]
                     break
             return None
@@ -252,6 +257,7 @@ def variant_adata_core(
             seq1_column=seq1_col,
             seq2_column=seq2_col,
             read_span_layer=cfg.mismatch_frequency_read_span_layer,
+            reference_col=cfg.reference_column,
         )
 
     ############################################### Plot mismatch base frequencies ###############################################
@@ -365,7 +371,38 @@ def variant_adata_core(
                     variant_segment_layer=segment_layer_name,
                     read_span_layer=cfg.mismatch_frequency_read_span_layer,
                     save_path=segment_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                     show_position_axis=True,
+                )
+
+            segment_type_dir = (
+                variant_directory
+                / "deduplicated"
+                / "05_variant_segment_clustermaps_with_mismatch_type"
+            )
+            if segment_type_dir.exists():
+                logger.info(
+                    "Variant segment mismatch-type clustermaps already exist at %s; skipping.",
+                    segment_type_dir,
+                )
+            else:
+                make_dirs([segment_type_dir])
+                plot_variant_segment_clustermaps(
+                    adata,
+                    seq1_column=seq1_col,
+                    seq2_column=seq2_col,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    variant_segment_layer=segment_layer_name,
+                    read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                    save_path=segment_type_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                    show_position_axis=True,
+                    mismatch_type_obs_col="chimeric_variant_sites_type",
                 )
 
     # ============================================================

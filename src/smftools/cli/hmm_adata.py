@@ -1089,6 +1089,10 @@ def hmm_adata_core(
                 deaminase=deaminase,
                 min_signal=0,
                 index_col_suffix=cfg.reindexed_var_suffix,
+                overlay_variant_calls=getattr(cfg, "overlay_variant_calls", False),
+                variant_overlay_seq1_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                variant_overlay_seq2_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                variant_overlay_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
             )
 
     hmm_length_dir = hmm_directory / "12b_hmm_length_clustermaps"
@@ -1145,6 +1149,10 @@ def hmm_adata_core(
                 min_signal=0,
                 index_col_suffix=cfg.reindexed_var_suffix,
                 length_feature_ranges=length_feature_ranges,
+                overlay_variant_calls=getattr(cfg, "overlay_variant_calls", False),
+                variant_overlay_seq1_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                variant_overlay_seq2_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                variant_overlay_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
             )
 
     hmm_dir = hmm_directory / "13_hmm_bulk_traces"

@@ -468,7 +468,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
             ser = df[col]
             # categorical handling
             try:
-                is_cat = pd.api.types.is_categorical_dtype(ser.dtype)
+                is_cat = isinstance(ser.dtype, pd.CategoricalDtype)
             except Exception:
                 is_cat = False
 

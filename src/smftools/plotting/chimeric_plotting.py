@@ -856,9 +856,14 @@ def plot_zero_hamming_span_and_layer(
                         plot_x = nearest_heatmap_col[local_cols]
                         for ax in (ax1, ax2):
                             ax.scatter(
-                                plot_x + 0.5, plot_y + 0.5,
-                                c=marker_color, s=variant_marker_size,
-                                marker="o", edgecolors="gray", linewidths=0.3, zorder=3,
+                                plot_x + 0.5,
+                                plot_y + 0.5,
+                                c=marker_color,
+                                s=variant_marker_size,
+                                marker="o",
+                                edgecolors="gray",
+                                linewidths=0.3,
+                                zorder=3,
                                 label=label,
                             )
 
@@ -1631,6 +1636,10 @@ def plot_hamming_span_trio(
     ref1_marker_color: str = "white",
     ref2_marker_color: str = "black",
     variant_marker_size: float = 4.0,
+    classification_obs_col: str | None = "chimeric_by_mod_hamming_distance",
+    classification_true_color: str = "#000000",
+    classification_false_color: str = "#f0f0f0",
+    classification_panel_title: str = "Mod-hamming chimera",
     save_name: str | None = None,
 ):
     """
@@ -1709,13 +1718,26 @@ def plot_hamming_span_trio(
         (delta_df, delta_span_color, delta_span_layer_key, "Delta spans"),
     ]
 
+    has_classification = bool(classification_obs_col) and classification_obs_col in subset.obs
+
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(
-        2, 3,
-        height_ratios=[1, 6],
-        wspace=0.08,
-        hspace=0.05,
-    )
+    if has_classification:
+        gs = fig.add_gridspec(
+            2,
+            4,
+            height_ratios=[1, 6],
+            width_ratios=[1, 1, 1, 0.12],
+            wspace=0.08,
+            hspace=0.05,
+        )
+    else:
+        gs = fig.add_gridspec(
+            2,
+            3,
+            height_ratios=[1, 6],
+            wspace=0.08,
+            hspace=0.05,
+        )
 
     axes = []
     for col_idx, (df, color, layer_name, panel_title) in enumerate(panels):
@@ -1733,7 +1755,9 @@ def plot_hamming_span_trio(
         cmap.set_bad(outside_read_color)
 
         mean_span = np.nanmean(plot_data.to_numpy(), axis=0)
-        clean_barplot(ax_bar, mean_span, panel_title, y_max=1.0, y_label="Span frac", y_ticks=[0.0, 0.5, 1.0])
+        clean_barplot(
+            ax_bar, mean_span, panel_title, y_max=1.0, y_label="Span frac", y_ticks=[0.0, 0.5, 1.0]
+        )
 
         sns.heatmap(
             plot_data,
@@ -1745,8 +1769,32 @@ def plot_hamming_span_trio(
             robust=robust,
             cbar=False,
         )
-        ax_heat.set_title(panel_title, fontsize=10)
         _apply_xticks(ax_heat, [str(x) for x in ordered.columns], xtick_step)
+
+    if has_classification:
+        class_values = (
+            subset.obs.loc[ordered_index, classification_obs_col].astype(bool).astype(int)
+        )
+        class_df = pd.DataFrame(
+            {classification_panel_title: class_values.to_numpy()},
+            index=ordered_index,
+        )
+        class_cmap = colors.ListedColormap([classification_false_color, classification_true_color])
+        class_norm = colors.BoundaryNorm([-0.5, 0.5, 1.5], class_cmap.N)
+
+        ax_class_top = fig.add_subplot(gs[0, 3])
+        ax_class_top.axis("off")
+        ax_class = fig.add_subplot(gs[1, 3], sharey=axes[-1])
+        sns.heatmap(
+            class_df,
+            ax=ax_class,
+            cmap=class_cmap,
+            norm=class_norm,
+            xticklabels=False,
+            yticklabels=False,
+            cbar=False,
+            robust=robust,
+        )
 
     # Overlay variant call circles on all three panels
     if variant_call_data is not None:
@@ -1800,9 +1848,14 @@ def plot_hamming_span_trio(
                     plot_x = col_idx_arr[local_cols]
                     for ax in axes:
                         ax.scatter(
-                            plot_x + 0.5, plot_y + 0.5,
-                            c=marker_color, s=variant_marker_size,
-                            marker="o", edgecolors="gray", linewidths=0.3, zorder=3,
+                            plot_x + 0.5,
+                            plot_y + 0.5,
+                            c=marker_color,
+                            s=variant_marker_size,
+                            marker="o",
+                            edgecolors="gray",
+                            linewidths=0.3,
+                            zorder=3,
                             label=label,
                         )
 
@@ -1810,16 +1863,20 @@ def plot_hamming_span_trio(
         handles, labels = axes[-1].get_legend_handles_labels()
         seen = {}
         unique_handles, unique_labels = [], []
-        for h, l in zip(handles, labels):
-            if l not in seen:
-                seen[l] = True
+        for h, la in zip(handles, labels):
+            if la not in seen:
+                seen[la] = True
                 unique_handles.append(h)
-                unique_labels.append(l)
+                unique_labels.append(la)
         if unique_handles:
+            legend_x_anchor = 1.3 if has_classification else 1.02
             axes[-1].legend(
-                unique_handles, unique_labels,
-                loc="upper left", bbox_to_anchor=(1.02, 1.0),
-                fontsize=8, framealpha=0.9,
+                unique_handles,
+                unique_labels,
+                loc="upper left",
+                bbox_to_anchor=(legend_x_anchor, 1.0),
+                fontsize=8,
+                framealpha=0.9,
             )
 
     if title:

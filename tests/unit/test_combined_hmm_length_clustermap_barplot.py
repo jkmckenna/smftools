@@ -28,7 +28,7 @@ def test_combined_hmm_length_clustermap_barplot_caps_lengths(tmp_path, monkeypat
     def fake_clean_barplot(ax, mean_values, title, **kwargs):
         captured["mean_values"] = np.array(mean_values)
 
-    monkeypatch.setattr("smftools.plotting.general_plotting.clean_barplot", fake_clean_barplot)
+    monkeypatch.setattr("smftools.plotting.hmm_plotting.clean_barplot", fake_clean_barplot)
 
     combined_hmm_length_clustermap(
         adata,

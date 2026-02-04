@@ -14,6 +14,47 @@ logger = get_logger(__name__)
 ZERO_HAMMING_DISTANCE_SPANS = "zero_hamming_distance_spans"
 
 
+def _max_positive_span_length(delta_row: "np.ndarray") -> int:
+    """Return the max contiguous run length where delta span values are > 0."""
+    import numpy as np
+
+    values = np.asarray(delta_row)
+    if values.ndim != 1 or values.size == 0:
+        return 0
+
+    positive_mask = values > 0
+    if not np.any(positive_mask):
+        return 0
+
+    transitions = np.diff(positive_mask.astype(np.int8))
+    starts = np.flatnonzero(transitions == 1) + 1
+    ends = np.flatnonzero(transitions == -1) + 1
+
+    if positive_mask[0]:
+        starts = np.r_[0, starts]
+    if positive_mask[-1]:
+        ends = np.r_[ends, positive_mask.size]
+
+    return int(np.max(ends - starts))
+
+
+def _compute_chimeric_by_mod_hamming_distance(
+    delta_layer: "np.ndarray",
+    span_threshold: int,
+) -> "np.ndarray":
+    """Flag reads with any delta-hamming span strictly larger than ``span_threshold``."""
+    import numpy as np
+
+    delta_values = np.asarray(delta_layer)
+    if delta_values.ndim != 2:
+        raise ValueError("delta_layer must be a 2D array with shape (n_obs, n_vars).")
+
+    flags = np.zeros(delta_values.shape[0], dtype=bool)
+    for obs_idx, row in enumerate(delta_values):
+        flags[obs_idx] = _max_positive_span_length(row) > span_threshold
+    return flags
+
+
 def _build_top_segments_obs_tuples(
     read_df: "pd.DataFrame",
     obs_names: "pd.Index",
@@ -295,7 +336,10 @@ def chimeric_adata_core(
             suffix = "_strand_FASTA_base"
             variant_seq1_label = seq1_col[: -len(suffix)] if seq1_col.endswith(suffix) else seq1_col
             variant_seq2_label = seq2_col[: -len(suffix)] if seq2_col.endswith(suffix) else seq2_col
-            logger.info("Detected variant call layer '%s'; will overlay on span clustermaps.", variant_call_layer_name)
+            logger.info(
+                "Detected variant call layer '%s'; will overlay on span clustermaps.",
+                variant_call_layer_name,
+            )
 
     # ============================================================
     # 1) Rolling NN distances + layer clustermaps
@@ -625,7 +669,9 @@ def chimeric_adata_core(
                         _vc = adata[mask].layers[variant_call_layer_name]
                         _vc = _vc.toarray() if hasattr(_vc, "toarray") else np.asarray(_vc)
                         _variant_call_df = pd.DataFrame(
-                            _vc, index=adata[mask].obs_names.astype(str), columns=adata.var_names,
+                            _vc,
+                            index=adata[mask].obs_names.astype(str),
+                            columns=adata.var_names,
                         )
 
                     subset = subset[:, site_mask].copy()
@@ -641,6 +687,9 @@ def chimeric_adata_core(
                             variant_call_data=_variant_call_df,
                             seq1_label=variant_seq1_label,
                             seq2_label=variant_seq2_label,
+                            ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                            ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                            variant_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                             title=title,
                             save_name=out_png,
                         )
@@ -1000,7 +1049,9 @@ def chimeric_adata_core(
                         _vc = adata[sample_mask].layers[variant_call_layer_name]
                         _vc = _vc.toarray() if hasattr(_vc, "toarray") else np.asarray(_vc)
                         _cross_variant_call_df = pd.DataFrame(
-                            _vc, index=adata[sample_mask].obs_names.astype(str), columns=adata.var_names,
+                            _vc,
+                            index=adata[sample_mask].obs_names.astype(str),
+                            columns=adata.var_names,
                         )
 
                     # --- Plots ---
@@ -1073,6 +1124,15 @@ def chimeric_adata_core(
                                 variant_call_data=_cross_variant_call_df,
                                 seq1_label=variant_seq1_label,
                                 seq2_label=variant_seq2_label,
+                                ref1_marker_color=getattr(
+                                    cfg, "variant_overlay_seq1_color", "white"
+                                ),
+                                ref2_marker_color=getattr(
+                                    cfg, "variant_overlay_seq2_color", "black"
+                                ),
+                                variant_marker_size=getattr(
+                                    cfg, "variant_overlay_marker_size", 4.0
+                                ),
                                 title=title,
                                 save_name=out_png,
                             )
@@ -1146,12 +1206,31 @@ def chimeric_adata_core(
                 )
                 delta_layer = np.clip(within_layer - cross_layer, 0, None)
                 adata.layers[DELTA_ZERO_HAMMING_DISTANCE_SPANS] = delta_layer
+                threshold = getattr(cfg, "delta_hamming_chimeric_span_threshold", 200)
+                try:
+                    threshold = int(threshold)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Invalid delta_hamming_chimeric_span_threshold=%s; using default 200.",
+                        threshold,
+                    )
+                    threshold = 200
+                if threshold < 0:
+                    logger.warning(
+                        "delta_hamming_chimeric_span_threshold=%s is negative; clamping to 0.",
+                        threshold,
+                    )
+                    threshold = 0
+                adata.obs["chimeric_by_mod_hamming_distance"] = (
+                    _compute_chimeric_by_mod_hamming_distance(delta_layer, threshold)
+                )
             else:
                 logger.warning(
                     "Cannot compute delta: missing %s or %s layer.",
                     ZERO_HAMMING_DISTANCE_SPANS,
                     CROSS_SAMPLE_ZERO_HAMMING_DISTANCE_SPANS,
                 )
+                adata.obs["chimeric_by_mod_hamming_distance"] = False
 
             if DELTA_ZERO_HAMMING_DISTANCE_SPANS in adata.layers:
                 for reference in references:
@@ -1300,7 +1379,9 @@ def chimeric_adata_core(
                     .astype("category")
                     .cat.categories.tolist()
                 )
-                references = adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
+                references = (
+                    adata.obs[cfg.reference_column].astype("category").cat.categories.tolist()
+                )
 
                 for reference in references:
                     ref_mask = adata.obs[cfg.reference_column] == reference
@@ -1332,9 +1413,7 @@ def chimeric_adata_core(
                         safe_sample = str(sample).replace(os.sep, "_")
                         safe_ref = str(reference).replace(os.sep, "_")
                         n_reads = int(sample_mask.sum())
-                        trio_title = (
-                            f"{sample} {reference} (n={n_reads})"
-                        )
+                        trio_title = f"{sample} {reference} (n={n_reads})"
                         out_png = span_trio_dir / f"{safe_sample}__{safe_ref}.png"
                         try:
                             plot_hamming_span_trio(
@@ -1345,6 +1424,15 @@ def chimeric_adata_core(
                                 variant_call_data=_variant_call_df,
                                 seq1_label=variant_seq1_label,
                                 seq2_label=variant_seq2_label,
+                                ref1_marker_color=getattr(
+                                    cfg, "variant_overlay_seq1_color", "white"
+                                ),
+                                ref2_marker_color=getattr(
+                                    cfg, "variant_overlay_seq2_color", "black"
+                                ),
+                                variant_marker_size=getattr(
+                                    cfg, "variant_overlay_marker_size", 4.0
+                                ),
                                 title=trio_title,
                                 save_name=out_png,
                             )

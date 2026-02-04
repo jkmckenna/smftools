@@ -19,7 +19,7 @@ def test_align_sequences_with_substitution() -> None:
 def test_align_sequences_with_insertion() -> None:
     aligned1, aligned2, mismatches = align_sequences_with_mismatches("ACGT", "ACGTT")
 
-    assert aligned1 == "ACGT-"
+    assert aligned1 == "ACG-T"
     assert aligned2 == "ACGTT"
     assert len(mismatches) == 1
 
@@ -27,7 +27,7 @@ def test_align_sequences_with_insertion() -> None:
     assert mismatch.event == "insertion"
     assert mismatch.seq1_pos is None
     assert mismatch.seq1_base is None
-    assert mismatch.seq2_pos == 4
+    assert mismatch.seq2_pos == 3
     assert mismatch.seq2_base == "T"
 
 

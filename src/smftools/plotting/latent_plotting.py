@@ -452,7 +452,7 @@ def plot_embedding(
         values = adata.obs[color_key]
         fig, ax = plt.subplots(figsize=(5.5, 4.5))
 
-        if pd.api.types.is_categorical_dtype(values) or values.dtype == object:
+        if isinstance(values.dtype, pd.CategoricalDtype) or values.dtype == object:
             categories = pd.Categorical(values)
             label_strings = categories.categories.astype(str)
             palette = sns.color_palette("tab20", n_colors=len(label_strings))
@@ -584,7 +584,7 @@ def plot_embedding_grid(
         legend_ax.axis("off")
 
         values = adata.obs[color_key]
-        if pd.api.types.is_categorical_dtype(values) or values.dtype == object:
+        if isinstance(values.dtype, pd.CategoricalDtype) or values.dtype == object:
             categories = pd.Categorical(values)
             label_strings = categories.categories.astype(str)
             palette = sns.color_palette("tab20", n_colors=len(label_strings))

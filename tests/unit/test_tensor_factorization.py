@@ -62,7 +62,7 @@ def test_calculate_sequence_cp_decomposition() -> None:
     assert result.varm["H_cp_sequence"].shape == (4, 2)
     assert "cp_sequence" in result.uns
     assert result.uns["cp_sequence"]["base_factors"].shape == (4, 2)
-    assert result.uns["cp_sequence"]["backend"] == "numpy"
+    assert result.uns["cp_sequence"]["backend"] == "pytorch"
 
 
 @pytest.mark.unit

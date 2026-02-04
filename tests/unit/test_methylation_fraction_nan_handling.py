@@ -1,6 +1,7 @@
 import numpy as np
+import pytest
 
-from smftools.plotting.general_plotting import methylation_fraction
+from smftools.plotting.plotting_utils import methylation_fraction
 
 
 def test_methylation_fraction_ignores_nan_values():

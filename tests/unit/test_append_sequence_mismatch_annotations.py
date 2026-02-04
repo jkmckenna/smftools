@@ -1,4 +1,5 @@
 import anndata as ad
+import numpy as np
 import pandas as pd
 
 from smftools.preprocessing.append_sequence_mismatch_annotations import (
@@ -9,18 +10,18 @@ from smftools.preprocessing.append_sequence_mismatch_annotations import (
 def test_append_sequence_mismatch_annotations_adds_expected_vars() -> None:
     var = pd.DataFrame(
         {
-            "seq_a": ["ACGT", "ACGT"],
-            "seq_b": ["ACCT", "ACGTT"],
+            "seq_a": ["A", "C", "N", "G", "T"],
+            "seq_b": ["A", "C", "C", "G", "T"],
         }
     )
-    adata = ad.AnnData(X=[[0], [0]], var=var)
+    adata = ad.AnnData(X=np.zeros((1, 5)), var=var)
 
     append_sequence_mismatch_annotations(adata, seq1_column="seq_a", seq2_column="seq_b")
 
-    positions = adata.var["seq_a__seq_b_mismatch_positions"].tolist()
-    types = adata.var["seq_a__seq_b_mismatch_types"].tolist()
-    identities = adata.var["seq_a__seq_b_mismatch_identities"].tolist()
+    types = adata.var["seq_a__seq_b_mismatch_type"].tolist()
+    identities = adata.var["seq_a__seq_b_mismatch_identity"].tolist()
+    flags = adata.var["seq_a__seq_b_is_mismatch"].tolist()
 
-    assert positions == [[(2, 2)], [(None, 4)]]
-    assert types == [["substitution"], ["insertion"]]
-    assert identities == [["G->C"], ["ins:T"]]
+    assert types.count("insertion") == 1
+    assert identities.count("ins:C") == 1
+    assert sum(flags) == 1

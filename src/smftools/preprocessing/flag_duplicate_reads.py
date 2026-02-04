@@ -844,11 +844,11 @@ def plot_histogram_pages(
     if adata is not None and sample_key in adata.obs.columns and ref_key in adata.obs.columns:
         obs = adata.obs
         sseries = obs[sample_key]
-        if not pd.api.types.is_categorical_dtype(sseries):
+        if not isinstance(sseries.dtype, pd.CategoricalDtype):
             sseries = sseries.astype("category")
         samples = list(sseries.cat.categories)
         rseries = obs[ref_key]
-        if not pd.api.types.is_categorical_dtype(rseries):
+        if not isinstance(rseries.dtype, pd.CategoricalDtype):
             rseries = rseries.astype("category")
         references = list(rseries.cat.categories)
         use_adata = True
@@ -1189,7 +1189,7 @@ def plot_hamming_vs_metric_pages(
     # canonicalize samples and refs
     if samples is None:
         sseries = obs[sample_col]
-        if not pd.api.types.is_categorical_dtype(sseries):
+        if not isinstance(sseries.dtype, pd.CategoricalDtype):
             sseries = sseries.astype("category")
         samples_all = list(sseries.cat.categories)
     else:
@@ -1197,7 +1197,7 @@ def plot_hamming_vs_metric_pages(
 
     if references is None:
         rseries = obs[ref_col]
-        if not pd.api.types.is_categorical_dtype(rseries):
+        if not isinstance(rseries.dtype, pd.CategoricalDtype):
             rseries = rseries.astype("category")
         refs_all = list(rseries.cat.categories)
     else:

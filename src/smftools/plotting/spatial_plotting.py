@@ -698,7 +698,7 @@ def combined_raw_clustermap(
     for col in (sample_col, reference_col):
         if col not in adata.obs:
             raise KeyError(f"{col} not in adata.obs")
-        if not pd.api.types.is_categorical_dtype(adata.obs[col]):
+        if not isinstance(adata.obs[col].dtype, pd.CategoricalDtype):
             adata.obs[col] = adata.obs[col].astype("category")
 
     base_set = set(mod_target_bases)
