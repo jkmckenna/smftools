@@ -74,7 +74,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install .[dev]
+          python -m pip install .[dev,torch,plotting]
       - name: Run pytest
         run: pytest -m "smoke" -q
 
