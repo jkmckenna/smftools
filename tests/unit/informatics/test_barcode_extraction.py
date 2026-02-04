@@ -1,8 +1,11 @@
 """Tests for barcode extraction functions."""
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from smftools.informatics import bam_functions
+from smftools.informatics.h5ad_functions import add_demux_type_from_bm_tag
 
 
 class TestExtractBarcodeAdjacentToAdapter:
@@ -207,12 +210,13 @@ class TestLoadBarcodeReferencesFromYaml:
         yaml_file.write_text(
             "barcode01: ACGTACGT\nbarcode02: TGCATGCA\nbarcode03: AAAACCCC\n"
         )
-        refs = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        refs, length = bam_functions.load_barcode_references_from_yaml(yaml_file)
         assert refs == {
             "barcode01": "ACGTACGT",
             "barcode02": "TGCATGCA",
             "barcode03": "AAAACCCC",
         }
+        assert length == 8
 
     def test_load_nested_structure(self, tmp_path):
         """Test loading from nested YAML structure with 'barcodes' key."""
@@ -220,19 +224,35 @@ class TestLoadBarcodeReferencesFromYaml:
         yaml_file.write_text(
             "barcodes:\n  barcode01: ACGTACGT\n  barcode02: TGCATGCA\n"
         )
-        refs = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        refs, length = bam_functions.load_barcode_references_from_yaml(yaml_file)
         assert refs == {
             "barcode01": "ACGTACGT",
             "barcode02": "TGCATGCA",
         }
+        assert length == 8
 
     def test_sequences_uppercased(self, tmp_path):
         """Test that sequences are uppercased."""
         yaml_file = tmp_path / "barcodes.yaml"
         yaml_file.write_text("barcode01: acgtacgt\nbarcode02: TgCaTgCa\n")
-        refs = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        refs, length = bam_functions.load_barcode_references_from_yaml(yaml_file)
         assert refs["barcode01"] == "ACGTACGT"
         assert refs["barcode02"] == "TGCATGCA"
+        assert length == 8
+
+    def test_barcode_length_derived(self, tmp_path):
+        """Test that barcode length is correctly derived."""
+        yaml_file = tmp_path / "barcodes.yaml"
+        yaml_file.write_text("barcode01: ACGTACGTACGTACGT\n")  # 16 bases
+        refs, length = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        assert length == 16
+
+    def test_inconsistent_lengths_raises(self, tmp_path):
+        """Test that inconsistent barcode lengths raise ValueError."""
+        yaml_file = tmp_path / "inconsistent.yaml"
+        yaml_file.write_text("barcode01: ACGT\nbarcode02: ACGTACGT\n")  # 4 vs 8
+        with pytest.raises(ValueError, match="inconsistent lengths"):
+            bam_functions.load_barcode_references_from_yaml(yaml_file)
 
     def test_file_not_found_raises(self):
         """Test that FileNotFoundError is raised for missing file."""
@@ -265,8 +285,9 @@ class TestLoadBarcodeReferencesFromYaml:
         """Test that N bases are allowed in sequences."""
         yaml_file = tmp_path / "with_n.yaml"
         yaml_file.write_text("barcode01: ACNTNACGT\n")
-        refs = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        refs, length = bam_functions.load_barcode_references_from_yaml(yaml_file)
         assert refs["barcode01"] == "ACNTNACGT"
+        assert length == 9
 
     def test_non_string_value_skipped(self, tmp_path):
         """Test that non-string values are skipped (results in no valid barcodes)."""
@@ -275,3 +296,70 @@ class TestLoadBarcodeReferencesFromYaml:
         # Non-string values are filtered out, resulting in no valid barcodes
         with pytest.raises(ValueError, match="No valid barcode sequences found"):
             bam_functions.load_barcode_references_from_yaml(yaml_file)
+
+
+class TestAddDemuxTypeFromBmTag:
+    """Tests for deriving demux_type from BM tag."""
+
+    def _make_adata(self, bm_values):
+        """Create a mock AnnData with BM column."""
+        import anndata as ad
+
+        n = len(bm_values)
+        adata = ad.AnnData(X=np.zeros((n, 5)))
+        adata.obs["BM"] = bm_values
+        adata.obs_names = [f"read_{i}" for i in range(n)]
+        return adata
+
+    def test_both_becomes_double(self):
+        """Test that BM='both' maps to demux_type='double'."""
+        adata = self._make_adata(["both", "both", "both"])
+        add_demux_type_from_bm_tag(adata)
+        assert all(adata.obs["demux_type"] == "double")
+
+    def test_left_only_becomes_single(self):
+        """Test that BM='left_only' maps to demux_type='single'."""
+        adata = self._make_adata(["left_only", "left_only"])
+        add_demux_type_from_bm_tag(adata)
+        assert all(adata.obs["demux_type"] == "single")
+
+    def test_right_only_becomes_single(self):
+        """Test that BM='right_only' maps to demux_type='single'."""
+        adata = self._make_adata(["right_only", "right_only"])
+        add_demux_type_from_bm_tag(adata)
+        assert all(adata.obs["demux_type"] == "single")
+
+    def test_mismatch_becomes_unclassified(self):
+        """Test that BM='mismatch' maps to demux_type='unclassified'."""
+        adata = self._make_adata(["mismatch", "mismatch"])
+        add_demux_type_from_bm_tag(adata)
+        assert all(adata.obs["demux_type"] == "unclassified")
+
+    def test_unclassified_stays_unclassified(self):
+        """Test that BM='unclassified' maps to demux_type='unclassified'."""
+        adata = self._make_adata(["unclassified", "unclassified"])
+        add_demux_type_from_bm_tag(adata)
+        assert all(adata.obs["demux_type"] == "unclassified")
+
+    def test_mixed_values(self):
+        """Test correct mapping with mixed BM values."""
+        adata = self._make_adata(["both", "left_only", "right_only", "mismatch", "unclassified"])
+        add_demux_type_from_bm_tag(adata)
+        expected = ["double", "single", "single", "unclassified", "unclassified"]
+        assert list(adata.obs["demux_type"]) == expected
+
+    def test_case_insensitive(self):
+        """Test that BM matching is case-insensitive."""
+        adata = self._make_adata(["BOTH", "Left_Only", "RIGHT_ONLY"])
+        add_demux_type_from_bm_tag(adata)
+        expected = ["double", "single", "single"]
+        assert list(adata.obs["demux_type"]) == expected
+
+    def test_missing_bm_column_warns(self):
+        """Test that missing BM column sets demux_type to 'unknown'."""
+        import anndata as ad
+
+        adata = ad.AnnData(X=np.zeros((3, 5)))
+        adata.obs_names = ["read_0", "read_1", "read_2"]
+        add_demux_type_from_bm_tag(adata, bm_column="BM")
+        assert all(adata.obs["demux_type"] == "unknown")

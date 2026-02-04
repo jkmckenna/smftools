@@ -19,6 +19,17 @@ def _deep_freeze(obj: Any) -> Any:
 ## Constants ##
 BAM_SUFFIX: Final[str] = ".bam"
 BARCODE_BOTH_ENDS: Final[bool] = False
+
+# Barcode kit aliases for smftools demux backend
+# Maps kit alias names to paths of barcode YAML files (relative to package data or absolute)
+# Users can add custom aliases here or use "custom" with custom_barcode_yaml path
+_private_barcode_kit_aliases: Dict[str, str] = {
+    # Example entries - add actual kit YAML paths as needed:
+    # "smf-barcode-16": "/path/to/smf_barcode_16.yaml",
+    # "smf-barcode-24": "/path/to/smf_barcode_24.yaml",
+}
+BARCODE_KIT_ALIASES: Final[Mapping[str, str]] = _deep_freeze(_private_barcode_kit_aliases)
+
 REF_COL: Final[str] = "Reference_strand"
 SAMPLE_COL: Final[str] = "Experiment_name_and_barcode"
 SAMPLE: Final[str] = "Sample"

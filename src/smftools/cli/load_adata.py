@@ -7,7 +7,7 @@ from typing import Iterable, Union
 
 import numpy as np
 
-from smftools.constants import LOAD_DIR, LOGGING_DIR
+from smftools.constants import BARCODE_KIT_ALIASES, LOAD_DIR, LOGGING_DIR
 from smftools.logging_utils import get_logger, setup_logging
 
 from .helpers import AdataPaths
@@ -190,6 +190,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         subsample_fasta_from_bed,
     )
     from ..informatics.h5ad_functions import (
+        add_demux_type_from_bm_tag,
         add_read_length_and_mapping_qc,
         add_read_tag_annotations,
         add_secondary_supplementary_alignment_flags,
@@ -489,28 +490,35 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     )
     ########################################################################################################################
 
-    ################################### 4.6) Optional custom barcode extraction #############################################
-    use_custom_barcodes = cfg.barcode_kit == "custom"
-    if use_custom_barcodes:
-        if not cfg.custom_barcode_yaml:
+    ################################### 4.6) Optional smftools barcode extraction #############################################
+    use_smftools_demux = getattr(cfg, "demux_backend", "smftools").lower() == "smftools"
+    if use_smftools_demux and cfg.barcode_kit:
+        # Resolve barcode YAML path from kit alias or custom path
+        if cfg.barcode_kit == "custom":
+            if not cfg.custom_barcode_yaml:
+                raise ValueError(
+                    "barcode_kit='custom' requires custom_barcode_yaml path to be specified"
+                )
+            barcode_yaml_path = cfg.custom_barcode_yaml
+        elif cfg.barcode_kit in BARCODE_KIT_ALIASES:
+            barcode_yaml_path = BARCODE_KIT_ALIASES[cfg.barcode_kit]
+            logger.info(f"Using barcode kit alias '{cfg.barcode_kit}' -> {barcode_yaml_path}")
+        else:
             raise ValueError(
-                "barcode_kit='custom' requires custom_barcode_yaml path to be specified"
-            )
-        if not cfg.barcode_length:
-            raise ValueError(
-                "barcode_kit='custom' requires barcode_length to be specified"
+                f"Unknown barcode_kit '{cfg.barcode_kit}' for smftools demux backend. "
+                f"Available aliases: {list(BARCODE_KIT_ALIASES.keys())} or use 'custom' with custom_barcode_yaml."
             )
 
-        logger.info("Loading custom barcode references from YAML")
-        barcode_references = load_barcode_references_from_yaml(cfg.custom_barcode_yaml)
-        logger.info(f"Loaded {len(barcode_references)} barcode references")
+        logger.info("Loading barcode references from YAML")
+        barcode_references, barcode_length = load_barcode_references_from_yaml(barcode_yaml_path)
+        logger.info(f"Loaded {len(barcode_references)} barcode references (length={barcode_length})")
 
-        logger.info("Extracting and assigning custom barcodes to aligned BAM")
+        logger.info("Extracting and assigning barcodes to aligned BAM using smftools backend")
         barcoded_bam = extract_and_assign_barcodes_in_bam(
             aligned_sorted_output,
             barcode_adapters=getattr(cfg, "barcode_adapters", [None, None]),
             barcode_references=barcode_references,
-            barcode_length=cfg.barcode_length,
+            barcode_length=barcode_length,
             barcode_search_window=getattr(cfg, "barcode_search_window", 200),
             barcode_max_edit_distance=getattr(cfg, "barcode_max_edit_distance", 3),
             barcode_adapter_matcher=getattr(cfg, "barcode_adapter_matcher", "edlib"),
@@ -521,13 +529,13 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         )
         # Update aligned_sorted_output to point to the barcoded BAM
         aligned_sorted_output = str(barcoded_bam)
-        logger.info(f"Custom barcode extraction complete: {barcoded_bam}")
+        logger.info(f"smftools barcode extraction complete: {barcoded_bam}")
     ########################################################################################################################
 
     ################################### 5) Demultiplexing ######################################################################
 
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
-    if cfg.input_already_demuxed or use_custom_barcodes:
+    if cfg.input_already_demuxed or use_smftools_demux:
         if cfg.split_path.is_dir():
             logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
 
@@ -687,6 +695,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             delete_intermediates=cfg.delete_intermediate_hdfs,
             double_barcoded_path=double_barcoded_path,
             samtools_backend=cfg.samtools_backend,
+            demux_backend=getattr(cfg, "demux_backend", None),
         )
     else:
         if mod_bed_dir.is_dir():
@@ -743,6 +752,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             cfg.threads,
             double_barcoded_path,
             cfg.samtools_backend,
+            demux_backend=getattr(cfg, "demux_backend", None),
         )
         if cfg.delete_intermediate_tsvs:
             delete_tsvs(mod_tsv_dir)
@@ -773,8 +783,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     # Add UMI tags if UMI extraction was enabled
     if getattr(cfg, "use_umi", False):
         default_tags.extend(["U1", "U2", "RX"])
-    # Add barcode tags if custom barcode extraction was used
-    if cfg.barcode_kit == "custom":
+    # Add barcode tags if smftools barcode extraction was used
+    if getattr(cfg, "demux_backend", "smftools").lower() == "smftools" and cfg.barcode_kit:
         default_tags.extend(["BC", "BM", "B1", "B2", "BE", "BF"])
     bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
 
@@ -788,6 +798,15 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         extract_read_tags_from_bam_callable=extract_read_tags_from_bam,
         samtools_backend=cfg.samtools_backend,
     )
+
+    # Derive demux_type from BM tag when using smftools backend
+    if (
+        getattr(cfg, "demux_backend", "smftools").lower() == "smftools"
+        and cfg.barcode_kit
+        and not cfg.input_already_demuxed
+    ):
+        logger.info("Deriving demux_type from BM tag (smftools backend)")
+        add_demux_type_from_bm_tag(raw_adata, bm_column="BM")
 
     if getattr(cfg, "annotate_secondary_supplementary", False):
         logger.info("Annotating secondary/supplementary alignments from aligned BAM")

@@ -6,6 +6,7 @@ _LAZY_ATTRS = {
     "_bed_to_bigwig": "smftools.informatics.bed_functions",
     "_plot_bed_histograms": "smftools.informatics.bed_functions",
     "add_demux_type_annotation": "smftools.informatics.h5ad_functions",
+    "add_demux_type_from_bm_tag": "smftools.informatics.h5ad_functions",
     "add_read_tag_annotations": "smftools.informatics.h5ad_functions",
     "add_read_length_and_mapping_qc": "smftools.informatics.h5ad_functions",
     "align_and_sort_BAM": "smftools.informatics.bam_functions",

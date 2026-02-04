@@ -129,6 +129,7 @@ def converted_BAM_to_adata(
     delete_intermediates: bool = True,
     double_barcoded_path: Path | None = None,
     samtools_backend: str | None = "auto",
+    demux_backend: str | None = None,
 ) -> tuple[ad.AnnData | None, Path]:
     """Convert converted BAM files into an AnnData object with integer sequence encoding.
 
@@ -147,6 +148,8 @@ def converted_BAM_to_adata(
         delete_intermediates: Whether to remove intermediate files after processing.
         double_barcoded_path: Path to dorado demux summary file of double-ended barcodes.
         samtools_backend: Samtools backend choice for alignment parsing.
+        demux_backend: Demux backend used ("smftools" or "dorado"). If "smftools",
+            demux_type annotation is skipped here and derived from BM tag later.
 
     Returns:
         tuple[anndata.AnnData | None, Path]: The AnnData object (if generated) and its path.
@@ -279,7 +282,11 @@ def converted_BAM_to_adata(
     if input_already_demuxed:
         final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
         final_adata.obs[DEMUX_TYPE] = final_adata.obs[DEMUX_TYPE].astype("category")
+    elif demux_backend and demux_backend.lower() == "smftools":
+        # Skip demux_type annotation here - will be derived from BM tag after BAM tags are loaded
+        logger.info("Skipping demux_type annotation (will be derived from BM tag)")
     else:
+        # Dorado backend - use barcoding_summary.txt
         from .h5ad_functions import add_demux_type_annotation
 
         double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"

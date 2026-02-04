@@ -84,7 +84,8 @@ bedtools_backend: auto # auto|python|cli for bedtools-compatible operations
 bigwig_backend: auto # auto|python|cli for bedGraphToBigWig conversion
 
 # Nanopore specific demultiplexing
-barcode_both_ends: False # dorado demultiplexing
+demux_backend: smftools # smftools|dorado - smftools uses YAML-based barcode refs, dorado uses kit names
+barcode_both_ends: False # Require barcode match at both ends
 trim: False # dorado adapter and barcode removal during demultiplexing
 use_umi: False # Whether to detect and annotate UMIs in aligned_sorted BAM before demultiplexing
 umi_adapters: [null, null] # Two-slot list [left_ref_end_adapter, right_ref_end_adapter]
@@ -93,10 +94,10 @@ umi_search_window: 200 # Max distance from read ends to consider an adapter matc
 umi_adapter_matcher: exact # exact|edlib
 umi_adapter_max_edits: 0 # Used for edlib fuzzy matching
 
-# Custom barcode extraction (set barcode_kit: "custom" to enable)
-custom_barcode_yaml: null # Path to YAML file containing barcode name -> sequence mappings
+# smftools barcode extraction (when demux_backend: smftools)
+# barcode_kit can be: alias from BARCODE_KIT_ALIASES in constants.py, or "custom" (requires custom_barcode_yaml)
+custom_barcode_yaml: null # Path to YAML file containing barcode name -> sequence mappings (when barcode_kit: custom)
 barcode_adapters: [null, null] # Two-slot list [left_ref_end_adapter, right_ref_end_adapter]
-barcode_length: null # Length of barcode sequences (required when barcode_kit is "custom")
 barcode_search_window: 200 # Max distance from read ends to search for adapter
 barcode_max_edit_distance: 3 # Max edit distance for matching extracted barcode to references
 barcode_adapter_matcher: edlib # exact|edlib for adapter detection

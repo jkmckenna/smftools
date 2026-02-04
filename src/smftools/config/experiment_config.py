@@ -716,16 +716,17 @@ class ExperimentConfig:
     model: str = "hac"
     barcode_both_ends: bool = BARCODE_BOTH_ENDS
     trim: bool = TRIM
+    demux_backend: str = "smftools"  # "smftools" or "dorado"
     use_umi: bool = False
     umi_adapters: List[Optional[str]] = field(default_factory=lambda: [None, None])
     umi_length: Optional[int] = None
     umi_search_window: int = 200
     umi_adapter_matcher: str = "exact"
     umi_adapter_max_edits: int = 0
-    # Custom barcode extraction (when barcode_kit="custom")
+    # smftools barcode extraction (when demux_backend="smftools")
+    # barcode_kit can be an alias from BARCODE_KIT_ALIASES or "custom" (requires custom_barcode_yaml)
     custom_barcode_yaml: Optional[str] = None
     barcode_adapters: List[Optional[str]] = field(default_factory=lambda: [None, None])
-    barcode_length: Optional[int] = None
     barcode_search_window: int = 200
     barcode_max_edit_distance: int = 3
     barcode_adapter_matcher: str = "edlib"
@@ -1247,12 +1248,11 @@ class ExperimentConfig:
         if "umi_adapters" in merged:
             merged["umi_adapters"] = _parse_list(merged.get("umi_adapters"))
 
-        # Custom barcode extraction config parsing
+        # smftools barcode extraction config parsing
+        if "demux_backend" in merged:
+            merged["demux_backend"] = str(merged.get("demux_backend", "smftools")).lower()
         if "barcode_adapters" in merged:
             merged["barcode_adapters"] = _parse_list(merged.get("barcode_adapters"))
-        if "barcode_length" in merged:
-            bc_len = _parse_numeric(merged.get("barcode_length", None), None)
-            merged["barcode_length"] = None if bc_len is None else int(bc_len)
         if "barcode_search_window" in merged:
             merged["barcode_search_window"] = int(
                 _parse_numeric(merged.get("barcode_search_window", 200), 200)
@@ -1385,16 +1385,16 @@ class ExperimentConfig:
             model=merged.get("model", "hac"),
             barcode_both_ends=merged.get("barcode_both_ends", BARCODE_BOTH_ENDS),
             trim=merged.get("trim", TRIM),
+            demux_backend=merged.get("demux_backend", "smftools"),
             use_umi=merged.get("use_umi", False),
             umi_adapters=merged.get("umi_adapters", [None, None]),
             umi_length=merged.get("umi_length", None),
             umi_search_window=merged.get("umi_search_window", 200),
             umi_adapter_matcher=merged.get("umi_adapter_matcher", "exact"),
             umi_adapter_max_edits=merged.get("umi_adapter_max_edits", 0),
-            # Custom barcode extraction config
+            # smftools barcode extraction config
             custom_barcode_yaml=merged.get("custom_barcode_yaml", None),
             barcode_adapters=merged.get("barcode_adapters", [None, None]),
-            barcode_length=merged.get("barcode_length", None),
             barcode_search_window=merged.get("barcode_search_window", 200),
             barcode_max_edit_distance=merged.get("barcode_max_edit_distance", 3),
             barcode_adapter_matcher=merged.get("barcode_adapter_matcher", "edlib"),

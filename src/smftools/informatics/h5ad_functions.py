@@ -85,6 +85,65 @@ def add_demux_type_annotation(
     return adata
 
 
+def add_demux_type_from_bm_tag(
+    adata,
+    bm_column: str = "BM",
+):
+    """
+    Add adata.obs["demux_type"] based on the BM (barcode match type) tag from smftools demux.
+
+    Mapping:
+        - "both" → "double" (both ends matched same barcode)
+        - "left_only", "right_only" → "single" (one end matched)
+        - "mismatch", "unclassified" → "unclassified"
+
+    Parameters
+    ----------
+    adata : AnnData
+        AnnData object with BM column in obs.
+    bm_column : str
+        Name of the column containing BM tag values (default "BM").
+
+    Returns
+    -------
+    AnnData
+        The modified AnnData with demux_type column added.
+    """
+    if bm_column not in adata.obs.columns:
+        logger.warning(
+            f"Column '{bm_column}' not found in adata.obs. "
+            "Cannot derive demux_type from BM tag. Setting all to 'unknown'."
+        )
+        adata.obs["demux_type"] = "unknown"
+        adata.obs["demux_type"] = adata.obs["demux_type"].astype("category")
+        return adata
+
+    bm_values = adata.obs[bm_column].astype(str).str.lower()
+
+    # Map BM values to demux_type
+    demux_type = np.where(
+        bm_values == "both",
+        "double",
+        np.where(
+            bm_values.isin(["left_only", "right_only"]),
+            "single",
+            "unclassified",
+        ),
+    )
+
+    adata.obs["demux_type"] = demux_type
+    adata.obs["demux_type"] = adata.obs["demux_type"].astype("category")
+
+    logger.info(
+        "Derived demux_type from BM tag: double=%d, single=%d, unclassified=%d",
+        (adata.obs["demux_type"] == "double").sum(),
+        (adata.obs["demux_type"] == "single").sum(),
+        (adata.obs["demux_type"] == "unclassified").sum(),
+    )
+
+    return adata
+
+
 def append_reference_strand_quality_stats(
     adata,
     ref_column: str = REFERENCE_STRAND,

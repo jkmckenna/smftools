@@ -479,7 +479,7 @@ def _match_barcode_to_references(
     return best_match, best_distance
 
 
-def load_barcode_references_from_yaml(yaml_path: str | Path) -> Dict[str, str]:
+def load_barcode_references_from_yaml(yaml_path: str | Path) -> Tuple[Dict[str, str], int]:
     """
     Load barcode reference sequences from a YAML file.
 
@@ -501,15 +501,15 @@ def load_barcode_references_from_yaml(yaml_path: str | Path) -> Dict[str, str]:
 
     Returns
     -------
-    Dict[str, str]
-        Dictionary mapping barcode names to their sequences.
+    Tuple[Dict[str, str], int]
+        Tuple of (references dict, barcode_length). All barcodes must have the same length.
 
     Raises
     ------
     FileNotFoundError
         If the YAML file does not exist.
     ValueError
-        If the YAML file is empty or has invalid structure.
+        If the YAML file is empty, has invalid structure, or barcodes have inconsistent lengths.
     """
     import yaml
 
@@ -550,7 +550,19 @@ def load_barcode_references_from_yaml(yaml_path: str | Path) -> Dict[str, str]:
                     "Only A, C, G, T, N are allowed."
                 )
 
-        return {k: v.upper() for k, v in references.items()}
+        # Uppercase all sequences
+        references = {k: v.upper() for k, v in references.items()}
+
+        # Validate all barcodes have the same length
+        lengths = {len(seq) for seq in references.values()}
+        if len(lengths) > 1:
+            raise ValueError(
+                f"Barcodes have inconsistent lengths: {lengths}. "
+                "All barcodes must have the same length."
+            )
+
+        barcode_length = lengths.pop()
+        return references, barcode_length
 
     raise ValueError(
         f"Invalid YAML structure in {yaml_path}. Expected a dictionary."
@@ -562,7 +574,7 @@ def extract_and_assign_barcodes_in_bam(
     *,
     barcode_adapters: List[Optional[str]],
     barcode_references: Dict[str, str],
-    barcode_length: int,
+    barcode_length: Optional[int] = None,
     barcode_search_window: int = 200,
     barcode_max_edit_distance: int = 3,
     barcode_adapter_matcher: str = "edlib",
@@ -581,7 +593,13 @@ def extract_and_assign_barcodes_in_bam(
     - B2: Right-end barcode match name (if found)
     - BE: Left-end match edit distance
     - BF: Right-end match edit distance
-    - BM: Match type ("both", "left_only", "right_only", "unclassified")
+    - BM: Match type ("both", "left_only", "right_only", "mismatch", "unclassified")
+
+    BC assignment rules:
+    - "both": Both ends match same barcode → BC = barcode name
+    - "mismatch": Both ends match different barcodes → BC = "unclassified"
+    - "left_only"/"right_only": Single end match → BC = barcode name (or "unclassified" if require_both_ends)
+    - "unclassified": No match → BC = "unclassified"
 
     Parameters
     ----------
@@ -592,8 +610,8 @@ def extract_and_assign_barcodes_in_bam(
         Either can be None to skip that end.
     barcode_references : Dict[str, str]
         Mapping of barcode names to barcode sequences (e.g., {"barcode01": "AAGAAAGTTGTCGGTGTCTTTGTG"}).
-    barcode_length : int
-        Expected length of barcode sequences.
+    barcode_length : int, optional
+        Expected length of barcode sequences. If None, derived from barcode_references.
     barcode_search_window : int
         Maximum distance from read end to search for adapter (default 200).
     barcode_max_edit_distance : int
@@ -605,6 +623,7 @@ def extract_and_assign_barcodes_in_bam(
     require_both_ends : bool
         If True, only assign barcode if both ends match the same barcode.
         If False, assign based on any matching end (default False).
+        Note: Mismatch reads (different barcodes at each end) are always unclassified.
     min_barcode_score : int, optional
         Minimum edit distance threshold; reads with higher edit distance are unclassified.
     samtools_backend : str or None
@@ -616,6 +635,18 @@ def extract_and_assign_barcodes_in_bam(
         Path to the modified BAM file.
     """
     input_bam = Path(bam_path)
+
+    # Derive barcode_length from references if not provided
+    if barcode_length is None:
+        if not barcode_references:
+            raise ValueError("barcode_references is empty; cannot derive barcode_length")
+        lengths = {len(seq) for seq in barcode_references.values()}
+        if len(lengths) > 1:
+            raise ValueError(
+                f"Barcodes have inconsistent lengths: {lengths}. "
+                "All barcodes must have the same length."
+            )
+        barcode_length = lengths.pop()
 
     # Validate adapters
     if barcode_adapters is None:
@@ -710,18 +741,11 @@ def extract_and_assign_barcodes_in_bam(
                     assigned_bc = left_match
                     reads_both_ends += 1
                 else:
-                    # Both ends matched but to different barcodes
+                    # Both ends matched but to different barcodes - always unclassified
                     match_type = "mismatch"
+                    assigned_bc = "unclassified"
                     reads_mismatch_ends += 1
-                    if require_both_ends:
-                        assigned_bc = "unclassified"
-                        reads_unclassified += 1
-                    else:
-                        # Use the better match (lower edit distance)
-                        if left_dist <= right_dist:
-                            assigned_bc = left_match
-                        else:
-                            assigned_bc = right_match
+                    reads_unclassified += 1
             elif left_match:
                 match_type = "left_only"
                 reads_left_only += 1

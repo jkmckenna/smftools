@@ -1130,6 +1130,7 @@ def modkit_extract_to_adata(
     threads=None,
     double_barcoded_path=None,
     samtools_backend: str | None = "auto",
+    demux_backend: str | None = None,
 ):
     """Convert modkit extract TSVs and BAMs into an AnnData object.
 
@@ -1147,6 +1148,8 @@ def modkit_extract_to_adata(
         threads (int | None): Thread count for parallel operations.
         double_barcoded_path (Path | None): Dorado demux summary directory for double barcodes.
         samtools_backend (str | None): Samtools backend selection.
+        demux_backend (str | None): Demux backend used ("smftools" or "dorado"). If "smftools",
+            demux_type annotation is skipped here and derived from BM tag later.
 
     Returns:
         tuple[ad.AnnData | None, Path]: The final AnnData (if created) and its H5AD path.
@@ -1888,7 +1891,11 @@ def modkit_extract_to_adata(
     if input_already_demuxed:
         final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
         final_adata.obs[DEMUX_TYPE] = final_adata.obs[DEMUX_TYPE].astype("category")
+    elif demux_backend and demux_backend.lower() == "smftools":
+        # Skip demux_type annotation here - will be derived from BM tag after BAM tags are loaded
+        logger.info("Skipping demux_type annotation (will be derived from BM tag)")
     else:
+        # Dorado backend - use barcoding_summary.txt
         from .h5ad_functions import add_demux_type_annotation
 
         double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
