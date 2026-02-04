@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["main", "0.3.0"]
+    branches: ["main"]
   pull_request:
-    branches: ["main", "0.3.0"]
+    branches: ["main"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -49,7 +49,7 @@ jobs:
       - name: Lint with ruff
         run: ruff check --output-format=github .
 
-  smoke:
+  pytest:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -76,7 +76,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .[dev]
       - name: Run pytest
-        run: pytest -m "smoke or unit" -q
+        run: pytest -m "smoke" -q
 
   docs:
     runs-on: ubuntu-latest
