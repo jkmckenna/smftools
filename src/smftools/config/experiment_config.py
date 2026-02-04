@@ -722,6 +722,15 @@ class ExperimentConfig:
     umi_search_window: int = 200
     umi_adapter_matcher: str = "exact"
     umi_adapter_max_edits: int = 0
+    # Custom barcode extraction (when barcode_kit="custom")
+    custom_barcode_yaml: Optional[str] = None
+    barcode_adapters: List[Optional[str]] = field(default_factory=lambda: [None, None])
+    barcode_length: Optional[int] = None
+    barcode_search_window: int = 200
+    barcode_max_edit_distance: int = 3
+    barcode_adapter_matcher: str = "edlib"
+    barcode_adapter_max_edits: int = 2
+    barcode_min_score: Optional[int] = None
     # General basecalling params
     filter_threshold: float = 0.8
     # Modified basecalling specific params
@@ -1238,6 +1247,32 @@ class ExperimentConfig:
         if "umi_adapters" in merged:
             merged["umi_adapters"] = _parse_list(merged.get("umi_adapters"))
 
+        # Custom barcode extraction config parsing
+        if "barcode_adapters" in merged:
+            merged["barcode_adapters"] = _parse_list(merged.get("barcode_adapters"))
+        if "barcode_length" in merged:
+            bc_len = _parse_numeric(merged.get("barcode_length", None), None)
+            merged["barcode_length"] = None if bc_len is None else int(bc_len)
+        if "barcode_search_window" in merged:
+            merged["barcode_search_window"] = int(
+                _parse_numeric(merged.get("barcode_search_window", 200), 200)
+            )
+        if "barcode_max_edit_distance" in merged:
+            merged["barcode_max_edit_distance"] = int(
+                _parse_numeric(merged.get("barcode_max_edit_distance", 3), 3)
+            )
+        if "barcode_adapter_matcher" in merged:
+            merged["barcode_adapter_matcher"] = str(
+                merged.get("barcode_adapter_matcher", "edlib")
+            ).lower()
+        if "barcode_adapter_max_edits" in merged:
+            merged["barcode_adapter_max_edits"] = int(
+                _parse_numeric(merged.get("barcode_adapter_max_edits", 2), 2)
+            )
+        if "barcode_min_score" in merged:
+            bms = _parse_numeric(merged.get("barcode_min_score", None), None)
+            merged["barcode_min_score"] = None if bms is None else int(bms)
+
         if "aligner_args" in merged and merged.get("aligner_args") is None:
             merged.pop("aligner_args", None)
 
@@ -1356,6 +1391,15 @@ class ExperimentConfig:
             umi_search_window=merged.get("umi_search_window", 200),
             umi_adapter_matcher=merged.get("umi_adapter_matcher", "exact"),
             umi_adapter_max_edits=merged.get("umi_adapter_max_edits", 0),
+            # Custom barcode extraction config
+            custom_barcode_yaml=merged.get("custom_barcode_yaml", None),
+            barcode_adapters=merged.get("barcode_adapters", [None, None]),
+            barcode_length=merged.get("barcode_length", None),
+            barcode_search_window=merged.get("barcode_search_window", 200),
+            barcode_max_edit_distance=merged.get("barcode_max_edit_distance", 3),
+            barcode_adapter_matcher=merged.get("barcode_adapter_matcher", "edlib"),
+            barcode_adapter_max_edits=merged.get("barcode_adapter_max_edits", 2),
+            barcode_min_score=merged.get("barcode_min_score", None),
             input_already_demuxed=merged.get("input_already_demuxed", False),
             threads=merged.get("threads"),
             emit_log_file=merged.get("emit_log_file", True),

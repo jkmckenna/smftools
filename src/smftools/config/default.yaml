@@ -93,6 +93,16 @@ umi_search_window: 200 # Max distance from read ends to consider an adapter matc
 umi_adapter_matcher: exact # exact|edlib
 umi_adapter_max_edits: 0 # Used for edlib fuzzy matching
 
+# Custom barcode extraction (set barcode_kit: "custom" to enable)
+custom_barcode_yaml: null # Path to YAML file containing barcode name -> sequence mappings
+barcode_adapters: [null, null] # Two-slot list [left_ref_end_adapter, right_ref_end_adapter]
+barcode_length: null # Length of barcode sequences (required when barcode_kit is "custom")
+barcode_search_window: 200 # Max distance from read ends to search for adapter
+barcode_max_edit_distance: 3 # Max edit distance for matching extracted barcode to references
+barcode_adapter_matcher: edlib # exact|edlib for adapter detection
+barcode_adapter_max_edits: 2 # Max edits for adapter matching (when using edlib)
+barcode_min_score: null # Optional minimum score threshold for barcode assignment
+
 # Anndata structure
 mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
 reference_column: 'Reference_strand'

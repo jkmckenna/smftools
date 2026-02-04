@@ -479,6 +479,84 @@ def _match_barcode_to_references(
     return best_match, best_distance
 
 
+def load_barcode_references_from_yaml(yaml_path: str | Path) -> Dict[str, str]:
+    """
+    Load barcode reference sequences from a YAML file.
+
+    The YAML file should have a structure like:
+        barcodes:
+          barcode01: "ACGTACGT"
+          barcode02: "TGCATGCA"
+          ...
+
+    Or a flat structure:
+        barcode01: "ACGTACGT"
+        barcode02: "TGCATGCA"
+        ...
+
+    Parameters
+    ----------
+    yaml_path : str | Path
+        Path to the YAML file containing barcode name -> sequence mappings.
+
+    Returns
+    -------
+    Dict[str, str]
+        Dictionary mapping barcode names to their sequences.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the YAML file does not exist.
+    ValueError
+        If the YAML file is empty or has invalid structure.
+    """
+    import yaml
+
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"Barcode YAML file not found: {yaml_path}")
+
+    with open(yaml_path, "r") as f:
+        data = yaml.safe_load(f)
+
+    if data is None:
+        raise ValueError(f"Barcode YAML file is empty: {yaml_path}")
+
+    # Support nested structure with 'barcodes' key or flat structure
+    if isinstance(data, dict):
+        if "barcodes" in data and isinstance(data["barcodes"], dict):
+            references = data["barcodes"]
+        else:
+            # Assume flat structure where all keys are barcode names
+            references = {k: v for k, v in data.items() if isinstance(v, str)}
+
+        if not references:
+            raise ValueError(
+                f"No valid barcode sequences found in {yaml_path}. "
+                "Expected format: 'barcode_name: SEQUENCE' or 'barcodes: {name: seq}'"
+            )
+
+        # Validate sequences contain only valid DNA bases
+        valid_bases = set("ACGTN")
+        for name, seq in references.items():
+            if not isinstance(seq, str):
+                raise ValueError(f"Barcode '{name}' has non-string value: {seq}")
+            seq_upper = seq.upper()
+            invalid_chars = set(seq_upper) - valid_bases
+            if invalid_chars:
+                raise ValueError(
+                    f"Barcode '{name}' contains invalid characters: {invalid_chars}. "
+                    "Only A, C, G, T, N are allowed."
+                )
+
+        return {k: v.upper() for k, v in references.items()}
+
+    raise ValueError(
+        f"Invalid YAML structure in {yaml_path}. Expected a dictionary."
+    )
+
+
 def extract_and_assign_barcodes_in_bam(
     bam_path: str | Path,
     *,

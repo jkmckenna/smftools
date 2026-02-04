@@ -175,8 +175,10 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         bam_qc,
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
+        extract_and_assign_barcodes_in_bam,
         extract_read_features_from_bam,
         extract_read_tags_from_bam,
+        load_barcode_references_from_yaml,
         split_and_index_BAM,
     )
     from ..informatics.basecalling import canoncall, modcall
@@ -487,10 +489,45 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     )
     ########################################################################################################################
 
+    ################################### 4.6) Optional custom barcode extraction #############################################
+    use_custom_barcodes = cfg.barcode_kit == "custom"
+    if use_custom_barcodes:
+        if not cfg.custom_barcode_yaml:
+            raise ValueError(
+                "barcode_kit='custom' requires custom_barcode_yaml path to be specified"
+            )
+        if not cfg.barcode_length:
+            raise ValueError(
+                "barcode_kit='custom' requires barcode_length to be specified"
+            )
+
+        logger.info("Loading custom barcode references from YAML")
+        barcode_references = load_barcode_references_from_yaml(cfg.custom_barcode_yaml)
+        logger.info(f"Loaded {len(barcode_references)} barcode references")
+
+        logger.info("Extracting and assigning custom barcodes to aligned BAM")
+        barcoded_bam = extract_and_assign_barcodes_in_bam(
+            aligned_sorted_output,
+            barcode_adapters=getattr(cfg, "barcode_adapters", [None, None]),
+            barcode_references=barcode_references,
+            barcode_length=cfg.barcode_length,
+            barcode_search_window=getattr(cfg, "barcode_search_window", 200),
+            barcode_max_edit_distance=getattr(cfg, "barcode_max_edit_distance", 3),
+            barcode_adapter_matcher=getattr(cfg, "barcode_adapter_matcher", "edlib"),
+            barcode_adapter_max_edits=getattr(cfg, "barcode_adapter_max_edits", 2),
+            require_both_ends=getattr(cfg, "barcode_both_ends", False),
+            min_barcode_score=getattr(cfg, "barcode_min_score", None),
+            samtools_backend=cfg.samtools_backend,
+        )
+        # Update aligned_sorted_output to point to the barcoded BAM
+        aligned_sorted_output = str(barcoded_bam)
+        logger.info(f"Custom barcode extraction complete: {barcoded_bam}")
+    ########################################################################################################################
+
     ################################### 5) Demultiplexing ######################################################################
 
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
-    if cfg.input_already_demuxed:
+    if cfg.input_already_demuxed or use_custom_barcodes:
         if cfg.split_path.is_dir():
             logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
 
@@ -736,6 +773,9 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     # Add UMI tags if UMI extraction was enabled
     if getattr(cfg, "use_umi", False):
         default_tags.extend(["U1", "U2", "RX"])
+    # Add barcode tags if custom barcode extraction was used
+    if cfg.barcode_kit == "custom":
+        default_tags.extend(["BC", "BM", "B1", "B2", "BE", "BF"])
     bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
 
     logger.info("Adding BAM tags and BAM flags to adata.obs")

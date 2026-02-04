@@ -18,6 +18,7 @@ _LAZY_ATTRS = {
     "count_aligned_reads": "smftools.informatics.bam_functions",
     "demux_and_index_BAM": "smftools.informatics.bam_functions",
     "extract_and_assign_barcodes_in_bam": "smftools.informatics.bam_functions",
+    "load_barcode_references_from_yaml": "smftools.informatics.bam_functions",
     "extract_base_identities": "smftools.informatics.bam_functions",
     "extract_mods": "smftools.informatics.modkit_functions",
     "extract_read_features_from_bam": "smftools.informatics.bam_functions",

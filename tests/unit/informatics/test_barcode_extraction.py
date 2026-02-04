@@ -196,3 +196,82 @@ class TestMatchBarcodeToReferences:
         )
         assert name == "barcode02"
         assert dist == 0
+
+
+class TestLoadBarcodeReferencesFromYaml:
+    """Tests for loading barcode references from YAML files."""
+
+    def test_load_flat_structure(self, tmp_path):
+        """Test loading from flat YAML structure."""
+        yaml_file = tmp_path / "barcodes.yaml"
+        yaml_file.write_text(
+            "barcode01: ACGTACGT\nbarcode02: TGCATGCA\nbarcode03: AAAACCCC\n"
+        )
+        refs = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        assert refs == {
+            "barcode01": "ACGTACGT",
+            "barcode02": "TGCATGCA",
+            "barcode03": "AAAACCCC",
+        }
+
+    def test_load_nested_structure(self, tmp_path):
+        """Test loading from nested YAML structure with 'barcodes' key."""
+        yaml_file = tmp_path / "barcodes.yaml"
+        yaml_file.write_text(
+            "barcodes:\n  barcode01: ACGTACGT\n  barcode02: TGCATGCA\n"
+        )
+        refs = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        assert refs == {
+            "barcode01": "ACGTACGT",
+            "barcode02": "TGCATGCA",
+        }
+
+    def test_sequences_uppercased(self, tmp_path):
+        """Test that sequences are uppercased."""
+        yaml_file = tmp_path / "barcodes.yaml"
+        yaml_file.write_text("barcode01: acgtacgt\nbarcode02: TgCaTgCa\n")
+        refs = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        assert refs["barcode01"] == "ACGTACGT"
+        assert refs["barcode02"] == "TGCATGCA"
+
+    def test_file_not_found_raises(self):
+        """Test that FileNotFoundError is raised for missing file."""
+        with pytest.raises(FileNotFoundError, match="Barcode YAML file not found"):
+            bam_functions.load_barcode_references_from_yaml("/nonexistent/path.yaml")
+
+    def test_empty_file_raises(self, tmp_path):
+        """Test that ValueError is raised for empty file."""
+        yaml_file = tmp_path / "empty.yaml"
+        yaml_file.write_text("")
+        with pytest.raises(ValueError, match="empty"):
+            bam_functions.load_barcode_references_from_yaml(yaml_file)
+
+    def test_no_valid_barcodes_raises(self, tmp_path):
+        """Test that ValueError is raised when no valid barcodes found."""
+        yaml_file = tmp_path / "invalid.yaml"
+        # Use only non-string values or nested dicts to avoid matching as sequences
+        yaml_file.write_text("config:\n  option: 123\ncount: 456\n")
+        with pytest.raises(ValueError, match="No valid barcode sequences found"):
+            bam_functions.load_barcode_references_from_yaml(yaml_file)
+
+    def test_invalid_characters_raises(self, tmp_path):
+        """Test that ValueError is raised for invalid DNA characters."""
+        yaml_file = tmp_path / "invalid_chars.yaml"
+        yaml_file.write_text("barcode01: ACGTXYZ\n")
+        with pytest.raises(ValueError, match="invalid characters"):
+            bam_functions.load_barcode_references_from_yaml(yaml_file)
+
+    def test_n_bases_allowed(self, tmp_path):
+        """Test that N bases are allowed in sequences."""
+        yaml_file = tmp_path / "with_n.yaml"
+        yaml_file.write_text("barcode01: ACNTNACGT\n")
+        refs = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        assert refs["barcode01"] == "ACNTNACGT"
+
+    def test_non_string_value_skipped(self, tmp_path):
+        """Test that non-string values are skipped (results in no valid barcodes)."""
+        yaml_file = tmp_path / "non_string.yaml"
+        yaml_file.write_text("barcode01: 12345\nbarcode02: 67890\n")
+        # Non-string values are filtered out, resulting in no valid barcodes
+        with pytest.raises(ValueError, match="No valid barcode sequences found"):
+            bam_functions.load_barcode_references_from_yaml(yaml_file)
