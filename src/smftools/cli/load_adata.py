@@ -729,11 +729,20 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         samtools_backend=cfg.samtools_backend,
     )
 
+    # Build default tag list: always NM/MD, MM/ML only for direct modality
+    default_tags = ["NM", "MD"]
+    if cfg.smf_modality == "direct":
+        default_tags.extend(["MM", "ML"])
+    # Add UMI tags if UMI extraction was enabled
+    if getattr(cfg, "use_umi", False):
+        default_tags.extend(["U1", "U2", "RX"])
+    bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
+
     logger.info("Adding BAM tags and BAM flags to adata.obs")
     add_read_tag_annotations(
         raw_adata,
         se_bam_files,
-        tag_names=getattr(cfg, "bam_tag_names", ["NM", "MD", "MM", "ML"]),
+        tag_names=bam_tag_names,
         include_flags=True,
         include_cigar=True,
         extract_read_tags_from_bam_callable=extract_read_tags_from_bam,
