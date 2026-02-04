@@ -716,6 +716,12 @@ class ExperimentConfig:
     model: str = "hac"
     barcode_both_ends: bool = BARCODE_BOTH_ENDS
     trim: bool = TRIM
+    use_umi: bool = False
+    umi_adapters: List[Optional[str]] = field(default_factory=lambda: [None, None])
+    umi_length: Optional[int] = None
+    umi_search_window: int = 200
+    umi_adapter_matcher: str = "exact"
+    umi_adapter_max_edits: int = 0
     # General basecalling params
     filter_threshold: float = 0.8
     # Modified basecalling specific params
@@ -1202,6 +1208,7 @@ class ExperimentConfig:
         for bkey in (
             "barcode_both_ends",
             "trim",
+            "use_umi",
             "input_already_demuxed",
             "make_bigwigs",
             "skip_unclassified",
@@ -1212,9 +1219,24 @@ class ExperimentConfig:
 
         if "batch_size" in merged:
             merged["batch_size"] = int(_parse_numeric(merged.get("batch_size", 4), 4))
+        if "umi_length" in merged:
+            umi_length_val = _parse_numeric(merged.get("umi_length", None), None)
+            merged["umi_length"] = None if umi_length_val is None else int(umi_length_val)
+        if "umi_search_window" in merged:
+            merged["umi_search_window"] = int(
+                _parse_numeric(merged.get("umi_search_window", 200), 200)
+            )
+        if "umi_adapter_max_edits" in merged:
+            merged["umi_adapter_max_edits"] = int(
+                _parse_numeric(merged.get("umi_adapter_max_edits", 0), 0)
+            )
+        if "umi_adapter_matcher" in merged:
+            merged["umi_adapter_matcher"] = str(merged.get("umi_adapter_matcher", "exact")).lower()
         if "threads" in merged:
             tval = _parse_numeric(merged.get("threads", None), None)
             merged["threads"] = None if tval is None else int(tval)
+        if "umi_adapters" in merged:
+            merged["umi_adapters"] = _parse_list(merged.get("umi_adapters"))
 
         if "aligner_args" in merged and merged.get("aligner_args") is None:
             merged.pop("aligner_args", None)
@@ -1328,6 +1350,12 @@ class ExperimentConfig:
             model=merged.get("model", "hac"),
             barcode_both_ends=merged.get("barcode_both_ends", BARCODE_BOTH_ENDS),
             trim=merged.get("trim", TRIM),
+            use_umi=merged.get("use_umi", False),
+            umi_adapters=merged.get("umi_adapters", [None, None]),
+            umi_length=merged.get("umi_length", None),
+            umi_search_window=merged.get("umi_search_window", 200),
+            umi_adapter_matcher=merged.get("umi_adapter_matcher", "exact"),
+            umi_adapter_max_edits=merged.get("umi_adapter_max_edits", 0),
             input_already_demuxed=merged.get("input_already_demuxed", False),
             threads=merged.get("threads"),
             emit_log_file=merged.get("emit_log_file", True),

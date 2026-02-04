@@ -86,6 +86,12 @@ bigwig_backend: auto # auto|python|cli for bedGraphToBigWig conversion
 # Nanopore specific demultiplexing
 barcode_both_ends: False # dorado demultiplexing
 trim: False # dorado adapter and barcode removal during demultiplexing
+use_umi: False # Whether to detect and annotate UMIs in aligned_sorted BAM before demultiplexing
+umi_adapters: [null, null] # Two-slot list [left_ref_end_adapter, right_ref_end_adapter]
+umi_length: null # Length of each UMI (required when use_umi is true)
+umi_search_window: 200 # Max distance from read ends to consider an adapter match for UMI extraction
+umi_adapter_matcher: exact # exact|edlib
+umi_adapter_max_edits: 0 # Used for edlib fuzzy matching
 
 # Anndata structure
 mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.

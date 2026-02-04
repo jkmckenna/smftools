@@ -135,6 +135,10 @@ qc = [
     "multiqc",
 ]
 
+umi = [
+    "edlib",
+]
+
 umap = [
     "pynndescent>=0.5.10",
     "umap-learn>=0.5.5",
@@ -183,6 +187,9 @@ all = [
 
     # qc
     "multiqc",
+
+    # umi
+    "edlib",
 ]
 
 [tool.hatch.build]

@@ -171,6 +171,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     from ..informatics.bam_functions import (
         align_and_sort_BAM,
+        annotate_umi_tags_in_bam,
         bam_qc,
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
@@ -469,6 +470,21 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 bedtools_backend=cfg.bedtools_backend,
                 bigwig_backend=cfg.bigwig_backend,
             )
+    ########################################################################################################################
+
+    ################################### 4.5) Optional UMI annotation #############################################
+    if getattr(cfg, "use_umi", False):
+        logger.info("Annotating UMIs in aligned and sorted BAM before demultiplexing")
+    annotate_umi_tags_in_bam(
+        aligned_sorted_output,
+        use_umi=getattr(cfg, "use_umi", False),
+        umi_adapters=getattr(cfg, "umi_adapters", None),
+        umi_length=getattr(cfg, "umi_length", None),
+        umi_search_window=getattr(cfg, "umi_search_window", 200),
+        umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "exact"),
+        umi_adapter_max_edits=getattr(cfg, "umi_adapter_max_edits", 0),
+        samtools_backend=cfg.samtools_backend,
+    )
     ########################################################################################################################
 
     ################################### 5) Demultiplexing ######################################################################

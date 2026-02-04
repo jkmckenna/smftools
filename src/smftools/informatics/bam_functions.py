@@ -130,6 +130,228 @@ def _parse_idxstats_output(output: str) -> Tuple[int, int, Dict[str, Tuple[int, 
     return aligned_reads_count, unaligned_reads_count, proportions
 
 
+def _normalize_umi_adapters(umi_adapters: Any) -> List[Optional[str]]:
+    """Normalize UMI adapters into a two-slot [left_ref_end, right_ref_end] list."""
+    if umi_adapters is None:
+        adapters: List[Any] = []
+    elif isinstance(umi_adapters, (list, tuple)):
+        adapters = list(umi_adapters)
+    else:
+        adapters = [umi_adapters]
+
+    if len(adapters) != 2:
+        raise ValueError("umi_adapters must be a two-item list: [left_ref_end, right_ref_end].")
+
+    normalized: List[Optional[str]] = []
+    for adapter in adapters:
+        if adapter is None:
+            normalized.append(None)
+            continue
+        value = str(adapter).strip()
+        if not value or value.lower() == "none":
+            normalized.append(None)
+            continue
+        normalized.append(value.upper())
+    return normalized
+
+
+def validate_umi_config(
+    use_umi: bool,
+    umi_adapters: Any,
+    umi_length: Any,
+) -> Tuple[List[Optional[str]], Optional[int]]:
+    """Validate UMI settings and return normalized adapters and length."""
+    if not use_umi:
+        return [], None
+
+    adapters = _normalize_umi_adapters(umi_adapters)
+    if all(adapter is None for adapter in adapters):
+        raise ValueError(
+            "cfg.use_umi is true, but no UMI adapter sequences were provided in umi_adapters."
+        )
+
+    try:
+        length = int(umi_length)
+    except Exception as exc:
+        raise ValueError(
+            "UMI length must be a positive integer when cfg.use_umi is true."
+        ) from exc
+    if length <= 0:
+        raise ValueError("UMI length must be a positive integer when cfg.use_umi is true.")
+
+    return adapters, length
+
+
+def _extract_umi_adjacent_to_adapter_on_read_end(
+    read_sequence: str,
+    adapter_sequence: str,
+    umi_length: int,
+    umi_search_window: int,
+    search_from_start: bool,
+    adapter_matcher: str = "exact",
+    adapter_max_edits: int = 0,
+) -> Optional[str]:
+    """Extract UMI adjacent to adapter constrained to either start or end of read."""
+    if not read_sequence or not adapter_sequence:
+        return None
+
+    seq = read_sequence.upper()
+    adapter = adapter_sequence.upper()
+    seq_len = len(seq)
+    if seq_len == 0:
+        return None
+
+    matcher = str(adapter_matcher).strip().lower()
+    if matcher not in {"exact", "edlib"}:
+        raise ValueError("adapter_matcher must be one of: exact, edlib")
+
+    if matcher == "exact":
+        matches = [(m.start(), m.end()) for m in re.finditer(re.escape(adapter), seq)]
+    else:
+        edlib = require("edlib", extra="umi", purpose="fuzzy UMI adapter matching")
+        result = edlib.align(adapter, seq, mode="HW", task="locations", k=max(0, adapter_max_edits))
+        locations = result.get("locations", []) if isinstance(result, dict) else []
+        matches = []
+        for loc in locations:
+            if not isinstance(loc, (list, tuple)) or len(loc) != 2:
+                continue
+            start_i, end_i = int(loc[0]), int(loc[1])
+            if start_i < 0 or end_i < start_i:
+                continue
+            matches.append((start_i, end_i + 1))
+
+    best: Optional[Tuple[int, int]] = None
+    for start, end in matches:
+        distance = start if search_from_start else (seq_len - end)
+        if distance > umi_search_window:
+            continue
+        if best is None or distance < best[0]:
+            best = (distance, start)
+
+    if best is None:
+        return None
+
+    start = best[1]
+    end = start + len(adapter)
+    if search_from_start:
+        umi_start, umi_end = end, end + umi_length
+    else:
+        umi_start, umi_end = start - umi_length, start
+
+    if umi_start < 0 or umi_end > seq_len:
+        return None
+    umi = seq[umi_start:umi_end]
+    return umi if len(umi) == umi_length else None
+
+
+def _target_read_end_for_ref_side(is_reverse: bool, ref_side: str) -> str:
+    """Map reference-side adapter slot to a read-end target given read strand."""
+    if ref_side == "left":
+        return "end" if is_reverse else "start"
+    if ref_side == "right":
+        return "start" if is_reverse else "end"
+    raise ValueError(f"Unknown ref_side: {ref_side}")
+
+
+def annotate_umi_tags_in_bam(
+    bam_path: str | Path,
+    *,
+    use_umi: bool,
+    umi_adapters: Any,
+    umi_length: Any,
+    umi_search_window: int = 200,
+    umi_adapter_matcher: str = "exact",
+    umi_adapter_max_edits: int = 0,
+    samtools_backend: str | None = "auto",
+) -> Path:
+    """Annotate aligned BAM reads with UMI tags before demultiplexing."""
+    input_bam = Path(bam_path)
+    if not use_umi:
+        return input_bam
+
+    adapters, length = validate_umi_config(use_umi, umi_adapters, umi_length)
+    search_window = max(0, int(umi_search_window))
+    matcher = str(umi_adapter_matcher).strip().lower()
+    if matcher not in {"exact", "edlib"}:
+        raise ValueError("umi_adapter_matcher must be one of: exact, edlib")
+    max_edits = max(0, int(umi_adapter_max_edits))
+    if matcher == "edlib":
+        require("edlib", extra="umi", purpose="fuzzy UMI adapter matching")
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    configured_adapter_count = sum(1 for adapter in adapters if adapter is not None)
+
+    pysam_mod = _require_pysam()
+    tmp_bam = input_bam.with_name(f"{input_bam.stem}.umi_tmp{input_bam.suffix}")
+
+    total_reads = 0
+    reads_with_any_umi = 0
+    reads_with_all_umis = 0
+
+    with (
+        pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam,
+        pysam_mod.AlignmentFile(str(tmp_bam), "wb", template=in_bam) as out_bam,
+    ):
+        for read in in_bam.fetch(until_eof=True):
+            total_reads += 1
+            sequence = read.query_sequence or ""
+            umi_values: List[Optional[str]] = [None, None]
+            for i, adapter in enumerate(adapters):
+                if adapter is None:
+                    continue
+                ref_side = "left" if i == 0 else "right"
+                read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
+                umi_values[i] = _extract_umi_adjacent_to_adapter_on_read_end(
+                    read_sequence=sequence,
+                    adapter_sequence=adapter,
+                    umi_length=length,
+                    umi_search_window=search_window,
+                    search_from_start=(read_end == "start"),
+                    adapter_matcher=matcher,
+                    adapter_max_edits=max_edits,
+                )
+            present = [u for u in umi_values if u]
+            if present:
+                reads_with_any_umi += 1
+            if configured_adapter_count and len(present) == configured_adapter_count:
+                reads_with_all_umis += 1
+
+            umi1, umi2 = umi_values[0], umi_values[1]
+            if umi1:
+                read.set_tag("U1", umi1, value_type="Z")
+            if umi2:
+                read.set_tag("U2", umi2, value_type="Z")
+            if umi1 and umi2:
+                read.set_tag("RX", f"{umi1}-{umi2}", value_type="Z")
+            elif umi1:
+                read.set_tag("RX", umi1, value_type="Z")
+            elif umi2:
+                read.set_tag("RX", umi2, value_type="Z")
+
+            out_bam.write(read)
+
+    tmp_bam.replace(input_bam)
+    index_paths = (
+        input_bam.with_suffix(input_bam.suffix + ".bai"),
+        Path(str(input_bam) + ".bai"),
+    )
+    for idx_path in index_paths:
+        if idx_path.exists():
+            idx_path.unlink()
+    if backend_choice == "python":
+        _index_bam_with_pysam(input_bam)
+    else:
+        _index_bam_with_samtools(input_bam)
+
+    logger.info(
+        "UMI annotation complete for %s: total_reads=%d, reads_with_any_umi=%d, reads_with_all_umis=%d",
+        input_bam,
+        total_reads,
+        reads_with_any_umi,
+        reads_with_all_umis,
+    )
+    return input_bam
+
+
 def _stream_dorado_logs(stderr_iter) -> None:
     """Stream dorado stderr and emit structured log messages.
 
