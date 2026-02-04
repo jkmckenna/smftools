@@ -352,6 +352,367 @@ def annotate_umi_tags_in_bam(
     return input_bam
 
 
+def _extract_barcode_adjacent_to_adapter_on_read_end(
+    read_sequence: str,
+    adapter_sequence: str,
+    barcode_length: int,
+    barcode_search_window: int,
+    search_from_start: bool,
+    adapter_matcher: str = "edlib",
+    adapter_max_edits: int = 2,
+) -> Tuple[Optional[str], Optional[int]]:
+    """
+    Extract barcode sequence adjacent to adapter, constrained to read end.
+
+    Returns
+    -------
+    Tuple[Optional[str], Optional[int]]
+        (barcode_sequence, adapter_start_position) or (None, None) if not found.
+    """
+    if not read_sequence or not adapter_sequence:
+        return None, None
+
+    seq = read_sequence.upper()
+    adapter = adapter_sequence.upper()
+    seq_len = len(seq)
+    if seq_len == 0:
+        return None, None
+
+    matcher = str(adapter_matcher).strip().lower()
+    if matcher not in {"exact", "edlib"}:
+        raise ValueError("adapter_matcher must be one of: exact, edlib")
+
+    if matcher == "exact":
+        matches = [(m.start(), m.end()) for m in re.finditer(re.escape(adapter), seq)]
+    else:
+        edlib = require("edlib", extra="umi", purpose="fuzzy barcode adapter matching")
+        result = edlib.align(adapter, seq, mode="HW", task="locations", k=max(0, adapter_max_edits))
+        locations = result.get("locations", []) if isinstance(result, dict) else []
+        matches = []
+        for loc in locations:
+            if not isinstance(loc, (list, tuple)) or len(loc) != 2:
+                continue
+            start_i, end_i = int(loc[0]), int(loc[1])
+            if start_i < 0 or end_i < start_i:
+                continue
+            matches.append((start_i, end_i + 1))
+
+    best: Optional[Tuple[int, int]] = None
+    for start, end in matches:
+        distance = start if search_from_start else (seq_len - end)
+        if distance > barcode_search_window:
+            continue
+        if best is None or distance < best[0]:
+            best = (distance, start)
+
+    if best is None:
+        return None, None
+
+    adapter_start = best[1]
+    adapter_end = adapter_start + len(adapter)
+    if search_from_start:
+        bc_start, bc_end = adapter_end, adapter_end + barcode_length
+    else:
+        bc_start, bc_end = adapter_start - barcode_length, adapter_start
+
+    if bc_start < 0 or bc_end > seq_len:
+        return None, None
+    barcode = seq[bc_start:bc_end]
+    return (barcode, adapter_start) if len(barcode) == barcode_length else (None, None)
+
+
+def _match_barcode_to_references(
+    extracted_barcode: str,
+    barcode_references: Dict[str, str],
+    max_edit_distance: int = 3,
+) -> Tuple[Optional[str], Optional[int]]:
+    """
+    Match an extracted barcode sequence to reference barcodes.
+
+    Parameters
+    ----------
+    extracted_barcode : str
+        The extracted barcode sequence.
+    barcode_references : Dict[str, str]
+        Mapping of barcode names to barcode sequences.
+    max_edit_distance : int
+        Maximum edit distance to consider a match.
+
+    Returns
+    -------
+    Tuple[Optional[str], Optional[int]]
+        (best_barcode_name, edit_distance) or (None, None) if no match.
+    """
+    if not extracted_barcode or not barcode_references:
+        return None, None
+
+    extracted = extracted_barcode.upper()
+    best_match: Optional[str] = None
+    best_distance: Optional[int] = None
+
+    try:
+        edlib = require("edlib", extra="umi", purpose="barcode matching")
+        use_edlib = True
+    except Exception:
+        use_edlib = False
+
+    for bc_name, bc_seq in barcode_references.items():
+        bc_seq = bc_seq.upper()
+
+        if use_edlib:
+            result = edlib.align(extracted, bc_seq, mode="NW", task="distance", k=max_edit_distance)
+            dist = result.get("editDistance", -1)
+            if dist == -1:
+                continue
+        else:
+            # Fallback to simple Hamming distance for same-length sequences
+            if len(extracted) != len(bc_seq):
+                continue
+            dist = sum(1 for a, b in zip(extracted, bc_seq) if a != b)
+            if dist > max_edit_distance:
+                continue
+
+        if best_distance is None or dist < best_distance:
+            best_distance = dist
+            best_match = bc_name
+
+    return best_match, best_distance
+
+
+def extract_and_assign_barcodes_in_bam(
+    bam_path: str | Path,
+    *,
+    barcode_adapters: List[Optional[str]],
+    barcode_references: Dict[str, str],
+    barcode_length: int,
+    barcode_search_window: int = 200,
+    barcode_max_edit_distance: int = 3,
+    barcode_adapter_matcher: str = "edlib",
+    barcode_adapter_max_edits: int = 2,
+    require_both_ends: bool = False,
+    min_barcode_score: Optional[int] = None,
+    samtools_backend: str | None = "auto",
+) -> Path:
+    """
+    Extract barcodes from reads and assign best-matching barcode from reference set.
+
+    This function extracts barcode sequences adjacent to adapter sequences at read ends,
+    matches them against a reference barcode set, and writes BAM tags for:
+    - BC: Assigned barcode name (or "unclassified")
+    - B1: Left-end barcode match name (if found)
+    - B2: Right-end barcode match name (if found)
+    - BE: Left-end match edit distance
+    - BF: Right-end match edit distance
+    - BM: Match type ("both", "left_only", "right_only", "unclassified")
+
+    Parameters
+    ----------
+    bam_path : str or Path
+        Path to the input BAM file (will be modified in place).
+    barcode_adapters : List[Optional[str]]
+        Two-element list of adapter sequences: [left_adapter, right_adapter].
+        Either can be None to skip that end.
+    barcode_references : Dict[str, str]
+        Mapping of barcode names to barcode sequences (e.g., {"barcode01": "AAGAAAGTTGTCGGTGTCTTTGTG"}).
+    barcode_length : int
+        Expected length of barcode sequences.
+    barcode_search_window : int
+        Maximum distance from read end to search for adapter (default 200).
+    barcode_max_edit_distance : int
+        Maximum edit distance to consider a barcode match (default 3).
+    barcode_adapter_matcher : str
+        Adapter matching method: "exact" or "edlib" (default "edlib").
+    barcode_adapter_max_edits : int
+        Maximum edit distance for adapter matching (default 2).
+    require_both_ends : bool
+        If True, only assign barcode if both ends match the same barcode.
+        If False, assign based on any matching end (default False).
+    min_barcode_score : int, optional
+        Minimum edit distance threshold; reads with higher edit distance are unclassified.
+    samtools_backend : str or None
+        Backend for BAM indexing ("samtools", "python", or "auto").
+
+    Returns
+    -------
+    Path
+        Path to the modified BAM file.
+    """
+    input_bam = Path(bam_path)
+
+    # Validate adapters
+    if barcode_adapters is None:
+        barcode_adapters = [None, None]
+    elif not isinstance(barcode_adapters, (list, tuple)) or len(barcode_adapters) != 2:
+        raise ValueError("barcode_adapters must be a two-element list: [left_adapter, right_adapter]")
+
+    adapters: List[Optional[str]] = []
+    for adapter in barcode_adapters:
+        if adapter is None:
+            adapters.append(None)
+        else:
+            val = str(adapter).strip().upper()
+            adapters.append(val if val and val.lower() != "none" else None)
+
+    if all(a is None for a in adapters):
+        logger.warning("No barcode adapters provided; skipping barcode extraction")
+        return input_bam
+
+    if not barcode_references:
+        raise ValueError("barcode_references must be provided with at least one barcode")
+
+    # Normalize barcode references
+    bc_refs = {name: seq.upper() for name, seq in barcode_references.items()}
+
+    matcher = str(barcode_adapter_matcher).strip().lower()
+    if matcher not in {"exact", "edlib"}:
+        raise ValueError("barcode_adapter_matcher must be one of: exact, edlib")
+    if matcher == "edlib":
+        require("edlib", extra="umi", purpose="fuzzy barcode adapter matching")
+
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    pysam_mod = _require_pysam()
+    tmp_bam = input_bam.with_name(f"{input_bam.stem}.bc_tmp{input_bam.suffix}")
+
+    # Statistics
+    total_reads = 0
+    reads_both_ends = 0
+    reads_left_only = 0
+    reads_right_only = 0
+    reads_unclassified = 0
+    reads_mismatch_ends = 0  # Both ends matched but to different barcodes
+
+    with (
+        pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam,
+        pysam_mod.AlignmentFile(str(tmp_bam), "wb", template=in_bam) as out_bam,
+    ):
+        for read in in_bam.fetch(until_eof=True):
+            total_reads += 1
+            sequence = read.query_sequence or ""
+
+            # Extract barcodes from each end
+            bc_matches: List[Tuple[Optional[str], Optional[int]]] = [
+                (None, None),
+                (None, None),
+            ]
+
+            for i, adapter in enumerate(adapters):
+                if adapter is None:
+                    continue
+                ref_side = "left" if i == 0 else "right"
+                read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
+
+                extracted_bc, _ = _extract_barcode_adjacent_to_adapter_on_read_end(
+                    read_sequence=sequence,
+                    adapter_sequence=adapter,
+                    barcode_length=barcode_length,
+                    barcode_search_window=barcode_search_window,
+                    search_from_start=(read_end == "start"),
+                    adapter_matcher=matcher,
+                    adapter_max_edits=barcode_adapter_max_edits,
+                )
+
+                if extracted_bc:
+                    match_name, match_dist = _match_barcode_to_references(
+                        extracted_bc,
+                        bc_refs,
+                        max_edit_distance=barcode_max_edit_distance,
+                    )
+                    if match_name is not None:
+                        # Apply minimum score filter if specified
+                        if min_barcode_score is None or match_dist <= min_barcode_score:
+                            bc_matches[i] = (match_name, match_dist)
+
+            left_match, left_dist = bc_matches[0]
+            right_match, right_dist = bc_matches[1]
+
+            # Determine match type and final barcode assignment
+            if left_match and right_match:
+                if left_match == right_match:
+                    match_type = "both"
+                    assigned_bc = left_match
+                    reads_both_ends += 1
+                else:
+                    # Both ends matched but to different barcodes
+                    match_type = "mismatch"
+                    reads_mismatch_ends += 1
+                    if require_both_ends:
+                        assigned_bc = "unclassified"
+                        reads_unclassified += 1
+                    else:
+                        # Use the better match (lower edit distance)
+                        if left_dist <= right_dist:
+                            assigned_bc = left_match
+                        else:
+                            assigned_bc = right_match
+            elif left_match:
+                match_type = "left_only"
+                reads_left_only += 1
+                assigned_bc = "unclassified" if require_both_ends else left_match
+                if require_both_ends:
+                    reads_unclassified += 1
+            elif right_match:
+                match_type = "right_only"
+                reads_right_only += 1
+                assigned_bc = "unclassified" if require_both_ends else right_match
+                if require_both_ends:
+                    reads_unclassified += 1
+            else:
+                match_type = "unclassified"
+                assigned_bc = "unclassified"
+                reads_unclassified += 1
+
+            # Write tags
+            read.set_tag("BC", assigned_bc, value_type="Z")
+            read.set_tag("BM", match_type, value_type="Z")
+
+            if left_match:
+                read.set_tag("B1", left_match, value_type="Z")
+                read.set_tag("BE", left_dist, value_type="i")
+            if right_match:
+                read.set_tag("B2", right_match, value_type="Z")
+                read.set_tag("BF", right_dist, value_type="i")
+
+            out_bam.write(read)
+
+    # Replace original BAM and re-index
+    tmp_bam.replace(input_bam)
+    index_paths = (
+        input_bam.with_suffix(input_bam.suffix + ".bai"),
+        Path(str(input_bam) + ".bai"),
+    )
+    for idx_path in index_paths:
+        if idx_path.exists():
+            idx_path.unlink()
+    if backend_choice == "python":
+        _index_bam_with_pysam(input_bam)
+    else:
+        _index_bam_with_samtools(input_bam)
+
+    logger.info(
+        "Barcode extraction complete for %s:\n"
+        "  total_reads=%d\n"
+        "  both_ends=%d (%.1f%%)\n"
+        "  left_only=%d (%.1f%%)\n"
+        "  right_only=%d (%.1f%%)\n"
+        "  mismatch_ends=%d (%.1f%%)\n"
+        "  unclassified=%d (%.1f%%)",
+        input_bam,
+        total_reads,
+        reads_both_ends,
+        100 * reads_both_ends / max(1, total_reads),
+        reads_left_only,
+        100 * reads_left_only / max(1, total_reads),
+        reads_right_only,
+        100 * reads_right_only / max(1, total_reads),
+        reads_mismatch_ends,
+        100 * reads_mismatch_ends / max(1, total_reads),
+        reads_unclassified,
+        100 * reads_unclassified / max(1, total_reads),
+    )
+
+    return input_bam
+
+
 def _stream_dorado_logs(stderr_iter) -> None:
     """Stream dorado stderr and emit structured log messages.
 

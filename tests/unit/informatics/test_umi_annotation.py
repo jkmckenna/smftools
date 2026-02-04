@@ -72,6 +72,11 @@ def test_extract_umi_respects_search_window():
 
 
 def test_extract_umi_uses_adapter_occurrence_nearest_targeted_end():
+    # Read has two "ACGT" adapters. When searching from end, should use the
+    # one nearest to the end (second occurrence) and extract UMI before it.
+    # Structure: NNNNNNNN ACGT AAAA TTTT ACGT GGGG
+    #                     ^^^1      ^^^^ ^^^2
+    #                              UMI  adapter (nearest to end)
     read = "NNNNNNNNACGTAAAATTTTACGTGGGG"
     umi = bam_functions._extract_umi_adjacent_to_adapter_on_read_end(
         read_sequence=read,
@@ -80,7 +85,8 @@ def test_extract_umi_uses_adapter_occurrence_nearest_targeted_end():
         umi_search_window=10,
         search_from_start=False,
     )
-    assert umi == "GGGG"
+    # UMI is extracted BEFORE the adapter when searching from end
+    assert umi == "TTTT"
 
 
 def test_extract_umi_rejects_unknown_matcher():
