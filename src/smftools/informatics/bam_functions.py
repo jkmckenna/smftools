@@ -8,6 +8,7 @@ import subprocess
 import time
 from collections import Counter, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
@@ -33,6 +34,51 @@ logger = get_logger(__name__)
 
 _PROGRESS_RE = re.compile(r"Output records written:\s*(\d+)")
 _EMPTY_RE = re.compile(r"^\s*$")
+
+
+# ---------------------------------------------------------------------------
+# Flanking-sequence configuration dataclasses
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FlankingConfig:
+    """Flanking sequences on each side of a barcode or UMI."""
+    adapter_side: Optional[str] = None
+    amplicon_side: Optional[str] = None
+
+
+@dataclass
+class PerEndFlankingConfig:
+    """Per-reference-end flanking configuration."""
+    left_ref_end: Optional[FlankingConfig] = None
+    right_ref_end: Optional[FlankingConfig] = None
+
+
+@dataclass
+class BarcodeKitConfig:
+    """Full barcode kit configuration loaded from YAML."""
+    name: Optional[str] = None
+    barcodes: Dict[str, str] = field(default_factory=dict)
+    barcode_length: int = 0
+    flanking: Optional[PerEndFlankingConfig] = None
+    barcode_ends: str = "both"
+    barcode_flank_mode: str = "adapter_only"
+    barcode_max_edit_distance: int = 3
+    barcode_adapter_max_edits: int = 2
+    barcode_amplicon_max_edits: int = 2
+
+
+@dataclass
+class UMIKitConfig:
+    """UMI configuration loaded from YAML."""
+    flanking: Optional[PerEndFlankingConfig] = None
+    length: int = 0
+    umi_ends: str = "both"
+    umi_flank_mode: str = "adapter_only"
+    adapter_max_edits: int = 0
+    amplicon_max_edits: int = 0
+
+
 _BAM_FLAG_BITS: Tuple[Tuple[int, str], ...] = (
     (0x1, "paired"),
     (0x2, "proper_pair"),
@@ -244,6 +290,209 @@ def _extract_umi_adjacent_to_adapter_on_read_end(
     return umi if len(umi) == umi_length else None
 
 
+def _find_flanking_sequence(
+    seq: str,
+    flanking_seq: str,
+    search_window: int,
+    search_from_start: bool,
+    matcher: str = "edlib",
+    max_edits: int = 2,
+) -> Optional[Tuple[int, int]]:
+    """Find a flanking sequence within a search window of a read end.
+
+    Returns
+    -------
+    Optional[Tuple[int, int]]
+        (start, end) positions of the match, or None if not found.
+    """
+    if not seq or not flanking_seq:
+        return None
+
+    seq_len = len(seq)
+    flanking_upper = flanking_seq.upper()
+
+    if matcher == "exact":
+        matches = [(m.start(), m.end()) for m in re.finditer(re.escape(flanking_upper), seq)]
+    else:
+        edlib = require("edlib", extra="umi", purpose="fuzzy flanking sequence matching")
+        result = edlib.align(flanking_upper, seq, mode="HW", task="locations", k=max(0, max_edits))
+        locations = result.get("locations", []) if isinstance(result, dict) else []
+        matches = []
+        for loc in locations:
+            if not isinstance(loc, (list, tuple)) or len(loc) != 2:
+                continue
+            start_i, end_i = int(loc[0]), int(loc[1])
+            if start_i < 0 or end_i < start_i:
+                continue
+            matches.append((start_i, end_i + 1))
+
+    best: Optional[Tuple[int, int]] = None
+    best_distance: Optional[int] = None
+    for start, end in matches:
+        distance = start if search_from_start else (seq_len - end)
+        if distance > search_window:
+            continue
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best = (start, end)
+
+    return best
+
+
+def _extract_sequence_with_flanking(
+    read_sequence: str,
+    target_length: int,
+    search_window: int,
+    search_from_start: bool,
+    flanking: FlankingConfig,
+    flank_mode: str = "adapter_only",
+    adapter_matcher: str = "edlib",
+    adapter_max_edits: int = 2,
+    amplicon_max_edits: int = 2,
+) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+    """Extract a target sequence (barcode or UMI) using flanking sequence detection.
+
+    Detection modes based on ``flank_mode``:
+
+    * ``"adapter_only"``: Find *adapter_side* flanking sequence, extract target
+      adjacent to it (after it when searching from start, before it from end).
+    * ``"amplicon_only"``: Find *amplicon_side* flanking sequence, extract target
+      adjacent to it (before it when searching from start, after it from end).
+    * ``"both"``: Find *adapter_side*, extract candidate, then validate that
+      *amplicon_side* is present at the expected position. Return ``None`` if
+      validation fails.
+
+    Parameters
+    ----------
+    read_sequence : str
+        The read sequence to search within.
+    target_length : int
+        Expected length of the target (barcode / UMI).
+    search_window : int
+        Maximum distance from the targeted read end to search for a flanking match.
+    search_from_start : bool
+        If True, search from the start of the read (left reference end on forward
+        strand); otherwise search from the end.
+    flanking : FlankingConfig
+        Flanking sequences for adapter_side and/or amplicon_side.
+    flank_mode : str
+        One of ``"adapter_only"``, ``"amplicon_only"``, ``"both"``.
+    adapter_matcher : str
+        Matching algorithm for flanking detection (``"exact"`` or ``"edlib"``).
+    adapter_max_edits : int
+        Max edit distance for adapter_side matching (edlib mode).
+    amplicon_max_edits : int
+        Max edit distance for amplicon_side matching (edlib mode).
+
+    Returns
+    -------
+    Tuple[Optional[str], Optional[int], Optional[int]]
+        ``(extracted_sequence, start_pos, end_pos)`` or ``(None, None, None)``
+        if extraction fails.
+    """
+    if not read_sequence:
+        return None, None, None
+
+    seq = read_sequence.upper()
+    seq_len = len(seq)
+
+    if flank_mode == "adapter_only":
+        if not flanking.adapter_side:
+            return None, None, None
+
+        hit = _find_flanking_sequence(
+            seq, flanking.adapter_side, search_window, search_from_start,
+            matcher=adapter_matcher, max_edits=adapter_max_edits,
+        )
+        if hit is None:
+            return None, None, None
+        adapter_start, adapter_end = hit
+
+        # Extract target adjacent to adapter
+        if search_from_start:
+            tgt_start, tgt_end = adapter_end, adapter_end + target_length
+        else:
+            tgt_start, tgt_end = adapter_start - target_length, adapter_start
+
+    elif flank_mode == "amplicon_only":
+        if not flanking.amplicon_side:
+            return None, None, None
+
+        hit = _find_flanking_sequence(
+            seq, flanking.amplicon_side, search_window, search_from_start,
+            matcher=adapter_matcher, max_edits=amplicon_max_edits,
+        )
+        if hit is None:
+            return None, None, None
+        amplicon_start, amplicon_end = hit
+
+        # Extract target adjacent to amplicon (opposite side from adapter logic)
+        if search_from_start:
+            tgt_start, tgt_end = amplicon_start - target_length, amplicon_start
+        else:
+            tgt_start, tgt_end = amplicon_end, amplicon_end + target_length
+
+    elif flank_mode == "both":
+        if not flanking.adapter_side:
+            return None, None, None
+
+        # Step 1: find adapter_side
+        hit = _find_flanking_sequence(
+            seq, flanking.adapter_side, search_window, search_from_start,
+            matcher=adapter_matcher, max_edits=adapter_max_edits,
+        )
+        if hit is None:
+            return None, None, None
+        adapter_start, adapter_end = hit
+
+        # Step 2: extract candidate
+        if search_from_start:
+            tgt_start, tgt_end = adapter_end, adapter_end + target_length
+        else:
+            tgt_start, tgt_end = adapter_start - target_length, adapter_start
+
+        # Step 3: validate amplicon_side is adjacent to the other side of target
+        if flanking.amplicon_side:
+            if search_from_start:
+                expected_amplicon_region_start = tgt_end
+                expected_amplicon_region_end = min(
+                    tgt_end + len(flanking.amplicon_side) + amplicon_max_edits + 1,
+                    seq_len,
+                )
+            else:
+                expected_amplicon_region_end = tgt_start
+                expected_amplicon_region_start = max(
+                    tgt_start - len(flanking.amplicon_side) - amplicon_max_edits - 1,
+                    0,
+                )
+
+            region = seq[expected_amplicon_region_start:expected_amplicon_region_end]
+            if region:
+                amp_hit = _find_flanking_sequence(
+                    region, flanking.amplicon_side,
+                    search_window=len(region),
+                    search_from_start=True,
+                    matcher=adapter_matcher,
+                    max_edits=amplicon_max_edits,
+                )
+                if amp_hit is None:
+                    return None, None, None
+            else:
+                return None, None, None
+    else:
+        raise ValueError(f"flank_mode must be one of: adapter_only, amplicon_only, both. Got: {flank_mode}")
+
+    # Bounds check
+    if tgt_start < 0 or tgt_end > seq_len:
+        return None, None, None
+
+    extracted = seq[tgt_start:tgt_end]
+    if len(extracted) != target_length:
+        return None, None, None
+
+    return extracted, tgt_start, tgt_end
+
+
 def _target_read_end_for_ref_side(is_reverse: bool, ref_side: str) -> str:
     """Map reference-side adapter slot to a read-end target given read strand."""
     if ref_side == "left":
@@ -263,13 +512,45 @@ def annotate_umi_tags_in_bam(
     umi_adapter_matcher: str = "exact",
     umi_adapter_max_edits: int = 0,
     samtools_backend: str | None = "auto",
+    # New flanking parameters (optional)
+    umi_kit_config: Optional[UMIKitConfig] = None,
+    umi_ends: Optional[str] = None,
+    umi_flank_mode: Optional[str] = None,
+    umi_amplicon_max_edits: int = 0,
 ) -> Path:
-    """Annotate aligned BAM reads with UMI tags before demultiplexing."""
+    """Annotate aligned BAM reads with UMI tags before demultiplexing.
+
+    When ``umi_kit_config`` with flanking sequences is provided, extraction uses
+    ``_extract_sequence_with_flanking`` instead of
+    ``_extract_umi_adjacent_to_adapter_on_read_end``.
+    """
     input_bam = Path(bam_path)
     if not use_umi:
         return input_bam
 
-    adapters, length = validate_umi_config(use_umi, umi_adapters, umi_length)
+    # Determine if flanking-based extraction should be used
+    use_flanking = (
+        umi_kit_config is not None
+        and umi_kit_config.flanking is not None
+    )
+
+    if use_flanking:
+        flanking_config = umi_kit_config.flanking
+        length = umi_kit_config.length if umi_kit_config.length else int(umi_length or 0)
+        effective_umi_ends = umi_ends or umi_kit_config.umi_ends or "both"
+        effective_flank_mode = umi_flank_mode or umi_kit_config.umi_flank_mode or "adapter_only"
+        if length <= 0:
+            raise ValueError("UMI length must be a positive integer when using flanking-based extraction.")
+        # We still need adapters validated for the legacy path if flanking is partial
+        adapters = [None, None]  # Not used in flanking path
+        configured_adapter_count = 0
+    else:
+        flanking_config = None
+        adapters, length = validate_umi_config(use_umi, umi_adapters, umi_length)
+        effective_umi_ends = umi_ends or "both"
+        effective_flank_mode = umi_flank_mode or "adapter_only"
+        configured_adapter_count = sum(1 for adapter in adapters if adapter is not None)
+
     search_window = max(0, int(umi_search_window))
     matcher = str(umi_adapter_matcher).strip().lower()
     if matcher not in {"exact", "edlib"}:
@@ -278,7 +559,16 @@ def annotate_umi_tags_in_bam(
     if matcher == "edlib":
         require("edlib", extra="umi", purpose="fuzzy UMI adapter matching")
     backend_choice = _resolve_samtools_backend(samtools_backend)
-    configured_adapter_count = sum(1 for adapter in adapters if adapter is not None)
+
+    check_left = effective_umi_ends in ("both", "left_only")
+    check_right = effective_umi_ends in ("both", "right_only")
+
+    # Count configured ends for flanking
+    if use_flanking:
+        configured_adapter_count = sum([
+            1 for fc in [flanking_config.left_ref_end, flanking_config.right_ref_end]
+            if fc is not None and (fc.adapter_side or fc.amplicon_side)
+        ])
 
     pysam_mod = _require_pysam()
     tmp_bam = input_bam.with_name(f"{input_bam.stem}.umi_tmp{input_bam.suffix}")
@@ -295,20 +585,48 @@ def annotate_umi_tags_in_bam(
             total_reads += 1
             sequence = read.query_sequence or ""
             umi_values: List[Optional[str]] = [None, None]
-            for i, adapter in enumerate(adapters):
-                if adapter is None:
+
+            for i, ref_side in enumerate(["left", "right"]):
+                if i == 0 and not check_left:
                     continue
-                ref_side = "left" if i == 0 else "right"
+                if i == 1 and not check_right:
+                    continue
+
                 read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
-                umi_values[i] = _extract_umi_adjacent_to_adapter_on_read_end(
-                    read_sequence=sequence,
-                    adapter_sequence=adapter,
-                    umi_length=length,
-                    umi_search_window=search_window,
-                    search_from_start=(read_end == "start"),
-                    adapter_matcher=matcher,
-                    adapter_max_edits=max_edits,
-                )
+                search_from_start = (read_end == "start")
+
+                if use_flanking:
+                    end_flanking = (
+                        flanking_config.left_ref_end if ref_side == "left"
+                        else flanking_config.right_ref_end
+                    )
+                    if end_flanking is not None:
+                        extracted, _, _ = _extract_sequence_with_flanking(
+                            read_sequence=sequence,
+                            target_length=length,
+                            search_window=search_window,
+                            search_from_start=search_from_start,
+                            flanking=end_flanking,
+                            flank_mode=effective_flank_mode,
+                            adapter_matcher=matcher,
+                            adapter_max_edits=max_edits,
+                            amplicon_max_edits=umi_amplicon_max_edits,
+                        )
+                        umi_values[i] = extracted
+                else:
+                    adapter = adapters[i] if i < len(adapters) else None
+                    if adapter is None:
+                        continue
+                    umi_values[i] = _extract_umi_adjacent_to_adapter_on_read_end(
+                        read_sequence=sequence,
+                        adapter_sequence=adapter,
+                        umi_length=length,
+                        umi_search_window=search_window,
+                        search_from_start=search_from_start,
+                        adapter_matcher=matcher,
+                        adapter_max_edits=max_edits,
+                    )
+
             present = [u for u in umi_values if u]
             if present:
                 reads_with_any_umi += 1
@@ -479,37 +797,114 @@ def _match_barcode_to_references(
     return best_match, best_distance
 
 
-def load_barcode_references_from_yaml(yaml_path: str | Path) -> Tuple[Dict[str, str], int]:
+def _parse_flanking_config_from_dict(d: Dict[str, Any]) -> FlankingConfig:
+    """Parse a FlankingConfig from a dictionary with adapter_side/amplicon_side keys."""
+    adapter_side = d.get("adapter_side")
+    amplicon_side = d.get("amplicon_side")
+    if adapter_side is not None:
+        adapter_side = str(adapter_side).strip().upper() or None
+    if amplicon_side is not None:
+        amplicon_side = str(amplicon_side).strip().upper() or None
+    return FlankingConfig(adapter_side=adapter_side, amplicon_side=amplicon_side)
+
+
+def _parse_per_end_flanking(flanking_data: Dict[str, Any]) -> PerEndFlankingConfig:
+    """Parse per-end flanking config from YAML flanking section.
+
+    Supports both global flanking (adapter_side/amplicon_side at top level)
+    and per-end flanking (left_ref_end/right_ref_end subsections).
     """
-    Load barcode reference sequences from a YAML file.
+    per_end = PerEndFlankingConfig()
 
-    The YAML file should have a structure like:
-        barcodes:
-          barcode01: "ACGTACGT"
-          barcode02: "TGCATGCA"
-          ...
+    has_per_end = "left_ref_end" in flanking_data or "right_ref_end" in flanking_data
 
-    Or a flat structure:
+    if has_per_end:
+        if "left_ref_end" in flanking_data and isinstance(flanking_data["left_ref_end"], dict):
+            per_end.left_ref_end = _parse_flanking_config_from_dict(flanking_data["left_ref_end"])
+        if "right_ref_end" in flanking_data and isinstance(flanking_data["right_ref_end"], dict):
+            per_end.right_ref_end = _parse_flanking_config_from_dict(flanking_data["right_ref_end"])
+    else:
+        # Global flanking applies to both ends
+        global_config = _parse_flanking_config_from_dict(flanking_data)
+        per_end.left_ref_end = global_config
+        per_end.right_ref_end = FlankingConfig(
+            adapter_side=global_config.adapter_side,
+            amplicon_side=global_config.amplicon_side,
+        )
+
+    return per_end
+
+
+def _validate_barcode_sequences(references: Dict[str, str], yaml_path: Path) -> Tuple[Dict[str, str], int]:
+    """Validate and normalize barcode sequences. Returns (uppercased refs, barcode_length)."""
+    if not references:
+        raise ValueError(
+            f"No valid barcode sequences found in {yaml_path}. "
+            "Expected format: 'barcode_name: SEQUENCE' or 'barcodes: {name: seq}'"
+        )
+
+    valid_bases = set("ACGTN")
+    for name, seq in references.items():
+        if not isinstance(seq, str):
+            raise ValueError(f"Barcode '{name}' has non-string value: {seq}")
+        seq_upper = seq.upper()
+        invalid_chars = set(seq_upper) - valid_bases
+        if invalid_chars:
+            raise ValueError(
+                f"Barcode '{name}' contains invalid characters: {invalid_chars}. "
+                "Only A, C, G, T, N are allowed."
+            )
+
+    references = {k: v.upper() for k, v in references.items()}
+
+    lengths = {len(seq) for seq in references.values()}
+    if len(lengths) > 1:
+        raise ValueError(
+            f"Barcodes have inconsistent lengths: {lengths}. "
+            "All barcodes must have the same length."
+        )
+
+    barcode_length = lengths.pop()
+    return references, barcode_length
+
+
+def load_barcode_references_from_yaml(yaml_path: str | Path) -> Union[Tuple[Dict[str, str], int], BarcodeKitConfig]:
+    """Load barcode reference sequences from a YAML file.
+
+    Supports both the legacy format (flat dict or ``barcodes:`` key only)
+    and the new extended format with flanking sequences and config parameters.
+
+    Legacy format (returns ``Tuple[Dict[str, str], int]``)::
+
         barcode01: "ACGTACGT"
         barcode02: "TGCATGCA"
-        ...
+
+    New format (returns ``BarcodeKitConfig``)::
+
+        name: SQK-NBD114-96
+        flanking:
+          adapter_side: AAGGTTAA
+          amplicon_side: CAGCACCT
+        barcode_ends: both
+        barcode_flank_mode: both
+        barcode_max_edit_distance: 3
+        barcode_adapter_max_edits: 2
+        barcodes:
+          NB01: CACAAAGACACCGACAACTTTCTT
+          NB02: ACAGACGACTACAAACGGAATCGA
+
+    The new format is detected by the presence of a ``flanking`` key,
+    ``barcode_ends`` key, or ``barcode_flank_mode`` key.
 
     Parameters
     ----------
     yaml_path : str | Path
-        Path to the YAML file containing barcode name -> sequence mappings.
+        Path to the YAML file.
 
     Returns
     -------
-    Tuple[Dict[str, str], int]
-        Tuple of (references dict, barcode_length). All barcodes must have the same length.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the YAML file does not exist.
-    ValueError
-        If the YAML file is empty, has invalid structure, or barcodes have inconsistent lengths.
+    Tuple[Dict[str, str], int] | BarcodeKitConfig
+        Legacy tuple for old-format files, or ``BarcodeKitConfig`` for new format.
     """
     import yaml
 
@@ -523,50 +918,195 @@ def load_barcode_references_from_yaml(yaml_path: str | Path) -> Tuple[Dict[str, 
     if data is None:
         raise ValueError(f"Barcode YAML file is empty: {yaml_path}")
 
-    # Support nested structure with 'barcodes' key or flat structure
-    if isinstance(data, dict):
-        if "barcodes" in data and isinstance(data["barcodes"], dict):
-            references = data["barcodes"]
-        else:
-            # Assume flat structure where all keys are barcode names
-            references = {k: v for k, v in data.items() if isinstance(v, str)}
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Invalid YAML structure in {yaml_path}. Expected a dictionary."
+        )
 
-        if not references:
-            raise ValueError(
-                f"No valid barcode sequences found in {yaml_path}. "
-                "Expected format: 'barcode_name: SEQUENCE' or 'barcodes: {name: seq}'"
-            )
+    # Detect new format by presence of extended keys
+    _new_format_keys = {"flanking", "barcode_ends", "barcode_flank_mode"}
+    is_new_format = bool(_new_format_keys & set(data.keys()))
 
-        # Validate sequences contain only valid DNA bases
-        valid_bases = set("ACGTN")
-        for name, seq in references.items():
-            if not isinstance(seq, str):
-                raise ValueError(f"Barcode '{name}' has non-string value: {seq}")
-            seq_upper = seq.upper()
-            invalid_chars = set(seq_upper) - valid_bases
-            if invalid_chars:
-                raise ValueError(
-                    f"Barcode '{name}' contains invalid characters: {invalid_chars}. "
-                    "Only A, C, G, T, N are allowed."
-                )
+    # Extract barcodes dict
+    if "barcodes" in data and isinstance(data["barcodes"], dict):
+        references = data["barcodes"]
+    else:
+        # Flat structure: all string-valued keys are barcodes
+        references = {k: v for k, v in data.items() if isinstance(v, str)}
 
-        # Uppercase all sequences
-        references = {k: v.upper() for k, v in references.items()}
+    references, barcode_length = _validate_barcode_sequences(references, yaml_path)
 
-        # Validate all barcodes have the same length
-        lengths = {len(seq) for seq in references.values()}
-        if len(lengths) > 1:
-            raise ValueError(
-                f"Barcodes have inconsistent lengths: {lengths}. "
-                "All barcodes must have the same length."
-            )
-
-        barcode_length = lengths.pop()
+    if not is_new_format:
         return references, barcode_length
 
-    raise ValueError(
-        f"Invalid YAML structure in {yaml_path}. Expected a dictionary."
+    # Build BarcodeKitConfig for new format
+    flanking = None
+    if "flanking" in data and isinstance(data["flanking"], dict):
+        flanking = _parse_per_end_flanking(data["flanking"])
+
+    return BarcodeKitConfig(
+        name=data.get("name"),
+        barcodes=references,
+        barcode_length=barcode_length,
+        flanking=flanking,
+        barcode_ends=str(data.get("barcode_ends", "both")).strip().lower(),
+        barcode_flank_mode=str(data.get("barcode_flank_mode", "adapter_only")).strip().lower(),
+        barcode_max_edit_distance=int(data.get("barcode_max_edit_distance", 3)),
+        barcode_adapter_max_edits=int(data.get("barcode_adapter_max_edits", 2)),
+        barcode_amplicon_max_edits=int(data.get("barcode_amplicon_max_edits", 2)),
     )
+
+
+def load_umi_config_from_yaml(yaml_path: str | Path) -> UMIKitConfig:
+    """Load UMI configuration from a YAML file.
+
+    The YAML file can contain a top-level ``umi:`` key::
+
+        umi:
+          flanking:
+            adapter_side: GTACTGAC
+            amplicon_side: AATTCCGG
+          length: 12
+          umi_ends: left_only
+          umi_flank_mode: both
+          adapter_max_edits: 1
+
+    Or the same keys at the top level (no ``umi:`` wrapper).
+
+    Parameters
+    ----------
+    yaml_path : str | Path
+        Path to the YAML file.
+
+    Returns
+    -------
+    UMIKitConfig
+    """
+    import yaml
+
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"UMI YAML file not found: {yaml_path}")
+
+    with open(yaml_path, "r") as f:
+        data = yaml.safe_load(f)
+
+    if data is None:
+        raise ValueError(f"UMI YAML file is empty: {yaml_path}")
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid YAML structure in {yaml_path}. Expected a dictionary.")
+
+    # Support nested umi: key
+    if "umi" in data and isinstance(data["umi"], dict):
+        data = data["umi"]
+
+    flanking = None
+    if "flanking" in data and isinstance(data["flanking"], dict):
+        flanking = _parse_per_end_flanking(data["flanking"])
+
+    return UMIKitConfig(
+        flanking=flanking,
+        length=int(data.get("length", 0)),
+        umi_ends=str(data.get("umi_ends", "both")).strip().lower(),
+        umi_flank_mode=str(data.get("umi_flank_mode", "adapter_only")).strip().lower(),
+        adapter_max_edits=int(data.get("adapter_max_edits", 0)),
+        amplicon_max_edits=int(data.get("amplicon_max_edits", 0)),
+    )
+
+
+def _build_flanking_from_adapters(adapters: List[Optional[str]]) -> PerEndFlankingConfig:
+    """Convert legacy barcode_adapters / umi_adapters list to PerEndFlankingConfig.
+
+    Legacy adapters are ``[left_ref_end_adapter, right_ref_end_adapter]`` and
+    correspond to the ``adapter_side`` flanking sequence for each reference end.
+    """
+    left_adapter = adapters[0] if len(adapters) > 0 else None
+    right_adapter = adapters[1] if len(adapters) > 1 else None
+
+    return PerEndFlankingConfig(
+        left_ref_end=FlankingConfig(adapter_side=left_adapter) if left_adapter else None,
+        right_ref_end=FlankingConfig(adapter_side=right_adapter) if right_adapter else None,
+    )
+
+
+def resolve_barcode_config(yaml_config: BarcodeKitConfig, cfg: Any) -> Dict[str, Any]:
+    """Resolve barcode configuration with priority: experiment_config > yaml > defaults.
+
+    Parameters
+    ----------
+    yaml_config : BarcodeKitConfig
+        Configuration loaded from YAML.
+    cfg : Any
+        Experiment configuration object (may have attributes for overrides).
+
+    Returns
+    -------
+    Dict[str, Any]
+        Resolved configuration dictionary with keys: barcode_ends, barcode_flank_mode,
+        barcode_max_edit_distance, barcode_adapter_max_edits, barcode_amplicon_max_edits,
+        flanking.
+    """
+    def _get(attr: str, yaml_val: Any, default: Any) -> Any:
+        cfg_val = getattr(cfg, attr, None)
+        if cfg_val is not None:
+            return cfg_val
+        if yaml_val is not None:
+            return yaml_val
+        return default
+
+    return {
+        "barcode_ends": _get("barcode_ends", yaml_config.barcode_ends, "both"),
+        "barcode_flank_mode": _get("barcode_flank_mode", yaml_config.barcode_flank_mode, "adapter_only"),
+        "barcode_max_edit_distance": _get(
+            "barcode_max_edit_distance", yaml_config.barcode_max_edit_distance, 3
+        ),
+        "barcode_adapter_max_edits": _get(
+            "barcode_adapter_max_edits", yaml_config.barcode_adapter_max_edits, 2
+        ),
+        "barcode_amplicon_max_edits": _get(
+            "barcode_amplicon_max_edits", yaml_config.barcode_amplicon_max_edits, 2
+        ),
+        "flanking": yaml_config.flanking,
+    }
+
+
+def resolve_umi_config(umi_config: Optional[UMIKitConfig], cfg: Any) -> Dict[str, Any]:
+    """Resolve UMI configuration with priority: experiment_config > yaml > defaults.
+
+    Parameters
+    ----------
+    umi_config : UMIKitConfig or None
+        Configuration loaded from UMI YAML.
+    cfg : Any
+        Experiment configuration object.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Resolved UMI configuration dictionary.
+    """
+    def _get(attr: str, yaml_val: Any, default: Any) -> Any:
+        cfg_val = getattr(cfg, attr, None)
+        if cfg_val is not None:
+            return cfg_val
+        if yaml_val is not None:
+            return yaml_val
+        return default
+
+    yaml_ends = umi_config.umi_ends if umi_config else None
+    yaml_mode = umi_config.umi_flank_mode if umi_config else None
+    yaml_max_edits = umi_config.adapter_max_edits if umi_config else None
+    yaml_amplicon_max_edits = umi_config.amplicon_max_edits if umi_config else None
+    yaml_flanking = umi_config.flanking if umi_config else None
+
+    return {
+        "umi_ends": _get("umi_ends", yaml_ends, "both"),
+        "umi_flank_mode": _get("umi_flank_mode", yaml_mode, "adapter_only"),
+        "umi_adapter_max_edits": _get("umi_adapter_max_edits", yaml_max_edits, 0),
+        "umi_amplicon_max_edits": _get("umi_amplicon_max_edits", yaml_amplicon_max_edits, 0),
+        "flanking": yaml_flanking,
+    }
 
 
 def extract_and_assign_barcodes_in_bam(
@@ -582,12 +1122,17 @@ def extract_and_assign_barcodes_in_bam(
     require_both_ends: bool = False,
     min_barcode_score: Optional[int] = None,
     samtools_backend: str | None = "auto",
+    # New flanking parameters (optional; when provided, use flanking-based extraction)
+    barcode_kit_config: Optional[BarcodeKitConfig] = None,
+    barcode_ends: Optional[str] = None,
+    barcode_flank_mode: Optional[str] = None,
+    barcode_amplicon_max_edits: int = 2,
 ) -> Path:
-    """
-    Extract barcodes from reads and assign best-matching barcode from reference set.
+    """Extract barcodes from reads and assign best-matching barcode from reference set.
 
     This function extracts barcode sequences adjacent to adapter sequences at read ends,
     matches them against a reference barcode set, and writes BAM tags for:
+
     - BC: Assigned barcode name (or "unclassified")
     - B1: Left-end barcode match name (if found)
     - B2: Right-end barcode match name (if found)
@@ -595,11 +1140,9 @@ def extract_and_assign_barcodes_in_bam(
     - BF: Right-end match edit distance
     - BM: Match type ("both", "left_only", "right_only", "mismatch", "unclassified")
 
-    BC assignment rules:
-    - "both": Both ends match same barcode → BC = barcode name
-    - "mismatch": Both ends match different barcodes → BC = "unclassified"
-    - "left_only"/"right_only": Single end match → BC = barcode name (or "unclassified" if require_both_ends)
-    - "unclassified": No match → BC = "unclassified"
+    When ``barcode_kit_config`` with flanking sequences is provided, extraction uses
+    ``_extract_sequence_with_flanking`` instead of
+    ``_extract_barcode_adjacent_to_adapter_on_read_end``.
 
     Parameters
     ----------
@@ -609,7 +1152,7 @@ def extract_and_assign_barcodes_in_bam(
         Two-element list of adapter sequences: [left_adapter, right_adapter].
         Either can be None to skip that end.
     barcode_references : Dict[str, str]
-        Mapping of barcode names to barcode sequences (e.g., {"barcode01": "AAGAAAGTTGTCGGTGTCTTTGTG"}).
+        Mapping of barcode names to barcode sequences.
     barcode_length : int, optional
         Expected length of barcode sequences. If None, derived from barcode_references.
     barcode_search_window : int
@@ -622,12 +1165,19 @@ def extract_and_assign_barcodes_in_bam(
         Maximum edit distance for adapter matching (default 2).
     require_both_ends : bool
         If True, only assign barcode if both ends match the same barcode.
-        If False, assign based on any matching end (default False).
-        Note: Mismatch reads (different barcodes at each end) are always unclassified.
     min_barcode_score : int, optional
-        Minimum edit distance threshold; reads with higher edit distance are unclassified.
+        Minimum edit distance threshold.
     samtools_backend : str or None
-        Backend for BAM indexing ("samtools", "python", or "auto").
+        Backend for BAM indexing.
+    barcode_kit_config : BarcodeKitConfig, optional
+        Full barcode kit config with flanking sequences. When provided with
+        flanking data, enables flanking-based extraction.
+    barcode_ends : str, optional
+        Which reference ends to check: "both", "left_only", "right_only".
+    barcode_flank_mode : str, optional
+        Flanking mode: "adapter_only", "amplicon_only", "both".
+    barcode_amplicon_max_edits : int
+        Max edit distance for amplicon_side validation (default 2).
 
     Returns
     -------
@@ -648,23 +1198,38 @@ def extract_and_assign_barcodes_in_bam(
             )
         barcode_length = lengths.pop()
 
-    # Validate adapters
-    if barcode_adapters is None:
-        barcode_adapters = [None, None]
-    elif not isinstance(barcode_adapters, (list, tuple)) or len(barcode_adapters) != 2:
-        raise ValueError("barcode_adapters must be a two-element list: [left_adapter, right_adapter]")
+    # Determine if we should use flanking-based extraction
+    use_flanking = (
+        barcode_kit_config is not None
+        and barcode_kit_config.flanking is not None
+    )
+    flanking_config = barcode_kit_config.flanking if use_flanking else None
+    effective_flank_mode = barcode_flank_mode or (
+        barcode_kit_config.barcode_flank_mode if barcode_kit_config else "adapter_only"
+    )
+    effective_barcode_ends = barcode_ends or (
+        barcode_kit_config.barcode_ends if barcode_kit_config else "both"
+    )
 
-    adapters: List[Optional[str]] = []
-    for adapter in barcode_adapters:
-        if adapter is None:
-            adapters.append(None)
-        else:
-            val = str(adapter).strip().upper()
-            adapters.append(val if val and val.lower() != "none" else None)
+    # Build legacy adapter list or determine which ends to check
+    if not use_flanking:
+        # Legacy path: validate adapters
+        if barcode_adapters is None:
+            barcode_adapters = [None, None]
+        elif not isinstance(barcode_adapters, (list, tuple)) or len(barcode_adapters) != 2:
+            raise ValueError("barcode_adapters must be a two-element list: [left_adapter, right_adapter]")
 
-    if all(a is None for a in adapters):
-        logger.warning("No barcode adapters provided; skipping barcode extraction")
-        return input_bam
+        adapters: List[Optional[str]] = []
+        for adapter in barcode_adapters:
+            if adapter is None:
+                adapters.append(None)
+            else:
+                val = str(adapter).strip().upper()
+                adapters.append(val if val and val.lower() != "none" else None)
+
+        if all(a is None for a in adapters):
+            logger.warning("No barcode adapters provided; skipping barcode extraction")
+            return input_bam
 
     if not barcode_references:
         raise ValueError("barcode_references must be provided with at least one barcode")
@@ -678,6 +1243,10 @@ def extract_and_assign_barcodes_in_bam(
     if matcher == "edlib":
         require("edlib", extra="umi", purpose="fuzzy barcode adapter matching")
 
+    # Determine which ends to process
+    check_left = effective_barcode_ends in ("both", "left_only")
+    check_right = effective_barcode_ends in ("both", "right_only")
+
     backend_choice = _resolve_samtools_backend(samtools_backend)
     pysam_mod = _require_pysam()
     tmp_bam = input_bam.with_name(f"{input_bam.stem}.bc_tmp{input_bam.suffix}")
@@ -688,7 +1257,7 @@ def extract_and_assign_barcodes_in_bam(
     reads_left_only = 0
     reads_right_only = 0
     reads_unclassified = 0
-    reads_mismatch_ends = 0  # Both ends matched but to different barcodes
+    reads_mismatch_ends = 0
 
     with (
         pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam,
@@ -698,27 +1267,54 @@ def extract_and_assign_barcodes_in_bam(
             total_reads += 1
             sequence = read.query_sequence or ""
 
-            # Extract barcodes from each end
             bc_matches: List[Tuple[Optional[str], Optional[int]]] = [
                 (None, None),
                 (None, None),
             ]
 
-            for i, adapter in enumerate(adapters):
-                if adapter is None:
+            for i, ref_side in enumerate(["left", "right"]):
+                if i == 0 and not check_left:
                     continue
-                ref_side = "left" if i == 0 else "right"
-                read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
+                if i == 1 and not check_right:
+                    continue
 
-                extracted_bc, _ = _extract_barcode_adjacent_to_adapter_on_read_end(
-                    read_sequence=sequence,
-                    adapter_sequence=adapter,
-                    barcode_length=barcode_length,
-                    barcode_search_window=barcode_search_window,
-                    search_from_start=(read_end == "start"),
-                    adapter_matcher=matcher,
-                    adapter_max_edits=barcode_adapter_max_edits,
-                )
+                read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
+                search_from_start = (read_end == "start")
+
+                extracted_bc: Optional[str] = None
+
+                if use_flanking:
+                    # Get per-end flanking config
+                    end_flanking = (
+                        flanking_config.left_ref_end if ref_side == "left"
+                        else flanking_config.right_ref_end
+                    )
+                    if end_flanking is not None:
+                        extracted_bc, _, _ = _extract_sequence_with_flanking(
+                            read_sequence=sequence,
+                            target_length=barcode_length,
+                            search_window=barcode_search_window,
+                            search_from_start=search_from_start,
+                            flanking=end_flanking,
+                            flank_mode=effective_flank_mode,
+                            adapter_matcher=matcher,
+                            adapter_max_edits=barcode_adapter_max_edits,
+                            amplicon_max_edits=barcode_amplicon_max_edits,
+                        )
+                else:
+                    # Legacy path
+                    adapter = adapters[i] if i < len(adapters) else None
+                    if adapter is None:
+                        continue
+                    extracted_bc, _ = _extract_barcode_adjacent_to_adapter_on_read_end(
+                        read_sequence=sequence,
+                        adapter_sequence=adapter,
+                        barcode_length=barcode_length,
+                        barcode_search_window=barcode_search_window,
+                        search_from_start=search_from_start,
+                        adapter_matcher=matcher,
+                        adapter_max_edits=barcode_adapter_max_edits,
+                    )
 
                 if extracted_bc:
                     match_name, match_dist = _match_barcode_to_references(
@@ -727,7 +1323,6 @@ def extract_and_assign_barcodes_in_bam(
                         max_edit_distance=barcode_max_edit_distance,
                     )
                     if match_name is not None:
-                        # Apply minimum score filter if specified
                         if min_barcode_score is None or match_dist <= min_barcode_score:
                             bc_matches[i] = (match_name, match_dist)
 
@@ -741,7 +1336,6 @@ def extract_and_assign_barcodes_in_bam(
                     assigned_bc = left_match
                     reads_both_ends += 1
                 else:
-                    # Both ends matched but to different barcodes - always unclassified
                     match_type = "mismatch"
                     assigned_bc = "unclassified"
                     reads_mismatch_ends += 1

@@ -40,7 +40,13 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `output_directory`: Root output folder for all generated AnnData files and plots.
 - `experiment_name`: Base name used for output AnnData files.
 - `model_dir` / `model`: Dorado basecalling model configuration (nanopore runs).
-- `barcode_kit`: Demultiplexing configuration for barcoded nanopore experiments.
+- `demux_backend`: Demultiplexing backend (`dorado` or `smftools`).
+- `barcode_kit`: Barcode kit name. Required for `dorado`; for `smftools`, use either a known alias or
+  `custom` plus `custom_barcode_yaml`.
+- `custom_barcode_yaml`: Barcode reference YAML path used when `demux_backend=smftools` and
+  `barcode_kit=custom`.
+- `use_umi` / `umi_yaml`: Optional UMI extraction controls. `umi_yaml` can define flanking-aware UMI
+  extraction.
 - `mapping_threshold`: Minimum mapping proportion per reference required for downstream steps.
 - `mod_list`: Modification calls to use for direct-modality workflows.
 - `conversion_types`: Target modification types for conversion workflows.

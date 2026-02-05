@@ -726,7 +726,10 @@ def _build_sample_maps(bam_path_list: list[Path]) -> tuple[dict[int, str], dict[
             barcode = stem
 
         sample_name = f"{sample_name}_{barcode}"
-        barcode_id = int(barcode.split("barcode")[1])
+        if barcode.lower().startswith("barcode"):
+            barcode_id = barcode[len("barcode") :]
+        else:
+            barcode_id = barcode
 
         sample_name_map[idx] = sample_name
         barcode_map[idx] = str(barcode_id)

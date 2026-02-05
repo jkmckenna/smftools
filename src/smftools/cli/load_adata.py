@@ -170,6 +170,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     from datetime import datetime
 
     from ..informatics.bam_functions import (
+        BarcodeKitConfig,
         align_and_sort_BAM,
         annotate_umi_tags_in_bam,
         bam_qc,
@@ -179,7 +180,11 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         extract_read_features_from_bam,
         extract_read_tags_from_bam,
         load_barcode_references_from_yaml,
+        load_umi_config_from_yaml,
+        resolve_barcode_config,
+        resolve_umi_config,
         split_and_index_BAM,
+        _build_flanking_from_adapters,
     )
     from ..informatics.basecalling import canoncall, modcall
     from ..informatics.bed_functions import aligned_BAM_to_bed
@@ -396,6 +401,33 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     ################################### 3) Basecalling ###################################
 
+    demux_backend = str(getattr(cfg, "demux_backend", "dorado") or "dorado").strip().lower()
+    if demux_backend not in {"smftools", "dorado"}:
+        raise ValueError("demux_backend must be one of: smftools, dorado")
+
+    # Validate demux configuration up front for clearer errors.
+    if not cfg.input_already_demuxed:
+        if demux_backend == "smftools":
+            if not cfg.barcode_kit:
+                raise ValueError("demux_backend='smftools' requires barcode_kit to be set.")
+            if cfg.barcode_kit == "custom" and not cfg.custom_barcode_yaml:
+                raise ValueError(
+                    "demux_backend='smftools' with barcode_kit='custom' requires custom_barcode_yaml."
+                )
+            if cfg.barcode_kit != "custom" and cfg.barcode_kit not in BARCODE_KIT_ALIASES:
+                raise ValueError(
+                    "demux_backend='smftools' requires barcode_kit to be 'custom' with custom_barcode_yaml, "
+                    f"or one of BARCODE_KIT_ALIASES: {list(BARCODE_KIT_ALIASES.keys())}"
+                )
+        else:
+            if not cfg.barcode_kit:
+                raise ValueError("demux_backend='dorado' requires barcode_kit.")
+            if cfg.barcode_kit == "custom":
+                raise ValueError(
+                    "demux_backend='dorado' does not support barcode_kit='custom'. "
+                    "Use demux_backend='smftools' with custom_barcode_yaml."
+                )
+
     # 1) Basecall using dorado
     if basecall and cfg.sequencer == "ont":
         try:
@@ -412,11 +444,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             logger.info(f"{unaligned_output} already exists. Using existing basecalled BAM.")
         elif cfg.smf_modality != "direct":
             logger.info("Running canonical basecalling using dorado")
+            dorado_kit_name = cfg.barcode_kit if cfg.barcode_kit != "custom" else None
             canoncall(
                 str(cfg.model_dir),
                 cfg.model,
                 str(cfg.input_data_path),
-                cfg.barcode_kit,
+                dorado_kit_name,
                 str(bam),
                 cfg.bam_suffix,
                 cfg.barcode_both_ends,
@@ -425,11 +458,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             )
         else:
             logger.info("Running modified basecalling using dorado")
+            dorado_kit_name = cfg.barcode_kit if cfg.barcode_kit != "custom" else None
             modcall(
                 str(cfg.model_dir),
                 cfg.model,
                 str(cfg.input_data_path),
-                cfg.barcode_kit,
+                dorado_kit_name,
                 cfg.mod_list,
                 str(bam),
                 cfg.bam_suffix,
@@ -478,20 +512,33 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ################################### 4.5) Optional UMI annotation #############################################
     if getattr(cfg, "use_umi", False):
         logger.info("Annotating UMIs in aligned and sorted BAM before demultiplexing")
-    annotate_umi_tags_in_bam(
-        aligned_sorted_output,
-        use_umi=getattr(cfg, "use_umi", False),
-        umi_adapters=getattr(cfg, "umi_adapters", None),
-        umi_length=getattr(cfg, "umi_length", None),
-        umi_search_window=getattr(cfg, "umi_search_window", 200),
-        umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "exact"),
-        umi_adapter_max_edits=getattr(cfg, "umi_adapter_max_edits", 0),
-        samtools_backend=cfg.samtools_backend,
-    )
+
+        # Load UMI config from YAML if specified
+        umi_kit_config = None
+        umi_yaml_path = getattr(cfg, "umi_yaml", None)
+        if umi_yaml_path:
+            logger.info(f"Loading UMI config from YAML: {umi_yaml_path}")
+            umi_kit_config = load_umi_config_from_yaml(umi_yaml_path)
+        resolved_umi = resolve_umi_config(umi_kit_config, cfg)
+
+        annotate_umi_tags_in_bam(
+            aligned_sorted_output,
+            use_umi=True,
+            umi_adapters=getattr(cfg, "umi_adapters", None),
+            umi_length=getattr(cfg, "umi_length", None),
+            umi_search_window=getattr(cfg, "umi_search_window", 200),
+            umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "exact"),
+            umi_adapter_max_edits=resolved_umi["umi_adapter_max_edits"],
+            samtools_backend=cfg.samtools_backend,
+            umi_kit_config=umi_kit_config,
+            umi_ends=resolved_umi["umi_ends"],
+            umi_flank_mode=resolved_umi["umi_flank_mode"],
+            umi_amplicon_max_edits=resolved_umi["umi_amplicon_max_edits"],
+        )
     ########################################################################################################################
 
     ################################### 4.6) Optional smftools barcode extraction #############################################
-    use_smftools_demux = getattr(cfg, "demux_backend", "smftools").lower() == "smftools"
+    use_smftools_demux = demux_backend == "smftools"
     if use_smftools_demux and cfg.barcode_kit:
         # Resolve barcode YAML path from kit alias or custom path
         if cfg.barcode_kit == "custom":
@@ -510,8 +557,28 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             )
 
         logger.info("Loading barcode references from YAML")
-        barcode_references, barcode_length = load_barcode_references_from_yaml(barcode_yaml_path)
+        yaml_result = load_barcode_references_from_yaml(barcode_yaml_path)
+
+        # Handle both old format (tuple) and new format (BarcodeKitConfig)
+        if isinstance(yaml_result, BarcodeKitConfig):
+            barcode_kit_config = yaml_result
+            barcode_references = barcode_kit_config.barcodes
+            barcode_length = barcode_kit_config.barcode_length
+        else:
+            barcode_references, barcode_length = yaml_result
+            # Build a BarcodeKitConfig from legacy adapters for flanking support
+            legacy_adapters = getattr(cfg, "barcode_adapters", [None, None])
+            flanking = _build_flanking_from_adapters(legacy_adapters) if any(
+                a is not None for a in (legacy_adapters or [])
+            ) else None
+            barcode_kit_config = BarcodeKitConfig(
+                barcodes=barcode_references,
+                barcode_length=barcode_length,
+                flanking=flanking,
+            )
+
         logger.info(f"Loaded {len(barcode_references)} barcode references (length={barcode_length})")
+        resolved_bc = resolve_barcode_config(barcode_kit_config, cfg)
 
         logger.info("Extracting and assigning barcodes to aligned BAM using smftools backend")
         barcoded_bam = extract_and_assign_barcodes_in_bam(
@@ -520,15 +587,19 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             barcode_references=barcode_references,
             barcode_length=barcode_length,
             barcode_search_window=getattr(cfg, "barcode_search_window", 200),
-            barcode_max_edit_distance=getattr(cfg, "barcode_max_edit_distance", 3),
+            barcode_max_edit_distance=resolved_bc["barcode_max_edit_distance"],
             barcode_adapter_matcher=getattr(cfg, "barcode_adapter_matcher", "edlib"),
-            barcode_adapter_max_edits=getattr(cfg, "barcode_adapter_max_edits", 2),
+            barcode_adapter_max_edits=resolved_bc["barcode_adapter_max_edits"],
             require_both_ends=getattr(cfg, "barcode_both_ends", False),
             min_barcode_score=getattr(cfg, "barcode_min_score", None),
             samtools_backend=cfg.samtools_backend,
+            barcode_kit_config=barcode_kit_config,
+            barcode_ends=resolved_bc["barcode_ends"],
+            barcode_flank_mode=resolved_bc["barcode_flank_mode"],
+            barcode_amplicon_max_edits=resolved_bc["barcode_amplicon_max_edits"],
         )
         # Update aligned_sorted_output to point to the barcoded BAM
-        aligned_sorted_output = str(barcoded_bam)
+        aligned_sorted_output = barcoded_bam
         logger.info(f"smftools barcode extraction complete: {barcoded_bam}")
     ########################################################################################################################
 
@@ -784,7 +855,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     if getattr(cfg, "use_umi", False):
         default_tags.extend(["U1", "U2", "RX"])
     # Add barcode tags if smftools barcode extraction was used
-    if getattr(cfg, "demux_backend", "smftools").lower() == "smftools" and cfg.barcode_kit:
+    if demux_backend == "smftools" and cfg.barcode_kit:
         default_tags.extend(["BC", "BM", "B1", "B2", "BE", "BF"])
     bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
 
@@ -801,7 +872,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     # Derive demux_type from BM tag when using smftools backend
     if (
-        getattr(cfg, "demux_backend", "smftools").lower() == "smftools"
+        demux_backend == "smftools"
         and cfg.barcode_kit
         and not cfg.input_already_demuxed
     ):

@@ -38,13 +38,13 @@ def canoncall(
         "basecaller",
         "--models-directory",
         model_dir,
-        "--kit-name",
-        barcode_kit,
         "--device",
         device,
         "--batchsize",
         "0",
     ]
+    if barcode_kit:
+        command += ["--kit-name", barcode_kit]
     if barcode_both_ends:
         command.append("--barcode-both-ends")
     if not trim:
@@ -95,10 +95,10 @@ def modcall(
         "basecaller",
         "--models-directory",
         model_dir,
-        "--kit-name",
-        barcode_kit,
         "--modified-bases",
     ]
+    if barcode_kit:
+        command += ["--kit-name", barcode_kit]
     command += mod_list
     command += ["--device", device, "--batchsize", "0"]
     if barcode_both_ends:

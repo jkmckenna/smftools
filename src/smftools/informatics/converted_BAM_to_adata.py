@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import re
 import shutil
 import time
 import traceback
@@ -112,6 +113,14 @@ SEQUENCE_ENCODING_CONFIG = SequenceEncodingConfig(
     bases=MODKIT_EXTRACT_SEQUENCE_BASES,
     padding_base=MODKIT_EXTRACT_SEQUENCE_PADDING_BASE,
 )
+
+
+def _barcode_label_from_sample_name(sample_name: str) -> str:
+    """Extract a stable barcode label from a sample name."""
+    match = re.search(r"barcode([0-9A-Za-z\-]+)", sample_name, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return sample_name
 
 
 def converted_BAM_to_adata(
@@ -755,12 +764,8 @@ def process_single_bam(
         adata.obs_names = bin_df.index.astype(str)
         adata.var_names = bin_df.columns.astype(str)
         adata.obs[SAMPLE] = [sample] * len(adata)
-        try:
-            barcode = sample.split("barcode")[1]
-        except Exception:
-            barcode = np.nan
-        adata.obs[BARCODE] = [int(barcode)] * len(adata)
-        adata.obs[BARCODE] = adata.obs[BARCODE].astype(str)
+        barcode_label = _barcode_label_from_sample_name(sample)
+        adata.obs[BARCODE] = [barcode_label] * len(adata)
         adata.obs[REFERENCE] = [chromosome] * len(adata)
         adata.obs[STRAND] = [strand] * len(adata)
         adata.obs[DATASET] = [mod_type] * len(adata)
