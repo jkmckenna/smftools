@@ -352,12 +352,10 @@ hmm_merge_layer_features:
   - ["all_accessible_features", 60]
 clustermap_cmap_hmm: "coolwarm"
 hmm_clustermap_feature_layers:
-  - all_accessible_features_merged
   - nucleosome_depleted_region_merged
   - small_bound_stretch
   - medium_bound_stretch
   - putative_nucleosome
-  - all_footprint_features
 hmm_clustermap_length_layers:
   - all_accessible_features_merged
   - all_footprint_features

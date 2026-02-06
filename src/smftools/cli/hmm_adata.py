@@ -586,7 +586,7 @@ def hmm_adata(config_path: str):
     #   - in-memory spatial_ad from wrapper call
     #   - saved spatial / pp_dedup / pp / raw on disk
     if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply):
-        logger.debug(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
+        logger.info(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
         return None
 
     if paths.hmm.exists():
@@ -653,6 +653,7 @@ def hmm_adata_core(
 
     from ..hmm import call_hmm_peaks
     from ..metadata import record_smftools_metadata
+    from ..preprocessing import load_sample_sheet, invert_adata, reindex_references_adata
     from ..plotting import (
         combined_hmm_length_clustermap,
         combined_hmm_raw_clustermap,
@@ -684,6 +685,35 @@ def hmm_adata_core(
         log_file = None
 
     setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
+
+
+    # -----------------------------
+    # Optional sample sheet metadata
+    # -----------------------------
+    if getattr(cfg, "sample_sheet_path", None):
+        load_sample_sheet(
+            adata,
+            cfg.sample_sheet_path,
+            mapping_key_column=cfg.sample_sheet_mapping_column,
+            as_category=True,
+            force_reload=cfg.force_reload_sample_sheet,
+        )
+
+    # -----------------------------
+    # Optional inversion along positions axis
+    # -----------------------------
+    if getattr(cfg, "invert_adata", False):
+        adata = invert_adata(adata)
+
+    # -----------------------------
+    # Optional reindexing by reference
+    # -----------------------------
+    reindex_references_adata(
+        adata,
+        reference_col=cfg.reference_column,
+        offsets=cfg.reindexing_offsets,
+        new_col=cfg.reindexed_var_suffix,
+    )
 
     # ---------------------------- HMM annotate stage ----------------------------
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):
