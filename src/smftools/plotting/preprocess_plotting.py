@@ -175,9 +175,18 @@ def plot_read_span_quality_clustermaps(
             if quality_matrix.size == 0:
                 continue
 
-            quality_filled = _fill_nan_with_col_means(quality_matrix)
-            linkage = sch.linkage(quality_filled, method="ward")
-            order = sch.leaves_list(linkage)
+            if quality_matrix.shape[0] < 2:
+                logger.debug(
+                    "Skipping hierarchical clustering for %s/%s: only %d read(s).",
+                    sample,
+                    ref,
+                    quality_matrix.shape[0],
+                )
+                order = np.arange(quality_matrix.shape[0])
+            else:
+                quality_filled = _fill_nan_with_col_means(quality_matrix)
+                linkage = sch.linkage(quality_filled, method="ward")
+                order = sch.leaves_list(linkage)
 
             quality_matrix = quality_matrix[order]
             read_span_matrix = read_span_matrix[order]

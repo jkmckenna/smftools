@@ -565,45 +565,48 @@ def preprocess_adata_core(
             "read_span_mask and base quality layers not found; skipping read span/base quality clustermaps."
         )
     else:
-        pp_span_quality_dir = preprocess_directory / "06_read_span_and_quality_clustermaps"
-        if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
-            logger.debug(
-                f"{pp_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
-            )
-        else:
-            make_dirs([pp_span_quality_dir])
-            plot_read_span_quality_clustermaps(
-                adata,
-                sample_col=cfg.sample_name_col_for_plotting,
-                reference_col=cfg.reference_column,
-                quality_layer=quality_layer,
-                read_span_layer=READ_SPAN_MASK,
-                demux_types=cfg.clustermap_demux_types_to_plot,
-                save_path=pp_span_quality_dir,
-                show_position_axis=True,
-                max_nan_fraction=0.5,
-            )
 
-        pp_dedup_span_quality_dir = (
-            preprocess_directory / "deduplicated" / "06_read_span_and_quality_clustermaps"
-        )
-        if pp_dedup_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
-            logger.debug(
-                f"{pp_dedup_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
+        if getattr(cfg, "preprocessed_plot_read_span_quality_clustermaps", False):
+            pp_span_quality_dir = preprocess_directory / "06_read_span_and_quality_clustermaps"
+            if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
+                logger.debug(
+                    f"{pp_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
+                )
+            else:
+                make_dirs([pp_span_quality_dir])
+                plot_read_span_quality_clustermaps(
+                    adata,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    quality_layer=quality_layer,
+                    read_span_layer=READ_SPAN_MASK,
+                    demux_types=cfg.clustermap_demux_types_to_plot,
+                    save_path=pp_span_quality_dir,
+                    show_position_axis=True,
+                    max_nan_fraction=0.5,
+                )
+
+        if getattr(cfg, "preprocessed_dedup_plot_read_span_quality_clustermaps", True):
+            pp_dedup_span_quality_dir = (
+                preprocess_directory / "deduplicated" / "06_read_span_and_quality_clustermaps"
             )
-        elif quality_layer in adata_unique.layers and READ_SPAN_MASK in adata_unique.layers:
-            make_dirs([pp_dedup_span_quality_dir])
-            plot_read_span_quality_clustermaps(
-                adata_unique,
-                sample_col=cfg.sample_name_col_for_plotting,
-                reference_col=cfg.reference_column,
-                quality_layer=quality_layer,
-                read_span_layer=READ_SPAN_MASK,
-                demux_types=cfg.clustermap_demux_types_to_plot,
-                save_path=pp_dedup_span_quality_dir,
-                show_position_axis=True,
-                max_nan_fraction=0.5,
-            )
+            if pp_dedup_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
+                logger.debug(
+                    f"{pp_dedup_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
+                )
+            elif quality_layer in adata_unique.layers and READ_SPAN_MASK in adata_unique.layers:
+                make_dirs([pp_dedup_span_quality_dir])
+                plot_read_span_quality_clustermaps(
+                    adata_unique,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    quality_layer=quality_layer,
+                    read_span_layer=READ_SPAN_MASK,
+                    demux_types=cfg.clustermap_demux_types_to_plot,
+                    save_path=pp_dedup_span_quality_dir,
+                    show_position_axis=True,
+                    max_nan_fraction=0.5,
+                )
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:

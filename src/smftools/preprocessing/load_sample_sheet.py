@@ -55,6 +55,13 @@ def load_sample_sheet(
     logger.info("Appending metadata columns: %s", value_columns)
     df = df.set_index(mapping_key_column)
 
+    match_count = int(key_series.isin(df.index).sum())
+    if match_count == 0:
+        raise ValueError(
+            "Sample sheet mapping failed: no keys from adata matched column "
+            f"'{mapping_key_column}' in {sample_sheet_path}."
+        )
+
     for col in value_columns:
         mapped = key_series.map(df[col])
         if as_category:
