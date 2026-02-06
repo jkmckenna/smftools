@@ -37,6 +37,18 @@ _private_barcode_kit_aliases: Dict[str, str] = {
     "SQK-NBD114.96": str(
         Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-NBD114-96.yaml"
     ),
+    "SQK-RBK114-24": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-RBK114-24.yaml"
+    ),
+    "SQK-RBK114.24": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-RBK114-24.yaml"
+    ),
+    "SQK-RBK114-96": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-RBK114-96.yaml"
+    ),
+    "SQK-RBK114.96": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-RBK114-96.yaml"
+    ),
 }
 BARCODE_KIT_ALIASES: Final[Mapping[str, str]] = _deep_freeze(_private_barcode_kit_aliases)
 

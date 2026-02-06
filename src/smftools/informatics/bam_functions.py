@@ -3207,7 +3207,9 @@ def split_and_index_BAM(
             Splits an input BAM file on barcode value and makes a BAM index file.
     """
     logger.debug("Demultiplexing and indexing BAMS based on BC tag using split_and_index_BAM")
-    aligned_sorted_output = aligned_sorted_BAM + bam_suffix
+    aligned_sorted_BAM = Path(aligned_sorted_BAM)
+    split_dir = Path(split_dir)
+    aligned_sorted_output = aligned_sorted_BAM.with_suffix(bam_suffix)
     file_prefix = date_string()
     separate_bam_by_bc(
         aligned_sorted_output,
