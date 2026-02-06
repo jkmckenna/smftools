@@ -740,7 +740,8 @@ class ExperimentConfig:
     umi_ends: Optional[str] = None
     umi_flank_mode: Optional[str] = None
     umi_amplicon_max_edits: Optional[int] = None
-    umi_yaml: Optional[str] = None  # Path to UMI YAML config file
+    umi_kit: Optional[str] = None  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yaml
+    umi_yaml: Optional[str] = None  # Path to UMI YAML config file (when umi_kit is "custom")
     # General basecalling params
     filter_threshold: float = 0.8
     # Modified basecalling specific params
@@ -1312,6 +1313,9 @@ class ExperimentConfig:
         if "umi_amplicon_max_edits" in merged:
             val = _parse_numeric(merged.get("umi_amplicon_max_edits", None), None)
             merged["umi_amplicon_max_edits"] = None if val is None else int(val)
+        if "umi_kit" in merged:
+            val = merged.get("umi_kit")
+            merged["umi_kit"] = None if val is None or str(val).strip().lower() in ("", "null", "none") else str(val).strip()
         if "umi_yaml" in merged:
             val = merged.get("umi_yaml")
             merged["umi_yaml"] = None if val is None or str(val).strip().lower() in ("", "null", "none") else str(val)
@@ -1449,6 +1453,7 @@ class ExperimentConfig:
             umi_ends=merged.get("umi_ends", None),
             umi_flank_mode=merged.get("umi_flank_mode", None),
             umi_amplicon_max_edits=merged.get("umi_amplicon_max_edits", None),
+            umi_kit=merged.get("umi_kit", None),
             umi_yaml=merged.get("umi_yaml", None),
             input_already_demuxed=merged.get("input_already_demuxed", False),
             threads=merged.get("threads"),

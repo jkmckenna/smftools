@@ -40,6 +40,16 @@ _private_barcode_kit_aliases: Dict[str, str] = {
 }
 BARCODE_KIT_ALIASES: Final[Mapping[str, str]] = _deep_freeze(_private_barcode_kit_aliases)
 
+# UMI kit aliases for smftools UMI extraction
+# Maps kit alias names to paths of UMI YAML config files
+# Users can add custom aliases here or use "custom" with umi_yaml path
+_private_umi_kit_aliases: Dict[str, str] = {
+    "dual-nextera-12": str(
+        Path(__file__).resolve().parent / "config" / "umis" / "dual-nextera-12.yaml"
+    ),
+}
+UMI_KIT_ALIASES: Final[Mapping[str, str]] = _deep_freeze(_private_umi_kit_aliases)
+
 REF_COL: Final[str] = "Reference_strand"
 SAMPLE_COL: Final[str] = "Experiment_name_and_barcode"
 SAMPLE: Final[str] = "Sample"

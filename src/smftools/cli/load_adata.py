@@ -7,7 +7,7 @@ from typing import Iterable, Union
 
 import numpy as np
 
-from smftools.constants import BARCODE_KIT_ALIASES, LOAD_DIR, LOGGING_DIR
+from smftools.constants import BARCODE_KIT_ALIASES, LOAD_DIR, LOGGING_DIR, UMI_KIT_ALIASES
 from smftools.logging_utils import get_logger, setup_logging
 
 from .helpers import AdataPaths
@@ -513,9 +513,20 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     if getattr(cfg, "use_umi", False):
         logger.info("Annotating UMIs in aligned and sorted BAM before demultiplexing")
 
-        # Load UMI config from YAML if specified
+        # Resolve UMI kit alias or custom YAML path
         umi_kit_config = None
+        umi_kit = getattr(cfg, "umi_kit", None)
         umi_yaml_path = getattr(cfg, "umi_yaml", None)
+        if umi_kit and umi_kit != "custom":
+            if umi_kit not in UMI_KIT_ALIASES:
+                raise ValueError(
+                    f"Unknown umi_kit '{umi_kit}'. "
+                    f"Available aliases: {list(UMI_KIT_ALIASES.keys())} or use 'custom' with umi_yaml."
+                )
+            umi_yaml_path = UMI_KIT_ALIASES[umi_kit]
+            logger.info(f"Using UMI kit alias '{umi_kit}' -> {umi_yaml_path}")
+        elif umi_kit == "custom" and not umi_yaml_path:
+            raise ValueError("umi_kit='custom' requires umi_yaml path to be specified.")
         if umi_yaml_path:
             logger.info(f"Loading UMI config from YAML: {umi_yaml_path}")
             umi_kit_config = load_umi_config_from_yaml(umi_yaml_path)

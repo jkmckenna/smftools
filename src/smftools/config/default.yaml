@@ -113,7 +113,8 @@ barcode_amplicon_max_edits: null  # Max edits for amplicon_side validation; null
 umi_ends: null  # both | left_only | right_only - null defers to YAML/default
 umi_flank_mode: null  # adapter_only | amplicon_only | both - null defers to YAML/default
 umi_amplicon_max_edits: null
-umi_yaml: null  # Path to UMI YAML config file
+umi_kit: null  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yaml
+umi_yaml: null  # Path to UMI YAML config file (when umi_kit: custom)
 
 # Anndata structure
 mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
