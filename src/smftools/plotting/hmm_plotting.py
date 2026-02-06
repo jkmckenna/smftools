@@ -197,8 +197,8 @@ def plot_hmm_size_contours(
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     feature_ranges: Optional[Sequence[Tuple[int, int, str]]] = None,
-    zero_color: str = "#f5f1e8",
-    nan_color: str = "#E6E6E6",
+    zero_color: str = "#eee6d9",
+    nan_color: str = "#D0D0D0",
     # ---------------- smoothing params ----------------
     smoothing_sigma: Optional[Union[float, Tuple[float, float]]] = None,
     normalize_after_smoothing: bool = True,
@@ -561,8 +561,8 @@ def _resolve_feature_color(cmap: Any) -> Tuple[float, float, float, float]:
 def _build_hmm_feature_cmap(
     cmap: Any,
     *,
-    zero_color: str = "#f5f1e8",
-    nan_color: str = "#E6E6E6",
+    zero_color: str = "#eee6d9",
+    nan_color: str = "#D0D0D0",
 ) -> mpl_colors.Colormap:
     """Build a two-color HMM colormap with explicit NaN/under handling."""
     feature_color = _resolve_feature_color(cmap)
@@ -592,8 +592,8 @@ def _map_length_matrix_to_subclasses(
 def _build_length_feature_cmap(
     feature_ranges: Sequence[Tuple[int, int, Any]],
     *,
-    zero_color: str = "#f5f1e8",
-    nan_color: str = "#E6E6E6",
+    zero_color: str = "#eee6d9",
+    nan_color: str = "#D0D0D0",
 ) -> Tuple[mpl_colors.Colormap, mpl_colors.BoundaryNorm]:
     """Build a discrete colormap and norm for length-based subclasses."""
     color_list = [zero_color] + [color for _, _, color in feature_ranges]

@@ -13,7 +13,13 @@ from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
 
 # FIX: import _to_dense_np to avoid NameError
-from ..hmm.HMM import _safe_int_coords, _to_dense_np, create_hmm, normalize_hmm_feature_sets
+from ..hmm.HMM import (
+    _safe_int_coords,
+    _to_dense_np,
+    create_hmm,
+    mask_layers_outside_read_span,
+    normalize_hmm_feature_sets,
+)
 
 logger = get_logger(__name__)
 
@@ -817,11 +823,12 @@ def hmm_adata_core(
                                         suffix=merged_suffix,
                                         overwrite=True,
                                     )
+                                    masked_layers = [merged_base, f"{merged_base}_lengths"]
                                     # write merged size classes based on whichever group core_layer corresponds to
                                     for group, fs in feature_sets_access.items():
                                         fmap = fs.get("features", {}) or {}
                                         if fmap:
-                                            hmm.write_size_class_layers_from_binary(
+                                            created = hmm.write_size_class_layers_from_binary(
                                                 subset,
                                                 merged_base,
                                                 out_prefix=str(mb),
@@ -829,6 +836,12 @@ def hmm_adata_core(
                                                 suffix=merged_suffix,
                                                 overwrite=True,
                                             )
+                                            masked_layers.extend(created)
+                                    mask_layers_outside_read_span(
+                                        subset,
+                                        masked_layers,
+                                        use_original_var_names=True,
+                                    )
 
                     # =========================
                     # 2) Multi-channel accessibility (Combined)
@@ -902,10 +915,11 @@ def hmm_adata_core(
                                             suffix=merged_suffix,
                                             overwrite=True,
                                         )
+                                        masked_layers = [merged_base, f"{merged_base}_lengths"]
                                         for group, fs in feature_sets_access.items():
                                             fmap = fs.get("features", {}) or {}
                                             if fmap:
-                                                hmmc.write_size_class_layers_from_binary(
+                                                created = hmmc.write_size_class_layers_from_binary(
                                                     subset,
                                                     merged_base,
                                                     out_prefix="Combined",
@@ -913,6 +927,12 @@ def hmm_adata_core(
                                                     suffix=merged_suffix,
                                                     overwrite=True,
                                                 )
+                                                masked_layers.extend(created)
+                                        mask_layers_outside_read_span(
+                                            subset,
+                                            masked_layers,
+                                            use_original_var_names=True,
+                                        )
 
                     # =========================
                     # 3) CpG-only single-channel task
