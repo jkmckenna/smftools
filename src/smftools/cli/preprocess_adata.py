@@ -349,7 +349,7 @@ def preprocess_adata_core(
     calculate_coverage(
         adata,
         ref_column=cfg.reference_column,
-        position_nan_threshold=cfg.position_max_nan_threshold,
+        position_nan_threshold=1-cfg.position_max_nan_threshold,
         smf_modality=smf_modality,
         target_layer=cfg.output_binary_layer_name,
     )
@@ -448,7 +448,7 @@ def preprocess_adata_core(
     calculate_coverage(
         adata,
         ref_column=cfg.reference_column,
-        position_nan_threshold=cfg.position_max_nan_threshold,
+        position_nan_threshold=1-cfg.position_max_nan_threshold,
         smf_modality=smf_modality,
         target_layer=cfg.output_binary_layer_name,
         force_redo=True,
