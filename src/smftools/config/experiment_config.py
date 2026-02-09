@@ -736,6 +736,8 @@ class ExperimentConfig:
     barcode_ends: Optional[str] = None  # both | left_only | right_only
     barcode_flank_mode: Optional[str] = None  # adapter_only | amplicon_only | both
     barcode_amplicon_max_edits: Optional[int] = None
+    barcode_amplicon_gap_tolerance: Optional[int] = None
+    same_orientation: Optional[bool] = None
     # UMI flanking configuration
     umi_ends: Optional[str] = None
     umi_flank_mode: Optional[str] = None
@@ -1296,6 +1298,15 @@ class ExperimentConfig:
         if "barcode_amplicon_max_edits" in merged:
             val = _parse_numeric(merged.get("barcode_amplicon_max_edits", None), None)
             merged["barcode_amplicon_max_edits"] = None if val is None else int(val)
+        if "barcode_amplicon_gap_tolerance" in merged:
+            val = _parse_numeric(merged.get("barcode_amplicon_gap_tolerance", None), None)
+            merged["barcode_amplicon_gap_tolerance"] = None if val is None else int(val)
+        if "same_orientation" in merged:
+            val = merged.get("same_orientation")
+            if val is None or str(val).strip().lower() in ("", "none", "null"):
+                merged["same_orientation"] = None
+            else:
+                merged["same_orientation"] = _parse_bool(val)
 
         # UMI flanking config parsing
         if "umi_ends" in merged:
@@ -1450,6 +1461,8 @@ class ExperimentConfig:
             barcode_ends=merged.get("barcode_ends", None),
             barcode_flank_mode=merged.get("barcode_flank_mode", None),
             barcode_amplicon_max_edits=merged.get("barcode_amplicon_max_edits", None),
+            barcode_amplicon_gap_tolerance=merged.get("barcode_amplicon_gap_tolerance", None),
+            same_orientation=merged.get("same_orientation", None),
             umi_ends=merged.get("umi_ends", None),
             umi_flank_mode=merged.get("umi_flank_mode", None),
             umi_amplicon_max_edits=merged.get("umi_amplicon_max_edits", None),

@@ -545,6 +545,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             umi_ends=resolved_umi["umi_ends"],
             umi_flank_mode=resolved_umi["umi_flank_mode"],
             umi_amplicon_max_edits=resolved_umi["umi_amplicon_max_edits"],
+            same_orientation=resolved_umi.get("same_orientation", False),
         )
     ########################################################################################################################
 
@@ -608,6 +609,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             barcode_ends=resolved_bc["barcode_ends"],
             barcode_flank_mode=resolved_bc["barcode_flank_mode"],
             barcode_amplicon_max_edits=resolved_bc["barcode_amplicon_max_edits"],
+            barcode_amplicon_gap_tolerance=resolved_bc["barcode_amplicon_gap_tolerance"],
+            same_orientation=resolved_bc["same_orientation"],
         )
         # Update aligned_sorted_output to point to the barcoded BAM
         aligned_sorted_output = barcoded_bam

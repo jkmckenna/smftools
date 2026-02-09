@@ -85,7 +85,6 @@ docs = [
 ]
 
 cluster = [
-    "fastcluster",
     "igraph",
     "leidenalg",
 ]
@@ -150,7 +149,6 @@ torch = [
 
 all = [
     # cluster
-    "fastcluster",
     "igraph",
     "leidenalg",
 

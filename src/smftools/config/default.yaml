@@ -21,7 +21,7 @@ input_already_demuxed: False # If the input files are already demultiplexed.
 
 delete_intermediate_hdfs: True # Whether to delete the intermediate hdfs from the conversion/deamination workflows.
 delete_intermediate_bams: False # Whether to delete intermediate BAM files.
-delete_intermediate_tsvs: True # Whether to delete intermediate TSV files.
+delete_intermediate_tsvs: False # Whether to delete intermediate TSV files.
 
 # Sequencing modality and general experiment params
 smf_modality: 'conversion' # conversion, deaminase, direct
@@ -108,6 +108,8 @@ barcode_min_score: null # Optional minimum score threshold for barcode assignmen
 barcode_ends: null  # both | left_only | right_only - null defers to YAML/default
 barcode_flank_mode: null  # adapter_only | amplicon_only | both - null defers to YAML/default
 barcode_amplicon_max_edits: null  # Max edits for amplicon_side validation; null defers to YAML/default
+barcode_amplicon_gap_tolerance: 5  # Allowed gap/overlap (bp) between amplicon and barcode; null defers to YAML/default
+same_orientation: null  # Whether barcode construct has same orientation at both read ends; null defers to YAML/default
 
 # UMI flanking configuration
 umi_ends: null  # both | left_only | right_only - null defers to YAML/default

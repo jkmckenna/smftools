@@ -3,10 +3,11 @@ flanking:
   adapter_side: AAGGTTAA
   amplicon_side: CAGCACCT
 barcode_ends: both
-barcode_flank_mode: both
+barcode_flank_mode: either
 barcode_max_edit_distance: 5
 barcode_adapter_max_edits: 2
 barcode_amplicon_max_edits: 2
+same_orientation: false
 barcodes:
   NB01: CACAAAGACACCGACAACTTTCTT
   NB02: ACAGACGACTACAAACGGAATCGA

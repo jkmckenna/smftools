@@ -10,7 +10,6 @@ seaborn>=0.11
 tqdm
 
 # Graph / clustering
-fastcluster
 igraph
 leidenalg
 networkx>=3.2

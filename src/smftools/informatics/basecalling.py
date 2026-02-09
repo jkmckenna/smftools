@@ -10,7 +10,7 @@ def canoncall(
     barcode_kit,
     bam,
     bam_suffix,
-    barcode_both_ends=True,
+    barcode_both_ends=False,
     trim=False,
     device="auto",
 ):
@@ -21,7 +21,7 @@ def canoncall(
         model_dir (str): a string representing the file path to the dorado basecalling model directory.
         model (str): a string representing the the dorado basecalling model.
         pod5_dir (str): a string representing the file path to the experiment directory containing the POD5 files.
-        barcode_kit (str): A string reppresenting the barcoding kit used in the experiment.
+        barcode_kit (str): A string reppresenting the barcoding kit used in the experiment. Needed for demultiplexing
         bam (str): File path to the BAM file to output.
         bam_suffix (str): The suffix to use for the BAM file.
         barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
@@ -64,7 +64,7 @@ def modcall(
     mod_list,
     bam,
     bam_suffix,
-    barcode_both_ends=True,
+    barcode_both_ends=False,
     trim=False,
     device="auto",
 ):

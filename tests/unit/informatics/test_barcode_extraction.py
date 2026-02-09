@@ -14,6 +14,7 @@ from smftools.informatics.bam_functions import (
     _extract_sequence_with_flanking,
     _parse_flanking_config_from_dict,
     _parse_per_end_flanking,
+    _reverse_complement,
     load_umi_config_from_yaml,
     resolve_barcode_config,
     resolve_umi_config,
@@ -598,6 +599,67 @@ class TestExtractSequenceWithFlanking:
         )
         assert bc is None
 
+    def test_amplicon_only_same_orientation_from_end(self):
+        """With same_orientation=True, barcode is BEFORE amplicon even from end."""
+        # Layout at end of read: ...NNNNNNNN + BARCODE + AMPLICON
+        # Without same_orientation, amplicon_only from end would look for barcode AFTER amplicon.
+        # With same_orientation, it should still extract barcode BEFORE amplicon.
+        read = "NNNNNNNNCCCCGGGGCAGCACCT"
+        flanking = FlankingConfig(amplicon_side="CAGCACCT")
+        bc, start, end = _extract_sequence_with_flanking(
+            read_sequence=read,
+            target_length=8,
+            search_window=50,
+            search_from_start=False,
+            flanking=flanking,
+            flank_mode="amplicon_only",
+            adapter_matcher="exact",
+            same_orientation=True,
+        )
+        # Amplicon at position 16-24 (CAGCACCT). Barcode 8 bases before: 8-16 (CCCCGGGG)
+        assert bc == "CCCCGGGG"
+        assert start == 8
+        assert end == 16
+
+    def test_amplicon_only_default_orientation_from_end(self):
+        """Default (same_orientation=False) preserves old behavior: barcode AFTER amplicon from end."""
+        # Layout: ...AMPLICON + BARCODE at end
+        read = "NNNNNNNNCAGCACCTGGGG"
+        flanking = FlankingConfig(amplicon_side="CAGCACCT")
+        bc, start, end = _extract_sequence_with_flanking(
+            read_sequence=read,
+            target_length=4,
+            search_window=50,
+            search_from_start=False,
+            flanking=flanking,
+            flank_mode="amplicon_only",
+            adapter_matcher="exact",
+            same_orientation=False,
+        )
+        assert bc == "GGGG"
+        assert start == 16
+        assert end == 20
+
+    def test_adapter_only_same_orientation_from_end(self):
+        """With same_orientation=True, adapter_only from end still extracts barcode AFTER adapter."""
+        # Layout at end of read: ...NNNNNNNN + ADAPTER + BARCODE
+        read = "NNNNNNNNAAGGTTAACCCC"
+        flanking = FlankingConfig(adapter_side="AAGGTTAA")
+        bc, start, end = _extract_sequence_with_flanking(
+            read_sequence=read,
+            target_length=4,
+            search_window=50,
+            search_from_start=False,
+            flanking=flanking,
+            flank_mode="adapter_only",
+            adapter_matcher="exact",
+            same_orientation=True,
+        )
+        # Adapter at 8-16 (AAGGTTAA). Barcode 4 bases after: 16-20 (CCCC)
+        assert bc == "CCCC"
+        assert start == 16
+        assert end == 20
+
 
 class TestLoadBarcodeYamlNewFormat:
     """Tests for loading barcode references from new YAML format."""
@@ -693,6 +755,39 @@ class TestLoadBarcodeYamlNewFormat:
         result = bam_functions.load_barcode_references_from_yaml(yaml_file)
         assert isinstance(result, BarcodeKitConfig)
         assert result.barcodes == {"BC01": "AAAACCCC", "BC02": "GGGGTTTT"}
+
+    def test_same_orientation_from_yaml(self, tmp_path):
+        """Parse same_orientation: true from YAML."""
+        yaml_file = tmp_path / "barcodes.yaml"
+        yaml_file.write_text(
+            "flanking:\n"
+            "  adapter_side: ACGT\n"
+            "  amplicon_side: TTTT\n"
+            "barcode_ends: both\n"
+            "barcode_flank_mode: either\n"
+            "same_orientation: true\n"
+            "barcodes:\n"
+            "  BC01: AAAACCCC\n"
+        )
+        result = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        assert isinstance(result, BarcodeKitConfig)
+        assert result.same_orientation is True
+        assert result.flanking.same_orientation is True
+
+    def test_same_orientation_defaults_false(self, tmp_path):
+        """Absent same_orientation key defaults to False."""
+        yaml_file = tmp_path / "barcodes.yaml"
+        yaml_file.write_text(
+            "flanking:\n"
+            "  adapter_side: ACGT\n"
+            "barcode_ends: both\n"
+            "barcodes:\n"
+            "  BC01: AAAACCCC\n"
+        )
+        result = bam_functions.load_barcode_references_from_yaml(yaml_file)
+        assert isinstance(result, BarcodeKitConfig)
+        assert result.same_orientation is False
+        assert result.flanking.same_orientation is False
 
 
 class TestLoadUmiConfigFromYaml:
@@ -806,6 +901,47 @@ class TestConfigResolution:
         resolved = resolve_umi_config(None, FakeCfg())
         assert resolved["umi_ends"] == "both"
         assert resolved["umi_flank_mode"] == "adapter_only"
+
+    def test_same_orientation_resolved(self):
+        """same_orientation is included in resolved config."""
+        kit = BarcodeKitConfig(
+            barcodes={"BC01": "ACGT"},
+            barcode_length=4,
+            same_orientation=True,
+        )
+
+        class FakeCfg:
+            pass
+
+        resolved = resolve_barcode_config(kit, FakeCfg())
+        assert resolved["same_orientation"] is True
+
+    def test_same_orientation_defaults_false_in_resolution(self):
+        """same_orientation defaults to False when not set."""
+        kit = BarcodeKitConfig(
+            barcodes={"BC01": "ACGT"},
+            barcode_length=4,
+        )
+
+        class FakeCfg:
+            pass
+
+        resolved = resolve_barcode_config(kit, FakeCfg())
+        assert resolved["same_orientation"] is False
+
+    def test_same_orientation_config_overrides_yaml(self):
+        """Experiment config same_orientation takes precedence over YAML."""
+        kit = BarcodeKitConfig(
+            barcodes={"BC01": "ACGT"},
+            barcode_length=4,
+            same_orientation=False,
+        )
+
+        class FakeCfg:
+            same_orientation = True
+
+        resolved = resolve_barcode_config(kit, FakeCfg())
+        assert resolved["same_orientation"] is True
 
 
 class TestBuildFlankingFromAdapters:
@@ -952,16 +1088,25 @@ class TestExtractAndAssignBarcodesInBam:
     # -- Flanking-based extraction -------------------------------------------
 
     def test_flanking_based_both_ends(self, tmp_path):
-        """Flanking-based extraction with BarcodeKitConfig matches both ends."""
+        """Flanking-based extraction with BarcodeKitConfig matches both ends.
+
+        YAML stores forward-strand sequences. For a forward read:
+        - Left end (read start): adapter + barcode + ...
+        - Right end (read end):  ... + RC(barcode) + RC(adapter)
+        """
+        adapter = "ATCG"
+        rc_adapter = _reverse_complement(adapter)  # CGAT
+        rc_bc = _reverse_complement("AAAA")        # TTTT
         kit = BarcodeKitConfig(
             barcodes=self.BC_REFS,
             barcode_length=4,
             flanking=PerEndFlankingConfig(
-                left_ref_end=FlankingConfig(adapter_side="ACGT"),
-                right_ref_end=FlankingConfig(adapter_side="TGCA"),
+                left_ref_end=FlankingConfig(adapter_side=adapter),
+                right_ref_end=FlankingConfig(adapter_side=adapter),
             ),
         )
-        reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNAAAATGCA"}]
+        # Left: ATCG + AAAA + ... Right: ... + TTTT + CGAT
+        reads = [{"name": "r1", "sequence": f"ATCGAAAANNNNNNNN{rc_bc}{rc_adapter}"}]
         tags = self._run(
             tmp_path, reads,
             barcode_kit_config=kit,
@@ -973,17 +1118,99 @@ class TestExtractAndAssignBarcodesInBam:
     # -- Strand handling ------------------------------------------------------
 
     def test_reverse_strand_flips_ends(self, tmp_path):
-        """Reverse read: left ref → read end, right ref → read start."""
-        # For a reverse read, right adapter should be at READ start,
-        # left adapter at READ end.
-        # TGCA(0-3) GGGG(4-7) NNNNNNNN(8-15) GGGG(16-19) ACGT(20-23)
-        reads = [{"name": "r1", "sequence": "TGCAGGGGNNNNNNNNGGGGACGT",
+        """Reverse read: left ref → read end, right ref → read start.
+
+        Barcodes appear in RC orientation in the read.  After extraction the
+        code RC's them back to forward orientation before matching.
+        """
+        # For a reverse read, right adapter (TGCA) appears as RC(TGCA)=TGCA
+        # at READ start and left adapter (ACGT) as RC(ACGT)=ACGT at READ end.
+        # Barcodes appear as RC(GGGG)=CCCC in the read.
+        # RC(TGCA)(0-3) RC(GGGG)(4-7) NNNNNNNN(8-15) RC(GGGG)(16-19) RC(ACGT)(20-23)
+        reads = [{"name": "r1", "sequence": "TGCACCCCNNNNNNNNCCCCACGT",
                   "is_reverse": True}]
         tags = self._run(tmp_path, reads)
         assert tags["r1"]["BC"] == "BC03"
         assert tags["r1"]["BM"] == "both"
         assert tags["r1"]["B1"] == "BC03"
         assert tags["r1"]["B2"] == "BC03"
+
+    def test_reverse_strand_non_palindromic_adapters(self, tmp_path):
+        """Reverse read with non-palindromic adapters verifies RC handling."""
+        # Adapters: left=ATCG (RC=CGAT), right=GCTA (RC=TAGC)
+        # BC01 = AAAA, RC(AAAA) = TTTT
+        # Reverse read layout:
+        #   read start: RC(right adapter)=TAGC + RC(BC01)=TTTT
+        #   read end:   RC(BC01)=TTTT + RC(left adapter)=CGAT
+        reads = [{"name": "r1", "sequence": "TAGCTTTTNNNNNNNNTTTTCGAT",
+                  "is_reverse": True}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_adapters=["ATCG", "GCTA"],
+        )
+        assert tags["r1"]["BC"] == "BC01"
+        assert tags["r1"]["BM"] == "both"
+        assert tags["r1"]["B1"] == "BC01"
+        assert tags["r1"]["B2"] == "BC01"
+
+    # -- "either" flank mode -------------------------------------------------
+
+    def test_either_mode_uses_both_when_available(self, tmp_path):
+        """'either' mode finds both flanks → same as 'both' mode.
+
+        Forward read with RC construct at right end:
+        - Left:  adapter + BC01 + amplicon + ...
+        - Right: ... + RC(amplicon) + RC(BC01) + RC(adapter)
+        """
+        adapter = "ATCG"
+        amplicon = "CCCCCCCC"
+        rc_adapter = _reverse_complement(adapter)    # CGAT
+        rc_amplicon = _reverse_complement(amplicon)   # GGGGGGGG
+        rc_bc = _reverse_complement("AAAA")           # TTTT
+        kit = BarcodeKitConfig(
+            barcodes=self.BC_REFS,
+            barcode_length=4,
+            flanking=PerEndFlankingConfig(
+                left_ref_end=FlankingConfig(adapter_side=adapter, amplicon_side=amplicon),
+                right_ref_end=FlankingConfig(adapter_side=adapter, amplicon_side=amplicon),
+            ),
+        )
+        reads = [{"name": "r1", "sequence": f"{adapter}AAAA{amplicon}NNNN{rc_amplicon}{rc_bc}{rc_adapter}"}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=kit,
+            barcode_flank_mode="either",
+        )
+        assert tags["r1"]["BC"] == "BC01"
+        assert tags["r1"]["BM"] == "both"
+
+    def test_either_mode_falls_back_to_amplicon_only(self, tmp_path):
+        """'either' mode: adapter not found → falls back to amplicon_only.
+
+        Forward read with RC construct at right end:
+        - Left: BC01(AAAA) + amplicon(CGATCGAT) + ...
+        - Right: ... + RC(amplicon)(=ATCGATCG) + RC(BC01)(=TTTT)
+        """
+        amplicon = "CGATCGAT"
+        rc_amplicon = _reverse_complement(amplicon)  # ATCGATCG
+        rc_bc = _reverse_complement("AAAA")          # TTTT
+        kit = BarcodeKitConfig(
+            barcodes=self.BC_REFS,
+            barcode_length=4,
+            flanking=PerEndFlankingConfig(
+                left_ref_end=FlankingConfig(adapter_side="ZZZZ", amplicon_side=amplicon),
+                right_ref_end=FlankingConfig(adapter_side="ZZZZ", amplicon_side=amplicon),
+            ),
+        )
+        reads = [{"name": "r1", "sequence": f"AAAA{amplicon}NNNNNNNN{rc_amplicon}{rc_bc}"}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=kit,
+            barcode_flank_mode="either",
+            barcode_adapter_matcher="exact",
+        )
+        assert tags["r1"]["BC"] == "BC01"
+        assert tags["r1"]["BM"] == "both"
 
     # -- Error handling -------------------------------------------------------
 
@@ -1019,3 +1246,383 @@ class TestExtractAndAssignBarcodesInBam:
         assert tags["left_bc03"]["BM"] == "left_only"
         assert tags["unclassified"]["BC"] == "unclassified"
         assert tags["unclassified"]["BM"] == "unclassified"
+
+    # -- RC / right-ref-end integration ----------------------------------------
+
+    def test_flanking_forward_right_end_rc(self, tmp_path):
+        """Forward read: right ref end has RC'd construct, code RC's flanking to match.
+
+        Kit construct:
+        - Left ref end:  [adapter][barcode][amplicon][reference...]
+        - Right ref end: [...reference][RC(amplicon)][RC(barcode)][RC(adapter)]
+
+        For a forward read:
+        - Left end (read start): adapter + barcode + amplicon + ...
+        - Right end (read end):  ... + RC(amplicon) + RC(barcode) + RC(adapter)
+
+        The code should RC the YAML flanking seqs for the right end, find
+        them in the read, extract the RC'd barcode, and RC it back.
+        """
+        adapter = "ACGT"
+        amplicon = "TTTTTTTT"
+        rc_adapter = _reverse_complement(adapter)    # ACGT → ACGT (palindrome)
+        rc_amplicon = _reverse_complement(amplicon)   # AAAAAAAA
+        kit = BarcodeKitConfig(
+            barcodes=self.BC_REFS,
+            barcode_length=4,
+            flanking=PerEndFlankingConfig(
+                left_ref_end=FlankingConfig(adapter_side=adapter, amplicon_side=amplicon),
+                right_ref_end=FlankingConfig(adapter_side=adapter, amplicon_side=amplicon),
+            ),
+        )
+        # Use non-palindromic barcode BC03=GGGG, RC(GGGG)=CCCC
+        rc_bc = _reverse_complement("GGGG")  # CCCC
+        # Left end:  ACGT + GGGG + TTTTTTTT
+        # Right end: AAAAAAAA + CCCC + ACGT
+        seq = f"ACGTGGGGTTTTTTTTNNNNNNNNAAAAAAAA{rc_bc}ACGT"
+        reads = [{"name": "r1", "sequence": seq}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=kit,
+            barcode_flank_mode="adapter_only",
+            barcode_adapter_matcher="exact",
+        )
+        assert tags["r1"]["BC"] == "BC03"
+        assert tags["r1"]["BM"] == "both"
+        assert tags["r1"]["B1"] == "BC03"
+        assert tags["r1"]["B2"] == "BC03"
+
+    def test_flanking_reverse_strand_both_ends(self, tmp_path):
+        """Reverse read: both ends should find barcode with correct RC logic.
+
+        For a reverse-strand read, pysam gives the reverse-complemented sequence.
+        - Left ref end now appears at READ end: RC(amplicon) + RC(barcode) + RC(adapter)
+        - Right ref end now appears at READ start: adapter + barcode + amplicon
+
+        So: left ref end needs RC (is_reverse=True, ref_side=left → XOR=True)
+            right ref end does NOT need RC (is_reverse=True, ref_side=right → XOR=False)
+        """
+        adapter = "ATCG"
+        amplicon = "CCCCCCCC"
+        rc_adapter = _reverse_complement(adapter)    # CGAT
+        rc_amplicon = _reverse_complement(amplicon)   # GGGGGGGG
+        kit = BarcodeKitConfig(
+            barcodes=self.BC_REFS,
+            barcode_length=4,
+            flanking=PerEndFlankingConfig(
+                left_ref_end=FlankingConfig(adapter_side=adapter, amplicon_side=amplicon),
+                right_ref_end=FlankingConfig(adapter_side=adapter, amplicon_side=amplicon),
+            ),
+        )
+        # BC01=AAAA, RC=TTTT
+        rc_bc = _reverse_complement("AAAA")  # TTTT
+        # Reverse read layout (what pysam returns):
+        # READ start = right ref end (no RC): adapter + barcode + amplicon
+        # READ end = left ref end (RC'd):     RC(amplicon) + RC(barcode) + RC(adapter)
+        seq = f"{adapter}AAAA{amplicon}NNNNNNNN{rc_amplicon}{rc_bc}{rc_adapter}"
+        reads = [{"name": "r1", "sequence": seq, "is_reverse": True}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=kit,
+            barcode_flank_mode="adapter_only",
+            barcode_adapter_matcher="exact",
+        )
+        assert tags["r1"]["BC"] == "BC01"
+        assert tags["r1"]["BM"] == "both"
+        assert tags["r1"]["B1"] == "BC01"
+        assert tags["r1"]["B2"] == "BC01"
+
+
+# ---------------------------------------------------------------------------
+# Tier 2: Realistic RBK114-style RC logic tests
+# ---------------------------------------------------------------------------
+@requires_pysam
+class TestRBK114RealisticRC:
+    """Integration tests using realistic RBK114 kit sequences.
+
+    The RBK114 kit construct:
+    - Left ref end:  [adapter][barcode][amplicon][reference...]
+    - Right ref end: [...reference][RC(amplicon)][RC(barcode)][RC(adapter)]
+
+    YAML stores forward-strand (left ref end) sequences.  The code must
+    RC them when searching the right ref end of a forward read or the
+    left ref end of a reverse read (``needs_rc = is_reverse XOR right``).
+    """
+
+    ADAPTER = "GCTTGGGTGTTTAACC"                                               # 16 bp
+    AMPLICON = "GTTTTCGCATTTATCGTGAAACGCTTTCGCGTTTTTCGTGCGCCGCTTCA"            # 50 bp
+    RC_ADAPTER = _reverse_complement("GCTTGGGTGTTTAACC")                       # GGTTAAACACCCAAGC
+    RC_AMPLICON = _reverse_complement(
+        "GTTTTCGCATTTATCGTGAAACGCTTTCGCGTTTTTCGTGCGCCGCTTCA"
+    )                                                                          # TGAAGCGGCGCAC...
+    FILLER = "N" * 40                                                          # generic reference
+
+    BC_REFS = {
+        "RB01": "AAGAAAGTTGTCGGTGTCTTTGTG",
+        "RB02": "TCGATTCCGTTTGTAGTCGTCTGT",
+        "RB03": "GAGTCTTGTGTCCCAGTTACCAGG",
+    }
+    RC_RB01 = _reverse_complement("AAGAAAGTTGTCGGTGTCTTTGTG")                 # CACAAAGACACCGACAACTTTCTT
+    RC_RB02 = _reverse_complement("TCGATTCCGTTTGTAGTCGTCTGT")
+    BARCODE_LENGTH = 24
+
+    def _run(self, tmp_path, reads, **kwargs):
+        bam = tmp_path / "test.bam"
+        _create_test_bam(bam, reads)
+        defaults = dict(
+            barcode_adapters=[None, None],
+            barcode_references=self.BC_REFS,
+            barcode_length=self.BARCODE_LENGTH,
+            barcode_search_window=200,
+            barcode_max_edit_distance=5,
+            barcode_adapter_matcher="edlib",
+            barcode_adapter_max_edits=2,
+            barcode_amplicon_max_edits=10,
+            samtools_backend="python",
+        )
+        defaults.update(kwargs)
+        bam_functions.extract_and_assign_barcodes_in_bam(bam, **defaults)
+        return _read_bam_tags(bam)
+
+    def _make_kit(self, **overrides):
+        kw = dict(
+            barcodes=self.BC_REFS,
+            barcode_length=self.BARCODE_LENGTH,
+            flanking=PerEndFlankingConfig(
+                left_ref_end=FlankingConfig(
+                    adapter_side=self.ADAPTER,
+                    amplicon_side=self.AMPLICON,
+                ),
+                right_ref_end=FlankingConfig(
+                    adapter_side=self.ADAPTER,
+                    amplicon_side=self.AMPLICON,
+                ),
+            ),
+        )
+        kw.update(overrides)
+        return BarcodeKitConfig(**kw)
+
+    # -- Forward read, both ends -----------------------------------------------
+
+    def test_forward_both_ends(self, tmp_path):
+        """Forward read with full construct at both ends → BM='both'."""
+        left = self.ADAPTER + self.BC_REFS["RB01"] + self.AMPLICON
+        right = self.RC_AMPLICON + self.RC_RB01 + self.RC_ADAPTER
+        seq = left + self.FILLER + right
+        reads = [{"name": "r1", "sequence": seq}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="either",
+        )
+        assert tags["r1"]["BC"] == "RB01"
+        assert tags["r1"]["BM"] == "both"
+        assert tags["r1"]["B1"] == "RB01"
+        assert tags["r1"]["B2"] == "RB01"
+
+    # -- Forward read, right end only ------------------------------------------
+
+    def test_forward_right_end_only(self, tmp_path):
+        """Forward read: only right end has construct → BM='right_only'.
+
+        This is the case dorado caught but pre-fix smftools missed.
+        """
+        right = self.RC_AMPLICON + self.RC_RB01 + self.RC_ADAPTER
+        seq = self.FILLER + right
+        reads = [{"name": "r1", "sequence": seq}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="either",
+        )
+        assert tags["r1"]["BC"] == "RB01"
+        assert tags["r1"]["BM"] == "right_only"
+        assert "B1" not in tags["r1"]
+        assert tags["r1"]["B2"] == "RB01"
+
+    # -- Forward read, left end only -------------------------------------------
+
+    def test_forward_left_end_only(self, tmp_path):
+        """Forward read: only left end has construct → BM='left_only'."""
+        left = self.ADAPTER + self.BC_REFS["RB01"] + self.AMPLICON
+        seq = left + self.FILLER
+        reads = [{"name": "r1", "sequence": seq}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="either",
+        )
+        assert tags["r1"]["BC"] == "RB01"
+        assert tags["r1"]["BM"] == "left_only"
+        assert tags["r1"]["B1"] == "RB01"
+        assert "B2" not in tags["r1"]
+
+    def test_forward_amplicon_gap_tolerance(self, tmp_path):
+        """Forward read: barcode is near amplicon with small gap, recovered with tolerance."""
+        gap = "NNN"
+        left = self.BC_REFS["RB01"] + gap + self.AMPLICON
+        seq = left + self.FILLER
+        reads = [{"name": "r1", "sequence": seq}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="amplicon_only",
+            barcode_adapter_matcher="exact",
+            barcode_amplicon_gap_tolerance=5,
+        )
+        assert tags["r1"]["BC"] == "RB01"
+        assert tags["r1"]["BM"] == "left_only"
+        assert tags["r1"]["B1"] == "RB01"
+        assert "B2" not in tags["r1"]
+
+    # -- Reverse read, both ends -----------------------------------------------
+
+    def test_reverse_both_ends(self, tmp_path):
+        """Reverse read: pysam returns RC of original molecule.
+
+        Read start = right ref end in forward orientation (needs_rc=False)
+        Read end = left ref end in RC orientation (needs_rc=True)
+        """
+        # Right ref end appears at read start in forward orientation
+        read_start = self.ADAPTER + self.BC_REFS["RB01"] + self.AMPLICON
+        # Left ref end appears at read end in RC orientation
+        read_end = self.RC_AMPLICON + self.RC_RB01 + self.RC_ADAPTER
+        seq = read_start + self.FILLER + read_end
+        reads = [{"name": "r1", "sequence": seq, "is_reverse": True}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="either",
+        )
+        assert tags["r1"]["BC"] == "RB01"
+        assert tags["r1"]["BM"] == "both"
+        assert tags["r1"]["B1"] == "RB01"
+        assert tags["r1"]["B2"] == "RB01"
+
+    # -- Reverse read, left end only (appears at read end) ---------------------
+
+    def test_reverse_left_end_only(self, tmp_path):
+        """Reverse read: only left ref end present (at read end, RC'd) → 'left_only'."""
+        read_end = self.RC_AMPLICON + self.RC_RB01 + self.RC_ADAPTER
+        seq = self.FILLER + read_end
+        reads = [{"name": "r1", "sequence": seq, "is_reverse": True}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="either",
+        )
+        assert tags["r1"]["BC"] == "RB01"
+        assert tags["r1"]["BM"] == "left_only"
+        assert tags["r1"]["B1"] == "RB01"
+        assert "B2" not in tags["r1"]
+
+    # -- Reverse read, right end only (appears at read start) ------------------
+
+    def test_reverse_right_end_only(self, tmp_path):
+        """Reverse read: only right ref end present (at read start, fwd) → 'right_only'."""
+        read_start = self.ADAPTER + self.BC_REFS["RB01"] + self.AMPLICON
+        seq = read_start + self.FILLER
+        reads = [{"name": "r1", "sequence": seq, "is_reverse": True}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="either",
+        )
+        assert tags["r1"]["BC"] == "RB01"
+        assert tags["r1"]["BM"] == "right_only"
+        assert "B1" not in tags["r1"]
+        assert tags["r1"]["B2"] == "RB01"
+
+    # -- Mismatch between ends -------------------------------------------------
+
+    def test_forward_mismatch_ends(self, tmp_path):
+        """Forward read: different barcodes at each end → 'mismatch'."""
+        left = self.ADAPTER + self.BC_REFS["RB01"] + self.AMPLICON
+        right = self.RC_AMPLICON + self.RC_RB02 + self.RC_ADAPTER
+        seq = left + self.FILLER + right
+        reads = [{"name": "r1", "sequence": seq}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="either",
+        )
+        assert tags["r1"]["BC"] == "unclassified"
+        assert tags["r1"]["BM"] == "mismatch"
+        assert tags["r1"]["B1"] == "RB01"
+        assert tags["r1"]["B2"] == "RB02"
+
+    # -- Mixed forward + reverse reads ----------------------------------------
+
+    def test_mixed_strand_batch(self, tmp_path):
+        """Multiple reads on both strands produce correct results."""
+        fwd_left = self.ADAPTER + self.BC_REFS["RB01"] + self.AMPLICON
+        fwd_right = self.RC_AMPLICON + self.RC_RB01 + self.RC_ADAPTER
+        rev_start = self.ADAPTER + self.BC_REFS["RB01"] + self.AMPLICON
+        rev_end = self.RC_AMPLICON + self.RC_RB01 + self.RC_ADAPTER
+
+        reads = [
+            {"name": "fwd_both", "sequence": fwd_left + self.FILLER + fwd_right},
+            {"name": "fwd_left", "sequence": fwd_left + self.FILLER},
+            {"name": "fwd_right", "sequence": self.FILLER + fwd_right},
+            {"name": "rev_both", "sequence": rev_start + self.FILLER + rev_end,
+             "is_reverse": True},
+            {"name": "rev_left", "sequence": self.FILLER + rev_end,
+             "is_reverse": True},
+            {"name": "rev_right", "sequence": rev_start + self.FILLER,
+             "is_reverse": True},
+            {"name": "nothing", "sequence": "N" * 100},
+        ]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="either",
+        )
+        assert tags["fwd_both"]["BM"] == "both"
+        assert tags["fwd_both"]["BC"] == "RB01"
+        assert tags["fwd_left"]["BM"] == "left_only"
+        assert tags["fwd_left"]["BC"] == "RB01"
+        assert tags["fwd_right"]["BM"] == "right_only"
+        assert tags["fwd_right"]["BC"] == "RB01"
+        assert tags["rev_both"]["BM"] == "both"
+        assert tags["rev_both"]["BC"] == "RB01"
+        assert tags["rev_left"]["BM"] == "left_only"
+        assert tags["rev_left"]["BC"] == "RB01"
+        assert tags["rev_right"]["BM"] == "right_only"
+        assert tags["rev_right"]["BC"] == "RB01"
+        assert tags["nothing"]["BM"] == "unclassified"
+
+    # -- Adapter-only flank mode -----------------------------------------------
+
+    def test_forward_both_ends_adapter_only(self, tmp_path):
+        """adapter_only mode still works with RC logic."""
+        left = self.ADAPTER + self.BC_REFS["RB01"] + self.AMPLICON
+        right = self.RC_AMPLICON + self.RC_RB01 + self.RC_ADAPTER
+        seq = left + self.FILLER + right
+        reads = [{"name": "r1", "sequence": seq}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="adapter_only",
+        )
+        assert tags["r1"]["BC"] == "RB01"
+        assert tags["r1"]["BM"] == "both"
+
+    # -- Fuzzy matching (edlib with errors) ------------------------------------
+
+    def test_forward_both_ends_with_errors(self, tmp_path):
+        """Barcode with 2 base errors still matches within edit distance 5."""
+        # Introduce 2 substitution errors into RB01 at left end
+        mutated_bc = "TAGAAAGTTGTCGGTGTCTTTGTG"  # A→T at pos 0
+        # Right end: RC of a differently mutated copy
+        mutated_rc_bc = _reverse_complement("AAGAAAGTTGTCGGTGTCTTTGCG")  # G→C at pos 22
+        left = self.ADAPTER + mutated_bc + self.AMPLICON
+        right = self.RC_AMPLICON + mutated_rc_bc + self.RC_ADAPTER
+        seq = left + self.FILLER + right
+        reads = [{"name": "r1", "sequence": seq}]
+        tags = self._run(
+            tmp_path, reads,
+            barcode_kit_config=self._make_kit(),
+            barcode_flank_mode="either",
+        )
+        assert tags["r1"]["BC"] == "RB01"
+        assert tags["r1"]["BM"] == "both"
