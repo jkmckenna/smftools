@@ -2,9 +2,12 @@ name: SQK-NBD114-24
 flanking:
   adapter_side: AAGGTTAA
   amplicon_side: CAGCACCT
+  adapter_pad: 5
+  amplicon_pad: 5
 barcode_ends: both
-barcode_max_edit_distance: 5
-barcode_composite_max_edits: 4
+barcode_max_edit_distance: 6
+barcode_composite_max_edits: 8
+barcode_min_separation: 2
 barcodes:
   NB01: CACAAAGACACCGACAACTTTCTT
   NB02: ACAGACGACTACAAACGGAATCGA

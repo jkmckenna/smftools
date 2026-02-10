@@ -5,6 +5,7 @@ flanking:
 barcode_ends: read_start
 barcode_max_edit_distance: 5
 barcode_composite_max_edits: 12
+barcode_min_separation: 5
 barcodes:
   RB01: AAGAAAGTTGTCGGTGTCTTTGTG
   RB02: TCGATTCCGTTTGTAGTCGTCTGT

@@ -513,7 +513,13 @@ def _composite_extract(
     search_from_start: bool,
     max_edits: int,
 ) -> Optional[Tuple[str, int, int]]:
-    """Extract barcode using composite alignment against read-end window."""
+    """Extract barcode using composite alignment against read-end window.
+
+    Returns
+    -------
+    Optional[Tuple[str, int, int]]
+        (barcode_seq, start, end) or None if extraction fails.
+    """
     if not read_sequence:
         return None
 
@@ -568,10 +574,14 @@ def _composite_extract(
     if bc_start < 0 or bc_end > seq_len or bc_end <= bc_start:
         return None
 
-    extracted = seq[bc_start:bc_end]
-    if len(extracted) != target_length:
+    # Strict length check
+    extracted_len = bc_end - bc_start
+    if abs(extracted_len - target_length) > 2:
         return None
-    return extracted, bc_start, bc_end
+
+    barcode_seq = seq[bc_start:bc_end]
+
+    return barcode_seq, bc_start, bc_end
 
 
 def _extract_barcode_with_flanking(
@@ -611,8 +621,8 @@ def _extract_barcode_with_flanking(
     Returns
     -------
     Tuple[Optional[str], Optional[int], Optional[int]]
-        ``(extracted_sequence, start_pos, end_pos)`` or ``(None, None, None)``
-        if extraction fails.
+        ``(extracted_sequence, start_pos, end_pos)`` or
+        ``(None, None, None)`` if extraction fails.
     """
     if not read_sequence:
         return None, None, None
@@ -1132,7 +1142,14 @@ def _match_barcode_to_references(
         bc_seq = bc_seq.upper()
 
         if use_edlib:
-            result = edlib.align(extracted, bc_seq, mode="NW", task="distance", k=max_edit_distance)
+            result = edlib.align(
+                extracted,  # Query: extracted barcode
+                bc_seq,     # Target: reference barcode
+                mode="NW",
+                task="distance",
+                k=max_edit_distance
+            )
+
             dist = result.get("editDistance", -1)
             if dist == -1:
                 continue
@@ -1169,7 +1186,11 @@ def _parse_flanking_config_from_dict(d: Dict[str, Any]) -> FlankingConfig:
         adapter_side = str(adapter_side).strip().upper() or None
     if amplicon_side is not None:
         amplicon_side = str(amplicon_side).strip().upper() or None
-    return FlankingConfig(adapter_side=adapter_side, amplicon_side=amplicon_side)
+
+    return FlankingConfig(
+        adapter_side=adapter_side,
+        amplicon_side=amplicon_side,
+    )
 
 
 def _parse_per_end_flanking(flanking_data: Dict[str, Any]) -> PerEndFlankingConfig:
@@ -1716,7 +1737,10 @@ def extract_and_assign_barcodes_in_bam(
                                     amplicon_side=_reverse_complement(candidate.amplicon_side),
                                 )
                             else:
-                                end_flanking = FlankingConfig(adapter_side=None, amplicon_side=None)
+                                end_flanking = FlankingConfig(
+                                    adapter_side=None,
+                                    amplicon_side=None,
+                                )
 
                         extracted_bc, _, _ = _extract_barcode_with_flanking(
                             read_sequence=sequence,

@@ -8,8 +8,9 @@ flanking:
   adapter_side: GCTTGGGTGTTTAACC
   amplicon_side: GTTTTCGCATTTATCGTGAAACGCTTTCGCGTTTTTCGTGCGCCGCTTCA
 barcode_ends: read_start
-barcode_max_edit_distance: 5
+barcode_max_edit_distance: 6
 barcode_composite_max_edits: 12
+barcode_min_separation: 2
 barcode_amplicon_gap_tolerance: 5
 barcodes:
   RB01: AAGAAAGTTGTCGGTGTCTTTGTG
