@@ -3020,24 +3020,35 @@ def demux_and_index_BAM(
     no_classify=False,
     file_prefix=None,
 ):
-    """
-    A wrapper function for splitting BAMS and indexing them.
-    Parameters:
-        aligned_sorted_BAM (str): A string representing the file path of the aligned_sorted BAM file.
-        split_dir (str): A string representing the file path to the directory to split the BAMs into.
-        bam_suffix (str): A suffix to add to the bam file.
-        barcode_kit (str): Name of barcoding kit.
-        barcode_both_ends (bool): Whether to require both ends to be barcoded.
-        trim (bool): Whether to trim off barcodes after demultiplexing.
-        threads (int): Number of threads to use.
-        no_classify (bool): When True, use --no-classify to split by existing BC tags
-            without re-classifying barcodes. Ignores barcode_kit and barcode_both_ends.
-        file_prefix (str or None): Optional prefix for output BAM filenames. If None,
-            defaults to "de"/"se" based on barcode_both_ends (legacy behavior).
+    """Split an input BAM by barcode and index the outputs.
 
-    Returns:
-        bam_files (list): List of split BAM file path strings
-            Splits an input BAM file on barcode value and makes a BAM index file.
+    Parameters
+    ----------
+    aligned_sorted_BAM : Path
+        Path to the aligned, sorted BAM input.
+    split_dir : Path
+        Directory to write demultiplexed BAMs.
+    bam_suffix : str
+        Suffix to add to BAM filenames (e.g., \".bam\").
+    barcode_kit : str
+        Name of the barcoding kit to pass to dorado.
+    barcode_both_ends : bool
+        Whether to require both ends to be barcoded.
+    trim : bool
+        Whether to trim barcodes after demultiplexing.
+    threads : int
+        Number of threads to use.
+    no_classify : bool, default False
+        When True, use ``--no-classify`` to split by existing BC tags without
+        re-classifying barcodes. Ignores ``barcode_kit`` and ``barcode_both_ends``.
+    file_prefix : str or None, default None
+        Optional prefix for output BAM filenames. If None, defaults to
+        ``\"de\"``/``\"se\"`` based on ``barcode_both_ends`` (legacy behavior).
+
+    Returns
+    -------
+    list[Path]
+        List of split BAM file paths.
     """
 
     input_bam = aligned_sorted_BAM.with_suffix(bam_suffix)
