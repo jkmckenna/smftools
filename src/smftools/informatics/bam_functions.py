@@ -849,9 +849,29 @@ def _extract_sequence_with_flanking(
             amplicon_max_edits=amplicon_max_edits,
             same_orientation=same_orientation,
         )
+    elif flank_mode == "composite":
+        if not (flanking.adapter_side and flanking.amplicon_side):
+            return None, None, None
+        composite_max_edits = max(0, int(max(adapter_max_edits, amplicon_max_edits)))
+        comp = _composite_extract(
+            read_sequence=seq,
+            adapter_side=flanking.adapter_side,
+            amplicon_side=flanking.amplicon_side,
+            target_length=target_length,
+            search_window=search_window,
+            search_from_start=search_from_start,
+            max_edits=composite_max_edits,
+            adapter_pad=flanking.adapter_pad,
+            amplicon_pad=flanking.amplicon_pad,
+        )
+        if comp is None:
+            return None, None, None
+        extracted, _, tgt_start, tgt_end = comp
+        return extracted, tgt_start, tgt_end
     else:
         raise ValueError(
-            f"flank_mode must be one of: adapter_only, amplicon_only, both, either. Got: {flank_mode}"
+            "flank_mode must be one of: adapter_only, amplicon_only, both, either, composite. "
+            f"Got: {flank_mode}"
         )
 
     if tgt_start < 0 or tgt_end > seq_len:
@@ -931,18 +951,25 @@ def annotate_umi_tags_in_bam(
         require("edlib", extra="umi", purpose="fuzzy UMI adapter matching")
     backend_choice = _resolve_samtools_backend(samtools_backend)
 
-    check_left = effective_umi_ends in ("both", "left_only")
-    check_right = effective_umi_ends in ("both", "right_only")
+    check_start = effective_umi_ends in ("both", "left_only", "read_start")
+    check_end = effective_umi_ends in ("both", "right_only", "read_end")
+
+    flanking_candidates: List[Tuple[str, FlankingConfig]] = []
+    if use_flanking and flanking_config is not None:
+        if flanking_config.left_ref_end is not None and (
+            flanking_config.left_ref_end.adapter_side or flanking_config.left_ref_end.amplicon_side
+        ):
+            flanking_candidates.append(("top", flanking_config.left_ref_end))
+        if flanking_config.right_ref_end is not None and (
+            flanking_config.right_ref_end.adapter_side
+            or flanking_config.right_ref_end.amplicon_side
+        ):
+            flanking_candidates.append(("bottom", flanking_config.right_ref_end))
 
     # Count configured ends for flanking
     if use_flanking:
-        configured_adapter_count = sum(
-            [
-                1
-                for fc in [flanking_config.left_ref_end, flanking_config.right_ref_end]
-                if fc is not None and (fc.adapter_side or fc.amplicon_side)
-            ]
-        )
+        configured_slots = [0 if slot == "top" else 1 for slot, _ in flanking_candidates]
+        configured_adapter_count = len(configured_slots)
 
     pysam_mod = _require_pysam()
     tmp_bam = input_bam.with_name(f"{input_bam.stem}.umi_tmp{input_bam.suffix}")
@@ -960,34 +987,41 @@ def annotate_umi_tags_in_bam(
             sequence = read.query_sequence or ""
             umi_values: List[Optional[str]] = [None, None]
 
-            for i, ref_side in enumerate(["left", "right"]):
-                if i == 0 and not check_left:
-                    continue
-                if i == 1 and not check_right:
-                    continue
+            if use_flanking:
+                for read_end in ("start", "end"):
+                    if read_end == "start" and not check_start:
+                        continue
+                    if read_end == "end" and not check_end:
+                        continue
+                    search_from_start = read_end == "start"
 
-                read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
-                search_from_start = read_end == "start"
+                    for slot, candidate in flanking_candidates:
+                        end_flanking = candidate
+                        if read_end == "end":
+                            if candidate.adapter_side and candidate.amplicon_side:
+                                end_flanking = FlankingConfig(
+                                    adapter_side=_reverse_complement(candidate.amplicon_side),
+                                    amplicon_side=_reverse_complement(candidate.adapter_side),
+                                    adapter_pad=candidate.amplicon_pad,
+                                    amplicon_pad=candidate.adapter_pad,
+                                )
+                            elif candidate.adapter_side:
+                                end_flanking = FlankingConfig(
+                                    adapter_side=_reverse_complement(candidate.adapter_side),
+                                    amplicon_side=None,
+                                    adapter_pad=candidate.adapter_pad,
+                                    amplicon_pad=candidate.amplicon_pad,
+                                )
+                            elif candidate.amplicon_side:
+                                end_flanking = FlankingConfig(
+                                    adapter_side=None,
+                                    amplicon_side=_reverse_complement(candidate.amplicon_side),
+                                    adapter_pad=candidate.adapter_pad,
+                                    amplicon_pad=candidate.amplicon_pad,
+                                )
+                            else:
+                                end_flanking = FlankingConfig(adapter_side=None, amplicon_side=None)
 
-                if use_flanking:
-                    end_flanking = (
-                        flanking_config.left_ref_end
-                        if ref_side == "left"
-                        else flanking_config.right_ref_end
-                    )
-                    if end_flanking is not None:
-                        # RC flanking sequences when the read-strand orientation
-                        # differs from the YAML reference orientation.
-                        needs_rc = read.is_reverse != (ref_side == "right")
-                        if needs_rc:
-                            end_flanking = FlankingConfig(
-                                adapter_side=_reverse_complement(end_flanking.adapter_side)
-                                if end_flanking.adapter_side
-                                else None,
-                                amplicon_side=_reverse_complement(end_flanking.amplicon_side)
-                                if end_flanking.amplicon_side
-                                else None,
-                            )
                         extracted, _, _ = _extract_sequence_with_flanking(
                             read_sequence=sequence,
                             target_length=length,
@@ -998,13 +1032,28 @@ def annotate_umi_tags_in_bam(
                             adapter_matcher=matcher,
                             adapter_max_edits=max_edits,
                             amplicon_max_edits=umi_amplicon_max_edits,
-                            same_orientation=same_orientation,
+                            same_orientation=False,
                         )
-                        # RC extracted UMI back to forward orientation
-                        if extracted and needs_rc:
+                        if extracted and read_end == "end":
                             extracted = _reverse_complement(extracted)
-                        umi_values[i] = extracted
-                else:
+
+                        if extracted:
+                            idx = 0 if slot == "top" else 1
+                            if umi_values[idx] is None:
+                                umi_values[idx] = extracted
+
+                    if configured_slots and all(umi_values[idx] is not None for idx in configured_slots):
+                        break
+            else:
+                for i, ref_side in enumerate(["left", "right"]):
+                    if i == 0 and not check_start:
+                        continue
+                    if i == 1 and not check_end:
+                        continue
+
+                    read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
+                    search_from_start = read_end == "start"
+
                     adapter = adapters[i] if i < len(adapters) else None
                     if adapter is None:
                         continue
@@ -1468,7 +1517,13 @@ def load_umi_config_from_yaml(yaml_path: str | Path) -> UMIKitConfig:
         data = data["umi"]
 
     flanking = None
-    if "flanking" in data and isinstance(data["flanking"], dict):
+    if "top_flanking" in data or "bottom_flanking" in data:
+        per_end = {
+            "left_ref_end": data.get("top_flanking", {}),
+            "right_ref_end": data.get("bottom_flanking", {}),
+        }
+        flanking = _parse_per_end_flanking(per_end)
+    elif "flanking" in data and isinstance(data["flanking"], dict):
         flanking = _parse_per_end_flanking(data["flanking"])
 
     same_orientation = bool(data.get("same_orientation", False))

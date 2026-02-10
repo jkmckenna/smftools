@@ -232,6 +232,48 @@ class TestUMIFlankingExtraction:
         )
         assert umi is None
 
+    def test_umi_amplicon_only_from_start(self):
+        """Extract UMI before amplicon_side at read start."""
+        read = "AATTCCGGAACCTTGGNNNNNNNN"
+        flanking = FlankingConfig(amplicon_side="AACCTTGG")
+        umi, start, end = _extract_sequence_with_flanking(
+            read_sequence=read,
+            target_length=8,
+            search_window=50,
+            search_from_start=True,
+            flanking=flanking,
+            flank_mode="amplicon_only",
+            adapter_matcher="exact",
+        )
+        assert umi == "AATTCCGG"
+
+    def test_umi_composite_from_start(self, monkeypatch):
+        """Extract UMI with composite alignment."""
+        class _FakeEdlib:
+            @staticmethod
+            def align(query, target, mode, task, k, additionalEqualities=None):
+                assert mode == "HW"
+                assert task == "path"
+                assert k == 0
+                # Exact match for entire query against target
+                return {"editDistance": 0, "locations": [(0, len(query) - 1)], "cigar": f\"{len(query)}=\"}
+
+        monkeypatch.setattr(bam_functions, \"require\", lambda *args, **kwargs: _FakeEdlib())
+        read = "GTACTGACAATTCCGGAACCTTGGNNNN"
+        flanking = FlankingConfig(adapter_side="GTACTGAC", amplicon_side="AACCTTGG")
+        umi, start, end = _extract_sequence_with_flanking(
+            read_sequence=read,
+            target_length=8,
+            search_window=50,
+            search_from_start=True,
+            flanking=flanking,
+            flank_mode="composite",
+            adapter_matcher="edlib",
+            adapter_max_edits=0,
+            amplicon_max_edits=0,
+        )
+        assert umi == "AATTCCGG"
+
     def test_per_end_different_flanking(self):
         """Different flanking config per reference end."""
         left_flanking = FlankingConfig(adapter_side="AAAA")
@@ -378,6 +420,31 @@ class TestAnnotateUmiTagsInBam:
         assert tags["r1"]["U1"] == "AAAA"
         assert "U2" not in tags["r1"]
         assert tags["r1"]["RX"] == "AAAA"
+
+    def test_flanking_top_bottom_across_ends(self, tmp_path):
+        """Top flank in read start -> U1, bottom flank in read end -> U2 (RC)."""
+        umi_kit = UMIKitConfig(
+            flanking=PerEndFlankingConfig(
+                left_ref_end=FlankingConfig(adapter_side="GCTA"),
+                right_ref_end=FlankingConfig(adapter_side="CCGA"),
+            ),
+            length=4,
+            umi_ends="both",
+            umi_flank_mode="adapter_only",
+        )
+        # start: GCTA + GGTT
+        # end: UMI2_rc (TCGT) + RC(bottom adapter) (TCGG)
+        reads = [{"name": "r1", "sequence": "GCTAGGTTNNNNNNNNNNTCGTTCGG"}]
+        tags = self._run(
+            tmp_path,
+            reads,
+            umi_kit_config=umi_kit,
+            umi_ends="both",
+            umi_flank_mode="adapter_only",
+        )
+        assert tags["r1"]["U1"] == "GGTT"
+        assert tags["r1"]["U2"] == "ACGA"
+        assert tags["r1"]["RX"] == "GGTT-ACGA"
 
     # -- Strand handling ------------------------------------------------------
 

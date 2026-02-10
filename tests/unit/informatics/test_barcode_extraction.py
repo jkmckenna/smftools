@@ -774,6 +774,20 @@ class TestLoadUmiConfigFromYaml:
         assert result.length == 8
         assert result.flanking.left_ref_end.adapter_side == "ACGT"
 
+    def test_load_top_bottom_flanking(self, tmp_path):
+        yaml_file = tmp_path / "umi.yaml"
+        yaml_file.write_text(
+            "top_flanking:\n"
+            "  adapter_side: AAAA\n"
+            "bottom_flanking:\n"
+            "  adapter_side: TTTT\n"
+            "length: 6\n"
+        )
+        result = load_umi_config_from_yaml(yaml_file)
+        assert result.length == 6
+        assert result.flanking.left_ref_end.adapter_side == "AAAA"
+        assert result.flanking.right_ref_end.adapter_side == "TTTT"
+
     def test_file_not_found_raises(self):
         with pytest.raises(FileNotFoundError):
             load_umi_config_from_yaml("/nonexistent/umi.yaml")
