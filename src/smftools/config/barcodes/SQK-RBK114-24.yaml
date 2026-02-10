@@ -2,7 +2,7 @@ name: SQK-RBK114-24
 flanking:
   adapter_side: GCTTGGGTGTTTAACC
   amplicon_side: GTTTTCGCATTTATCGTGAAACGCTTTCGCGTTTTTCGTGCGCCGCTTCA
-barcode_ends: both
+barcode_ends: read_start
 barcode_flank_mode: either
 barcode_max_edit_distance: 5
 barcode_adapter_max_edits: 2
