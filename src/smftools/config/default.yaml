@@ -37,6 +37,7 @@ enzyme_target_bases:
 model_dir: null # Directory where dorado basecalling models are stored.
 model: "hac" # needed for dorado basecaller
 filter_threshold: 0.8 # Dorado probability filter threshold for base calling.
+emit_moves: False # Whether to emit move tables (mv tag) during basecalling for signal-to-base alignment
 
 # Alignment params
 aligner: "dorado" # Aligner to use: dorado, minimap2

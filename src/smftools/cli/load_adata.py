@@ -455,6 +455,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 cfg.barcode_both_ends,
                 cfg.trim,
                 cfg.device,
+                cfg.emit_moves,
             )
         else:
             logger.info("Running modified basecalling using dorado")
@@ -470,6 +471,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 cfg.barcode_both_ends,
                 cfg.trim,
                 cfg.device,
+                cfg.emit_moves,
             )
     elif basecall:
         logger.error("Basecalling is currently only supported for ont sequencers and not pacbio.")
@@ -847,6 +849,14 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         raw_adata.obs["Experiment_name"].astype(str) + "_" + raw_adata.obs["Barcode"].astype(str)
     )
 
+    # Store experiment-specific BAM paths for POD5 plotting
+    if "bam_paths" not in raw_adata.uns:
+        raw_adata.uns["bam_paths"] = {}
+    if unaligned_output.exists():
+        raw_adata.uns["bam_paths"][f"{cfg.experiment_name}_unaligned"] = str(unaligned_output)
+    if aligned_sorted_output.exists():
+        raw_adata.uns["bam_paths"][f"{cfg.experiment_name}_aligned"] = str(aligned_sorted_output)
+
     ########################################################################################################################
 
     ############################################### Add basic read length, read quality, mapping quality stats ###############################################
@@ -862,7 +872,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     )
 
     # Build default tag list: always NM/MD, MM/ML only for direct modality
-    default_tags = ["NM", "MD"]
+    default_tags = ["NM", "MD", "fn"]
     if cfg.smf_modality == "direct":
         default_tags.extend(["MM", "ML"])
     # Add UMI tags if UMI extraction was enabled

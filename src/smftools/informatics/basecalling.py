@@ -13,6 +13,7 @@ def canoncall(
     barcode_both_ends=False,
     trim=False,
     device="auto",
+    emit_moves=False,
 ):
     """
     Wrapper function for dorado canonical base calling.
@@ -27,6 +28,7 @@ def canoncall(
         barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
         trim (bool): Whether to trim barcodes, adapters, and primers from read ends.
         device (str): The device to use. 'auto' is default, which can detect device to use. Can also specify metal, cpu, cuda.
+        emit_moves (bool): Whether to emit move tables (mv tag) for signal-to-base alignment.
 
     Returns:
         None
@@ -49,6 +51,8 @@ def canoncall(
         command.append("--barcode-both-ends")
     if not trim:
         command.append("--no-trim")
+    if emit_moves:
+        command.append("--emit-moves")
     command += [model, pod5_dir]
     command_string = " ".join(command)
     print(f"Running {command_string}\n to generate {output}")
@@ -67,6 +71,7 @@ def modcall(
     barcode_both_ends=False,
     trim=False,
     device="auto",
+    emit_moves=False,
 ):
     """
     Wrapper function for dorado modified base calling.
@@ -82,6 +87,7 @@ def modcall(
         barcode_both_ends (bool): Whether to require a barcode detection on both ends for demultiplexing.
         trim (bool): Whether to trim barcodes, adapters, and primers from read ends
         device (str): Device to use for basecalling. auto, metal, cpu, cuda.
+        emit_moves (bool): Whether to emit move tables (mv tag) for signal-to-base alignment.
 
     Returns:
         None
@@ -105,6 +111,8 @@ def modcall(
         command.append("--barcode-both-ends")
     if not trim:
         command.append("--no-trim")
+    if emit_moves:
+        command.append("--emit-moves")
     command += [model, pod5_dir]
     print(f"Running: {' '.join(command)}")
     with open(output, "w") as outfile:
