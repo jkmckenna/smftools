@@ -730,18 +730,17 @@ class ExperimentConfig:
     barcode_search_window: int = 200
     barcode_max_edit_distance: Optional[int] = None
     barcode_adapter_matcher: str = "edlib"
-    barcode_adapter_max_edits: Optional[int] = None
+    barcode_composite_max_edits: Optional[int] = None
+    barcode_min_separation: Optional[int] = None
     barcode_min_score: Optional[int] = None
     # Barcode flanking configuration
-    barcode_ends: Optional[str] = None  # both | left_only | right_only
-    barcode_flank_mode: Optional[str] = None  # adapter_only | amplicon_only | both
-    barcode_amplicon_max_edits: Optional[int] = None
+    barcode_ends: Optional[str] = None  # both | read_start | read_end | left_only | right_only
     barcode_amplicon_gap_tolerance: Optional[int] = None
-    same_orientation: Optional[bool] = None
     # UMI flanking configuration
     umi_ends: Optional[str] = None
     umi_flank_mode: Optional[str] = None
     umi_amplicon_max_edits: Optional[int] = None
+    same_orientation: Optional[bool] = None  # UMI flanking orientation override
     umi_kit: Optional[str] = None  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yaml
     umi_yaml: Optional[str] = None  # Path to UMI YAML config file (when umi_kit is "custom")
     # General basecalling params
@@ -1271,13 +1270,16 @@ class ExperimentConfig:
         if "barcode_max_edit_distance" in merged:
             merged_bmed = _parse_numeric(merged.get("barcode_max_edit_distance", None), None)
             merged["barcode_max_edit_distance"] = None if merged_bmed is None else int(merged_bmed)
+        if "barcode_min_separation" in merged:
+            merged_bms = _parse_numeric(merged.get("barcode_min_separation", None), None)
+            merged["barcode_min_separation"] = None if merged_bms is None else int(merged_bms)
         if "barcode_adapter_matcher" in merged:
             merged["barcode_adapter_matcher"] = str(
                 merged.get("barcode_adapter_matcher", "edlib")
             ).lower()
-        if "barcode_adapter_max_edits" in merged:
-            merged_bame = _parse_numeric(merged.get("barcode_adapter_max_edits", None), None)
-            merged["barcode_adapter_max_edits"] = None if merged_bame is None else int(merged_bame)
+        if "barcode_composite_max_edits" in merged:
+            merged_bcme = _parse_numeric(merged.get("barcode_composite_max_edits", None), None)
+            merged["barcode_composite_max_edits"] = None if merged_bcme is None else int(merged_bcme)
         if "barcode_min_score" in merged:
             bms = _parse_numeric(merged.get("barcode_min_score", None), None)
             merged["barcode_min_score"] = None if bms is None else int(bms)
@@ -1289,15 +1291,6 @@ class ExperimentConfig:
                 None if val is None or str(val).strip().lower() in ("", "none", "null")
                 else str(val).strip().lower()
             )
-        if "barcode_flank_mode" in merged:
-            val = merged.get("barcode_flank_mode")
-            merged["barcode_flank_mode"] = (
-                None if val is None or str(val).strip().lower() in ("", "none", "null")
-                else str(val).strip().lower()
-            )
-        if "barcode_amplicon_max_edits" in merged:
-            val = _parse_numeric(merged.get("barcode_amplicon_max_edits", None), None)
-            merged["barcode_amplicon_max_edits"] = None if val is None else int(val)
         if "barcode_amplicon_gap_tolerance" in merged:
             val = _parse_numeric(merged.get("barcode_amplicon_gap_tolerance", None), None)
             merged["barcode_amplicon_gap_tolerance"] = None if val is None else int(val)
@@ -1456,11 +1449,10 @@ class ExperimentConfig:
             barcode_search_window=merged.get("barcode_search_window", 200),
             barcode_max_edit_distance=merged.get("barcode_max_edit_distance", None),
             barcode_adapter_matcher=merged.get("barcode_adapter_matcher", "edlib"),
-            barcode_adapter_max_edits=merged.get("barcode_adapter_max_edits", None),
+            barcode_composite_max_edits=merged.get("barcode_composite_max_edits", None),
+            barcode_min_separation=merged.get("barcode_min_separation", None),
             barcode_min_score=merged.get("barcode_min_score", None),
             barcode_ends=merged.get("barcode_ends", None),
-            barcode_flank_mode=merged.get("barcode_flank_mode", None),
-            barcode_amplicon_max_edits=merged.get("barcode_amplicon_max_edits", None),
             barcode_amplicon_gap_tolerance=merged.get("barcode_amplicon_gap_tolerance", None),
             same_orientation=merged.get("same_orientation", None),
             umi_ends=merged.get("umi_ends", None),

@@ -607,16 +607,14 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             barcode_search_window=getattr(cfg, "barcode_search_window", 200),
             barcode_max_edit_distance=resolved_bc["barcode_max_edit_distance"],
             barcode_adapter_matcher=getattr(cfg, "barcode_adapter_matcher", "edlib"),
-            barcode_adapter_max_edits=resolved_bc["barcode_adapter_max_edits"],
+            barcode_composite_max_edits=resolved_bc["barcode_composite_max_edits"],
+            barcode_min_separation=resolved_bc.get("barcode_min_separation"),
             require_both_ends=getattr(cfg, "barcode_both_ends", False),
             min_barcode_score=getattr(cfg, "barcode_min_score", None),
             samtools_backend=cfg.samtools_backend,
             barcode_kit_config=barcode_kit_config,
             barcode_ends=resolved_bc["barcode_ends"],
-            barcode_flank_mode=resolved_bc["barcode_flank_mode"],
-            barcode_amplicon_max_edits=resolved_bc["barcode_amplicon_max_edits"],
             barcode_amplicon_gap_tolerance=resolved_bc["barcode_amplicon_gap_tolerance"],
-            same_orientation=resolved_bc["same_orientation"],
         )
         # Update aligned_sorted_output to point to the barcoded BAM
         aligned_sorted_output = barcoded_bam

@@ -146,12 +146,10 @@ class BarcodeKitConfig:
     barcode_length: int = 0
     flanking: Optional[PerEndFlankingConfig] = None
     barcode_ends: str = "both"
-    barcode_flank_mode: str = "adapter_only"
     barcode_max_edit_distance: int = 3
-    barcode_adapter_max_edits: int = 2
-    barcode_amplicon_max_edits: int = 2
+    barcode_composite_max_edits: int = 4
+    barcode_min_separation: Optional[int] = None
     barcode_amplicon_gap_tolerance: int = 5
-    same_orientation: bool = False
 
 
 @dataclass
@@ -434,29 +432,163 @@ def _find_flanking_sequence(
     return best
 
 
-def _extract_sequence_with_flanking(
+def _build_composite_query(
+    adapter_side: str,
+    amplicon_side: str,
+    target_length: int,
+) -> Tuple[str, int, int]:
+    """Build composite query ``adapter + N*length + amplicon`` and mask indices."""
+    mask = "N" * target_length
+    composite = adapter_side + mask + amplicon_side
+    mask_start = len(adapter_side)
+    mask_end = mask_start + target_length
+    return composite, mask_start, mask_end
+
+
+def _extract_mask_location(
+    cigar: str,
+    query_mask_start: int,
+    query_mask_end: int,
+) -> Optional[Tuple[int, int]]:
+    """Map query mask positions to target coordinates using edlib CIGAR."""
+    if not cigar:
+        return None
+
+    query_pos = 0
+    target_pos = 0
+    target_start = None
+    target_end = None
+
+    num = ""
+    for ch in cigar:
+        if ch.isdigit():
+            num += ch
+            continue
+        if not num:
+            return None
+        length = int(num)
+        num = ""
+
+        if ch in {"=", "M", "X"}:
+            for _ in range(length):
+                if query_pos == query_mask_start:
+                    target_start = target_pos
+                if query_pos == query_mask_end:
+                    target_end = target_pos
+                    return target_start, target_end
+                query_pos += 1
+                target_pos += 1
+        elif ch == "I":
+            for _ in range(length):
+                if query_pos == query_mask_start:
+                    target_start = target_pos
+                if query_pos == query_mask_end:
+                    target_end = target_pos
+                    return target_start, target_end
+                query_pos += 1
+        elif ch == "D":
+            for _ in range(length):
+                if query_pos == query_mask_start:
+                    target_start = target_pos
+                if query_pos == query_mask_end:
+                    target_end = target_pos
+                    return target_start, target_end
+                target_pos += 1
+        else:
+            return None
+
+    if query_pos == query_mask_end:
+        target_end = target_pos
+    if target_start is not None and target_end is not None:
+        return target_start, target_end
+    return None
+
+
+def _composite_extract(
+    read_sequence: str,
+    adapter_side: str,
+    amplicon_side: str,
+    target_length: int,
+    search_window: int,
+    search_from_start: bool,
+    max_edits: int,
+) -> Optional[Tuple[str, int, int]]:
+    """Extract barcode using composite alignment against read-end window."""
+    if not read_sequence:
+        return None
+
+    edlib = require("edlib", extra="umi", purpose="composite barcode extraction")
+    seq = read_sequence.upper()
+    seq_len = len(seq)
+
+    composite, mask_start, mask_end = _build_composite_query(
+        adapter_side.upper(),
+        amplicon_side.upper(),
+        target_length,
+    )
+
+    window_len = min(seq_len, search_window + len(composite))
+    if search_from_start:
+        window_start = 0
+        window = seq[:window_len]
+    else:
+        window_start = max(0, seq_len - window_len)
+        window = seq[window_start:]
+
+    if not window:
+        return None
+
+    result = edlib.align(
+        composite,
+        window,
+        mode="HW",
+        task="path",
+        k=max_edits,
+        additionalEqualities=[("N", "A"), ("N", "C"), ("N", "G"), ("N", "T")],
+    )
+    if result.get("editDistance", -1) == -1:
+        return None
+
+    locations = result.get("locations") or []
+    if not locations:
+        return None
+    cigar = result.get("cigar")
+    if cigar is None:
+        return None
+
+    mask_loc = _extract_mask_location(cigar, mask_start, mask_end)
+    if mask_loc is None:
+        return None
+
+    target_mask_start, target_mask_end = mask_loc
+    aln_start = locations[0][0] if isinstance(locations[0], (list, tuple)) else locations[0]
+    bc_start = window_start + aln_start + target_mask_start
+    bc_end = window_start + aln_start + target_mask_end
+
+    if bc_start < 0 or bc_end > seq_len or bc_end <= bc_start:
+        return None
+
+    extracted = seq[bc_start:bc_end]
+    if len(extracted) != target_length:
+        return None
+    return extracted, bc_start, bc_end
+
+
+def _extract_barcode_with_flanking(
     read_sequence: str,
     target_length: int,
     search_window: int,
     search_from_start: bool,
     flanking: FlankingConfig,
-    flank_mode: str = "adapter_only",
     adapter_matcher: str = "edlib",
-    adapter_max_edits: int = 2,
-    amplicon_max_edits: int = 2,
-    same_orientation: bool = False,
+    composite_max_edits: int = 4,
 ) -> Tuple[Optional[str], Optional[int], Optional[int]]:
     """Extract a target sequence (barcode or UMI) using flanking sequence detection.
 
-    Detection modes based on ``flank_mode``:
-
-    * ``"adapter_only"``: Find *adapter_side* flanking sequence, extract target
-      adjacent to it (after it when searching from start, before it from end).
-    * ``"amplicon_only"``: Find *amplicon_side* flanking sequence, extract target
-      adjacent to it (before it when searching from start, after it from end).
-    * ``"both"``: Find *adapter_side*, extract candidate, then validate that
-      *amplicon_side* is present at the expected position. Return ``None`` if
-      validation fails.
+    Behavior:
+    - If both adapter_side and amplicon_side are provided, use composite alignment
+      of ``adapter + N*target_length + amplicon`` within the end window.
+    - If only one flank is provided, fall back to single-flank anchored extraction.
 
     Parameters
     ----------
@@ -471,14 +603,10 @@ def _extract_sequence_with_flanking(
         strand); otherwise search from the end.
     flanking : FlankingConfig
         Flanking sequences for adapter_side and/or amplicon_side.
-    flank_mode : str
-        One of ``"adapter_only"``, ``"amplicon_only"``, ``"both"``.
     adapter_matcher : str
         Matching algorithm for flanking detection (``"exact"`` or ``"edlib"``).
-    adapter_max_edits : int
-        Max edit distance for adapter_side matching (edlib mode).
-    amplicon_max_edits : int
-        Max edit distance for amplicon_side matching (edlib mode).
+    composite_max_edits : int
+        Max edit distance allowed for composite or single-flank matching.
 
     Returns
     -------
@@ -492,10 +620,96 @@ def _extract_sequence_with_flanking(
     seq = read_sequence.upper()
     seq_len = len(seq)
 
+    tgt_start: Optional[int] = None
+    tgt_end: Optional[int] = None
+
+    has_adapter = bool(flanking.adapter_side)
+    has_amplicon = bool(flanking.amplicon_side)
+
+    # Composite alignment when both flanks are available
+    if has_adapter and has_amplicon:
+        comp = _composite_extract(
+            read_sequence=seq,
+            adapter_side=flanking.adapter_side,
+            amplicon_side=flanking.amplicon_side,
+            target_length=target_length,
+            search_window=search_window,
+            search_from_start=search_from_start,
+            max_edits=composite_max_edits,
+        )
+        if comp is not None:
+            extracted, tgt_start, tgt_end = comp
+            return extracted, tgt_start, tgt_end
+
+    # Single-flank fallback
+    if has_adapter:
+        hit = _find_flanking_sequence(
+            seq,
+            flanking.adapter_side,
+            search_window,
+            search_from_start,
+            matcher=adapter_matcher,
+            max_edits=composite_max_edits,
+        )
+        if hit is not None:
+            adapter_start, adapter_end = hit
+            if search_from_start:
+                tgt_start, tgt_end = adapter_end, adapter_end + target_length
+            else:
+                tgt_start, tgt_end = adapter_start - target_length, adapter_start
+    elif has_amplicon:
+        hit = _find_flanking_sequence(
+            seq,
+            flanking.amplicon_side,
+            search_window,
+            search_from_start,
+            matcher=adapter_matcher,
+            max_edits=composite_max_edits,
+        )
+        if hit is not None:
+            amplicon_start, amplicon_end = hit
+            if search_from_start:
+                tgt_start, tgt_end = amplicon_start - target_length, amplicon_start
+            else:
+                tgt_start, tgt_end = amplicon_end, amplicon_end + target_length
+    else:
+        return None, None, None
+
+    # Bounds check
+    if tgt_start is None or tgt_end is None:
+        return None, None, None
+    if tgt_start < 0 or tgt_end > seq_len:
+        return None, None, None
+
+    extracted = seq[tgt_start:tgt_end]
+    if len(extracted) != target_length:
+        return None, None, None
+
+    return extracted, tgt_start, tgt_end
+
+
+def _extract_sequence_with_flanking(
+    read_sequence: str,
+    target_length: int,
+    search_window: int,
+    search_from_start: bool,
+    flanking: FlankingConfig,
+    flank_mode: str = "adapter_only",
+    adapter_matcher: str = "edlib",
+    adapter_max_edits: int = 2,
+    amplicon_max_edits: int = 2,
+    same_orientation: bool = False,
+) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+    """Extract a target sequence (barcode or UMI) using flanking sequence detection."""
+    if not read_sequence:
+        return None, None, None
+
+    seq = read_sequence.upper()
+    seq_len = len(seq)
+
     if flank_mode == "adapter_only":
         if not flanking.adapter_side:
             return None, None, None
-
         hit = _find_flanking_sequence(
             seq, flanking.adapter_side, search_window, search_from_start,
             matcher=adapter_matcher, max_edits=adapter_max_edits,
@@ -503,8 +717,6 @@ def _extract_sequence_with_flanking(
         if hit is None:
             return None, None, None
         adapter_start, adapter_end = hit
-
-        # Extract target adjacent to adapter
         if search_from_start or same_orientation:
             tgt_start, tgt_end = adapter_end, adapter_end + target_length
         else:
@@ -513,7 +725,6 @@ def _extract_sequence_with_flanking(
     elif flank_mode == "amplicon_only":
         if not flanking.amplicon_side:
             return None, None, None
-
         hit = _find_flanking_sequence(
             seq, flanking.amplicon_side, search_window, search_from_start,
             matcher=adapter_matcher, max_edits=amplicon_max_edits,
@@ -521,8 +732,6 @@ def _extract_sequence_with_flanking(
         if hit is None:
             return None, None, None
         amplicon_start, amplicon_end = hit
-
-        # Extract target adjacent to amplicon (opposite side from adapter logic)
         if search_from_start or same_orientation:
             tgt_start, tgt_end = amplicon_start - target_length, amplicon_start
         else:
@@ -531,8 +740,6 @@ def _extract_sequence_with_flanking(
     elif flank_mode == "both":
         if not flanking.adapter_side:
             return None, None, None
-
-        # Step 1: find adapter_side
         hit = _find_flanking_sequence(
             seq, flanking.adapter_side, search_window, search_from_start,
             matcher=adapter_matcher, max_edits=adapter_max_edits,
@@ -540,43 +747,39 @@ def _extract_sequence_with_flanking(
         if hit is None:
             return None, None, None
         adapter_start, adapter_end = hit
-
-        # Step 2: extract candidate
         if search_from_start or same_orientation:
             tgt_start, tgt_end = adapter_end, adapter_end + target_length
         else:
             tgt_start, tgt_end = adapter_start - target_length, adapter_start
 
-        # Step 3: validate amplicon_side is adjacent to the other side of target
         if flanking.amplicon_side:
             if search_from_start or same_orientation:
-                expected_amplicon_region_start = tgt_end
-                expected_amplicon_region_end = min(
+                region_start = tgt_end
+                region_end = min(
                     tgt_end + len(flanking.amplicon_side) + amplicon_max_edits + 1,
                     seq_len,
                 )
             else:
-                expected_amplicon_region_end = tgt_start
-                expected_amplicon_region_start = max(
+                region_end = tgt_start
+                region_start = max(
                     tgt_start - len(flanking.amplicon_side) - amplicon_max_edits - 1,
                     0,
                 )
-
-            region = seq[expected_amplicon_region_start:expected_amplicon_region_end]
-            if region:
-                amp_hit = _find_flanking_sequence(
-                    region, flanking.amplicon_side,
-                    search_window=len(region),
-                    search_from_start=True,
-                    matcher=adapter_matcher,
-                    max_edits=amplicon_max_edits,
-                )
-                if amp_hit is None:
-                    return None, None, None
-            else:
+            region = seq[region_start:region_end]
+            if not region:
                 return None, None, None
+            amp_hit = _find_flanking_sequence(
+                region, flanking.amplicon_side,
+                search_window=len(region),
+                search_from_start=True,
+                matcher=adapter_matcher,
+                max_edits=amplicon_max_edits,
+            )
+            if amp_hit is None:
+                return None, None, None
+
     elif flank_mode == "either":
-        # Try "both" first, then fall back to "amplicon_only", then "adapter_only"
+        # Try both, then amplicon_only, then adapter_only
         result = _extract_sequence_with_flanking(
             read_sequence, target_length, search_window, search_from_start,
             flanking, flank_mode="both",
@@ -605,11 +808,11 @@ def _extract_sequence_with_flanking(
             amplicon_max_edits=amplicon_max_edits,
             same_orientation=same_orientation,
         )
-
     else:
-        raise ValueError(f"flank_mode must be one of: adapter_only, amplicon_only, both, either. Got: {flank_mode}")
+        raise ValueError(
+            f"flank_mode must be one of: adapter_only, amplicon_only, both, either. Got: {flank_mode}"
+        )
 
-    # Bounds check
     if tgt_start < 0 or tgt_end > seq_len:
         return None, None, None
 
@@ -618,58 +821,6 @@ def _extract_sequence_with_flanking(
         return None, None, None
 
     return extracted, tgt_start, tgt_end
-
-
-def _extract_barcode_candidates_from_amplicon(
-    read_sequence: str,
-    target_length: int,
-    search_window: int,
-    search_from_start: bool,
-    flanking: FlankingConfig,
-    adapter_matcher: str,
-    amplicon_max_edits: int,
-    gap_tolerance: int,
-    same_orientation: bool,
-) -> List[str]:
-    """Return candidate barcode sequences within a gap tolerance of an amplicon hit."""
-    if not read_sequence or not flanking.amplicon_side:
-        return []
-    if gap_tolerance <= 0:
-        return []
-
-    seq = read_sequence.upper()
-    seq_len = len(seq)
-
-    hit = _find_flanking_sequence(
-        seq, flanking.amplicon_side, search_window, search_from_start,
-        matcher=adapter_matcher, max_edits=amplicon_max_edits,
-    )
-    if hit is None:
-        return []
-
-    amplicon_start, amplicon_end = hit
-    candidates: List[str] = []
-    offsets = range(-gap_tolerance, gap_tolerance + 1)
-
-    if search_from_start or same_orientation:
-        # Barcode ends near the amplicon start.
-        for offset in offsets:
-            bc_end = amplicon_start + offset
-            bc_start = bc_end - target_length
-            if bc_start < 0 or bc_end > seq_len:
-                continue
-            candidates.append(seq[bc_start:bc_end])
-    else:
-        # Barcode starts near the amplicon end.
-        for offset in offsets:
-            bc_start = amplicon_end + offset
-            bc_end = bc_start + target_length
-            if bc_start < 0 or bc_end > seq_len:
-                continue
-            candidates.append(seq[bc_start:bc_end])
-
-    # Preserve order but drop duplicates
-    return list(dict.fromkeys(candidates))
 
 
 def _target_read_end_for_ref_side(is_reverse: bool, ref_side: str) -> str:
@@ -941,6 +1092,7 @@ def _match_barcode_to_references(
     extracted_barcode: str,
     barcode_references: Dict[str, str],
     max_edit_distance: int = 3,
+    min_separation: Optional[int] = None,
 ) -> Tuple[Optional[str], Optional[int]]:
     """
     Match an extracted barcode sequence to reference barcodes.
@@ -953,6 +1105,9 @@ def _match_barcode_to_references(
         Mapping of barcode names to barcode sequences.
     max_edit_distance : int
         Maximum edit distance to consider a match.
+    min_separation : int, optional
+        Minimum required distance to the second-best match. If the gap between
+        best and second-best distances is smaller, the match is rejected.
 
     Returns
     -------
@@ -965,6 +1120,7 @@ def _match_barcode_to_references(
     extracted = extracted_barcode.upper()
     best_match: Optional[str] = None
     best_distance: Optional[int] = None
+    second_best: Optional[int] = None
 
     try:
         edlib = require("edlib", extra="umi", purpose="barcode matching")
@@ -989,8 +1145,18 @@ def _match_barcode_to_references(
                 continue
 
         if best_distance is None or dist < best_distance:
+            second_best = best_distance
             best_distance = dist
             best_match = bc_name
+        elif second_best is None or dist < second_best:
+            second_best = dist
+
+    if best_match is None:
+        return None, None
+
+    if min_separation is not None and second_best is not None:
+        if (second_best - best_distance) < int(min_separation):
+            return None, None
 
     return best_match, best_distance
 
@@ -1086,15 +1252,15 @@ def load_barcode_references_from_yaml(yaml_path: str | Path) -> Union[Tuple[Dict
           adapter_side: AAGGTTAA
           amplicon_side: CAGCACCT
         barcode_ends: both
-        barcode_flank_mode: both
         barcode_max_edit_distance: 3
-        barcode_adapter_max_edits: 2
+        barcode_composite_max_edits: 4
         barcodes:
           NB01: CACAAAGACACCGACAACTTTCTT
           NB02: ACAGACGACTACAAACGGAATCGA
 
     The new format is detected by the presence of a ``flanking`` key,
-    ``barcode_ends`` key, or ``barcode_flank_mode`` key.
+    ``top_flanking``/``bottom_flanking`` keys, ``barcode_ends`` key,
+    or ``barcode_composite_max_edits`` key.
 
     Parameters
     ----------
@@ -1124,7 +1290,13 @@ def load_barcode_references_from_yaml(yaml_path: str | Path) -> Union[Tuple[Dict
         )
 
     # Detect new format by presence of extended keys
-    _new_format_keys = {"flanking", "barcode_ends", "barcode_flank_mode"}
+    _new_format_keys = {
+        "flanking",
+        "top_flanking",
+        "bottom_flanking",
+        "barcode_ends",
+        "barcode_composite_max_edits",
+    }
     is_new_format = bool(_new_format_keys & set(data.keys()))
 
     # Extract barcodes dict
@@ -1141,12 +1313,14 @@ def load_barcode_references_from_yaml(yaml_path: str | Path) -> Union[Tuple[Dict
 
     # Build BarcodeKitConfig for new format
     flanking = None
-    if "flanking" in data and isinstance(data["flanking"], dict):
+    if "top_flanking" in data or "bottom_flanking" in data:
+        per_end = {
+            "left_ref_end": data.get("top_flanking", {}),
+            "right_ref_end": data.get("bottom_flanking", {}),
+        }
+        flanking = _parse_per_end_flanking(per_end)
+    elif "flanking" in data and isinstance(data["flanking"], dict):
         flanking = _parse_per_end_flanking(data["flanking"])
-
-    same_orientation = bool(data.get("same_orientation", False))
-    if flanking is not None:
-        flanking.same_orientation = same_orientation
 
     return BarcodeKitConfig(
         name=data.get("name"),
@@ -1154,12 +1328,14 @@ def load_barcode_references_from_yaml(yaml_path: str | Path) -> Union[Tuple[Dict
         barcode_length=barcode_length,
         flanking=flanking,
         barcode_ends=str(data.get("barcode_ends", "both")).strip().lower(),
-        barcode_flank_mode=str(data.get("barcode_flank_mode", "adapter_only")).strip().lower(),
         barcode_max_edit_distance=int(data.get("barcode_max_edit_distance", 3)),
-        barcode_adapter_max_edits=int(data.get("barcode_adapter_max_edits", 2)),
-        barcode_amplicon_max_edits=int(data.get("barcode_amplicon_max_edits", 2)),
+        barcode_composite_max_edits=int(data.get("barcode_composite_max_edits", 4)),
+        barcode_min_separation=(
+            None
+            if data.get("barcode_min_separation", None) is None
+            else int(data.get("barcode_min_separation"))
+        ),
         barcode_amplicon_gap_tolerance=int(data.get("barcode_amplicon_gap_tolerance", 5)),
-        same_orientation=same_orientation,
     )
 
 
@@ -1254,9 +1430,8 @@ def resolve_barcode_config(yaml_config: BarcodeKitConfig, cfg: Any) -> Dict[str,
     Returns
     -------
     Dict[str, Any]
-        Resolved configuration dictionary with keys: barcode_ends, barcode_flank_mode,
-        barcode_max_edit_distance, barcode_adapter_max_edits, barcode_amplicon_max_edits,
-        flanking.
+        Resolved configuration dictionary with keys: barcode_ends,
+        barcode_max_edit_distance, barcode_composite_max_edits, flanking.
     """
     def _get(attr: str, yaml_val: Any, default: Any) -> Any:
         cfg_val = getattr(cfg, attr, None)
@@ -1266,27 +1441,21 @@ def resolve_barcode_config(yaml_config: BarcodeKitConfig, cfg: Any) -> Dict[str,
             return yaml_val
         return default
 
-    yaml_same_orientation = yaml_config.same_orientation
-    if not yaml_same_orientation and yaml_config.flanking is not None:
-        yaml_same_orientation = yaml_config.flanking.same_orientation
-
     return {
         "barcode_ends": _get("barcode_ends", yaml_config.barcode_ends, "both"),
-        "barcode_flank_mode": _get("barcode_flank_mode", yaml_config.barcode_flank_mode, "adapter_only"),
         "barcode_max_edit_distance": _get(
             "barcode_max_edit_distance", yaml_config.barcode_max_edit_distance, 3
         ),
-        "barcode_adapter_max_edits": _get(
-            "barcode_adapter_max_edits", yaml_config.barcode_adapter_max_edits, 2
+        "barcode_composite_max_edits": _get(
+            "barcode_composite_max_edits", yaml_config.barcode_composite_max_edits, 4
         ),
-        "barcode_amplicon_max_edits": _get(
-            "barcode_amplicon_max_edits", yaml_config.barcode_amplicon_max_edits, 2
+        "barcode_min_separation": _get(
+            "barcode_min_separation", yaml_config.barcode_min_separation, None
         ),
         "barcode_amplicon_gap_tolerance": _get(
             "barcode_amplicon_gap_tolerance", yaml_config.barcode_amplicon_gap_tolerance, 5
         ),
         "flanking": yaml_config.flanking,
-        "same_orientation": _get("same_orientation", yaml_same_orientation, False),
     }
 
 
@@ -1341,17 +1510,15 @@ def extract_and_assign_barcodes_in_bam(
     barcode_search_window: int = 200,
     barcode_max_edit_distance: int = 3,
     barcode_adapter_matcher: str = "edlib",
-    barcode_adapter_max_edits: int = 2,
+    barcode_composite_max_edits: int = 4,
+    barcode_min_separation: Optional[int] = None,
     require_both_ends: bool = False,
     min_barcode_score: Optional[int] = None,
     samtools_backend: str | None = "auto",
     # New flanking parameters (optional; when provided, use flanking-based extraction)
     barcode_kit_config: Optional[BarcodeKitConfig] = None,
     barcode_ends: Optional[str] = None,
-    barcode_flank_mode: Optional[str] = None,
-    barcode_amplicon_max_edits: int = 2,
     barcode_amplicon_gap_tolerance: int = 5,
-    same_orientation: bool = False,
 ) -> Path:
     """Extract barcodes from reads and assign best-matching barcode from reference set.
 
@@ -1363,7 +1530,7 @@ def extract_and_assign_barcodes_in_bam(
     - B2: Right-end barcode match name (if found)
     - BE: Left-end match edit distance
     - BF: Right-end match edit distance
-    - BM: Match type ("both", "left_only", "right_only", "mismatch", "unclassified")
+    - BM: Match type ("both", "read_start_only", "read_end_only", "mismatch", "unclassified")
 
     When ``barcode_kit_config`` with flanking sequences is provided, extraction uses
     ``_extract_sequence_with_flanking`` instead of
@@ -1386,8 +1553,10 @@ def extract_and_assign_barcodes_in_bam(
         Maximum edit distance to consider a barcode match (default 3).
     barcode_adapter_matcher : str
         Adapter matching method: "exact" or "edlib" (default "edlib").
-    barcode_adapter_max_edits : int
-        Maximum edit distance for adapter matching (default 2).
+    barcode_composite_max_edits : int
+        Maximum edit distance for composite or single-flank matching (default 4).
+    barcode_min_separation : int, optional
+        Minimum required distance to the second-best match.
     require_both_ends : bool
         If True, only assign barcode if both ends match the same barcode.
     min_barcode_score : int, optional
@@ -1398,11 +1567,8 @@ def extract_and_assign_barcodes_in_bam(
         Full barcode kit config with flanking sequences. When provided with
         flanking data, enables flanking-based extraction.
     barcode_ends : str, optional
-        Which reference ends to check: "both", "left_only", "right_only".
-    barcode_flank_mode : str, optional
-        Flanking mode: "adapter_only", "amplicon_only", "both".
-    barcode_amplicon_max_edits : int
-        Max edit distance for amplicon_side validation (default 2).
+        Which read ends to check: "both", "read_start", "read_end",
+        "left_only", "right_only".
     barcode_amplicon_gap_tolerance : int
         Allowed gap/overlap (bp) between amplicon and barcode in amplicon-only extraction.
 
@@ -1431,9 +1597,6 @@ def extract_and_assign_barcodes_in_bam(
         and barcode_kit_config.flanking is not None
     )
     flanking_config = barcode_kit_config.flanking if use_flanking else None
-    effective_flank_mode = barcode_flank_mode or (
-        barcode_kit_config.barcode_flank_mode if barcode_kit_config else "adapter_only"
-    )
     effective_barcode_ends = barcode_ends or (
         barcode_kit_config.barcode_ends if barcode_kit_config else "both"
     )
@@ -1470,9 +1633,11 @@ def extract_and_assign_barcodes_in_bam(
     if matcher == "edlib":
         require("edlib", extra="umi", purpose="fuzzy barcode adapter matching")
 
-    # Determine which ends to process
-    check_left = effective_barcode_ends in ("both", "left_only")
-    check_right = effective_barcode_ends in ("both", "right_only")
+    composite_max_edits = 0 if barcode_composite_max_edits is None else int(barcode_composite_max_edits)
+
+    # Determine which ends to process (read_start/read_end)
+    check_start = effective_barcode_ends in ("both", "left_only", "read_start")
+    check_end = effective_barcode_ends in ("both", "right_only", "read_end")
 
     backend_choice = _resolve_samtools_backend(samtools_backend)
     pysam_mod = _require_pysam()
@@ -1481,8 +1646,8 @@ def extract_and_assign_barcodes_in_bam(
     # Statistics
     total_reads = 0
     reads_both_ends = 0
-    reads_left_only = 0
-    reads_right_only = 0
+    reads_start_only = 0
+    reads_end_only = 0
     reads_unclassified = 0
     reads_mismatch_ends = 0
 
@@ -1498,106 +1663,82 @@ def extract_and_assign_barcodes_in_bam(
                 (None, None),
                 (None, None),
             ]
+            extracted_start_seq: Optional[str] = None
+            extracted_end_seq: Optional[str] = None
 
-            for i, ref_side in enumerate(["left", "right"]):
-                if i == 0 and not check_left:
+            for i, read_end in enumerate(["start", "end"]):
+                if i == 0 and not check_start:
                     continue
-                if i == 1 and not check_right:
+                if i == 1 and not check_end:
                     continue
 
-                read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
-                search_from_start = (read_end == "start")
+                search_from_start = read_end == "start"
 
                 extracted_bc: Optional[str] = None
 
                 if use_flanking:
-                    # Get per-end flanking config
-                    end_flanking = (
-                        flanking_config.left_ref_end if ref_side == "left"
-                        else flanking_config.right_ref_end
-                    )
-                    if end_flanking is not None:
-                        # RC flanking sequences when the read-strand orientation
-                        # differs from the YAML reference orientation.
-                        # YAML stores forward-strand sequences for the left ref end.
-                        # Right ref end construct is RC of left, so we RC when:
-                        #   forward read + right ref end, OR reverse read + left ref end
-                        needs_rc = read.is_reverse != (ref_side == "right")
-                        if needs_rc:
-                            end_flanking = FlankingConfig(
-                                adapter_side=_reverse_complement(end_flanking.adapter_side) if end_flanking.adapter_side else None,
-                                amplicon_side=_reverse_complement(end_flanking.amplicon_side) if end_flanking.amplicon_side else None,
+                    flanking_candidates: List[FlankingConfig] = []
+                    if flanking_config is not None:
+                        if (
+                            flanking_config.left_ref_end is not None
+                            and (
+                                flanking_config.left_ref_end.adapter_side
+                                or flanking_config.left_ref_end.amplicon_side
                             )
-                        extracted_bc, _, _ = _extract_sequence_with_flanking(
+                        ):
+                            flanking_candidates.append(flanking_config.left_ref_end)
+                        if (
+                            flanking_config.right_ref_end is not None
+                            and flanking_config.right_ref_end not in flanking_candidates
+                            and (
+                                flanking_config.right_ref_end.adapter_side
+                                or flanking_config.right_ref_end.amplicon_side
+                            )
+                        ):
+                            flanking_candidates.append(flanking_config.right_ref_end)
+
+                    for candidate in flanking_candidates:
+                        end_flanking = candidate
+                        if read_end == "end":
+                            if candidate.adapter_side and candidate.amplicon_side:
+                                end_flanking = FlankingConfig(
+                                    adapter_side=_reverse_complement(candidate.amplicon_side),
+                                    amplicon_side=_reverse_complement(candidate.adapter_side),
+                                )
+                            elif candidate.adapter_side:
+                                end_flanking = FlankingConfig(
+                                    adapter_side=_reverse_complement(candidate.adapter_side),
+                                    amplicon_side=None,
+                                )
+                            elif candidate.amplicon_side:
+                                end_flanking = FlankingConfig(
+                                    adapter_side=None,
+                                    amplicon_side=_reverse_complement(candidate.amplicon_side),
+                                )
+                            else:
+                                end_flanking = FlankingConfig(adapter_side=None, amplicon_side=None)
+
+                        extracted_bc, _, _ = _extract_barcode_with_flanking(
                             read_sequence=sequence,
                             target_length=barcode_length,
                             search_window=barcode_search_window,
                             search_from_start=search_from_start,
                             flanking=end_flanking,
-                            flank_mode=effective_flank_mode,
                             adapter_matcher=matcher,
-                            adapter_max_edits=barcode_adapter_max_edits,
-                            amplicon_max_edits=barcode_amplicon_max_edits,
-                            same_orientation=same_orientation,
+                            composite_max_edits=composite_max_edits,
                         )
-                        # RC extracted barcode back to forward orientation
-                        if extracted_bc and needs_rc:
+
+                        if extracted_bc and read_end == "end":
                             extracted_bc = _reverse_complement(extracted_bc)
+
                         if extracted_bc:
-                            match_name, match_dist = _match_barcode_to_references(
-                                extracted_bc,
-                                bc_refs,
-                                max_edit_distance=barcode_max_edit_distance,
-                            )
-                            if match_name is not None and (
-                                min_barcode_score is None or match_dist <= min_barcode_score
-                            ):
-                                bc_matches[i] = (match_name, match_dist)
-                                continue
-                            extracted_bc = None
-                        if (
-                            extracted_bc is None
-                            and effective_flank_mode in ("amplicon_only", "either")
-                            and barcode_amplicon_gap_tolerance > 0
-                        ):
-                            candidates = _extract_barcode_candidates_from_amplicon(
-                                read_sequence=sequence,
-                                target_length=barcode_length,
-                                search_window=barcode_search_window,
-                                search_from_start=search_from_start,
-                                flanking=end_flanking,
-                                adapter_matcher=matcher,
-                                amplicon_max_edits=barcode_amplicon_max_edits,
-                                gap_tolerance=barcode_amplicon_gap_tolerance,
-                                same_orientation=same_orientation,
-                            )
-                            best_name: Optional[str] = None
-                            best_dist: Optional[int] = None
-                            for candidate in candidates:
-                                cand = _reverse_complement(candidate) if needs_rc else candidate
-                                name, dist = _match_barcode_to_references(
-                                    cand,
-                                    bc_refs,
-                                    max_edit_distance=barcode_max_edit_distance,
-                                )
-                                if name is None:
-                                    continue
-                                if min_barcode_score is not None and dist > min_barcode_score:
-                                    continue
-                                if best_dist is None or dist < best_dist:
-                                    best_name = name
-                                    best_dist = dist
-                            if best_name is not None:
-                                bc_matches[i] = (best_name, best_dist)
-                                continue
-                        extracted_bc = None
+                            break
                 else:
                     # Legacy path
                     adapter = adapters[i] if i < len(adapters) else None
                     if adapter is None:
                         continue
-                    # RC adapter for reverse-strand reads
-                    search_adapter = _reverse_complement(adapter) if read.is_reverse else adapter
+                    search_adapter = _reverse_complement(adapter) if read_end == "end" else adapter
                     extracted_bc, _ = _extract_barcode_adjacent_to_adapter_on_read_end(
                         read_sequence=sequence,
                         adapter_sequence=search_adapter,
@@ -1605,17 +1746,21 @@ def extract_and_assign_barcodes_in_bam(
                         barcode_search_window=barcode_search_window,
                         search_from_start=search_from_start,
                         adapter_matcher=matcher,
-                        adapter_max_edits=barcode_adapter_max_edits,
+                        adapter_max_edits=composite_max_edits,
                     )
-                    # RC extracted barcode for reverse-strand reads
-                    if extracted_bc and read.is_reverse:
+                    if extracted_bc and read_end == "end":
                         extracted_bc = _reverse_complement(extracted_bc)
 
                 if extracted_bc:
+                    if read_end == "start":
+                        extracted_start_seq = extracted_bc
+                    else:
+                        extracted_end_seq = extracted_bc
                     match_name, match_dist = _match_barcode_to_references(
                         extracted_bc,
                         bc_refs,
                         max_edit_distance=barcode_max_edit_distance,
+                        min_separation=barcode_min_separation,
                     )
                     if match_name is not None:
                         if min_barcode_score is None or match_dist <= min_barcode_score:
@@ -1636,14 +1781,14 @@ def extract_and_assign_barcodes_in_bam(
                     reads_mismatch_ends += 1
                     reads_unclassified += 1
             elif left_match:
-                match_type = "left_only"
-                reads_left_only += 1
+                match_type = "read_start_only"
+                reads_start_only += 1
                 assigned_bc = "unclassified" if require_both_ends else left_match
                 if require_both_ends:
                     reads_unclassified += 1
             elif right_match:
-                match_type = "right_only"
-                reads_right_only += 1
+                match_type = "read_end_only"
+                reads_end_only += 1
                 assigned_bc = "unclassified" if require_both_ends else right_match
                 if require_both_ends:
                     reads_unclassified += 1
@@ -1655,6 +1800,11 @@ def extract_and_assign_barcodes_in_bam(
             # Write tags
             read.set_tag("BC", assigned_bc, value_type="Z")
             read.set_tag("BM", match_type, value_type="Z")
+
+            if extracted_start_seq:
+                read.set_tag("B3", extracted_start_seq, value_type="Z")
+            if extracted_end_seq:
+                read.set_tag("B4", extracted_end_seq, value_type="Z")
 
             if left_match:
                 read.set_tag("B1", left_match, value_type="Z")
@@ -1683,18 +1833,18 @@ def extract_and_assign_barcodes_in_bam(
         "Barcode extraction complete for %s:\n"
         "  total_reads=%d\n"
         "  both_ends=%d (%.1f%%)\n"
-        "  left_only=%d (%.1f%%)\n"
-        "  right_only=%d (%.1f%%)\n"
+        "  read_start_only=%d (%.1f%%)\n"
+        "  read_end_only=%d (%.1f%%)\n"
         "  mismatch_ends=%d (%.1f%%)\n"
         "  unclassified=%d (%.1f%%)",
         input_bam,
         total_reads,
         reads_both_ends,
         100 * reads_both_ends / max(1, total_reads),
-        reads_left_only,
-        100 * reads_left_only / max(1, total_reads),
-        reads_right_only,
-        100 * reads_right_only / max(1, total_reads),
+        reads_start_only,
+        100 * reads_start_only / max(1, total_reads),
+        reads_end_only,
+        100 * reads_end_only / max(1, total_reads),
         reads_mismatch_ends,
         100 * reads_mismatch_ends / max(1, total_reads),
         reads_unclassified,

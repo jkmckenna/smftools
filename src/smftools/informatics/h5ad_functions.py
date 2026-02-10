@@ -94,7 +94,7 @@ def add_demux_type_from_bm_tag(
 
     Mapping:
         - "both" → "double" (both ends matched same barcode)
-        - "left_only", "right_only" → "single" (one end matched)
+        - "left_only", "right_only", "read_start_only", "read_end_only" → "single"
         - "mismatch", "unclassified" → "unclassified"
 
     Parameters
@@ -125,7 +125,7 @@ def add_demux_type_from_bm_tag(
         bm_values == "both",
         "double",
         np.where(
-            bm_values.isin(["left_only", "right_only"]),
+            bm_values.isin(["left_only", "right_only", "read_start_only", "read_end_only"]),
             "single",
             "unclassified",
         ),
@@ -700,7 +700,7 @@ def add_demux_type_from_bm_tag(adata, bm_column="BM"):
 
     Maps BM tag values to demux_type categories:
     - "both" → "double_ended"
-    - "left_only" or "right_only" → "single_ended"
+    - "left_only", "right_only", "read_start_only", "read_end_only" → "single_ended"
     - "unknown" or "unclassified" → "unclassified"
 
     Parameters
@@ -724,7 +724,7 @@ def add_demux_type_from_bm_tag(adata, bm_column="BM"):
         bm_str = str(bm_value).lower()
         if bm_str == "both":
             return "double_ended"
-        elif bm_str in ("left_only", "right_only"):
+        elif bm_str in ("left_only", "right_only", "read_start_only", "read_end_only"):
             return "single_ended"
         else:  # unknown, unclassified
             return "unclassified"

@@ -3,11 +3,8 @@ flanking:
   adapter_side: GCTTGGGTGTTTAACC
   amplicon_side: GTTTTCGCATTTATCGTGAAACGCTTTCGCGTTTTTCGTGCGCCGCTTCA
 barcode_ends: read_start
-barcode_flank_mode: either
 barcode_max_edit_distance: 5
-barcode_adapter_max_edits: 2
-barcode_amplicon_max_edits: 10
-same_orientation: false
+barcode_composite_max_edits: 12
 barcodes:
   RB01: AAGAAAGTTGTCGGTGTCTTTGTG
   RB02: TCGATTCCGTTTGTAGTCGTCTGT

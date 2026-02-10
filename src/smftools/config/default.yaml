@@ -102,15 +102,13 @@ barcode_adapters: [null, null] # Two-slot list [left_ref_end_adapter, right_ref_
 barcode_search_window: 200 # Max distance from read ends to search for adapter
 barcode_max_edit_distance: null # Max edit distance for matching extracted barcode to references; null defers to YAML/default
 barcode_adapter_matcher: edlib # exact|edlib for adapter detection
-barcode_adapter_max_edits: null # Max edits for adapter matching (when using edlib); null defers to YAML/default
+barcode_composite_max_edits: null # Max edits for composite or single-flank matching; null defers to YAML/default
+barcode_min_separation: null # Min distance between best and second-best barcode match; null disables
 barcode_min_score: null # Optional minimum score threshold for barcode assignment
 
 # Barcode flanking configuration
-barcode_ends: null  # both | left_only | right_only - null defers to YAML/default
-barcode_flank_mode: null  # adapter_only | amplicon_only | both - null defers to YAML/default
-barcode_amplicon_max_edits: null  # Max edits for amplicon_side validation; null defers to YAML/default
+barcode_ends: null  # both | read_start | read_end | left_only | right_only - null defers to YAML/default
 barcode_amplicon_gap_tolerance: 5  # Allowed gap/overlap (bp) between amplicon and barcode; null defers to YAML/default
-same_orientation: null  # Whether barcode construct has same orientation at both read ends; null defers to YAML/default
 
 # UMI flanking configuration
 umi_ends: null  # both | left_only | right_only - null defers to YAML/default
