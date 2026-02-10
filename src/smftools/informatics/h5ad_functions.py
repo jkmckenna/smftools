@@ -622,3 +622,115 @@ def annotate_pod5_origin(
             logger.info("CSV saved.")
 
     return global_mapping
+
+
+def expand_bi_tag_columns(adata, bi_column="bi"):
+    """Expand dorado bi array tag into individual score columns.
+
+    The bi tag is a 7-element float array from dorado >= 1.3.1:
+    - bi[0]: overall barcode score
+    - bi[1]: top barcode start position
+    - bi[2]: top barcode length
+    - bi[3]: top (front) barcode score
+    - bi[4]: bottom barcode end position  
+    - bi[5]: bottom barcode length
+    - bi[6]: bottom (rear) barcode score
+
+    This function expands the array into separate columns with descriptive names.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        AnnData object with bi tag in obs.
+    bi_column : str, default "bi"
+        Name of the column containing bi array.
+    """
+    import pandas as pd
+
+    if bi_column not in adata.obs.columns:
+        logger.debug(f"Column '{bi_column}' not found in adata.obs, skipping expansion")
+        return
+
+    logger.info(f"Expanding {bi_column} array into individual columns")
+
+    bi_data = adata.obs[bi_column]
+    
+    # Initialize columns
+    bi_overall = []
+    bi_top_start = []
+    bi_top_length = []
+    bi_top_score = []
+    bi_bottom_end = []
+    bi_bottom_length = []
+    bi_bottom_score = []
+
+    for val in bi_data:
+        if pd.isna(val) or val is None:
+            bi_overall.append(np.nan)
+            bi_top_start.append(np.nan)
+            bi_top_length.append(np.nan)
+            bi_top_score.append(np.nan)
+            bi_bottom_end.append(np.nan)
+            bi_bottom_length.append(np.nan)
+            bi_bottom_score.append(np.nan)
+        else:
+            # val should be array-like
+            bi_array = np.array(val) if not isinstance(val, np.ndarray) else val
+            bi_overall.append(bi_array[0] if len(bi_array) > 0 else np.nan)
+            bi_top_start.append(bi_array[1] if len(bi_array) > 1 else np.nan)
+            bi_top_length.append(bi_array[2] if len(bi_array) > 2 else np.nan)
+            bi_top_score.append(bi_array[3] if len(bi_array) > 3 else np.nan)
+            bi_bottom_end.append(bi_array[4] if len(bi_array) > 4 else np.nan)
+            bi_bottom_length.append(bi_array[5] if len(bi_array) > 5 else np.nan)
+            bi_bottom_score.append(bi_array[6] if len(bi_array) > 6 else np.nan)
+
+    adata.obs["bi_overall_score"] = bi_overall
+    adata.obs["bi_top_start"] = bi_top_start
+    adata.obs["bi_top_length"] = bi_top_length
+    adata.obs["bi_top_score"] = bi_top_score
+    adata.obs["bi_bottom_end"] = bi_bottom_end
+    adata.obs["bi_bottom_length"] = bi_bottom_length
+    adata.obs["bi_bottom_score"] = bi_bottom_score
+
+    logger.info("Created columns: bi_overall_score, bi_top_score, bi_bottom_score, etc.")
+
+
+def add_demux_type_from_bm_tag(adata, bm_column="BM"):
+    """Add demux_type column to adata.obs from BM tag values.
+
+    Maps BM tag values to demux_type categories:
+    - "both" → "double_ended"
+    - "left_only" or "right_only" → "single_ended"
+    - "unknown" or "unclassified" → "unclassified"
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        AnnData object.
+    bm_column : str, default "BM"
+        Name of column containing BM tag values.
+    """
+    import pandas as pd
+
+    if bm_column not in adata.obs.columns:
+        logger.warning(f"Column '{bm_column}' not found in adata.obs, cannot derive demux_type")
+        return
+
+    logger.info(f"Deriving demux_type from {bm_column} tag")
+
+    def map_bm_to_demux_type(bm_value):
+        if pd.isna(bm_value):
+            return "unclassified"
+        bm_str = str(bm_value).lower()
+        if bm_str == "both":
+            return "double_ended"
+        elif bm_str in ("left_only", "right_only"):
+            return "single_ended"
+        else:  # unknown, unclassified
+            return "unclassified"
+
+    adata.obs["demux_type"] = adata.obs[bm_column].apply(map_bm_to_demux_type)
+
+    # Log counts
+    counts = adata.obs["demux_type"].value_counts()
+    logger.info(f"demux_type counts: {counts.to_dict()}")

@@ -35,6 +35,89 @@ logger = get_logger(__name__)
 _PROGRESS_RE = re.compile(r"Output records written:\s*(\d+)")
 _EMPTY_RE = re.compile(r"^\s*$")
 
+# Global cache for dorado version
+_DORADO_VERSION_CACHE: Optional[Tuple[int, int, int]] = None
+
+
+def _get_dorado_version() -> Optional[Tuple[int, int, int]]:
+    """Get installed dorado version as (major, minor, patch) tuple, or None if not found.
+
+    Returns
+    -------
+    tuple of (int, int, int) or None
+        Version tuple like (1, 3, 1) for dorado 1.3.1, or None if dorado not found.
+    """
+    global _DORADO_VERSION_CACHE
+    if _DORADO_VERSION_CACHE is not None:
+        return _DORADO_VERSION_CACHE
+
+    try:
+        result = subprocess.run(
+            ["dorado", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        version_str = result.stdout.strip() or result.stderr.strip()
+        # Parse "1.3.1" or "0.9.0+9dc15a85"
+        match = re.match(r"(\d+)\.(\d+)\.(\d+)", version_str)
+        if match:
+            _DORADO_VERSION_CACHE = (
+                int(match.group(1)),
+                int(match.group(2)),
+                int(match.group(3))
+            )
+            logger.info(f"Detected dorado version: {'.'.join(str(v) for v in _DORADO_VERSION_CACHE)}")
+            return _DORADO_VERSION_CACHE
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        logger.debug(f"Could not determine dorado version: {e}")
+
+    return None
+
+
+def _bam_has_barcode_info_tags(bam_path: str | Path, sample_size: int = 100) -> dict:
+    """Check whether classified reads in a BAM have dorado bi/bv barcode scoring tags.
+
+    Samples up to sample_size reads that carry a BC tag and returns a dict with boolean flags.
+
+    Parameters
+    ----------
+    bam_path : str or Path
+        Path to BAM file to check.
+    sample_size : int, default 100
+        Maximum number of BC-tagged reads to sample.
+
+    Returns
+    -------
+    dict
+        Dictionary with keys:
+        - 'has_bc': at least one read has a BC tag
+        - 'has_bi': at least one classified read also has a bi tag
+        - 'has_bv': at least one classified read also has a bv tag
+    """
+    pysam_mod = _require_pysam()
+    has_bc = False
+    has_bi = False
+    has_bv = False
+    checked = 0
+
+    try:
+        with pysam_mod.AlignmentFile(str(bam_path), "rb", check_sq=False) as bam:
+            for read in bam:
+                if read.has_tag("BC"):
+                    has_bc = True
+                    if read.has_tag("bi"):
+                        has_bi = True
+                    if read.has_tag("bv"):
+                        has_bv = True
+                    checked += 1
+                    if checked >= sample_size:
+                        break
+    except Exception as e:
+        logger.warning(f"Error checking BAM tags in {bam_path}: {e}")
+
+    return {"has_bc": has_bc, "has_bi": has_bi, "has_bv": has_bv}
+
 
 # ---------------------------------------------------------------------------
 # Flanking-sequence configuration dataclasses
@@ -2591,8 +2674,111 @@ def count_aligned_reads(bam_file, samtools_backend: str | None = "auto"):
     return _parse_idxstats_output(cp.stdout)
 
 
+def annotate_demux_type_from_bi_tag(
+    bam_path: str | Path,
+    output_path: Optional[str | Path] = None,
+    threshold: float = 0.0
+) -> Path:
+    """Annotate reads with a BM tag based on dorado bi per-end barcode scores.
+
+    The bi tag is a float array of 7 elements written by dorado >= 1.3.1:
+
+    - bi[0]: overall barcode score
+    - bi[1-2]: top barcode position/length
+    - bi[3]: **top (front) barcode score**
+    - bi[4-5]: bottom barcode position/length
+    - bi[6]: **bottom (rear) barcode score**
+
+    Classification logic:
+
+    - Both bi[3] and bi[6] > threshold → "both"
+    - Only bi[3] > threshold → "left_only"
+    - Only bi[6] > threshold → "right_only"
+    - Has BC but no bi tag → "unknown"
+    - No BC tag → "unclassified"
+
+    Parameters
+    ----------
+    bam_path : str or Path
+        Path to input BAM file.
+    output_path : str or Path, optional
+        Path to output BAM file. If None, overwrites input in-place (via a temporary file).
+    threshold : float, default 0.0
+        Minimum per-end score to consider a barcode match.
+
+    Returns
+    -------
+    Path
+        Path to the output BAM file.
+    """
+    pysam_mod = _require_pysam()
+    bam_path = Path(bam_path)
+
+    if output_path is None:
+        tmp_path = bam_path.with_suffix(".bm_tmp.bam")
+    else:
+        tmp_path = Path(output_path)
+
+    counts = {
+        "both": 0,
+        "left_only": 0,
+        "right_only": 0,
+        "unknown": 0,
+        "unclassified": 0
+    }
+
+    with pysam_mod.AlignmentFile(str(bam_path), "rb", check_sq=False) as inbam:
+        with pysam_mod.AlignmentFile(str(tmp_path), "wb", header=inbam.header) as outbam:
+            for read in inbam:
+                if not read.has_tag("BC"):
+                    bm_value = "unclassified"
+                elif not read.has_tag("bi"):
+                    bm_value = "unknown"
+                else:
+                    bi = read.get_tag("bi")
+                    top_score = bi[3] if len(bi) > 3 else -1.0
+                    bottom_score = bi[6] if len(bi) > 6 else -1.0
+
+                    if top_score > threshold and bottom_score > threshold:
+                        bm_value = "both"
+                    elif top_score > threshold:
+                        bm_value = "left_only"
+                    elif bottom_score > threshold:
+                        bm_value = "right_only"
+                    else:
+                        bm_value = "unknown"
+
+                read.set_tag("BM", bm_value, value_type="Z")
+                outbam.write(read)
+                counts[bm_value] += 1
+
+    if output_path is None:
+        tmp_path.rename(bam_path)
+        result_path = bam_path
+    else:
+        result_path = tmp_path
+
+    # Re-index after rewriting the BAM
+    pysam_mod.index(str(result_path))
+
+    logger.info(
+        "BM tag annotation complete for %s: %s",
+        result_path.name,
+        ", ".join(f"{k}={v}" for k, v in counts.items())
+    )
+    return result_path
+
+
 def demux_and_index_BAM(
-    aligned_sorted_BAM, split_dir, bam_suffix, barcode_kit, barcode_both_ends, trim, threads
+    aligned_sorted_BAM,
+    split_dir,
+    bam_suffix,
+    barcode_kit,
+    barcode_both_ends,
+    trim,
+    threads,
+    no_classify=False,
+    file_prefix=None,
 ):
     """
     A wrapper function for splitting BAMS and indexing them.
@@ -2604,6 +2790,10 @@ def demux_and_index_BAM(
         barcode_both_ends (bool): Whether to require both ends to be barcoded.
         trim (bool): Whether to trim off barcodes after demultiplexing.
         threads (int): Number of threads to use.
+        no_classify (bool): When True, use --no-classify to split by existing BC tags
+            without re-classifying barcodes. Ignores barcode_kit and barcode_both_ends.
+        file_prefix (str or None): Optional prefix for output BAM filenames. If None,
+            defaults to "de"/"se" based on barcode_both_ends (legacy behavior).
 
     Returns:
         bam_files (list): List of split BAM file path strings
@@ -2611,18 +2801,23 @@ def demux_and_index_BAM(
     """
 
     input_bam = aligned_sorted_BAM.with_suffix(bam_suffix)
-    command = ["dorado", "demux", "--kit-name", barcode_kit]
-    if barcode_both_ends:
-        command.append("--barcode-both-ends")
+
+    # Build command based on mode
+    if no_classify:
+        command = ["dorado", "demux", "--no-classify"]
+    else:
+        command = ["dorado", "demux", "--kit-name", barcode_kit]
+        if barcode_both_ends:
+            command.append("--barcode-both-ends")
+
     if not trim:
         command.append("--no-trim")
     if threads:
         command += ["-t", str(threads)]
-    else:
-        pass
+
     command += ["--emit-summary", "--sort-bam", "--output-dir", str(split_dir)]
     command.append(str(input_bam))
-    command_string = " ".join(command)
+
     logger.info("Running dorado demux: %s", " ".join(command))
 
     proc = subprocess.Popen(
@@ -2648,11 +2843,15 @@ def demux_and_index_BAM(
 
     # ---- Optional renaming with prefix ----
     renamed_bams = []
-    prefix = "de" if barcode_both_ends else "se"
+    # Use file_prefix if provided, otherwise default to legacy se/de prefix
+    if file_prefix is None:
+        prefix = "de" if barcode_both_ends else "se"
+    else:
+        prefix = file_prefix
 
     for bam in bam_files:
         bam = Path(bam)
-        bai = bam.with_suffix(bam_suffix + ".bai")  # dorado’s sorting produces .bam.bai
+        bai = bam.with_suffix(bam_suffix + ".bai")  # dorado's sorting produces .bam.bai
 
         if prefix:
             new_name = f"{prefix}_{bam.name}"

@@ -171,7 +171,11 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     from ..informatics.bam_functions import (
         BarcodeKitConfig,
+        _bam_has_barcode_info_tags,
+        _build_flanking_from_adapters,
+        _get_dorado_version,
         align_and_sort_BAM,
+        annotate_demux_type_from_bi_tag,
         annotate_umi_tags_in_bam,
         bam_qc,
         concatenate_fastqs_to_bam,
@@ -184,7 +188,6 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         resolve_barcode_config,
         resolve_umi_config,
         split_and_index_BAM,
-        _build_flanking_from_adapters,
     )
     from ..informatics.basecalling import canoncall, modcall
     from ..informatics.bed_functions import aligned_BAM_to_bed
@@ -199,6 +202,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         add_read_length_and_mapping_qc,
         add_read_tag_annotations,
         add_secondary_supplementary_alignment_flags,
+        expand_bi_tag_columns,
     )
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
@@ -650,69 +654,146 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         double_barcoded_path = None
 
     else:
-        if single_barcoded_path.is_dir():
-            logger.debug(
-                f"{single_barcoded_path} already exists. Using existing single ended demultiplexed BAMs."
-            )
+        # --- Dorado demux: version-aware branching ---
+        dorado_version = _get_dorado_version()
+        use_single_pass = dorado_version is not None and dorado_version >= (1, 3, 1)
 
-            all_se_bam_files = sorted(
-                p
-                for p in single_barcoded_path.iterdir()
-                if p.is_file() and p.suffix == cfg.bam_suffix
-            )
-            unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
-            se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
+        if use_single_pass:
+            # Check what barcode tags are already present in the BAM
+            tag_info = _bam_has_barcode_info_tags(aligned_sorted_output)
+
+            if tag_info["has_bc"] and tag_info["has_bi"]:
+                # Best case: basecalling already classified with per-end scoring info
+                logger.info(
+                    "Dorado basecalling already classified barcodes with scoring info (bi/bv tags). "
+                    "Using --no-classify for demux."
+                )
+                demux_mode = "no_classify"
+            elif tag_info["has_bc"]:
+                # BC tags from older basecalling, but new dorado available — re-classify
+                logger.info(
+                    "BC tags present but no bi/bv scoring tags. "
+                    "Re-classifying barcodes with dorado >= 1.3.1 to get per-end scoring info."
+                )
+                demux_mode = "classify"
+            else:
+                # No BC tags — need full classification
+                logger.info("No existing barcode tags. Running full dorado demux classification.")
+                demux_mode = "classify"
+
+            # Single-pass demux into split_path directly (no se_/de_ subdirectories)
+            if cfg.split_path.is_dir():
+                logger.debug(
+                    f"{cfg.split_path} already exists. Using existing demultiplexed BAMs."
+                )
+                all_bam_files = sorted(
+                    p
+                    for p in cfg.split_path.iterdir()
+                    if p.is_file() and p.suffix == cfg.bam_suffix
+                )
+                unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
+                bam_files = [p for p in all_bam_files if "unclassified" not in p.name]
+            else:
+                make_dirs([cfg.split_path])
+                logger.info(
+                    "Demultiplexing with dorado (single-pass, version %s)",
+                    ".".join(str(v) for v in dorado_version)
+                )
+                all_bam_files = demux_and_index_BAM(
+                    aligned_sorted_BAM,
+                    cfg.split_path,
+                    cfg.bam_suffix,
+                    cfg.barcode_kit,
+                    barcode_both_ends=False,
+                    trim=cfg.trim,
+                    threads=cfg.threads,
+                    no_classify=(demux_mode == "no_classify"),
+                    file_prefix="",  # no se_/de_ prefix for single-pass
+                )
+                unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
+                bam_files = [p for p in all_bam_files if "unclassified" not in p.name]
+
+            # Annotate BM tag from bi per-end scores on each demuxed BAM
+            for bam in bam_files:
+                if "unclassified" not in bam.name:
+                    annotate_demux_type_from_bi_tag(bam, threshold=0.0)
+
+            se_bam_files = bam_files
+            bam_dir = cfg.split_path
+            double_barcoded_path = None
+
         else:
-            make_dirs([cfg.split_path, single_barcoded_path])
-            logger.info(
-                "Demultiplexing samples into individual aligned/sorted BAM files based on single end barcode status with Dorado"
-            )
-            all_se_bam_files = demux_and_index_BAM(
-                aligned_sorted_BAM,
-                single_barcoded_path,
-                cfg.bam_suffix,
-                cfg.barcode_kit,
-                False,
-                cfg.trim,
-                cfg.threads,
-            )
+            # Old dorado (< 1.3.1) or dorado not found: use existing 2-pass approach
+            if dorado_version is not None:
+                logger.warning(
+                    "Dorado version %s detected (< 1.3.1). Using 2-pass demux. "
+                    "Upgrade to dorado >= 1.3.1 for faster single-pass demux with per-end scoring.",
+                    ".".join(str(v) for v in dorado_version),
+                )
 
-            unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
-            se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
+            if single_barcoded_path.is_dir():
+                logger.debug(
+                    f"{single_barcoded_path} already exists. Using existing single ended demultiplexed BAMs."
+                )
 
-        if double_barcoded_path.is_dir():
-            logger.debug(
-                f"{double_barcoded_path} already exists. Using existing double ended demultiplexed BAMs."
-            )
+                all_se_bam_files = sorted(
+                    p
+                    for p in single_barcoded_path.iterdir()
+                    if p.is_file() and p.suffix == cfg.bam_suffix
+                )
+                unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
+                se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
+            else:
+                make_dirs([cfg.split_path, single_barcoded_path])
+                logger.info(
+                    "Demultiplexing samples into individual aligned/sorted BAM files based on single end barcode status with Dorado"
+                )
+                all_se_bam_files = demux_and_index_BAM(
+                    aligned_sorted_BAM,
+                    single_barcoded_path,
+                    cfg.bam_suffix,
+                    cfg.barcode_kit,
+                    False,
+                    cfg.trim,
+                    cfg.threads,
+                )
 
-            all_de_bam_files = sorted(
-                p
-                for p in double_barcoded_path.iterdir()
-                if p.is_file() and p.suffix == cfg.bam_suffix
-            )
-            unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
-            de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
-        else:
-            make_dirs([cfg.split_path, double_barcoded_path])
-            logger.info(
-                "Demultiplexing samples into individual aligned/sorted BAM files based on double end barcode status with Dorado"
-            )
-            all_de_bam_files = demux_and_index_BAM(
-                aligned_sorted_BAM,
-                double_barcoded_path,
-                cfg.bam_suffix,
-                cfg.barcode_kit,
-                True,
-                cfg.trim,
-                cfg.threads,
-            )
+                unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
+                se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
 
-            unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
-            de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
+            if double_barcoded_path.is_dir():
+                logger.debug(
+                    f"{double_barcoded_path} already exists. Using existing double ended demultiplexed BAMs."
+                )
 
-        bam_files = se_bam_files + de_bam_files
-        unclassified_bams = unclassified_se_bams + unclassified_de_bams
-        bam_dir = single_barcoded_path
+                all_de_bam_files = sorted(
+                    p
+                    for p in double_barcoded_path.iterdir()
+                    if p.is_file() and p.suffix == cfg.bam_suffix
+                )
+                unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
+                de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
+            else:
+                make_dirs([cfg.split_path, double_barcoded_path])
+                logger.info(
+                    "Demultiplexing samples into individual aligned/sorted BAM files based on double end barcode status with Dorado"
+                )
+                all_de_bam_files = demux_and_index_BAM(
+                    aligned_sorted_BAM,
+                    double_barcoded_path,
+                    cfg.bam_suffix,
+                    cfg.barcode_kit,
+                    True,
+                    cfg.trim,
+                    cfg.threads,
+                )
+
+                unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
+                de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
+
+            bam_files = se_bam_files + de_bam_files
+            unclassified_bams = unclassified_se_bams + unclassified_de_bams
+            bam_dir = single_barcoded_path
 
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
@@ -881,6 +962,11 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     # Add barcode tags if smftools barcode extraction was used
     if demux_backend == "smftools" and cfg.barcode_kit:
         default_tags.extend(["BC", "BM", "B1", "B2", "BE", "BF"])
+    # Add barcode tags from dorado single-pass demux (BM annotated from bi tag)
+    elif demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+        dorado_ver = _get_dorado_version()
+        if dorado_ver is not None and dorado_ver >= (1, 3, 1):
+            default_tags.extend(["BC", "BM", "bi"])
     bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
 
     logger.info("Adding BAM tags and BAM flags to adata.obs")
@@ -894,13 +980,20 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         samtools_backend=cfg.samtools_backend,
     )
 
-    # Derive demux_type from BM tag when using smftools backend
-    if (
-        demux_backend == "smftools"
-        and cfg.barcode_kit
-        and not cfg.input_already_demuxed
-    ):
-        logger.info("Deriving demux_type from BM tag (smftools backend)")
+    # Expand dorado bi array tag into individual float score columns
+    if "bi" in bam_tag_names:
+        expand_bi_tag_columns(raw_adata, bi_column="bi")
+
+    # Derive demux_type from BM tag when using smftools or dorado single-pass backend
+    _derive_bm = False
+    if demux_backend == "smftools" and cfg.barcode_kit and not cfg.input_already_demuxed:
+        _derive_bm = True
+    elif demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+        dorado_ver = _get_dorado_version()
+        if dorado_ver is not None and dorado_ver >= (1, 3, 1):
+            _derive_bm = True
+    if _derive_bm:
+        logger.info("Deriving demux_type from BM tag")
         add_demux_type_from_bm_tag(raw_adata, bm_column="BM")
 
     if getattr(cfg, "annotate_secondary_supplementary", False):
