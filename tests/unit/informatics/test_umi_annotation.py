@@ -369,7 +369,8 @@ class TestAnnotateUmiTagsInBam:
         )
         reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNNNNNNNNN"}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             umi_kit_config=umi_kit,
             umi_ends="left_only",
             umi_flank_mode="adapter_only",
@@ -383,8 +384,7 @@ class TestAnnotateUmiTagsInBam:
     def test_reverse_strand_umi(self, tmp_path):
         """Reverse read: left ref → read end, right ref → read start."""
         # TGCA(0-3) GGGG(4-7) NNNNNNNN(8-15) TTTT(16-19) ACGT(20-23)
-        reads = [{"name": "r1", "sequence": "TGCAGGGGNNNNNNNNTTTTACGT",
-                  "is_reverse": True}]
+        reads = [{"name": "r1", "sequence": "TGCAGGGGNNNNNNNNTTTTACGT", "is_reverse": True}]
         tags = self._run(tmp_path, reads)
         # Left ref → search from end → find ACGT at 20-24 → UMI before = TTTT
         assert tags["r1"]["U1"] == "TTTT"

@@ -226,17 +226,13 @@ class TestMatchBarcodeToReferences:
     def test_empty_barcode(self):
         """Test handling of empty extracted barcode."""
         references = {"barcode01": "AAAA"}
-        name, dist = bam_functions._match_barcode_to_references(
-            "", references, max_edit_distance=1
-        )
+        name, dist = bam_functions._match_barcode_to_references("", references, max_edit_distance=1)
         assert name is None
         assert dist is None
 
     def test_empty_references(self):
         """Test handling of empty reference set."""
-        name, dist = bam_functions._match_barcode_to_references(
-            "AAAA", {}, max_edit_distance=1
-        )
+        name, dist = bam_functions._match_barcode_to_references("AAAA", {}, max_edit_distance=1)
         assert name is None
         assert dist is None
 
@@ -269,9 +265,7 @@ class TestLoadBarcodeReferencesFromYaml:
     def test_load_flat_structure(self, tmp_path):
         """Test loading from flat YAML structure."""
         yaml_file = tmp_path / "barcodes.yaml"
-        yaml_file.write_text(
-            "barcode01: ACGTACGT\nbarcode02: TGCATGCA\nbarcode03: AAAACCCC\n"
-        )
+        yaml_file.write_text("barcode01: ACGTACGT\nbarcode02: TGCATGCA\nbarcode03: AAAACCCC\n")
         refs, length = bam_functions.load_barcode_references_from_yaml(yaml_file)
         assert refs == {
             "barcode01": "ACGTACGT",
@@ -283,9 +277,7 @@ class TestLoadBarcodeReferencesFromYaml:
     def test_load_nested_structure(self, tmp_path):
         """Test loading from nested YAML structure with 'barcodes' key."""
         yaml_file = tmp_path / "barcodes.yaml"
-        yaml_file.write_text(
-            "barcodes:\n  barcode01: ACGTACGT\n  barcode02: TGCATGCA\n"
-        )
+        yaml_file.write_text("barcodes:\n  barcode01: ACGTACGT\n  barcode02: TGCATGCA\n")
         refs, length = bam_functions.load_barcode_references_from_yaml(yaml_file)
         assert refs == {
             "barcode01": "ACGTACGT",
@@ -405,7 +397,9 @@ class TestAddDemuxTypeFromBmTag:
 
     def test_mixed_values(self):
         """Test correct mapping with mixed BM values."""
-        adata = self._make_adata(["both", "read_start_only", "read_end_only", "mismatch", "unclassified"])
+        adata = self._make_adata(
+            ["both", "read_start_only", "read_end_only", "mismatch", "unclassified"]
+        )
         add_demux_type_from_bm_tag(adata)
         expected = ["double", "single", "single", "unclassified", "unclassified"]
         assert list(adata.obs["demux_type"]) == expected
@@ -715,9 +709,7 @@ class TestLoadBarcodeYamlNewFormat:
     def test_backward_compat_old_format(self, tmp_path):
         """Old format without flanking still returns tuple."""
         yaml_file = tmp_path / "barcodes.yaml"
-        yaml_file.write_text(
-            "barcode01: ACGTACGT\nbarcode02: TGCATGCA\n"
-        )
+        yaml_file.write_text("barcode01: ACGTACGT\nbarcode02: TGCATGCA\n")
         result = bam_functions.load_barcode_references_from_yaml(yaml_file)
         assert isinstance(result, tuple)
         refs, length = result
@@ -744,11 +736,7 @@ class TestLoadBarcodeYamlNewFormat:
         """New format with nested barcodes key."""
         yaml_file = tmp_path / "barcodes.yaml"
         yaml_file.write_text(
-            "flanking:\n"
-            "  adapter_side: ACGT\n"
-            "barcodes:\n"
-            "  BC01: AAAACCCC\n"
-            "  BC02: GGGGTTTT\n"
+            "flanking:\n  adapter_side: ACGT\nbarcodes:\n  BC01: AAAACCCC\n  BC02: GGGGTTTT\n"
         )
         result = bam_functions.load_barcode_references_from_yaml(yaml_file)
         assert isinstance(result, BarcodeKitConfig)
@@ -781,12 +769,7 @@ class TestLoadUmiConfigFromYaml:
     def test_load_nested_umi_key(self, tmp_path):
         """Support umi: top-level key."""
         yaml_file = tmp_path / "umi.yaml"
-        yaml_file.write_text(
-            "umi:\n"
-            "  flanking:\n"
-            "    adapter_side: ACGT\n"
-            "  length: 8\n"
-        )
+        yaml_file.write_text("umi:\n  flanking:\n    adapter_side: ACGT\n  length: 8\n")
         result = load_umi_config_from_yaml(yaml_file)
         assert result.length == 8
         assert result.flanking.left_ref_end.adapter_side == "ACGT"
@@ -863,6 +846,7 @@ class TestConfigResolution:
         resolved = resolve_umi_config(None, FakeCfg())
         assert resolved["umi_ends"] == "both"
         assert resolved["umi_flank_mode"] == "adapter_only"
+
 
 class TestBuildFlankingFromAdapters:
     """Tests for legacy adapter conversion."""
@@ -1042,7 +1026,7 @@ class TestExtractAndAssignBarcodesInBam:
         """
         adapter = "ATCG"
         rc_adapter = _reverse_complement(adapter)  # CGAT
-        rc_bc = _reverse_complement("AAAA")        # TTTT
+        rc_bc = _reverse_complement("AAAA")  # TTTT
         kit = BarcodeKitConfig(
             barcodes=self.BC_REFS,
             barcode_length=4,
@@ -1054,7 +1038,8 @@ class TestExtractAndAssignBarcodesInBam:
         # Left: ATCG + AAAA + ... Right: ... + TTTT + CGAT
         reads = [{"name": "r1", "sequence": f"ATCGAAAANNNNNNNN{rc_bc}{rc_adapter}"}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=kit,
         )
         assert tags["r1"]["BC"] == "BC01"
@@ -1073,8 +1058,7 @@ class TestExtractAndAssignBarcodesInBam:
         # at READ start and left adapter (ACGT) as RC(ACGT)=ACGT at READ end.
         # Barcodes appear as RC(GGGG)=CCCC in the read.
         # RC(TGCA)(0-3) RC(GGGG)(4-7) NNNNNNNN(8-15) RC(GGGG)(16-19) RC(ACGT)(20-23)
-        reads = [{"name": "r1", "sequence": "TGCACCCCNNNNNNNNCCCCACGT",
-                  "is_reverse": True}]
+        reads = [{"name": "r1", "sequence": "TGCACCCCNNNNNNNNCCCCACGT", "is_reverse": True}]
         tags = self._run(tmp_path, reads)
         assert tags["r1"]["BC"] == "BC03"
         assert tags["r1"]["BM"] == "both"
@@ -1089,10 +1073,10 @@ class TestExtractAndAssignBarcodesInBam:
         # Reverse read layout:
         #   read start: RC(right adapter)=TAGC + RC(BC01)=TTTT
         #   read end:   RC(BC01)=TTTT + RC(left adapter)=CGAT
-        reads = [{"name": "r1", "sequence": "TAGCTTTTNNNNNNNNTTTTCGAT",
-                  "is_reverse": True}]
+        reads = [{"name": "r1", "sequence": "TAGCTTTTNNNNNNNNTTTTCGAT", "is_reverse": True}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_adapters=["ATCG", "GCTA"],
         )
         assert tags["r1"]["BC"] == "BC01"
@@ -1111,9 +1095,9 @@ class TestExtractAndAssignBarcodesInBam:
         """
         adapter = "ATCG"
         amplicon = "CCCCCCCC"
-        rc_adapter = _reverse_complement(adapter)    # CGAT
-        rc_amplicon = _reverse_complement(amplicon)   # GGGGGGGG
-        rc_bc = _reverse_complement("AAAA")           # TTTT
+        rc_adapter = _reverse_complement(adapter)  # CGAT
+        rc_amplicon = _reverse_complement(amplicon)  # GGGGGGGG
+        rc_bc = _reverse_complement("AAAA")  # TTTT
         kit = BarcodeKitConfig(
             barcodes=self.BC_REFS,
             barcode_length=4,
@@ -1122,9 +1106,15 @@ class TestExtractAndAssignBarcodesInBam:
                 right_ref_end=FlankingConfig(adapter_side=adapter, amplicon_side=amplicon),
             ),
         )
-        reads = [{"name": "r1", "sequence": f"{adapter}AAAA{amplicon}NNNN{rc_amplicon}{rc_bc}{rc_adapter}"}]
+        reads = [
+            {
+                "name": "r1",
+                "sequence": f"{adapter}AAAA{amplicon}NNNN{rc_amplicon}{rc_bc}{rc_adapter}",
+            }
+        ]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=kit,
         )
         assert tags["r1"]["BC"] == "BC01"
@@ -1139,7 +1129,7 @@ class TestExtractAndAssignBarcodesInBam:
         """
         amplicon = "CGATCGAT"
         rc_amplicon = _reverse_complement(amplicon)  # ATCGATCG
-        rc_bc = _reverse_complement("AAAA")          # TTTT
+        rc_bc = _reverse_complement("AAAA")  # TTTT
         kit = BarcodeKitConfig(
             barcodes=self.BC_REFS,
             barcode_length=4,
@@ -1150,7 +1140,8 @@ class TestExtractAndAssignBarcodesInBam:
         )
         reads = [{"name": "r1", "sequence": f"AAAA{amplicon}NNNNNNNN{rc_amplicon}{rc_bc}"}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=kit,
             barcode_adapter_matcher="exact",
         )
@@ -1210,8 +1201,8 @@ class TestExtractAndAssignBarcodesInBam:
         """
         adapter = "ACGT"
         amplicon = "TTTTTTTT"
-        rc_adapter = _reverse_complement(adapter)    # ACGT → ACGT (palindrome)
-        rc_amplicon = _reverse_complement(amplicon)   # AAAAAAAA
+        rc_adapter = _reverse_complement(adapter)  # ACGT → ACGT (palindrome)
+        rc_amplicon = _reverse_complement(amplicon)  # AAAAAAAA
         kit = BarcodeKitConfig(
             barcodes=self.BC_REFS,
             barcode_length=4,
@@ -1227,7 +1218,8 @@ class TestExtractAndAssignBarcodesInBam:
         seq = f"ACGTGGGGTTTTTTTTNNNNNNNNAAAAAAAA{rc_bc}ACGT"
         reads = [{"name": "r1", "sequence": seq}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=kit,
             barcode_adapter_matcher="exact",
         )
@@ -1249,8 +1241,8 @@ class TestExtractAndAssignBarcodesInBam:
         """
         adapter = "ATCG"
         amplicon = "CCCCCCCC"
-        rc_adapter = _reverse_complement(adapter)    # CGAT
-        rc_amplicon = _reverse_complement(amplicon)   # GGGGGGGG
+        rc_adapter = _reverse_complement(adapter)  # CGAT
+        rc_amplicon = _reverse_complement(amplicon)  # GGGGGGGG
         kit = BarcodeKitConfig(
             barcodes=self.BC_REFS,
             barcode_length=4,
@@ -1267,7 +1259,8 @@ class TestExtractAndAssignBarcodesInBam:
         seq = f"{adapter}AAAA{amplicon}NNNNNNNN{rc_amplicon}{rc_bc}{rc_adapter}"
         reads = [{"name": "r1", "sequence": seq, "is_reverse": True}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=kit,
             barcode_adapter_matcher="exact",
         )
@@ -1293,20 +1286,20 @@ class TestRBK114RealisticRC:
     left ref end of a reverse read (``needs_rc = is_reverse XOR right``).
     """
 
-    ADAPTER = "GCTTGGGTGTTTAACC"                                               # 16 bp
-    AMPLICON = "GTTTTCGCATTTATCGTGAAACGCTTTCGCGTTTTTCGTGCGCCGCTTCA"            # 50 bp
-    RC_ADAPTER = _reverse_complement("GCTTGGGTGTTTAACC")                       # GGTTAAACACCCAAGC
+    ADAPTER = "GCTTGGGTGTTTAACC"  # 16 bp
+    AMPLICON = "GTTTTCGCATTTATCGTGAAACGCTTTCGCGTTTTTCGTGCGCCGCTTCA"  # 50 bp
+    RC_ADAPTER = _reverse_complement("GCTTGGGTGTTTAACC")  # GGTTAAACACCCAAGC
     RC_AMPLICON = _reverse_complement(
         "GTTTTCGCATTTATCGTGAAACGCTTTCGCGTTTTTCGTGCGCCGCTTCA"
-    )                                                                          # TGAAGCGGCGCAC...
-    FILLER = "N" * 40                                                          # generic reference
+    )  # TGAAGCGGCGCAC...
+    FILLER = "N" * 40  # generic reference
 
     BC_REFS = {
         "RB01": "AAGAAAGTTGTCGGTGTCTTTGTG",
         "RB02": "TCGATTCCGTTTGTAGTCGTCTGT",
         "RB03": "GAGTCTTGTGTCCCAGTTACCAGG",
     }
-    RC_RB01 = _reverse_complement("AAGAAAGTTGTCGGTGTCTTTGTG")                 # CACAAAGACACCGACAACTTTCTT
+    RC_RB01 = _reverse_complement("AAGAAAGTTGTCGGTGTCTTTGTG")  # CACAAAGACACCGACAACTTTCTT
     RC_RB02 = _reverse_complement("TCGATTCCGTTTGTAGTCGTCTGT")
     BARCODE_LENGTH = 24
 
@@ -1354,7 +1347,8 @@ class TestRBK114RealisticRC:
         seq = left + self.FILLER + right
         reads = [{"name": "r1", "sequence": seq}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["r1"]["BC"] == "RB01"
@@ -1373,7 +1367,8 @@ class TestRBK114RealisticRC:
         seq = self.FILLER + right
         reads = [{"name": "r1", "sequence": seq}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["r1"]["BC"] == "RB01"
@@ -1389,7 +1384,8 @@ class TestRBK114RealisticRC:
         seq = left + self.FILLER
         reads = [{"name": "r1", "sequence": seq}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["r1"]["BC"] == "RB01"
@@ -1405,7 +1401,8 @@ class TestRBK114RealisticRC:
         seq = left + self.FILLER
         reads = [{"name": "r1", "sequence": seq}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
             barcode_adapter_matcher="exact",
             barcode_amplicon_gap_tolerance=5,
@@ -1431,7 +1428,8 @@ class TestRBK114RealisticRC:
         seq = read_start + self.FILLER + read_end
         reads = [{"name": "r1", "sequence": seq, "is_reverse": True}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["r1"]["BC"] == "RB01"
@@ -1448,7 +1446,8 @@ class TestRBK114RealisticRC:
         seq = self.FILLER + read_end
         reads = [{"name": "r1", "sequence": seq, "is_reverse": True}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["r1"]["BC"] == "RB01"
@@ -1465,7 +1464,8 @@ class TestRBK114RealisticRC:
         seq = read_start + self.FILLER
         reads = [{"name": "r1", "sequence": seq, "is_reverse": True}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["r1"]["BC"] == "RB01"
@@ -1482,7 +1482,8 @@ class TestRBK114RealisticRC:
         seq = left + self.FILLER + right
         reads = [{"name": "r1", "sequence": seq}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["r1"]["BC"] == "unclassified"
@@ -1504,16 +1505,14 @@ class TestRBK114RealisticRC:
             {"name": "fwd_both", "sequence": fwd_left + self.FILLER + fwd_right},
             {"name": "fwd_left", "sequence": fwd_left + self.FILLER},
             {"name": "fwd_right", "sequence": self.FILLER + fwd_right},
-            {"name": "rev_both", "sequence": rev_start + self.FILLER + rev_end,
-             "is_reverse": True},
-            {"name": "rev_left", "sequence": self.FILLER + rev_end,
-             "is_reverse": True},
-            {"name": "rev_right", "sequence": rev_start + self.FILLER,
-             "is_reverse": True},
+            {"name": "rev_both", "sequence": rev_start + self.FILLER + rev_end, "is_reverse": True},
+            {"name": "rev_left", "sequence": self.FILLER + rev_end, "is_reverse": True},
+            {"name": "rev_right", "sequence": rev_start + self.FILLER, "is_reverse": True},
             {"name": "nothing", "sequence": "N" * 100},
         ]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["fwd_both"]["BM"] == "both"
@@ -1539,7 +1538,8 @@ class TestRBK114RealisticRC:
         seq = left + self.FILLER + right
         reads = [{"name": "r1", "sequence": seq}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["r1"]["BC"] == "RB01"
@@ -1558,7 +1558,8 @@ class TestRBK114RealisticRC:
         seq = left + self.FILLER + right
         reads = [{"name": "r1", "sequence": seq}]
         tags = self._run(
-            tmp_path, reads,
+            tmp_path,
+            reads,
             barcode_kit_config=self._make_kit(),
         )
         assert tags["r1"]["BC"] == "RB01"

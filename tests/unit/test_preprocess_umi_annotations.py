@@ -129,7 +129,9 @@ class TestValidateUmi:
     def test_validate_umi_homopolymer_run(self):
         # ACAAAAAT has 5 A's which exceeds max_homopolymer_run=4
         # But we need to set max_homopolymer_fraction high enough to not fail that check first
-        is_valid, reason = validate_umi("ACAAAAAT", max_homopolymer_run=4, max_homopolymer_fraction=0.8)
+        is_valid, reason = validate_umi(
+            "ACAAAAAT", max_homopolymer_run=4, max_homopolymer_fraction=0.8
+        )
         assert is_valid is False
         assert "homopolymer_run" in reason
 
@@ -240,24 +242,24 @@ class TestPreprocessUmiAnnotations:
 
         # Check validation results
         # Index 0, 1, 2 should have valid U1 (ACGTACGT, ACGTACGT, ACGTACTT)
-        assert result.obs.loc["read_0", "U1_valid"] == True
-        assert result.obs.loc["read_1", "U1_valid"] == True
-        assert result.obs.loc["read_2", "U1_valid"] == True
+        assert result.obs.loc["read_0", "U1_valid"]
+        assert result.obs.loc["read_1", "U1_valid"]
+        assert result.obs.loc["read_2", "U1_valid"]
 
         # Index 5 should be invalid (homopolymer AAAAAAAA)
-        assert result.obs.loc["read_5", "U1_valid"] == False
+        assert not result.obs.loc["read_5", "U1_valid"]
         assert "homopolymer" in result.obs.loc["read_5", "U1_invalid_reason"]
 
         # Index 6 should be invalid (missing)
-        assert result.obs.loc["read_6", "U1_valid"] == False
+        assert not result.obs.loc["read_6", "U1_valid"]
         assert result.obs.loc["read_6", "U1_invalid_reason"] == "missing"
 
         # Index 7 should be invalid (contains N)
-        assert result.obs.loc["read_7", "U1_valid"] == False
+        assert not result.obs.loc["read_7", "U1_valid"]
         assert result.obs.loc["read_7", "U1_invalid_reason"] == "contains_N"
 
         # Check that uns flag was set
-        assert result.uns.get("preprocess_umi_annotations_performed") == True
+        assert result.uns.get("preprocess_umi_annotations_performed")
 
     def test_preprocess_clustering(self, simple_adata):
         """Test that clustering groups similar UMIs."""
@@ -290,16 +292,16 @@ class TestPreprocessUmiAnnotations:
         """Test that force_redo reruns processing."""
         # First run
         result = preprocess_umi_annotations(simple_adata, umi_cols=["U1"])
-        assert result.uns.get("preprocess_umi_annotations_performed") == True
+        assert result.uns.get("preprocess_umi_annotations_performed")
 
         # Second run without force_redo should skip
         result.obs["U1_valid"] = False  # Modify to check if it gets recomputed
         result = preprocess_umi_annotations(result, umi_cols=["U1"], force_redo=False)
-        assert result.obs.loc["read_0", "U1_valid"] == False  # Should not be recomputed
+        assert not result.obs.loc["read_0", "U1_valid"]  # Should not be recomputed
 
         # With force_redo should recompute
         result = preprocess_umi_annotations(result, umi_cols=["U1"], force_redo=True)
-        assert result.obs.loc["read_0", "U1_valid"] == True  # Should be recomputed
+        assert result.obs.loc["read_0", "U1_valid"]  # Should be recomputed
 
     def test_preprocess_missing_columns(self, simple_adata):
         """Test handling of missing UMI columns."""

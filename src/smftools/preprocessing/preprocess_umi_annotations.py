@@ -99,9 +99,9 @@ def _edit_distance(s1: str, s2: str, max_dist: Optional[int] = None) -> int:
         for j in range(1, len2 + 1):
             cost = 0 if s1[i - 1] == s2[j - 1] else 1
             curr_row[j] = min(
-                prev_row[j] + 1,      # deletion
+                prev_row[j] + 1,  # deletion
                 curr_row[j - 1] + 1,  # insertion
-                prev_row[j - 1] + cost  # substitution
+                prev_row[j - 1] + cost,  # substitution
             )
             row_min = min(row_min, curr_row[j])
 
@@ -372,8 +372,10 @@ def preprocess_umi_annotations(
             length_counts = lengths.value_counts()
             if len(length_counts) > 0:
                 inferred_lengths[col] = length_counts.index[0]
-                logger.info(f"Inferred UMI length for {col}: {inferred_lengths[col]} "
-                           f"(from {length_counts.iloc[0]}/{len(lengths)} UMIs)")
+                logger.info(
+                    f"Inferred UMI length for {col}: {inferred_lengths[col]} "
+                    f"(from {length_counts.iloc[0]}/{len(lengths)} UMIs)"
+                )
 
     # Step 1: Validate each UMI
     validation_stats = defaultdict(lambda: defaultdict(int))
@@ -400,7 +402,9 @@ def preprocess_umi_annotations(
         adata.obs[f"{col}_invalid_reason"] = invalid_reasons
 
         n_valid = sum(valid_flags)
-        logger.info(f"{col}: {n_valid}/{n_obs} ({100*n_valid/n_obs:.1f}%) UMIs passed validation")
+        logger.info(
+            f"{col}: {n_valid}/{n_obs} ({100 * n_valid / n_obs:.1f}%) UMIs passed validation"
+        )
         for reason, count in sorted(validation_stats[col].items(), key=lambda x: -x[1]):
             if reason != "valid":
                 logger.debug(f"  {col} - {reason}: {count}")
@@ -472,9 +476,11 @@ def preprocess_umi_annotations(
 
     for col in existing_cols:
         n_clustered = adata.obs[f"{col}_cluster"].notna().sum()
-        logger.info(f"{col}: {total_clusters[col]} unique clusters, "
-                   f"{total_singletons[col]} singletons, "
-                   f"{n_clustered} reads with cluster assignment")
+        logger.info(
+            f"{col}: {total_clusters[col]} unique clusters, "
+            f"{total_singletons[col]} singletons, "
+            f"{n_clustered} reads with cluster assignment"
+        )
 
     # Step 3: Create combined cluster column
     if len(existing_cols) >= 2:
@@ -521,8 +527,12 @@ def preprocess_umi_annotations(
     n_with_cluster = adata.obs[f"{combined_col}_cluster"].notna().sum()
 
     logger.info(f"UMI preprocessing complete:")
-    logger.info(f"  Reads with any valid UMI: {n_with_valid_umi}/{n_obs} ({100*n_with_valid_umi/n_obs:.1f}%)")
-    logger.info(f"  Reads with cluster assignment: {n_with_cluster}/{n_obs} ({100*n_with_cluster/n_obs:.1f}%)")
+    logger.info(
+        f"  Reads with any valid UMI: {n_with_valid_umi}/{n_obs} ({100 * n_with_valid_umi / n_obs:.1f}%)"
+    )
+    logger.info(
+        f"  Reads with cluster assignment: {n_with_cluster}/{n_obs} ({100 * n_with_cluster / n_obs:.1f}%)"
+    )
 
     # Store validation stats in uns
     adata.uns["umi_preprocessing_stats"] = {

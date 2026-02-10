@@ -349,7 +349,7 @@ def preprocess_adata_core(
     calculate_coverage(
         adata,
         ref_column=cfg.reference_column,
-        position_nan_threshold=1-cfg.position_max_nan_threshold,
+        position_nan_threshold=1 - cfg.position_max_nan_threshold,
         smf_modality=smf_modality,
         target_layer=cfg.output_binary_layer_name,
     )
@@ -448,7 +448,7 @@ def preprocess_adata_core(
     calculate_coverage(
         adata,
         ref_column=cfg.reference_column,
-        position_nan_threshold=1-cfg.position_max_nan_threshold,
+        position_nan_threshold=1 - cfg.position_max_nan_threshold,
         smf_modality=smf_modality,
         target_layer=cfg.output_binary_layer_name,
         force_redo=True,
@@ -565,7 +565,6 @@ def preprocess_adata_core(
             "read_span_mask and base quality layers not found; skipping read span/base quality clustermaps."
         )
     else:
-
         if getattr(cfg, "preprocessed_plot_read_span_quality_clustermaps", False):
             pp_span_quality_dir = preprocess_directory / "06_read_span_and_quality_clustermaps"
             if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:

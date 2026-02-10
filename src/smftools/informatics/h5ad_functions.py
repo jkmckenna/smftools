@@ -632,7 +632,7 @@ def expand_bi_tag_columns(adata, bi_column="bi"):
     - bi[1]: top barcode start position
     - bi[2]: top barcode length
     - bi[3]: top (front) barcode score
-    - bi[4]: bottom barcode end position  
+    - bi[4]: bottom barcode end position
     - bi[5]: bottom barcode length
     - bi[6]: bottom (rear) barcode score
 
@@ -654,7 +654,7 @@ def expand_bi_tag_columns(adata, bi_column="bi"):
     logger.info(f"Expanding {bi_column} array into individual columns")
 
     bi_data = adata.obs[bi_column]
-    
+
     # Initialize columns
     bi_overall = []
     bi_top_start = []

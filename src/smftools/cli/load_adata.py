@@ -586,16 +586,20 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             barcode_references, barcode_length = yaml_result
             # Build a BarcodeKitConfig from legacy adapters for flanking support
             legacy_adapters = getattr(cfg, "barcode_adapters", [None, None])
-            flanking = _build_flanking_from_adapters(legacy_adapters) if any(
-                a is not None for a in (legacy_adapters or [])
-            ) else None
+            flanking = (
+                _build_flanking_from_adapters(legacy_adapters)
+                if any(a is not None for a in (legacy_adapters or []))
+                else None
+            )
             barcode_kit_config = BarcodeKitConfig(
                 barcodes=barcode_references,
                 barcode_length=barcode_length,
                 flanking=flanking,
             )
 
-        logger.info(f"Loaded {len(barcode_references)} barcode references (length={barcode_length})")
+        logger.info(
+            f"Loaded {len(barcode_references)} barcode references (length={barcode_length})"
+        )
         resolved_bc = resolve_barcode_config(barcode_kit_config, cfg)
 
         logger.info("Extracting and assigning barcodes to aligned BAM using smftools backend")
@@ -681,9 +685,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
             # Single-pass demux into split_path directly (no se_/de_ subdirectories)
             if cfg.split_path.is_dir():
-                logger.debug(
-                    f"{cfg.split_path} already exists. Using existing demultiplexed BAMs."
-                )
+                logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
                 all_bam_files = sorted(
                     p
                     for p in cfg.split_path.iterdir()
@@ -695,7 +697,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 make_dirs([cfg.split_path])
                 logger.info(
                     "Demultiplexing with dorado (single-pass, version %s)",
-                    ".".join(str(v) for v in dorado_version)
+                    ".".join(str(v) for v in dorado_version),
                 )
                 all_bam_files = demux_and_index_BAM(
                     aligned_sorted_BAM,

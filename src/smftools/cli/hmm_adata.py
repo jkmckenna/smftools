@@ -653,13 +653,13 @@ def hmm_adata_core(
 
     from ..hmm import call_hmm_peaks
     from ..metadata import record_smftools_metadata
-    from ..preprocessing import load_sample_sheet, invert_adata, reindex_references_adata
     from ..plotting import (
         combined_hmm_length_clustermap,
         combined_hmm_raw_clustermap,
         plot_hmm_layers_rolling_by_sample_ref,
         plot_hmm_size_contours,
     )
+    from ..preprocessing import invert_adata, load_sample_sheet, reindex_references_adata
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
@@ -685,7 +685,6 @@ def hmm_adata_core(
         log_file = None
 
     setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
-
 
     # -----------------------------
     # Optional sample sheet metadata

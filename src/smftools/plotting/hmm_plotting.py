@@ -1530,9 +1530,7 @@ def combined_hmm_length_clustermap(
                             label = f">= {min_len} bp"
                         else:
                             label = f"{min_len}-{max_len} bp"
-                        legend_handles.append(
-                            patches.Patch(facecolor=color, edgecolor="none")
-                        )
+                        legend_handles.append(patches.Patch(facecolor=color, edgecolor="none"))
                         legend_labels.append(label)
 
                 panels = [

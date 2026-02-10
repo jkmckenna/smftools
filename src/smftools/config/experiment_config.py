@@ -741,7 +741,9 @@ class ExperimentConfig:
     umi_flank_mode: Optional[str] = None
     umi_amplicon_max_edits: Optional[int] = None
     same_orientation: Optional[bool] = None  # UMI flanking orientation override
-    umi_kit: Optional[str] = None  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yaml
+    umi_kit: Optional[str] = (
+        None  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yaml
+    )
     umi_yaml: Optional[str] = None  # Path to UMI YAML config file (when umi_kit is "custom")
     # General basecalling params
     filter_threshold: float = 0.8
@@ -1279,7 +1281,9 @@ class ExperimentConfig:
             ).lower()
         if "barcode_composite_max_edits" in merged:
             merged_bcme = _parse_numeric(merged.get("barcode_composite_max_edits", None), None)
-            merged["barcode_composite_max_edits"] = None if merged_bcme is None else int(merged_bcme)
+            merged["barcode_composite_max_edits"] = (
+                None if merged_bcme is None else int(merged_bcme)
+            )
         if "barcode_min_score" in merged:
             bms = _parse_numeric(merged.get("barcode_min_score", None), None)
             merged["barcode_min_score"] = None if bms is None else int(bms)
@@ -1288,7 +1292,8 @@ class ExperimentConfig:
         if "barcode_ends" in merged:
             val = merged.get("barcode_ends")
             merged["barcode_ends"] = (
-                None if val is None or str(val).strip().lower() in ("", "none", "null")
+                None
+                if val is None or str(val).strip().lower() in ("", "none", "null")
                 else str(val).strip().lower()
             )
         if "barcode_amplicon_gap_tolerance" in merged:
@@ -1305,13 +1310,15 @@ class ExperimentConfig:
         if "umi_ends" in merged:
             val = merged.get("umi_ends")
             merged["umi_ends"] = (
-                None if val is None or str(val).strip().lower() in ("", "none", "null")
+                None
+                if val is None or str(val).strip().lower() in ("", "none", "null")
                 else str(val).strip().lower()
             )
         if "umi_flank_mode" in merged:
             val = merged.get("umi_flank_mode")
             merged["umi_flank_mode"] = (
-                None if val is None or str(val).strip().lower() in ("", "none", "null")
+                None
+                if val is None or str(val).strip().lower() in ("", "none", "null")
                 else str(val).strip().lower()
             )
         if "umi_amplicon_max_edits" in merged:
@@ -1319,10 +1326,18 @@ class ExperimentConfig:
             merged["umi_amplicon_max_edits"] = None if val is None else int(val)
         if "umi_kit" in merged:
             val = merged.get("umi_kit")
-            merged["umi_kit"] = None if val is None or str(val).strip().lower() in ("", "null", "none") else str(val).strip()
+            merged["umi_kit"] = (
+                None
+                if val is None or str(val).strip().lower() in ("", "null", "none")
+                else str(val).strip()
+            )
         if "umi_yaml" in merged:
             val = merged.get("umi_yaml")
-            merged["umi_yaml"] = None if val is None or str(val).strip().lower() in ("", "null", "none") else str(val)
+            merged["umi_yaml"] = (
+                None
+                if val is None or str(val).strip().lower() in ("", "null", "none")
+                else str(val)
+            )
 
         if "aligner_args" in merged and merged.get("aligner_args") is None:
             merged.pop("aligner_args", None)

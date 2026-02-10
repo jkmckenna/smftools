@@ -70,7 +70,9 @@ def plot_read_current_traces(
     if "fn" not in adata.obs.columns:
         raise ValueError("adata.obs must contain 'fn' column with POD5 filenames")
     if "bam_paths" not in adata.uns:
-        raise ValueError("adata.uns must contain 'bam_paths' dict with experiment-specific BAM paths")
+        raise ValueError(
+            "adata.uns must contain 'bam_paths' dict with experiment-specific BAM paths"
+        )
 
     n_reads = len(read_ids)
     fig, axes = plt.subplots(n_reads, 1, figsize=figsize, squeeze=False)
@@ -81,8 +83,14 @@ def plot_read_current_traces(
         # Get read information from adata
         if read_id not in adata.obs_names:
             logger.warning(f"Read {read_id} not found in adata, skipping")
-            ax.text(0.5, 0.5, f"Read {read_id} not found",
-                   ha='center', va='center', transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                f"Read {read_id} not found",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
             continue
 
         read_obs = adata.obs.loc[read_id]
@@ -91,8 +99,14 @@ def plot_read_current_traces(
 
         if pd.isna(pod5_filename):
             logger.warning(f"No POD5 filename for read {read_id}, skipping")
-            ax.text(0.5, 0.5, f"No POD5 file for {read_id}",
-                   ha='center', va='center', transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                f"No POD5 file for {read_id}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
             continue
 
         # Determine BAM file path
@@ -101,31 +115,52 @@ def plot_read_current_traces(
             # Try aligned first, then unaligned
             aligned_key = f"{experiment_name}_aligned"
             unaligned_key = f"{experiment_name}_unaligned"
-            bam_path = adata.uns["bam_paths"].get(aligned_key) or adata.uns["bam_paths"].get(unaligned_key)
+            bam_path = adata.uns["bam_paths"].get(aligned_key) or adata.uns["bam_paths"].get(
+                unaligned_key
+            )
 
         if not bam_path:
-            logger.warning(f"No BAM path found for experiment {experiment_name}, skipping {read_id}")
-            ax.text(0.5, 0.5, f"No BAM path for {read_id}",
-                   ha='center', va='center', transform=ax.transAxes)
+            logger.warning(
+                f"No BAM path found for experiment {experiment_name}, skipping {read_id}"
+            )
+            ax.text(
+                0.5,
+                0.5,
+                f"No BAM path for {read_id}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
             continue
 
         try:
             # Extract signal from POD5
             signal = _extract_signal_from_pod5(pod5_filename, read_id)
             if signal is None:
-                ax.text(0.5, 0.5, f"Could not extract signal for {read_id}",
-                       ha='center', va='center', transform=ax.transAxes)
+                ax.text(
+                    0.5,
+                    0.5,
+                    f"Could not extract signal for {read_id}",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
                 continue
 
             # Get alignment info and optionally map to reference coordinates
             if reference_start is not None and reference_end is not None:
                 signal_region = _map_reference_to_signal(
-                    bam_path, read_id, reference_start, reference_end,
-                    signal, use_moves
+                    bam_path, read_id, reference_start, reference_end, signal, use_moves
                 )
                 if signal_region is None:
-                    ax.text(0.5, 0.5, f"Could not map region for {read_id}",
-                           ha='center', va='center', transform=ax.transAxes)
+                    ax.text(
+                        0.5,
+                        0.5,
+                        f"Could not map region for {read_id}",
+                        ha="center",
+                        va="center",
+                        transform=ax.transAxes,
+                    )
                     continue
                 signal = signal_region
 
@@ -141,8 +176,9 @@ def plot_read_current_traces(
 
         except Exception as e:
             logger.error(f"Error plotting read {read_id}: {e}")
-            ax.text(0.5, 0.5, f"Error: {str(e)[:50]}",
-                   ha='center', va='center', transform=ax.transAxes)
+            ax.text(
+                0.5, 0.5, f"Error: {str(e)[:50]}", ha="center", va="center", transform=ax.transAxes
+            )
 
     plt.tight_layout()
     return fig
@@ -241,8 +277,9 @@ def _map_reference_to_signal(
         return None
 
 
-def _map_with_moves(read, ref_start: int, ref_end: int,
-                    signal: np.ndarray, moves: np.ndarray) -> Optional[np.ndarray]:
+def _map_with_moves(
+    read, ref_start: int, ref_end: int, signal: np.ndarray, moves: np.ndarray
+) -> Optional[np.ndarray]:
     """Map reference to signal using move table."""
     # Convert reference coordinates to query coordinates
     ref_pos = read.reference_start
@@ -269,8 +306,9 @@ def _map_with_moves(read, ref_start: int, ref_end: int,
     return signal[signal_start:signal_end]
 
 
-def _map_proportional(read, ref_start: int, ref_end: int,
-                     signal: np.ndarray) -> Optional[np.ndarray]:
+def _map_proportional(
+    read, ref_start: int, ref_end: int, signal: np.ndarray
+) -> Optional[np.ndarray]:
     """Map reference to signal using proportional estimation."""
     # Get query positions for reference region
     query_start = None
