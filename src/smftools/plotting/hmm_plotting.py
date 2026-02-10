@@ -197,8 +197,8 @@ def plot_hmm_size_contours(
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     feature_ranges: Optional[Sequence[Tuple[int, int, str]]] = None,
-    zero_color: str = "#f5f1e8",
-    nan_color: str = "#E6E6E6",
+    zero_color: str = "#eee6d9",
+    nan_color: str = "#D0D0D0",
     # ---------------- smoothing params ----------------
     smoothing_sigma: Optional[Union[float, Tuple[float, float]]] = None,
     normalize_after_smoothing: bool = True,
@@ -561,8 +561,8 @@ def _resolve_feature_color(cmap: Any) -> Tuple[float, float, float, float]:
 def _build_hmm_feature_cmap(
     cmap: Any,
     *,
-    zero_color: str = "#f5f1e8",
-    nan_color: str = "#E6E6E6",
+    zero_color: str = "#eee6d9",
+    nan_color: str = "#D0D0D0",
 ) -> mpl_colors.Colormap:
     """Build a two-color HMM colormap with explicit NaN/under handling."""
     feature_color = _resolve_feature_color(cmap)
@@ -592,8 +592,8 @@ def _map_length_matrix_to_subclasses(
 def _build_length_feature_cmap(
     feature_ranges: Sequence[Tuple[int, int, Any]],
     *,
-    zero_color: str = "#f5f1e8",
-    nan_color: str = "#E6E6E6",
+    zero_color: str = "#eee6d9",
+    nan_color: str = "#D0D0D0",
 ) -> Tuple[mpl_colors.Colormap, mpl_colors.BoundaryNorm]:
     """Build a discrete colormap and norm for length-based subclasses."""
     color_list = [zero_color] + [color for _, _, color in feature_ranges]
@@ -1062,7 +1062,7 @@ def combined_hmm_raw_clustermap(
                 fig = plt.figure(figsize=(4.5 * n_panels, 10))
                 gs = gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
                 fig.suptitle(
-                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=14, y=0.98
+                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98
                 )
 
                 axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
@@ -1086,7 +1086,7 @@ def combined_hmm_raw_clustermap(
                     # ---- xticks ----
                     xtick_pos, xtick_labels = pick_xticks(np.asarray(labels), n_ticks)
                     axes_heat[i].set_xticks(xtick_pos)
-                    axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=8)
+                    axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
 
                     for boundary in bin_boundaries[:-1]:
                         axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
@@ -1509,15 +1509,33 @@ def combined_hmm_length_clustermap(
                 length_plot_cmap = cmap_lengths
                 length_plot_norm = None
 
+                feature_class_label = None
+                lower_layer = str(length_layer).lower()
+                if "accessible" in lower_layer:
+                    feature_class_label = "Accessible Patch Sizes"
+                    hmm_title = "HMM Accessible Patches"
+                elif "footprint" in lower_layer:
+                    feature_class_label = "Footprint Sizes"
+                    hmm_title = "HMM Footprints"
+
                 if feature_ranges:
                     length_plot_matrix = _map_length_matrix_to_subclasses(
                         length_matrix_raw, feature_ranges
                     )
                     length_plot_cmap, length_plot_norm = _build_length_feature_cmap(feature_ranges)
+                    legend_handles = []
+                    legend_labels = []
+                    for min_len, max_len, color in feature_ranges:
+                        if max_len >= int(1e9):
+                            label = f">= {min_len} bp"
+                        else:
+                            label = f"{min_len}-{max_len} bp"
+                        legend_handles.append(patches.Patch(facecolor=color, edgecolor="none"))
+                        legend_labels.append(label)
 
                 panels = [
                     (
-                        f"HMM lengths - {length_layer}",
+                        f"HMM - {hmm_title}",
                         length_plot_matrix,
                         length_labels,
                         length_plot_cmap,
@@ -1591,7 +1609,7 @@ def combined_hmm_length_clustermap(
                 fig = plt.figure(figsize=(4.5 * n_panels, 10))
                 gs = gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
                 fig.suptitle(
-                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=14, y=0.98
+                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98
                 )
 
                 axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
@@ -1612,10 +1630,23 @@ def combined_hmm_length_clustermap(
 
                     xtick_pos, xtick_labels = pick_xticks(np.asarray(labels), n_ticks)
                     axes_heat[i].set_xticks(xtick_pos)
-                    axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=8)
+                    axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
 
                     for boundary in bin_boundaries[:-1]:
                         axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
+
+                    if feature_ranges and name.startswith("HMM -") and legend_handles:
+                        axes_heat[i].legend(
+                            legend_handles,
+                            legend_labels,
+                            fontsize=12,
+                            loc="center left",
+                            bbox_to_anchor=(-0.85, 0.65),
+                            borderaxespad=0.0,
+                            frameon=False,
+                            title=feature_class_label,
+                            title_fontsize=14,
+                        )
 
                 if overlay_variant_calls and ordered_obs_names:
                     try:
@@ -1634,7 +1665,7 @@ def combined_hmm_length_clustermap(
 
                         # Build panels_with_indices using site indices for each panel
                         name_to_sites = {
-                            f"HMM lengths - {length_layer}": length_sites_global,
+                            f"HMM - {length_layer}": length_sites_global,
                             "C": any_c_sites_global,
                             "GpC": gpc_sites_global,
                             "CpG": cpg_sites_global,
@@ -1660,6 +1691,8 @@ def combined_hmm_length_clustermap(
                             "Variant overlay failed for %s - %s: %s", sample, ref, overlay_err
                         )
 
+                if feature_ranges:
+                    fig.subplots_adjust(left=0.18)
                 plt.tight_layout()
 
                 if save_path:

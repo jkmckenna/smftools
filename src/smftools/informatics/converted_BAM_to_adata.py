@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import re
 import shutil
 import time
 import traceback
@@ -114,6 +115,14 @@ SEQUENCE_ENCODING_CONFIG = SequenceEncodingConfig(
 )
 
 
+def _barcode_label_from_sample_name(sample_name: str) -> str:
+    """Extract a stable barcode label from a sample name."""
+    match = re.search(r"barcode([0-9A-Za-z\-]+)", sample_name, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return sample_name
+
+
 def converted_BAM_to_adata(
     converted_FASTA: str | Path,
     split_dir: Path,
@@ -129,6 +138,7 @@ def converted_BAM_to_adata(
     delete_intermediates: bool = True,
     double_barcoded_path: Path | None = None,
     samtools_backend: str | None = "auto",
+    demux_backend: str | None = None,
 ) -> tuple[ad.AnnData | None, Path]:
     """Convert converted BAM files into an AnnData object with integer sequence encoding.
 
@@ -147,6 +157,8 @@ def converted_BAM_to_adata(
         delete_intermediates: Whether to remove intermediate files after processing.
         double_barcoded_path: Path to dorado demux summary file of double-ended barcodes.
         samtools_backend: Samtools backend choice for alignment parsing.
+        demux_backend: Demux backend used ("smftools" or "dorado"). If "smftools",
+            demux_type annotation is skipped here and derived from BM tag later.
 
     Returns:
         tuple[anndata.AnnData | None, Path]: The AnnData object (if generated) and its path.
@@ -279,7 +291,11 @@ def converted_BAM_to_adata(
     if input_already_demuxed:
         final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
         final_adata.obs[DEMUX_TYPE] = final_adata.obs[DEMUX_TYPE].astype("category")
+    elif demux_backend and demux_backend.lower() == "smftools":
+        # Skip demux_type annotation here - will be derived from BM tag after BAM tags are loaded
+        logger.info("Skipping demux_type annotation (will be derived from BM tag)")
     else:
+        # Dorado backend - use barcoding_summary.txt
         from .h5ad_functions import add_demux_type_annotation
 
         double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
@@ -748,12 +764,8 @@ def process_single_bam(
         adata.obs_names = bin_df.index.astype(str)
         adata.var_names = bin_df.columns.astype(str)
         adata.obs[SAMPLE] = [sample] * len(adata)
-        try:
-            barcode = sample.split("barcode")[1]
-        except Exception:
-            barcode = np.nan
-        adata.obs[BARCODE] = [int(barcode)] * len(adata)
-        adata.obs[BARCODE] = adata.obs[BARCODE].astype(str)
+        barcode_label = _barcode_label_from_sample_name(sample)
+        adata.obs[BARCODE] = [barcode_label] * len(adata)
         adata.obs[REFERENCE] = [chromosome] * len(adata)
         adata.obs[STRAND] = [strand] * len(adata)
         adata.obs[DATASET] = [mod_type] * len(adata)

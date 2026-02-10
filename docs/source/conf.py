@@ -82,7 +82,6 @@ autodoc_mock_imports = [
     "anndata",
     "Bio",
     "captum",
-    "fastcluster",
     "hydra",
     "igraph",
     "leidenalg",

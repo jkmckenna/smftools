@@ -46,6 +46,7 @@ def basecall_pod5s(config_path: str | Path) -> None:
     barcode_both_ends = var_dict.get("barcode_both_ends", default_value)  # dorado demultiplexing
     trim = var_dict.get("trim", default_value)  # dorado adapter and barcode removal
     device = var_dict.get("device", "auto")
+    emit_moves = var_dict.get("emit_moves", False)
 
     # Modified basecalling specific variable init
     filter_threshold = var_dict.get("filter_threshold", default_value)
@@ -88,6 +89,7 @@ def basecall_pod5s(config_path: str | Path) -> None:
         mod_string = "_".join(mod_list)
         bam = output_directory / f"{model_basename}_{mod_string}_calls"
         modcall(
+            model_dir,
             model,
             input_data_path,
             barcode_kit,
@@ -97,11 +99,21 @@ def basecall_pod5s(config_path: str | Path) -> None:
             barcode_both_ends,
             trim,
             device,
+            emit_moves,
         )
     else:
         bam = output_directory / f"{model_basename}_canonical_basecalls"
         canoncall(
-            model, input_data_path, barcode_kit, bam, bam_suffix, barcode_both_ends, trim, device
+            model_dir,
+            model,
+            input_data_path,
+            barcode_kit,
+            bam,
+            bam_suffix,
+            barcode_both_ends,
+            trim,
+            device,
+            emit_moves,
         )
 
 

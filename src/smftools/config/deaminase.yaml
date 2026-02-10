@@ -50,9 +50,9 @@ hmm_feature_sets:
   footprint:
     state: "Non-Modified"
     features:
-      small_bound_stretch: [6, 40]
-      medium_bound_stretch: [40, 100]
-      putative_nucleosome: [100, 200]
+      small_bound_stretch: [6, 30]
+      medium_bound_stretch: [30, 80]
+      putative_nucleosome: [80, 200]
       large_bound_stretch: [200, inf]
   accessible:
     state: "Modified"

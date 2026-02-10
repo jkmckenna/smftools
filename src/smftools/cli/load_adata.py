@@ -7,7 +7,7 @@ from typing import Iterable, Union
 
 import numpy as np
 
-from smftools.constants import LOAD_DIR, LOGGING_DIR
+from smftools.constants import BARCODE_KIT_ALIASES, LOAD_DIR, LOGGING_DIR, UMI_KIT_ALIASES
 from smftools.logging_utils import get_logger, setup_logging
 
 from .helpers import AdataPaths
@@ -170,12 +170,23 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     from datetime import datetime
 
     from ..informatics.bam_functions import (
+        BarcodeKitConfig,
+        _bam_has_barcode_info_tags,
+        _build_flanking_from_adapters,
+        _get_dorado_version,
         align_and_sort_BAM,
+        annotate_demux_type_from_bi_tag,
+        annotate_umi_tags_in_bam,
         bam_qc,
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
+        extract_and_assign_barcodes_in_bam,
         extract_read_features_from_bam,
         extract_read_tags_from_bam,
+        load_barcode_references_from_yaml,
+        load_umi_config_from_yaml,
+        resolve_barcode_config,
+        resolve_umi_config,
         split_and_index_BAM,
     )
     from ..informatics.basecalling import canoncall, modcall
@@ -187,9 +198,11 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         subsample_fasta_from_bed,
     )
     from ..informatics.h5ad_functions import (
+        add_demux_type_from_bm_tag,
         add_read_length_and_mapping_qc,
         add_read_tag_annotations,
         add_secondary_supplementary_alignment_flags,
+        expand_bi_tag_columns,
     )
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
@@ -392,6 +405,33 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     ################################### 3) Basecalling ###################################
 
+    demux_backend = str(getattr(cfg, "demux_backend", "dorado") or "dorado").strip().lower()
+    if demux_backend not in {"smftools", "dorado"}:
+        raise ValueError("demux_backend must be one of: smftools, dorado")
+
+    # Validate demux configuration up front for clearer errors.
+    if not cfg.input_already_demuxed:
+        if demux_backend == "smftools":
+            if not cfg.barcode_kit:
+                raise ValueError("demux_backend='smftools' requires barcode_kit to be set.")
+            if cfg.barcode_kit == "custom" and not cfg.custom_barcode_yaml:
+                raise ValueError(
+                    "demux_backend='smftools' with barcode_kit='custom' requires custom_barcode_yaml."
+                )
+            if cfg.barcode_kit != "custom" and cfg.barcode_kit not in BARCODE_KIT_ALIASES:
+                raise ValueError(
+                    "demux_backend='smftools' requires barcode_kit to be 'custom' with custom_barcode_yaml, "
+                    f"or one of BARCODE_KIT_ALIASES: {list(BARCODE_KIT_ALIASES.keys())}"
+                )
+        else:
+            if not cfg.barcode_kit:
+                raise ValueError("demux_backend='dorado' requires barcode_kit.")
+            if cfg.barcode_kit == "custom":
+                raise ValueError(
+                    "demux_backend='dorado' does not support barcode_kit='custom'. "
+                    "Use demux_backend='smftools' with custom_barcode_yaml."
+                )
+
     # 1) Basecall using dorado
     if basecall and cfg.sequencer == "ont":
         try:
@@ -408,30 +448,34 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             logger.info(f"{unaligned_output} already exists. Using existing basecalled BAM.")
         elif cfg.smf_modality != "direct":
             logger.info("Running canonical basecalling using dorado")
+            dorado_kit_name = cfg.barcode_kit if cfg.barcode_kit != "custom" else None
             canoncall(
                 str(cfg.model_dir),
                 cfg.model,
                 str(cfg.input_data_path),
-                cfg.barcode_kit,
+                dorado_kit_name,
                 str(bam),
                 cfg.bam_suffix,
                 cfg.barcode_both_ends,
                 cfg.trim,
                 cfg.device,
+                cfg.emit_moves,
             )
         else:
             logger.info("Running modified basecalling using dorado")
+            dorado_kit_name = cfg.barcode_kit if cfg.barcode_kit != "custom" else None
             modcall(
                 str(cfg.model_dir),
                 cfg.model,
                 str(cfg.input_data_path),
-                cfg.barcode_kit,
+                dorado_kit_name,
                 cfg.mod_list,
                 str(bam),
                 cfg.bam_suffix,
                 cfg.barcode_both_ends,
                 cfg.trim,
                 cfg.device,
+                cfg.emit_moves,
             )
     elif basecall:
         logger.error("Basecalling is currently only supported for ont sequencers and not pacbio.")
@@ -471,10 +515,120 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             )
     ########################################################################################################################
 
+    ################################### 4.5) Optional UMI annotation #############################################
+    if getattr(cfg, "use_umi", False):
+        logger.info("Annotating UMIs in aligned and sorted BAM before demultiplexing")
+
+        # Resolve UMI kit alias or custom YAML path
+        umi_kit_config = None
+        umi_kit = getattr(cfg, "umi_kit", None)
+        umi_yaml_path = getattr(cfg, "umi_yaml", None)
+        if umi_kit and umi_kit != "custom":
+            if umi_kit not in UMI_KIT_ALIASES:
+                raise ValueError(
+                    f"Unknown umi_kit '{umi_kit}'. "
+                    f"Available aliases: {list(UMI_KIT_ALIASES.keys())} or use 'custom' with umi_yaml."
+                )
+            umi_yaml_path = UMI_KIT_ALIASES[umi_kit]
+            logger.info(f"Using UMI kit alias '{umi_kit}' -> {umi_yaml_path}")
+        elif umi_kit == "custom" and not umi_yaml_path:
+            raise ValueError("umi_kit='custom' requires umi_yaml path to be specified.")
+        if umi_yaml_path:
+            logger.info(f"Loading UMI config from YAML: {umi_yaml_path}")
+            umi_kit_config = load_umi_config_from_yaml(umi_yaml_path)
+        resolved_umi = resolve_umi_config(umi_kit_config, cfg)
+
+        annotate_umi_tags_in_bam(
+            aligned_sorted_output,
+            use_umi=True,
+            umi_adapters=getattr(cfg, "umi_adapters", None),
+            umi_length=getattr(cfg, "umi_length", None),
+            umi_search_window=getattr(cfg, "umi_search_window", 200),
+            umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "exact"),
+            umi_adapter_max_edits=resolved_umi["umi_adapter_max_edits"],
+            samtools_backend=cfg.samtools_backend,
+            umi_kit_config=umi_kit_config,
+            umi_ends=resolved_umi["umi_ends"],
+            umi_flank_mode=resolved_umi["umi_flank_mode"],
+            umi_amplicon_max_edits=resolved_umi["umi_amplicon_max_edits"],
+            same_orientation=resolved_umi.get("same_orientation", False),
+        )
+    ########################################################################################################################
+
+    ################################### 4.6) Optional smftools barcode extraction #############################################
+    use_smftools_demux = demux_backend == "smftools"
+    if use_smftools_demux and cfg.barcode_kit:
+        # Resolve barcode YAML path from kit alias or custom path
+        if cfg.barcode_kit == "custom":
+            if not cfg.custom_barcode_yaml:
+                raise ValueError(
+                    "barcode_kit='custom' requires custom_barcode_yaml path to be specified"
+                )
+            barcode_yaml_path = cfg.custom_barcode_yaml
+        elif cfg.barcode_kit in BARCODE_KIT_ALIASES:
+            barcode_yaml_path = BARCODE_KIT_ALIASES[cfg.barcode_kit]
+            logger.info(f"Using barcode kit alias '{cfg.barcode_kit}' -> {barcode_yaml_path}")
+        else:
+            raise ValueError(
+                f"Unknown barcode_kit '{cfg.barcode_kit}' for smftools demux backend. "
+                f"Available aliases: {list(BARCODE_KIT_ALIASES.keys())} or use 'custom' with custom_barcode_yaml."
+            )
+
+        logger.info("Loading barcode references from YAML")
+        yaml_result = load_barcode_references_from_yaml(barcode_yaml_path)
+
+        # Handle both old format (tuple) and new format (BarcodeKitConfig)
+        if isinstance(yaml_result, BarcodeKitConfig):
+            barcode_kit_config = yaml_result
+            barcode_references = barcode_kit_config.barcodes
+            barcode_length = barcode_kit_config.barcode_length
+        else:
+            barcode_references, barcode_length = yaml_result
+            # Build a BarcodeKitConfig from legacy adapters for flanking support
+            legacy_adapters = getattr(cfg, "barcode_adapters", [None, None])
+            flanking = (
+                _build_flanking_from_adapters(legacy_adapters)
+                if any(a is not None for a in (legacy_adapters or []))
+                else None
+            )
+            barcode_kit_config = BarcodeKitConfig(
+                barcodes=barcode_references,
+                barcode_length=barcode_length,
+                flanking=flanking,
+            )
+
+        logger.info(
+            f"Loaded {len(barcode_references)} barcode references (length={barcode_length})"
+        )
+        resolved_bc = resolve_barcode_config(barcode_kit_config, cfg)
+
+        logger.info("Extracting and assigning barcodes to aligned BAM using smftools backend")
+        barcoded_bam = extract_and_assign_barcodes_in_bam(
+            aligned_sorted_output,
+            barcode_adapters=getattr(cfg, "barcode_adapters", [None, None]),
+            barcode_references=barcode_references,
+            barcode_length=barcode_length,
+            barcode_search_window=getattr(cfg, "barcode_search_window", 200),
+            barcode_max_edit_distance=resolved_bc["barcode_max_edit_distance"],
+            barcode_adapter_matcher=getattr(cfg, "barcode_adapter_matcher", "edlib"),
+            barcode_composite_max_edits=resolved_bc["barcode_composite_max_edits"],
+            barcode_min_separation=resolved_bc.get("barcode_min_separation"),
+            require_both_ends=getattr(cfg, "barcode_both_ends", False),
+            min_barcode_score=getattr(cfg, "barcode_min_score", None),
+            samtools_backend=cfg.samtools_backend,
+            barcode_kit_config=barcode_kit_config,
+            barcode_ends=resolved_bc["barcode_ends"],
+            barcode_amplicon_gap_tolerance=resolved_bc["barcode_amplicon_gap_tolerance"],
+        )
+        # Update aligned_sorted_output to point to the barcoded BAM
+        aligned_sorted_output = barcoded_bam
+        logger.info(f"smftools barcode extraction complete: {barcoded_bam}")
+    ########################################################################################################################
+
     ################################### 5) Demultiplexing ######################################################################
 
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
-    if cfg.input_already_demuxed:
+    if cfg.input_already_demuxed or use_smftools_demux:
         if cfg.split_path.is_dir():
             logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
 
@@ -502,69 +656,144 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         double_barcoded_path = None
 
     else:
-        if single_barcoded_path.is_dir():
-            logger.debug(
-                f"{single_barcoded_path} already exists. Using existing single ended demultiplexed BAMs."
-            )
+        # --- Dorado demux: version-aware branching ---
+        dorado_version = _get_dorado_version()
+        use_single_pass = dorado_version is not None and dorado_version >= (1, 3, 1)
 
-            all_se_bam_files = sorted(
-                p
-                for p in single_barcoded_path.iterdir()
-                if p.is_file() and p.suffix == cfg.bam_suffix
-            )
-            unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
-            se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
+        if use_single_pass:
+            # Check what barcode tags are already present in the BAM
+            tag_info = _bam_has_barcode_info_tags(aligned_sorted_output)
+
+            if tag_info["has_bc"] and tag_info["has_bi"]:
+                # Best case: basecalling already classified with per-end scoring info
+                logger.info(
+                    "Dorado basecalling already classified barcodes with scoring info (bi/bv tags). "
+                    "Using --no-classify for demux."
+                )
+                demux_mode = "no_classify"
+            elif tag_info["has_bc"]:
+                # BC tags from older basecalling, but new dorado available — re-classify
+                logger.info(
+                    "BC tags present but no bi/bv scoring tags. "
+                    "Re-classifying barcodes with dorado >= 1.3.1 to get per-end scoring info."
+                )
+                demux_mode = "classify"
+            else:
+                # No BC tags — need full classification
+                logger.info("No existing barcode tags. Running full dorado demux classification.")
+                demux_mode = "classify"
+
+            # Single-pass demux into split_path directly (no se_/de_ subdirectories)
+            if cfg.split_path.is_dir():
+                logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
+                all_bam_files = sorted(
+                    p
+                    for p in cfg.split_path.iterdir()
+                    if p.is_file() and p.suffix == cfg.bam_suffix
+                )
+                unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
+                bam_files = [p for p in all_bam_files if "unclassified" not in p.name]
+            else:
+                make_dirs([cfg.split_path])
+                logger.info(
+                    "Demultiplexing with dorado (single-pass, version %s)",
+                    ".".join(str(v) for v in dorado_version),
+                )
+                all_bam_files = demux_and_index_BAM(
+                    aligned_sorted_BAM,
+                    cfg.split_path,
+                    cfg.bam_suffix,
+                    cfg.barcode_kit,
+                    barcode_both_ends=False,
+                    trim=cfg.trim,
+                    threads=cfg.threads,
+                    no_classify=(demux_mode == "no_classify"),
+                    file_prefix="",  # no se_/de_ prefix for single-pass
+                )
+                unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
+                bam_files = [p for p in all_bam_files if "unclassified" not in p.name]
+
+            # Annotate BM tag from bi per-end scores on each demuxed BAM
+            for bam in bam_files:
+                if "unclassified" not in bam.name:
+                    annotate_demux_type_from_bi_tag(bam, threshold=0.0)
+
+            se_bam_files = bam_files
+            bam_dir = cfg.split_path
+            double_barcoded_path = None
+
         else:
-            make_dirs([cfg.split_path, single_barcoded_path])
-            logger.info(
-                "Demultiplexing samples into individual aligned/sorted BAM files based on single end barcode status with Dorado"
-            )
-            all_se_bam_files = demux_and_index_BAM(
-                aligned_sorted_BAM,
-                single_barcoded_path,
-                cfg.bam_suffix,
-                cfg.barcode_kit,
-                False,
-                cfg.trim,
-                cfg.threads,
-            )
+            # Old dorado (< 1.3.1) or dorado not found: use existing 2-pass approach
+            if dorado_version is not None:
+                logger.warning(
+                    "Dorado version %s detected (< 1.3.1). Using 2-pass demux. "
+                    "Upgrade to dorado >= 1.3.1 for faster single-pass demux with per-end scoring.",
+                    ".".join(str(v) for v in dorado_version),
+                )
 
-            unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
-            se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
+            if single_barcoded_path.is_dir():
+                logger.debug(
+                    f"{single_barcoded_path} already exists. Using existing single ended demultiplexed BAMs."
+                )
 
-        if double_barcoded_path.is_dir():
-            logger.debug(
-                f"{double_barcoded_path} already exists. Using existing double ended demultiplexed BAMs."
-            )
+                all_se_bam_files = sorted(
+                    p
+                    for p in single_barcoded_path.iterdir()
+                    if p.is_file() and p.suffix == cfg.bam_suffix
+                )
+                unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
+                se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
+            else:
+                make_dirs([cfg.split_path, single_barcoded_path])
+                logger.info(
+                    "Demultiplexing samples into individual aligned/sorted BAM files based on single end barcode status with Dorado"
+                )
+                all_se_bam_files = demux_and_index_BAM(
+                    aligned_sorted_BAM,
+                    single_barcoded_path,
+                    cfg.bam_suffix,
+                    cfg.barcode_kit,
+                    False,
+                    cfg.trim,
+                    cfg.threads,
+                )
 
-            all_de_bam_files = sorted(
-                p
-                for p in double_barcoded_path.iterdir()
-                if p.is_file() and p.suffix == cfg.bam_suffix
-            )
-            unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
-            de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
-        else:
-            make_dirs([cfg.split_path, double_barcoded_path])
-            logger.info(
-                "Demultiplexing samples into individual aligned/sorted BAM files based on double end barcode status with Dorado"
-            )
-            all_de_bam_files = demux_and_index_BAM(
-                aligned_sorted_BAM,
-                double_barcoded_path,
-                cfg.bam_suffix,
-                cfg.barcode_kit,
-                True,
-                cfg.trim,
-                cfg.threads,
-            )
+                unclassified_se_bams = [p for p in all_se_bam_files if "unclassified" in p.name]
+                se_bam_files = [p for p in all_se_bam_files if "unclassified" not in p.name]
 
-            unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
-            de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
+            if double_barcoded_path.is_dir():
+                logger.debug(
+                    f"{double_barcoded_path} already exists. Using existing double ended demultiplexed BAMs."
+                )
 
-        bam_files = se_bam_files + de_bam_files
-        unclassified_bams = unclassified_se_bams + unclassified_de_bams
-        bam_dir = single_barcoded_path
+                all_de_bam_files = sorted(
+                    p
+                    for p in double_barcoded_path.iterdir()
+                    if p.is_file() and p.suffix == cfg.bam_suffix
+                )
+                unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
+                de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
+            else:
+                make_dirs([cfg.split_path, double_barcoded_path])
+                logger.info(
+                    "Demultiplexing samples into individual aligned/sorted BAM files based on double end barcode status with Dorado"
+                )
+                all_de_bam_files = demux_and_index_BAM(
+                    aligned_sorted_BAM,
+                    double_barcoded_path,
+                    cfg.bam_suffix,
+                    cfg.barcode_kit,
+                    True,
+                    cfg.trim,
+                    cfg.threads,
+                )
+
+                unclassified_de_bams = [p for p in all_de_bam_files if "unclassified" in p.name]
+                de_bam_files = [p for p in all_de_bam_files if "unclassified" not in p.name]
+
+            bam_files = se_bam_files + de_bam_files
+            unclassified_bams = unclassified_se_bams + unclassified_de_bams
+            bam_dir = single_barcoded_path
 
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
@@ -634,6 +863,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             delete_intermediates=cfg.delete_intermediate_hdfs,
             double_barcoded_path=double_barcoded_path,
             samtools_backend=cfg.samtools_backend,
+            demux_backend=getattr(cfg, "demux_backend", None),
         )
     else:
         if mod_bed_dir.is_dir():
@@ -690,6 +920,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             cfg.threads,
             double_barcoded_path,
             cfg.samtools_backend,
+            demux_backend=getattr(cfg, "demux_backend", None),
         )
         if cfg.delete_intermediate_tsvs:
             delete_tsvs(mod_tsv_dir)
@@ -698,6 +929,14 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     raw_adata.obs["Experiment_name_and_barcode"] = (
         raw_adata.obs["Experiment_name"].astype(str) + "_" + raw_adata.obs["Barcode"].astype(str)
     )
+
+    # Store experiment-specific BAM paths for POD5 plotting
+    if "bam_paths" not in raw_adata.uns:
+        raw_adata.uns["bam_paths"] = {}
+    if unaligned_output.exists():
+        raw_adata.uns["bam_paths"][f"{cfg.experiment_name}_unaligned"] = str(unaligned_output)
+    if aligned_sorted_output.exists():
+        raw_adata.uns["bam_paths"][f"{cfg.experiment_name}_aligned"] = str(aligned_sorted_output)
 
     ########################################################################################################################
 
@@ -713,16 +952,49 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         samtools_backend=cfg.samtools_backend,
     )
 
+    # Build default tag list: always NM/MD, MM/ML only for direct modality
+    default_tags = ["NM", "MD", "fn"]
+    if cfg.smf_modality == "direct":
+        default_tags.extend(["MM", "ML"])
+    # Add UMI tags if UMI extraction was enabled
+    if getattr(cfg, "use_umi", False):
+        default_tags.extend(["U1", "U2", "RX"])
+    # Add barcode tags if smftools barcode extraction was used
+    if demux_backend == "smftools" and cfg.barcode_kit:
+        default_tags.extend(["BC", "BM", "B1", "B2", "BE", "BF"])
+    # Add barcode tags from dorado single-pass demux (BM annotated from bi tag)
+    elif demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+        dorado_ver = _get_dorado_version()
+        if dorado_ver is not None and dorado_ver >= (1, 3, 1):
+            default_tags.extend(["BC", "BM", "bi"])
+    bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
+
     logger.info("Adding BAM tags and BAM flags to adata.obs")
     add_read_tag_annotations(
         raw_adata,
         se_bam_files,
-        tag_names=getattr(cfg, "bam_tag_names", ["NM", "MD", "MM", "ML"]),
+        tag_names=bam_tag_names,
         include_flags=True,
         include_cigar=True,
         extract_read_tags_from_bam_callable=extract_read_tags_from_bam,
         samtools_backend=cfg.samtools_backend,
     )
+
+    # Expand dorado bi array tag into individual float score columns
+    if "bi" in bam_tag_names:
+        expand_bi_tag_columns(raw_adata, bi_column="bi")
+
+    # Derive demux_type from BM tag when using smftools or dorado single-pass backend
+    _derive_bm = False
+    if demux_backend == "smftools" and cfg.barcode_kit and not cfg.input_already_demuxed:
+        _derive_bm = True
+    elif demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+        dorado_ver = _get_dorado_version()
+        if dorado_ver is not None and dorado_ver >= (1, 3, 1):
+            _derive_bm = True
+    if _derive_bm:
+        logger.info("Deriving demux_type from BM tag")
+        add_demux_type_from_bm_tag(raw_adata, bm_column="BM")
 
     if getattr(cfg, "annotate_secondary_supplementary", False):
         logger.info("Annotating secondary/supplementary alignments from aligned BAM")

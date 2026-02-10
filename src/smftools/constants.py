@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Dict, Final, Mapping
 
@@ -19,6 +20,48 @@ def _deep_freeze(obj: Any) -> Any:
 ## Constants ##
 BAM_SUFFIX: Final[str] = ".bam"
 BARCODE_BOTH_ENDS: Final[bool] = False
+
+# Barcode kit aliases for smftools demux backend
+# Maps kit alias names to paths of barcode YAML files (relative to package data or absolute)
+# Users can add custom aliases here or use "custom" with custom_barcode_yaml path
+_private_barcode_kit_aliases: Dict[str, str] = {
+    "SQK-NBD114-24": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-NBD114-24.yaml"
+    ),
+    "SQK-NBD114.24": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-NBD114-24.yaml"
+    ),
+    "SQK-NBD114-96": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-NBD114-96.yaml"
+    ),
+    "SQK-NBD114.96": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-NBD114-96.yaml"
+    ),
+    "SQK-RBK114-24": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-RBK114-24.yaml"
+    ),
+    "SQK-RBK114.24": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-RBK114-24.yaml"
+    ),
+    "SQK-RBK114-96": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-RBK114-96.yaml"
+    ),
+    "SQK-RBK114.96": str(
+        Path(__file__).resolve().parent / "config" / "barcodes" / "SQK-RBK114-96.yaml"
+    ),
+}
+BARCODE_KIT_ALIASES: Final[Mapping[str, str]] = _deep_freeze(_private_barcode_kit_aliases)
+
+# UMI kit aliases for smftools UMI extraction
+# Maps kit alias names to paths of UMI YAML config files
+# Users can add custom aliases here or use "custom" with umi_yaml path
+_private_umi_kit_aliases: Dict[str, str] = {
+    "dual-nextera-12": str(
+        Path(__file__).resolve().parent / "config" / "umis" / "dual-nextera-12.yaml"
+    ),
+}
+UMI_KIT_ALIASES: Final[Mapping[str, str]] = _deep_freeze(_private_umi_kit_aliases)
+
 REF_COL: Final[str] = "Reference_strand"
 SAMPLE_COL: Final[str] = "Experiment_name_and_barcode"
 SAMPLE: Final[str] = "Sample"

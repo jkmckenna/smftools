@@ -13,7 +13,13 @@ from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
 
 # FIX: import _to_dense_np to avoid NameError
-from ..hmm.HMM import _safe_int_coords, _to_dense_np, create_hmm, normalize_hmm_feature_sets
+from ..hmm.HMM import (
+    _safe_int_coords,
+    _to_dense_np,
+    create_hmm,
+    mask_layers_outside_read_span,
+    normalize_hmm_feature_sets,
+)
 
 logger = get_logger(__name__)
 
@@ -580,7 +586,7 @@ def hmm_adata(config_path: str):
     #   - in-memory spatial_ad from wrapper call
     #   - saved spatial / pp_dedup / pp / raw on disk
     if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply):
-        logger.debug(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
+        logger.info(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
         return None
 
     if paths.hmm.exists():
@@ -653,6 +659,7 @@ def hmm_adata_core(
         plot_hmm_layers_rolling_by_sample_ref,
         plot_hmm_size_contours,
     )
+    from ..preprocessing import invert_adata, load_sample_sheet, reindex_references_adata
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
@@ -678,6 +685,34 @@ def hmm_adata_core(
         log_file = None
 
     setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
+
+    # -----------------------------
+    # Optional sample sheet metadata
+    # -----------------------------
+    if getattr(cfg, "sample_sheet_path", None):
+        load_sample_sheet(
+            adata,
+            cfg.sample_sheet_path,
+            mapping_key_column=cfg.sample_sheet_mapping_column,
+            as_category=True,
+            force_reload=cfg.force_reload_sample_sheet,
+        )
+
+    # -----------------------------
+    # Optional inversion along positions axis
+    # -----------------------------
+    if getattr(cfg, "invert_adata", False):
+        adata = invert_adata(adata)
+
+    # -----------------------------
+    # Optional reindexing by reference
+    # -----------------------------
+    reindex_references_adata(
+        adata,
+        reference_col=cfg.reference_column,
+        offsets=cfg.reindexing_offsets,
+        new_col=cfg.reindexed_var_suffix,
+    )
 
     # ---------------------------- HMM annotate stage ----------------------------
     if not (cfg.bypass_hmm_fit and cfg.bypass_hmm_apply):
@@ -817,11 +852,12 @@ def hmm_adata_core(
                                         suffix=merged_suffix,
                                         overwrite=True,
                                     )
+                                    masked_layers = [merged_base, f"{merged_base}_lengths"]
                                     # write merged size classes based on whichever group core_layer corresponds to
                                     for group, fs in feature_sets_access.items():
                                         fmap = fs.get("features", {}) or {}
                                         if fmap:
-                                            hmm.write_size_class_layers_from_binary(
+                                            created = hmm.write_size_class_layers_from_binary(
                                                 subset,
                                                 merged_base,
                                                 out_prefix=str(mb),
@@ -829,6 +865,12 @@ def hmm_adata_core(
                                                 suffix=merged_suffix,
                                                 overwrite=True,
                                             )
+                                            masked_layers.extend(created)
+                                    mask_layers_outside_read_span(
+                                        subset,
+                                        masked_layers,
+                                        use_original_var_names=True,
+                                    )
 
                     # =========================
                     # 2) Multi-channel accessibility (Combined)
@@ -902,10 +944,11 @@ def hmm_adata_core(
                                             suffix=merged_suffix,
                                             overwrite=True,
                                         )
+                                        masked_layers = [merged_base, f"{merged_base}_lengths"]
                                         for group, fs in feature_sets_access.items():
                                             fmap = fs.get("features", {}) or {}
                                             if fmap:
-                                                hmmc.write_size_class_layers_from_binary(
+                                                created = hmmc.write_size_class_layers_from_binary(
                                                     subset,
                                                     merged_base,
                                                     out_prefix="Combined",
@@ -913,6 +956,12 @@ def hmm_adata_core(
                                                     suffix=merged_suffix,
                                                     overwrite=True,
                                                 )
+                                                masked_layers.extend(created)
+                                        mask_layers_outside_read_span(
+                                            subset,
+                                            masked_layers,
+                                            use_original_var_names=True,
+                                        )
 
                     # =========================
                     # 3) CpG-only single-channel task

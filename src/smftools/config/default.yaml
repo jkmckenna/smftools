@@ -21,7 +21,7 @@ input_already_demuxed: False # If the input files are already demultiplexed.
 
 delete_intermediate_hdfs: True # Whether to delete the intermediate hdfs from the conversion/deamination workflows.
 delete_intermediate_bams: False # Whether to delete intermediate BAM files.
-delete_intermediate_tsvs: True # Whether to delete intermediate TSV files.
+delete_intermediate_tsvs: False # Whether to delete intermediate TSV files.
 
 # Sequencing modality and general experiment params
 smf_modality: 'conversion' # conversion, deaminase, direct
@@ -37,6 +37,7 @@ enzyme_target_bases:
 model_dir: null # Directory where dorado basecalling models are stored.
 model: "hac" # needed for dorado basecaller
 filter_threshold: 0.8 # Dorado probability filter threshold for base calling.
+emit_moves: False # Whether to emit move tables (mv tag) during basecalling for signal-to-base alignment
 
 # Alignment params
 aligner: "dorado" # Aligner to use: dorado, minimap2
@@ -84,8 +85,37 @@ bedtools_backend: auto # auto|python|cli for bedtools-compatible operations
 bigwig_backend: auto # auto|python|cli for bedGraphToBigWig conversion
 
 # Nanopore specific demultiplexing
-barcode_both_ends: False # dorado demultiplexing
+demux_backend: dorado # smftools|dorado - smftools uses YAML-based barcode refs, dorado uses kit names
+barcode_both_ends: False # Require barcode match at both ends
 trim: False # dorado adapter and barcode removal during demultiplexing
+use_umi: False # Whether to detect and annotate UMIs in aligned_sorted BAM before demultiplexing
+umi_adapters: [null, null] # Two-slot list [left_ref_end_adapter, right_ref_end_adapter]
+umi_length: null # Length of each UMI (required when use_umi is true)
+umi_search_window: 200 # Max distance from read ends to consider an adapter match for UMI extraction
+umi_adapter_matcher: exact # exact|edlib
+umi_adapter_max_edits: null # Used for edlib fuzzy matching; null defers to UMI YAML/default
+
+# smftools barcode extraction (when demux_backend: smftools)
+# barcode_kit can be: alias from BARCODE_KIT_ALIASES in constants.py, or "custom" (requires custom_barcode_yaml)
+custom_barcode_yaml: null # Path to YAML file containing barcode name -> sequence mappings (when barcode_kit: custom)
+barcode_adapters: [null, null] # Two-slot list [left_ref_end_adapter, right_ref_end_adapter]
+barcode_search_window: 200 # Max distance from read ends to search for adapter
+barcode_max_edit_distance: null # Max edit distance for matching extracted barcode to references; null defers to YAML/default
+barcode_adapter_matcher: edlib # exact|edlib for adapter detection
+barcode_composite_max_edits: null # Max edits for composite or single-flank matching; null defers to YAML/default
+barcode_min_separation: null # Min distance between best and second-best barcode match; null disables
+barcode_min_score: null # Optional minimum score threshold for barcode assignment
+
+# Barcode flanking configuration
+barcode_ends: null  # both | read_start | read_end | left_only | right_only - null defers to YAML/default
+barcode_amplicon_gap_tolerance: 5  # Allowed gap/overlap (bp) between amplicon and barcode; null defers to YAML/default
+
+# UMI flanking configuration
+umi_ends: null  # both | left_only | right_only - null defers to YAML/default
+umi_flank_mode: null  # adapter_only | amplicon_only | both - null defers to YAML/default
+umi_amplicon_max_edits: null
+umi_kit: null  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yaml
+umi_yaml: null  # Path to UMI YAML config file (when umi_kit: custom)
 
 # Anndata structure
 mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
@@ -323,12 +353,10 @@ hmm_merge_layer_features:
   - ["all_accessible_features", 60]
 clustermap_cmap_hmm: "coolwarm"
 hmm_clustermap_feature_layers:
-  - all_accessible_features_merged
   - nucleosome_depleted_region_merged
   - small_bound_stretch
   - medium_bound_stretch
   - putative_nucleosome
-  - all_footprint_features
 hmm_clustermap_length_layers:
   - all_accessible_features_merged
   - all_footprint_features

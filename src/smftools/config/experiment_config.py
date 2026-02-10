@@ -716,6 +716,35 @@ class ExperimentConfig:
     model: str = "hac"
     barcode_both_ends: bool = BARCODE_BOTH_ENDS
     trim: bool = TRIM
+    demux_backend: str = "dorado"  # "smftools" or "dorado"
+    use_umi: bool = False
+    umi_adapters: List[Optional[str]] = field(default_factory=lambda: [None, None])
+    umi_length: Optional[int] = None
+    umi_search_window: int = 200
+    umi_adapter_matcher: str = "exact"
+    umi_adapter_max_edits: Optional[int] = None
+    # smftools barcode extraction (when demux_backend="smftools")
+    # barcode_kit can be an alias from BARCODE_KIT_ALIASES or "custom" (requires custom_barcode_yaml)
+    custom_barcode_yaml: Optional[str] = None
+    barcode_adapters: List[Optional[str]] = field(default_factory=lambda: [None, None])
+    barcode_search_window: int = 200
+    barcode_max_edit_distance: Optional[int] = None
+    barcode_adapter_matcher: str = "edlib"
+    barcode_composite_max_edits: Optional[int] = None
+    barcode_min_separation: Optional[int] = None
+    barcode_min_score: Optional[int] = None
+    # Barcode flanking configuration
+    barcode_ends: Optional[str] = None  # both | read_start | read_end | left_only | right_only
+    barcode_amplicon_gap_tolerance: Optional[int] = None
+    # UMI flanking configuration
+    umi_ends: Optional[str] = None
+    umi_flank_mode: Optional[str] = None
+    umi_amplicon_max_edits: Optional[int] = None
+    same_orientation: Optional[bool] = None  # UMI flanking orientation override
+    umi_kit: Optional[str] = (
+        None  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yaml
+    )
+    umi_yaml: Optional[str] = None  # Path to UMI YAML config file (when umi_kit is "custom")
     # General basecalling params
     filter_threshold: float = 0.8
     # Modified basecalling specific params
@@ -1202,6 +1231,7 @@ class ExperimentConfig:
         for bkey in (
             "barcode_both_ends",
             "trim",
+            "use_umi",
             "input_already_demuxed",
             "make_bigwigs",
             "skip_unclassified",
@@ -1212,9 +1242,102 @@ class ExperimentConfig:
 
         if "batch_size" in merged:
             merged["batch_size"] = int(_parse_numeric(merged.get("batch_size", 4), 4))
+        if "umi_length" in merged:
+            umi_length_val = _parse_numeric(merged.get("umi_length", None), None)
+            merged["umi_length"] = None if umi_length_val is None else int(umi_length_val)
+        if "umi_search_window" in merged:
+            merged["umi_search_window"] = int(
+                _parse_numeric(merged.get("umi_search_window", 200), 200)
+            )
+        if "umi_adapter_max_edits" in merged:
+            merged_uae = _parse_numeric(merged.get("umi_adapter_max_edits", None), None)
+            merged["umi_adapter_max_edits"] = None if merged_uae is None else int(merged_uae)
+        if "umi_adapter_matcher" in merged:
+            merged["umi_adapter_matcher"] = str(merged.get("umi_adapter_matcher", "exact")).lower()
         if "threads" in merged:
             tval = _parse_numeric(merged.get("threads", None), None)
             merged["threads"] = None if tval is None else int(tval)
+        if "umi_adapters" in merged:
+            merged["umi_adapters"] = _parse_list(merged.get("umi_adapters"))
+
+        # smftools barcode extraction config parsing
+        if "demux_backend" in merged:
+            merged["demux_backend"] = str(merged.get("demux_backend", "dorado")).lower()
+        if "barcode_adapters" in merged:
+            merged["barcode_adapters"] = _parse_list(merged.get("barcode_adapters"))
+        if "barcode_search_window" in merged:
+            merged["barcode_search_window"] = int(
+                _parse_numeric(merged.get("barcode_search_window", 200), 200)
+            )
+        if "barcode_max_edit_distance" in merged:
+            merged_bmed = _parse_numeric(merged.get("barcode_max_edit_distance", None), None)
+            merged["barcode_max_edit_distance"] = None if merged_bmed is None else int(merged_bmed)
+        if "barcode_min_separation" in merged:
+            merged_bms = _parse_numeric(merged.get("barcode_min_separation", None), None)
+            merged["barcode_min_separation"] = None if merged_bms is None else int(merged_bms)
+        if "barcode_adapter_matcher" in merged:
+            merged["barcode_adapter_matcher"] = str(
+                merged.get("barcode_adapter_matcher", "edlib")
+            ).lower()
+        if "barcode_composite_max_edits" in merged:
+            merged_bcme = _parse_numeric(merged.get("barcode_composite_max_edits", None), None)
+            merged["barcode_composite_max_edits"] = (
+                None if merged_bcme is None else int(merged_bcme)
+            )
+        if "barcode_min_score" in merged:
+            bms = _parse_numeric(merged.get("barcode_min_score", None), None)
+            merged["barcode_min_score"] = None if bms is None else int(bms)
+
+        # Barcode flanking config parsing
+        if "barcode_ends" in merged:
+            val = merged.get("barcode_ends")
+            merged["barcode_ends"] = (
+                None
+                if val is None or str(val).strip().lower() in ("", "none", "null")
+                else str(val).strip().lower()
+            )
+        if "barcode_amplicon_gap_tolerance" in merged:
+            val = _parse_numeric(merged.get("barcode_amplicon_gap_tolerance", None), None)
+            merged["barcode_amplicon_gap_tolerance"] = None if val is None else int(val)
+        if "same_orientation" in merged:
+            val = merged.get("same_orientation")
+            if val is None or str(val).strip().lower() in ("", "none", "null"):
+                merged["same_orientation"] = None
+            else:
+                merged["same_orientation"] = _parse_bool(val)
+
+        # UMI flanking config parsing
+        if "umi_ends" in merged:
+            val = merged.get("umi_ends")
+            merged["umi_ends"] = (
+                None
+                if val is None or str(val).strip().lower() in ("", "none", "null")
+                else str(val).strip().lower()
+            )
+        if "umi_flank_mode" in merged:
+            val = merged.get("umi_flank_mode")
+            merged["umi_flank_mode"] = (
+                None
+                if val is None or str(val).strip().lower() in ("", "none", "null")
+                else str(val).strip().lower()
+            )
+        if "umi_amplicon_max_edits" in merged:
+            val = _parse_numeric(merged.get("umi_amplicon_max_edits", None), None)
+            merged["umi_amplicon_max_edits"] = None if val is None else int(val)
+        if "umi_kit" in merged:
+            val = merged.get("umi_kit")
+            merged["umi_kit"] = (
+                None
+                if val is None or str(val).strip().lower() in ("", "null", "none")
+                else str(val).strip()
+            )
+        if "umi_yaml" in merged:
+            val = merged.get("umi_yaml")
+            merged["umi_yaml"] = (
+                None
+                if val is None or str(val).strip().lower() in ("", "null", "none")
+                else str(val)
+            )
 
         if "aligner_args" in merged and merged.get("aligner_args") is None:
             merged.pop("aligner_args", None)
@@ -1328,6 +1451,30 @@ class ExperimentConfig:
             model=merged.get("model", "hac"),
             barcode_both_ends=merged.get("barcode_both_ends", BARCODE_BOTH_ENDS),
             trim=merged.get("trim", TRIM),
+            demux_backend=merged.get("demux_backend", "dorado"),
+            use_umi=merged.get("use_umi", False),
+            umi_adapters=merged.get("umi_adapters", [None, None]),
+            umi_length=merged.get("umi_length", None),
+            umi_search_window=merged.get("umi_search_window", 200),
+            umi_adapter_matcher=merged.get("umi_adapter_matcher", "exact"),
+            umi_adapter_max_edits=merged.get("umi_adapter_max_edits", None),
+            # smftools barcode extraction config
+            custom_barcode_yaml=merged.get("custom_barcode_yaml", None),
+            barcode_adapters=merged.get("barcode_adapters", [None, None]),
+            barcode_search_window=merged.get("barcode_search_window", 200),
+            barcode_max_edit_distance=merged.get("barcode_max_edit_distance", None),
+            barcode_adapter_matcher=merged.get("barcode_adapter_matcher", "edlib"),
+            barcode_composite_max_edits=merged.get("barcode_composite_max_edits", None),
+            barcode_min_separation=merged.get("barcode_min_separation", None),
+            barcode_min_score=merged.get("barcode_min_score", None),
+            barcode_ends=merged.get("barcode_ends", None),
+            barcode_amplicon_gap_tolerance=merged.get("barcode_amplicon_gap_tolerance", None),
+            same_orientation=merged.get("same_orientation", None),
+            umi_ends=merged.get("umi_ends", None),
+            umi_flank_mode=merged.get("umi_flank_mode", None),
+            umi_amplicon_max_edits=merged.get("umi_amplicon_max_edits", None),
+            umi_kit=merged.get("umi_kit", None),
+            umi_yaml=merged.get("umi_yaml", None),
             input_already_demuxed=merged.get("input_already_demuxed", False),
             threads=merged.get("threads"),
             emit_log_file=merged.get("emit_log_file", True),
