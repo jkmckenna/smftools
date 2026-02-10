@@ -2993,8 +2993,8 @@ def annotate_demux_type_from_bi_tag(
     Classification logic:
 
     - Both bi[3] and bi[6] > threshold → "both"
-    - Only bi[3] > threshold → "left_only"
-    - Only bi[6] > threshold → "right_only"
+    - Only bi[3] > threshold → "read_start_only"
+    - Only bi[6] > threshold → "read_end_only"
     - Has BC but no bi tag → "unknown"
     - No BC tag → "unclassified"
 
@@ -3020,7 +3020,13 @@ def annotate_demux_type_from_bi_tag(
     else:
         tmp_path = Path(output_path)
 
-    counts = {"both": 0, "left_only": 0, "right_only": 0, "unknown": 0, "unclassified": 0}
+    counts = {
+        "both": 0,
+        "read_start_only": 0,
+        "read_end_only": 0,
+        "unknown": 0,
+        "unclassified": 0,
+    }
 
     with pysam_mod.AlignmentFile(str(bam_path), "rb", check_sq=False) as inbam:
         with pysam_mod.AlignmentFile(str(tmp_path), "wb", header=inbam.header) as outbam:
@@ -3037,9 +3043,9 @@ def annotate_demux_type_from_bi_tag(
                     if top_score > threshold and bottom_score > threshold:
                         bm_value = "both"
                     elif top_score > threshold:
-                        bm_value = "left_only"
+                        bm_value = "read_start_only"
                     elif bottom_score > threshold:
-                        bm_value = "right_only"
+                        bm_value = "read_end_only"
                     else:
                         bm_value = "unknown"
 
