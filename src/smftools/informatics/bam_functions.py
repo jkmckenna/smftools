@@ -1667,10 +1667,10 @@ def extract_and_assign_barcodes_in_bam(
     matches them against a reference barcode set, and writes BAM tags for:
 
     - BC: Assigned barcode name (or "unclassified")
-    - B1: Left-end barcode match name (if found)
-    - B2: Right-end barcode match name (if found)
-    - BE: Left-end match edit distance
-    - BF: Right-end match edit distance
+    - B1: Read-start match edit distance (if found)
+    - B2: Read-end match edit distance (if found)
+    - B5: Read-start barcode name (if found)
+    - B6: Read-end barcode name (if found)
     - BM: Match type ("both", "read_start_only", "read_end_only", "mismatch", "unclassified")
 
     When ``barcode_kit_config`` with flanking sequences is provided, extraction uses
@@ -1959,12 +1959,12 @@ def extract_and_assign_barcodes_in_bam(
             if extracted_end_seq:
                 read.set_tag("B4", extracted_end_seq, value_type="Z")
 
-            if left_match:
-                read.set_tag("B1", left_match, value_type="Z")
-                read.set_tag("BE", left_dist, value_type="i")
-            if right_match:
-                read.set_tag("B2", right_match, value_type="Z")
-                read.set_tag("BF", right_dist, value_type="i")
+            if left_match is not None:
+                read.set_tag("B1", left_dist, value_type="i")
+                read.set_tag("B5", left_match, value_type="Z")
+            if right_match is not None:
+                read.set_tag("B2", right_dist, value_type="i")
+                read.set_tag("B6", right_match, value_type="Z")
 
             out_bam.write(read)
 

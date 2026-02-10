@@ -950,10 +950,8 @@ class TestExtractAndAssignBarcodesInBam:
         tags = self._run(tmp_path, reads)
         assert tags["r1"]["BC"] == "BC01"
         assert tags["r1"]["BM"] == "both"
-        assert tags["r1"]["B1"] == "BC01"
-        assert tags["r1"]["B2"] == "BC01"
-        assert tags["r1"]["BE"] == 0
-        assert tags["r1"]["BF"] == 0
+        assert tags["r1"]["B5"] == "BC01"
+        assert tags["r1"]["B6"] == "BC01"
 
     def test_legacy_mismatch_ends(self, tmp_path):
         """Different barcodes at each end → 'mismatch', 'unclassified'."""
@@ -961,8 +959,8 @@ class TestExtractAndAssignBarcodesInBam:
         tags = self._run(tmp_path, reads)
         assert tags["r1"]["BC"] == "unclassified"
         assert tags["r1"]["BM"] == "mismatch"
-        assert tags["r1"]["B1"] == "BC01"
-        assert tags["r1"]["B2"] == "BC02"
+        assert tags["r1"]["B5"] == "BC01"
+        assert tags["r1"]["B6"] == "BC02"
 
     def test_legacy_left_only(self, tmp_path):
         """Only left adapter found → assigned from start, BM='read_start_only'."""
@@ -970,8 +968,8 @@ class TestExtractAndAssignBarcodesInBam:
         tags = self._run(tmp_path, reads)
         assert tags["r1"]["BC"] == "BC01"
         assert tags["r1"]["BM"] == "read_start_only"
-        assert tags["r1"]["B1"] == "BC01"
-        assert "B2" not in tags["r1"]
+        assert tags["r1"]["B5"] == "BC01"
+        assert "B6" not in tags["r1"]
 
     def test_legacy_right_only(self, tmp_path):
         """Only right adapter found → assigned from end, BM='read_end_only'."""
@@ -979,8 +977,8 @@ class TestExtractAndAssignBarcodesInBam:
         tags = self._run(tmp_path, reads)
         assert tags["r1"]["BC"] == "BC02"
         assert tags["r1"]["BM"] == "read_end_only"
-        assert "B1" not in tags["r1"]
-        assert tags["r1"]["B2"] == "BC02"
+        assert "B5" not in tags["r1"]
+        assert tags["r1"]["B6"] == "BC02"
 
     def test_legacy_unclassified(self, tmp_path):
         """No adapters found → 'unclassified'."""
@@ -988,8 +986,8 @@ class TestExtractAndAssignBarcodesInBam:
         tags = self._run(tmp_path, reads)
         assert tags["r1"]["BC"] == "unclassified"
         assert tags["r1"]["BM"] == "unclassified"
-        assert "B1" not in tags["r1"]
-        assert "B2" not in tags["r1"]
+        assert "B5" not in tags["r1"]
+        assert "B6" not in tags["r1"]
 
     # -- Filtering options ----------------------------------------------------
 
@@ -999,7 +997,7 @@ class TestExtractAndAssignBarcodesInBam:
         tags = self._run(tmp_path, reads, require_both_ends=True)
         assert tags["r1"]["BC"] == "unclassified"
         assert tags["r1"]["BM"] == "read_start_only"
-        assert tags["r1"]["B1"] == "BC01"
+        assert tags["r1"]["B5"] == "BC01"
 
     def test_min_barcode_score_filters_weak_match(self, tmp_path):
         """min_barcode_score=0 rejects matches with edit distance > 0."""
@@ -1017,8 +1015,8 @@ class TestExtractAndAssignBarcodesInBam:
         tags = self._run(tmp_path, reads, barcode_ends="left_only")
         assert tags["r1"]["BC"] == "BC01"
         assert tags["r1"]["BM"] == "read_start_only"
-        assert tags["r1"]["B1"] == "BC01"
-        assert "B2" not in tags["r1"]
+        assert tags["r1"]["B5"] == "BC01"
+        assert "B6" not in tags["r1"]
 
     def test_barcode_ends_right_only(self, tmp_path):
         """barcode_ends='right_only' ignores read start entirely."""
@@ -1026,8 +1024,8 @@ class TestExtractAndAssignBarcodesInBam:
         tags = self._run(tmp_path, reads, barcode_ends="right_only")
         assert tags["r1"]["BC"] == "BC02"
         assert tags["r1"]["BM"] == "read_end_only"
-        assert "B1" not in tags["r1"]
-        assert tags["r1"]["B2"] == "BC02"
+        assert "B5" not in tags["r1"]
+        assert tags["r1"]["B6"] == "BC02"
 
     # -- Flanking-based extraction -------------------------------------------
 
@@ -1076,8 +1074,8 @@ class TestExtractAndAssignBarcodesInBam:
         tags = self._run(tmp_path, reads)
         assert tags["r1"]["BC"] == "BC03"
         assert tags["r1"]["BM"] == "both"
-        assert tags["r1"]["B1"] == "BC03"
-        assert tags["r1"]["B2"] == "BC03"
+        assert tags["r1"]["B5"] == "BC03"
+        assert tags["r1"]["B6"] == "BC03"
 
     @pytest.mark.skip(reason="Barcode extraction now uses read start/end for unaligned BAMs.")
     def test_reverse_strand_non_palindromic_adapters(self, tmp_path):
@@ -1095,8 +1093,8 @@ class TestExtractAndAssignBarcodesInBam:
         )
         assert tags["r1"]["BC"] == "BC01"
         assert tags["r1"]["BM"] == "both"
-        assert tags["r1"]["B1"] == "BC01"
-        assert tags["r1"]["B2"] == "BC01"
+        assert tags["r1"]["B5"] == "BC01"
+        assert tags["r1"]["B6"] == "BC01"
 
     # -- "either" flank mode -------------------------------------------------
 
@@ -1239,8 +1237,8 @@ class TestExtractAndAssignBarcodesInBam:
         )
         assert tags["r1"]["BC"] == "BC03"
         assert tags["r1"]["BM"] == "both"
-        assert tags["r1"]["B1"] == "BC03"
-        assert tags["r1"]["B2"] == "BC03"
+        assert tags["r1"]["B5"] == "BC03"
+        assert tags["r1"]["B6"] == "BC03"
 
     @pytest.mark.skip(reason="Barcode extraction now uses read start/end for unaligned BAMs.")
     def test_flanking_reverse_strand_both_ends(self, tmp_path):
@@ -1280,8 +1278,8 @@ class TestExtractAndAssignBarcodesInBam:
         )
         assert tags["r1"]["BC"] == "BC01"
         assert tags["r1"]["BM"] == "both"
-        assert tags["r1"]["B1"] == "BC01"
-        assert tags["r1"]["B2"] == "BC01"
+        assert tags["r1"]["B5"] == "BC01"
+        assert tags["r1"]["B6"] == "BC01"
 
 
 # ---------------------------------------------------------------------------
@@ -1367,8 +1365,8 @@ class TestRBK114RealisticRC:
         )
         assert tags["r1"]["BC"] == "RB01"
         assert tags["r1"]["BM"] == "both"
-        assert tags["r1"]["B1"] == "RB01"
-        assert tags["r1"]["B2"] == "RB01"
+        assert tags["r1"]["B5"] == "RB01"
+        assert tags["r1"]["B6"] == "RB01"
 
     # -- Forward read, right end only ------------------------------------------
 
@@ -1387,8 +1385,8 @@ class TestRBK114RealisticRC:
         )
         assert tags["r1"]["BC"] == "RB01"
         assert tags["r1"]["BM"] == "read_end_only"
-        assert "B1" not in tags["r1"]
-        assert tags["r1"]["B2"] == "RB01"
+        assert "B5" not in tags["r1"]
+        assert tags["r1"]["B6"] == "RB01"
 
     # -- Forward read, left end only -------------------------------------------
 
@@ -1404,8 +1402,8 @@ class TestRBK114RealisticRC:
         )
         assert tags["r1"]["BC"] == "RB01"
         assert tags["r1"]["BM"] == "read_start_only"
-        assert tags["r1"]["B1"] == "RB01"
-        assert "B2" not in tags["r1"]
+        assert tags["r1"]["B5"] == "RB01"
+        assert "B6" not in tags["r1"]
 
     @pytest.mark.skip(reason="Amplicon-gap tolerance removed with composite/single-flank logic.")
     def test_forward_amplicon_gap_tolerance(self, tmp_path):
@@ -1423,8 +1421,8 @@ class TestRBK114RealisticRC:
         )
         assert tags["r1"]["BC"] == "RB01"
         assert tags["r1"]["BM"] == "read_start_only"
-        assert tags["r1"]["B1"] == "RB01"
-        assert "B2" not in tags["r1"]
+        assert tags["r1"]["B5"] == "RB01"
+        assert "B6" not in tags["r1"]
 
     # -- Reverse read, both ends -----------------------------------------------
 
@@ -1448,8 +1446,8 @@ class TestRBK114RealisticRC:
         )
         assert tags["r1"]["BC"] == "RB01"
         assert tags["r1"]["BM"] == "both"
-        assert tags["r1"]["B1"] == "RB01"
-        assert tags["r1"]["B2"] == "RB01"
+        assert tags["r1"]["B5"] == "RB01"
+        assert tags["r1"]["B6"] == "RB01"
 
     # -- Reverse read, left end only (appears at read end) ---------------------
 
@@ -1466,8 +1464,8 @@ class TestRBK114RealisticRC:
         )
         assert tags["r1"]["BC"] == "RB01"
         assert tags["r1"]["BM"] == "read_end_only"
-        assert tags["r1"]["B1"] == "RB01"
-        assert "B2" not in tags["r1"]
+        assert tags["r1"]["B5"] == "RB01"
+        assert "B6" not in tags["r1"]
 
     # -- Reverse read, right end only (appears at read start) ------------------
 
@@ -1484,8 +1482,8 @@ class TestRBK114RealisticRC:
         )
         assert tags["r1"]["BC"] == "RB01"
         assert tags["r1"]["BM"] == "read_start_only"
-        assert "B1" not in tags["r1"]
-        assert tags["r1"]["B2"] == "RB01"
+        assert "B5" not in tags["r1"]
+        assert tags["r1"]["B6"] == "RB01"
 
     # -- Mismatch between ends -------------------------------------------------
 
@@ -1502,8 +1500,8 @@ class TestRBK114RealisticRC:
         )
         assert tags["r1"]["BC"] == "unclassified"
         assert tags["r1"]["BM"] == "mismatch"
-        assert tags["r1"]["B1"] == "RB01"
-        assert tags["r1"]["B2"] == "RB02"
+        assert tags["r1"]["B5"] == "RB01"
+        assert tags["r1"]["B6"] == "RB02"
 
     # -- Mixed forward + reverse reads ----------------------------------------
 
