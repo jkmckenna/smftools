@@ -5,7 +5,7 @@ flanking:
   adapter_pad: 5
   amplicon_pad: 5
 barcode_ends: both
-barcode_max_edit_distance: 6
+barcode_max_edit_distance: 8
 barcode_composite_max_edits: 8
 barcode_min_separation: 2
 barcodes:

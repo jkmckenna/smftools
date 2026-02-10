@@ -128,6 +128,8 @@ class FlankingConfig:
     """Flanking sequences on each side of a barcode or UMI."""
     adapter_side: Optional[str] = None
     amplicon_side: Optional[str] = None
+    adapter_pad: int = 5
+    amplicon_pad: int = 5
 
 
 @dataclass
@@ -512,13 +514,17 @@ def _composite_extract(
     search_window: int,
     search_from_start: bool,
     max_edits: int,
-) -> Optional[Tuple[str, int, int]]:
+    adapter_pad: int = 5,
+    amplicon_pad: int = 5,
+) -> Optional[Tuple[str, str, int, int]]:
     """Extract barcode using composite alignment against read-end window.
 
     Returns
     -------
-    Optional[Tuple[str, int, int]]
-        (barcode_seq, start, end) or None if extraction fails.
+    Optional[Tuple[str, str, int, int]]
+        (barcode_seq, padded_region, start, end) or None if extraction fails.
+        barcode_seq may be variable length due to indels in alignment.
+        padded_region includes flanking context for padded scoring.
     """
     if not read_sequence:
         return None
@@ -574,14 +580,15 @@ def _composite_extract(
     if bc_start < 0 or bc_end > seq_len or bc_end <= bc_start:
         return None
 
-    # Strict length check
-    extracted_len = bc_end - bc_start
-    if abs(extracted_len - target_length) > 2:
-        return None
-
+    # Extract core barcode (may be variable length due to indels)
     barcode_seq = seq[bc_start:bc_end]
 
-    return barcode_seq, bc_start, bc_end
+    # Extract padded region with flanking context for padded scoring
+    pad_start = max(0, bc_start - adapter_pad)
+    pad_end = min(seq_len, bc_end + amplicon_pad)
+    padded_region = seq[pad_start:pad_end]
+
+    return barcode_seq, padded_region, bc_start, bc_end
 
 
 def _extract_barcode_with_flanking(
@@ -592,7 +599,7 @@ def _extract_barcode_with_flanking(
     flanking: FlankingConfig,
     adapter_matcher: str = "edlib",
     composite_max_edits: int = 4,
-) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+) -> Tuple[Optional[str], Optional[int], Optional[int], Optional[str]]:
     """Extract a target sequence (barcode or UMI) using flanking sequence detection.
 
     Behavior:
@@ -620,12 +627,13 @@ def _extract_barcode_with_flanking(
 
     Returns
     -------
-    Tuple[Optional[str], Optional[int], Optional[int]]
-        ``(extracted_sequence, start_pos, end_pos)`` or
-        ``(None, None, None)`` if extraction fails.
+    Tuple[Optional[str], Optional[int], Optional[int], Optional[str]]
+        ``(extracted_sequence, start_pos, end_pos, padded_region)`` or
+        ``(None, None, None, None)`` if extraction fails.
+        padded_region is only available for composite extraction.
     """
     if not read_sequence:
-        return None, None, None
+        return None, None, None, None
 
     seq = read_sequence.upper()
     seq_len = len(seq)
@@ -646,10 +654,12 @@ def _extract_barcode_with_flanking(
             search_window=search_window,
             search_from_start=search_from_start,
             max_edits=composite_max_edits,
+            adapter_pad=flanking.adapter_pad,
+            amplicon_pad=flanking.amplicon_pad,
         )
         if comp is not None:
-            extracted, tgt_start, tgt_end = comp
-            return extracted, tgt_start, tgt_end
+            extracted, padded_region, tgt_start, tgt_end = comp
+            return extracted, tgt_start, tgt_end, padded_region
 
     # Single-flank fallback
     if has_adapter:
@@ -683,19 +693,19 @@ def _extract_barcode_with_flanking(
             else:
                 tgt_start, tgt_end = amplicon_end, amplicon_end + target_length
     else:
-        return None, None, None
+        return None, None, None, None
 
     # Bounds check
     if tgt_start is None or tgt_end is None:
-        return None, None, None
+        return None, None, None, None
     if tgt_start < 0 or tgt_end > seq_len:
-        return None, None, None
+        return None, None, None, None
 
     extracted = seq[tgt_start:tgt_end]
     if len(extracted) != target_length:
-        return None, None, None
+        return None, None, None, None
 
-    return extracted, tgt_start, tgt_end
+    return extracted, tgt_start, tgt_end, None
 
 
 def _extract_sequence_with_flanking(
@@ -1103,6 +1113,7 @@ def _match_barcode_to_references(
     barcode_references: Dict[str, str],
     max_edit_distance: int = 3,
     min_separation: Optional[int] = None,
+    padded_region: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[int]]:
     """
     Match an extracted barcode sequence to reference barcodes.
@@ -1118,6 +1129,10 @@ def _match_barcode_to_references(
     min_separation : int, optional
         Minimum required distance to the second-best match. If the gap between
         best and second-best distances is smaller, the match is rejected.
+    padded_region : str, optional
+        Padded region with flanking context. If provided, uses padded scoring
+        (dorado-style) by aligning fixed-length barcode reference against the
+        variable-length padded region using HW (infix) alignment.
 
     Returns
     -------
@@ -1142,13 +1157,26 @@ def _match_barcode_to_references(
         bc_seq = bc_seq.upper()
 
         if use_edlib:
-            result = edlib.align(
-                extracted,  # Query: extracted barcode
-                bc_seq,     # Target: reference barcode
-                mode="NW",
-                task="distance",
-                k=max_edit_distance
-            )
+            if padded_region is not None:
+                # Padded scoring: align fixed-length barcode ref against
+                # variable-length padded region using HW (infix) mode so the
+                # barcode finds its best position within the padded window
+                padded_upper = padded_region.upper()
+                result = edlib.align(
+                    bc_seq,          # Query: fixed-length reference barcode
+                    padded_upper,    # Target: variable-length padded region
+                    mode="HW",
+                    task="distance",
+                    k=max_edit_distance,
+                )
+            else:
+                result = edlib.align(
+                    extracted,  # Query: extracted barcode
+                    bc_seq,     # Target: reference barcode
+                    mode="NW",
+                    task="distance",
+                    k=max_edit_distance,
+                )
 
             dist = result.get("editDistance", -1)
             if dist == -1:
@@ -1187,9 +1215,14 @@ def _parse_flanking_config_from_dict(d: Dict[str, Any]) -> FlankingConfig:
     if amplicon_side is not None:
         amplicon_side = str(amplicon_side).strip().upper() or None
 
+    adapter_pad = int(d.get("adapter_pad", 5))
+    amplicon_pad = int(d.get("amplicon_pad", 5))
+
     return FlankingConfig(
         adapter_side=adapter_side,
         amplicon_side=amplicon_side,
+        adapter_pad=adapter_pad,
+        amplicon_pad=amplicon_pad,
     )
 
 
@@ -1686,6 +1719,7 @@ def extract_and_assign_barcodes_in_bam(
             ]
             extracted_start_seq: Optional[str] = None
             extracted_end_seq: Optional[str] = None
+            padded_region: Optional[str] = None
 
             for i, read_end in enumerate(["start", "end"]):
                 if i == 0 and not check_start:
@@ -1696,6 +1730,7 @@ def extract_and_assign_barcodes_in_bam(
                 search_from_start = read_end == "start"
 
                 extracted_bc: Optional[str] = None
+                padded_region = None
 
                 if use_flanking:
                     flanking_candidates: List[FlankingConfig] = []
@@ -1725,16 +1760,22 @@ def extract_and_assign_barcodes_in_bam(
                                 end_flanking = FlankingConfig(
                                     adapter_side=_reverse_complement(candidate.amplicon_side),
                                     amplicon_side=_reverse_complement(candidate.adapter_side),
+                                    adapter_pad=candidate.amplicon_pad,
+                                    amplicon_pad=candidate.adapter_pad,
                                 )
                             elif candidate.adapter_side:
                                 end_flanking = FlankingConfig(
                                     adapter_side=_reverse_complement(candidate.adapter_side),
                                     amplicon_side=None,
+                                    adapter_pad=candidate.adapter_pad,
+                                    amplicon_pad=candidate.amplicon_pad,
                                 )
                             elif candidate.amplicon_side:
                                 end_flanking = FlankingConfig(
                                     adapter_side=None,
                                     amplicon_side=_reverse_complement(candidate.amplicon_side),
+                                    adapter_pad=candidate.adapter_pad,
+                                    amplicon_pad=candidate.amplicon_pad,
                                 )
                             else:
                                 end_flanking = FlankingConfig(
@@ -1742,7 +1783,7 @@ def extract_and_assign_barcodes_in_bam(
                                     amplicon_side=None,
                                 )
 
-                        extracted_bc, _, _ = _extract_barcode_with_flanking(
+                        extracted_bc, _, _, padded_region = _extract_barcode_with_flanking(
                             read_sequence=sequence,
                             target_length=barcode_length,
                             search_window=barcode_search_window,
@@ -1754,6 +1795,8 @@ def extract_and_assign_barcodes_in_bam(
 
                         if extracted_bc and read_end == "end":
                             extracted_bc = _reverse_complement(extracted_bc)
+                            if padded_region is not None:
+                                padded_region = _reverse_complement(padded_region)
 
                         if extracted_bc:
                             break
@@ -1785,6 +1828,7 @@ def extract_and_assign_barcodes_in_bam(
                         bc_refs,
                         max_edit_distance=barcode_max_edit_distance,
                         min_separation=barcode_min_separation,
+                        padded_region=padded_region,
                     )
                     if match_name is not None:
                         if min_barcode_score is None or match_dist <= min_barcode_score:
