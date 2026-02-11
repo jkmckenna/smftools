@@ -1042,7 +1042,9 @@ def annotate_umi_tags_in_bam(
                             if umi_values[idx] is None:
                                 umi_values[idx] = extracted
 
-                    if configured_slots and all(umi_values[idx] is not None for idx in configured_slots):
+                    if configured_slots and all(
+                        umi_values[idx] is not None for idx in configured_slots
+                    ):
                         break
             else:
                 for i, ref_side in enumerate(["left", "right"]):
