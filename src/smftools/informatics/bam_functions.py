@@ -3149,6 +3149,48 @@ def demux_and_index_BAM(
     bam_files = sorted(
         p for p in split_dir.glob(f"*{bam_suffix}") if p.is_file() and p.suffix == bam_suffix
     )
+    if not bam_files:
+        # dorado demux can nest BAMs under run/sample directories
+        nested_bams = sorted(
+            p for p in split_dir.rglob(f"*{bam_suffix}") if p.is_file() and p.suffix == bam_suffix
+        )
+        if nested_bams:
+            logger.info(
+                "Flattening %d demuxed BAMs from nested directories into %s",
+                len(nested_bams),
+                split_dir,
+            )
+            flattened = []
+            for bam in nested_bams:
+                target = split_dir / bam.name
+                if target.exists():
+                    logger.warning("Target BAM already exists, skipping move: %s", target)
+                    continue
+                shutil.move(str(bam), str(target))
+                bai = bam.with_suffix(bam_suffix + ".bai")
+                if bai.exists():
+                    target_bai = target.with_suffix(bam_suffix + ".bai")
+                    if target_bai.exists():
+                        logger.warning("Target BAI already exists, skipping move: %s", target_bai)
+                    else:
+                        shutil.move(str(bai), str(target_bai))
+                flattened.append(target)
+
+            # Remove empty nested directories
+            for root, dirs, _files in os.walk(split_dir, topdown=False):
+                for d in dirs:
+                    path = Path(root) / d
+                    if path == split_dir:
+                        continue
+                    try:
+                        if not any(path.iterdir()):
+                            path.rmdir()
+                    except OSError:
+                        pass
+
+            bam_files = sorted(flattened)
+        else:
+            bam_files = []
 
     if not bam_files:
         raise FileNotFoundError(f"No BAM files found in {split_dir} with suffix {bam_suffix}")

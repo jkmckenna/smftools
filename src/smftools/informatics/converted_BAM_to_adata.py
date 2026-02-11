@@ -295,12 +295,25 @@ def converted_BAM_to_adata(
         # Skip demux_type annotation here - will be derived from BM tag after BAM tags are loaded
         logger.info("Skipping demux_type annotation (will be derived from BM tag)")
     else:
-        # Dorado backend - use barcoding_summary.txt
-        from .h5ad_functions import add_demux_type_annotation
+        # Dorado backend - use barcoding_summary.txt when available (2-pass demux)
+        if double_barcoded_path is None:
+            logger.info(
+                "Skipping demux_type annotation from barcoding_summary.txt "
+                "(double_barcoded_path not set)."
+            )
+        else:
+            from .h5ad_functions import add_demux_type_annotation
 
-        double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
-        logger.info("Adding demux type to each read")
-        add_demux_type_annotation(final_adata, double_barcoded_reads)
+            double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
+            if double_barcoded_reads.exists():
+                logger.info("Adding demux type to each read")
+                add_demux_type_annotation(final_adata, double_barcoded_reads)
+            else:
+                logger.info(
+                    "Skipping demux_type annotation from barcoding_summary.txt "
+                    "(file not found at %s).",
+                    double_barcoded_reads,
+                )
 
     ## Delete intermediate h5ad files and temp directories
     if delete_intermediates:
