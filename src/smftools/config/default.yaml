@@ -37,7 +37,7 @@ enzyme_target_bases:
 model_dir: null # Directory where dorado basecalling models are stored.
 model: "hac" # needed for dorado basecaller
 filter_threshold: 0.8 # Dorado probability filter threshold for base calling.
-emit_moves: False # Whether to emit move tables (mv tag) during basecalling for signal-to-base alignment
+emit_moves: True # Whether to emit move tables (mv tag) during basecalling for signal-to-base alignment
 
 # Alignment params
 aligner: "dorado" # Aligner to use: dorado, minimap2
@@ -92,7 +92,7 @@ use_umi: False # Whether to detect and annotate UMIs in aligned_sorted BAM befor
 umi_adapters: [null, null] # Two-slot list [left_ref_end_adapter, right_ref_end_adapter]
 umi_length: null # Length of each UMI (required when use_umi is true)
 umi_search_window: 200 # Max distance from read ends to consider an adapter match for UMI extraction
-umi_adapter_matcher: exact # exact|edlib
+umi_adapter_matcher: edlib # exact|edlib
 umi_adapter_max_edits: null # Used for edlib fuzzy matching; null defers to UMI YAML/default
 
 # smftools barcode extraction (when demux_backend: smftools)

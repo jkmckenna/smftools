@@ -723,9 +723,9 @@ def add_demux_type_from_bm_tag(adata, bm_column="BM"):
             return "unclassified"
         bm_str = str(bm_value).lower()
         if bm_str == "both":
-            return "double_ended"
+            return "double"
         elif bm_str in ("left_only", "right_only", "read_start_only", "read_end_only"):
-            return "single_ended"
+            return "single"
         else:  # unknown, unclassified
             return "unclassified"
 

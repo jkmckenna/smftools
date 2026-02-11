@@ -1,10 +1,9 @@
 name: dual-nextera-12
-flanking:
-  left_ref_end:
-    adapter_side: TCGTCGGCAGCGTCAGATGTG
-  right_ref_end:
-    adapter_side: GTCTCGTGGGCTCGGAGATGT
+top_flanking:
+  adapter_side: TCGTCGGCAGCGTCAGATGTG
+bottom_flanking:
+  adapter_side: GTCTCGTGGGCTCGGAGATGT
 length: 12
 umi_ends: both
 umi_flank_mode: adapter_only
-adapter_max_edits: 2
+adapter_max_edits: 4

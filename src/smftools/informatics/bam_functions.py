@@ -849,9 +849,29 @@ def _extract_sequence_with_flanking(
             amplicon_max_edits=amplicon_max_edits,
             same_orientation=same_orientation,
         )
+    elif flank_mode == "composite":
+        if not (flanking.adapter_side and flanking.amplicon_side):
+            return None, None, None
+        composite_max_edits = max(0, int(max(adapter_max_edits, amplicon_max_edits)))
+        comp = _composite_extract(
+            read_sequence=seq,
+            adapter_side=flanking.adapter_side,
+            amplicon_side=flanking.amplicon_side,
+            target_length=target_length,
+            search_window=search_window,
+            search_from_start=search_from_start,
+            max_edits=composite_max_edits,
+            adapter_pad=flanking.adapter_pad,
+            amplicon_pad=flanking.amplicon_pad,
+        )
+        if comp is None:
+            return None, None, None
+        extracted, _, tgt_start, tgt_end = comp
+        return extracted, tgt_start, tgt_end
     else:
         raise ValueError(
-            f"flank_mode must be one of: adapter_only, amplicon_only, both, either. Got: {flank_mode}"
+            "flank_mode must be one of: adapter_only, amplicon_only, both, either, composite. "
+            f"Got: {flank_mode}"
         )
 
     if tgt_start < 0 or tgt_end > seq_len:
@@ -931,18 +951,25 @@ def annotate_umi_tags_in_bam(
         require("edlib", extra="umi", purpose="fuzzy UMI adapter matching")
     backend_choice = _resolve_samtools_backend(samtools_backend)
 
-    check_left = effective_umi_ends in ("both", "left_only")
-    check_right = effective_umi_ends in ("both", "right_only")
+    check_start = effective_umi_ends in ("both", "left_only", "read_start")
+    check_end = effective_umi_ends in ("both", "right_only", "read_end")
+
+    flanking_candidates: List[Tuple[str, FlankingConfig]] = []
+    if use_flanking and flanking_config is not None:
+        if flanking_config.left_ref_end is not None and (
+            flanking_config.left_ref_end.adapter_side or flanking_config.left_ref_end.amplicon_side
+        ):
+            flanking_candidates.append(("top", flanking_config.left_ref_end))
+        if flanking_config.right_ref_end is not None and (
+            flanking_config.right_ref_end.adapter_side
+            or flanking_config.right_ref_end.amplicon_side
+        ):
+            flanking_candidates.append(("bottom", flanking_config.right_ref_end))
 
     # Count configured ends for flanking
     if use_flanking:
-        configured_adapter_count = sum(
-            [
-                1
-                for fc in [flanking_config.left_ref_end, flanking_config.right_ref_end]
-                if fc is not None and (fc.adapter_side or fc.amplicon_side)
-            ]
-        )
+        configured_slots = [0 if slot == "top" else 1 for slot, _ in flanking_candidates]
+        configured_adapter_count = len(configured_slots)
 
     pysam_mod = _require_pysam()
     tmp_bam = input_bam.with_name(f"{input_bam.stem}.umi_tmp{input_bam.suffix}")
@@ -960,34 +987,41 @@ def annotate_umi_tags_in_bam(
             sequence = read.query_sequence or ""
             umi_values: List[Optional[str]] = [None, None]
 
-            for i, ref_side in enumerate(["left", "right"]):
-                if i == 0 and not check_left:
-                    continue
-                if i == 1 and not check_right:
-                    continue
+            if use_flanking:
+                for read_end in ("start", "end"):
+                    if read_end == "start" and not check_start:
+                        continue
+                    if read_end == "end" and not check_end:
+                        continue
+                    search_from_start = read_end == "start"
 
-                read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
-                search_from_start = read_end == "start"
+                    for slot, candidate in flanking_candidates:
+                        end_flanking = candidate
+                        if read_end == "end":
+                            if candidate.adapter_side and candidate.amplicon_side:
+                                end_flanking = FlankingConfig(
+                                    adapter_side=_reverse_complement(candidate.amplicon_side),
+                                    amplicon_side=_reverse_complement(candidate.adapter_side),
+                                    adapter_pad=candidate.amplicon_pad,
+                                    amplicon_pad=candidate.adapter_pad,
+                                )
+                            elif candidate.adapter_side:
+                                end_flanking = FlankingConfig(
+                                    adapter_side=_reverse_complement(candidate.adapter_side),
+                                    amplicon_side=None,
+                                    adapter_pad=candidate.adapter_pad,
+                                    amplicon_pad=candidate.amplicon_pad,
+                                )
+                            elif candidate.amplicon_side:
+                                end_flanking = FlankingConfig(
+                                    adapter_side=None,
+                                    amplicon_side=_reverse_complement(candidate.amplicon_side),
+                                    adapter_pad=candidate.adapter_pad,
+                                    amplicon_pad=candidate.amplicon_pad,
+                                )
+                            else:
+                                end_flanking = FlankingConfig(adapter_side=None, amplicon_side=None)
 
-                if use_flanking:
-                    end_flanking = (
-                        flanking_config.left_ref_end
-                        if ref_side == "left"
-                        else flanking_config.right_ref_end
-                    )
-                    if end_flanking is not None:
-                        # RC flanking sequences when the read-strand orientation
-                        # differs from the YAML reference orientation.
-                        needs_rc = read.is_reverse != (ref_side == "right")
-                        if needs_rc:
-                            end_flanking = FlankingConfig(
-                                adapter_side=_reverse_complement(end_flanking.adapter_side)
-                                if end_flanking.adapter_side
-                                else None,
-                                amplicon_side=_reverse_complement(end_flanking.amplicon_side)
-                                if end_flanking.amplicon_side
-                                else None,
-                            )
                         extracted, _, _ = _extract_sequence_with_flanking(
                             read_sequence=sequence,
                             target_length=length,
@@ -998,13 +1032,28 @@ def annotate_umi_tags_in_bam(
                             adapter_matcher=matcher,
                             adapter_max_edits=max_edits,
                             amplicon_max_edits=umi_amplicon_max_edits,
-                            same_orientation=same_orientation,
+                            same_orientation=False,
                         )
-                        # RC extracted UMI back to forward orientation
-                        if extracted and needs_rc:
+                        if extracted and read_end == "end":
                             extracted = _reverse_complement(extracted)
-                        umi_values[i] = extracted
-                else:
+
+                        if extracted:
+                            idx = 0 if slot == "top" else 1
+                            if umi_values[idx] is None:
+                                umi_values[idx] = extracted
+
+                    if configured_slots and all(umi_values[idx] is not None for idx in configured_slots):
+                        break
+            else:
+                for i, ref_side in enumerate(["left", "right"]):
+                    if i == 0 and not check_start:
+                        continue
+                    if i == 1 and not check_end:
+                        continue
+
+                    read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
+                    search_from_start = read_end == "start"
+
                     adapter = adapters[i] if i < len(adapters) else None
                     if adapter is None:
                         continue
@@ -1468,7 +1517,13 @@ def load_umi_config_from_yaml(yaml_path: str | Path) -> UMIKitConfig:
         data = data["umi"]
 
     flanking = None
-    if "flanking" in data and isinstance(data["flanking"], dict):
+    if "top_flanking" in data or "bottom_flanking" in data:
+        per_end = {
+            "left_ref_end": data.get("top_flanking", {}),
+            "right_ref_end": data.get("bottom_flanking", {}),
+        }
+        flanking = _parse_per_end_flanking(per_end)
+    elif "flanking" in data and isinstance(data["flanking"], dict):
         flanking = _parse_per_end_flanking(data["flanking"])
 
     same_orientation = bool(data.get("same_orientation", False))
@@ -1612,10 +1667,10 @@ def extract_and_assign_barcodes_in_bam(
     matches them against a reference barcode set, and writes BAM tags for:
 
     - BC: Assigned barcode name (or "unclassified")
-    - B1: Left-end barcode match name (if found)
-    - B2: Right-end barcode match name (if found)
-    - BE: Left-end match edit distance
-    - BF: Right-end match edit distance
+    - B1: Read-start match edit distance (if found)
+    - B2: Read-end match edit distance (if found)
+    - B5: Read-start barcode name (if found)
+    - B6: Read-end barcode name (if found)
     - BM: Match type ("both", "read_start_only", "read_end_only", "mismatch", "unclassified")
 
     When ``barcode_kit_config`` with flanking sequences is provided, extraction uses
@@ -1904,12 +1959,12 @@ def extract_and_assign_barcodes_in_bam(
             if extracted_end_seq:
                 read.set_tag("B4", extracted_end_seq, value_type="Z")
 
-            if left_match:
-                read.set_tag("B1", left_match, value_type="Z")
-                read.set_tag("BE", left_dist, value_type="i")
-            if right_match:
-                read.set_tag("B2", right_match, value_type="Z")
-                read.set_tag("BF", right_dist, value_type="i")
+            if left_match is not None:
+                read.set_tag("B1", left_dist, value_type="i")
+                read.set_tag("B5", left_match, value_type="Z")
+            if right_match is not None:
+                read.set_tag("B2", right_dist, value_type="i")
+                read.set_tag("B6", right_match, value_type="Z")
 
             out_bam.write(read)
 
@@ -2938,8 +2993,8 @@ def annotate_demux_type_from_bi_tag(
     Classification logic:
 
     - Both bi[3] and bi[6] > threshold → "both"
-    - Only bi[3] > threshold → "left_only"
-    - Only bi[6] > threshold → "right_only"
+    - Only bi[3] > threshold → "read_start_only"
+    - Only bi[6] > threshold → "read_end_only"
     - Has BC but no bi tag → "unknown"
     - No BC tag → "unclassified"
 
@@ -2965,7 +3020,13 @@ def annotate_demux_type_from_bi_tag(
     else:
         tmp_path = Path(output_path)
 
-    counts = {"both": 0, "left_only": 0, "right_only": 0, "unknown": 0, "unclassified": 0}
+    counts = {
+        "both": 0,
+        "read_start_only": 0,
+        "read_end_only": 0,
+        "unknown": 0,
+        "unclassified": 0,
+    }
 
     with pysam_mod.AlignmentFile(str(bam_path), "rb", check_sq=False) as inbam:
         with pysam_mod.AlignmentFile(str(tmp_path), "wb", header=inbam.header) as outbam:
@@ -2982,9 +3043,9 @@ def annotate_demux_type_from_bi_tag(
                     if top_score > threshold and bottom_score > threshold:
                         bm_value = "both"
                     elif top_score > threshold:
-                        bm_value = "left_only"
+                        bm_value = "read_start_only"
                     elif bottom_score > threshold:
-                        bm_value = "right_only"
+                        bm_value = "read_end_only"
                     else:
                         bm_value = "unknown"
 
@@ -3088,6 +3149,48 @@ def demux_and_index_BAM(
     bam_files = sorted(
         p for p in split_dir.glob(f"*{bam_suffix}") if p.is_file() and p.suffix == bam_suffix
     )
+    if not bam_files:
+        # dorado demux can nest BAMs under run/sample directories
+        nested_bams = sorted(
+            p for p in split_dir.rglob(f"*{bam_suffix}") if p.is_file() and p.suffix == bam_suffix
+        )
+        if nested_bams:
+            logger.info(
+                "Flattening %d demuxed BAMs from nested directories into %s",
+                len(nested_bams),
+                split_dir,
+            )
+            flattened = []
+            for bam in nested_bams:
+                target = split_dir / bam.name
+                if target.exists():
+                    logger.warning("Target BAM already exists, skipping move: %s", target)
+                    continue
+                shutil.move(str(bam), str(target))
+                bai = bam.with_suffix(bam_suffix + ".bai")
+                if bai.exists():
+                    target_bai = target.with_suffix(bam_suffix + ".bai")
+                    if target_bai.exists():
+                        logger.warning("Target BAI already exists, skipping move: %s", target_bai)
+                    else:
+                        shutil.move(str(bai), str(target_bai))
+                flattened.append(target)
+
+            # Remove empty nested directories
+            for root, dirs, _files in os.walk(split_dir, topdown=False):
+                for d in dirs:
+                    path = Path(root) / d
+                    if path == split_dir:
+                        continue
+                    try:
+                        if not any(path.iterdir()):
+                            path.rmdir()
+                    except OSError:
+                        pass
+
+            bam_files = sorted(flattened)
+        else:
+            bam_files = []
 
     if not bam_files:
         raise FileNotFoundError(f"No BAM files found in {split_dir} with suffix {bam_suffix}")

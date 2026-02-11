@@ -961,7 +961,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         default_tags.extend(["U1", "U2", "RX"])
     # Add barcode tags if smftools barcode extraction was used
     if demux_backend == "smftools" and cfg.barcode_kit:
-        default_tags.extend(["BC", "BM", "B1", "B2", "BE", "BF"])
+        default_tags.extend(["BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"])
     # Add barcode tags from dorado single-pass demux (BM annotated from bi tag)
     elif demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
         dorado_ver = _get_dorado_version()
