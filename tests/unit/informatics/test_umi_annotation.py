@@ -249,6 +249,7 @@ class TestUMIFlankingExtraction:
 
     def test_umi_composite_from_start(self, monkeypatch):
         """Extract UMI with composite alignment."""
+
         class _FakeEdlib:
             @staticmethod
             def align(query, target, mode, task, k, additionalEqualities=None):
