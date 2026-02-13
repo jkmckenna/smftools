@@ -713,6 +713,7 @@ class ExperimentConfig:
     # Nanopore specific for basecalling and demultiplexing
     model_dir: Optional[str] = None
     barcode_kit: Optional[str] = None
+    emit_moves: Optional[bool] = True
     model: str = "hac"
     barcode_both_ends: bool = BARCODE_BOTH_ENDS
     trim: bool = TRIM
@@ -1449,6 +1450,7 @@ class ExperimentConfig:
             mapping_threshold=float(merged.get("mapping_threshold", 0.01)),
             experiment_name=merged.get("experiment_name"),
             model=merged.get("model", "hac"),
+            emit_moves=merged.get("emit_moves", True),
             barcode_both_ends=merged.get("barcode_both_ends", BARCODE_BOTH_ENDS),
             trim=merged.get("trim", TRIM),
             demux_backend=merged.get("demux_backend", "dorado"),

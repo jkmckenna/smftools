@@ -249,6 +249,7 @@ class TestUMIFlankingExtraction:
 
     def test_umi_composite_from_start(self, monkeypatch):
         """Extract UMI with composite alignment."""
+
         class _FakeEdlib:
             @staticmethod
             def align(query, target, mode, task, k, additionalEqualities=None):
@@ -256,9 +257,13 @@ class TestUMIFlankingExtraction:
                 assert task == "path"
                 assert k == 0
                 # Exact match for entire query against target
-                return {"editDistance": 0, "locations": [(0, len(query) - 1)], "cigar": f\"{len(query)}=\"}
+                return {
+                    "editDistance": 0,
+                    "locations": [(0, len(query) - 1)],
+                    "cigar": f"{len(query)}=",
+                }
 
-        monkeypatch.setattr(bam_functions, \"require\", lambda *args, **kwargs: _FakeEdlib())
+        monkeypatch.setattr(bam_functions, "require", lambda *args, **kwargs: _FakeEdlib())
         read = "GTACTGACAATTCCGGAACCTTGGNNNN"
         flanking = FlankingConfig(adapter_side="GTACTGAC", amplicon_side="AACCTTGG")
         umi, start, end = _extract_sequence_with_flanking(
