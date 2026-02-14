@@ -1209,9 +1209,8 @@ def _match_barcode_to_references(
         Minimum required distance to the second-best match. If the gap between
         best and second-best distances is smaller, the match is rejected.
     padded_region : str, optional
-        Padded region with flanking context. If provided, uses padded scoring
-        (dorado-style) by aligning fixed-length barcode reference against the
-        variable-length padded region using HW (infix) alignment.
+        Padded region. If provided, aligns fixed-length barcode reference against the
+        variable-length padded region using HW semi-global alignment.
 
     Returns
     -------
