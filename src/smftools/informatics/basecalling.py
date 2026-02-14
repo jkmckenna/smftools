@@ -103,9 +103,10 @@ def modcall(
         model_dir,
         "--modified-bases",
     ]
+    command += mod_list
+
     if barcode_kit:
         command += ["--kit-name", barcode_kit]
-    command += mod_list
     command += ["--device", device, "--batchsize", "0"]
     if barcode_both_ends:
         command.append("--barcode-both-ends")
