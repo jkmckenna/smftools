@@ -1,3 +1,4 @@
+import pandas as pd
 import pytest
 
 from smftools.informatics import bam_functions
@@ -50,6 +51,26 @@ def _read_bam_tags(bam_path):
     with _pysam.AlignmentFile(str(bam_path), "rb") as fh:
         for read in fh.fetch(until_eof=True):
             out[read.query_name] = dict(read.get_tags())
+    return out
+
+
+def _read_parquet_tags(parquet_path):
+    """Return ``{read_name: {tag: value}}`` from a Parquet sidecar file.
+
+    Only includes non-null tag values to match the BAM tag semantics
+    (missing tag == not present).
+    """
+    df = pd.read_parquet(parquet_path)
+    out = {}
+    for _, row in df.iterrows():
+        tags = {}
+        for col in df.columns:
+            if col == "read_name":
+                continue
+            val = row[col]
+            if pd.notna(val):
+                tags[col] = val
+        out[row["read_name"]] = tags
     return out
 
 
@@ -192,7 +213,7 @@ class TestAnnotateUmiTagsInBam:
     """Integration tests for UMI annotation orchestration."""
 
     def _run(self, tmp_path, reads, **kwargs):
-        """Create BAM -> run UMI annotation -> return {name: {tag: val}}."""
+        """Create BAM -> run UMI annotation -> return {name: {tag: val}} from Parquet sidecar."""
         bam = tmp_path / "test.bam"
         _create_test_bam(bam, reads)
         defaults = dict(
@@ -212,8 +233,8 @@ class TestAnnotateUmiTagsInBam:
             samtools_backend="python",
         )
         defaults.update(kwargs)
-        bam_functions.annotate_umi_tags_in_bam(bam, **defaults)
-        return _read_bam_tags(bam)
+        sidecar = bam_functions.annotate_umi_tags_in_bam(bam, **defaults)
+        return _read_parquet_tags(sidecar)
 
     # -- use_umi=False --------------------------------------------------------
 
@@ -233,6 +254,10 @@ class TestAnnotateUmiTagsInBam:
             samtools_backend="python",
         )
         assert result == bam
+        # No sidecar should be created
+        sidecar = bam.with_suffix(".umi_tags.parquet")
+        assert not sidecar.exists()
+        # BAM should have no UMI tags
         tags = _read_bam_tags(bam)
         assert "U1" not in tags["r1"]
         assert "U2" not in tags["r1"]

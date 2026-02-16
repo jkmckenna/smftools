@@ -1008,16 +1008,8 @@ def annotate_umi_tags_in_bam(
     num_workers = min(max(1, int(threads)), cpu_count) if threads else 1
 
     pysam_mod = _require_pysam()
-    tmp_bam = input_bam.with_name(f"{input_bam.stem}.umi_tmp{input_bam.suffix}")
 
-    # ── Count reads ─────────────────────────────────────────────────────
-    total_reads = 0
-    with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
-        for _ in tqdm(in_bam.fetch(until_eof=True), desc="UMI: counting reads", unit=" reads"):
-            total_reads += 1
-
-    # ── UMI extraction ──────────────────────────────────────────────────
-    # Shared kwargs for extraction (small config only — no sequence data)
+    # ── Shared extraction kwargs ────────────────────────────────────────
     extraction_kwargs = dict(
         length=length,
         search_window=search_window,
@@ -1031,14 +1023,23 @@ def annotate_umi_tags_in_bam(
         check_end=check_end,
     )
 
+    # ── Single BAM pass: collect metadata + sequences ───────────────────
+    read_names: List[str] = []
+    is_reverse_flags: List[bool] = []
+    is_primary: List[bool] = []
+    sequences: List[str] = []
+    with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
+        for read in tqdm(in_bam.fetch(until_eof=True), desc="UMI: reading BAM", unit=" reads"):
+            read_names.append(read.query_name)
+            is_reverse_flags.append(read.is_reverse)
+            is_primary.append(not read.is_secondary and not read.is_supplementary)
+            sequences.append(read.query_sequence or "")
+    total_reads = len(read_names)
+
+    # ── UMI extraction ──────────────────────────────────────────────────
     if num_workers <= 1 or total_reads == 0:
         # Single-process fast path – no IPC overhead
-        sequences: List[str] = []
-        with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
-            for read in in_bam.fetch(until_eof=True):
-                sequences.append(read.query_sequence or "")
         all_results = _extract_umis_for_reads(sequences, **extraction_kwargs)
-        del sequences
     else:
         chunk_size = max(1000, ceil(total_reads / num_workers))
         num_chunks = ceil(total_reads / chunk_size)
@@ -1082,98 +1083,93 @@ def annotate_umi_tags_in_bam(
                 all_results.extend(chunk_results[chunk_idx])
             del chunk_results
 
-    # ── Write BAM with tags ─────────────────────────────────────────────
+    del sequences
+
+    # ── Compute tags in-memory and write Parquet sidecar ────────────────
+    import pandas as pd
+
     reads_with_any_umi = 0
     reads_with_all_umis = 0
 
-    with (
-        pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam,
-        pysam_mod.AlignmentFile(str(tmp_bam), "wb", template=in_bam) as out_bam,
-    ):
-        for read_idx, read in enumerate(tqdm(
-            in_bam.fetch(until_eof=True),
-            total=total_reads,
-            desc="UMI: writing tags",
-            unit=" reads",
-        )):
-            us_result, ue_result = all_results[read_idx]
+    tag_rows: List[Dict[str, Optional[str]]] = []
+    for read_idx in range(total_reads):
+        us_result, ue_result = all_results[read_idx]
 
-            present = sum(1 for r in (us_result, ue_result) if r and r.umi_seq)
-            if present:
-                reads_with_any_umi += 1
-            if configured_adapter_count and present == configured_adapter_count:
-                reads_with_all_umis += 1
+        present = sum(1 for r in (us_result, ue_result) if r and r.umi_seq)
+        if present:
+            reads_with_any_umi += 1
+        if configured_adapter_count and present == configured_adapter_count:
+            reads_with_all_umis += 1
 
-            # Clear stale UMI tags from previous runs
-            for _tag in ("US", "UE", "U1", "U2", "RX", "FC"):
-                if read.has_tag(_tag):
-                    read.set_tag(_tag, None)
+        # Only include primary alignments in the sidecar
+        if not is_primary[read_idx]:
+            continue
 
-            # Write positional tags (US/UE) as delimited strings
-            if us_result and us_result.umi_seq:
-                parts = [us_result.umi_seq, us_result.slot or "", us_result.flank_seq or ""]
-                read.set_tag("US", ";".join(parts), value_type="Z")
-            if ue_result and ue_result.umi_seq:
-                parts = [ue_result.umi_seq, ue_result.slot or "", ue_result.flank_seq or ""]
-                read.set_tag("UE", ";".join(parts), value_type="Z")
+        row: Dict[str, Optional[str]] = {"read_name": read_names[read_idx]}
 
-            # Assign U1/U2 based on alignment orientation
-            if read.is_reverse:
-                u1_result, u2_result = ue_result, us_result
-            else:
-                u1_result, u2_result = us_result, ue_result
+        # Positional tags (US/UE) as delimited strings
+        if us_result and us_result.umi_seq:
+            parts = [us_result.umi_seq, us_result.slot or "", us_result.flank_seq or ""]
+            row["US"] = ";".join(parts)
+        if ue_result and ue_result.umi_seq:
+            parts = [ue_result.umi_seq, ue_result.slot or "", ue_result.flank_seq or ""]
+            row["UE"] = ";".join(parts)
 
-            u1 = u1_result.umi_seq if u1_result else None
-            u2 = u2_result.umi_seq if u2_result else None
+        # Assign U1/U2 based on alignment orientation
+        is_rev = is_reverse_flags[read_idx]
+        if is_rev:
+            u1_result, u2_result = ue_result, us_result
+        else:
+            u1_result, u2_result = us_result, ue_result
 
-            if u1:
-                read.set_tag("U1", u1, value_type="Z")
-            if u2:
-                read.set_tag("U2", u2, value_type="Z")
+        u1 = u1_result.umi_seq if u1_result else None
+        u2 = u2_result.umi_seq if u2_result else None
 
-            # FC tag: flank context of U1/U2 pair
-            u1_slot = u1_result.slot if u1_result else None
-            u2_slot = u2_result.slot if u2_result else None
-            if u1_slot and u2_slot:
-                read.set_tag("FC", f"{u1_slot}-{u2_slot}", value_type="Z")
-            elif u1_slot:
-                read.set_tag("FC", u1_slot, value_type="Z")
-            elif u2_slot:
-                read.set_tag("FC", u2_slot, value_type="Z")
+        if u1:
+            row["U1"] = u1
+        if u2:
+            row["U2"] = u2
 
-            # Write combined tag (RX) using orientation-assigned U1/U2
-            if u1 and u2:
-                read.set_tag("RX", f"{u1}-{u2}", value_type="Z")
-            elif u1:
-                read.set_tag("RX", u1, value_type="Z")
-            elif u2:
-                read.set_tag("RX", u2, value_type="Z")
+        # FC tag: flank context of U1/U2 pair
+        u1_slot = u1_result.slot if u1_result else None
+        u2_slot = u2_result.slot if u2_result else None
+        if u1_slot and u2_slot:
+            row["FC"] = f"{u1_slot}-{u2_slot}"
+        elif u1_slot:
+            row["FC"] = u1_slot
+        elif u2_slot:
+            row["FC"] = u2_slot
 
-            out_bam.write(read)
+        # Combined tag (RX) using orientation-assigned U1/U2
+        if u1 and u2:
+            row["RX"] = f"{u1}-{u2}"
+        elif u1:
+            row["RX"] = u1
+        elif u2:
+            row["RX"] = u2
 
-    del all_results
+        tag_rows.append(row)
 
-    tmp_bam.replace(input_bam)
-    index_paths = (
-        input_bam.with_suffix(input_bam.suffix + ".bai"),
-        Path(str(input_bam) + ".bai"),
-    )
-    for idx_path in index_paths:
-        if idx_path.exists():
-            idx_path.unlink()
-    if backend_choice == "python":
-        _index_bam_with_pysam(input_bam)
-    else:
-        _index_bam_with_samtools(input_bam)
+    del all_results, read_names, is_reverse_flags, is_primary
+
+    sidecar_path = input_bam.with_suffix(".umi_tags.parquet")
+    df = pd.DataFrame(tag_rows)
+    # Ensure all tag columns exist even if no reads had UMIs
+    for col in ("U1", "U2", "US", "UE", "RX", "FC"):
+        if col not in df.columns:
+            df[col] = None
+    df.to_parquet(sidecar_path, index=False)
+    del tag_rows, df
 
     logger.info(
-        "UMI annotation complete for %s: total_reads=%d, reads_with_any_umi=%d, reads_with_all_umis=%d",
+        "UMI annotation complete for %s: total_reads=%d, reads_with_any_umi=%d, reads_with_all_umis=%d, sidecar=%s",
         input_bam,
         total_reads,
         reads_with_any_umi,
         reads_with_all_umis,
+        sidecar_path,
     )
-    return input_bam
+    return sidecar_path
 
 
 def _extract_barcode_adjacent_to_adapter_on_read_end(

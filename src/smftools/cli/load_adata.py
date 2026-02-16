@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable, Union
 
 import numpy as np
+import pandas as pd
 
 from smftools.constants import BARCODE_KIT_ALIASES, LOAD_DIR, LOGGING_DIR, UMI_KIT_ALIASES
 from smftools.logging_utils import get_logger, setup_logging
@@ -516,6 +517,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ########################################################################################################################
 
     ################################### 4.5) Optional UMI annotation #############################################
+    umi_sidecar = None
     if getattr(cfg, "use_umi", False):
         logger.info("Annotating UMIs in aligned and sorted BAM before demultiplexing")
 
@@ -538,7 +540,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             umi_kit_config = load_umi_config_from_yaml(umi_yaml_path)
         resolved_umi = resolve_umi_config(umi_kit_config, cfg)
 
-        annotate_umi_tags_in_bam(
+        umi_sidecar = annotate_umi_tags_in_bam(
             aligned_sorted_output,
             use_umi=True,
             umi_kit_config=umi_kit_config,
@@ -956,9 +958,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     default_tags = ["NM", "MD", "fn"]
     if cfg.smf_modality == "direct":
         default_tags.extend(["MM", "ML"])
-    # Add UMI tags if UMI extraction was enabled
-    if getattr(cfg, "use_umi", False):
-        default_tags.extend(["U1", "U2", "US", "UE", "RX", "FC"])
+    # UMI tags are loaded from Parquet sidecar below (not from BAM)
     # Add barcode tags if smftools barcode extraction was used
     if demux_backend == "smftools" and cfg.barcode_kit:
         default_tags.extend(["BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"])
@@ -979,6 +979,16 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         extract_read_tags_from_bam_callable=extract_read_tags_from_bam,
         samtools_backend=cfg.samtools_backend,
     )
+
+    # Load UMI tags from Parquet sidecar (written by annotate_umi_tags_in_bam)
+    if getattr(cfg, "use_umi", False) and umi_sidecar and Path(umi_sidecar).exists():
+        logger.info("Loading UMI tags from Parquet sidecar: %s", umi_sidecar)
+        umi_df = pd.read_parquet(umi_sidecar).set_index("read_name")
+        umi_df = umi_df.reindex(raw_adata.obs_names)
+        for col in ["U1", "U2", "RX", "FC", "US", "UE"]:
+            if col in umi_df.columns:
+                raw_adata.obs[col] = umi_df[col].values
+        del umi_df
 
     # Expand dorado bi array tag into individual float score columns
     if "bi" in bam_tag_names:
