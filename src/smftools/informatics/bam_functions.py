@@ -165,6 +165,15 @@ class UMIKitConfig:
     same_orientation: bool = False
 
 
+@dataclass
+class UMIExtractionResult:
+    """Per-position UMI extraction result."""
+
+    umi_seq: Optional[str] = None
+    slot: Optional[str] = None
+    flank_seq: Optional[str] = None
+
+
 _BAM_FLAG_BITS: Tuple[Tuple[int, str], ...] = (
     (0x1, "paired"),
     (0x2, "proper_pair"),
@@ -787,11 +796,12 @@ def _extract_umis_for_reads(
     configured_slots: List[int],
     check_start: bool,
     check_end: bool,
-) -> List[Tuple[List[Optional[str]], List[Optional[str]]]]:
+) -> List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]]:
     """Extract UMIs for a list of read sequences.
 
-    Returns a list of ``(umi_values, umi_positional)`` tuples, one per read.
-    ``umi_values`` is ``[U1, U2]`` (biological) and ``umi_positional`` is ``[US, UE]`` (positional).
+    Returns a list of ``(us_result, ue_result)`` tuples, one per read.
+    Each element is an :class:`UMIExtractionResult` with UMI sequence, slot,
+    and flanking sequence metadata.
     """
     # Pre-compute RC'd flanking configs for read-end searches
     end_flanking_cache: List[FlankingConfig] = []
@@ -820,10 +830,11 @@ def _extract_umis_for_reads(
         else:
             end_flanking_cache.append(FlankingConfig(adapter_side=None, amplicon_side=None))
 
-    results: List[Tuple[List[Optional[str]], List[Optional[str]]]] = []
+    results: List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]] = []
     for sequence in sequences:
-        umi_values: List[Optional[str]] = [None, None]
-        umi_positional: List[Optional[str]] = [None, None]
+        us_result: Optional[UMIExtractionResult] = None
+        ue_result: Optional[UMIExtractionResult] = None
+        found_slots: List[Optional[str]] = [None, None]  # track by slot index
 
         for read_end in ("start", "end"):
             if read_end == "start" and not check_start:
@@ -851,19 +862,27 @@ def _extract_umis_for_reads(
                     extracted = _reverse_complement(extracted)
 
                 if extracted:
+                    # Use original (pre-RC) adapter_side as flank identity
+                    flank_seq = candidate.adapter_side or ""
+                    result = UMIExtractionResult(
+                        umi_seq=extracted, slot=slot, flank_seq=flank_seq,
+                    )
                     idx = 0 if slot == "top" else 1
-                    if umi_values[idx] is None:
-                        umi_values[idx] = extracted
-                    pos_idx = 0 if search_from_start else 1
-                    if umi_positional[pos_idx] is None:
-                        umi_positional[pos_idx] = extracted
+                    if found_slots[idx] is None:
+                        found_slots[idx] = slot
+                    if search_from_start:
+                        if us_result is None:
+                            us_result = result
+                    else:
+                        if ue_result is None:
+                            ue_result = result
 
             if configured_slots and all(
-                umi_values[idx] is not None for idx in configured_slots
+                found_slots[idx] is not None for idx in configured_slots
             ):
                 break
 
-        results.append((umi_values, umi_positional))
+        results.append((us_result, ue_result))
     return results
 
 
@@ -881,7 +900,7 @@ def _extract_umis_from_bam_range(
     configured_slots: List[int],
     check_start: bool,
     check_end: bool,
-) -> List[Tuple[List[Optional[str]], List[Optional[str]]]]:
+) -> List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]]:
     """Worker: open BAM, read sequences in [start_idx, end_idx), extract UMIs.
 
     Each worker reads the BAM independently so no sequence data is pickled
@@ -936,9 +955,10 @@ def annotate_umi_tags_in_bam(
     multiprocessing while BAM I/O remains single-threaded.
 
     Tags written:
-        US / UE  – positional: UMI extracted from read **start** / **end**
-        U1 / U2  – biological: UMI from **top** (left ref end) / **bottom** (right ref end) config slot
-        RX       – combined tag using U1-U2 ordering
+        US / UE  – positional: delimited ``"UMI_seq;slot;flank_seq"`` from read **start** / **end**
+        U1 / U2  – orientation-based: forward reads get U1=US, U2=UE; reverse reads get U1=UE, U2=US (UMI sequence only)
+        FC       – flank context: slot names of U1/U2 pair (e.g. ``"top-bottom"``)
+        RX       – combined tag using orientation-assigned U1-U2
     """
     input_bam = Path(bam_path)
     if not use_umi:
@@ -1045,7 +1065,7 @@ def annotate_umi_tags_in_bam(
                 futures[future] = chunk_idx
 
             # Collect results in submission order, with progress per chunk
-            chunk_results: Dict[int, List[Tuple[List[Optional[str]], List[Optional[str]]]]] = {}
+            chunk_results: Dict[int, List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]]] = {}
             with tqdm(
                 total=total_reads,
                 desc=f"UMI: extracting ({actual_workers} workers)",
@@ -1057,7 +1077,7 @@ def annotate_umi_tags_in_bam(
                     chunk_results[idx] = result
                     pbar.update(len(result))
 
-            all_results: List[Tuple[List[Optional[str]], List[Optional[str]]]] = []
+            all_results: List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]] = []
             for chunk_idx in range(num_chunks):
                 all_results.extend(chunk_results[chunk_idx])
             del chunk_results
@@ -1076,29 +1096,52 @@ def annotate_umi_tags_in_bam(
             desc="UMI: writing tags",
             unit=" reads",
         )):
-            umi_values, umi_positional = all_results[read_idx]
+            us_result, ue_result = all_results[read_idx]
 
-            present = [u for u in umi_values if u]
+            present = sum(1 for r in (us_result, ue_result) if r and r.umi_seq)
             if present:
                 reads_with_any_umi += 1
-            if configured_adapter_count and len(present) == configured_adapter_count:
+            if configured_adapter_count and present == configured_adapter_count:
                 reads_with_all_umis += 1
 
-            # Write positional tags (US/UE)
-            us, ue = umi_positional[0], umi_positional[1]
-            if us:
-                read.set_tag("US", us, value_type="Z")
-            if ue:
-                read.set_tag("UE", ue, value_type="Z")
+            # Clear stale UMI tags from previous runs
+            for _tag in ("US", "UE", "U1", "U2", "RX", "FC"):
+                if read.has_tag(_tag):
+                    read.set_tag(_tag, None)
 
-            # Write biological tags (U1/U2)
-            u1, u2 = umi_values[0], umi_values[1]
+            # Write positional tags (US/UE) as delimited strings
+            if us_result and us_result.umi_seq:
+                parts = [us_result.umi_seq, us_result.slot or "", us_result.flank_seq or ""]
+                read.set_tag("US", ";".join(parts), value_type="Z")
+            if ue_result and ue_result.umi_seq:
+                parts = [ue_result.umi_seq, ue_result.slot or "", ue_result.flank_seq or ""]
+                read.set_tag("UE", ";".join(parts), value_type="Z")
+
+            # Assign U1/U2 based on alignment orientation
+            if read.is_reverse:
+                u1_result, u2_result = ue_result, us_result
+            else:
+                u1_result, u2_result = us_result, ue_result
+
+            u1 = u1_result.umi_seq if u1_result else None
+            u2 = u2_result.umi_seq if u2_result else None
+
             if u1:
                 read.set_tag("U1", u1, value_type="Z")
             if u2:
                 read.set_tag("U2", u2, value_type="Z")
 
-            # Write combined tag (RX) using biological ordering
+            # FC tag: flank context of U1/U2 pair
+            u1_slot = u1_result.slot if u1_result else None
+            u2_slot = u2_result.slot if u2_result else None
+            if u1_slot and u2_slot:
+                read.set_tag("FC", f"{u1_slot}-{u2_slot}", value_type="Z")
+            elif u1_slot:
+                read.set_tag("FC", u1_slot, value_type="Z")
+            elif u2_slot:
+                read.set_tag("FC", u2_slot, value_type="Z")
+
+            # Write combined tag (RX) using orientation-assigned U1/U2
             if u1 and u2:
                 read.set_tag("RX", f"{u1}-{u2}", value_type="Z")
             elif u1:

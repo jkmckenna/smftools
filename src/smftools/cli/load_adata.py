@@ -958,7 +958,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         default_tags.extend(["MM", "ML"])
     # Add UMI tags if UMI extraction was enabled
     if getattr(cfg, "use_umi", False):
-        default_tags.extend(["U1", "U2", "US", "UE", "RX"])
+        default_tags.extend(["U1", "U2", "US", "UE", "RX", "FC"])
     # Add barcode tags if smftools barcode extraction was used
     if demux_backend == "smftools" and cfg.barcode_kit:
         default_tags.extend(["BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"])

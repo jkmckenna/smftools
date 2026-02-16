@@ -192,7 +192,7 @@ class TestAnnotateUmiTagsInBam:
     """Integration tests for UMI annotation orchestration."""
 
     def _run(self, tmp_path, reads, **kwargs):
-        """Create BAM → run UMI annotation → return {name: {tag: val}}."""
+        """Create BAM -> run UMI annotation -> return {name: {tag: val}}."""
         bam = tmp_path / "test.bam"
         _create_test_bam(bam, reads)
         defaults = dict(
@@ -239,11 +239,12 @@ class TestAnnotateUmiTagsInBam:
         assert "US" not in tags["r1"]
         assert "UE" not in tags["r1"]
         assert "RX" not in tags["r1"]
+        assert "FC" not in tags["r1"]
 
     # -- Flanking-based extraction -------------------------------------------
 
     def test_flanking_umi_extraction(self, tmp_path):
-        """Flanking-based UMI extraction with UMIKitConfig."""
+        """Flanking-based UMI extraction with UMIKitConfig (forward read, left_only)."""
         umi_kit = UMIKitConfig(
             flanking=PerEndFlankingConfig(
                 left_ref_end=FlankingConfig(adapter_side="ACGT"),
@@ -260,14 +261,17 @@ class TestAnnotateUmiTagsInBam:
             umi_ends="left_only",
             umi_flank_mode="adapter_only",
         )
+        # US is delimited: "UMI_seq;slot;flank_seq"
+        assert tags["r1"]["US"] == "AAAA;top;ACGT"
+        # Forward read: U1=US, U2=UE
         assert tags["r1"]["U1"] == "AAAA"
-        assert tags["r1"]["US"] == "AAAA"  # extracted from read start
         assert "U2" not in tags["r1"]
         assert "UE" not in tags["r1"]
         assert tags["r1"]["RX"] == "AAAA"
+        assert tags["r1"]["FC"] == "top"
 
     def test_flanking_top_bottom_across_ends(self, tmp_path):
-        """Top flank in read start -> U1/US, bottom flank in read end -> U2/UE (RC)."""
+        """Top flank at read start, bottom flank at read end (forward read)."""
         umi_kit = UMIKitConfig(
             flanking=PerEndFlankingConfig(
                 left_ref_end=FlankingConfig(adapter_side="GCTA"),
@@ -287,11 +291,45 @@ class TestAnnotateUmiTagsInBam:
             umi_ends="both",
             umi_flank_mode="adapter_only",
         )
+        # Delimited US/UE
+        assert tags["r1"]["US"] == "GGTT;top;GCTA"
+        assert tags["r1"]["UE"] == "ACGA;bottom;CCGA"
+        # Forward read: U1=US, U2=UE
         assert tags["r1"]["U1"] == "GGTT"
         assert tags["r1"]["U2"] == "ACGA"
-        assert tags["r1"]["US"] == "GGTT"  # extracted from read start
-        assert tags["r1"]["UE"] == "ACGA"  # extracted from read end (RC'd)
         assert tags["r1"]["RX"] == "GGTT-ACGA"
+        assert tags["r1"]["FC"] == "top-bottom"
+
+    # -- Reverse-read orientation swap ----------------------------------------
+
+    def test_reverse_read_swaps_u1_u2(self, tmp_path):
+        """Reverse-mapped read: U1=UE, U2=US (swapped from forward)."""
+        umi_kit = UMIKitConfig(
+            flanking=PerEndFlankingConfig(
+                left_ref_end=FlankingConfig(adapter_side="GCTA"),
+                right_ref_end=FlankingConfig(adapter_side="CCGA"),
+            ),
+            length=4,
+            umi_ends="both",
+            umi_flank_mode="adapter_only",
+        )
+        # Same sequence as test_flanking_top_bottom_across_ends but reverse-mapped
+        reads = [{"name": "r1", "sequence": "GCTAGGTTNNNNNNNNNNTCGTTCGG", "is_reverse": True}]
+        tags = self._run(
+            tmp_path,
+            reads,
+            umi_kit_config=umi_kit,
+            umi_ends="both",
+            umi_flank_mode="adapter_only",
+        )
+        # US/UE are positional (unchanged by orientation)
+        assert tags["r1"]["US"] == "GGTT;top;GCTA"
+        assert tags["r1"]["UE"] == "ACGA;bottom;CCGA"
+        # Reverse read: U1=UE, U2=US
+        assert tags["r1"]["U1"] == "ACGA"  # from UE
+        assert tags["r1"]["U2"] == "GGTT"  # from US
+        assert tags["r1"]["RX"] == "ACGA-GGTT"
+        assert tags["r1"]["FC"] == "bottom-top"
 
     # -- umi_ends filtering ---------------------------------------------------
 
@@ -308,11 +346,13 @@ class TestAnnotateUmiTagsInBam:
         )
         reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNCCCCTGCA"}]
         tags = self._run(tmp_path, reads, umi_kit_config=umi_kit, umi_ends="left_only")
+        assert tags["r1"]["US"] == "AAAA;top;ACGT"
+        # Forward: U1=US
         assert tags["r1"]["U1"] == "AAAA"
-        assert tags["r1"]["US"] == "AAAA"
         assert "U2" not in tags["r1"]
         assert "UE" not in tags["r1"]
         assert tags["r1"]["RX"] == "AAAA"
+        assert tags["r1"]["FC"] == "top"
 
     def test_umi_ends_right_only(self, tmp_path):
         """umi_ends='right_only' skips left end."""
@@ -327,17 +367,19 @@ class TestAnnotateUmiTagsInBam:
         )
         reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNCCCCTGCA"}]
         tags = self._run(tmp_path, reads, umi_kit_config=umi_kit, umi_ends="right_only")
-        assert "U1" not in tags["r1"]
         assert "US" not in tags["r1"]
         # bottom flank from read end: RC(TGCA)=TGCA found, UMI before = CCCC, then RC'd = GGGG
+        assert tags["r1"]["UE"] == "GGGG;bottom;TGCA"
+        # Forward read: U1=US=None, U2=UE
+        assert "U1" not in tags["r1"]
         assert tags["r1"]["U2"] == "GGGG"
-        assert tags["r1"]["UE"] == "GGGG"
         assert tags["r1"]["RX"] == "GGGG"
+        assert tags["r1"]["FC"] == "bottom"
 
     # -- No UMI found ---------------------------------------------------------
 
     def test_no_umi_found(self, tmp_path):
-        """No adapter found → no UMI tags set."""
+        """No adapter found -> no UMI tags set."""
         reads = [{"name": "r1", "sequence": "TTTTTTTTTTTTTTTTTTTTTTTT"}]
         tags = self._run(tmp_path, reads)
         assert "U1" not in tags["r1"]
@@ -345,6 +387,7 @@ class TestAnnotateUmiTagsInBam:
         assert "US" not in tags["r1"]
         assert "UE" not in tags["r1"]
         assert "RX" not in tags["r1"]
+        assert "FC" not in tags["r1"]
 
     # -- Multiple reads -------------------------------------------------------
 
@@ -369,13 +412,16 @@ class TestAnnotateUmiTagsInBam:
         assert "U1" in tags["both"]
         assert "US" in tags["both"]
         assert "RX" in tags["both"]
-        # "left" read: only top adapter at start
+        assert "FC" in tags["both"]
+        # "left" read: only top adapter at start (forward: U1=US)
         assert tags["left"]["U1"] == "GGGG"
-        assert tags["left"]["US"] == "GGGG"
+        assert tags["left"]["US"] == "GGGG;top;ACGT"
         assert tags["left"]["RX"] == "GGGG"
+        assert tags["left"]["FC"] == "top"
         # "none" read: no adapters
         assert "RX" not in tags["none"]
         assert "US" not in tags["none"]
+        assert "FC" not in tags["none"]
 
     # -- Multiprocessing path -------------------------------------------------
 
