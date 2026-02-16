@@ -2979,7 +2979,7 @@ def count_aligned_reads(bam_file, samtools_backend: str | None = "auto"):
 
 
 def annotate_demux_type_from_bi_tag(
-    bam_path: str | Path, output_path: Optional[str | Path] = None, threshold: float = 0.0
+    bam_path: str | Path, output_path: Optional[str | Path] = None, threshold: float = 0.65
 ) -> Path:
     """Annotate reads with a BM tag based on dorado bi per-end barcode scores.
 

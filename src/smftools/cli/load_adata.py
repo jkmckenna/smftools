@@ -544,7 +544,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             umi_adapters=getattr(cfg, "umi_adapters", None),
             umi_length=getattr(cfg, "umi_length", None),
             umi_search_window=getattr(cfg, "umi_search_window", 200),
-            umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "exact"),
+            umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "edlib"),
             umi_adapter_max_edits=resolved_umi["umi_adapter_max_edits"],
             samtools_backend=cfg.samtools_backend,
             umi_kit_config=umi_kit_config,
@@ -716,7 +716,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             # Annotate BM tag from bi per-end scores on each demuxed BAM
             for bam in bam_files:
                 if "unclassified" not in bam.name:
-                    annotate_demux_type_from_bi_tag(bam, threshold=0.0)
+                    annotate_demux_type_from_bi_tag(bam)
 
             se_bam_files = bam_files
             bam_dir = cfg.split_path
