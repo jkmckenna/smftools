@@ -7,7 +7,8 @@ import shutil
 import subprocess
 import time
 from collections import Counter, defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from math import ceil
 from dataclasses import dataclass, field
 from itertools import zip_longest
 from pathlib import Path
@@ -261,116 +262,6 @@ def _parse_idxstats_output(output: str) -> Tuple[int, int, Dict[str, Tuple[int, 
     return aligned_reads_count, unaligned_reads_count, proportions
 
 
-def _normalize_umi_adapters(umi_adapters: Any) -> List[Optional[str]]:
-    """Normalize UMI adapters into a two-slot [left_ref_end, right_ref_end] list."""
-    if umi_adapters is None:
-        adapters: List[Any] = []
-    elif isinstance(umi_adapters, (list, tuple)):
-        adapters = list(umi_adapters)
-    else:
-        adapters = [umi_adapters]
-
-    if len(adapters) != 2:
-        raise ValueError("umi_adapters must be a two-item list: [left_ref_end, right_ref_end].")
-
-    normalized: List[Optional[str]] = []
-    for adapter in adapters:
-        if adapter is None:
-            normalized.append(None)
-            continue
-        value = str(adapter).strip()
-        if not value or value.lower() == "none":
-            normalized.append(None)
-            continue
-        normalized.append(value.upper())
-    return normalized
-
-
-def validate_umi_config(
-    use_umi: bool,
-    umi_adapters: Any,
-    umi_length: Any,
-) -> Tuple[List[Optional[str]], Optional[int]]:
-    """Validate UMI settings and return normalized adapters and length."""
-    if not use_umi:
-        return [], None
-
-    adapters = _normalize_umi_adapters(umi_adapters)
-    if all(adapter is None for adapter in adapters):
-        raise ValueError(
-            "cfg.use_umi is true, but no UMI adapter sequences were provided in umi_adapters."
-        )
-
-    try:
-        length = int(umi_length)
-    except Exception as exc:
-        raise ValueError("UMI length must be a positive integer when cfg.use_umi is true.") from exc
-    if length <= 0:
-        raise ValueError("UMI length must be a positive integer when cfg.use_umi is true.")
-
-    return adapters, length
-
-
-def _extract_umi_adjacent_to_adapter_on_read_end(
-    read_sequence: str,
-    adapter_sequence: str,
-    umi_length: int,
-    umi_search_window: int,
-    search_from_start: bool,
-    adapter_matcher: str = "exact",
-    adapter_max_edits: int = 0,
-) -> Optional[str]:
-    """Extract UMI adjacent to adapter constrained to either start or end of read."""
-    if not read_sequence or not adapter_sequence:
-        return None
-
-    seq = read_sequence.upper()
-    adapter = adapter_sequence.upper()
-    seq_len = len(seq)
-    if seq_len == 0:
-        return None
-
-    matcher = str(adapter_matcher).strip().lower()
-    if matcher not in {"exact", "edlib"}:
-        raise ValueError("adapter_matcher must be one of: exact, edlib")
-
-    if matcher == "exact":
-        matches = [(m.start(), m.end()) for m in re.finditer(re.escape(adapter), seq)]
-    else:
-        edlib = require("edlib", extra="umi", purpose="fuzzy UMI adapter matching")
-        result = edlib.align(adapter, seq, mode="HW", task="locations", k=max(0, adapter_max_edits))
-        locations = result.get("locations", []) if isinstance(result, dict) else []
-        matches = []
-        for loc in locations:
-            if not isinstance(loc, (list, tuple)) or len(loc) != 2:
-                continue
-            start_i, end_i = int(loc[0]), int(loc[1])
-            if start_i < 0 or end_i < start_i:
-                continue
-            matches.append((start_i, end_i + 1))
-
-    best: Optional[Tuple[int, int]] = None
-    for start, end in matches:
-        distance = start if search_from_start else (seq_len - end)
-        if distance > umi_search_window:
-            continue
-        if best is None or distance < best[0]:
-            best = (distance, start)
-
-    if best is None:
-        return None
-
-    start = best[1]
-    end = start + len(adapter)
-    if search_from_start:
-        umi_start, umi_end = end, end + umi_length
-    else:
-        umi_start, umi_end = start - umi_length, start
-
-    if umi_start < 0 or umi_end > seq_len:
-        return None
-    umi = seq[umi_start:umi_end]
-    return umi if len(umi) == umi_length else None
 
 
 _COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
@@ -884,63 +775,188 @@ def _extract_sequence_with_flanking(
     return extracted, tgt_start, tgt_end
 
 
-def _target_read_end_for_ref_side(is_reverse: bool, ref_side: str) -> str:
-    """Map reference-side adapter slot to a read-end target given read strand."""
-    if ref_side == "left":
-        return "end" if is_reverse else "start"
-    if ref_side == "right":
-        return "start" if is_reverse else "end"
-    raise ValueError(f"Unknown ref_side: {ref_side}")
+def _extract_umis_for_reads(
+    sequences: List[str],
+    length: int,
+    search_window: int,
+    matcher: str,
+    max_edits: int,
+    umi_amplicon_max_edits: int,
+    effective_flank_mode: str,
+    flanking_candidates: List[Tuple[str, FlankingConfig]],
+    configured_slots: List[int],
+    check_start: bool,
+    check_end: bool,
+) -> List[Tuple[List[Optional[str]], List[Optional[str]]]]:
+    """Extract UMIs for a list of read sequences.
+
+    Returns a list of ``(umi_values, umi_positional)`` tuples, one per read.
+    ``umi_values`` is ``[U1, U2]`` (biological) and ``umi_positional`` is ``[US, UE]`` (positional).
+    """
+    # Pre-compute RC'd flanking configs for read-end searches
+    end_flanking_cache: List[FlankingConfig] = []
+    for _slot, candidate in flanking_candidates:
+        if candidate.adapter_side and candidate.amplicon_side:
+            end_flanking_cache.append(FlankingConfig(
+                adapter_side=_reverse_complement(candidate.amplicon_side),
+                amplicon_side=_reverse_complement(candidate.adapter_side),
+                adapter_pad=candidate.amplicon_pad,
+                amplicon_pad=candidate.adapter_pad,
+            ))
+        elif candidate.adapter_side:
+            end_flanking_cache.append(FlankingConfig(
+                adapter_side=_reverse_complement(candidate.adapter_side),
+                amplicon_side=None,
+                adapter_pad=candidate.adapter_pad,
+                amplicon_pad=candidate.amplicon_pad,
+            ))
+        elif candidate.amplicon_side:
+            end_flanking_cache.append(FlankingConfig(
+                adapter_side=None,
+                amplicon_side=_reverse_complement(candidate.amplicon_side),
+                adapter_pad=candidate.adapter_pad,
+                amplicon_pad=candidate.amplicon_pad,
+            ))
+        else:
+            end_flanking_cache.append(FlankingConfig(adapter_side=None, amplicon_side=None))
+
+    results: List[Tuple[List[Optional[str]], List[Optional[str]]]] = []
+    for sequence in sequences:
+        umi_values: List[Optional[str]] = [None, None]
+        umi_positional: List[Optional[str]] = [None, None]
+
+        for read_end in ("start", "end"):
+            if read_end == "start" and not check_start:
+                continue
+            if read_end == "end" and not check_end:
+                continue
+            search_from_start = read_end == "start"
+
+            for i, (slot, candidate) in enumerate(flanking_candidates):
+                end_flanking = candidate if search_from_start else end_flanking_cache[i]
+
+                extracted, _, _ = _extract_sequence_with_flanking(
+                    read_sequence=sequence,
+                    target_length=length,
+                    search_window=search_window,
+                    search_from_start=search_from_start,
+                    flanking=end_flanking,
+                    flank_mode=effective_flank_mode,
+                    adapter_matcher=matcher,
+                    adapter_max_edits=max_edits,
+                    amplicon_max_edits=umi_amplicon_max_edits,
+                    same_orientation=False,
+                )
+                if extracted and read_end == "end":
+                    extracted = _reverse_complement(extracted)
+
+                if extracted:
+                    idx = 0 if slot == "top" else 1
+                    if umi_values[idx] is None:
+                        umi_values[idx] = extracted
+                    pos_idx = 0 if search_from_start else 1
+                    if umi_positional[pos_idx] is None:
+                        umi_positional[pos_idx] = extracted
+
+            if configured_slots and all(
+                umi_values[idx] is not None for idx in configured_slots
+            ):
+                break
+
+        results.append((umi_values, umi_positional))
+    return results
+
+
+def _extract_umis_from_bam_range(
+    bam_path: str,
+    start_idx: int,
+    end_idx: int,
+    length: int,
+    search_window: int,
+    matcher: str,
+    max_edits: int,
+    umi_amplicon_max_edits: int,
+    effective_flank_mode: str,
+    flanking_candidates: List[Tuple[str, FlankingConfig]],
+    configured_slots: List[int],
+    check_start: bool,
+    check_end: bool,
+) -> List[Tuple[List[Optional[str]], List[Optional[str]]]]:
+    """Worker: open BAM, read sequences in [start_idx, end_idx), extract UMIs.
+
+    Each worker reads the BAM independently so no sequence data is pickled
+    across process boundaries — only config (small dataclasses/scalars) is serialized.
+    """
+    import pysam  # import in child process to avoid pickling the module
+
+    sequences: List[str] = []
+    with pysam.AlignmentFile(bam_path, "rb") as bam:
+        for i, read in enumerate(bam.fetch(until_eof=True)):
+            if i < start_idx:
+                continue
+            if i >= end_idx:
+                break
+            sequences.append(read.query_sequence or "")
+
+    return _extract_umis_for_reads(
+        sequences,
+        length=length,
+        search_window=search_window,
+        matcher=matcher,
+        max_edits=max_edits,
+        umi_amplicon_max_edits=umi_amplicon_max_edits,
+        effective_flank_mode=effective_flank_mode,
+        flanking_candidates=flanking_candidates,
+        configured_slots=configured_slots,
+        check_start=check_start,
+        check_end=check_end,
+    )
 
 
 def annotate_umi_tags_in_bam(
     bam_path: str | Path,
     *,
     use_umi: bool,
-    umi_adapters: Any,
-    umi_length: Any,
+    umi_kit_config: UMIKitConfig,
+    umi_length: Any = None,
     umi_search_window: int = 200,
-    umi_adapter_matcher: str = "exact",
+    umi_adapter_matcher: str = "edlib",
     umi_adapter_max_edits: int = 0,
     samtools_backend: str | None = "auto",
-    # New flanking parameters (optional)
-    umi_kit_config: Optional[UMIKitConfig] = None,
     umi_ends: Optional[str] = None,
     umi_flank_mode: Optional[str] = None,
     umi_amplicon_max_edits: int = 0,
     same_orientation: bool = False,
+    threads: Optional[int] = None,
 ) -> Path:
     """Annotate aligned BAM reads with UMI tags before demultiplexing.
 
-    When ``umi_kit_config`` with flanking sequences is provided, extraction uses
-    ``_extract_sequence_with_flanking`` instead of
-    ``_extract_umi_adjacent_to_adapter_on_read_end``.
+    Uses flanking-sequence-based extraction via ``_extract_sequence_with_flanking``.
+    When ``threads`` > 1, UMI extraction is parallelized across CPU cores using
+    multiprocessing while BAM I/O remains single-threaded.
+
+    Tags written:
+        US / UE  – positional: UMI extracted from read **start** / **end**
+        U1 / U2  – biological: UMI from **top** (left ref end) / **bottom** (right ref end) config slot
+        RX       – combined tag using U1-U2 ordering
     """
     input_bam = Path(bam_path)
     if not use_umi:
         return input_bam
 
-    # Determine if flanking-based extraction should be used
-    use_flanking = umi_kit_config is not None and umi_kit_config.flanking is not None
+    if umi_kit_config is None or umi_kit_config.flanking is None:
+        raise ValueError(
+            "umi_kit_config with flanking sequences is required for UMI annotation."
+        )
 
-    if use_flanking:
-        flanking_config = umi_kit_config.flanking
-        length = umi_kit_config.length if umi_kit_config.length else int(umi_length or 0)
-        effective_umi_ends = umi_ends or umi_kit_config.umi_ends or "both"
-        effective_flank_mode = umi_flank_mode or umi_kit_config.umi_flank_mode or "adapter_only"
-        if length <= 0:
-            raise ValueError(
-                "UMI length must be a positive integer when using flanking-based extraction."
-            )
-        # We still need adapters validated for the legacy path if flanking is partial
-        adapters = [None, None]  # Not used in flanking path
-        configured_adapter_count = 0
-    else:
-        flanking_config = None
-        adapters, length = validate_umi_config(use_umi, umi_adapters, umi_length)
-        effective_umi_ends = umi_ends or "both"
-        effective_flank_mode = umi_flank_mode or "adapter_only"
-        configured_adapter_count = sum(1 for adapter in adapters if adapter is not None)
+    flanking_config = umi_kit_config.flanking
+    length = umi_kit_config.length if umi_kit_config.length else int(umi_length or 0)
+    effective_umi_ends = umi_ends or umi_kit_config.umi_ends or "both"
+    effective_flank_mode = umi_flank_mode or umi_kit_config.umi_flank_mode or "adapter_only"
+    if length <= 0:
+        raise ValueError(
+            "UMI length must be a positive integer when using flanking-based extraction."
+        )
 
     search_window = max(0, int(umi_search_window))
     matcher = str(umi_adapter_matcher).strip().lower()
@@ -955,26 +971,98 @@ def annotate_umi_tags_in_bam(
     check_end = effective_umi_ends in ("both", "right_only", "read_end")
 
     flanking_candidates: List[Tuple[str, FlankingConfig]] = []
-    if use_flanking and flanking_config is not None:
-        if flanking_config.left_ref_end is not None and (
-            flanking_config.left_ref_end.adapter_side or flanking_config.left_ref_end.amplicon_side
-        ):
-            flanking_candidates.append(("top", flanking_config.left_ref_end))
-        if flanking_config.right_ref_end is not None and (
-            flanking_config.right_ref_end.adapter_side
-            or flanking_config.right_ref_end.amplicon_side
-        ):
-            flanking_candidates.append(("bottom", flanking_config.right_ref_end))
+    if flanking_config.left_ref_end is not None and (
+        flanking_config.left_ref_end.adapter_side or flanking_config.left_ref_end.amplicon_side
+    ):
+        flanking_candidates.append(("top", flanking_config.left_ref_end))
+    if flanking_config.right_ref_end is not None and (
+        flanking_config.right_ref_end.adapter_side
+        or flanking_config.right_ref_end.amplicon_side
+    ):
+        flanking_candidates.append(("bottom", flanking_config.right_ref_end))
 
-    # Count configured ends for flanking
-    if use_flanking:
-        configured_slots = [0 if slot == "top" else 1 for slot, _ in flanking_candidates]
-        configured_adapter_count = len(configured_slots)
+    configured_slots = [0 if slot == "top" else 1 for slot, _ in flanking_candidates]
+    configured_adapter_count = len(configured_slots)
+
+    cpu_count = os.cpu_count() or 1
+    num_workers = min(max(1, int(threads)), cpu_count) if threads else 1
 
     pysam_mod = _require_pysam()
     tmp_bam = input_bam.with_name(f"{input_bam.stem}.umi_tmp{input_bam.suffix}")
 
+    # ── Count reads ─────────────────────────────────────────────────────
     total_reads = 0
+    with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
+        for _ in tqdm(in_bam.fetch(until_eof=True), desc="UMI: counting reads", unit=" reads"):
+            total_reads += 1
+
+    # ── UMI extraction ──────────────────────────────────────────────────
+    # Shared kwargs for extraction (small config only — no sequence data)
+    extraction_kwargs = dict(
+        length=length,
+        search_window=search_window,
+        matcher=matcher,
+        max_edits=max_edits,
+        umi_amplicon_max_edits=umi_amplicon_max_edits,
+        effective_flank_mode=effective_flank_mode,
+        flanking_candidates=flanking_candidates,
+        configured_slots=configured_slots,
+        check_start=check_start,
+        check_end=check_end,
+    )
+
+    if num_workers <= 1 or total_reads == 0:
+        # Single-process fast path – no IPC overhead
+        sequences: List[str] = []
+        with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
+            for read in in_bam.fetch(until_eof=True):
+                sequences.append(read.query_sequence or "")
+        all_results = _extract_umis_for_reads(sequences, **extraction_kwargs)
+        del sequences
+    else:
+        chunk_size = max(1000, ceil(total_reads / num_workers))
+        num_chunks = ceil(total_reads / chunk_size)
+        actual_workers = min(num_workers, num_chunks)
+        logger.info(
+            "UMI extraction: %d reads across %d workers (chunk_size=%d)",
+            total_reads,
+            actual_workers,
+            chunk_size,
+        )
+        bam_path_str = str(input_bam)
+        with ProcessPoolExecutor(max_workers=actual_workers) as pool:
+            futures = {}
+            for chunk_idx in range(num_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min(start_idx + chunk_size, total_reads)
+                future = pool.submit(
+                    _extract_umis_from_bam_range,
+                    bam_path_str,
+                    start_idx,
+                    end_idx,
+                    **extraction_kwargs,
+                )
+                futures[future] = chunk_idx
+
+            # Collect results in submission order, with progress per chunk
+            chunk_results: Dict[int, List[Tuple[List[Optional[str]], List[Optional[str]]]]] = {}
+            with tqdm(
+                total=total_reads,
+                desc=f"UMI: extracting ({actual_workers} workers)",
+                unit=" reads",
+            ) as pbar:
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    result = future.result()
+                    chunk_results[idx] = result
+                    pbar.update(len(result))
+
+            all_results: List[Tuple[List[Optional[str]], List[Optional[str]]]] = []
+            for chunk_idx in range(num_chunks):
+                all_results.extend(chunk_results[chunk_idx])
+            del chunk_results
+
+    # ── Write BAM with tags ─────────────────────────────────────────────
     reads_with_any_umi = 0
     reads_with_all_umis = 0
 
@@ -982,98 +1070,13 @@ def annotate_umi_tags_in_bam(
         pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam,
         pysam_mod.AlignmentFile(str(tmp_bam), "wb", template=in_bam) as out_bam,
     ):
-        for read in in_bam.fetch(until_eof=True):
-            total_reads += 1
-            sequence = read.query_sequence or ""
-            umi_values: List[Optional[str]] = [None, None]
-
-            if use_flanking:
-                for read_end in ("start", "end"):
-                    if read_end == "start" and not check_start:
-                        continue
-                    if read_end == "end" and not check_end:
-                        continue
-                    search_from_start = read_end == "start"
-
-                    for slot, candidate in flanking_candidates:
-                        end_flanking = candidate
-                        if read_end == "end":
-                            if candidate.adapter_side and candidate.amplicon_side:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=_reverse_complement(candidate.amplicon_side),
-                                    amplicon_side=_reverse_complement(candidate.adapter_side),
-                                    adapter_pad=candidate.amplicon_pad,
-                                    amplicon_pad=candidate.adapter_pad,
-                                )
-                            elif candidate.adapter_side:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=_reverse_complement(candidate.adapter_side),
-                                    amplicon_side=None,
-                                    adapter_pad=candidate.adapter_pad,
-                                    amplicon_pad=candidate.amplicon_pad,
-                                )
-                            elif candidate.amplicon_side:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=None,
-                                    amplicon_side=_reverse_complement(candidate.amplicon_side),
-                                    adapter_pad=candidate.adapter_pad,
-                                    amplicon_pad=candidate.amplicon_pad,
-                                )
-                            else:
-                                end_flanking = FlankingConfig(adapter_side=None, amplicon_side=None)
-
-                        extracted, _, _ = _extract_sequence_with_flanking(
-                            read_sequence=sequence,
-                            target_length=length,
-                            search_window=search_window,
-                            search_from_start=search_from_start,
-                            flanking=end_flanking,
-                            flank_mode=effective_flank_mode,
-                            adapter_matcher=matcher,
-                            adapter_max_edits=max_edits,
-                            amplicon_max_edits=umi_amplicon_max_edits,
-                            same_orientation=False,
-                        )
-                        if extracted and read_end == "end":
-                            extracted = _reverse_complement(extracted)
-
-                        if extracted:
-                            idx = 0 if slot == "top" else 1
-                            if umi_values[idx] is None:
-                                umi_values[idx] = extracted
-
-                    if configured_slots and all(
-                        umi_values[idx] is not None for idx in configured_slots
-                    ):
-                        break
-            else:
-                for i, ref_side in enumerate(["left", "right"]):
-                    if i == 0 and not check_start:
-                        continue
-                    if i == 1 and not check_end:
-                        continue
-
-                    read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
-                    search_from_start = read_end == "start"
-
-                    adapter = adapters[i] if i < len(adapters) else None
-                    if adapter is None:
-                        continue
-                    # RC adapter for reverse-strand reads
-                    search_adapter = _reverse_complement(adapter) if read.is_reverse else adapter
-                    extracted_umi = _extract_umi_adjacent_to_adapter_on_read_end(
-                        read_sequence=sequence,
-                        adapter_sequence=search_adapter,
-                        umi_length=length,
-                        umi_search_window=search_window,
-                        search_from_start=search_from_start,
-                        adapter_matcher=matcher,
-                        adapter_max_edits=max_edits,
-                    )
-                    # RC extracted UMI for reverse-strand reads
-                    if extracted_umi and read.is_reverse:
-                        extracted_umi = _reverse_complement(extracted_umi)
-                    umi_values[i] = extracted_umi
+        for read_idx, read in enumerate(tqdm(
+            in_bam.fetch(until_eof=True),
+            total=total_reads,
+            desc="UMI: writing tags",
+            unit=" reads",
+        )):
+            umi_values, umi_positional = all_results[read_idx]
 
             present = [u for u in umi_values if u]
             if present:
@@ -1081,19 +1084,31 @@ def annotate_umi_tags_in_bam(
             if configured_adapter_count and len(present) == configured_adapter_count:
                 reads_with_all_umis += 1
 
-            umi1, umi2 = umi_values[0], umi_values[1]
-            if umi1:
-                read.set_tag("U1", umi1, value_type="Z")
-            if umi2:
-                read.set_tag("U2", umi2, value_type="Z")
-            if umi1 and umi2:
-                read.set_tag("RX", f"{umi1}-{umi2}", value_type="Z")
-            elif umi1:
-                read.set_tag("RX", umi1, value_type="Z")
-            elif umi2:
-                read.set_tag("RX", umi2, value_type="Z")
+            # Write positional tags (US/UE)
+            us, ue = umi_positional[0], umi_positional[1]
+            if us:
+                read.set_tag("US", us, value_type="Z")
+            if ue:
+                read.set_tag("UE", ue, value_type="Z")
+
+            # Write biological tags (U1/U2)
+            u1, u2 = umi_values[0], umi_values[1]
+            if u1:
+                read.set_tag("U1", u1, value_type="Z")
+            if u2:
+                read.set_tag("U2", u2, value_type="Z")
+
+            # Write combined tag (RX) using biological ordering
+            if u1 and u2:
+                read.set_tag("RX", f"{u1}-{u2}", value_type="Z")
+            elif u1:
+                read.set_tag("RX", u1, value_type="Z")
+            elif u2:
+                read.set_tag("RX", u2, value_type="Z")
 
             out_bam.write(read)
+
+    del all_results
 
     tmp_bam.replace(input_bam)
     index_paths = (

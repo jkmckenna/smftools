@@ -541,17 +541,17 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         annotate_umi_tags_in_bam(
             aligned_sorted_output,
             use_umi=True,
-            umi_adapters=getattr(cfg, "umi_adapters", None),
+            umi_kit_config=umi_kit_config,
             umi_length=getattr(cfg, "umi_length", None),
             umi_search_window=getattr(cfg, "umi_search_window", 200),
             umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "edlib"),
             umi_adapter_max_edits=resolved_umi["umi_adapter_max_edits"],
             samtools_backend=cfg.samtools_backend,
-            umi_kit_config=umi_kit_config,
             umi_ends=resolved_umi["umi_ends"],
             umi_flank_mode=resolved_umi["umi_flank_mode"],
             umi_amplicon_max_edits=resolved_umi["umi_amplicon_max_edits"],
             same_orientation=resolved_umi.get("same_orientation", False),
+            threads=cfg.threads,
         )
     ########################################################################################################################
 
@@ -958,7 +958,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         default_tags.extend(["MM", "ML"])
     # Add UMI tags if UMI extraction was enabled
     if getattr(cfg, "use_umi", False):
-        default_tags.extend(["U1", "U2", "RX"])
+        default_tags.extend(["U1", "U2", "US", "UE", "RX"])
     # Add barcode tags if smftools barcode extraction was used
     if demux_backend == "smftools" and cfg.barcode_kit:
         default_tags.extend(["BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"])

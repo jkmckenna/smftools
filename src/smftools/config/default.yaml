@@ -89,7 +89,6 @@ demux_backend: dorado # smftools|dorado - smftools uses YAML-based barcode refs,
 barcode_both_ends: False # Require barcode match at both ends
 trim: False # dorado adapter and barcode removal during demultiplexing
 use_umi: False # Whether to detect and annotate UMIs in aligned_sorted BAM before demultiplexing
-umi_adapters: [null, null] # Two-slot list [left_ref_end_adapter, right_ref_end_adapter]
 umi_length: null # Length of each UMI (required when use_umi is true)
 umi_search_window: 200 # Max distance from read ends to consider an adapter match for UMI extraction
 umi_adapter_matcher: edlib # exact|edlib
