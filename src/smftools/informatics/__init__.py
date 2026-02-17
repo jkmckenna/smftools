@@ -17,6 +17,7 @@ _LAZY_ATTRS = {
     "concatenate_fastqs_to_bam": "smftools.informatics.bam_functions",
     "converted_BAM_to_adata": "smftools.informatics.converted_BAM_to_adata",
     "count_aligned_reads": "smftools.informatics.bam_functions",
+    "derive_umi_orientation_tags_from_aligned_bam": "smftools.informatics.bam_functions",
     "demux_and_index_BAM": "smftools.informatics.bam_functions",
     "extract_and_assign_barcodes_in_bam": "smftools.informatics.bam_functions",
     "load_barcode_references_from_yaml": "smftools.informatics.bam_functions",

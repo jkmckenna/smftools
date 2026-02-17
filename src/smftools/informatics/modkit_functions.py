@@ -15,6 +15,7 @@ def extract_mods(
     skip_unclassified=True,
     modkit_summary=False,
     threads=None,
+    single_bam=None,
 ):
     """
     Takes all of the aligned, sorted, split modified BAM files and runs Nanopore Modkit Extract to load the modification data into zipped TSV files
@@ -22,23 +23,29 @@ def extract_mods(
     Parameters:
         thresholds (list): A list of thresholds to use for marking each basecalled base as passing or failing on canonical and modification call status.
         mod_tsv_dir (str): A string representing the file path to the directory to hold the modkit extract outputs.
-        split_dit (str): A string representing the file path to the directory containing the converted aligned_sorted_split BAM files.
+        split_dir (str): A string representing the file path to the directory containing the converted aligned_sorted_split BAM files.
         bam_suffix (str): The suffix to use for the BAM file.
         skip_unclassified (bool): Whether to skip unclassified bam file for modkit extract command
         modkit_summary (bool): Whether to run and display modkit summary
         threads (int): Number of threads to use
+        single_bam (Path | None): When set, use this single BAM instead of iterating split_dir.
 
     Returns:
         None
         Runs modkit extract on input aligned_sorted_split modified BAM files to output zipped TSVs containing modification calls.
 
     """
+    from pathlib import Path
+
     filter_threshold, m6A_threshold, m5C_threshold, hm5C_threshold = thresholds
-    bam_files = sorted(
-        p for p in split_dir.iterdir() if bam_suffix in p.name and ".bai" not in p.name
-    )
-    if skip_unclassified:
-        bam_files = [p for p in bam_files if "unclassified" not in p.name]
+    if single_bam is not None:
+        bam_files = [Path(single_bam)]
+    else:
+        bam_files = sorted(
+            p for p in split_dir.iterdir() if bam_suffix in p.name and ".bai" not in p.name
+        )
+        if skip_unclassified:
+            bam_files = [p for p in bam_files if "unclassified" not in p.name]
     logger.info(f"Running modkit extract for the following bam files: {bam_files}")
 
     if threads:

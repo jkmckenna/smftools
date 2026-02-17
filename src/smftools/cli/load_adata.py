@@ -179,8 +179,10 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         annotate_demux_type_from_bi_tag,
         annotate_umi_tags_in_bam,
         bam_qc,
+        build_classified_read_set,
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
+        derive_umi_orientation_tags_from_aligned_bam,
         extract_and_assign_barcodes_in_bam,
         extract_read_features_from_bam,
         extract_read_tags_from_bam,
@@ -209,6 +211,11 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
     from ..informatics.pod5_functions import fast5_to_pod5
     from ..informatics.run_multiqc import run_multiqc
+    from ..informatics.sidecar_manifest import (
+        register_sidecar,
+        resolve_sidecar,
+        sidecar_manifest_path,
+    )
     from ..metadata import record_smftools_metadata
     from ..readwrite import add_or_update_column_in_csv, make_dirs
     from .helpers import write_gz_h5ad
@@ -222,6 +229,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     output_directory = Path(cfg.output_directory)
     load_directory = output_directory / LOAD_DIR
+    sidecar_manifest = sidecar_manifest_path(load_directory)
     logging_directory = load_directory / LOGGING_DIR
 
     make_dirs([output_directory, load_directory])
@@ -520,7 +528,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     umi_sidecar = None
     barcode_sidecar = None
     if getattr(cfg, "use_umi", False):
-        logger.info("Annotating UMIs in aligned and sorted BAM before demultiplexing")
+        logger.info("Extracting positional UMIs (US/UE) from unaligned BAM before demultiplexing")
 
         # Resolve UMI kit alias or custom YAML path
         umi_kit_config = None
@@ -541,8 +549,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             umi_kit_config = load_umi_config_from_yaml(umi_yaml_path)
         resolved_umi = resolve_umi_config(umi_kit_config, cfg)
 
-        umi_sidecar = annotate_umi_tags_in_bam(
-            aligned_sorted_output,
+        umi_positional_sidecar = annotate_umi_tags_in_bam(
+            unaligned_output,
             use_umi=True,
             umi_kit_config=umi_kit_config,
             umi_length=getattr(cfg, "umi_length", None),
@@ -555,6 +563,25 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             umi_amplicon_max_edits=resolved_umi["umi_amplicon_max_edits"],
             same_orientation=resolved_umi.get("same_orientation", False),
             threads=cfg.threads,
+        )
+        register_sidecar(
+            sidecar_manifest,
+            "umi_positional",
+            umi_positional_sidecar,
+            metadata={"source_bam": str(unaligned_output)},
+        )
+        logger.info("Deriving orientation-aware UMI tags (U1/U2/RX/FC) from aligned BAM")
+        umi_sidecar = derive_umi_orientation_tags_from_aligned_bam(
+            umi_positional_sidecar,
+            aligned_sorted_output,
+            output_sidecar_path=aligned_sorted_output.with_suffix(".umi_tags.parquet"),
+            samtools_backend=cfg.samtools_backend,
+        )
+        register_sidecar(
+            sidecar_manifest,
+            "umi_oriented",
+            umi_sidecar,
+            metadata={"source_bam": str(aligned_sorted_output)},
         )
     ########################################################################################################################
 
@@ -605,9 +632,9 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         )
         resolved_bc = resolve_barcode_config(barcode_kit_config, cfg)
 
-        logger.info("Extracting and assigning barcodes to aligned BAM using smftools backend")
-        barcode_sidecar = extract_and_assign_barcodes_in_bam(
-            aligned_sorted_output,
+        logger.info("Extracting and assigning barcodes from unaligned BAM using smftools backend")
+        barcode_positional_sidecar = extract_and_assign_barcodes_in_bam(
+            unaligned_output,
             barcode_adapters=getattr(cfg, "barcode_adapters", [None, None]),
             barcode_references=barcode_references,
             barcode_length=barcode_length,
@@ -624,13 +651,37 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             barcode_amplicon_gap_tolerance=resolved_bc["barcode_amplicon_gap_tolerance"],
             threads=cfg.threads,
         )
+        register_sidecar(
+            sidecar_manifest,
+            "barcode_positional",
+            barcode_positional_sidecar,
+            metadata={"source_bam": str(unaligned_output)},
+        )
+        barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
+        if Path(barcode_positional_sidecar) != barcode_sidecar:
+            shutil.copy2(barcode_positional_sidecar, barcode_sidecar)
+        register_sidecar(
+            sidecar_manifest,
+            "barcode",
+            barcode_sidecar,
+            metadata={"source_bam": str(aligned_sorted_output)},
+        )
         logger.info(f"smftools barcode extraction complete: {barcode_sidecar}")
     ########################################################################################################################
 
     ################################### 5) Demultiplexing ######################################################################
 
+    skip_bam_split = getattr(cfg, "skip_bam_split", False)
+
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
-    if cfg.input_already_demuxed or use_smftools_demux:
+    if skip_bam_split:
+        logger.info("skip_bam_split=True: skipping BAM splitting, using single aligned BAM")
+        se_bam_files = [aligned_sorted_output]
+        bam_files = [aligned_sorted_output]
+        unclassified_bams = []
+        bam_dir = None
+        double_barcoded_path = None
+    elif cfg.input_already_demuxed or use_smftools_demux:
         if cfg.split_path.is_dir():
             logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
 
@@ -800,7 +851,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
-    if cfg.make_beds:
+    if cfg.make_beds and not skip_bam_split:
         # Make beds and provide basic histograms
         bed_dir = cfg.split_path / "beds"
         if bed_dir.is_dir():
@@ -831,12 +882,26 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     else:
         make_dirs([bam_qc_dir])
         logger.info("Performing BAM QC")
+        _qc_barcodes = None
+        _qc_barcode_readname_map = None
+        if skip_bam_split and barcode_sidecar and Path(barcode_sidecar).exists():
+            _bc_df = pd.read_parquet(barcode_sidecar)
+            _qc_barcodes = sorted(_bc_df["BC"].dropna().unique().tolist())
+            _qc_barcodes = [b for b in _qc_barcodes if b != "unclassified"]
+            _bc_df = _bc_df[_bc_df["BC"].isin(_qc_barcodes)]
+            _qc_barcode_readname_map = {
+                str(bc): set(group["read_name"].astype(str).tolist())
+                for bc, group in _bc_df.groupby("BC", observed=True)
+            }
+            del _bc_df
         bam_qc(
             bam_files,
             bam_qc_dir,
             cfg.threads,
             modality=cfg.smf_modality,
             samtools_backend=cfg.samtools_backend,
+            barcodes=_qc_barcodes,
+            barcode_readname_map=_qc_barcode_readname_map,
         )
     ########################################################################################################################
 
@@ -853,7 +918,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         logger.info(f"Loading Anndata from BAM files for {cfg.smf_modality} footprinting")
         raw_adata, raw_adata_path = converted_BAM_to_adata(
             fasta,
-            bam_dir,
+            bam_dir if bam_dir is not None else cfg.split_path,
             load_directory,
             cfg.input_already_demuxed,
             cfg.mapping_threshold,
@@ -867,6 +932,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             double_barcoded_path=double_barcoded_path,
             samtools_backend=cfg.samtools_backend,
             demux_backend=getattr(cfg, "demux_backend", None),
+            single_bam=aligned_sorted_output if skip_bam_split else None,
+            barcode_sidecar=barcode_sidecar,
         )
     else:
         if mod_bed_dir.is_dir():
@@ -897,11 +964,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         extract_mods(
             cfg.thresholds,
             mod_tsv_dir,
-            bam_dir,
+            bam_dir if bam_dir is not None else cfg.split_path,
             cfg.bam_suffix,
             skip_unclassified=cfg.skip_unclassified,
             modkit_summary=False,
             threads=cfg.threads,
+            single_bam=aligned_sorted_output if skip_bam_split else None,
         )  # Extract methylations calls for split BAM files into split TSV files
 
         from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
@@ -911,7 +979,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         # 6 Load the modification data from TSVs into an adata object
         raw_adata, raw_adata_path = modkit_extract_to_adata(
             fasta,
-            bam_dir,
+            bam_dir if bam_dir is not None else cfg.split_path,
             load_directory,
             cfg.input_already_demuxed,
             cfg.mapping_threshold,
@@ -924,6 +992,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             double_barcoded_path,
             cfg.samtools_backend,
             demux_backend=getattr(cfg, "demux_backend", None),
+            single_bam=aligned_sorted_output if skip_bam_split else None,
+            barcode_sidecar=barcode_sidecar,
         )
         if cfg.delete_intermediate_tsvs:
             delete_tsvs(mod_tsv_dir)
@@ -946,10 +1016,16 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ############################################### Add basic read length, read quality, mapping quality stats ###############################################
 
     logger.info("Adding read length, mapping quality, and modification signal to Anndata")
+    if skip_bam_split:
+        from functools import partial as _partial
+
+        _extract_features = _partial(extract_read_features_from_bam, primary_only=True)
+    else:
+        _extract_features = extract_read_features_from_bam
     add_read_length_and_mapping_qc(
         raw_adata,
         se_bam_files,
-        extract_read_features_from_bam_callable=extract_read_features_from_bam,
+        extract_read_features_from_bam_callable=_extract_features,
         bypass=cfg.bypass_add_read_length_and_mapping_qc,
         force_redo=cfg.force_redo_add_read_length_and_mapping_qc,
         samtools_backend=cfg.samtools_backend,
@@ -969,17 +1045,26 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
 
     logger.info("Adding BAM tags and BAM flags to adata.obs")
+    if skip_bam_split:
+        _extract_tags = _partial(extract_read_tags_from_bam, primary_only=True)
+    else:
+        _extract_tags = extract_read_tags_from_bam
     add_read_tag_annotations(
         raw_adata,
         se_bam_files,
         tag_names=bam_tag_names,
         include_flags=True,
         include_cigar=True,
-        extract_read_tags_from_bam_callable=extract_read_tags_from_bam,
+        extract_read_tags_from_bam_callable=_extract_tags,
         samtools_backend=cfg.samtools_backend,
     )
 
     # Load UMI tags from Parquet sidecar (written by annotate_umi_tags_in_bam)
+    if getattr(cfg, "use_umi", False) and (not umi_sidecar or not Path(umi_sidecar).exists()):
+        _resolved_umi_sidecar = resolve_sidecar(sidecar_manifest, "umi_oriented")
+        if _resolved_umi_sidecar is not None:
+            umi_sidecar = _resolved_umi_sidecar
+
     if getattr(cfg, "use_umi", False) and umi_sidecar and Path(umi_sidecar).exists():
         logger.info("Loading UMI tags from Parquet sidecar: %s", umi_sidecar)
         umi_df = pd.read_parquet(umi_sidecar).set_index("read_name")
@@ -990,6 +1075,15 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         del umi_df
 
     # Load barcode tags from Parquet sidecar (written by extract_and_assign_barcodes_in_bam)
+    if (
+        demux_backend == "smftools"
+        and cfg.barcode_kit
+        and (not barcode_sidecar or not Path(barcode_sidecar).exists())
+    ):
+        _resolved_barcode_sidecar = resolve_sidecar(sidecar_manifest, "barcode")
+        if _resolved_barcode_sidecar is not None:
+            barcode_sidecar = _resolved_barcode_sidecar
+
     if (
         demux_backend == "smftools"
         and cfg.barcode_kit
@@ -1071,18 +1165,24 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     if cfg.delete_intermediate_bams:
         logger.info("Deleting intermediate BAM files")
         # delete aligned and sorted bam
-        aligned_sorted_output.unlink()
+        if aligned_sorted_output.exists():
+            aligned_sorted_output.unlink()
         bai = aligned_sorted_output.parent / (aligned_sorted_output.name + ".bai")
-        bai.unlink()
+        if bai.exists():
+            bai.unlink()
         # delete the demultiplexed bams. Keep the demultiplexing summary files and directories to faciliate demultiplexing in the future with these files
         for bam in bam_files:
             bai = bam.parent / (bam.name + ".bai")
-            bam.unlink()
-            bai.unlink()
+            if bam.exists():
+                bam.unlink()
+            if bai.exists():
+                bai.unlink()
         for bam in unclassified_bams:
             bai = bam.parent / (bam.name + ".bai")
-            bam.unlink()
-            bai.unlink()
+            if bam.exists():
+                bam.unlink()
+            if bai.exists():
+                bai.unlink()
         logger.info("Finished deleting intermediate BAM files")
     ########################################################################################################################
 
