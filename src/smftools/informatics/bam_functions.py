@@ -886,52 +886,6 @@ def _extract_umis_for_reads(
     return results
 
 
-def _extract_umis_from_bam_range(
-    bam_path: str,
-    start_idx: int,
-    end_idx: int,
-    length: int,
-    search_window: int,
-    matcher: str,
-    max_edits: int,
-    umi_amplicon_max_edits: int,
-    effective_flank_mode: str,
-    flanking_candidates: List[Tuple[str, FlankingConfig]],
-    configured_slots: List[int],
-    check_start: bool,
-    check_end: bool,
-) -> List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]]:
-    """Worker: open BAM, read sequences in [start_idx, end_idx), extract UMIs.
-
-    Each worker reads the BAM independently so no sequence data is pickled
-    across process boundaries — only config (small dataclasses/scalars) is serialized.
-    """
-    import pysam  # import in child process to avoid pickling the module
-
-    sequences: List[str] = []
-    with pysam.AlignmentFile(bam_path, "rb") as bam:
-        for i, read in enumerate(bam.fetch(until_eof=True)):
-            if i < start_idx:
-                continue
-            if i >= end_idx:
-                break
-            sequences.append(read.query_sequence or "")
-
-    return _extract_umis_for_reads(
-        sequences,
-        length=length,
-        search_window=search_window,
-        matcher=matcher,
-        max_edits=max_edits,
-        umi_amplicon_max_edits=umi_amplicon_max_edits,
-        effective_flank_mode=effective_flank_mode,
-        flanking_candidates=flanking_candidates,
-        configured_slots=configured_slots,
-        check_start=check_start,
-        check_end=check_end,
-    )
-
-
 def annotate_umi_tags_in_bam(
     bam_path: str | Path,
     *,
@@ -1007,8 +961,6 @@ def annotate_umi_tags_in_bam(
     cpu_count = os.cpu_count() or 1
     num_workers = min(max(1, int(threads)), cpu_count) if threads else 1
 
-    pysam_mod = _require_pysam()
-
     # ── Shared extraction kwargs ────────────────────────────────────────
     extraction_kwargs = dict(
         length=length,
@@ -1028,12 +980,34 @@ def annotate_umi_tags_in_bam(
     is_reverse_flags: List[bool] = []
     is_primary: List[bool] = []
     sequences: List[str] = []
-    with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
-        for read in tqdm(in_bam.fetch(until_eof=True), desc="UMI: reading BAM", unit=" reads"):
-            read_names.append(read.query_name)
-            is_reverse_flags.append(read.is_reverse)
-            is_primary.append(not read.is_secondary and not read.is_supplementary)
-            sequences.append(read.query_sequence or "")
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
+            for read in tqdm(in_bam.fetch(until_eof=True), desc="UMI: reading BAM", unit=" reads"):
+                read_names.append(read.query_name)
+                is_reverse_flags.append(read.is_reverse)
+                is_primary.append(not read.is_secondary and not read.is_supplementary)
+                sequences.append(read.query_sequence or "")
+    else:
+        cmd = ["samtools", "view", str(input_bam)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        for line in tqdm(proc.stdout, desc="UMI: reading BAM", unit=" reads"):
+            if not line.strip() or line.startswith("@"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 11:
+                continue
+            flag = int(fields[1])
+            read_names.append(fields[0])
+            is_reverse_flags.append(bool(flag & 0x10))
+            is_primary.append(not bool(flag & 0x100) and not bool(flag & 0x800))
+            seq = fields[9]
+            sequences.append("" if seq == "*" else seq)
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
     total_reads = len(read_names)
 
     # ── UMI extraction ──────────────────────────────────────────────────
@@ -1050,17 +1024,15 @@ def annotate_umi_tags_in_bam(
             actual_workers,
             chunk_size,
         )
-        bam_path_str = str(input_bam)
         with ProcessPoolExecutor(max_workers=actual_workers) as pool:
             futures = {}
             for chunk_idx in range(num_chunks):
                 start_idx = chunk_idx * chunk_size
                 end_idx = min(start_idx + chunk_size, total_reads)
+                chunk = sequences[start_idx:end_idx]
                 future = pool.submit(
-                    _extract_umis_from_bam_range,
-                    bam_path_str,
-                    start_idx,
-                    end_idx,
+                    _extract_umis_for_reads,
+                    chunk,
                     **extraction_kwargs,
                 )
                 futures[future] = chunk_idx
