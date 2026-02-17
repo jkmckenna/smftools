@@ -988,7 +988,10 @@ def annotate_umi_tags_in_bam(
                 read_names.append(read.query_name)
                 is_reverse_flags.append(read.is_reverse)
                 is_primary.append(not read.is_secondary and not read.is_supplementary)
-                sequences.append(read.query_sequence or "")
+                seq = read.query_sequence or ""
+                if read.is_reverse:
+                    seq = _reverse_complement(seq)
+                sequences.append(seq)
     else:
         cmd = ["samtools", "view", str(input_bam)]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -1004,7 +1007,11 @@ def annotate_umi_tags_in_bam(
             is_reverse_flags.append(bool(flag & 0x10))
             is_primary.append(not bool(flag & 0x100) and not bool(flag & 0x800))
             seq = fields[9]
-            sequences.append("" if seq == "*" else seq)
+            if seq == "*":
+                seq = ""
+            elif bool(flag & 0x10):
+                seq = _reverse_complement(seq)
+            sequences.append(seq)
         rc = proc.wait()
         if rc != 0:
             stderr = proc.stderr.read() if proc.stderr else ""
@@ -1107,15 +1114,15 @@ def annotate_umi_tags_in_bam(
         if u2:
             row["U2"] = u2
 
-        # FC tag: flank context of U1/U2 pair
+        # FC tag: flank context of U1/U2 pair; use NA placeholder for missing side
         u1_slot = u1_result.slot if u1_result else None
         u2_slot = u2_result.slot if u2_result else None
         if u1_slot and u2_slot:
             row["FC"] = f"{u1_slot}-{u2_slot}"
         elif u1_slot:
-            row["FC"] = u1_slot
+            row["FC"] = f"{u1_slot}-NA"
         elif u2_slot:
-            row["FC"] = u2_slot
+            row["FC"] = f"NA-{u2_slot}"
 
         # Combined tag (RX) using orientation-assigned U1/U2
         if u1 and u2:
@@ -1919,6 +1926,7 @@ def extract_and_assign_barcodes_in_bam(
 
     # ── Single BAM pass: collect read_names + sequences ─────────────────
     read_names: List[str] = []
+    is_reverse_flags: List[bool] = []
     is_primary: List[bool] = []
     sequences: List[str] = []
     if backend_choice == "python":
@@ -1928,8 +1936,12 @@ def extract_and_assign_barcodes_in_bam(
                 in_bam.fetch(until_eof=True), desc="Barcode: reading BAM", unit=" reads"
             ):
                 read_names.append(read.query_name)
+                is_reverse_flags.append(read.is_reverse)
                 is_primary.append(not read.is_secondary and not read.is_supplementary)
-                sequences.append(read.query_sequence or "")
+                seq = read.query_sequence or ""
+                if read.is_reverse:
+                    seq = _reverse_complement(seq)
+                sequences.append(seq)
     else:
         cmd = ["samtools", "view", str(input_bam)]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -1942,9 +1954,14 @@ def extract_and_assign_barcodes_in_bam(
                 continue
             flag = int(fields[1])
             read_names.append(fields[0])
+            is_reverse_flags.append(bool(flag & 0x10))
             is_primary.append(not bool(flag & 0x100) and not bool(flag & 0x800))
             seq = fields[9]
-            sequences.append("" if seq == "*" else seq)
+            if seq == "*":
+                seq = ""
+            elif bool(flag & 0x10):
+                seq = _reverse_complement(seq)
+            sequences.append(seq)
         rc = proc.wait()
         if rc != 0:
             stderr = proc.stderr.read() if proc.stderr else ""
@@ -2337,11 +2354,18 @@ def bam_qc(
     flagstats: bool = True,
     idxstats: bool = True,
     samtools_backend: str | None = "auto",
+    barcodes: Optional[List[str]] = None,
+    barcode_readname_map: Optional[Dict[str, set[str]]] = None,
 ) -> None:
     """
     QC for BAM/CRAMs: stats, flagstat, idxstats.
     Prefers pysam; falls back to `samtools` if needed.
     Runs BAMs in parallel (up to `threads`, default serial).
+
+    When *barcodes* is provided the single input BAM is filtered per barcode
+    using ``samtools view -d BC:<barcode>`` piped into stats/flagstat.  An
+    overall (unfiltered) summary is also produced.  ``idxstats`` is only run
+    on the unfiltered BAM because it requires an index.
     """
     import subprocess
 
@@ -2400,6 +2424,196 @@ def bam_qc(
             tail = "\n".join(last_err)
             raise RuntimeError(f"{tag} failed for {bam} (exit {rc}). Stderr tail:\n{tail}")
         return rc
+
+    def _run_piped_to_file(
+        view_cmd: list[str],
+        tool_cmd: list[str],
+        out_path: Path,
+        bam: Path,
+        tag: str,
+    ) -> int:
+        """Pipe ``samtools view`` into a samtools tool and write stdout to *out_path*.
+
+        Returns the return code of the downstream tool process.
+        """
+        last_err: deque[str] = deque(maxlen=80)
+        view_last_err: deque[str] = deque(maxlen=80)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        view_proc = subprocess.Popen(view_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        with open(out_path, "w") as fh:
+            tool_proc = subprocess.Popen(
+                tool_cmd, stdin=view_proc.stdout, stdout=fh, stderr=subprocess.PIPE, text=True
+            )
+            # Allow view_proc to receive SIGPIPE if tool_proc closes stdin early.
+            assert view_proc.stdout is not None
+            view_proc.stdout.close()
+
+            assert tool_proc.stderr is not None
+            for line in tool_proc.stderr:
+                line = line.rstrip()
+                if line:
+                    last_err.append(line)
+                    logger.debug("[%s][%s] %s", tag, bam.name, line)
+            tool_rc = tool_proc.wait()
+
+        assert view_proc.stderr is not None
+        for line in view_proc.stderr:
+            line = line.rstrip()
+            if line:
+                view_last_err.append(line)
+                logger.debug("[view:%s][%s] %s", tag, bam.name, line)
+        view_rc = view_proc.wait()
+        # Treat SIGPIPE (rc -13) from view as benign when downstream closed early.
+        if view_rc not in (0, -13):
+            tail = "\n".join(view_last_err)
+            raise RuntimeError(
+                f"samtools view failed for {bam} ({tag}, exit {view_rc}). "
+                f"Stderr tail:\n{tail}"
+            )
+
+        if tool_rc != 0:
+            tail = "\n".join(last_err)
+            raise RuntimeError(f"{tag} failed for {bam} (exit {tool_rc}). Stderr tail:\n{tail}")
+        return tool_rc
+
+    def _samtools_view_supports_name_filter() -> bool:
+        """Return True when `samtools view` supports `-N <readname_file>`."""
+        cp = subprocess.run(
+            ["samtools", "view", "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        help_text = (cp.stdout or "") + "\n" + (cp.stderr or "")
+        return "-N FILE" in help_text or " -N " in help_text
+
+    def _run_one_barcode_from_readnames(
+        bam: Path, barcode: str, read_names: set[str]
+    ) -> tuple[str, list[tuple[str, int]]]:
+        """Run stats/flagstat for a barcode by filtering on read names from sidecar."""
+        import subprocess
+        import tempfile
+
+        results: list[tuple[str, int]] = []
+        out_stats = bam_qc_dir / f"{barcode}_stats.txt"
+        out_flag = bam_qc_dir / f"{barcode}_flagstat.txt"
+
+        if not read_names:
+            logger.warning("No read names provided for barcode %s; QC outputs may be empty.", barcode)
+            read_names = set()
+
+        # Fast path: samtools view -N when available.
+        if _samtools_view_supports_name_filter():
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".readnames.txt",
+                prefix=f"{barcode}_",
+                dir=str(bam_qc_dir),
+                delete=False,
+            ) as fh:
+                readname_file = Path(fh.name)
+                for rn in sorted(read_names):
+                    fh.write(f"{rn}\n")
+            try:
+                view_cmd = ["samtools", "view", "-h", "-N", str(readname_file), str(bam)]
+                if stats:
+                    rc = _run_piped_to_file(
+                        view_cmd, ["samtools", "stats", "-"], out_stats, bam, f"stats[{barcode}]"
+                    )
+                    results.append((f"stats[{barcode}]", rc))
+                if flagstats:
+                    rc = _run_piped_to_file(
+                        view_cmd, ["samtools", "flagstat", "-"], out_flag, bam, f"flagstat[{barcode}]"
+                    )
+                    results.append((f"flagstat[{barcode}]", rc))
+                return barcode, results
+            finally:
+                if readname_file.exists():
+                    readname_file.unlink()
+
+        # Fallback path: create a temporary BAM and run samtools stats/flagstat on it.
+        # Prefer pysam when present, otherwise stream-filter SAM with samtools+python.
+        with tempfile.NamedTemporaryFile(
+            suffix=".bam",
+            prefix=f"{barcode}_",
+            dir=str(bam_qc_dir),
+            delete=False,
+        ) as fh:
+            tmp_bam = Path(fh.name)
+        try:
+            if have_pysam:
+                assert pysam_mod is not None
+                with pysam_mod.AlignmentFile(str(bam), "rb") as in_bam, pysam_mod.AlignmentFile(
+                    str(tmp_bam), "wb", header=in_bam.header
+                ) as out_bam:
+                    for read in in_bam.fetch(until_eof=True):
+                        if read.query_name in read_names:
+                            out_bam.write(read)
+            else:
+                # samtools-only fallback: stream SAM, filter rows by read_name, and pack to BAM.
+                view_proc = subprocess.Popen(
+                    ["samtools", "view", "-h", str(bam)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                pack_proc = subprocess.Popen(
+                    ["samtools", "view", "-b", "-o", str(tmp_bam), "-"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                assert view_proc.stdout is not None
+                assert pack_proc.stdin is not None
+                for line in view_proc.stdout:
+                    if line.startswith("@"):
+                        pack_proc.stdin.write(line)
+                        continue
+                    if not line.strip():
+                        continue
+                    qname = line.split("\t", 1)[0]
+                    if qname in read_names:
+                        pack_proc.stdin.write(line)
+
+                pack_proc.stdin.close()
+                view_rc = view_proc.wait()
+                pack_rc = pack_proc.wait()
+                if view_rc != 0:
+                    stderr = view_proc.stderr.read() if view_proc.stderr else ""
+                    raise RuntimeError(
+                        f"samtools view failed while filtering barcode {barcode} "
+                        f"(exit {view_rc}):\n{stderr}"
+                    )
+                if pack_rc != 0:
+                    stderr = pack_proc.stderr.read() if pack_proc.stderr else ""
+                    raise RuntimeError(
+                        f"samtools BAM packing failed for barcode {barcode} "
+                        f"(exit {pack_rc}):\n{stderr}"
+                    )
+
+            if stats:
+                rc = _run_samtools_to_file(
+                    ["samtools", "stats", str(tmp_bam)],
+                    out_stats,
+                    bam,
+                    f"samtools stats[{barcode}]",
+                )
+                results.append((f"stats[{barcode}]", rc))
+            if flagstats:
+                rc = _run_samtools_to_file(
+                    ["samtools", "flagstat", str(tmp_bam)],
+                    out_flag,
+                    bam,
+                    f"samtools flagstat[{barcode}]",
+                )
+                results.append((f"flagstat[{barcode}]", rc))
+            return barcode, results
+        finally:
+            if tmp_bam.exists():
+                tmp_bam.unlink()
 
     def _run_one(bam: Path) -> tuple[Path, list[tuple[str, int]]]:
         """Run stats/flagstat/idxstats for a single BAM.
@@ -2469,15 +2683,62 @@ def bam_qc(
 
         return bam, results
 
+    def _run_one_barcode(bam: Path, barcode: str) -> tuple[str, list[tuple[str, int]]]:
+        """Run stats/flagstat for a single barcode by piping ``samtools view -d BC:<barcode>``.
+
+        idxstats is skipped because the piped stream is not indexed.
+
+        Returns:
+            Tuple of (barcode, list of (stage, return_code)).
+        """
+        results: list[tuple[str, int]] = []
+        out_stats = bam_qc_dir / f"{barcode}_stats.txt"
+        out_flag = bam_qc_dir / f"{barcode}_flagstat.txt"
+
+        # Prefer explicit read-name filters from sidecar when available.
+        if barcode_readname_map and barcode in barcode_readname_map:
+            return _run_one_barcode_from_readnames(bam, barcode, barcode_readname_map[barcode])
+
+        view_cmd = ["samtools", "view", "-h", "-d", f"BC:{barcode}", str(bam)]
+
+        if stats:
+            rc = _run_piped_to_file(
+                view_cmd, ["samtools", "stats", "-"], out_stats, bam, f"stats[{barcode}]"
+            )
+            results.append((f"stats[{barcode}]", rc))
+
+        if flagstats:
+            rc = _run_piped_to_file(
+                view_cmd, ["samtools", "flagstat", "-"], out_flag, bam, f"flagstat[{barcode}]"
+            )
+            results.append((f"flagstat[{barcode}]", rc))
+
+        return barcode, results
+
     max_workers = int(threads) if threads and int(threads) > 0 else 1
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        # Always run whole-BAM QC for each input BAM
         futs = [ex.submit(_run_one, b) for b in bam_paths]
+
+        # Per-barcode QC when barcodes are provided
+        if barcodes:
+            if len(bam_paths) != 1:
+                logger.warning(
+                    "Per-barcode QC expects a single BAM; got %d. "
+                    "Running per-barcode QC on the first BAM only.",
+                    len(bam_paths),
+                )
+            bc_bam = bam_paths[0]
+            for bc in barcodes:
+                futs.append(ex.submit(_run_one_barcode, bc_bam, bc))
+
         for fut in as_completed(futs):
             try:
-                bam, res = fut.result()
+                key, res = fut.result()
                 summary = ", ".join(f"{name}:{rc}" for name, rc in res) or "no-op"
-                logger.info("[qc] %s: %s", bam.name, summary)
+                label = key.name if isinstance(key, Path) else key
+                logger.info("[qc] %s: %s", label, summary)
             except Exception as e:
                 logger.exception("QC failed: %s", e)
 
@@ -3287,6 +3548,82 @@ def demux_and_index_BAM(
     return renamed_bams
 
 
+def build_classified_read_set(
+    barcode_sidecar: Union[str, Path, None] = None,
+    bam_path: Union[str, Path, None] = None,
+) -> Tuple[set, Dict[str, str]]:
+    """Return (set of classified read names, dict of read_name -> barcode).
+
+    Loads from barcode sidecar parquet if available,
+    otherwise scans BAM BC tags.
+    Excludes reads with BC == 'unclassified' or missing BC.
+
+    Parameters
+    ----------
+    barcode_sidecar : Path | None
+        Path to barcode sidecar parquet file.
+    bam_path : Path | None
+        Path to BAM file to scan for BC tags (used when no sidecar).
+
+    Returns
+    -------
+    tuple[set[str], dict[str, str]]
+        Set of classified read names and mapping of read_name to barcode string.
+    """
+    import pandas as pd
+
+    read_to_barcode: Dict[str, str] = {}
+
+    if barcode_sidecar is not None and Path(barcode_sidecar).exists():
+        df = pd.read_parquet(barcode_sidecar)
+        if "read_name" in df.columns and "BC" in df.columns:
+            for _, row in df.iterrows():
+                bc = str(row["BC"])
+                if bc and bc.lower() != "unclassified" and bc.lower() != "nan":
+                    read_to_barcode[str(row["read_name"])] = bc
+    elif bam_path is not None:
+        backend = _resolve_samtools_backend("auto")
+        if backend == "python":
+            pysam = _require_pysam()
+            with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+                for read in bam.fetch(until_eof=True):
+                    if read.is_unmapped:
+                        continue
+                    if read.is_secondary or read.is_supplementary:
+                        continue
+                    try:
+                        bc = read.get_tag("BC")
+                    except KeyError:
+                        continue
+                    if bc and str(bc).lower() != "unclassified":
+                        read_to_barcode[read.query_name] = str(bc)
+        else:
+            import subprocess
+
+            # -F 2308 filters unmapped(4) + secondary(256) + supplementary(2048)
+            cmd = ["samtools", "view", "-F", "2308", str(bam_path)]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                if not line.strip() or line.startswith("@"):
+                    continue
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) < 11:
+                    continue
+                read_name = fields[0]
+                # Parse optional tags for BC
+                for tag_field in fields[11:]:
+                    if tag_field.startswith("BC:Z:"):
+                        bc = tag_field[5:]
+                        if bc and bc.lower() != "unclassified":
+                            read_to_barcode[read_name] = bc
+                        break
+            proc.wait()
+
+    classified_reads = set(read_to_barcode.keys())
+    return classified_reads, read_to_barcode
+
+
 def extract_base_identities(
     bam_file,
     record,
@@ -3294,6 +3631,8 @@ def extract_base_identities(
     max_reference_length,
     sequence,
     samtools_backend: str | None = "auto",
+    primary_only: bool = False,
+    read_name_filter: set | None = None,
 ):
     """
     Efficiently extracts base identities from mapped reads with reference coordinates.
@@ -3304,6 +3643,8 @@ def extract_base_identities(
         positions (list): Positions to extract (0-based).
         max_reference_length (int): Maximum reference length for padding.
         sequence (str): The sequence of the record fasta
+        primary_only (bool): If True, skip secondary and supplementary alignments.
+        read_name_filter (set | None): If provided, only process reads whose names are in this set.
 
     Returns:
         dict: Base identities from forward mapped reads.
@@ -3349,8 +3690,11 @@ def extract_base_identities(
             for read in bam.fetch(record):
                 if not read.is_mapped:
                     continue  # Skip unmapped reads
-
+                if primary_only and (read.is_secondary or read.is_supplementary):
+                    continue
                 read_name = read.query_name
+                if read_name_filter is not None and read_name not in read_name_filter:
+                    continue
                 query_sequence = read.query_sequence
                 query_qualities = read.query_qualities or []
                 base_dict = rev_base_identities if read.is_reverse else fwd_base_identities
@@ -3414,7 +3758,9 @@ def extract_base_identities(
                     span += int(length_str)
             return span
 
-        cmd = ["samtools", "view", "-F", "4", str(bam_path), record]
+        # -F 2308 filters unmapped(4) + secondary(256) + supplementary(2048)
+        exclude_flag = "2308" if primary_only else "4"
+        cmd = ["samtools", "view", "-F", exclude_flag, str(bam_path), record]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -3424,6 +3770,8 @@ def extract_base_identities(
             if len(fields) < 11:
                 continue
             read_name = fields[0]
+            if read_name_filter is not None and read_name not in read_name_filter:
+                continue
             flag = int(fields[1])
             pos = int(fields[3])
             cigar = fields[5]
@@ -3492,13 +3840,16 @@ def extract_base_identities(
 
 
 def extract_read_features_from_bam(
-    bam_file_path: str | Path, samtools_backend: str | None = "auto"
+    bam_file_path: str | Path,
+    samtools_backend: str | None = "auto",
+    primary_only: bool = False,
 ) -> Dict[str, List[float]]:
     """Extract read metrics from a BAM file.
 
     Args:
         bam_file_path: Path to the BAM file.
         samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+        primary_only: If True, skip secondary and supplementary alignments.
 
     Returns:
         Mapping of read name to [read_length, read_median_qscore, reference_length,
@@ -3517,6 +3868,8 @@ def extract_read_features_from_bam(
             reference_lengths = dict(zip(bam_file.references, bam_file.lengths))
             for read in bam_file:
                 if read.is_unmapped:
+                    continue
+                if primary_only and (read.is_secondary or read.is_supplementary):
                     continue
                 read_quality = read.query_qualities
                 if read_quality is None:
@@ -3587,8 +3940,10 @@ def extract_read_features_from_bam(
         )
     reference_lengths = _parse_reference_lengths(header_cp.stdout)
 
+    # -F 2308 filters unmapped(4) + secondary(256) + supplementary(2048)
+    exclude_flag = "2308" if primary_only else "4"
     proc = subprocess.Popen(
-        ["samtools", "view", "-F", "4", str(bam_path)],
+        ["samtools", "view", "-F", exclude_flag, str(bam_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -3646,6 +4001,7 @@ def extract_read_tags_from_bam(
     include_flags: bool = True,
     include_cigar: bool = True,
     samtools_backend: str | None = "auto",
+    primary_only: bool = False,
 ) -> Dict[str, Dict[str, object]]:
     """Extract per-read tag metadata from a BAM file.
 
@@ -3656,6 +4012,7 @@ def extract_read_tags_from_bam(
         include_flags: Whether to include a list of flag names for each read.
         include_cigar: Whether to include the CIGAR string for each read.
         samtools_backend: Backend selection for samtools-compatible operations (auto|python|cli).
+        primary_only: If True, skip secondary and supplementary alignments.
 
     Returns:
         Mapping of read name to a dict of extracted tag values.
@@ -3673,6 +4030,8 @@ def extract_read_tags_from_bam(
             for read in bam_file.fetch(until_eof=True):
                 if not read.query_name:
                     continue
+                if primary_only and (read.is_secondary or read.is_supplementary):
+                    continue
                 tag_map: Dict[str, object] = {}
                 if include_cigar:
                     tag_map["CIGAR"] = read.cigarstring
@@ -3685,7 +4044,9 @@ def extract_read_tags_from_bam(
                         tag_map[tag] = None
                 read_tags[read.query_name] = tag_map
     else:
-        cmd = ["samtools", "view", "-F", "4", str(bam_file_path)]
+        # -F 2308 filters unmapped(4) + secondary(256) + supplementary(2048)
+        exclude_flag = "2308" if primary_only else "4"
+        cmd = ["samtools", "view", "-F", exclude_flag, str(bam_file_path)]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         assert proc.stdout is not None
         for line in proc.stdout:

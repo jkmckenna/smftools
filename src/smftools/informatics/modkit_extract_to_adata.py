@@ -215,7 +215,60 @@ def process_tsv(tsv, records_to_analyze, reference_dict, sample_index):
     return filtered_records
 
 
-def parallel_load_tsvs(tsv_batch, records_to_analyze, reference_dict, batch, batch_size, threads=4):
+def _split_read_set(read_names: set[str], n_chunks: int) -> list[set[str]]:
+    """Split read names into roughly equal subsets."""
+    read_list = sorted(read_names)
+    n_chunks = min(n_chunks, len(read_list)) or 1
+    chunk_size, remainder = divmod(len(read_list), n_chunks)
+    chunks: list[set[str]] = []
+    start = 0
+    for i in range(n_chunks):
+        end = start + chunk_size + (1 if i < remainder else 0)
+        chunks.append(set(read_list[start:end]))
+        start = end
+    return chunks
+
+
+def process_tsv_with_read_filter(
+    tsv,
+    records_to_analyze,
+    reference_dict,
+    sample_index,
+    read_name_filter: set[str] | None = None,
+):
+    """Load and filter a modkit TSV file, optionally restricting to a read-name subset."""
+    temp_df = pd.read_csv(tsv, sep="\t", header=0)
+    if read_name_filter is not None:
+        temp_df = temp_df[temp_df[MODKIT_EXTRACT_TSV_COLUMN_READ_ID].isin(read_name_filter)]
+    filtered_records = {}
+
+    for record in records_to_analyze:
+        if record not in reference_dict:
+            continue
+
+        ref_length = reference_dict[record][0]
+        filtered_df = temp_df[
+            (temp_df[MODKIT_EXTRACT_TSV_COLUMN_CHROM] == record)
+            & (temp_df[MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION] >= 0)
+            & (temp_df[MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION] < ref_length)
+        ]
+
+        if not filtered_df.empty:
+            filtered_records[record] = {sample_index: filtered_df}
+
+    return filtered_records
+
+
+def parallel_load_tsvs(
+    tsv_batch,
+    records_to_analyze,
+    reference_dict,
+    batch,
+    batch_size,
+    threads=4,
+    sample_indices: list[int] | None = None,
+    read_name_filters: dict[int, set[str]] | None = None,
+):
     """Load and filter a batch of TSVs in parallel.
 
     Args:
@@ -236,12 +289,20 @@ def parallel_load_tsvs(tsv_batch, records_to_analyze, reference_dict, batch, bat
     """
     dict_total = {record: {} for record in records_to_analyze}
 
+    if sample_indices is None:
+        sample_indices = list(range(len(tsv_batch)))
+
     with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
         futures = {
             executor.submit(
-                process_tsv, tsv, records_to_analyze, reference_dict, sample_index
+                process_tsv_with_read_filter,
+                tsv,
+                records_to_analyze,
+                reference_dict,
+                sample_index,
+                read_name_filters.get(sample_index) if read_name_filters else None,
             ): sample_index
-            for sample_index, tsv in enumerate(tsv_batch)
+            for sample_index, tsv in zip(sample_indices, tsv_batch)
         }
 
         for future in tqdm(
@@ -1134,12 +1195,14 @@ def modkit_extract_to_adata(
     double_barcoded_path=None,
     samtools_backend: str | None = "auto",
     demux_backend: str | None = None,
+    single_bam=None,
+    barcode_sidecar=None,
 ):
     """Convert modkit extract TSVs and BAMs into an AnnData object.
 
     Args:
         fasta (Path): Reference FASTA path.
-        bam_dir (Path): Directory with aligned BAM files.
+        bam_dir (Path): Directory with aligned BAM files (ignored when single_bam is set).
         out_dir (Path): Output directory for intermediate and final H5ADs.
         input_already_demuxed (bool): Whether reads were already demultiplexed.
         mapping_threshold (float): Minimum fraction of mapped reads to keep a record.
@@ -1153,6 +1216,8 @@ def modkit_extract_to_adata(
         samtools_backend (str | None): Samtools backend selection.
         demux_backend (str | None): Demux backend used ("smftools" or "dorado"). If "smftools",
             demux_type annotation is skipped here and derived from BM tag later.
+        single_bam: When set, use this single BAM instead of bam_dir (non-split mode).
+        barcode_sidecar: Path to barcode sidecar parquet for read-to-barcode lookup in non-split mode.
 
     Returns:
         tuple[ad.AnnData | None, Path]: The final AnnData (if created) and its H5AD path.
@@ -1197,14 +1262,60 @@ def modkit_extract_to_adata(
         logger.debug(f"{final_adata_path} already exists. Using existing adata")
         return final_adata, final_adata_path
 
-    tsvs, bams = _collect_input_paths(mod_tsv_dir, bam_dir)
-    tsv_path_list = list(tsvs)
-    bam_path_list = list(bams)
-    logger.info(f"{len(tsvs)} sample tsv files found: {tsvs}")
-    logger.info(f"{len(bams)} sample bams found: {bams}")
+    nonsplit_mode = single_bam is not None
+    read_to_barcode: dict[str, str] | None = None
+    nonsplit_chunk_count = 1
+    use_global_sample_indices = False
+    read_name_filters: dict[int, set[str]] | None = None
 
-    # Map global sample index (bami / final_sample_index) -> sample name / barcode
-    sample_name_map, barcode_map = _build_sample_maps(bam_path_list)
+    if nonsplit_mode:
+        from .bam_functions import build_classified_read_set
+
+        _classified, read_to_barcode = build_classified_read_set(
+            barcode_sidecar=barcode_sidecar,
+            bam_path=single_bam,
+        )
+        # In non-split mode, TSVs come from running extract_mods on the single BAM
+        base_tsvs = sorted(
+            p
+            for p in mod_tsv_dir.iterdir()
+            if p.is_file() and "extract.tsv" in p.name
+        )
+        if not base_tsvs:
+            raise ValueError(
+                "Non-split mode expects at least one modkit extract TSV in mod_tsv_dir."
+            )
+        read_names = set(read_to_barcode.keys()) if read_to_barcode is not None else set()
+        if read_names:
+            target_chunks = int(threads) if threads else 1
+            target_chunks = max(1, target_chunks)
+            read_chunks = _split_read_set(read_names, target_chunks)
+        else:
+            read_chunks = [set()]
+        nonsplit_chunk_count = len(read_chunks)
+        # Reuse the same TSV path for each read chunk; each pseudo-sample applies a read filter.
+        tsvs = [base_tsvs[0]] * nonsplit_chunk_count
+        read_name_filters = {idx: chunk for idx, chunk in enumerate(read_chunks)}
+        use_global_sample_indices = True
+        bam_path_list = [Path(single_bam)]
+        tsv_path_list = list(tsvs)
+        # Build sample/barcode maps from unique barcodes in sidecar
+        unique_barcodes = sorted(set(read_to_barcode.values()))
+        sample_name_map = {idx: Path(single_bam).stem for idx in range(nonsplit_chunk_count)}
+        barcode_map = {idx: "all" for idx in range(nonsplit_chunk_count)}
+        logger.info(
+            f"Non-split mode: {len(tsvs)} chunked TSV tasks from {base_tsvs[0].name}, "
+            f"single BAM {single_bam}, {len(_classified)} classified reads across "
+            f"{len(unique_barcodes)} barcodes in {nonsplit_chunk_count} read chunks"
+        )
+    else:
+        tsvs, bams = _collect_input_paths(mod_tsv_dir, bam_dir)
+        tsv_path_list = list(tsvs)
+        bam_path_list = list(bams)
+        # Map global sample index (bami / final_sample_index) -> sample name / barcode
+        sample_name_map, barcode_map = _build_sample_maps(bam_path_list)
+    logger.info(f"{len(tsv_path_list)} sample tsv files found: {tsv_path_list}")
+    logger.info(f"{len(bam_path_list)} sample bams found: {bam_path_list}")
     ##########################################################################################
 
     ######### Get Record names that have over a passed threshold of mapped reads #############
@@ -1273,7 +1384,9 @@ def modkit_extract_to_adata(
                     base_quality_scores,
                     read_span_masks,
                 ) = extract_base_identities(
-                    bam, record, positions, max_reference_length, ref_seq, samtools_backend
+                    bam, record, positions, max_reference_length, ref_seq, samtools_backend,
+                    primary_only=nonsplit_mode,
+                    read_name_filter=set(read_to_barcode.keys()) if read_to_barcode else None,
                 )
                 mismatch_fwd = {
                     read_name: mismatch_base_identities[read_name]
@@ -1377,6 +1490,21 @@ def modkit_extract_to_adata(
                 "read_span_batch_files": read_span_batch_files,
             },
         ).write_h5ad(sequence_cache_path)
+
+    # In non-split chunked mode, pseudo-sample indices share the same single-BAM sequence caches.
+    if nonsplit_mode and nonsplit_chunk_count > 1:
+        for chunk_idx in range(1, nonsplit_chunk_count):
+            for record in records_to_analyze:
+                src_key = f"0_{record}"
+                dst_key = f"{chunk_idx}_{record}"
+                if src_key in sequence_batch_files:
+                    sequence_batch_files[dst_key] = sequence_batch_files[src_key]
+                if src_key in mismatch_batch_files:
+                    mismatch_batch_files[dst_key] = mismatch_batch_files[src_key]
+                if src_key in quality_batch_files:
+                    quality_batch_files[dst_key] = quality_batch_files[src_key]
+                if src_key in read_span_batch_files:
+                    read_span_batch_files[dst_key] = read_span_batch_files[src_key]
     ##########################################################################################
 
     ##########################################################################################
@@ -1400,12 +1528,20 @@ def modkit_extract_to_adata(
         if batch == batches - 1:
             tsv_batch = tsv_path_list
             bam_batch = bam_path_list
+            if use_global_sample_indices:
+                sample_indices_batch = list(range(batch * batch_size, batch * batch_size + len(tsv_batch)))
+            else:
+                sample_indices_batch = None
         # For all other batches, take the next batch of tsvs and bams out of the file queue.
         else:
             tsv_batch = tsv_path_list[:batch_size]
             bam_batch = bam_path_list[:batch_size]
             tsv_path_list = tsv_path_list[batch_size:]
             bam_path_list = bam_path_list[batch_size:]
+            if use_global_sample_indices:
+                sample_indices_batch = list(range(batch * batch_size, batch * batch_size + len(tsv_batch)))
+            else:
+                sample_indices_batch = None
         logger.info("tsvs in batch {0} ".format(tsv_batch))
 
         batch_already_processed = sum([1 for h5 in existing_h5s if f"_{batch}_" in h5.name])
@@ -1430,6 +1566,8 @@ def modkit_extract_to_adata(
                 batch,
                 batch_size=len(tsv_batch),
                 threads=threads,
+                sample_indices=sample_indices_batch,
+                read_name_filters=read_name_filters,
             )
 
             batch_dicts, dict_to_skip = _build_modification_dicts(dict_total, mods)
@@ -1578,7 +1716,10 @@ def modkit_extract_to_adata(
                                 )
                             )
                             sample = int(sample)
-                            final_sample_index = sample + (batch * batch_size)
+                            if use_global_sample_indices:
+                                final_sample_index = sample
+                            else:
+                                final_sample_index = sample + (batch * batch_size)
                             logger.info(
                                 "Final sample index for sample: {}".format(final_sample_index)
                             )
@@ -1626,9 +1767,15 @@ def modkit_extract_to_adata(
                                 temp_adata.obs[SAMPLE] = [
                                     sample_name_map[final_sample_index]
                                 ] * len(temp_adata)
-                                temp_adata.obs[BARCODE] = [barcode_map[final_sample_index]] * len(
-                                    temp_adata
-                                )
+                                if read_to_barcode is not None:
+                                    temp_adata.obs[BARCODE] = [
+                                        read_to_barcode.get(rn, "unknown")
+                                        for rn in temp_adata.obs_names
+                                    ]
+                                else:
+                                    temp_adata.obs[BARCODE] = [
+                                        barcode_map[final_sample_index]
+                                    ] * len(temp_adata)
                                 temp_adata.obs[REFERENCE] = [f"{record}"] * len(temp_adata)
                                 temp_adata.obs[STRAND] = [strand] * len(temp_adata)
                                 temp_adata.obs[DATASET] = [dataset] * len(temp_adata)

@@ -42,7 +42,7 @@ from smftools.logging_utils import get_logger, setup_logging
 from smftools.optional_imports import require
 
 from ..readwrite import make_dirs
-from .bam_functions import count_aligned_reads, extract_base_identities
+from .bam_functions import build_classified_read_set, count_aligned_reads, extract_base_identities
 from .binarize_converted_base_identities import binarize_converted_base_identities
 from .fasta_functions import find_conversion_sites, get_native_references
 
@@ -123,6 +123,37 @@ def _barcode_label_from_sample_name(sample_name: str) -> str:
     return sample_name
 
 
+def _split_read_set(
+    read_names: set[str],
+    n_chunks: int,
+    read_to_barcode: dict[str, str] | None = None,
+) -> list[tuple[set[str], dict[str, str] | None]]:
+    """Split read names into *n_chunks* roughly equal subsets.
+
+    Args:
+        read_names: Full set of read names to partition.
+        n_chunks: Number of chunks to create.
+        read_to_barcode: Optional read-to-barcode mapping to subset in parallel.
+
+    Returns:
+        List of ``(read_name_subset, read_to_barcode_subset)`` tuples.
+    """
+    read_list = sorted(read_names)  # deterministic ordering
+    n_chunks = min(n_chunks, len(read_list)) or 1
+    chunk_size, remainder = divmod(len(read_list), n_chunks)
+    chunks: list[tuple[set[str], dict[str, str] | None]] = []
+    start = 0
+    for i in range(n_chunks):
+        end = start + chunk_size + (1 if i < remainder else 0)
+        subset = set(read_list[start:end])
+        barcode_subset: dict[str, str] | None = None
+        if read_to_barcode is not None:
+            barcode_subset = {rn: read_to_barcode[rn] for rn in subset if rn in read_to_barcode}
+        chunks.append((subset, barcode_subset))
+        start = end
+    return chunks
+
+
 def converted_BAM_to_adata(
     converted_FASTA: str | Path,
     split_dir: Path,
@@ -139,12 +170,14 @@ def converted_BAM_to_adata(
     double_barcoded_path: Path | None = None,
     samtools_backend: str | None = "auto",
     demux_backend: str | None = None,
+    single_bam: Path | None = None,
+    barcode_sidecar: Path | None = None,
 ) -> tuple[ad.AnnData | None, Path]:
     """Convert converted BAM files into an AnnData object with integer sequence encoding.
 
     Args:
         converted_FASTA: Path to the converted FASTA reference.
-        split_dir: Directory containing converted BAM files.
+        split_dir: Directory containing converted BAM files (ignored when single_bam is set).
         output_dir: Output directory for intermediate and final files.
         input_already_demuxed: Whether input reads were originally demultiplexed.
         mapping_threshold: Minimum fraction of aligned reads required for inclusion.
@@ -159,6 +192,8 @@ def converted_BAM_to_adata(
         samtools_backend: Samtools backend choice for alignment parsing.
         demux_backend: Demux backend used ("smftools" or "dorado"). If "smftools",
             demux_type annotation is skipped here and derived from BM tag later.
+        single_bam: When set, load from this single BAM instead of split_dir (non-split mode).
+        barcode_sidecar: Path to barcode sidecar parquet for read-to-barcode lookup in non-split mode.
 
     Returns:
         tuple[anndata.AnnData | None, Path]: The AnnData object (if generated) and its path.
@@ -192,16 +227,37 @@ def converted_BAM_to_adata(
 
     make_dirs([h5_dir, tmp_dir])
 
-    bam_files = sorted(
-        p
-        for p in split_dir.iterdir()
-        if p.is_file() and p.suffix == BAM_SUFFIX and "unclassified" not in p.name
-    )
+    # Non-split mode: use a single BAM and filter to classified primary reads
+    nonsplit_mode = single_bam is not None
+    classified_reads: set | None = None
+    read_to_barcode: dict[str, str] | None = None
+
+    if nonsplit_mode:
+        bam_files = [Path(single_bam)]
+        classified_reads, read_to_barcode = build_classified_read_set(
+            barcode_sidecar=barcode_sidecar,
+            bam_path=single_bam,
+        )
+        if not classified_reads:
+            raise ValueError(
+                "skip_bam_split=True requires classified reads (BC tag != 'unclassified'). "
+                "No classified reads were found in barcode sidecar/BAM."
+            )
+        logger.info(
+            f"Non-split mode: using single BAM {single_bam} "
+            f"with {len(classified_reads)} classified reads"
+        )
+    else:
+        bam_files = sorted(
+            p
+            for p in split_dir.iterdir()
+            if p.is_file() and p.suffix == BAM_SUFFIX and "unclassified" not in p.name
+        )
 
     bam_path_list = bam_files
 
     bam_names = [bam.name for bam in bam_files]
-    logger.info(f"Found {len(bam_files)} BAM files within {split_dir}: {bam_names}")
+    logger.info(f"Found {len(bam_files)} BAM files: {bam_names}")
 
     ## Process Conversion Sites
     max_reference_length, record_FASTA_dict, chromosome_FASTA_dict = process_conversion_sites(
@@ -237,7 +293,15 @@ def converted_BAM_to_adata(
         deaminase_footprinting,
         samtools_backend,
         converted_FASTA_record_seq_map,
+        primary_only=nonsplit_mode,
+        read_name_filter=classified_reads,
+        read_to_barcode=read_to_barcode,
     )
+    if final_adata is None:
+        raise RuntimeError(
+            "No AnnData content was generated from BAM processing. "
+            "Verify mapping threshold and barcode/classification inputs."
+        )
 
     final_adata.uns[f"{SEQUENCE_INTEGER_ENCODING}_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
     final_adata.uns[f"{MISMATCH_INTEGER_ENCODING}_map"] = dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT)
@@ -594,6 +658,9 @@ def process_single_bam(
     deaminase_footprinting: bool,
     samtools_backend: str | None,
     converted_FASTA_record_seq_map: dict[str, tuple[int, str]],
+    primary_only: bool = False,
+    read_name_filter: set | None = None,
+    read_to_barcode: dict[str, str] | None = None,
 ) -> ad.AnnData | None:
     """Process a single BAM file into per-record AnnData objects.
 
@@ -609,6 +676,9 @@ def process_single_bam(
         deaminase_footprinting: Whether direct deamination chemistry was used.
         samtools_backend: Samtools backend choice for alignment parsing.
         converted_FASTA_record_seq_map: record to seq map
+        primary_only: If True, skip secondary/supplementary alignments.
+        read_name_filter: If provided, only process reads in this set.
+        read_to_barcode: If provided, maps read names to barcode labels (non-split mode).
 
     Returns:
         anndata.AnnData | None: Concatenated AnnData object or None if no data.
@@ -649,6 +719,8 @@ def process_single_bam(
             max_reference_length,
             record_sequence,
             samtools_backend,
+            primary_only=primary_only,
+            read_name_filter=read_name_filter,
         )
         mismatch_trend_series = pd.Series(mismatch_trend_per_read)
 
@@ -777,8 +849,13 @@ def process_single_bam(
         adata.obs_names = bin_df.index.astype(str)
         adata.var_names = bin_df.columns.astype(str)
         adata.obs[SAMPLE] = [sample] * len(adata)
-        barcode_label = _barcode_label_from_sample_name(sample)
-        adata.obs[BARCODE] = [barcode_label] * len(adata)
+        if read_to_barcode is not None:
+            adata.obs[BARCODE] = [
+                read_to_barcode.get(rn, "unknown") for rn in adata.obs_names
+            ]
+        else:
+            barcode_label = _barcode_label_from_sample_name(sample)
+            adata.obs[BARCODE] = [barcode_label] * len(adata)
         adata.obs[REFERENCE] = [chromosome] * len(adata)
         adata.obs[STRAND] = [strand] * len(adata)
         adata.obs[DATASET] = [mod_type] * len(adata)
@@ -858,6 +935,10 @@ def worker_function(
     progress_queue,
     log_level: int,
     log_file: Path | None,
+    primary_only: bool = False,
+    read_name_filter: set | None = None,
+    read_to_barcode: dict[str, str] | None = None,
+    chunk_label: str | None = None,
 ):
     """Process a single BAM and write the output to an H5AD file.
 
@@ -877,6 +958,11 @@ def worker_function(
         progress_queue: Queue used to signal completion.
         log_level: Logging level to configure in workers.
         log_file: Optional log file path.
+        primary_only: If True, skip secondary/supplementary alignments.
+        read_name_filter: If provided, only process reads in this set.
+        read_to_barcode: If provided, maps read names to barcode labels (non-split mode).
+        chunk_label: If provided, used in the output H5AD filename and progress messages
+            to distinguish chunked workers operating on the same BAM.
 
     Processing Steps:
         1. Skip processing if an output H5AD already exists.
@@ -887,14 +973,18 @@ def worker_function(
     _ensure_worker_logging(log_level, log_file)
     worker_id = current_process().pid  # Get worker process ID
     sample = bam.stem
+    display_name = f"{sample}_{chunk_label}" if chunk_label else sample
 
     try:
-        logger.info(f"[Worker {worker_id}] Processing BAM: {sample}")
+        logger.info(f"[Worker {worker_id}] Processing BAM: {display_name}")
 
-        h5ad_path = h5_dir / bam.with_suffix(".h5ad").name
+        if chunk_label:
+            h5ad_path = h5_dir / f"{sample}_{chunk_label}.h5ad"
+        else:
+            h5ad_path = h5_dir / bam.with_suffix(".h5ad").name
         if h5ad_path.exists():
-            logger.debug(f"[Worker {worker_id}] Skipping {sample}: Already processed.")
-            progress_queue.put(sample)
+            logger.debug(f"[Worker {worker_id}] Skipping {display_name}: Already processed.")
+            progress_queue.put(display_name)
             return
 
         # Filter records specific to this BAM
@@ -904,9 +994,9 @@ def worker_function(
 
         if not bam_records_to_analyze:
             logger.debug(
-                f"[Worker {worker_id}] No valid records to analyze for {sample}. Skipping."
+                f"[Worker {worker_id}] No valid records to analyze for {display_name}. Skipping."
             )
-            progress_queue.put(sample)
+            progress_queue.put(display_name)
             return
 
         # Process BAM
@@ -922,23 +1012,26 @@ def worker_function(
             deaminase_footprinting,
             samtools_backend,
             converted_FASTA_record_seq_map,
+            primary_only=primary_only,
+            read_name_filter=read_name_filter,
+            read_to_barcode=read_to_barcode,
         )
 
         if adata is not None:
             adata.write_h5ad(str(h5ad_path))
-            logger.info(f"[Worker {worker_id}] Completed processing for BAM: {sample}")
+            logger.info(f"[Worker {worker_id}] Completed processing for BAM: {display_name}")
 
             # Free memory
             del adata
             gc.collect()
 
-        progress_queue.put(sample)
+        progress_queue.put(display_name)
 
     except Exception:
         logger.warning(
-            f"[Worker {worker_id}] ERROR while processing {sample}:\n{traceback.format_exc()}"
+            f"[Worker {worker_id}] ERROR while processing {display_name}:\n{traceback.format_exc()}"
         )
-        progress_queue.put(sample)  # Still signal completion to prevent deadlock
+        progress_queue.put(display_name)  # Still signal completion to prevent deadlock
 
 
 def process_bams_parallel(
@@ -954,6 +1047,9 @@ def process_bams_parallel(
     deaminase_footprinting: bool,
     samtools_backend: str | None,
     converted_FASTA_record_seq_map: dict[str, tuple[int, str]],
+    primary_only: bool = False,
+    read_name_filter: set | None = None,
+    read_to_barcode: dict[str, str] | None = None,
 ) -> ad.AnnData | None:
     """Process BAM files in parallel and concatenate the resulting AnnData.
 
@@ -970,6 +1066,9 @@ def process_bams_parallel(
         deaminase_footprinting: Whether direct deamination chemistry was used.
         samtools_backend: Samtools backend choice for alignment parsing.
         converted_FASTA_record_seq_map: map from converted record name to the converted reference length and sequence.
+        primary_only: If True, skip secondary/supplementary alignments.
+        read_name_filter: If provided, only process reads in this set.
+        read_to_barcode: If provided, maps read names to barcode labels (non-split mode).
 
     Returns:
         anndata.AnnData | None: Concatenated AnnData or None if no H5ADs produced.
@@ -984,51 +1083,114 @@ def process_bams_parallel(
     logger.info(f"Starting parallel BAM processing with {num_threads} threads...")
     log_level, log_file = _get_logger_config()
 
+    # Chunked mode: when a read_name_filter is provided (non-split mode) and there
+    # is a single BAM, split the classified reads into num_threads chunks so that
+    # each worker processes a subset of reads from the same BAM in parallel.
+    chunked_mode = read_name_filter is not None and len(bam_path_list) == 1
+
     with Manager() as manager:
         progress_queue = manager.Queue()
         shared_record_FASTA_dict = manager.dict(record_FASTA_dict)
 
-        with Pool(processes=num_threads) as pool:
-            results = [
-                pool.apply_async(
-                    worker_function,
-                    (
-                        i,
-                        bam,
-                        records_to_analyze,
-                        shared_record_FASTA_dict,
-                        chromosome_FASTA_dict,
-                        tmp_dir,
-                        h5_dir,
-                        max_reference_length,
-                        device,
-                        deaminase_footprinting,
-                        samtools_backend,
-                        converted_FASTA_record_seq_map,
-                        progress_queue,
-                        log_level,
-                        log_file,
-                    ),
-                )
-                for i, bam in enumerate(bam_path_list)
-            ]
+        if chunked_mode:
+            chunks = _split_read_set(read_name_filter, num_threads, read_to_barcode)
+            bam = bam_path_list[0]
+            n_jobs = len(chunks)
+            logger.info(
+                f"Non-split chunked mode: splitting {len(read_name_filter)} reads "
+                f"into {n_jobs} chunks for {bam.name}"
+            )
 
-            logger.info(f"Submitting {len(results)} BAMs for processing.")
+            with Pool(processes=num_threads) as pool:
+                results = [
+                    pool.apply_async(
+                        worker_function,
+                        (
+                            chunk_idx,
+                            bam,
+                            records_to_analyze,
+                            shared_record_FASTA_dict,
+                            chromosome_FASTA_dict,
+                            tmp_dir,
+                            h5_dir,
+                            max_reference_length,
+                            device,
+                            deaminase_footprinting,
+                            samtools_backend,
+                            converted_FASTA_record_seq_map,
+                            progress_queue,
+                            log_level,
+                            log_file,
+                            primary_only,
+                            chunk_reads,
+                            chunk_barcodes,
+                        ),
+                        {"chunk_label": f"chunk_{chunk_idx}"},
+                    )
+                    for chunk_idx, (chunk_reads, chunk_barcodes) in enumerate(chunks)
+                ]
 
-            # Track completed BAMs
-            completed_bams = set()
-            while len(completed_bams) < len(bam_path_list):
-                try:
-                    processed_bam = progress_queue.get(timeout=2400)  # Wait for a finished BAM
-                    completed_bams.add(processed_bam)
-                except Exception as e:
-                    logger.error(f"Timeout waiting for worker process. Possible crash? {e}")
-                    _log_async_result_errors(results, bam_path_list)
+                logger.info(f"Submitting {n_jobs} chunks for processing.")
 
-            pool.close()
-            pool.join()  # Ensure all workers finish
+                completed = set()
+                while len(completed) < n_jobs:
+                    try:
+                        done = progress_queue.get(timeout=2400)
+                        completed.add(done)
+                    except Exception as e:
+                        logger.error(f"Timeout waiting for worker process. Possible crash? {e}")
+                        _log_async_result_errors(results, [bam] * n_jobs)
 
-    _log_async_result_errors(results, bam_path_list)
+                pool.close()
+                pool.join()
+
+            _log_async_result_errors(results, [bam] * n_jobs)
+
+        else:
+            with Pool(processes=num_threads) as pool:
+                results = [
+                    pool.apply_async(
+                        worker_function,
+                        (
+                            i,
+                            bam,
+                            records_to_analyze,
+                            shared_record_FASTA_dict,
+                            chromosome_FASTA_dict,
+                            tmp_dir,
+                            h5_dir,
+                            max_reference_length,
+                            device,
+                            deaminase_footprinting,
+                            samtools_backend,
+                            converted_FASTA_record_seq_map,
+                            progress_queue,
+                            log_level,
+                            log_file,
+                            primary_only,
+                            read_name_filter,
+                            read_to_barcode,
+                        ),
+                    )
+                    for i, bam in enumerate(bam_path_list)
+                ]
+
+                logger.info(f"Submitting {len(results)} BAMs for processing.")
+
+                # Track completed BAMs
+                completed_bams = set()
+                while len(completed_bams) < len(bam_path_list):
+                    try:
+                        processed_bam = progress_queue.get(timeout=2400)  # Wait for a finished BAM
+                        completed_bams.add(processed_bam)
+                    except Exception as e:
+                        logger.error(f"Timeout waiting for worker process. Possible crash? {e}")
+                        _log_async_result_errors(results, bam_path_list)
+
+                pool.close()
+                pool.join()  # Ensure all workers finish
+
+            _log_async_result_errors(results, bam_path_list)
 
     # Final Concatenation Step
     h5ad_files = [f for f in h5_dir.iterdir() if f.suffix == ".h5ad"]

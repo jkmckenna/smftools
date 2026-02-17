@@ -179,6 +179,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         annotate_demux_type_from_bi_tag,
         annotate_umi_tags_in_bam,
         bam_qc,
+        build_classified_read_set,
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
         extract_and_assign_barcodes_in_bam,
@@ -629,8 +630,17 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     ################################### 5) Demultiplexing ######################################################################
 
+    skip_bam_split = getattr(cfg, "skip_bam_split", False)
+
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
-    if cfg.input_already_demuxed or use_smftools_demux:
+    if skip_bam_split:
+        logger.info("skip_bam_split=True: skipping BAM splitting, using single aligned BAM")
+        se_bam_files = [aligned_sorted_output]
+        bam_files = [aligned_sorted_output]
+        unclassified_bams = []
+        bam_dir = None
+        double_barcoded_path = None
+    elif cfg.input_already_demuxed or use_smftools_demux:
         if cfg.split_path.is_dir():
             logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
 
@@ -800,7 +810,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
-    if cfg.make_beds:
+    if cfg.make_beds and not skip_bam_split:
         # Make beds and provide basic histograms
         bed_dir = cfg.split_path / "beds"
         if bed_dir.is_dir():
@@ -831,12 +841,26 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     else:
         make_dirs([bam_qc_dir])
         logger.info("Performing BAM QC")
+        _qc_barcodes = None
+        _qc_barcode_readname_map = None
+        if skip_bam_split and barcode_sidecar and Path(barcode_sidecar).exists():
+            _bc_df = pd.read_parquet(barcode_sidecar)
+            _qc_barcodes = sorted(_bc_df["BC"].dropna().unique().tolist())
+            _qc_barcodes = [b for b in _qc_barcodes if b != "unclassified"]
+            _bc_df = _bc_df[_bc_df["BC"].isin(_qc_barcodes)]
+            _qc_barcode_readname_map = {
+                str(bc): set(group["read_name"].astype(str).tolist())
+                for bc, group in _bc_df.groupby("BC", observed=True)
+            }
+            del _bc_df
         bam_qc(
             bam_files,
             bam_qc_dir,
             cfg.threads,
             modality=cfg.smf_modality,
             samtools_backend=cfg.samtools_backend,
+            barcodes=_qc_barcodes,
+            barcode_readname_map=_qc_barcode_readname_map,
         )
     ########################################################################################################################
 
@@ -853,7 +877,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         logger.info(f"Loading Anndata from BAM files for {cfg.smf_modality} footprinting")
         raw_adata, raw_adata_path = converted_BAM_to_adata(
             fasta,
-            bam_dir,
+            bam_dir if bam_dir is not None else cfg.split_path,
             load_directory,
             cfg.input_already_demuxed,
             cfg.mapping_threshold,
@@ -867,6 +891,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             double_barcoded_path=double_barcoded_path,
             samtools_backend=cfg.samtools_backend,
             demux_backend=getattr(cfg, "demux_backend", None),
+            single_bam=aligned_sorted_output if skip_bam_split else None,
+            barcode_sidecar=barcode_sidecar,
         )
     else:
         if mod_bed_dir.is_dir():
@@ -897,11 +923,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         extract_mods(
             cfg.thresholds,
             mod_tsv_dir,
-            bam_dir,
+            bam_dir if bam_dir is not None else cfg.split_path,
             cfg.bam_suffix,
             skip_unclassified=cfg.skip_unclassified,
             modkit_summary=False,
             threads=cfg.threads,
+            single_bam=aligned_sorted_output if skip_bam_split else None,
         )  # Extract methylations calls for split BAM files into split TSV files
 
         from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
@@ -911,7 +938,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         # 6 Load the modification data from TSVs into an adata object
         raw_adata, raw_adata_path = modkit_extract_to_adata(
             fasta,
-            bam_dir,
+            bam_dir if bam_dir is not None else cfg.split_path,
             load_directory,
             cfg.input_already_demuxed,
             cfg.mapping_threshold,
@@ -924,6 +951,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             double_barcoded_path,
             cfg.samtools_backend,
             demux_backend=getattr(cfg, "demux_backend", None),
+            single_bam=aligned_sorted_output if skip_bam_split else None,
+            barcode_sidecar=barcode_sidecar,
         )
         if cfg.delete_intermediate_tsvs:
             delete_tsvs(mod_tsv_dir)
@@ -946,10 +975,16 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ############################################### Add basic read length, read quality, mapping quality stats ###############################################
 
     logger.info("Adding read length, mapping quality, and modification signal to Anndata")
+    if skip_bam_split:
+        from functools import partial as _partial
+
+        _extract_features = _partial(extract_read_features_from_bam, primary_only=True)
+    else:
+        _extract_features = extract_read_features_from_bam
     add_read_length_and_mapping_qc(
         raw_adata,
         se_bam_files,
-        extract_read_features_from_bam_callable=extract_read_features_from_bam,
+        extract_read_features_from_bam_callable=_extract_features,
         bypass=cfg.bypass_add_read_length_and_mapping_qc,
         force_redo=cfg.force_redo_add_read_length_and_mapping_qc,
         samtools_backend=cfg.samtools_backend,
@@ -969,13 +1004,17 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
 
     logger.info("Adding BAM tags and BAM flags to adata.obs")
+    if skip_bam_split:
+        _extract_tags = _partial(extract_read_tags_from_bam, primary_only=True)
+    else:
+        _extract_tags = extract_read_tags_from_bam
     add_read_tag_annotations(
         raw_adata,
         se_bam_files,
         tag_names=bam_tag_names,
         include_flags=True,
         include_cigar=True,
-        extract_read_tags_from_bam_callable=extract_read_tags_from_bam,
+        extract_read_tags_from_bam_callable=_extract_tags,
         samtools_backend=cfg.samtools_backend,
     )
 
@@ -1071,18 +1110,24 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     if cfg.delete_intermediate_bams:
         logger.info("Deleting intermediate BAM files")
         # delete aligned and sorted bam
-        aligned_sorted_output.unlink()
+        if aligned_sorted_output.exists():
+            aligned_sorted_output.unlink()
         bai = aligned_sorted_output.parent / (aligned_sorted_output.name + ".bai")
-        bai.unlink()
+        if bai.exists():
+            bai.unlink()
         # delete the demultiplexed bams. Keep the demultiplexing summary files and directories to faciliate demultiplexing in the future with these files
         for bam in bam_files:
             bai = bam.parent / (bam.name + ".bai")
-            bam.unlink()
-            bai.unlink()
+            if bam.exists():
+                bam.unlink()
+            if bai.exists():
+                bai.unlink()
         for bam in unclassified_bams:
             bai = bam.parent / (bam.name + ".bai")
-            bam.unlink()
-            bai.unlink()
+            if bam.exists():
+                bam.unlink()
+            if bai.exists():
+                bai.unlink()
         logger.info("Finished deleting intermediate BAM files")
     ########################################################################################################################
 

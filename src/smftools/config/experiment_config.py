@@ -697,6 +697,7 @@ class ExperimentConfig:
     # Direct SMF specific params for initial AnnData loading
     batch_size: int = 4
     skip_unclassified: bool = True
+    skip_bam_split: bool = False
     delete_batch_hdfs: bool = True
 
     # Sequencing modality and general experiment params
@@ -1236,6 +1237,7 @@ class ExperimentConfig:
             "input_already_demuxed",
             "make_bigwigs",
             "skip_unclassified",
+            "skip_bam_split",
             "delete_batch_hdfs",
         ):
             if bkey in merged:
@@ -1508,6 +1510,7 @@ class ExperimentConfig:
             mod_map=merged.get("mod_map", list(MOD_MAP)),
             batch_size=merged.get("batch_size", 4),
             skip_unclassified=merged.get("skip_unclassified", True),
+            skip_bam_split=merged.get("skip_bam_split", False),
             delete_batch_hdfs=merged.get("delete_batch_hdfs", True),
             reference_column=merged.get("reference_column", REF_COL),
             sample_column=merged.get("sample_column", SAMPLE_COL),
