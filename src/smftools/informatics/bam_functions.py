@@ -1166,9 +1166,10 @@ def derive_umi_orientation_tags_from_aligned_bam(
     """Derive U1/U2/RX/FC from positional US/UE tags using aligned read direction.
 
     This enables a two-stage UMI workflow:
-    1) Extract positional UMI tags (US/UE) from an unaligned BAM.
-    2) After alignment, derive orientation-aware tags (U1/U2/RX/FC) from read
-       mapping direction in the aligned BAM.
+
+    1. Extract positional UMI tags (US/UE) from an unaligned BAM.
+    2. After alignment, derive orientation-aware tags (U1/U2/RX/FC) from
+       read mapping direction in the aligned BAM.
 
     Args:
         umi_sidecar_path: Path to parquet sidecar containing at least read_name
