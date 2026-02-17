@@ -57,18 +57,25 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - Lists are written in bracketed form, e.g. `[5mC]` or `[5mC_5hmC]`.
 - If you update the CSV, re-run the CLI command pointing at the updated file.
 
-## BAM tags
+## Read annotations
 
-smftools writes and/or propagates the following BAM tags when loading data. These are also loaded
-into `adata.obs` when `load_adata` reads BAM tags.
+smftools annotates reads during `load_adata` and stores the results in `adata.obs`. Standard BAM
+tags (e.g. `NM`, `MD`, `MM`, `ML`) are read directly from BAM files. UMI and barcode annotations
+are computed in parallel and written to Parquet sidecar files alongside the aligned BAM, then loaded
+into `adata.obs` from those sidecars. The aligned BAM itself is not modified.
 
-**UMI tags**
+**UMI annotations** (written to `.umi_tags.parquet`)
 
-- `U1`: UMI from the *top* flank (read start or read end depending on match).
-- `U2`: UMI from the *bottom* flank.
+- `U1`: Orientation-corrected UMI for the *left* reference end of the mapped fragment (forward reads: US, reverse reads: UE).
+- `U2`: Orientation-corrected UMI for the *right* reference end of the mapped fragment (forward reads: UE, reverse reads: US).
+- `US`: Positional UMI from read start (delimited `UMI_seq;slot;flank_seq`).
+- `UE`: Positional UMI from read end (delimited `UMI_seq;slot;flank_seq`).
 - `RX`: Combined UMI string (`U1-U2`, or `U1`/`U2` if only one is present).
+- `FC`: Flank context of the U1/U2 pair (e.g. `top-bottom`).
 
-**Barcode tags (smftools demux backend)**
+When `threads` is set, UMI extraction is parallelized across multiple CPU cores.
+
+**Barcode annotations (smftools demux backend)** (written to `.barcode_tags.parquet`)
 
 - `BC`: Assigned barcode name, or `unclassified`.
 - `BM`: Match type (`both`, `read_start_only`, `read_end_only`, `mismatch`, `unclassified`).
@@ -79,9 +86,13 @@ into `adata.obs` when `load_adata` reads BAM tags.
 - `B5`: Barcode name matched at the read start (corresponds to `B1`/`B3`).
 - `B6`: Barcode name matched at the read end (corresponds to `B2`/`B4`).
 
-**Barcode tags (dorado demux backend)**
+When `threads` is set, barcode extraction is parallelized across multiple CPU cores.
+Demultiplexing (splitting reads into per-barcode BAMs) uses the sidecar `BC` assignments.
+Only primary alignments are included in split BAMs and sidecar files.
 
-- `BC`: Assigned barcode name.
+**Barcode annotations (dorado demux backend)**
+
+- `BC`: Assigned barcode name (read from BAM tag).
 - `bi`: Dorado barcode info array (if present; expanded into columns during load).
 
 Notes:

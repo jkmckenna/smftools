@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable, Union
 
 import numpy as np
+import pandas as pd
 
 from smftools.constants import BARCODE_KIT_ALIASES, LOAD_DIR, LOGGING_DIR, UMI_KIT_ALIASES
 from smftools.logging_utils import get_logger, setup_logging
@@ -516,6 +517,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ########################################################################################################################
 
     ################################### 4.5) Optional UMI annotation #############################################
+    umi_sidecar = None
+    barcode_sidecar = None
     if getattr(cfg, "use_umi", False):
         logger.info("Annotating UMIs in aligned and sorted BAM before demultiplexing")
 
@@ -538,20 +541,20 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             umi_kit_config = load_umi_config_from_yaml(umi_yaml_path)
         resolved_umi = resolve_umi_config(umi_kit_config, cfg)
 
-        annotate_umi_tags_in_bam(
+        umi_sidecar = annotate_umi_tags_in_bam(
             aligned_sorted_output,
             use_umi=True,
-            umi_adapters=getattr(cfg, "umi_adapters", None),
+            umi_kit_config=umi_kit_config,
             umi_length=getattr(cfg, "umi_length", None),
             umi_search_window=getattr(cfg, "umi_search_window", 200),
-            umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "exact"),
+            umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "edlib"),
             umi_adapter_max_edits=resolved_umi["umi_adapter_max_edits"],
             samtools_backend=cfg.samtools_backend,
-            umi_kit_config=umi_kit_config,
             umi_ends=resolved_umi["umi_ends"],
             umi_flank_mode=resolved_umi["umi_flank_mode"],
             umi_amplicon_max_edits=resolved_umi["umi_amplicon_max_edits"],
             same_orientation=resolved_umi.get("same_orientation", False),
+            threads=cfg.threads,
         )
     ########################################################################################################################
 
@@ -603,7 +606,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         resolved_bc = resolve_barcode_config(barcode_kit_config, cfg)
 
         logger.info("Extracting and assigning barcodes to aligned BAM using smftools backend")
-        barcoded_bam = extract_and_assign_barcodes_in_bam(
+        barcode_sidecar = extract_and_assign_barcodes_in_bam(
             aligned_sorted_output,
             barcode_adapters=getattr(cfg, "barcode_adapters", [None, None]),
             barcode_references=barcode_references,
@@ -619,10 +622,9 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             barcode_kit_config=barcode_kit_config,
             barcode_ends=resolved_bc["barcode_ends"],
             barcode_amplicon_gap_tolerance=resolved_bc["barcode_amplicon_gap_tolerance"],
+            threads=cfg.threads,
         )
-        # Update aligned_sorted_output to point to the barcoded BAM
-        aligned_sorted_output = barcoded_bam
-        logger.info(f"smftools barcode extraction complete: {barcoded_bam}")
+        logger.info(f"smftools barcode extraction complete: {barcode_sidecar}")
     ########################################################################################################################
 
     ################################### 5) Demultiplexing ######################################################################
@@ -646,6 +648,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 cfg.split_path,
                 cfg.bam_suffix,
                 samtools_backend=cfg.samtools_backend,
+                barcode_sidecar=barcode_sidecar,
             )
 
             unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
@@ -716,7 +719,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             # Annotate BM tag from bi per-end scores on each demuxed BAM
             for bam in bam_files:
                 if "unclassified" not in bam.name:
-                    annotate_demux_type_from_bi_tag(bam, threshold=0.0)
+                    annotate_demux_type_from_bi_tag(bam)
 
             se_bam_files = bam_files
             bam_dir = cfg.split_path
@@ -956,14 +959,10 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     default_tags = ["NM", "MD", "fn"]
     if cfg.smf_modality == "direct":
         default_tags.extend(["MM", "ML"])
-    # Add UMI tags if UMI extraction was enabled
-    if getattr(cfg, "use_umi", False):
-        default_tags.extend(["U1", "U2", "RX"])
-    # Add barcode tags if smftools barcode extraction was used
-    if demux_backend == "smftools" and cfg.barcode_kit:
-        default_tags.extend(["BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"])
+    # UMI tags are loaded from Parquet sidecar below (not from BAM)
+    # Barcode tags are loaded from Parquet sidecar below (not from BAM)
     # Add barcode tags from dorado single-pass demux (BM annotated from bi tag)
-    elif demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+    if demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
         dorado_ver = _get_dorado_version()
         if dorado_ver is not None and dorado_ver >= (1, 3, 1):
             default_tags.extend(["BC", "BM", "bi"])
@@ -979,6 +978,31 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         extract_read_tags_from_bam_callable=extract_read_tags_from_bam,
         samtools_backend=cfg.samtools_backend,
     )
+
+    # Load UMI tags from Parquet sidecar (written by annotate_umi_tags_in_bam)
+    if getattr(cfg, "use_umi", False) and umi_sidecar and Path(umi_sidecar).exists():
+        logger.info("Loading UMI tags from Parquet sidecar: %s", umi_sidecar)
+        umi_df = pd.read_parquet(umi_sidecar).set_index("read_name")
+        umi_df = umi_df.reindex(raw_adata.obs_names)
+        for col in ["U1", "U2", "RX", "FC", "US", "UE"]:
+            if col in umi_df.columns:
+                raw_adata.obs[col] = umi_df[col].values
+        del umi_df
+
+    # Load barcode tags from Parquet sidecar (written by extract_and_assign_barcodes_in_bam)
+    if (
+        demux_backend == "smftools"
+        and cfg.barcode_kit
+        and barcode_sidecar
+        and Path(barcode_sidecar).exists()
+    ):
+        logger.info("Loading barcode tags from Parquet sidecar: %s", barcode_sidecar)
+        bc_df = pd.read_parquet(barcode_sidecar).set_index("read_name")
+        bc_df = bc_df.reindex(raw_adata.obs_names)
+        for col in ["BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"]:
+            if col in bc_df.columns:
+                raw_adata.obs[col] = bc_df[col].values
+        del bc_df
 
     # Expand dorado bi array tag into individual float score columns
     if "bi" in bam_tag_names:

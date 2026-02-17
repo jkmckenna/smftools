@@ -29,7 +29,7 @@ The load command builds the raw AnnData object from your raw sequencing data. It
 - adata.X contains binarized modification data (conversion/deaminase), or modification probabilitiesc (native).
 - Adds basic read-level QC annotations (Read start, end, length, mean quality).
 - Adds layers encoding read DNA sequences, base quality scores, base mismatches.
-- Maintains BAM Tags/Flags in adata.obs.
+- Maintains BAM tags/flags in adata.obs (UMI and barcode annotations loaded from Parquet sidecars).
 - Writes the raw AnnData to the canonical output path and runs MultiQC.
 - Optionally deletes intermediate BAMs, H5ADs, and TSVs.
 

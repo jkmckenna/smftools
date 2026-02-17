@@ -714,6 +714,7 @@ def add_demux_type_from_bm_tag(adata, bm_column="BM"):
 
     if bm_column not in adata.obs.columns:
         logger.warning(f"Column '{bm_column}' not found in adata.obs, cannot derive demux_type")
+        adata.obs["demux_type"] = "unknown"
         return
 
     logger.info(f"Deriving demux_type from {bm_column} tag")

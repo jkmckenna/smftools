@@ -7,9 +7,10 @@ import shutil
 import subprocess
 import time
 from collections import Counter, defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from itertools import zip_longest
+from math import ceil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -164,6 +165,15 @@ class UMIKitConfig:
     same_orientation: bool = False
 
 
+@dataclass
+class UMIExtractionResult:
+    """Per-position UMI extraction result."""
+
+    umi_seq: Optional[str] = None
+    slot: Optional[str] = None
+    flank_seq: Optional[str] = None
+
+
 _BAM_FLAG_BITS: Tuple[Tuple[int, str], ...] = (
     (0x1, "paired"),
     (0x2, "proper_pair"),
@@ -259,118 +269,6 @@ def _parse_idxstats_output(output: str) -> Tuple[int, int, Dict[str, Tuple[int, 
         proportions[ref] = (count, proportion)
 
     return aligned_reads_count, unaligned_reads_count, proportions
-
-
-def _normalize_umi_adapters(umi_adapters: Any) -> List[Optional[str]]:
-    """Normalize UMI adapters into a two-slot [left_ref_end, right_ref_end] list."""
-    if umi_adapters is None:
-        adapters: List[Any] = []
-    elif isinstance(umi_adapters, (list, tuple)):
-        adapters = list(umi_adapters)
-    else:
-        adapters = [umi_adapters]
-
-    if len(adapters) != 2:
-        raise ValueError("umi_adapters must be a two-item list: [left_ref_end, right_ref_end].")
-
-    normalized: List[Optional[str]] = []
-    for adapter in adapters:
-        if adapter is None:
-            normalized.append(None)
-            continue
-        value = str(adapter).strip()
-        if not value or value.lower() == "none":
-            normalized.append(None)
-            continue
-        normalized.append(value.upper())
-    return normalized
-
-
-def validate_umi_config(
-    use_umi: bool,
-    umi_adapters: Any,
-    umi_length: Any,
-) -> Tuple[List[Optional[str]], Optional[int]]:
-    """Validate UMI settings and return normalized adapters and length."""
-    if not use_umi:
-        return [], None
-
-    adapters = _normalize_umi_adapters(umi_adapters)
-    if all(adapter is None for adapter in adapters):
-        raise ValueError(
-            "cfg.use_umi is true, but no UMI adapter sequences were provided in umi_adapters."
-        )
-
-    try:
-        length = int(umi_length)
-    except Exception as exc:
-        raise ValueError("UMI length must be a positive integer when cfg.use_umi is true.") from exc
-    if length <= 0:
-        raise ValueError("UMI length must be a positive integer when cfg.use_umi is true.")
-
-    return adapters, length
-
-
-def _extract_umi_adjacent_to_adapter_on_read_end(
-    read_sequence: str,
-    adapter_sequence: str,
-    umi_length: int,
-    umi_search_window: int,
-    search_from_start: bool,
-    adapter_matcher: str = "exact",
-    adapter_max_edits: int = 0,
-) -> Optional[str]:
-    """Extract UMI adjacent to adapter constrained to either start or end of read."""
-    if not read_sequence or not adapter_sequence:
-        return None
-
-    seq = read_sequence.upper()
-    adapter = adapter_sequence.upper()
-    seq_len = len(seq)
-    if seq_len == 0:
-        return None
-
-    matcher = str(adapter_matcher).strip().lower()
-    if matcher not in {"exact", "edlib"}:
-        raise ValueError("adapter_matcher must be one of: exact, edlib")
-
-    if matcher == "exact":
-        matches = [(m.start(), m.end()) for m in re.finditer(re.escape(adapter), seq)]
-    else:
-        edlib = require("edlib", extra="umi", purpose="fuzzy UMI adapter matching")
-        result = edlib.align(adapter, seq, mode="HW", task="locations", k=max(0, adapter_max_edits))
-        locations = result.get("locations", []) if isinstance(result, dict) else []
-        matches = []
-        for loc in locations:
-            if not isinstance(loc, (list, tuple)) or len(loc) != 2:
-                continue
-            start_i, end_i = int(loc[0]), int(loc[1])
-            if start_i < 0 or end_i < start_i:
-                continue
-            matches.append((start_i, end_i + 1))
-
-    best: Optional[Tuple[int, int]] = None
-    for start, end in matches:
-        distance = start if search_from_start else (seq_len - end)
-        if distance > umi_search_window:
-            continue
-        if best is None or distance < best[0]:
-            best = (distance, start)
-
-    if best is None:
-        return None
-
-    start = best[1]
-    end = start + len(adapter)
-    if search_from_start:
-        umi_start, umi_end = end, end + umi_length
-    else:
-        umi_start, umi_end = start - umi_length, start
-
-    if umi_start < 0 or umi_end > seq_len:
-        return None
-    umi = seq[umi_start:umi_end]
-    return umi if len(umi) == umi_length else None
 
 
 _COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
@@ -884,63 +782,157 @@ def _extract_sequence_with_flanking(
     return extracted, tgt_start, tgt_end
 
 
-def _target_read_end_for_ref_side(is_reverse: bool, ref_side: str) -> str:
-    """Map reference-side adapter slot to a read-end target given read strand."""
-    if ref_side == "left":
-        return "end" if is_reverse else "start"
-    if ref_side == "right":
-        return "start" if is_reverse else "end"
-    raise ValueError(f"Unknown ref_side: {ref_side}")
+def _extract_umis_for_reads(
+    sequences: List[str],
+    length: int,
+    search_window: int,
+    matcher: str,
+    max_edits: int,
+    umi_amplicon_max_edits: int,
+    effective_flank_mode: str,
+    flanking_candidates: List[Tuple[str, FlankingConfig]],
+    configured_slots: List[int],
+    check_start: bool,
+    check_end: bool,
+) -> List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]]:
+    """Extract UMIs for a list of read sequences.
+
+    Returns a list of ``(us_result, ue_result)`` tuples, one per read.
+    Each element is an :class:`UMIExtractionResult` with UMI sequence, slot,
+    and flanking sequence metadata.
+    """
+    # Pre-compute RC'd flanking configs for read-end searches
+    end_flanking_cache: List[FlankingConfig] = []
+    for _slot, candidate in flanking_candidates:
+        if candidate.adapter_side and candidate.amplicon_side:
+            end_flanking_cache.append(
+                FlankingConfig(
+                    adapter_side=_reverse_complement(candidate.amplicon_side),
+                    amplicon_side=_reverse_complement(candidate.adapter_side),
+                    adapter_pad=candidate.amplicon_pad,
+                    amplicon_pad=candidate.adapter_pad,
+                )
+            )
+        elif candidate.adapter_side:
+            end_flanking_cache.append(
+                FlankingConfig(
+                    adapter_side=_reverse_complement(candidate.adapter_side),
+                    amplicon_side=None,
+                    adapter_pad=candidate.adapter_pad,
+                    amplicon_pad=candidate.amplicon_pad,
+                )
+            )
+        elif candidate.amplicon_side:
+            end_flanking_cache.append(
+                FlankingConfig(
+                    adapter_side=None,
+                    amplicon_side=_reverse_complement(candidate.amplicon_side),
+                    adapter_pad=candidate.adapter_pad,
+                    amplicon_pad=candidate.amplicon_pad,
+                )
+            )
+        else:
+            end_flanking_cache.append(FlankingConfig(adapter_side=None, amplicon_side=None))
+
+    results: List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]] = []
+    for sequence in sequences:
+        us_result: Optional[UMIExtractionResult] = None
+        ue_result: Optional[UMIExtractionResult] = None
+        found_slots: List[Optional[str]] = [None, None]  # track by slot index
+
+        for read_end in ("start", "end"):
+            if read_end == "start" and not check_start:
+                continue
+            if read_end == "end" and not check_end:
+                continue
+            search_from_start = read_end == "start"
+
+            for i, (slot, candidate) in enumerate(flanking_candidates):
+                end_flanking = candidate if search_from_start else end_flanking_cache[i]
+
+                extracted, _, _ = _extract_sequence_with_flanking(
+                    read_sequence=sequence,
+                    target_length=length,
+                    search_window=search_window,
+                    search_from_start=search_from_start,
+                    flanking=end_flanking,
+                    flank_mode=effective_flank_mode,
+                    adapter_matcher=matcher,
+                    adapter_max_edits=max_edits,
+                    amplicon_max_edits=umi_amplicon_max_edits,
+                    same_orientation=False,
+                )
+                if extracted and read_end == "end":
+                    extracted = _reverse_complement(extracted)
+
+                if extracted:
+                    # Use original (pre-RC) adapter_side as flank identity
+                    flank_seq = candidate.adapter_side or ""
+                    result = UMIExtractionResult(
+                        umi_seq=extracted,
+                        slot=slot,
+                        flank_seq=flank_seq,
+                    )
+                    idx = 0 if slot == "top" else 1
+                    if found_slots[idx] is None:
+                        found_slots[idx] = slot
+                    if search_from_start:
+                        if us_result is None:
+                            us_result = result
+                    else:
+                        if ue_result is None:
+                            ue_result = result
+
+            if configured_slots and all(found_slots[idx] is not None for idx in configured_slots):
+                break
+
+        results.append((us_result, ue_result))
+    return results
 
 
 def annotate_umi_tags_in_bam(
     bam_path: str | Path,
     *,
     use_umi: bool,
-    umi_adapters: Any,
-    umi_length: Any,
+    umi_kit_config: UMIKitConfig,
+    umi_length: Any = None,
     umi_search_window: int = 200,
-    umi_adapter_matcher: str = "exact",
+    umi_adapter_matcher: str = "edlib",
     umi_adapter_max_edits: int = 0,
     samtools_backend: str | None = "auto",
-    # New flanking parameters (optional)
-    umi_kit_config: Optional[UMIKitConfig] = None,
     umi_ends: Optional[str] = None,
     umi_flank_mode: Optional[str] = None,
     umi_amplicon_max_edits: int = 0,
     same_orientation: bool = False,
+    threads: Optional[int] = None,
 ) -> Path:
     """Annotate aligned BAM reads with UMI tags before demultiplexing.
 
-    When ``umi_kit_config`` with flanking sequences is provided, extraction uses
-    ``_extract_sequence_with_flanking`` instead of
-    ``_extract_umi_adjacent_to_adapter_on_read_end``.
+    Uses flanking-sequence-based extraction via ``_extract_sequence_with_flanking``.
+    When ``threads`` > 1, UMI extraction is parallelized across CPU cores using
+    multiprocessing while BAM I/O remains single-threaded.
+
+    Tags written:
+        US / UE  – positional: delimited ``"UMI_seq;slot;flank_seq"`` from read **start** / **end**
+        U1 / U2  – orientation-corrected: U1 = left reference end, U2 = right reference end (fwd: U1=US,U2=UE; rev: U1=UE,U2=US; UMI sequence only)
+        FC       – flank context: slot names of U1/U2 pair (e.g. ``"top-bottom"``)
+        RX       – combined tag using orientation-assigned U1-U2
     """
     input_bam = Path(bam_path)
     if not use_umi:
         return input_bam
 
-    # Determine if flanking-based extraction should be used
-    use_flanking = umi_kit_config is not None and umi_kit_config.flanking is not None
+    if umi_kit_config is None or umi_kit_config.flanking is None:
+        raise ValueError("umi_kit_config with flanking sequences is required for UMI annotation.")
 
-    if use_flanking:
-        flanking_config = umi_kit_config.flanking
-        length = umi_kit_config.length if umi_kit_config.length else int(umi_length or 0)
-        effective_umi_ends = umi_ends or umi_kit_config.umi_ends or "both"
-        effective_flank_mode = umi_flank_mode or umi_kit_config.umi_flank_mode or "adapter_only"
-        if length <= 0:
-            raise ValueError(
-                "UMI length must be a positive integer when using flanking-based extraction."
-            )
-        # We still need adapters validated for the legacy path if flanking is partial
-        adapters = [None, None]  # Not used in flanking path
-        configured_adapter_count = 0
-    else:
-        flanking_config = None
-        adapters, length = validate_umi_config(use_umi, umi_adapters, umi_length)
-        effective_umi_ends = umi_ends or "both"
-        effective_flank_mode = umi_flank_mode or "adapter_only"
-        configured_adapter_count = sum(1 for adapter in adapters if adapter is not None)
+    flanking_config = umi_kit_config.flanking
+    length = umi_kit_config.length if umi_kit_config.length else int(umi_length or 0)
+    effective_umi_ends = umi_ends or umi_kit_config.umi_ends or "both"
+    effective_flank_mode = umi_flank_mode or umi_kit_config.umi_flank_mode or "adapter_only"
+    if length <= 0:
+        raise ValueError(
+            "UMI length must be a positive integer when using flanking-based extraction."
+        )
 
     search_window = max(0, int(umi_search_window))
     matcher = str(umi_adapter_matcher).strip().lower()
@@ -955,236 +947,206 @@ def annotate_umi_tags_in_bam(
     check_end = effective_umi_ends in ("both", "right_only", "read_end")
 
     flanking_candidates: List[Tuple[str, FlankingConfig]] = []
-    if use_flanking and flanking_config is not None:
-        if flanking_config.left_ref_end is not None and (
-            flanking_config.left_ref_end.adapter_side or flanking_config.left_ref_end.amplicon_side
-        ):
-            flanking_candidates.append(("top", flanking_config.left_ref_end))
-        if flanking_config.right_ref_end is not None and (
-            flanking_config.right_ref_end.adapter_side
-            or flanking_config.right_ref_end.amplicon_side
-        ):
-            flanking_candidates.append(("bottom", flanking_config.right_ref_end))
+    if flanking_config.left_ref_end is not None and (
+        flanking_config.left_ref_end.adapter_side or flanking_config.left_ref_end.amplicon_side
+    ):
+        flanking_candidates.append(("top", flanking_config.left_ref_end))
+    if flanking_config.right_ref_end is not None and (
+        flanking_config.right_ref_end.adapter_side or flanking_config.right_ref_end.amplicon_side
+    ):
+        flanking_candidates.append(("bottom", flanking_config.right_ref_end))
 
-    # Count configured ends for flanking
-    if use_flanking:
-        configured_slots = [0 if slot == "top" else 1 for slot, _ in flanking_candidates]
-        configured_adapter_count = len(configured_slots)
+    configured_slots = [0 if slot == "top" else 1 for slot, _ in flanking_candidates]
+    configured_adapter_count = len(configured_slots)
 
-    pysam_mod = _require_pysam()
-    tmp_bam = input_bam.with_name(f"{input_bam.stem}.umi_tmp{input_bam.suffix}")
+    cpu_count = os.cpu_count() or 1
+    num_workers = min(max(1, int(threads)), cpu_count) if threads else 1
 
-    total_reads = 0
+    # ── Shared extraction kwargs ────────────────────────────────────────
+    extraction_kwargs = dict(
+        length=length,
+        search_window=search_window,
+        matcher=matcher,
+        max_edits=max_edits,
+        umi_amplicon_max_edits=umi_amplicon_max_edits,
+        effective_flank_mode=effective_flank_mode,
+        flanking_candidates=flanking_candidates,
+        configured_slots=configured_slots,
+        check_start=check_start,
+        check_end=check_end,
+    )
+
+    # ── Single BAM pass: collect metadata + sequences ───────────────────
+    read_names: List[str] = []
+    is_reverse_flags: List[bool] = []
+    is_primary: List[bool] = []
+    sequences: List[str] = []
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
+            for read in tqdm(in_bam.fetch(until_eof=True), desc="UMI: reading BAM", unit=" reads"):
+                read_names.append(read.query_name)
+                is_reverse_flags.append(read.is_reverse)
+                is_primary.append(not read.is_secondary and not read.is_supplementary)
+                sequences.append(read.query_sequence or "")
+    else:
+        cmd = ["samtools", "view", str(input_bam)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        for line in tqdm(proc.stdout, desc="UMI: reading BAM", unit=" reads"):
+            if not line.strip() or line.startswith("@"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 11:
+                continue
+            flag = int(fields[1])
+            read_names.append(fields[0])
+            is_reverse_flags.append(bool(flag & 0x10))
+            is_primary.append(not bool(flag & 0x100) and not bool(flag & 0x800))
+            seq = fields[9]
+            sequences.append("" if seq == "*" else seq)
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+    total_reads = len(read_names)
+
+    # ── UMI extraction ──────────────────────────────────────────────────
+    if num_workers <= 1 or total_reads == 0:
+        # Single-process fast path – no IPC overhead
+        all_results = _extract_umis_for_reads(sequences, **extraction_kwargs)
+    else:
+        chunk_size = max(1000, ceil(total_reads / num_workers))
+        num_chunks = ceil(total_reads / chunk_size)
+        actual_workers = min(num_workers, num_chunks)
+        logger.info(
+            "UMI extraction: %d reads across %d workers (chunk_size=%d)",
+            total_reads,
+            actual_workers,
+            chunk_size,
+        )
+        with ProcessPoolExecutor(max_workers=actual_workers) as pool:
+            futures = {}
+            for chunk_idx in range(num_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min(start_idx + chunk_size, total_reads)
+                chunk = sequences[start_idx:end_idx]
+                future = pool.submit(
+                    _extract_umis_for_reads,
+                    chunk,
+                    **extraction_kwargs,
+                )
+                futures[future] = chunk_idx
+
+            # Collect results in submission order, with progress per chunk
+            chunk_results: Dict[
+                int, List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]]
+            ] = {}
+            with tqdm(
+                total=total_reads,
+                desc=f"UMI: extracting ({actual_workers} workers)",
+                unit=" reads",
+            ) as pbar:
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    result = future.result()
+                    chunk_results[idx] = result
+                    pbar.update(len(result))
+
+            all_results: List[
+                Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]
+            ] = []
+            for chunk_idx in range(num_chunks):
+                all_results.extend(chunk_results[chunk_idx])
+            del chunk_results
+
+    del sequences
+
+    # ── Compute tags in-memory and write Parquet sidecar ────────────────
+    import pandas as pd
+
     reads_with_any_umi = 0
     reads_with_all_umis = 0
 
-    with (
-        pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam,
-        pysam_mod.AlignmentFile(str(tmp_bam), "wb", template=in_bam) as out_bam,
-    ):
-        for read in in_bam.fetch(until_eof=True):
-            total_reads += 1
-            sequence = read.query_sequence or ""
-            umi_values: List[Optional[str]] = [None, None]
+    tag_rows: List[Dict[str, Optional[str]]] = []
+    for read_idx in range(total_reads):
+        us_result, ue_result = all_results[read_idx]
 
-            if use_flanking:
-                for read_end in ("start", "end"):
-                    if read_end == "start" and not check_start:
-                        continue
-                    if read_end == "end" and not check_end:
-                        continue
-                    search_from_start = read_end == "start"
+        present = sum(1 for r in (us_result, ue_result) if r and r.umi_seq)
+        if present:
+            reads_with_any_umi += 1
+        if configured_adapter_count and present == configured_adapter_count:
+            reads_with_all_umis += 1
 
-                    for slot, candidate in flanking_candidates:
-                        end_flanking = candidate
-                        if read_end == "end":
-                            if candidate.adapter_side and candidate.amplicon_side:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=_reverse_complement(candidate.amplicon_side),
-                                    amplicon_side=_reverse_complement(candidate.adapter_side),
-                                    adapter_pad=candidate.amplicon_pad,
-                                    amplicon_pad=candidate.adapter_pad,
-                                )
-                            elif candidate.adapter_side:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=_reverse_complement(candidate.adapter_side),
-                                    amplicon_side=None,
-                                    adapter_pad=candidate.adapter_pad,
-                                    amplicon_pad=candidate.amplicon_pad,
-                                )
-                            elif candidate.amplicon_side:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=None,
-                                    amplicon_side=_reverse_complement(candidate.amplicon_side),
-                                    adapter_pad=candidate.adapter_pad,
-                                    amplicon_pad=candidate.amplicon_pad,
-                                )
-                            else:
-                                end_flanking = FlankingConfig(adapter_side=None, amplicon_side=None)
+        # Only include primary alignments in the sidecar
+        if not is_primary[read_idx]:
+            continue
 
-                        extracted, _, _ = _extract_sequence_with_flanking(
-                            read_sequence=sequence,
-                            target_length=length,
-                            search_window=search_window,
-                            search_from_start=search_from_start,
-                            flanking=end_flanking,
-                            flank_mode=effective_flank_mode,
-                            adapter_matcher=matcher,
-                            adapter_max_edits=max_edits,
-                            amplicon_max_edits=umi_amplicon_max_edits,
-                            same_orientation=False,
-                        )
-                        if extracted and read_end == "end":
-                            extracted = _reverse_complement(extracted)
+        row: Dict[str, Optional[str]] = {"read_name": read_names[read_idx]}
 
-                        if extracted:
-                            idx = 0 if slot == "top" else 1
-                            if umi_values[idx] is None:
-                                umi_values[idx] = extracted
+        # Positional tags (US/UE) as delimited strings
+        if us_result and us_result.umi_seq:
+            parts = [us_result.umi_seq, us_result.slot or "", us_result.flank_seq or ""]
+            row["US"] = ";".join(parts)
+        if ue_result and ue_result.umi_seq:
+            parts = [ue_result.umi_seq, ue_result.slot or "", ue_result.flank_seq or ""]
+            row["UE"] = ";".join(parts)
 
-                    if configured_slots and all(
-                        umi_values[idx] is not None for idx in configured_slots
-                    ):
-                        break
-            else:
-                for i, ref_side in enumerate(["left", "right"]):
-                    if i == 0 and not check_start:
-                        continue
-                    if i == 1 and not check_end:
-                        continue
+        # Assign U1/U2 based on alignment orientation
+        is_rev = is_reverse_flags[read_idx]
+        if is_rev:
+            u1_result, u2_result = ue_result, us_result
+        else:
+            u1_result, u2_result = us_result, ue_result
 
-                    read_end = _target_read_end_for_ref_side(read.is_reverse, ref_side)
-                    search_from_start = read_end == "start"
+        u1 = u1_result.umi_seq if u1_result else None
+        u2 = u2_result.umi_seq if u2_result else None
 
-                    adapter = adapters[i] if i < len(adapters) else None
-                    if adapter is None:
-                        continue
-                    # RC adapter for reverse-strand reads
-                    search_adapter = _reverse_complement(adapter) if read.is_reverse else adapter
-                    extracted_umi = _extract_umi_adjacent_to_adapter_on_read_end(
-                        read_sequence=sequence,
-                        adapter_sequence=search_adapter,
-                        umi_length=length,
-                        umi_search_window=search_window,
-                        search_from_start=search_from_start,
-                        adapter_matcher=matcher,
-                        adapter_max_edits=max_edits,
-                    )
-                    # RC extracted UMI for reverse-strand reads
-                    if extracted_umi and read.is_reverse:
-                        extracted_umi = _reverse_complement(extracted_umi)
-                    umi_values[i] = extracted_umi
+        if u1:
+            row["U1"] = u1
+        if u2:
+            row["U2"] = u2
 
-            present = [u for u in umi_values if u]
-            if present:
-                reads_with_any_umi += 1
-            if configured_adapter_count and len(present) == configured_adapter_count:
-                reads_with_all_umis += 1
+        # FC tag: flank context of U1/U2 pair
+        u1_slot = u1_result.slot if u1_result else None
+        u2_slot = u2_result.slot if u2_result else None
+        if u1_slot and u2_slot:
+            row["FC"] = f"{u1_slot}-{u2_slot}"
+        elif u1_slot:
+            row["FC"] = u1_slot
+        elif u2_slot:
+            row["FC"] = u2_slot
 
-            umi1, umi2 = umi_values[0], umi_values[1]
-            if umi1:
-                read.set_tag("U1", umi1, value_type="Z")
-            if umi2:
-                read.set_tag("U2", umi2, value_type="Z")
-            if umi1 and umi2:
-                read.set_tag("RX", f"{umi1}-{umi2}", value_type="Z")
-            elif umi1:
-                read.set_tag("RX", umi1, value_type="Z")
-            elif umi2:
-                read.set_tag("RX", umi2, value_type="Z")
+        # Combined tag (RX) using orientation-assigned U1/U2
+        if u1 and u2:
+            row["RX"] = f"{u1}-{u2}"
+        elif u1:
+            row["RX"] = u1
+        elif u2:
+            row["RX"] = u2
 
-            out_bam.write(read)
+        tag_rows.append(row)
 
-    tmp_bam.replace(input_bam)
-    index_paths = (
-        input_bam.with_suffix(input_bam.suffix + ".bai"),
-        Path(str(input_bam) + ".bai"),
-    )
-    for idx_path in index_paths:
-        if idx_path.exists():
-            idx_path.unlink()
-    if backend_choice == "python":
-        _index_bam_with_pysam(input_bam)
-    else:
-        _index_bam_with_samtools(input_bam)
+    del all_results, read_names, is_reverse_flags, is_primary
+
+    sidecar_path = input_bam.with_suffix(".umi_tags.parquet")
+    df = pd.DataFrame(tag_rows)
+    # Ensure all tag columns exist even if no reads had UMIs
+    for col in ("U1", "U2", "US", "UE", "RX", "FC"):
+        if col not in df.columns:
+            df[col] = None
+    df.to_parquet(sidecar_path, index=False)
+    del tag_rows, df
 
     logger.info(
-        "UMI annotation complete for %s: total_reads=%d, reads_with_any_umi=%d, reads_with_all_umis=%d",
+        "UMI annotation complete for %s: total_reads=%d, reads_with_any_umi=%d, reads_with_all_umis=%d, sidecar=%s",
         input_bam,
         total_reads,
         reads_with_any_umi,
         reads_with_all_umis,
+        sidecar_path,
     )
-    return input_bam
-
-
-def _extract_barcode_adjacent_to_adapter_on_read_end(
-    read_sequence: str,
-    adapter_sequence: str,
-    barcode_length: int,
-    barcode_search_window: int,
-    search_from_start: bool,
-    adapter_matcher: str = "edlib",
-    adapter_max_edits: int = 2,
-) -> Tuple[Optional[str], Optional[int]]:
-    """
-    Extract barcode sequence adjacent to adapter, constrained to read end.
-
-    Returns
-    -------
-    Tuple[Optional[str], Optional[int]]
-        (barcode_sequence, adapter_start_position) or (None, None) if not found.
-    """
-    if not read_sequence or not adapter_sequence:
-        return None, None
-
-    seq = read_sequence.upper()
-    adapter = adapter_sequence.upper()
-    seq_len = len(seq)
-    if seq_len == 0:
-        return None, None
-
-    matcher = str(adapter_matcher).strip().lower()
-    if matcher not in {"exact", "edlib"}:
-        raise ValueError("adapter_matcher must be one of: exact, edlib")
-
-    if matcher == "exact":
-        matches = [(m.start(), m.end()) for m in re.finditer(re.escape(adapter), seq)]
-    else:
-        edlib = require("edlib", extra="umi", purpose="fuzzy barcode adapter matching")
-        result = edlib.align(adapter, seq, mode="HW", task="locations", k=max(0, adapter_max_edits))
-        locations = result.get("locations", []) if isinstance(result, dict) else []
-        matches = []
-        for loc in locations:
-            if not isinstance(loc, (list, tuple)) or len(loc) != 2:
-                continue
-            start_i, end_i = int(loc[0]), int(loc[1])
-            if start_i < 0 or end_i < start_i:
-                continue
-            matches.append((start_i, end_i + 1))
-
-    best: Optional[Tuple[int, int]] = None
-    for start, end in matches:
-        distance = start if search_from_start else (seq_len - end)
-        if distance > barcode_search_window:
-            continue
-        if best is None or distance < best[0]:
-            best = (distance, start)
-
-    if best is None:
-        return None, None
-
-    adapter_start = best[1]
-    adapter_end = adapter_start + len(adapter)
-    if search_from_start:
-        bc_start, bc_end = adapter_end, adapter_end + barcode_length
-    else:
-        bc_start, bc_end = adapter_start - barcode_length, adapter_start
-
-    if bc_start < 0 or bc_end > seq_len:
-        return None, None
-    barcode = seq[bc_start:bc_end]
-    return (barcode, adapter_start) if len(barcode) == barcode_length else (None, None)
+    return sidecar_path
 
 
 def _match_barcode_to_references(
@@ -1643,6 +1605,173 @@ def resolve_umi_config(umi_config: Optional[UMIKitConfig], cfg: Any) -> Dict[str
     }
 
 
+def _extract_and_match_barcodes_for_reads(
+    sequences: List[str],
+    *,
+    barcode_length: int,
+    barcode_search_window: int,
+    barcode_max_edit_distance: int,
+    barcode_adapter_matcher: str,
+    barcode_composite_max_edits: int,
+    barcode_min_separation: Optional[int],
+    require_both_ends: bool,
+    min_barcode_score: Optional[int],
+    bc_refs: Dict[str, str],
+    flanking_config: Any,
+    check_start: bool,
+    check_end: bool,
+) -> List[Dict[str, Optional[str | int]]]:
+    """Extract and match barcodes for a batch of read sequences.
+
+    Pure worker function suitable for multiprocessing. Returns one dict per read
+    with keys: BC, BM, B1, B2, B3, B4, B5, B6.
+    """
+    matcher = barcode_adapter_matcher
+    composite_max_edits = barcode_composite_max_edits
+
+    # Pre-compute end flanking configs for flanking-based extraction
+    end_flanking_cache: List[FlankingConfig] = []
+    flanking_candidates: List[FlankingConfig] = []
+    if flanking_config is not None:
+        if flanking_config.left_ref_end is not None and (
+            flanking_config.left_ref_end.adapter_side or flanking_config.left_ref_end.amplicon_side
+        ):
+            flanking_candidates.append(flanking_config.left_ref_end)
+        if (
+            flanking_config.right_ref_end is not None
+            and flanking_config.right_ref_end not in flanking_candidates
+            and (
+                flanking_config.right_ref_end.adapter_side
+                or flanking_config.right_ref_end.amplicon_side
+            )
+        ):
+            flanking_candidates.append(flanking_config.right_ref_end)
+
+        for candidate in flanking_candidates:
+            if candidate.adapter_side and candidate.amplicon_side:
+                end_flanking_cache.append(
+                    FlankingConfig(
+                        adapter_side=_reverse_complement(candidate.amplicon_side),
+                        amplicon_side=_reverse_complement(candidate.adapter_side),
+                        adapter_pad=candidate.amplicon_pad,
+                        amplicon_pad=candidate.adapter_pad,
+                    )
+                )
+            elif candidate.adapter_side:
+                end_flanking_cache.append(
+                    FlankingConfig(
+                        adapter_side=_reverse_complement(candidate.adapter_side),
+                        amplicon_side=None,
+                        adapter_pad=candidate.adapter_pad,
+                        amplicon_pad=candidate.amplicon_pad,
+                    )
+                )
+            elif candidate.amplicon_side:
+                end_flanking_cache.append(
+                    FlankingConfig(
+                        adapter_side=None,
+                        amplicon_side=_reverse_complement(candidate.amplicon_side),
+                        adapter_pad=candidate.adapter_pad,
+                        amplicon_pad=candidate.amplicon_pad,
+                    )
+                )
+            else:
+                end_flanking_cache.append(FlankingConfig(adapter_side=None, amplicon_side=None))
+
+    results: List[Dict[str, Optional[str | int]]] = []
+    for sequence in sequences:
+        bc_matches: List[Tuple[Optional[str], Optional[int]]] = [
+            (None, None),
+            (None, None),
+        ]
+        extracted_start_seq: Optional[str] = None
+        extracted_end_seq: Optional[str] = None
+        padded_region: Optional[str] = None
+
+        for i, read_end in enumerate(["start", "end"]):
+            if i == 0 and not check_start:
+                continue
+            if i == 1 and not check_end:
+                continue
+
+            search_from_start = read_end == "start"
+
+            extracted_bc: Optional[str] = None
+            padded_region = None
+
+            for ci, candidate in enumerate(flanking_candidates):
+                end_flanking = candidate if search_from_start else end_flanking_cache[ci]
+
+                extracted_bc, _, _, padded_region = _extract_barcode_with_flanking(
+                    read_sequence=sequence,
+                    target_length=barcode_length,
+                    search_window=barcode_search_window,
+                    search_from_start=search_from_start,
+                    flanking=end_flanking,
+                    adapter_matcher=matcher,
+                    composite_max_edits=composite_max_edits,
+                )
+
+                if extracted_bc and read_end == "end":
+                    extracted_bc = _reverse_complement(extracted_bc)
+                    if padded_region is not None:
+                        padded_region = _reverse_complement(padded_region)
+
+                if extracted_bc:
+                    break
+
+            if extracted_bc:
+                if read_end == "start":
+                    extracted_start_seq = extracted_bc
+                else:
+                    extracted_end_seq = extracted_bc
+                match_name, match_dist = _match_barcode_to_references(
+                    extracted_bc,
+                    bc_refs,
+                    max_edit_distance=barcode_max_edit_distance,
+                    min_separation=barcode_min_separation,
+                    padded_region=padded_region,
+                )
+                if match_name is not None:
+                    if min_barcode_score is None or match_dist <= min_barcode_score:
+                        bc_matches[i] = (match_name, match_dist)
+
+        left_match, left_dist = bc_matches[0]
+        right_match, right_dist = bc_matches[1]
+
+        # Determine match type and final barcode assignment
+        if left_match and right_match:
+            if left_match == right_match:
+                match_type = "both"
+                assigned_bc = left_match
+            else:
+                match_type = "mismatch"
+                assigned_bc = "unclassified"
+        elif left_match:
+            match_type = "read_start_only"
+            assigned_bc = "unclassified" if require_both_ends else left_match
+        elif right_match:
+            match_type = "read_end_only"
+            assigned_bc = "unclassified" if require_both_ends else right_match
+        else:
+            match_type = "unclassified"
+            assigned_bc = "unclassified"
+
+        row: Dict[str, Optional[str | int]] = {
+            "BC": assigned_bc,
+            "BM": match_type,
+            "B1": left_dist,
+            "B2": right_dist,
+            "B3": extracted_start_seq,
+            "B4": extracted_end_seq,
+            "B5": left_match,
+            "B6": right_match,
+        }
+        results.append(row)
+
+    return results
+
+
 def extract_and_assign_barcodes_in_bam(
     bam_path: str | Path,
     *,
@@ -1657,34 +1786,38 @@ def extract_and_assign_barcodes_in_bam(
     require_both_ends: bool = False,
     min_barcode_score: Optional[int] = None,
     samtools_backend: str | None = "auto",
-    # New flanking parameters (optional; when provided, use flanking-based extraction)
     barcode_kit_config: Optional[BarcodeKitConfig] = None,
     barcode_ends: Optional[str] = None,
     barcode_amplicon_gap_tolerance: int = 5,
+    threads: Optional[int] = None,
 ) -> Path:
-    """Extract barcodes from reads and assign best-matching barcode from reference set.
+    """Extract barcodes from reads and write results to a Parquet sidecar file.
 
     This function extracts barcode sequences adjacent to adapter sequences at read ends,
-    matches them against a reference barcode set, and writes BAM tags for:
+    matches them against a reference barcode set, and writes results to a Parquet sidecar
+    file (``.barcode_tags.parquet``) with columns:
 
     - BC: Assigned barcode name (or "unclassified")
     - B1: Read-start match edit distance (if found)
     - B2: Read-end match edit distance (if found)
+    - B3: Read-start extracted sequence (if found)
+    - B4: Read-end extracted sequence (if found)
     - B5: Read-start barcode name (if found)
     - B6: Read-end barcode name (if found)
     - BM: Match type ("both", "read_start_only", "read_end_only", "mismatch", "unclassified")
 
-    When ``barcode_kit_config`` with flanking sequences is provided, extraction uses
-    ``_extract_sequence_with_flanking`` instead of
-    ``_extract_barcode_adjacent_to_adapter_on_read_end``.
+    When ``threads`` > 1, barcode extraction is parallelized across CPU cores using
+    multiprocessing while BAM I/O remains single-threaded.
 
     Parameters
     ----------
     bam_path : str or Path
-        Path to the input BAM file (will be modified in place).
+        Path to the input BAM file (not modified).
     barcode_adapters : List[Optional[str]]
         Two-element list of adapter sequences: [left_adapter, right_adapter].
-        Either can be None to skip that end.
+        Either can be None to skip that end. Legacy parameter retained for
+        backwards compatibility; adapters are converted to flanking config
+        by the caller.
     barcode_references : Dict[str, str]
         Mapping of barcode names to barcode sequences.
     barcode_length : int, optional
@@ -1704,20 +1837,22 @@ def extract_and_assign_barcodes_in_bam(
     min_barcode_score : int, optional
         Minimum edit distance threshold.
     samtools_backend : str or None
-        Backend for BAM indexing.
+        Backend for BAM reading ("python" for pysam, "cli" for samtools).
     barcode_kit_config : BarcodeKitConfig, optional
-        Full barcode kit config with flanking sequences. When provided with
-        flanking data, enables flanking-based extraction.
+        Barcode kit config with flanking sequences. Required for extraction.
     barcode_ends : str, optional
         Which read ends to check: "both", "read_start", "read_end",
         "left_only", "right_only".
     barcode_amplicon_gap_tolerance : int
         Allowed gap/overlap (bp) between amplicon and barcode in amplicon-only extraction.
+    threads : int, optional
+        Number of worker processes for barcode extraction. If None or <= 1,
+        extraction runs in a single process.
 
     Returns
     -------
     Path
-        Path to the modified BAM file.
+        Path to the Parquet sidecar file containing barcode tags.
     """
     input_bam = Path(bam_path)
 
@@ -1733,34 +1868,14 @@ def extract_and_assign_barcodes_in_bam(
             )
         barcode_length = lengths.pop()
 
-    # Determine if we should use flanking-based extraction
-    use_flanking = barcode_kit_config is not None and barcode_kit_config.flanking is not None
-    flanking_config = barcode_kit_config.flanking if use_flanking else None
+    flanking_config = barcode_kit_config.flanking if barcode_kit_config else None
+    if flanking_config is None:
+        raise ValueError(
+            "barcode_kit_config with flanking sequences is required for barcode extraction."
+        )
     effective_barcode_ends = barcode_ends or (
         barcode_kit_config.barcode_ends if barcode_kit_config else "both"
     )
-
-    # Build legacy adapter list or determine which ends to check
-    if not use_flanking:
-        # Legacy path: validate adapters
-        if barcode_adapters is None:
-            barcode_adapters = [None, None]
-        elif not isinstance(barcode_adapters, (list, tuple)) or len(barcode_adapters) != 2:
-            raise ValueError(
-                "barcode_adapters must be a two-element list: [left_adapter, right_adapter]"
-            )
-
-        adapters: List[Optional[str]] = []
-        for adapter in barcode_adapters:
-            if adapter is None:
-                adapters.append(None)
-            else:
-                val = str(adapter).strip().upper()
-                adapters.append(val if val and val.lower() != "none" else None)
-
-        if all(a is None for a in adapters):
-            logger.warning("No barcode adapters provided; skipping barcode extraction")
-            return input_bam
 
     if not barcode_references:
         raise ValueError("barcode_references must be provided with at least one barcode")
@@ -1783,205 +1898,149 @@ def extract_and_assign_barcodes_in_bam(
     check_end = effective_barcode_ends in ("both", "right_only", "read_end")
 
     backend_choice = _resolve_samtools_backend(samtools_backend)
-    pysam_mod = _require_pysam()
-    tmp_bam = input_bam.with_name(f"{input_bam.stem}.bc_tmp{input_bam.suffix}")
+    cpu_count = os.cpu_count() or 1
+    num_workers = min(max(1, int(threads)), cpu_count) if threads else 1
 
-    # Statistics
-    total_reads = 0
+    # ── Shared extraction kwargs ────────────────────────────────────────
+    extraction_kwargs = dict(
+        barcode_length=barcode_length,
+        barcode_search_window=barcode_search_window,
+        barcode_max_edit_distance=barcode_max_edit_distance,
+        barcode_adapter_matcher=matcher,
+        barcode_composite_max_edits=composite_max_edits,
+        barcode_min_separation=barcode_min_separation,
+        require_both_ends=require_both_ends,
+        min_barcode_score=min_barcode_score,
+        bc_refs=bc_refs,
+        flanking_config=flanking_config,
+        check_start=check_start,
+        check_end=check_end,
+    )
+
+    # ── Single BAM pass: collect read_names + sequences ─────────────────
+    read_names: List[str] = []
+    is_primary: List[bool] = []
+    sequences: List[str] = []
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
+            for read in tqdm(
+                in_bam.fetch(until_eof=True), desc="Barcode: reading BAM", unit=" reads"
+            ):
+                read_names.append(read.query_name)
+                is_primary.append(not read.is_secondary and not read.is_supplementary)
+                sequences.append(read.query_sequence or "")
+    else:
+        cmd = ["samtools", "view", str(input_bam)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        for line in tqdm(proc.stdout, desc="Barcode: reading BAM", unit=" reads"):
+            if not line.strip() or line.startswith("@"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 11:
+                continue
+            flag = int(fields[1])
+            read_names.append(fields[0])
+            is_primary.append(not bool(flag & 0x100) and not bool(flag & 0x800))
+            seq = fields[9]
+            sequences.append("" if seq == "*" else seq)
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+    total_reads = len(read_names)
+
+    # ── Barcode extraction ──────────────────────────────────────────────
+    if num_workers <= 1 or total_reads == 0:
+        all_results = _extract_and_match_barcodes_for_reads(sequences, **extraction_kwargs)
+    else:
+        chunk_size = max(1000, ceil(total_reads / num_workers))
+        num_chunks = ceil(total_reads / chunk_size)
+        actual_workers = min(num_workers, num_chunks)
+        logger.info(
+            "Barcode extraction: %d reads across %d workers (chunk_size=%d)",
+            total_reads,
+            actual_workers,
+            chunk_size,
+        )
+        with ProcessPoolExecutor(max_workers=actual_workers) as pool:
+            futures = {}
+            for chunk_idx in range(num_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min(start_idx + chunk_size, total_reads)
+                chunk = sequences[start_idx:end_idx]
+                future = pool.submit(
+                    _extract_and_match_barcodes_for_reads,
+                    chunk,
+                    **extraction_kwargs,
+                )
+                futures[future] = chunk_idx
+
+            chunk_results: Dict[int, List[Dict[str, Optional[str | int]]]] = {}
+            with tqdm(
+                total=total_reads,
+                desc=f"Barcode: extracting ({actual_workers} workers)",
+                unit=" reads",
+            ) as pbar:
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    result = future.result()
+                    chunk_results[idx] = result
+                    pbar.update(len(result))
+
+            all_results: List[Dict[str, Optional[str | int]]] = []
+            for chunk_idx in range(num_chunks):
+                all_results.extend(chunk_results[chunk_idx])
+            del chunk_results
+
+    del sequences
+
+    # ── Compute statistics and write Parquet sidecar ────────────────────
+    import pandas as pd
+
     reads_both_ends = 0
     reads_start_only = 0
     reads_end_only = 0
     reads_unclassified = 0
     reads_mismatch_ends = 0
 
-    with (
-        pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam,
-        pysam_mod.AlignmentFile(str(tmp_bam), "wb", template=in_bam) as out_bam,
-    ):
-        for read in in_bam.fetch(until_eof=True):
-            total_reads += 1
-            sequence = read.query_sequence or ""
+    tag_rows: List[Dict[str, Optional[str | int]]] = []
+    for read_idx in range(total_reads):
+        row = all_results[read_idx]
+        match_type = row["BM"]
+        if match_type == "both":
+            reads_both_ends += 1
+        elif match_type == "read_start_only":
+            reads_start_only += 1
+        elif match_type == "read_end_only":
+            reads_end_only += 1
+        elif match_type == "mismatch":
+            reads_mismatch_ends += 1
+            reads_unclassified += 1
+        elif match_type == "unclassified":
+            reads_unclassified += 1
+        # Count unclassified for require_both_ends single-end matches
+        if require_both_ends and match_type in ("read_start_only", "read_end_only"):
+            reads_unclassified += 1
 
-            bc_matches: List[Tuple[Optional[str], Optional[int]]] = [
-                (None, None),
-                (None, None),
-            ]
-            extracted_start_seq: Optional[str] = None
-            extracted_end_seq: Optional[str] = None
-            padded_region: Optional[str] = None
+        # Only include primary alignments in the sidecar
+        if not is_primary[read_idx]:
+            continue
 
-            for i, read_end in enumerate(["start", "end"]):
-                if i == 0 and not check_start:
-                    continue
-                if i == 1 and not check_end:
-                    continue
+        tag_row = {"read_name": read_names[read_idx]}
+        tag_row.update(row)
+        tag_rows.append(tag_row)
 
-                search_from_start = read_end == "start"
+    del all_results, read_names, is_primary
 
-                extracted_bc: Optional[str] = None
-                padded_region = None
-
-                if use_flanking:
-                    flanking_candidates: List[FlankingConfig] = []
-                    if flanking_config is not None:
-                        if flanking_config.left_ref_end is not None and (
-                            flanking_config.left_ref_end.adapter_side
-                            or flanking_config.left_ref_end.amplicon_side
-                        ):
-                            flanking_candidates.append(flanking_config.left_ref_end)
-                        if (
-                            flanking_config.right_ref_end is not None
-                            and flanking_config.right_ref_end not in flanking_candidates
-                            and (
-                                flanking_config.right_ref_end.adapter_side
-                                or flanking_config.right_ref_end.amplicon_side
-                            )
-                        ):
-                            flanking_candidates.append(flanking_config.right_ref_end)
-
-                    for candidate in flanking_candidates:
-                        end_flanking = candidate
-                        if read_end == "end":
-                            if candidate.adapter_side and candidate.amplicon_side:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=_reverse_complement(candidate.amplicon_side),
-                                    amplicon_side=_reverse_complement(candidate.adapter_side),
-                                    adapter_pad=candidate.amplicon_pad,
-                                    amplicon_pad=candidate.adapter_pad,
-                                )
-                            elif candidate.adapter_side:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=_reverse_complement(candidate.adapter_side),
-                                    amplicon_side=None,
-                                    adapter_pad=candidate.adapter_pad,
-                                    amplicon_pad=candidate.amplicon_pad,
-                                )
-                            elif candidate.amplicon_side:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=None,
-                                    amplicon_side=_reverse_complement(candidate.amplicon_side),
-                                    adapter_pad=candidate.adapter_pad,
-                                    amplicon_pad=candidate.amplicon_pad,
-                                )
-                            else:
-                                end_flanking = FlankingConfig(
-                                    adapter_side=None,
-                                    amplicon_side=None,
-                                )
-
-                        extracted_bc, _, _, padded_region = _extract_barcode_with_flanking(
-                            read_sequence=sequence,
-                            target_length=barcode_length,
-                            search_window=barcode_search_window,
-                            search_from_start=search_from_start,
-                            flanking=end_flanking,
-                            adapter_matcher=matcher,
-                            composite_max_edits=composite_max_edits,
-                        )
-
-                        if extracted_bc and read_end == "end":
-                            extracted_bc = _reverse_complement(extracted_bc)
-                            if padded_region is not None:
-                                padded_region = _reverse_complement(padded_region)
-
-                        if extracted_bc:
-                            break
-                else:
-                    # Legacy path
-                    adapter = adapters[i] if i < len(adapters) else None
-                    if adapter is None:
-                        continue
-                    search_adapter = _reverse_complement(adapter) if read_end == "end" else adapter
-                    extracted_bc, _ = _extract_barcode_adjacent_to_adapter_on_read_end(
-                        read_sequence=sequence,
-                        adapter_sequence=search_adapter,
-                        barcode_length=barcode_length,
-                        barcode_search_window=barcode_search_window,
-                        search_from_start=search_from_start,
-                        adapter_matcher=matcher,
-                        adapter_max_edits=composite_max_edits,
-                    )
-                    if extracted_bc and read_end == "end":
-                        extracted_bc = _reverse_complement(extracted_bc)
-
-                if extracted_bc:
-                    if read_end == "start":
-                        extracted_start_seq = extracted_bc
-                    else:
-                        extracted_end_seq = extracted_bc
-                    match_name, match_dist = _match_barcode_to_references(
-                        extracted_bc,
-                        bc_refs,
-                        max_edit_distance=barcode_max_edit_distance,
-                        min_separation=barcode_min_separation,
-                        padded_region=padded_region,
-                    )
-                    if match_name is not None:
-                        if min_barcode_score is None or match_dist <= min_barcode_score:
-                            bc_matches[i] = (match_name, match_dist)
-
-            left_match, left_dist = bc_matches[0]
-            right_match, right_dist = bc_matches[1]
-
-            # Determine match type and final barcode assignment
-            if left_match and right_match:
-                if left_match == right_match:
-                    match_type = "both"
-                    assigned_bc = left_match
-                    reads_both_ends += 1
-                else:
-                    match_type = "mismatch"
-                    assigned_bc = "unclassified"
-                    reads_mismatch_ends += 1
-                    reads_unclassified += 1
-            elif left_match:
-                match_type = "read_start_only"
-                reads_start_only += 1
-                assigned_bc = "unclassified" if require_both_ends else left_match
-                if require_both_ends:
-                    reads_unclassified += 1
-            elif right_match:
-                match_type = "read_end_only"
-                reads_end_only += 1
-                assigned_bc = "unclassified" if require_both_ends else right_match
-                if require_both_ends:
-                    reads_unclassified += 1
-            else:
-                match_type = "unclassified"
-                assigned_bc = "unclassified"
-                reads_unclassified += 1
-
-            # Write tags
-            read.set_tag("BC", assigned_bc, value_type="Z")
-            read.set_tag("BM", match_type, value_type="Z")
-
-            if extracted_start_seq:
-                read.set_tag("B3", extracted_start_seq, value_type="Z")
-            if extracted_end_seq:
-                read.set_tag("B4", extracted_end_seq, value_type="Z")
-
-            if left_match is not None:
-                read.set_tag("B1", left_dist, value_type="i")
-                read.set_tag("B5", left_match, value_type="Z")
-            if right_match is not None:
-                read.set_tag("B2", right_dist, value_type="i")
-                read.set_tag("B6", right_match, value_type="Z")
-
-            out_bam.write(read)
-
-    # Replace original BAM and re-index
-    tmp_bam.replace(input_bam)
-    index_paths = (
-        input_bam.with_suffix(input_bam.suffix + ".bai"),
-        Path(str(input_bam) + ".bai"),
-    )
-    for idx_path in index_paths:
-        if idx_path.exists():
-            idx_path.unlink()
-    if backend_choice == "python":
-        _index_bam_with_pysam(input_bam)
-    else:
-        _index_bam_with_samtools(input_bam)
+    sidecar_path = input_bam.with_suffix(".barcode_tags.parquet")
+    df = pd.DataFrame(tag_rows)
+    for col in ("BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"):
+        if col not in df.columns:
+            df[col] = None
+    df.to_parquet(sidecar_path, index=False)
+    del tag_rows, df
 
     logger.info(
         "Barcode extraction complete for %s:\n"
@@ -1990,7 +2049,8 @@ def extract_and_assign_barcodes_in_bam(
         "  read_start_only=%d (%.1f%%)\n"
         "  read_end_only=%d (%.1f%%)\n"
         "  mismatch_ends=%d (%.1f%%)\n"
-        "  unclassified=%d (%.1f%%)",
+        "  unclassified=%d (%.1f%%)\n"
+        "  sidecar=%s",
         input_bam,
         total_reads,
         reads_both_ends,
@@ -2003,9 +2063,10 @@ def extract_and_assign_barcodes_in_bam(
         100 * reads_mismatch_ends / max(1, total_reads),
         reads_unclassified,
         100 * reads_unclassified / max(1, total_reads),
+        sidecar_path,
     )
 
-    return input_bam
+    return sidecar_path
 
 
 def _stream_dorado_logs(stderr_iter) -> None:
@@ -2979,7 +3040,7 @@ def count_aligned_reads(bam_file, samtools_backend: str | None = "auto"):
 
 
 def annotate_demux_type_from_bi_tag(
-    bam_path: str | Path, output_path: Optional[str | Path] = None, threshold: float = 0.0
+    bam_path: str | Path, output_path: Optional[str | Path] = None, threshold: float = 0.65
 ) -> Path:
     """Annotate reads with a BM tag based on dorado bi per-end barcode scores.
 
@@ -3868,57 +3929,105 @@ def extract_readnames_from_bam(aligned_BAM, samtools_backend: str | None = "auto
 
 
 def separate_bam_by_bc(
-    input_bam, output_prefix, bam_suffix, split_dir, samtools_backend: str | None = "auto"
+    input_bam,
+    output_prefix,
+    bam_suffix,
+    split_dir,
+    samtools_backend: str | None = "auto",
+    barcode_sidecar: Optional[Path] = None,
 ):
     """
-    Separates an input BAM file on the BC SAM tag values.
+    Separates an input BAM file by barcode assignment.
+
+    When *barcode_sidecar* is provided, barcode assignments are read from the
+    Parquet sidecar file (``read_name → BC`` mapping) instead of from BAM tags.
 
     Parameters:
         input_bam (str): File path to the BAM file to split.
         output_prefix (str): A prefix to append to the output BAM.
         bam_suffix (str): A suffix to add to the bam file.
-        split_dir (str): String indicating path to directory to split BAMs into
+        split_dir (str): String indicating path to directory to split BAMs into.
+        samtools_backend (str or None): Backend for BAM I/O.
+        barcode_sidecar (Path, optional): Path to barcode_tags.parquet sidecar.
 
     Returns:
         None
             Writes out split BAM files.
     """
-    logger.debug("Demultiplexing BAM based on the BC tag")
-    bam_base = input_bam.name
-    bam_base_minus_suffix = input_bam.stem
+    import pandas as pd
 
+    bam_base_minus_suffix = input_bam.stem
     backend_choice = _resolve_samtools_backend(samtools_backend)
+
+    # Load barcode assignments from sidecar if available
+    bc_lookup: Optional[Dict[str, str]] = None
+    if barcode_sidecar is not None and Path(barcode_sidecar).exists():
+        logger.debug("Loading barcode assignments from sidecar: %s", barcode_sidecar)
+        bc_df = pd.read_parquet(barcode_sidecar, columns=["read_name", "BC"])
+        bc_lookup = dict(zip(bc_df["read_name"], bc_df["BC"]))
+        del bc_df
+
+    # When using a sidecar, only write primary alignments to split BAMs
+    # so that split BAMs and sidecar are 1:1 on read_name.
+    primary_only = bc_lookup is not None
 
     if backend_choice == "python":
         pysam_mod = _require_pysam()
-        # Open the input BAM file for reading
         with pysam_mod.AlignmentFile(str(input_bam), "rb") as bam:
-            # Create a dictionary to store output BAM files
             output_files = {}
-            # Iterate over each read in the BAM file
             for read in bam:
-                try:
-                    # Get the barcode tag value
-                    bc_tag = read.get_tag("BC", with_value_type=True)[0]
-                    # bc_tag = read.get_tag("BC", with_value_type=True)[0].split('barcode')[1]
-                    # Open the output BAM file corresponding to the barcode
-                    if bc_tag not in output_files:
-                        output_path = (
-                            split_dir
-                            / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
-                        )
-                        output_files[bc_tag] = pysam_mod.AlignmentFile(
-                            str(output_path), "wb", header=bam.header
-                        )
-                    # Write the read to the corresponding output BAM file
-                    output_files[bc_tag].write(read)
-                except KeyError:
-                    logger.warning(f"BC tag not present for read: {read.query_name}")
-        # Close all output BAM files
+                if primary_only and (read.is_secondary or read.is_supplementary):
+                    continue
+
+                # Look up barcode from sidecar or BAM tag
+                bc_tag = None
+                if bc_lookup is not None:
+                    bc_tag = bc_lookup.get(read.query_name)
+                else:
+                    try:
+                        bc_tag = read.get_tag("BC", with_value_type=True)[0]
+                    except KeyError:
+                        pass
+
+                if bc_tag is None:
+                    bc_tag = "unclassified"
+
+                if bc_tag not in output_files:
+                    output_path = (
+                        split_dir / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
+                    )
+                    output_files[bc_tag] = pysam_mod.AlignmentFile(
+                        str(output_path), "wb", header=bam.header
+                    )
+                output_files[bc_tag].write(read)
         for output_file in output_files.values():
             output_file.close()
         return
 
+    # CLI backend: if we have a sidecar, use pysam-style single-pass splitting
+    # since samtools view -d can't filter by sidecar
+    if bc_lookup is not None:
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(input_bam), "rb") as bam:
+            output_files = {}
+            for read in bam:
+                if read.is_secondary or read.is_supplementary:
+                    continue
+
+                bc_tag = bc_lookup.get(read.query_name, "unclassified")
+                if bc_tag not in output_files:
+                    output_path = (
+                        split_dir / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
+                    )
+                    output_files[bc_tag] = pysam_mod.AlignmentFile(
+                        str(output_path), "wb", header=bam.header
+                    )
+                output_files[bc_tag].write(read)
+        for output_file in output_files.values():
+            output_file.close()
+        return
+
+    # CLI backend without sidecar: use samtools to split by BAM BC tag
     def _collect_bc_tags() -> set[str]:
         bc_tags: set[str] = set()
         proc = subprocess.Popen(
@@ -3959,7 +4068,11 @@ def separate_bam_by_bc(
 
 
 def split_and_index_BAM(
-    aligned_sorted_BAM, split_dir, bam_suffix, samtools_backend: str | None = "auto"
+    aligned_sorted_BAM,
+    split_dir,
+    bam_suffix,
+    samtools_backend: str | None = "auto",
+    barcode_sidecar: Optional[Path] = None,
 ):
     """
     A wrapper function for splitting BAMS and indexing them.
@@ -3967,6 +4080,7 @@ def split_and_index_BAM(
         aligned_sorted_BAM (str): A string representing the file path of the aligned_sorted BAM file.
         split_dir (str): A string representing the file path to the directory to split the BAMs into.
         bam_suffix (str): A suffix to add to the bam file.
+        barcode_sidecar (Path, optional): Path to barcode_tags.parquet sidecar.
 
     Returns:
         None
@@ -3983,6 +4097,7 @@ def split_and_index_BAM(
         bam_suffix,
         split_dir,
         samtools_backend=samtools_backend,
+        barcode_sidecar=barcode_sidecar,
     )
     # Make a BAM index file for the BAMs in that directory
     bam_pattern = "*" + bam_suffix
