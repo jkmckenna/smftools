@@ -850,9 +850,7 @@ def process_single_bam(
         adata.var_names = bin_df.columns.astype(str)
         adata.obs[SAMPLE] = [sample] * len(adata)
         if read_to_barcode is not None:
-            adata.obs[BARCODE] = [
-                read_to_barcode.get(rn, "unknown") for rn in adata.obs_names
-            ]
+            adata.obs[BARCODE] = [read_to_barcode.get(rn, "unknown") for rn in adata.obs_names]
         else:
             barcode_label = _barcode_label_from_sample_name(sample)
             adata.obs[BARCODE] = [barcode_label] * len(adata)

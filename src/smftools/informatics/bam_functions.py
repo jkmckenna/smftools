@@ -2597,7 +2597,9 @@ def bam_qc(
         view_last_err: deque[str] = deque(maxlen=80)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        view_proc = subprocess.Popen(view_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        view_proc = subprocess.Popen(
+            view_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
         with open(out_path, "w") as fh:
             tool_proc = subprocess.Popen(
                 tool_cmd, stdin=view_proc.stdout, stdout=fh, stderr=subprocess.PIPE, text=True
@@ -2625,8 +2627,7 @@ def bam_qc(
         if view_rc not in (0, -13):
             tail = "\n".join(view_last_err)
             raise RuntimeError(
-                f"samtools view failed for {bam} ({tag}, exit {view_rc}). "
-                f"Stderr tail:\n{tail}"
+                f"samtools view failed for {bam} ({tag}, exit {view_rc}). Stderr tail:\n{tail}"
             )
 
         if tool_rc != 0:
@@ -2658,7 +2659,9 @@ def bam_qc(
         out_flag = bam_qc_dir / f"{barcode}_flagstat.txt"
 
         if not read_names:
-            logger.warning("No read names provided for barcode %s; QC outputs may be empty.", barcode)
+            logger.warning(
+                "No read names provided for barcode %s; QC outputs may be empty.", barcode
+            )
             read_names = set()
 
         # Fast path: samtools view -N when available.
@@ -2682,7 +2685,11 @@ def bam_qc(
                     results.append((f"stats[{barcode}]", rc))
                 if flagstats:
                     rc = _run_piped_to_file(
-                        view_cmd, ["samtools", "flagstat", "-"], out_flag, bam, f"flagstat[{barcode}]"
+                        view_cmd,
+                        ["samtools", "flagstat", "-"],
+                        out_flag,
+                        bam,
+                        f"flagstat[{barcode}]",
                     )
                     results.append((f"flagstat[{barcode}]", rc))
                 return barcode, results
@@ -2702,9 +2709,10 @@ def bam_qc(
         try:
             if have_pysam:
                 assert pysam_mod is not None
-                with pysam_mod.AlignmentFile(str(bam), "rb") as in_bam, pysam_mod.AlignmentFile(
-                    str(tmp_bam), "wb", header=in_bam.header
-                ) as out_bam:
+                with (
+                    pysam_mod.AlignmentFile(str(bam), "rb") as in_bam,
+                    pysam_mod.AlignmentFile(str(tmp_bam), "wb", header=in_bam.header) as out_bam,
+                ):
                     for read in in_bam.fetch(until_eof=True):
                         if read.query_name in read_names:
                             out_bam.write(read)

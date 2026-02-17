@@ -564,11 +564,7 @@ class TestDualNextera12SyntheticFragments:
 
         start_adapter = top_adapter if start_slot == "top" else bottom_adapter
         end_adapter = top_adapter if end_slot == "top" else bottom_adapter
-        read_seq = (
-            f"{start_adapter}{u_start}"
-            f"{'N' * 40}"
-            f"{self._rc(u_end)}{self._rc(end_adapter)}"
-        )
+        read_seq = f"{start_adapter}{u_start}{'N' * 40}{self._rc(u_end)}{self._rc(end_adapter)}"
         # BAM always stores the reference-oriented sequence. For forward and
         # reverse reads of the same fragment, the BAM sequence is the same.
         # The code will RC reverse reads to recover original read orientation.
@@ -999,7 +995,11 @@ class TestBarcodeExtractionBackendConsistency:
         """Mix of forward/reverse reads: both backends agree on barcode assignment."""
         reads = [
             {"name": "fwd_nb01", "sequence": "GCTAAAAA" + "N" * 20 + "TTTTTCGG"},
-            {"name": "rev_nb01", "sequence": "GCTAAAAA" + "N" * 20 + "TTTTTCGG", "is_reverse": True},
+            {
+                "name": "rev_nb01",
+                "sequence": "GCTAAAAA" + "N" * 20 + "TTTTTCGG",
+                "is_reverse": True,
+            },
             {"name": "no_bc", "sequence": "T" * 30},
         ]
         py_tags = self._run_barcode(tmp_path, reads, "python", "py")

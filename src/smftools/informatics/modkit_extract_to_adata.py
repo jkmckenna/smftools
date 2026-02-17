@@ -1277,9 +1277,7 @@ def modkit_extract_to_adata(
         )
         # In non-split mode, TSVs come from running extract_mods on the single BAM
         base_tsvs = sorted(
-            p
-            for p in mod_tsv_dir.iterdir()
-            if p.is_file() and "extract.tsv" in p.name
+            p for p in mod_tsv_dir.iterdir() if p.is_file() and "extract.tsv" in p.name
         )
         if not base_tsvs:
             raise ValueError(
@@ -1384,7 +1382,12 @@ def modkit_extract_to_adata(
                     base_quality_scores,
                     read_span_masks,
                 ) = extract_base_identities(
-                    bam, record, positions, max_reference_length, ref_seq, samtools_backend,
+                    bam,
+                    record,
+                    positions,
+                    max_reference_length,
+                    ref_seq,
+                    samtools_backend,
                     primary_only=nonsplit_mode,
                     read_name_filter=set(read_to_barcode.keys()) if read_to_barcode else None,
                 )
@@ -1529,7 +1532,9 @@ def modkit_extract_to_adata(
             tsv_batch = tsv_path_list
             bam_batch = bam_path_list
             if use_global_sample_indices:
-                sample_indices_batch = list(range(batch * batch_size, batch * batch_size + len(tsv_batch)))
+                sample_indices_batch = list(
+                    range(batch * batch_size, batch * batch_size + len(tsv_batch))
+                )
             else:
                 sample_indices_batch = None
         # For all other batches, take the next batch of tsvs and bams out of the file queue.
@@ -1539,7 +1544,9 @@ def modkit_extract_to_adata(
             tsv_path_list = tsv_path_list[batch_size:]
             bam_path_list = bam_path_list[batch_size:]
             if use_global_sample_indices:
-                sample_indices_batch = list(range(batch * batch_size, batch * batch_size + len(tsv_batch)))
+                sample_indices_batch = list(
+                    range(batch * batch_size, batch * batch_size + len(tsv_batch))
+                )
             else:
                 sample_indices_batch = None
         logger.info("tsvs in batch {0} ".format(tsv_batch))

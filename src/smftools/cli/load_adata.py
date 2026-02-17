@@ -1060,9 +1060,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     )
 
     # Load UMI tags from Parquet sidecar (written by annotate_umi_tags_in_bam)
-    if getattr(cfg, "use_umi", False) and (
-        not umi_sidecar or not Path(umi_sidecar).exists()
-    ):
+    if getattr(cfg, "use_umi", False) and (not umi_sidecar or not Path(umi_sidecar).exists()):
         _resolved_umi_sidecar = resolve_sidecar(sidecar_manifest, "umi_oriented")
         if _resolved_umi_sidecar is not None:
             umi_sidecar = _resolved_umi_sidecar
