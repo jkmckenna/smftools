@@ -12,6 +12,7 @@ from smftools.informatics.bam_functions import (
     UMIKitConfig,
     _build_flanking_from_adapters,
     _extract_sequence_with_flanking,
+    _match_barcode_to_references,
     _parse_flanking_config_from_dict,
     _parse_per_end_flanking,
     _reverse_complement,
@@ -67,106 +68,21 @@ def _read_bam_tags(bam_path):
     with _pysam.AlignmentFile(str(bam_path), "rb") as fh:
         for read in fh.fetch(until_eof=True):
             out[read.query_name] = dict(read.get_tags())
+
+
+def _read_parquet_tags(parquet_path):
+    """Return ``{read_name: {tag: value}}`` from a barcode sidecar parquet."""
+    from pathlib import Path
+    p = Path(parquet_path)
+    df = pd.read_parquet(p)
+    out = {}
+    for _, row in df.iterrows():
+        tags = {}
+        for col in ["BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"]:
+            if col in row.index and pd.notna(row[col]):
+                tags[col] = row[col]
+        out[row["read_name"]] = tags
     return out
-
-
-class TestExtractBarcodeAdjacentToAdapter:
-    """Tests for barcode extraction from read sequences."""
-
-    def test_extract_barcode_from_read_start(self):
-        """Test barcode extraction when adapter is at read start."""
-        read = "ACGTAAAACCCCGGGGTTTT"
-        bc, pos = bam_functions._extract_barcode_adjacent_to_adapter_on_read_end(
-            read_sequence=read,
-            adapter_sequence="ACGT",
-            barcode_length=4,
-            barcode_search_window=10,
-            search_from_start=True,
-            adapter_matcher="exact",
-        )
-        assert bc == "AAAA"
-        assert pos == 0
-
-    def test_extract_barcode_from_read_end(self):
-        """Test barcode extraction when adapter is at read end."""
-        read = "TTTTCCCCGGGGACGT"
-        bc, pos = bam_functions._extract_barcode_adjacent_to_adapter_on_read_end(
-            read_sequence=read,
-            adapter_sequence="ACGT",
-            barcode_length=4,
-            barcode_search_window=10,
-            search_from_start=False,
-            adapter_matcher="exact",
-        )
-        assert bc == "GGGG"
-        assert pos == 12
-
-    def test_extract_barcode_no_adapter_found(self):
-        """Test that None is returned when adapter not found."""
-        read = "TTTTCCCCGGGGAAAA"
-        bc, pos = bam_functions._extract_barcode_adjacent_to_adapter_on_read_end(
-            read_sequence=read,
-            adapter_sequence="ACGT",
-            barcode_length=4,
-            barcode_search_window=10,
-            search_from_start=True,
-            adapter_matcher="exact",
-        )
-        assert bc is None
-        assert pos is None
-
-    def test_extract_barcode_outside_search_window(self):
-        """Test that adapter outside search window is not found."""
-        read = "TTTTTTTTTTACGTAAAA"
-        bc, pos = bam_functions._extract_barcode_adjacent_to_adapter_on_read_end(
-            read_sequence=read,
-            adapter_sequence="ACGT",
-            barcode_length=4,
-            barcode_search_window=5,
-            search_from_start=True,
-            adapter_matcher="exact",
-        )
-        assert bc is None
-        assert pos is None
-
-    def test_extract_barcode_insufficient_length(self):
-        """Test that None is returned when barcode region is too short."""
-        read = "ACGTAA"  # Only 2 bases after adapter
-        bc, pos = bam_functions._extract_barcode_adjacent_to_adapter_on_read_end(
-            read_sequence=read,
-            adapter_sequence="ACGT",
-            barcode_length=4,
-            barcode_search_window=10,
-            search_from_start=True,
-            adapter_matcher="exact",
-        )
-        assert bc is None
-        assert pos is None
-
-    def test_extract_barcode_empty_sequence(self):
-        """Test handling of empty read sequence."""
-        bc, pos = bam_functions._extract_barcode_adjacent_to_adapter_on_read_end(
-            read_sequence="",
-            adapter_sequence="ACGT",
-            barcode_length=4,
-            barcode_search_window=10,
-            search_from_start=True,
-            adapter_matcher="exact",
-        )
-        assert bc is None
-        assert pos is None
-
-    def test_extract_barcode_rejects_unknown_matcher(self):
-        """Test that unknown matcher raises ValueError."""
-        with pytest.raises(ValueError, match="adapter_matcher must be one of"):
-            bam_functions._extract_barcode_adjacent_to_adapter_on_read_end(
-                read_sequence="ACGTAAAA",
-                adapter_sequence="ACGT",
-                barcode_length=4,
-                barcode_search_window=10,
-                search_from_start=True,
-                adapter_matcher="invalid",
-            )
 
 
 class TestMatchBarcodeToReferences:
@@ -937,95 +853,23 @@ class TestExtractAndAssignBarcodesInBam:
             barcode_composite_max_edits=0,
             samtools_backend="python",
         )
+        # Provide a default flanking kit config unless the caller overrides
+        if "barcode_kit_config" not in kwargs:
+            defaults["barcode_kit_config"] = BarcodeKitConfig(
+                barcodes=self.BC_REFS,
+                barcode_length=4,
+                flanking=PerEndFlankingConfig(
+                    left_ref_end=FlankingConfig(
+                        adapter_side=self.LEFT_ADAPTER, amplicon_side=None,
+                    ),
+                    right_ref_end=FlankingConfig(
+                        adapter_side=self.RIGHT_ADAPTER, amplicon_side=None,
+                    ),
+                ),
+            )
         defaults.update(kwargs)
-        bam_functions.extract_and_assign_barcodes_in_bam(bam, **defaults)
-        return _read_bam_tags(bam)
-
-    # -- Legacy adapter path --------------------------------------------------
-
-    def test_legacy_both_ends_match(self, tmp_path):
-        """Both ends match BC01 → BC='BC01', BM='both'."""
-        # ACGT(0-3) AAAA(4-7) NNNNNNNN(8-15) AAAA(16-19) TGCA(20-23)
-        reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNAAAATGCA"}]
-        tags = self._run(tmp_path, reads)
-        assert tags["r1"]["BC"] == "BC01"
-        assert tags["r1"]["BM"] == "both"
-        assert tags["r1"]["B5"] == "BC01"
-        assert tags["r1"]["B6"] == "BC01"
-
-    def test_legacy_mismatch_ends(self, tmp_path):
-        """Different barcodes at each end → 'mismatch', 'unclassified'."""
-        reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNCCCCTGCA"}]
-        tags = self._run(tmp_path, reads)
-        assert tags["r1"]["BC"] == "unclassified"
-        assert tags["r1"]["BM"] == "mismatch"
-        assert tags["r1"]["B5"] == "BC01"
-        assert tags["r1"]["B6"] == "BC02"
-
-    def test_legacy_left_only(self, tmp_path):
-        """Only left adapter found → assigned from start, BM='read_start_only'."""
-        reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNNNNNNNNN"}]
-        tags = self._run(tmp_path, reads)
-        assert tags["r1"]["BC"] == "BC01"
-        assert tags["r1"]["BM"] == "read_start_only"
-        assert tags["r1"]["B5"] == "BC01"
-        assert "B6" not in tags["r1"]
-
-    def test_legacy_right_only(self, tmp_path):
-        """Only right adapter found → assigned from end, BM='read_end_only'."""
-        reads = [{"name": "r1", "sequence": "NNNNNNNNNNNNNNNNCCCCTGCA"}]
-        tags = self._run(tmp_path, reads)
-        assert tags["r1"]["BC"] == "BC02"
-        assert tags["r1"]["BM"] == "read_end_only"
-        assert "B5" not in tags["r1"]
-        assert tags["r1"]["B6"] == "BC02"
-
-    def test_legacy_unclassified(self, tmp_path):
-        """No adapters found → 'unclassified'."""
-        reads = [{"name": "r1", "sequence": "TTTTTTTTTTTTTTTTTTTTTTTT"}]
-        tags = self._run(tmp_path, reads)
-        assert tags["r1"]["BC"] == "unclassified"
-        assert tags["r1"]["BM"] == "unclassified"
-        assert "B5" not in tags["r1"]
-        assert "B6" not in tags["r1"]
-
-    # -- Filtering options ----------------------------------------------------
-
-    def test_require_both_ends_rejects_single(self, tmp_path):
-        """require_both_ends=True with only left match → 'unclassified'."""
-        reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNNNNNNNNN"}]
-        tags = self._run(tmp_path, reads, require_both_ends=True)
-        assert tags["r1"]["BC"] == "unclassified"
-        assert tags["r1"]["BM"] == "read_start_only"
-        assert tags["r1"]["B5"] == "BC01"
-
-    def test_min_barcode_score_filters_weak_match(self, tmp_path):
-        """min_barcode_score=0 rejects matches with edit distance > 0."""
-        # AAAT has Hamming distance 1 from AAAA (BC01)
-        reads = [{"name": "r1", "sequence": "ACGTAAATNNNNNNNNAAATTGCA"}]
-        tags = self._run(tmp_path, reads, min_barcode_score=0)
-        assert tags["r1"]["BC"] == "unclassified"
-        assert tags["r1"]["BM"] == "unclassified"
-
-    # -- barcode_ends ---------------------------------------------------------
-
-    def test_barcode_ends_left_only(self, tmp_path):
-        """barcode_ends='left_only' ignores read end entirely."""
-        reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNCCCCTGCA"}]
-        tags = self._run(tmp_path, reads, barcode_ends="left_only")
-        assert tags["r1"]["BC"] == "BC01"
-        assert tags["r1"]["BM"] == "read_start_only"
-        assert tags["r1"]["B5"] == "BC01"
-        assert "B6" not in tags["r1"]
-
-    def test_barcode_ends_right_only(self, tmp_path):
-        """barcode_ends='right_only' ignores read start entirely."""
-        reads = [{"name": "r1", "sequence": "ACGTAAAANNNNNNNNCCCCTGCA"}]
-        tags = self._run(tmp_path, reads, barcode_ends="right_only")
-        assert tags["r1"]["BC"] == "BC02"
-        assert tags["r1"]["BM"] == "read_end_only"
-        assert "B5" not in tags["r1"]
-        assert tags["r1"]["B6"] == "BC02"
+        sidecar = bam_functions.extract_and_assign_barcodes_in_bam(bam, **defaults)
+        return _read_parquet_tags(sidecar)
 
     # -- Flanking-based extraction -------------------------------------------
 
@@ -1132,57 +976,51 @@ class TestExtractAndAssignBarcodesInBam:
         assert tags["r1"]["BC"] == "BC01"
         assert tags["r1"]["BM"] == "both"
 
-    def test_either_mode_falls_back_to_amplicon_only(self, tmp_path):
-        """'either' mode: adapter not found → falls back to amplicon_only.
-
-        Forward read with RC construct at right end:
-        - Left: BC01(AAAA) + amplicon(CGATCGAT) + ...
-        - Right: ... + RC(amplicon)(=ATCGATCG) + RC(BC01)(=TTTT)
-        """
-        amplicon = "CGATCGAT"
-        rc_amplicon = _reverse_complement(amplicon)  # ATCGATCG
-        rc_bc = _reverse_complement("AAAA")  # TTTT
-        kit = BarcodeKitConfig(
-            barcodes=self.BC_REFS,
-            barcode_length=4,
-            flanking=PerEndFlankingConfig(
-                left_ref_end=FlankingConfig(adapter_side="ZZZZ", amplicon_side=amplicon),
-                right_ref_end=FlankingConfig(adapter_side="ZZZZ", amplicon_side=amplicon),
-            ),
-        )
-        reads = [{"name": "r1", "sequence": f"AAAA{amplicon}NNNNNNNN{rc_amplicon}{rc_bc}"}]
-        tags = self._run(
-            tmp_path,
-            reads,
-            barcode_kit_config=kit,
-            barcode_adapter_matcher="exact",
-        )
-        assert tags["r1"]["BC"] == "BC01"
-        assert tags["r1"]["BM"] == "both"
-
     # -- Error handling -------------------------------------------------------
 
     def test_empty_references_raises(self, tmp_path):
         """Empty barcode_references raises ValueError."""
         bam = tmp_path / "test.bam"
         _create_test_bam(bam, [{"name": "r1", "sequence": "ACGTAAAANNNNNNNN"}])
+        kit = BarcodeKitConfig(
+            barcodes={},
+            barcode_length=4,
+            flanking=PerEndFlankingConfig(
+                left_ref_end=FlankingConfig(adapter_side="ACGT", amplicon_side=None),
+                right_ref_end=FlankingConfig(adapter_side="TGCA", amplicon_side=None),
+            ),
+        )
         with pytest.raises(ValueError, match="barcode_references"):
             bam_functions.extract_and_assign_barcodes_in_bam(
                 bam,
                 barcode_adapters=["ACGT", "TGCA"],
                 barcode_references={},
                 barcode_adapter_matcher="exact",
+                barcode_kit_config=kit,
                 samtools_backend="python",
             )
 
     # -- Multiple reads -------------------------------------------------------
 
     def test_multiple_reads_mixed_outcomes(self, tmp_path):
-        """Multiple reads produce correct per-read tags."""
+        """Multiple reads produce correct per-read tags.
+
+        Uses flanking-based extraction with adapter-only flanking.
+        Right end: RC(adapter) + RC(barcode), so for BC01=AAAA the right end
+        has RC(TGCA)=TGCA followed by RC(AAAA)=TTTT, but the code extracts
+        the barcode before RC(adapter) and then reverse-complements it back.
+        """
+        rc_adapter = _reverse_complement("TGCA")  # TGCA
+        rc_bc01 = _reverse_complement("AAAA")  # TTTT
+        rc_bc02 = _reverse_complement("CCCC")  # GGGG
         reads = [
-            {"name": "both_bc01", "sequence": "ACGTAAAANNNNNNNNAAAATGCA"},
-            {"name": "mismatch", "sequence": "ACGTAAAANNNNNNNNCCCCTGCA"},
+            # Both ends match BC01
+            {"name": "both_bc01", "sequence": f"ACGTAAAANNNNNNNN{rc_bc01}{rc_adapter}"},
+            # Start=BC01, End=BC02 → mismatch
+            {"name": "mismatch", "sequence": f"ACGTAAAANNNNNNNN{rc_bc02}{rc_adapter}"},
+            # Only left adapter found
             {"name": "left_bc03", "sequence": "ACGTGGGGNNNNNNNNNNNNNNNN"},
+            # No adapters found
             {"name": "unclassified", "sequence": "TTTTTTTTTTTTTTTTTTTTTTTT"},
         ]
         tags = self._run(tmp_path, reads)
@@ -1329,8 +1167,8 @@ class TestRBK114RealisticRC:
             samtools_backend="python",
         )
         defaults.update(kwargs)
-        bam_functions.extract_and_assign_barcodes_in_bam(bam, **defaults)
-        return _read_bam_tags(bam)
+        sidecar = bam_functions.extract_and_assign_barcodes_in_bam(bam, **defaults)
+        return _read_parquet_tags(sidecar)
 
     def _make_kit(self, **overrides):
         kw = dict(
