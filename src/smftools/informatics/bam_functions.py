@@ -8,9 +8,9 @@ import subprocess
 import time
 from collections import Counter, defaultdict, deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from math import ceil
 from dataclasses import dataclass, field
 from itertools import zip_longest
+from math import ceil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -269,8 +269,6 @@ def _parse_idxstats_output(output: str) -> Tuple[int, int, Dict[str, Tuple[int, 
         proportions[ref] = (count, proportion)
 
     return aligned_reads_count, unaligned_reads_count, proportions
-
-
 
 
 _COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
@@ -807,26 +805,32 @@ def _extract_umis_for_reads(
     end_flanking_cache: List[FlankingConfig] = []
     for _slot, candidate in flanking_candidates:
         if candidate.adapter_side and candidate.amplicon_side:
-            end_flanking_cache.append(FlankingConfig(
-                adapter_side=_reverse_complement(candidate.amplicon_side),
-                amplicon_side=_reverse_complement(candidate.adapter_side),
-                adapter_pad=candidate.amplicon_pad,
-                amplicon_pad=candidate.adapter_pad,
-            ))
+            end_flanking_cache.append(
+                FlankingConfig(
+                    adapter_side=_reverse_complement(candidate.amplicon_side),
+                    amplicon_side=_reverse_complement(candidate.adapter_side),
+                    adapter_pad=candidate.amplicon_pad,
+                    amplicon_pad=candidate.adapter_pad,
+                )
+            )
         elif candidate.adapter_side:
-            end_flanking_cache.append(FlankingConfig(
-                adapter_side=_reverse_complement(candidate.adapter_side),
-                amplicon_side=None,
-                adapter_pad=candidate.adapter_pad,
-                amplicon_pad=candidate.amplicon_pad,
-            ))
+            end_flanking_cache.append(
+                FlankingConfig(
+                    adapter_side=_reverse_complement(candidate.adapter_side),
+                    amplicon_side=None,
+                    adapter_pad=candidate.adapter_pad,
+                    amplicon_pad=candidate.amplicon_pad,
+                )
+            )
         elif candidate.amplicon_side:
-            end_flanking_cache.append(FlankingConfig(
-                adapter_side=None,
-                amplicon_side=_reverse_complement(candidate.amplicon_side),
-                adapter_pad=candidate.adapter_pad,
-                amplicon_pad=candidate.amplicon_pad,
-            ))
+            end_flanking_cache.append(
+                FlankingConfig(
+                    adapter_side=None,
+                    amplicon_side=_reverse_complement(candidate.amplicon_side),
+                    adapter_pad=candidate.adapter_pad,
+                    amplicon_pad=candidate.amplicon_pad,
+                )
+            )
         else:
             end_flanking_cache.append(FlankingConfig(adapter_side=None, amplicon_side=None))
 
@@ -865,7 +869,9 @@ def _extract_umis_for_reads(
                     # Use original (pre-RC) adapter_side as flank identity
                     flank_seq = candidate.adapter_side or ""
                     result = UMIExtractionResult(
-                        umi_seq=extracted, slot=slot, flank_seq=flank_seq,
+                        umi_seq=extracted,
+                        slot=slot,
+                        flank_seq=flank_seq,
                     )
                     idx = 0 if slot == "top" else 1
                     if found_slots[idx] is None:
@@ -877,9 +883,7 @@ def _extract_umis_for_reads(
                         if ue_result is None:
                             ue_result = result
 
-            if configured_slots and all(
-                found_slots[idx] is not None for idx in configured_slots
-            ):
+            if configured_slots and all(found_slots[idx] is not None for idx in configured_slots):
                 break
 
         results.append((us_result, ue_result))
@@ -919,9 +923,7 @@ def annotate_umi_tags_in_bam(
         return input_bam
 
     if umi_kit_config is None or umi_kit_config.flanking is None:
-        raise ValueError(
-            "umi_kit_config with flanking sequences is required for UMI annotation."
-        )
+        raise ValueError("umi_kit_config with flanking sequences is required for UMI annotation.")
 
     flanking_config = umi_kit_config.flanking
     length = umi_kit_config.length if umi_kit_config.length else int(umi_length or 0)
@@ -950,8 +952,7 @@ def annotate_umi_tags_in_bam(
     ):
         flanking_candidates.append(("top", flanking_config.left_ref_end))
     if flanking_config.right_ref_end is not None and (
-        flanking_config.right_ref_end.adapter_side
-        or flanking_config.right_ref_end.amplicon_side
+        flanking_config.right_ref_end.adapter_side or flanking_config.right_ref_end.amplicon_side
     ):
         flanking_candidates.append(("bottom", flanking_config.right_ref_end))
 
@@ -1038,7 +1039,9 @@ def annotate_umi_tags_in_bam(
                 futures[future] = chunk_idx
 
             # Collect results in submission order, with progress per chunk
-            chunk_results: Dict[int, List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]]] = {}
+            chunk_results: Dict[
+                int, List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]]
+            ] = {}
             with tqdm(
                 total=total_reads,
                 desc=f"UMI: extracting ({actual_workers} workers)",
@@ -1050,7 +1053,9 @@ def annotate_umi_tags_in_bam(
                     chunk_results[idx] = result
                     pbar.update(len(result))
 
-            all_results: List[Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]] = []
+            all_results: List[
+                Tuple[Optional[UMIExtractionResult], Optional[UMIExtractionResult]]
+            ] = []
             for chunk_idx in range(num_chunks):
                 all_results.extend(chunk_results[chunk_idx])
             del chunk_results
@@ -1629,8 +1634,7 @@ def _extract_and_match_barcodes_for_reads(
     flanking_candidates: List[FlankingConfig] = []
     if flanking_config is not None:
         if flanking_config.left_ref_end is not None and (
-            flanking_config.left_ref_end.adapter_side
-            or flanking_config.left_ref_end.amplicon_side
+            flanking_config.left_ref_end.adapter_side or flanking_config.left_ref_end.amplicon_side
         ):
             flanking_candidates.append(flanking_config.left_ref_end)
         if (
@@ -1645,26 +1649,32 @@ def _extract_and_match_barcodes_for_reads(
 
         for candidate in flanking_candidates:
             if candidate.adapter_side and candidate.amplicon_side:
-                end_flanking_cache.append(FlankingConfig(
-                    adapter_side=_reverse_complement(candidate.amplicon_side),
-                    amplicon_side=_reverse_complement(candidate.adapter_side),
-                    adapter_pad=candidate.amplicon_pad,
-                    amplicon_pad=candidate.adapter_pad,
-                ))
+                end_flanking_cache.append(
+                    FlankingConfig(
+                        adapter_side=_reverse_complement(candidate.amplicon_side),
+                        amplicon_side=_reverse_complement(candidate.adapter_side),
+                        adapter_pad=candidate.amplicon_pad,
+                        amplicon_pad=candidate.adapter_pad,
+                    )
+                )
             elif candidate.adapter_side:
-                end_flanking_cache.append(FlankingConfig(
-                    adapter_side=_reverse_complement(candidate.adapter_side),
-                    amplicon_side=None,
-                    adapter_pad=candidate.adapter_pad,
-                    amplicon_pad=candidate.amplicon_pad,
-                ))
+                end_flanking_cache.append(
+                    FlankingConfig(
+                        adapter_side=_reverse_complement(candidate.adapter_side),
+                        amplicon_side=None,
+                        adapter_pad=candidate.adapter_pad,
+                        amplicon_pad=candidate.amplicon_pad,
+                    )
+                )
             elif candidate.amplicon_side:
-                end_flanking_cache.append(FlankingConfig(
-                    adapter_side=None,
-                    amplicon_side=_reverse_complement(candidate.amplicon_side),
-                    adapter_pad=candidate.adapter_pad,
-                    amplicon_pad=candidate.amplicon_pad,
-                ))
+                end_flanking_cache.append(
+                    FlankingConfig(
+                        adapter_side=None,
+                        amplicon_side=_reverse_complement(candidate.amplicon_side),
+                        adapter_pad=candidate.adapter_pad,
+                        amplicon_pad=candidate.amplicon_pad,
+                    )
+                )
             else:
                 end_flanking_cache.append(FlankingConfig(adapter_side=None, amplicon_side=None))
 
@@ -1914,7 +1924,9 @@ def extract_and_assign_barcodes_in_bam(
     if backend_choice == "python":
         pysam_mod = _require_pysam()
         with pysam_mod.AlignmentFile(str(input_bam), "rb") as in_bam:
-            for read in tqdm(in_bam.fetch(until_eof=True), desc="Barcode: reading BAM", unit=" reads"):
+            for read in tqdm(
+                in_bam.fetch(until_eof=True), desc="Barcode: reading BAM", unit=" reads"
+            ):
                 read_names.append(read.query_name)
                 is_primary.append(not read.is_secondary and not read.is_supplementary)
                 sequences.append(read.query_sequence or "")
@@ -3982,8 +3994,7 @@ def separate_bam_by_bc(
 
                 if bc_tag not in output_files:
                     output_path = (
-                        split_dir
-                        / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
+                        split_dir / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
                     )
                     output_files[bc_tag] = pysam_mod.AlignmentFile(
                         str(output_path), "wb", header=bam.header
@@ -4006,8 +4017,7 @@ def separate_bam_by_bc(
                 bc_tag = bc_lookup.get(read.query_name, "unclassified")
                 if bc_tag not in output_files:
                     output_path = (
-                        split_dir
-                        / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
+                        split_dir / f"{output_prefix}_{bam_base_minus_suffix}_{bc_tag}{bam_suffix}"
                     )
                     output_files[bc_tag] = pysam_mod.AlignmentFile(
                         str(output_path), "wb", header=bam.header

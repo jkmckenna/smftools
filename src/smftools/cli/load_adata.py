@@ -990,7 +990,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         del umi_df
 
     # Load barcode tags from Parquet sidecar (written by extract_and_assign_barcodes_in_bam)
-    if demux_backend == "smftools" and cfg.barcode_kit and barcode_sidecar and Path(barcode_sidecar).exists():
+    if (
+        demux_backend == "smftools"
+        and cfg.barcode_kit
+        and barcode_sidecar
+        and Path(barcode_sidecar).exists()
+    ):
         logger.info("Loading barcode tags from Parquet sidecar: %s", barcode_sidecar)
         bc_df = pd.read_parquet(barcode_sidecar).set_index("read_name")
         bc_df = bc_df.reindex(raw_adata.obs_names)

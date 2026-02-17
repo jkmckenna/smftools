@@ -73,6 +73,7 @@ def _read_bam_tags(bam_path):
 def _read_parquet_tags(parquet_path):
     """Return ``{read_name: {tag: value}}`` from a barcode sidecar parquet."""
     from pathlib import Path
+
     p = Path(parquet_path)
     df = pd.read_parquet(p)
     out = {}
@@ -860,10 +861,12 @@ class TestExtractAndAssignBarcodesInBam:
                 barcode_length=4,
                 flanking=PerEndFlankingConfig(
                     left_ref_end=FlankingConfig(
-                        adapter_side=self.LEFT_ADAPTER, amplicon_side=None,
+                        adapter_side=self.LEFT_ADAPTER,
+                        amplicon_side=None,
                     ),
                     right_ref_end=FlankingConfig(
-                        adapter_side=self.RIGHT_ADAPTER, amplicon_side=None,
+                        adapter_side=self.RIGHT_ADAPTER,
+                        amplicon_side=None,
                     ),
                 ),
             )
