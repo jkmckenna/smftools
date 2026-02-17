@@ -1156,6 +1156,163 @@ def annotate_umi_tags_in_bam(
     return sidecar_path
 
 
+def derive_umi_orientation_tags_from_aligned_bam(
+    umi_sidecar_path: str | Path,
+    aligned_bam_path: str | Path,
+    *,
+    output_sidecar_path: str | Path | None = None,
+    samtools_backend: str | None = "auto",
+) -> Path:
+    """Derive U1/U2/RX/FC from positional US/UE tags using aligned read direction.
+
+    This enables a two-stage UMI workflow:
+    1) Extract positional UMI tags (US/UE) from an unaligned BAM.
+    2) After alignment, derive orientation-aware tags (U1/U2/RX/FC) from read
+       mapping direction in the aligned BAM.
+
+    Args:
+        umi_sidecar_path: Path to parquet sidecar containing at least read_name
+            and optional US/UE columns.
+        aligned_bam_path: Path to aligned BAM used to determine primary
+            alignment direction.
+        output_sidecar_path: Optional output path. If omitted, overwrite
+            ``umi_sidecar_path``.
+        samtools_backend: BAM backend ("python", "cli", or "auto").
+
+    Returns:
+        Path to the updated parquet sidecar.
+    """
+    import pandas as pd
+
+    input_sidecar = Path(umi_sidecar_path)
+    output_sidecar = Path(output_sidecar_path) if output_sidecar_path is not None else input_sidecar
+    aligned_bam = Path(aligned_bam_path)
+
+    if not input_sidecar.exists():
+        raise FileNotFoundError(f"UMI sidecar not found: {input_sidecar}")
+    if not aligned_bam.exists():
+        raise FileNotFoundError(f"Aligned BAM not found: {aligned_bam}")
+
+    df = pd.read_parquet(input_sidecar)
+    if "read_name" not in df.columns:
+        raise ValueError(f"UMI sidecar missing required 'read_name' column: {input_sidecar}")
+
+    # Ensure positional columns exist to simplify downstream logic.
+    for col in ("US", "UE"):
+        if col not in df.columns:
+            df[col] = None
+
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+
+    # Build read_name -> is_reverse map using primary alignments only.
+    is_reverse_by_read_name: Dict[str, bool] = {}
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(aligned_bam), "rb") as in_bam:
+            for read in in_bam.fetch(until_eof=True):
+                if read.is_secondary or read.is_supplementary:
+                    continue
+                rn = read.query_name
+                if rn not in is_reverse_by_read_name:
+                    is_reverse_by_read_name[rn] = bool(read.is_reverse)
+    else:
+        cmd = ["samtools", "view", str(aligned_bam)]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if not line.strip() or line.startswith("@"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 2:
+                continue
+            flag = int(fields[1])
+            if bool(flag & 0x100) or bool(flag & 0x800):
+                continue
+            rn = fields[0]
+            if rn not in is_reverse_by_read_name:
+                is_reverse_by_read_name[rn] = bool(flag & 0x10)
+        rc = proc.wait()
+        if rc != 0:
+            stderr = proc.stderr.read() if proc.stderr else ""
+            raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+
+    def _parse_positional_tag(value: object) -> Tuple[Optional[str], Optional[str]]:
+        if not isinstance(value, str) or not value:
+            return None, None
+        parts = value.split(";")
+        if not parts:
+            return None, None
+        umi = parts[0] if parts[0] else None
+        slot = parts[1] if len(parts) > 1 and parts[1] else None
+        return umi, slot
+
+    u1_col: List[Optional[str]] = []
+    u2_col: List[Optional[str]] = []
+    rx_col: List[Optional[str]] = []
+    fc_col: List[Optional[str]] = []
+    matched_orientation = 0
+
+    for _, row in df.iterrows():
+        rn = str(row["read_name"])
+        is_rev = is_reverse_by_read_name.get(rn)
+        if is_rev is None:
+            u1_col.append(None)
+            u2_col.append(None)
+            rx_col.append(None)
+            fc_col.append(None)
+            continue
+
+        matched_orientation += 1
+        us_umi, us_slot = _parse_positional_tag(row.get("US"))
+        ue_umi, ue_slot = _parse_positional_tag(row.get("UE"))
+
+        if is_rev:
+            u1, u2 = ue_umi, us_umi
+            u1_slot, u2_slot = ue_slot, us_slot
+        else:
+            u1, u2 = us_umi, ue_umi
+            u1_slot, u2_slot = us_slot, ue_slot
+
+        if u1 and u2:
+            rx = f"{u1}-{u2}"
+        elif u1:
+            rx = u1
+        elif u2:
+            rx = u2
+        else:
+            rx = None
+
+        if u1_slot and u2_slot:
+            fc = f"{u1_slot}-{u2_slot}"
+        elif u1_slot:
+            fc = f"{u1_slot}-NA"
+        elif u2_slot:
+            fc = f"NA-{u2_slot}"
+        else:
+            fc = None
+
+        u1_col.append(u1)
+        u2_col.append(u2)
+        rx_col.append(rx)
+        fc_col.append(fc)
+
+    df["U1"] = u1_col
+    df["U2"] = u2_col
+    df["RX"] = rx_col
+    df["FC"] = fc_col
+    df.to_parquet(output_sidecar, index=False)
+
+    logger.info(
+        "Derived orientation-aware UMI tags from %s using %s: sidecar_rows=%d, orientation_matched=%d, output=%s",
+        aligned_bam,
+        input_sidecar,
+        len(df),
+        matched_orientation,
+        output_sidecar,
+    )
+    return output_sidecar
+
+
 def _match_barcode_to_references(
     extracted_barcode: str,
     barcode_references: Dict[str, str],

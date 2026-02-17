@@ -943,8 +943,10 @@ class TestBarcodeExtractionBackendConsistency:
         """Run barcode extraction with the specified backend and return sidecar tags."""
         from smftools.informatics.bam_functions import (
             BarcodeKitConfig,
-            PerEndFlankingConfig as PEFC,
             extract_and_assign_barcodes_in_bam,
+        )
+        from smftools.informatics.bam_functions import (
+            PerEndFlankingConfig as PEFC,
         )
 
         work = tmp_path / subdir
@@ -1055,3 +1057,39 @@ class TestOrientationConsistency:
         # Positional tags (US=read start, UE=read end) should be swapped
         assert fwd_tags["r1"]["US"] == rev_tags["r1"]["UE"]
         assert fwd_tags["r1"]["UE"] == rev_tags["r1"]["US"]
+
+
+@requires_pysam
+class TestDeriveUmiOrientationFromAlignedBam:
+    """Derivation of U1/U2/RX/FC from US/UE + aligned read direction."""
+
+    def test_derives_orientation_aware_tags(self, tmp_path):
+        bam = tmp_path / "aligned.bam"
+        reads = [
+            {"name": "fwd_read", "sequence": "ACGTAAAANNNNNNNNTCGTTCGG", "is_reverse": False},
+            {"name": "rev_read", "sequence": "ACGTCCCCNNNNNNNNAGTATCGG", "is_reverse": True},
+        ]
+        _create_test_bam(bam, reads)
+
+        sidecar = tmp_path / "umi_sidecar.parquet"
+        pd.DataFrame(
+            [
+                {"read_name": "fwd_read", "US": "AAAA;top;ACGT", "UE": "ACGA;bottom;CCGA"},
+                {"read_name": "rev_read", "US": "CCCC;top;ACGT", "UE": "TACT;bottom;CCGA"},
+            ]
+        ).to_parquet(sidecar, index=False)
+
+        out_path = bam_functions.derive_umi_orientation_tags_from_aligned_bam(sidecar, bam)
+        out = pd.read_parquet(out_path).set_index("read_name")
+
+        # Forward mapping: U1/U2 follows US/UE.
+        assert out.loc["fwd_read", "U1"] == "AAAA"
+        assert out.loc["fwd_read", "U2"] == "ACGA"
+        assert out.loc["fwd_read", "RX"] == "AAAA-ACGA"
+        assert out.loc["fwd_read", "FC"] == "top-bottom"
+
+        # Reverse mapping: U1/U2 swaps UE/US.
+        assert out.loc["rev_read", "U1"] == "TACT"
+        assert out.loc["rev_read", "U2"] == "CCCC"
+        assert out.loc["rev_read", "RX"] == "TACT-CCCC"
+        assert out.loc["rev_read", "FC"] == "bottom-top"
