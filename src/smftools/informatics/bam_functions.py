@@ -914,7 +914,7 @@ def annotate_umi_tags_in_bam(
 
     Tags written:
         US / UE  – positional: delimited ``"UMI_seq;slot;flank_seq"`` from read **start** / **end**
-        U1 / U2  – orientation-based: forward reads get U1=US, U2=UE; reverse reads get U1=UE, U2=US (UMI sequence only)
+        U1 / U2  – orientation-corrected: U1 = left reference end, U2 = right reference end (fwd: U1=US,U2=UE; rev: U1=UE,U2=US; UMI sequence only)
         FC       – flank context: slot names of U1/U2 pair (e.g. ``"top-bottom"``)
         RX       – combined tag using orientation-assigned U1-U2
     """
