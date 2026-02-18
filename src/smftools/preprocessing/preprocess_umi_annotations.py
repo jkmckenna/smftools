@@ -580,6 +580,7 @@ def preprocess_umi_annotations(
     max_homopolymer_fraction: float = 0.7,
     min_unique_bases: int = 2,
     max_homopolymer_run: int = 4,
+    min_entropy: Optional[float] = None,
     cluster_max_edit_distance: int = 1,
     cluster_directional: bool = True,
     sample_col: str = "Barcode",
@@ -615,6 +616,11 @@ def preprocess_umi_annotations(
         Minimum number of unique bases required (default 2).
     max_homopolymer_run : int
         Maximum allowed homopolymer run length (default 4).
+    min_entropy : float, optional
+        Minimum Shannon entropy (bits) for a UMI to be considered valid.
+        When set, a UMI must pass both ``validate_umi()`` checks and have
+        entropy >= ``min_entropy`` to be marked valid.  Entropy is always
+        computed and stored as ``{col}_entropy`` regardless of this setting.
     cluster_max_edit_distance : int
         Maximum edit distance for clustering UMIs (default 1).
     cluster_directional : bool
@@ -638,6 +644,7 @@ def preprocess_umi_annotations(
     -------
     AnnData
         Modified AnnData with new columns:
+        - {umi_col}_entropy: float - Shannon entropy (bits)
         - {umi_col}_valid: bool - whether UMI passed validation
         - {umi_col}_invalid_reason: str - reason for invalidity
         - {umi_col}_cluster: str - clustered/corrected UMI
@@ -705,6 +712,24 @@ def preprocess_umi_annotations(
             valid_flags.append(is_valid)
             invalid_reasons.append(reason if not is_valid else "")
             validation_stats[col][reason] += 1
+
+        # Compute entropy for every UMI
+        entropy_col = f"{col}_entropy"
+        adata.obs[entropy_col] = adata.obs[col].apply(umi_sequence_entropy).astype(float)
+        logger.info("Added UMI entropy column: %s", entropy_col)
+
+        # Incorporate entropy check into validity when min_entropy is set
+        if min_entropy is not None:
+            for i, (flag, umi_entropy) in enumerate(
+                zip(valid_flags, adata.obs[entropy_col])
+            ):
+                if flag:
+                    entropy_ok = bool(pd.notna(umi_entropy) and float(umi_entropy) >= float(min_entropy))
+                    if not entropy_ok:
+                        valid_flags[i] = False
+                        invalid_reasons[i] = "low_entropy"
+                        validation_stats[col]["low_entropy"] += 1
+                        validation_stats[col]["valid"] -= 1
 
         adata.obs[f"{col}_valid"] = valid_flags
         adata.obs[f"{col}_invalid_reason"] = invalid_reasons
@@ -844,7 +869,7 @@ def preprocess_umi_annotations(
 
     # Store validation stats in uns
     adata.uns["umi_preprocessing_stats"] = {
-        "validation_stats": dict(validation_stats),
+        "validation_stats": {k: dict(v) for k, v in validation_stats.items()},
         "total_clusters": dict(total_clusters),
         "total_singletons": dict(total_singletons),
         "n_with_valid_umi": int(n_with_valid_umi),
@@ -855,6 +880,7 @@ def preprocess_umi_annotations(
             "max_homopolymer_fraction": max_homopolymer_fraction,
             "min_unique_bases": min_unique_bases,
             "max_homopolymer_run": max_homopolymer_run,
+            "min_entropy": min_entropy,
             "cluster_max_edit_distance": cluster_max_edit_distance,
             "cluster_directional": cluster_directional,
             "cluster_within_groups": cluster_within_groups,

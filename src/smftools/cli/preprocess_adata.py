@@ -202,9 +202,7 @@ def preprocess_adata_core(
         plot_read_span_quality_clustermaps,
     )
     from ..preprocessing import (
-        add_umi_entropy_obs_fields,
-        add_umi_hamming_clusters,
-        add_umi_pass_obs_fields,
+        preprocess_umi_annotations,
         append_base_context,
         append_binary_layer_by_base_context,
         binarize_adata,
@@ -264,23 +262,31 @@ def preprocess_adata_core(
 
     # Optional UMI preprocessing section
     if getattr(cfg, "use_umi", False):
-        add_umi_entropy_obs_fields(adata, umi_cols=("U1", "U2"))
-        add_umi_pass_obs_fields(
+        preprocess_umi_annotations(
             adata,
             umi_cols=("U1", "U2"),
-            min_entropy=float(cfg.umi_min_entropy),
             expected_length=getattr(cfg, "umi_length", None),
+            min_entropy=float(cfg.umi_min_entropy),
+            cluster_max_edit_distance=int(cfg.umi_cluster_max_edit_distance),
+            cluster_directional=True,
+            sample_col=str(getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode")),
+            reference_col=str(getattr(cfg, "reference_column", "Reference_strand")),
         )
-        add_umi_hamming_clusters(
-            adata,
-            umi_cols=("U1", "U2"),
-            pass_suffix="_pass",
-            group_cols=(
-                str(getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode")),
-                str(getattr(cfg, "reference_column", "Reference_strand")),
-            ),
-            max_hamming_distance=int(cfg.umi_hamming_cluster_distance),
-        )
+        # UMI bipartite graph analysis
+        from ..preprocessing import analyze_umi_bipartite_graph
+
+        pp_umi_bipartite_dir = preprocess_directory / "01B_UMI_bipartite_analysis"
+        if pp_umi_bipartite_dir.is_dir() and not cfg.force_redo_preprocessing:
+            logger.debug(f"{pp_umi_bipartite_dir} already exists. Skipping UMI bipartite analysis.")
+        else:
+            make_dirs([pp_umi_bipartite_dir])
+            analyze_umi_bipartite_graph(
+                adata,
+                umi_cols=("U1", "U2"),
+                sample_col=str(getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode")),
+                reference_col=str(getattr(cfg, "reference_column", "Reference_strand")),
+                output_directory=pp_umi_bipartite_dir,
+            )
     else:
         logger.debug("UMI preprocessing skipped (use_umi=False).")
 

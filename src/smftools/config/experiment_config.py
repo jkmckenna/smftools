@@ -723,7 +723,7 @@ class ExperimentConfig:
     umi_adapters: List[Optional[str]] = field(default_factory=lambda: [None, None])
     umi_length: Optional[int] = None
     umi_min_entropy: float = 1.65
-    umi_hamming_cluster_distance: int = 2
+    umi_cluster_max_edit_distance: int = 2
     umi_search_window: int = 200
     umi_adapter_matcher: str = "exact"
     umi_adapter_max_edits: Optional[int] = None
@@ -1254,9 +1254,12 @@ class ExperimentConfig:
             merged["umi_min_entropy"] = float(
                 _parse_numeric(merged.get("umi_min_entropy", 1.65), 1.65)
             )
-        if "umi_hamming_cluster_distance" in merged:
-            merged["umi_hamming_cluster_distance"] = int(
-                _parse_numeric(merged.get("umi_hamming_cluster_distance", 2), 2)
+        # Backward compat: rename old key to new key
+        if "umi_hamming_cluster_distance" in merged and "umi_cluster_max_edit_distance" not in merged:
+            merged["umi_cluster_max_edit_distance"] = merged.pop("umi_hamming_cluster_distance")
+        if "umi_cluster_max_edit_distance" in merged:
+            merged["umi_cluster_max_edit_distance"] = int(
+                _parse_numeric(merged.get("umi_cluster_max_edit_distance", 2), 2)
             )
         if "umi_search_window" in merged:
             merged["umi_search_window"] = int(
@@ -1470,7 +1473,7 @@ class ExperimentConfig:
             umi_adapters=merged.get("umi_adapters", [None, None]),
             umi_length=merged.get("umi_length", None),
             umi_min_entropy=float(merged.get("umi_min_entropy", 1.65)),
-            umi_hamming_cluster_distance=int(merged.get("umi_hamming_cluster_distance", 2)),
+            umi_cluster_max_edit_distance=int(merged.get("umi_cluster_max_edit_distance", 2)),
             umi_search_window=merged.get("umi_search_window", 200),
             umi_adapter_matcher=merged.get("umi_adapter_matcher", "exact"),
             umi_adapter_max_edits=merged.get("umi_adapter_max_edits", None),
