@@ -23,7 +23,11 @@ _LAZY_ATTRS = {
     "flag_duplicate_reads": "smftools.preprocessing.flag_duplicate_reads",
     "invert_adata": "smftools.preprocessing.invert_adata",
     "load_sample_sheet": "smftools.preprocessing.load_sample_sheet",
+    "add_umi_entropy_obs_fields": "smftools.preprocessing.preprocess_umi_annotations",
+    "add_umi_hamming_clusters": "smftools.preprocessing.preprocess_umi_annotations",
+    "add_umi_pass_obs_fields": "smftools.preprocessing.preprocess_umi_annotations",
     "preprocess_umi_annotations": "smftools.preprocessing.preprocess_umi_annotations",
+    "umi_sequence_entropy": "smftools.preprocessing.preprocess_umi_annotations",
     "reindex_references_adata": "smftools.preprocessing.reindex_references_adata",
     "subsample_adata": "smftools.preprocessing.subsample_adata",
 }

@@ -90,6 +90,8 @@ barcode_both_ends: False # Require barcode match at both ends
 trim: False # dorado adapter and barcode removal during demultiplexing
 use_umi: False # Whether to detect and annotate UMIs in aligned_sorted BAM before demultiplexing
 umi_length: null # Length of each UMI (required when use_umi is true)
+umi_min_entropy: 1.65 # Minimum Shannon entropy (bits) for U1/U2 pass status in preprocess
+umi_hamming_cluster_distance: 2 # Max Hamming distance for U1/U2 clustering within sample+reference groups in preprocess
 umi_search_window: 200 # Max distance from read ends to consider an adapter match for UMI extraction
 umi_adapter_matcher: edlib # exact|edlib
 umi_adapter_max_edits: null # Used for edlib fuzzy matching; null defers to UMI YAML/default

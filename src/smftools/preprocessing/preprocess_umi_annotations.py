@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from math import log2
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -55,6 +56,313 @@ def _contains_n(seq: str) -> bool:
     seq = seq.upper()
     valid_bases = set("ACGT")
     return any(c not in valid_bases for c in seq)
+
+
+def umi_sequence_entropy(umi: Optional[str]) -> float:
+    """Compute Shannon entropy (bits) for A/C/G/T composition of a UMI.
+
+    Non-ACGT characters are ignored in the composition calculation.
+    Returns NaN when no valid A/C/G/T bases are present.
+    """
+    if umi is None or pd.isna(umi):
+        return float("nan")
+
+    s = str(umi).strip().upper()
+    if not s:
+        return float("nan")
+
+    valid = [c for c in s if c in {"A", "C", "G", "T"}]
+    n = len(valid)
+    if n == 0:
+        return float("nan")
+
+    counts = defaultdict(int)
+    for base in valid:
+        counts[base] += 1
+
+    entropy = 0.0
+    for c in counts.values():
+        p = c / n
+        entropy -= p * log2(p)
+    return entropy
+
+
+def add_umi_entropy_obs_fields(
+    adata: "ad.AnnData",
+    umi_cols: Sequence[str] = ("U1", "U2"),
+) -> "ad.AnnData":
+    """Add per-read UMI entropy columns to ``adata.obs``.
+
+    For each UMI column present in ``umi_cols``, writes
+    ``<UMI_COL>_entropy`` (e.g., ``U1_entropy``) in bits.
+    """
+    existing_cols = [col for col in umi_cols if col in adata.obs.columns]
+    if not existing_cols:
+        logger.warning("No UMI columns found in adata.obs for entropy calculation: %s", umi_cols)
+        return adata
+
+    for col in existing_cols:
+        entropy_col = f"{col}_entropy"
+        adata.obs[entropy_col] = adata.obs[col].apply(umi_sequence_entropy).astype(float)
+        logger.info("Added UMI entropy column: %s", entropy_col)
+
+    return adata
+
+
+def add_umi_pass_obs_fields(
+    adata: "ad.AnnData",
+    umi_cols: Sequence[str] = ("U1", "U2"),
+    *,
+    min_entropy: float = 1.0,
+    expected_length: Optional[int] = None,
+    max_homopolymer_fraction: float = 0.7,
+    min_unique_bases: int = 2,
+    max_homopolymer_run: int = 4,
+) -> "ad.AnnData":
+    """Add per-read UMI pass/fail columns to ``adata.obs``.
+
+    For each UMI column present in ``umi_cols``, writes ``<UMI_COL>_pass``.
+    A UMI passes when:
+    - it passes ``validate_umi(...)`` sequence-content checks, and
+    - its Shannon entropy is >= ``min_entropy``.
+    """
+    existing_cols = [col for col in umi_cols if col in adata.obs.columns]
+    if not existing_cols:
+        logger.warning(
+            "No UMI columns found in adata.obs for pass-status calculation: %s", umi_cols
+        )
+        return adata
+
+    for col in existing_cols:
+        entropy_col = f"{col}_entropy"
+        if entropy_col not in adata.obs.columns:
+            adata.obs[entropy_col] = adata.obs[col].apply(umi_sequence_entropy).astype(float)
+
+        pass_col = f"{col}_pass"
+        pass_values = []
+        for umi, entropy in zip(adata.obs[col], adata.obs[entropy_col]):
+            is_valid, _reason = validate_umi(
+                umi,
+                expected_length=expected_length,
+                max_homopolymer_fraction=max_homopolymer_fraction,
+                min_unique_bases=min_unique_bases,
+                max_homopolymer_run=max_homopolymer_run,
+            )
+            entropy_ok = bool(pd.notna(entropy) and float(entropy) >= float(min_entropy))
+            pass_values.append(bool(is_valid and entropy_ok))
+
+        adata.obs[pass_col] = pd.Series(pass_values, index=adata.obs.index, dtype=bool)
+        n_pass = int(adata.obs[pass_col].sum())
+        logger.info(
+            "Added %s (%d/%d passing, min_entropy=%.3f)", pass_col, n_pass, adata.n_obs, min_entropy
+        )
+
+    return adata
+
+
+def _pack_bool_to_u64(b: np.ndarray) -> np.ndarray:
+    """Pack boolean matrix (n, w) into uint64 blocks (n, ceil(w/64))."""
+    b = np.asarray(b, dtype=np.uint8)
+    packed_u8 = np.packbits(b, axis=1)
+    n, nb = packed_u8.shape
+    pad = (-nb) % 8
+    if pad:
+        packed_u8 = np.pad(packed_u8, ((0, 0), (0, pad)), mode="constant", constant_values=0)
+    packed_u8 = np.ascontiguousarray(packed_u8)
+    return packed_u8.reshape(n, -1, 8).view(np.uint64).reshape(n, -1)
+
+
+def _popcount_u64_matrix(a_u64: np.ndarray) -> np.ndarray:
+    """Vectorized popcount for uint64 arrays."""
+    b = a_u64.view(np.uint8).reshape(a_u64.shape + (8,))
+    return np.unpackbits(b, axis=-1).sum(axis=-1)
+
+
+def _bitpack_onehot_dna_sequences(sequences: Sequence[str]) -> np.ndarray:
+    """Bit-pack DNA sequences as one-hot boolean vectors (A/C/G/T per position)."""
+    if not sequences:
+        return np.zeros((0, 0), dtype=np.uint64)
+    seqs = [str(s).upper() for s in sequences]
+    length = len(seqs[0])
+    if any(len(s) != length for s in seqs):
+        raise ValueError(
+            "All sequences must have identical length for bit-packed Hamming distance."
+        )
+
+    arr = np.zeros((len(seqs), 4 * length), dtype=np.uint8)
+    base_to_offset = {"A": 0, "C": 1, "G": 2, "T": 3}
+    for i, s in enumerate(seqs):
+        for j, base in enumerate(s):
+            if base in base_to_offset:
+                arr[i, 4 * j + base_to_offset[base]] = 1
+    return _pack_bool_to_u64(arr.astype(bool))
+
+
+def _pairwise_hamming_from_bitpack(packed: np.ndarray) -> np.ndarray:
+    """Compute full pairwise Hamming distance matrix from bit-packed one-hot sequences."""
+    n = packed.shape[0]
+    dist = np.zeros((n, n), dtype=np.uint16)
+    for i in range(n):
+        xor = np.bitwise_xor(packed[i : i + 1, :], packed[i:, :])
+        # one-hot xor yields 2 set bits per base mismatch -> divide by 2
+        d = (_popcount_u64_matrix(xor).sum(axis=1) // 2).astype(np.uint16)
+        dist[i, i:] = d
+        dist[i:, i] = d
+    return dist
+
+
+def _connected_components_from_threshold(
+    distances: np.ndarray,
+    threshold: int,
+) -> np.ndarray:
+    """Return component labels from distance threshold graph using union-find."""
+    n = distances.shape[0]
+    parent = np.arange(n, dtype=np.int32)
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = int(parent[x])
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if int(distances[i, j]) <= int(threshold):
+                union(i, j)
+
+    roots = np.array([find(i) for i in range(n)], dtype=np.int32)
+    unique_roots, labels = np.unique(roots, return_inverse=True)
+    _ = unique_roots
+    return labels
+
+
+def add_umi_hamming_clusters(
+    adata: "ad.AnnData",
+    umi_cols: Sequence[str] = ("U1", "U2"),
+    *,
+    pass_suffix: str = "_pass",
+    group_cols: Sequence[str] = ("Experiment_name_and_barcode", "Reference_strand"),
+    max_hamming_distance: int = 1,
+    min_cluster_size: int = 1,
+) -> "ad.AnnData":
+    """Cluster passed UMIs with all-vs-all bit-packed Hamming distance.
+
+    Clustering is done separately per UMI column and within each
+    ``group_cols`` combination. Only reads with ``<UMI_COL><pass_suffix> == True``
+    are considered. Outputs:
+    - ``<UMI_COL>_cluster`` (cluster consensus sequence)
+    - ``<UMI_COL>_cluster_size``
+    """
+    existing_cols = [col for col in umi_cols if col in adata.obs.columns]
+    if not existing_cols:
+        logger.warning("No UMI columns found in adata.obs for Hamming clustering: %s", umi_cols)
+        return adata
+
+    usable_group_cols = [c for c in group_cols if c in adata.obs.columns]
+    if usable_group_cols:
+        grouped = adata.obs.groupby(usable_group_cols, observed=True)
+    else:
+        logger.warning(
+            "No requested group columns found for UMI Hamming clustering (%s); clustering across all reads.",
+            group_cols,
+        )
+        grouped = [(None, adata.obs)]
+
+    for col in existing_cols:
+        cluster_col = f"{col}_cluster"
+        size_col = f"{col}_cluster_size"
+        pass_col = f"{col}{pass_suffix}"
+
+        adata.obs[cluster_col] = pd.Series(
+            [None] * adata.n_obs, index=adata.obs.index, dtype=object
+        )
+        adata.obs[size_col] = 0
+        if pass_col not in adata.obs.columns:
+            logger.warning(
+                "Missing pass column %s; skipping Hamming clustering for %s.", pass_col, col
+            )
+            continue
+
+        for group_key, group_df in grouped:
+            idx = group_df.index
+            passed_mask = adata.obs.loc[idx, pass_col].astype(bool)
+            seq_series = adata.obs.loc[idx, col]
+            valid_mask = passed_mask & seq_series.notna()
+            valid_idx = seq_series.index[valid_mask]
+            if len(valid_idx) == 0:
+                continue
+
+            seqs = seq_series.loc[valid_idx].astype(str).str.upper()
+            # Handle mixed lengths by clustering each length bucket independently.
+            for seq_len, len_df in pd.DataFrame({"seq": seqs}).groupby(
+                pd.Series(seqs.str.len().to_numpy(), index=seqs.index), observed=True
+            ):
+                if seq_len <= 0:
+                    continue
+                len_idx = len_df.index
+                len_seqs = len_df["seq"].tolist()
+                if len(len_seqs) == 0:
+                    continue
+
+                uniq, inverse, counts = np.unique(
+                    np.array(len_seqs, dtype=object),
+                    return_inverse=True,
+                    return_counts=True,
+                )
+
+                packed = _bitpack_onehot_dna_sequences(uniq.tolist())
+                distances = _pairwise_hamming_from_bitpack(packed)
+                labels = _connected_components_from_threshold(distances, int(max_hamming_distance))
+
+                # Cluster representative: highest-count sequence in each component.
+                rep_by_label: Dict[int, str] = {}
+                size_by_label: Dict[int, int] = {}
+                for lab in np.unique(labels):
+                    members = np.where(labels == lab)[0]
+                    member_counts = counts[members]
+                    rep_idx = members[int(np.argmax(member_counts))]
+                    rep_seq = str(uniq[rep_idx])
+                    cluster_size = int(member_counts.sum())
+                    rep_by_label[int(lab)] = rep_seq
+                    size_by_label[int(lab)] = cluster_size
+
+                for read_i, obs_name in enumerate(len_idx):
+                    seq_i = inverse[read_i]
+                    lab = int(labels[seq_i])
+                    cluster_size = size_by_label[lab]
+                    if cluster_size >= int(min_cluster_size):
+                        adata.obs.at[obs_name, cluster_col] = rep_by_label[lab]
+                        adata.obs.at[obs_name, size_col] = cluster_size
+
+            if group_key is not None:
+                logger.debug("UMI Hamming clustering finished for %s group=%s", col, group_key)
+
+        n_clustered = int(adata.obs[cluster_col].notna().sum())
+        logger.info(
+            "Added %s/%s for %s (%d reads clustered)", cluster_col, size_col, col, n_clustered
+        )
+
+    # Build combined RX cluster from U1/U2 cluster columns when present.
+    if "U1_cluster" in adata.obs.columns and "U2_cluster" in adata.obs.columns:
+        combined = []
+        for u1, u2 in zip(adata.obs["U1_cluster"], adata.obs["U2_cluster"]):
+            if pd.notna(u1) and pd.notna(u2):
+                combined.append(f"{u1}-{u2}")
+            elif pd.notna(u1):
+                combined.append(str(u1))
+            elif pd.notna(u2):
+                combined.append(str(u2))
+            else:
+                combined.append(None)
+        adata.obs["RX_cluster"] = pd.Series(combined, index=adata.obs.index, dtype=object)
+        logger.info("Added RX_cluster from U1_cluster/U2_cluster")
+
+    return adata
 
 
 def _edit_distance(s1: str, s2: str, max_dist: Optional[int] = None) -> int:

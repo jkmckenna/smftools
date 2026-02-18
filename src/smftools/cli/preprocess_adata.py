@@ -202,6 +202,9 @@ def preprocess_adata_core(
         plot_read_span_quality_clustermaps,
     )
     from ..preprocessing import (
+        add_umi_entropy_obs_fields,
+        add_umi_hamming_clusters,
+        add_umi_pass_obs_fields,
         append_base_context,
         append_binary_layer_by_base_context,
         binarize_adata,
@@ -258,6 +261,28 @@ def preprocess_adata_core(
         )
     else:
         pass
+
+    # Optional UMI preprocessing section
+    if getattr(cfg, "use_umi", False):
+        add_umi_entropy_obs_fields(adata, umi_cols=("U1", "U2"))
+        add_umi_pass_obs_fields(
+            adata,
+            umi_cols=("U1", "U2"),
+            min_entropy=float(cfg.umi_min_entropy),
+            expected_length=getattr(cfg, "umi_length", None),
+        )
+        add_umi_hamming_clusters(
+            adata,
+            umi_cols=("U1", "U2"),
+            pass_suffix="_pass",
+            group_cols=(
+                str(getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode")),
+                str(getattr(cfg, "reference_column", "Reference_strand")),
+            ),
+            max_hamming_distance=int(cfg.umi_hamming_cluster_distance),
+        )
+    else:
+        logger.debug("UMI preprocessing skipped (use_umi=False).")
 
     # Adding read length, read quality, reference length, mapped_length, and mapping quality metadata to adata object.
     pp_length_qc_dir = preprocess_directory / "01_Read_length_and_quality_QC_metrics"
