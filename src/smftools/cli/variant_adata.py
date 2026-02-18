@@ -406,6 +406,69 @@ def variant_adata_core(
                 )
 
     # ============================================================
+    # 4b) Variant segment clustermaps with UMI dominant-pair status
+    # ============================================================
+    if (
+        seq1_col
+        and seq2_col
+        and getattr(cfg, "use_umi", False)
+        and "RX_is_dominant_pair" in adata.obs.columns
+        and "RX_edge_count" in adata.obs.columns
+    ):
+        segment_layer_name = f"{seq1_col}__{seq2_col}_variant_segments"
+        if segment_layer_name in adata.layers:
+            # Build a 3-state categorical column for the strip
+            umi_status_col = "RX_dominant_pair_status"
+            statuses = []
+            for edge_count, is_dom in zip(
+                adata.obs["RX_edge_count"], adata.obs["RX_is_dominant_pair"]
+            ):
+                if int(edge_count) == 0:
+                    statuses.append("no_UMI_pair")
+                elif bool(is_dom):
+                    statuses.append("dominant")
+                else:
+                    statuses.append("not_dominant")
+            adata.obs[umi_status_col] = pd.Categorical(
+                statuses, categories=["dominant", "not_dominant", "no_UMI_pair"]
+            )
+
+            umi_status_colors = {
+                "dominant": "#2ca02c",      # green
+                "not_dominant": "#d62728",   # red
+                "no_UMI_pair": "#d9d9d9",   # neutral gray
+            }
+
+            umi_segment_dir = (
+                variant_directory
+                / "deduplicated"
+                / "06_variant_segment_clustermaps_with_umi_status"
+            )
+            if umi_segment_dir.exists():
+                logger.info(
+                    "Variant segment UMI-status clustermaps already exist at %s; skipping.",
+                    umi_segment_dir,
+                )
+            else:
+                make_dirs([umi_segment_dir])
+                plot_variant_segment_clustermaps(
+                    adata,
+                    seq1_column=seq1_col,
+                    seq2_column=seq2_col,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    variant_segment_layer=segment_layer_name,
+                    read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                    save_path=umi_segment_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                    show_position_axis=True,
+                    mismatch_type_obs_col=umi_status_col,
+                    mismatch_type_colors=umi_status_colors,
+                )
+
+    # ============================================================
     # 5) Save AnnData
     # ============================================================
     if not paths.variant.exists():

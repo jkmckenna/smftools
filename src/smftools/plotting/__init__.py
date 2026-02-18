@@ -42,7 +42,7 @@ _LAZY_ATTRS = {
     "plot_spatial_autocorr_grid": "smftools.plotting.autocorrelation_plotting",
     "plot_hmm_size_contours": "smftools.plotting.hmm_plotting",
     "plot_read_current_traces": "smftools.plotting.pod5_plotting",
-    "plot_umi_bipartite_clustermap": "smftools.plotting.umi_plotting",
+    "plot_umi_bipartite_summary": "smftools.plotting.umi_plotting",
 }
 
 

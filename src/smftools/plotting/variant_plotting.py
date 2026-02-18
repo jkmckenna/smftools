@@ -368,7 +368,7 @@ def plot_mismatch_base_frequency_by_position(
             ax.set_yscale("log")
             ax.set_xlabel("Position")
             ax.set_ylabel("Mismatch frequency")
-            ax.set_title(f"{sample} - {ref} mismatch base frequencies")
+            ax.set_title(f"{sample} - {ref} mismatch base frequencies - {subset.n_obs} reads")
             ax.legend(title="Mismatch base", ncol=4, fontsize=9)
 
             if plot_zscores and zscore_ax is not None and zscore_freqs:
@@ -1068,7 +1068,8 @@ def plot_variant_segment_clustermaps(
                 )
                 ax_mismatch.set_xticks([])
                 ax_mismatch.set_yticks([])
-                ax_mismatch.set_title("Type", fontsize=8, pad=8)
+                strip_title = mismatch_type_obs_col.replace("_", " ").title() if mismatch_type_obs_col else "Type"
+                ax_mismatch.set_title(strip_title, fontsize=8, pad=8)
 
             # Overlay variant call circles
             if call_matrix is not None:
@@ -1131,7 +1132,7 @@ def plot_variant_segment_clustermaps(
                     label="Breakpoint",
                 )
 
-            ax.set_title(f"{ref} — {sample}", fontsize=10)
+            ax.set_title(f"{ref} — {sample} — {n_reads} reads", fontsize=10)
             ax.set_ylabel("Reads")
 
             if show_position_axis:

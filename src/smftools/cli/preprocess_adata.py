@@ -272,21 +272,45 @@ def preprocess_adata_core(
             sample_col=str(getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode")),
             reference_col=str(getattr(cfg, "reference_column", "Reference_strand")),
         )
-        # UMI bipartite graph analysis
+        # UMI bipartite graph analysis (obs annotations)
         from ..preprocessing import analyze_umi_bipartite_graph
+
+        _umi_sample_col = str(getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode"))
+        _umi_reference_col = str(getattr(cfg, "reference_column", "Reference_strand"))
+        analyze_umi_bipartite_graph(
+            adata,
+            umi_cols=("U1", "U2"),
+            sample_col=_umi_sample_col,
+            reference_col=_umi_reference_col,
+        )
+
+        # UMI bipartite fidelity scatter plots
+        import pandas as pd
+
+        from ..plotting import plot_umi_bipartite_summary
 
         pp_umi_bipartite_dir = preprocess_directory / "01B_UMI_bipartite_analysis"
         if pp_umi_bipartite_dir.is_dir() and not cfg.force_redo_preprocessing:
-            logger.debug(f"{pp_umi_bipartite_dir} already exists. Skipping UMI bipartite analysis.")
+            logger.debug(f"{pp_umi_bipartite_dir} already exists. Skipping UMI bipartite plots.")
         else:
             make_dirs([pp_umi_bipartite_dir])
-            analyze_umi_bipartite_graph(
-                adata,
-                umi_cols=("U1", "U2"),
-                sample_col=str(getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode")),
-                reference_col=str(getattr(cfg, "reference_column", "Reference_strand")),
-                output_directory=pp_umi_bipartite_dir,
-            )
+            bipartite_stats = adata.uns.get("umi_bipartite_stats", {})
+            for group_label, stats in bipartite_stats.items():
+                cm = pd.DataFrame(
+                    stats["count_matrix"]["data"],
+                    index=stats["count_matrix"]["index"],
+                    columns=stats["count_matrix"]["columns"],
+                )
+                parts = group_label.split("__", 1)
+                sample_name = parts[0] if len(parts) > 0 else "all"
+                reference_name = parts[1] if len(parts) > 1 else "all"
+                save_path = pp_umi_bipartite_dir / f"{reference_name}__{sample_name}__umi_bipartite.png"
+                plot_umi_bipartite_summary(
+                    count_matrix=cm,
+                    sample_name=sample_name,
+                    reference_name=reference_name,
+                    save_path=save_path,
+                )
     else:
         logger.debug("UMI preprocessing skipped (use_umi=False).")
 

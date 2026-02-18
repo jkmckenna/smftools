@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Sequence
 
 import numpy as np
@@ -21,8 +20,6 @@ def analyze_umi_bipartite_graph(
     umi_cols: Sequence[str] = ("U1", "U2"),
     sample_col: str = "Experiment_name_and_barcode",
     reference_col: str = "Reference_strand",
-    output_directory: Optional[Path] = None,
-    min_edge_count_for_plot: int = 2,
     uns_flag: str = "umi_bipartite_analysis_performed",
     bypass: bool = False,
     force_redo: bool = False,
@@ -47,12 +44,6 @@ def analyze_umi_bipartite_graph(
         The two UMI column name prefixes (default ``("U1", "U2")``).
     sample_col, reference_col : str
         Columns used to define groups.
-    output_directory : Path or None
-        When set, saves clustermap PNGs for each group.
-    min_edge_count_for_plot : int
-        Only U1/U2 clusters involved in at least one edge with this many reads
-        are included in the clustermap.  Filters out singleton noise that would
-        otherwise produce an uninformatively large matrix (default 2).
     uns_flag : str
         Key in ``adata.uns`` to mark completion.
     bypass : bool
@@ -172,46 +163,6 @@ def analyze_umi_bipartite_graph(
             count_matrix.shape[1],
             len(valid_idx),
         )
-
-        # Optional plotting
-        if output_directory is not None:
-            from ..plotting import plot_umi_bipartite_clustermap
-
-            output_directory = Path(output_directory)
-            if isinstance(group_key, tuple):
-                sample_name = str(group_key[0]) if len(group_key) > 0 else "all"
-                reference_name = str(group_key[1]) if len(group_key) > 1 else "all"
-            else:
-                sample_name = str(group_key)
-                reference_name = "all"
-
-            # Filter to clusters involved in at least one edge >= min_edge_count_for_plot
-            plot_matrix = count_matrix.copy()
-            if min_edge_count_for_plot > 1:
-                row_mask = (plot_matrix >= min_edge_count_for_plot).any(axis=1)
-                col_mask = (plot_matrix >= min_edge_count_for_plot).any(axis=0)
-                plot_matrix = plot_matrix.loc[row_mask, col_mask]
-                n_dropped_rows = int((~row_mask).sum())
-                n_dropped_cols = int((~col_mask).sum())
-                if n_dropped_rows or n_dropped_cols:
-                    logger.info(
-                        "Filtered plot matrix for group=%s: dropped %d/%d U1 and %d/%d U2 "
-                        "singleton clusters (min_edge_count_for_plot=%d)",
-                        group_label,
-                        n_dropped_rows,
-                        count_matrix.shape[0],
-                        n_dropped_cols,
-                        count_matrix.shape[1],
-                        min_edge_count_for_plot,
-                    )
-
-            save_path = output_directory / f"{reference_name}__{sample_name}__umi_bipartite.png"
-            plot_umi_bipartite_clustermap(
-                count_matrix=plot_matrix,
-                sample_name=sample_name,
-                reference_name=reference_name,
-                save_path=save_path,
-            )
 
     adata.uns["umi_bipartite_stats"] = bipartite_stats
     adata.uns[uns_flag] = True
