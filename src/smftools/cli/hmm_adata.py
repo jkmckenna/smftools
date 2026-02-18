@@ -573,7 +573,7 @@ def hmm_adata(config_path: str):
     - Call hmm_adata_core(cfg, adata, paths)
     """
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config
+    from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
 
     # 1) load cfg / stage paths
     cfg = load_experiment_config(config_path)
@@ -581,42 +581,17 @@ def hmm_adata(config_path: str):
     paths = get_adata_paths(cfg)
 
     # 2) choose starting AnnData
-    # Prefer:
-    #   - existing HMM h5ad if not forcing redo
-    #   - in-memory spatial_ad from wrapper call
-    #   - saved spatial / pp_dedup / pp / raw on disk
     if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply):
         logger.info(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
         return None
 
-    if paths.hmm.exists():
-        adata, _ = safe_read_h5ad(paths.hmm)
-        source_path = paths.hmm
-    elif paths.latent.exists():
-        adata, _ = safe_read_h5ad(paths.latent)
-        source_path = paths.latent
-    elif paths.spatial.exists():
-        adata, _ = safe_read_h5ad(paths.spatial)
-        source_path = paths.spatial
-    elif paths.chimeric.exists():
-        adata, _ = safe_read_h5ad(paths.chimeric)
-        source_path = paths.chimeric
-    elif paths.variant.exists():
-        adata, _ = safe_read_h5ad(paths.variant)
-        source_path = paths.variant
-    elif paths.pp_dedup.exists():
-        adata, _ = safe_read_h5ad(paths.pp_dedup)
-        source_path = paths.pp_dedup
-    elif paths.pp.exists():
-        adata, _ = safe_read_h5ad(paths.pp)
-        source_path = paths.pp
-    elif paths.raw.exists():
-        adata, _ = safe_read_h5ad(paths.raw)
-        source_path = paths.raw
-    else:
+    source_path, stage = resolve_adata_stage(cfg, paths)
+    if source_path is None:
         raise FileNotFoundError(
             "No AnnData available for HMM: expected at least raw or preprocessed h5ad."
         )
+
+    adata, _ = safe_read_h5ad(source_path)
 
     # 4) delegate to core
     adata, hmm_adata_path = hmm_adata_core(

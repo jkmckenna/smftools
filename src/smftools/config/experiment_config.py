@@ -1031,6 +1031,16 @@ class ExperimentConfig:
     bypass_hmm_apply: bool = False
     force_redo_hmm_apply: bool = False
 
+    # AnnData stage override (for CLI commands like plot-current)
+    from_adata_stage: Optional[str] = None
+
+    # Plot-current CLI params
+    plot_current_read_ids: List[str] = field(default_factory=list)
+    plot_current_reference_start: Optional[int] = None
+    plot_current_reference_end: Optional[int] = None
+    plot_current_var_start: Optional[int] = None
+    plot_current_var_end: Optional[int] = None
+
     # metadata
     config_source: Optional[str] = None
 
@@ -1357,6 +1367,27 @@ class ExperimentConfig:
 
         if "aligner_args" in merged and merged.get("aligner_args") is None:
             merged.pop("aligner_args", None)
+
+        # Plot-current params
+        if "plot_current_read_ids" in merged:
+            merged["plot_current_read_ids"] = _parse_list(merged["plot_current_read_ids"])
+        for _int_key in (
+            "plot_current_reference_start",
+            "plot_current_reference_end",
+            "plot_current_var_start",
+            "plot_current_var_end",
+        ):
+            if _int_key in merged:
+                _val = _parse_numeric(merged.get(_int_key, None), None)
+                merged[_int_key] = None if _val is None else int(_val)
+
+        # from_adata_stage normalization (strip whitespace, allow None)
+        raw_stage = merged.get("from_adata_stage", None)
+        if raw_stage is not None:
+            raw_stage = str(raw_stage).strip()
+            if raw_stage.lower() in ("", "none"):
+                raw_stage = None
+        merged["from_adata_stage"] = raw_stage
 
         # --- Resolve aligner_args into concrete list for the chosen aligner ---
         merged["aligner_args"] = resolve_aligner_args(merged)
@@ -1791,6 +1822,12 @@ class ExperimentConfig:
             references_to_align_for_variant_annotation=merged.get(
                 "references_to_align_for_variant_annotation", [None, None]
             ),
+            from_adata_stage=merged.get("from_adata_stage", None),
+            plot_current_read_ids=merged.get("plot_current_read_ids", []),
+            plot_current_reference_start=merged.get("plot_current_reference_start", None),
+            plot_current_reference_end=merged.get("plot_current_reference_end", None),
+            plot_current_var_start=merged.get("plot_current_var_start", None),
+            plot_current_var_end=merged.get("plot_current_var_end", None),
             config_source=config_source or "<var_dict>",
         )
 

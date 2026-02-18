@@ -162,59 +162,30 @@ def chimeric_adata(
     - Call `chimeric_adata_core(...)` when actual work is needed.
     """
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config
+    from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
 
     # 1) Ensure config + basic paths via load_adata
     cfg = load_experiment_config(config_path)
 
     paths = get_adata_paths(cfg)
 
-    pp_path = paths.pp
-    pp_dedup_path = paths.pp_dedup
-    spatial_path = paths.spatial
     chimeric_path = paths.chimeric
-    variant_path = paths.variant
-    hmm_path = paths.hmm
-    latent_path = paths.latent
 
     # Stage-skipping logic
     if not getattr(cfg, "force_redo_chimeric_analyses", False):
         if chimeric_path.exists():
             logger.info(f"Chimeric AnnData found: {chimeric_path}\nSkipping smftools chimeric")
-            return None, spatial_path
+            return None, chimeric_path
 
-    # Helper to load from disk, reusing loaded_adata if it matches
-    def _load(path: Path):
-        adata, _ = safe_read_h5ad(path)
-        return adata
-
-    # 3) Decide which AnnData to use as the *starting point* for  analyses
-    if hmm_path.exists():
-        start_adata = _load(hmm_path)
-        source_path = hmm_path
-    elif latent_path.exists():
-        start_adata = _load(latent_path)
-        source_path = latent_path
-    elif spatial_path.exists():
-        start_adata = _load(spatial_path)
-        source_path = spatial_path
-    elif chimeric_path.exists():
-        start_adata = _load(chimeric_path)
-        source_path = chimeric_path
-    elif variant_path.exists():
-        start_adata = _load(variant_path)
-        source_path = variant_path
-    elif pp_dedup_path.exists():
-        start_adata = _load(pp_dedup_path)
-        source_path = pp_dedup_path
-    elif pp_path.exists():
-        start_adata = _load(pp_path)
-        source_path = pp_path
-    else:
+    # Decide which AnnData to use as the *starting point* for analyses
+    source_path, stage = resolve_adata_stage(cfg, paths, min_stage="pp")
+    if source_path is None:
         logger.warning(
             "No suitable AnnData found for chimeric analyses (need at least preprocessed)."
         )
         return None, None
+
+    start_adata, _ = safe_read_h5ad(source_path)
 
     # 4) Run the core
     adata_chimeric, chimeric_path = chimeric_adata_core(

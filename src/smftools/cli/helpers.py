@@ -16,8 +16,27 @@ from smftools.constants import (
     VARIANT_DIR,
 )
 
+from smftools.logging_utils import get_logger
+
 from ..metadata import write_runtime_schema_yaml
 from ..readwrite import safe_write_h5ad
+
+logger = get_logger(__name__)
+
+# Canonical mapping from user-facing stage aliases to AdataPaths attribute names
+STAGE_MAP = {
+    "raw": "raw",
+    "load": "raw",
+    "pp": "pp",
+    "preprocess": "pp",
+    "pp_dedup": "pp_dedup",
+    "preprocess_dedup": "pp_dedup",
+    "spatial": "spatial",
+    "hmm": "hmm",
+    "latent": "latent",
+    "variant": "variant",
+    "chimeric": "chimeric",
+}
 
 
 @dataclass
@@ -96,3 +115,60 @@ def write_gz_h5ad(adata: ad.AnnData, path: Path) -> Path:
     safe_write_h5ad(adata, path, compression="gzip", backup=True)
     write_runtime_schema_yaml(adata, path, step_name="runtime")
     return path
+
+
+_DEFAULT_PRIORITY = ("hmm", "latent", "spatial", "chimeric", "variant", "pp_dedup", "pp", "raw")
+
+
+def resolve_adata_stage(
+    cfg,
+    paths: AdataPaths,
+    min_stage: str = "raw",
+) -> tuple[Path | None, str | None]:
+    """Resolve which AnnData file to load.
+
+    If ``cfg.from_adata_stage`` is set, force that stage.  Otherwise fall back
+    to the standard priority order:
+    hmm > latent > spatial > chimeric > variant > pp_dedup > pp > raw.
+
+    Parameters
+    ----------
+    cfg : ExperimentConfig
+    paths : AdataPaths
+    min_stage : str, default "raw"
+        The lowest stage to consider in the fallback chain.  Stages below this
+        in the priority list are skipped.  For example, ``min_stage="pp"``
+        excludes ``raw``.
+
+    Returns
+    -------
+    (path, stage_name) or (None, None) if no file is found.
+    """
+    if cfg.from_adata_stage is not None:
+        key = STAGE_MAP.get(cfg.from_adata_stage.lower())
+        if key is None:
+            raise ValueError(
+                f"Unknown from_adata_stage '{cfg.from_adata_stage}'. "
+                f"Valid values: {', '.join(sorted(STAGE_MAP))}"
+            )
+        p = getattr(paths, key)
+        if p.exists():
+            logger.info(f"from_adata_stage override: loading '{key}' from {p}")
+            return p, key
+        logger.warning(f"from_adata_stage='{cfg.from_adata_stage}' requested but {p} not found")
+        return None, None
+
+    # Default priority, truncated at min_stage
+    try:
+        cutoff = _DEFAULT_PRIORITY.index(min_stage) + 1
+    except ValueError:
+        cutoff = len(_DEFAULT_PRIORITY)
+    stages = _DEFAULT_PRIORITY[:cutoff]
+
+    for stage in stages:
+        p = getattr(paths, stage)
+        if p.exists():
+            logger.info(f"Auto-resolved AnnData stage '{stage}' from {p}")
+            return p, stage
+
+    return None, None
