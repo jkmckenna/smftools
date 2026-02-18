@@ -11,7 +11,11 @@ from smftools.preprocessing.preprocess_umi_annotations import (
     _has_homopolymer_run,
     _homopolymer_fraction,
     _unique_base_count,
+    add_umi_entropy_obs_fields,
+    add_umi_hamming_clusters,
+    add_umi_pass_obs_fields,
     preprocess_umi_annotations,
+    umi_sequence_entropy,
     validate_umi,
 )
 
@@ -58,6 +62,18 @@ class TestUmiValidationHelpers:
 
     def test_has_homopolymer_run_exactly_at_threshold(self):
         assert _has_homopolymer_run("ACGTAAAA", max_run=3) is True
+
+    def test_umi_sequence_entropy_uniform(self):
+        # Equal A/C/G/T composition -> 2 bits.
+        assert np.isclose(umi_sequence_entropy("ACGT"), 2.0)
+
+    def test_umi_sequence_entropy_single_base(self):
+        assert np.isclose(umi_sequence_entropy("AAAA"), 0.0)
+
+    def test_umi_sequence_entropy_invalid_or_missing(self):
+        assert np.isnan(umi_sequence_entropy(None))
+        assert np.isnan(umi_sequence_entropy(""))
+        assert np.isnan(umi_sequence_entropy("NNNN"))
 
 
 class TestEditDistance:
@@ -211,6 +227,7 @@ class TestPreprocessUmiAnnotations:
                     "CCCCGGGG",
                 ],
                 "Barcode": ["S1"] * 5 + ["S2"] * 5,
+                "Experiment_name_and_barcode": ["exp_S1"] * 5 + ["exp_S2"] * 5,
                 "Reference_strand": ["ref1"] * 10,
             },
             index=[f"read_{i}" for i in range(n_obs)],
@@ -325,3 +342,73 @@ class TestPreprocessUmiAnnotations:
         assert "total_clusters" in stats
         assert "params" in stats
         assert stats["params"]["umi_cols"] == ["U1", "U2"]
+
+    def test_add_umi_entropy_obs_fields(self, simple_adata):
+        """Test adding UMI entropy columns to obs."""
+        result = add_umi_entropy_obs_fields(simple_adata, umi_cols=["U1", "U2"])
+
+        assert "U1_entropy" in result.obs.columns
+        assert "U2_entropy" in result.obs.columns
+
+        # U1 row with ACGTACGT should have 2 bits of entropy.
+        assert np.isclose(result.obs.loc["read_0", "U1_entropy"], 2.0)
+        # U1 row with missing value should be NaN.
+        assert np.isnan(result.obs.loc["read_6", "U1_entropy"])
+        # U2 row with GGGGCCCC should have 1 bit of entropy.
+        assert np.isclose(result.obs.loc["read_0", "U2_entropy"], 1.0)
+
+    def test_add_umi_pass_obs_fields(self, simple_adata):
+        """Test adding UMI pass/fail status columns with entropy threshold."""
+        result = add_umi_pass_obs_fields(
+            simple_adata,
+            umi_cols=["U1", "U2"],
+            min_entropy=1.5,
+            expected_length=8,
+        )
+
+        assert "U1_pass" in result.obs.columns
+        assert "U2_pass" in result.obs.columns
+
+        # ACGTACGT has entropy 2.0 and valid content/length.
+        assert bool(result.obs.loc["read_0", "U1_pass"])
+        # AAAAAAAA should fail content checks (homopolymer).
+        assert not bool(result.obs.loc["read_5", "U1_pass"])
+        # Missing UMI should fail.
+        assert not bool(result.obs.loc["read_6", "U1_pass"])
+        # U2 value GGGGCCCC has entropy 1.0; with min_entropy=1.5, it should fail.
+        assert not bool(result.obs.loc["read_0", "U2_pass"])
+
+    def test_add_umi_hamming_clusters(self, simple_adata):
+        """Test bit-packed all-vs-all Hamming clustering on passed UMIs."""
+        result = add_umi_entropy_obs_fields(simple_adata, umi_cols=["U1", "U2"])
+        result = add_umi_pass_obs_fields(
+            result,
+            umi_cols=["U1", "U2"],
+            min_entropy=1.0,
+            expected_length=8,
+        )
+        result = add_umi_hamming_clusters(
+            result,
+            umi_cols=["U1", "U2"],
+            pass_suffix="_pass",
+            group_cols=["Experiment_name_and_barcode", "Reference_strand"],
+            max_hamming_distance=1,
+        )
+
+        assert "U1_cluster" in result.obs.columns
+        assert "U1_cluster_size" in result.obs.columns
+        assert "U2_cluster" in result.obs.columns
+        assert "U2_cluster_size" in result.obs.columns
+        assert "RX_cluster" in result.obs.columns
+
+        # U1: reads 0/1/2 should cluster together (ACGTACGT + one 1-edit neighbor).
+        c0 = result.obs.loc["read_0", "U1_cluster"]
+        c1 = result.obs.loc["read_1", "U1_cluster"]
+        c2 = result.obs.loc["read_2", "U1_cluster"]
+        assert c0 == c1 == c2
+        assert int(result.obs.loc["read_0", "U1_cluster_size"]) == 3
+        assert result.obs.loc["read_0", "RX_cluster"] == f"{result.obs.loc['read_0', 'U1_cluster']}-{result.obs.loc['read_0', 'U2_cluster']}"
+
+        # U1: invalid UMI (read_5) should remain unclustered.
+        assert pd.isna(result.obs.loc["read_5", "U1_cluster"])
+        assert int(result.obs.loc["read_5", "U1_cluster_size"]) == 0
