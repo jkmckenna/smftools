@@ -437,6 +437,76 @@ def variant_adata_core(
                     show_position_axis=True,
                     mismatch_type_obs_col=umi_status_col,
                     mismatch_type_colors=umi_status_colors,
+                    mismatch_type_legend_prefix="RX bipartite",
+                )
+
+    # ============================================================
+    # 4c) Variant segment clustermaps with UMI pass status
+    # ============================================================
+    if (
+        seq1_col
+        and seq2_col
+        and getattr(cfg, "use_umi", False)
+        and (("U1_valid" in adata.obs.columns and "U2_valid" in adata.obs.columns)
+             or ("U1_pass" in adata.obs.columns and "U2_pass" in adata.obs.columns))
+    ):
+        segment_layer_name = f"{seq1_col}__{seq2_col}_variant_segments"
+        if segment_layer_name in adata.layers:
+            umi_pass_col = "UMI_pass_status"
+            u1_status_col = "U1_valid" if "U1_valid" in adata.obs.columns else "U1_pass"
+            u2_status_col = "U2_valid" if "U2_valid" in adata.obs.columns else "U2_pass"
+            pass_statuses = []
+            for u1_state, u2_state in zip(adata.obs[u1_status_col], adata.obs[u2_status_col]):
+                u1_ok = bool(u1_state)
+                u2_ok = bool(u2_state)
+                if u1_ok and u2_ok:
+                    pass_statuses.append("both_pass")
+                elif u1_ok:
+                    pass_statuses.append("U1_only")
+                elif u2_ok:
+                    pass_statuses.append("U2_only")
+                else:
+                    pass_statuses.append("neither_pass")
+            adata.obs[umi_pass_col] = pd.Categorical(
+                pass_statuses,
+                categories=["both_pass", "U1_only", "U2_only", "neither_pass"],
+            )
+
+            umi_pass_colors = {
+                "both_pass": "#2ca02c",
+                "U1_only": "#1f77b4",
+                "U2_only": "#ff7f0e",
+                "neither_pass": "#d9d9d9",
+            }
+
+            umi_pass_dir = (
+                variant_directory
+                / "deduplicated"
+                / "07_variant_segment_clustermaps_with_umi_pass_status"
+            )
+            if umi_pass_dir.exists():
+                logger.info(
+                    "Variant segment UMI-pass-status clustermaps already exist at %s; skipping.",
+                    umi_pass_dir,
+                )
+            else:
+                make_dirs([umi_pass_dir])
+                plot_variant_segment_clustermaps(
+                    adata,
+                    seq1_column=seq1_col,
+                    seq2_column=seq2_col,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    variant_segment_layer=segment_layer_name,
+                    read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                    save_path=umi_pass_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                    show_position_axis=True,
+                    mismatch_type_obs_col=umi_pass_col,
+                    mismatch_type_colors=umi_pass_colors,
+                    mismatch_type_legend_prefix="UMI content",
                 )
 
     # ============================================================

@@ -59,6 +59,7 @@ def test_plot_variant_segment_clustermaps_with_mismatch_type_annotation(tmp_path
         read_span_layer="read_span_mask",
         save_path=tmp_path,
         mismatch_type_obs_col="chimeric_variant_sites_type",
+        mismatch_type_legend_prefix="UMI content",
     )
 
     assert len(results) == 1

@@ -57,7 +57,7 @@ General AnnData structures added by `preprocess`:
 - `obs`
 - sample-sheet metadata columns (when `sample_sheet_path` is provided) mapped by `sample_sheet_mapping_column`.
 - read-level QC/ratio/modification summary fields used for filtering and plotting (for example read length/quality/mapping and fraction-modified metrics).
-- optional UMI preprocessing fields when `use_umi=True`, including validity and clustering annotations (for example `U1_pass`, `U2_pass`, `U1_cluster`, `U2_cluster`, `RX_cluster`).
+- optional UMI preprocessing fields when `use_umi=True`, including validity and clustering annotations (for example `U1_valid`, `U2_valid`, `U1_cluster`, `U2_cluster`, `RX_cluster`).
 - optional UMI bipartite graph annotations and dominance metrics (for example edge-count/dominant-pair style fields) plus group-level stats in `uns`.
 - duplicate-detection fields for non-direct modalities (for example merged cluster IDs/sizes and duplicate flags).
 - `var`

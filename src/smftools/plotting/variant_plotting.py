@@ -885,6 +885,7 @@ def plot_variant_segment_clustermaps(
     xtick_fontsize: int = 9,
     mismatch_type_obs_col: str | None = None,
     mismatch_type_colors: Dict[str, str] | None = None,
+    mismatch_type_legend_prefix: str = "Mismatch type",
 ) -> List[Dict[str, Any]]:
     """Plot variant segment heatmaps with variant call and breakpoint overlays.
 
@@ -921,6 +922,9 @@ def plot_variant_segment_clustermaps(
             adjacent categorical strip.
         mismatch_type_colors: Optional mapping from mismatch class label to color.
             Missing labels fall back to gray.
+        mismatch_type_legend_prefix: Prefix used in legend entries for the
+            mismatch/categorical annotation (e.g., ``"Mismatch type"`` or
+            ``"UMI content"``).
 
     Returns:
         List of dicts with metadata about each generated plot.
@@ -1194,7 +1198,7 @@ def plot_variant_segment_clustermaps(
                     legend_elements.append(
                         patches.Patch(
                             facecolor=mismatch_type_colors.get(label, "#636363"),
-                            label=f"Mismatch type: {label}",
+                            label=f"{mismatch_type_legend_prefix}: {label}",
                         )
                     )
             ax.legend(
