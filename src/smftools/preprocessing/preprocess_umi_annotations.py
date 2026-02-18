@@ -128,7 +128,9 @@ def add_umi_pass_obs_fields(
     """
     existing_cols = [col for col in umi_cols if col in adata.obs.columns]
     if not existing_cols:
-        logger.warning("No UMI columns found in adata.obs for pass-status calculation: %s", umi_cols)
+        logger.warning(
+            "No UMI columns found in adata.obs for pass-status calculation: %s", umi_cols
+        )
         return adata
 
     for col in existing_cols:
@@ -151,7 +153,9 @@ def add_umi_pass_obs_fields(
 
         adata.obs[pass_col] = pd.Series(pass_values, index=adata.obs.index, dtype=bool)
         n_pass = int(adata.obs[pass_col].sum())
-        logger.info("Added %s (%d/%d passing, min_entropy=%.3f)", pass_col, n_pass, adata.n_obs, min_entropy)
+        logger.info(
+            "Added %s (%d/%d passing, min_entropy=%.3f)", pass_col, n_pass, adata.n_obs, min_entropy
+        )
 
     return adata
 
@@ -181,7 +185,9 @@ def _bitpack_onehot_dna_sequences(sequences: Sequence[str]) -> np.ndarray:
     seqs = [str(s).upper() for s in sequences]
     length = len(seqs[0])
     if any(len(s) != length for s in seqs):
-        raise ValueError("All sequences must have identical length for bit-packed Hamming distance.")
+        raise ValueError(
+            "All sequences must have identical length for bit-packed Hamming distance."
+        )
 
     arr = np.zeros((len(seqs), 4 * length), dtype=np.uint8)
     base_to_offset = {"A": 0, "C": 1, "G": 2, "T": 3}
@@ -272,10 +278,14 @@ def add_umi_hamming_clusters(
         size_col = f"{col}_cluster_size"
         pass_col = f"{col}{pass_suffix}"
 
-        adata.obs[cluster_col] = pd.Series([None] * adata.n_obs, index=adata.obs.index, dtype=object)
+        adata.obs[cluster_col] = pd.Series(
+            [None] * adata.n_obs, index=adata.obs.index, dtype=object
+        )
         adata.obs[size_col] = 0
         if pass_col not in adata.obs.columns:
-            logger.warning("Missing pass column %s; skipping Hamming clustering for %s.", pass_col, col)
+            logger.warning(
+                "Missing pass column %s; skipping Hamming clustering for %s.", pass_col, col
+            )
             continue
 
         for group_key, group_df in grouped:
@@ -333,7 +343,9 @@ def add_umi_hamming_clusters(
                 logger.debug("UMI Hamming clustering finished for %s group=%s", col, group_key)
 
         n_clustered = int(adata.obs[cluster_col].notna().sum())
-        logger.info("Added %s/%s for %s (%d reads clustered)", cluster_col, size_col, col, n_clustered)
+        logger.info(
+            "Added %s/%s for %s (%d reads clustered)", cluster_col, size_col, col, n_clustered
+        )
 
     # Build combined RX cluster from U1/U2 cluster columns when present.
     if "U1_cluster" in adata.obs.columns and "U2_cluster" in adata.obs.columns:

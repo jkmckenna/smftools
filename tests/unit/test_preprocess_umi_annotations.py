@@ -407,7 +407,10 @@ class TestPreprocessUmiAnnotations:
         c2 = result.obs.loc["read_2", "U1_cluster"]
         assert c0 == c1 == c2
         assert int(result.obs.loc["read_0", "U1_cluster_size"]) == 3
-        assert result.obs.loc["read_0", "RX_cluster"] == f"{result.obs.loc['read_0', 'U1_cluster']}-{result.obs.loc['read_0', 'U2_cluster']}"
+        assert (
+            result.obs.loc["read_0", "RX_cluster"]
+            == f"{result.obs.loc['read_0', 'U1_cluster']}-{result.obs.loc['read_0', 'U2_cluster']}"
+        )
 
         # U1: invalid UMI (read_5) should remain unclustered.
         assert pd.isna(result.obs.loc["read_5", "U1_cluster"])
