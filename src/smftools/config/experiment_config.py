@@ -9,12 +9,16 @@ from pathlib import Path
 from typing import IO, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from smftools.constants import (
+    BAM_OUTPUTS_DIR,
     BAM_SUFFIX,
     BARCODE_BOTH_ENDS,
+    BED_OUTPUTS_DIR,
     CONVERSIONS,
+    FASTA_OUTPUTS_DIR,
     LOAD_DIR,
     MOD_LIST,
     MOD_MAP,
+    MODKIT_OUTPUTS_DIR,
     REF_COL,
     SAMPLE_COL,
     SPLIT_DIR,
@@ -672,6 +676,14 @@ class ExperimentConfig:
     recursive_input_search: bool = True
     input_type: Optional[str] = None
     input_files: Optional[List[Path]] = None
+    bam_outputs_dir: str = BAM_OUTPUTS_DIR
+    bam_outputs_path: Optional[str] = None
+    fasta_outputs_dir: str = FASTA_OUTPUTS_DIR
+    fasta_outputs_path: Optional[str] = None
+    bed_outputs_dir: str = BED_OUTPUTS_DIR
+    bed_outputs_path: Optional[str] = None
+    modkit_outputs_dir: str = MODKIT_OUTPUTS_DIR
+    modkit_outputs_path: Optional[str] = None
     split_dir: str = SPLIT_DIR
     split_path: Optional[str] = None
     strands: List[str] = field(default_factory=lambda: STRANDS)
@@ -1213,9 +1225,25 @@ class ExperimentConfig:
         summary_file_basename = merged["experiment_name"] + "_output_summary.csv"
         summary_file = output_dir / summary_file_basename
 
+        # Resolve load BAM directories from constants (non-user-tunable).
+        bam_outputs_dir = BAM_OUTPUTS_DIR
+        bam_outputs_path = output_dir / bam_outputs_dir
+
+        # Resolve FASTA output directories from constants (non-user-tunable).
+        fasta_outputs_dir = FASTA_OUTPUTS_DIR
+        fasta_outputs_path = output_dir / fasta_outputs_dir
+
+        # Resolve BED output directories from constants (non-user-tunable).
+        bed_outputs_dir = BED_OUTPUTS_DIR
+        bed_outputs_path = output_dir / bed_outputs_dir
+
+        # Resolve modkit directories from constants (non-user-tunable).
+        modkit_outputs_dir = MODKIT_OUTPUTS_DIR
+        modkit_outputs_path = output_dir / modkit_outputs_dir
+
         # Demultiplexing output path
-        split_dir = merged.get("split_dir", SPLIT_DIR)
-        split_path = output_dir / LOAD_DIR / split_dir
+        split_dir = SPLIT_DIR
+        split_path = bam_outputs_path / split_dir
 
         # final normalization
         if "strands" in merged:
@@ -1491,6 +1519,14 @@ class ExperimentConfig:
             fastq_barcode_map=merged.get("fastq_barcode_map"),
             fastq_auto_pairing=merged.get("fastq_auto_pairing"),
             bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
+            bam_outputs_dir=bam_outputs_dir,
+            bam_outputs_path=bam_outputs_path,
+            fasta_outputs_dir=fasta_outputs_dir,
+            fasta_outputs_path=fasta_outputs_path,
+            bed_outputs_dir=bed_outputs_dir,
+            bed_outputs_path=bed_outputs_path,
+            modkit_outputs_dir=modkit_outputs_dir,
+            modkit_outputs_path=modkit_outputs_path,
             split_dir=split_dir,
             split_path=split_path,
             strands=merged.get("strands", STRANDS),
