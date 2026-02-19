@@ -229,10 +229,21 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     output_directory = Path(cfg.output_directory)
     load_directory = output_directory / LOAD_DIR
+    bam_outputs_directory = Path(cfg.bam_outputs_path)
+    fasta_outputs_directory = Path(cfg.fasta_outputs_path)
+    bed_outputs_directory = Path(cfg.bed_outputs_path)
+    modkit_outputs_directory = Path(cfg.modkit_outputs_path)
     sidecar_manifest = sidecar_manifest_path(load_directory)
     logging_directory = load_directory / LOGGING_DIR
 
-    make_dirs([output_directory, load_directory])
+    make_dirs(
+        [
+            output_directory,
+            load_directory,
+            bam_outputs_directory,
+            fasta_outputs_directory,
+        ]
+    )
 
     if cfg.emit_log_file:
         log_file = logging_directory / f"{date_str}_{time_str}_log.log"
@@ -254,9 +265,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     # Direct methylation detection SMF specific parameters
     if cfg.smf_modality == "direct":
-        mod_bed_dir = load_directory / "mod_beds"
-        mod_tsv_dir = load_directory / "mod_tsvs"
-        bam_qc_dir = load_directory / "bam_qc"
+        mod_bed_dir = modkit_outputs_directory / "mod_beds"
+        mod_tsv_dir = modkit_outputs_directory / "mod_tsvs"
         mods = [cfg.mod_map[mod] for mod in cfg.mod_list]
 
         if not check_executable_exists("dorado"):
@@ -361,7 +371,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     unaligned_output = bam.with_suffix(cfg.bam_suffix)
 
     aligned_BAM = (
-        load_directory / (bam.stem + "_aligned")
+        bam_outputs_directory / (bam.stem + "_aligned")
     )  # doing this allows specifying an input bam in a seperate directory as the aligned output bams
 
     aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
@@ -381,7 +391,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     if cfg.fasta_regions_of_interest and ".bed" in cfg.fasta_regions_of_interest:
         fasta_stem = cfg.fasta.stem
         bed_stem = Path(cfg.fasta_regions_of_interest).stem
-        output_FASTA = load_directory / f"{fasta_stem}_subsampled_by_{bed_stem}.fasta"
+        output_FASTA = fasta_outputs_directory / f"{fasta_stem}_subsampled_by_{bed_stem}.fasta"
 
         logger.info("Subsampling FASTA records using the provided BED file")
         subsample_fasta_from_bed(
@@ -396,7 +406,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     if cfg.smf_modality == "conversion":
         fasta_stem = fasta.stem
         converted_FASTA_basename = f"{fasta_stem}_converted.fasta"
-        converted_FASTA = load_directory / converted_FASTA_basename
+        converted_FASTA = fasta_outputs_directory / converted_FASTA_basename
 
         if "converted.fa" in fasta.name:
             logger.info(f"{fasta} is already converted. Using existing converted FASTA.")
@@ -505,7 +515,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     if cfg.make_beds:
         # Make beds and provide basic histograms
-        bed_dir = load_directory / "beds"
+        aligned_bed_output_root = bed_outputs_directory / "aligned"
+        bed_dir = aligned_bed_output_root / "beds"
         if bed_dir.is_dir():
             logger.debug(
                 f"{bed_dir} already exists. Skipping BAM -> BED conversion for {aligned_sorted_output}"
@@ -514,7 +525,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             logger.info("Making bed files from the aligned and sorted BAM file")
             aligned_BAM_to_bed(
                 aligned_sorted_output,
-                load_directory,
+                aligned_bed_output_root,
                 fasta,
                 cfg.make_bigwigs,
                 cfg.threads,
@@ -853,7 +864,8 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     if cfg.make_beds and not skip_bam_split:
         # Make beds and provide basic histograms
-        bed_dir = cfg.split_path / "beds"
+        demux_bed_output_root = bed_outputs_directory / "demultiplexed"
+        bed_dir = demux_bed_output_root / "beds"
         if bed_dir.is_dir():
             logger.debug(
                 f"{bed_dir} already exists. Skipping BAM -> BED conversion for demultiplexed bams"
@@ -863,7 +875,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             for bam in bam_files:
                 aligned_BAM_to_bed(
                     bam,
-                    cfg.split_path,
+                    demux_bed_output_root,
                     fasta,
                     cfg.make_bigwigs,
                     cfg.threads,
@@ -876,7 +888,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ################################### 6) SAMTools based BAM QC ######################################################################
 
     # 5) Samtools QC metrics on split BAM files
-    bam_qc_dir = load_directory / "bam_qc"
+    bam_qc_dir = bam_outputs_directory / "bam_qc"
     if bam_qc_dir.is_dir():
         logger.debug(f"{bam_qc_dir} already exists. Using existing BAM QC calculations.")
     else:
@@ -1153,7 +1165,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ############################################### MultiQC HTML Report ###############################################
 
     # multiqc ###
-    mqc_dir = load_directory / "multiqc"
+    mqc_dir = bam_outputs_directory / "multiqc"
     if mqc_dir.is_dir():
         logger.info(f"{mqc_dir} already exists, skipping multiqc")
     else:
