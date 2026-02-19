@@ -15,6 +15,7 @@ from smftools.constants import (
     BED_OUTPUTS_DIR,
     CONVERSIONS,
     FASTA_OUTPUTS_DIR,
+    INFORMATICS_OUTPUTS_DIR,
     LOAD_DIR,
     MOD_LIST,
     MOD_MAP,
@@ -676,6 +677,8 @@ class ExperimentConfig:
     recursive_input_search: bool = True
     input_type: Optional[str] = None
     input_files: Optional[List[Path]] = None
+    informatics_outputs_dir: str = INFORMATICS_OUTPUTS_DIR
+    informatics_outputs_path: Optional[str] = None
     bam_outputs_dir: str = BAM_OUTPUTS_DIR
     bam_outputs_path: Optional[str] = None
     fasta_outputs_dir: str = FASTA_OUTPUTS_DIR
@@ -1225,21 +1228,25 @@ class ExperimentConfig:
         summary_file_basename = merged["experiment_name"] + "_output_summary.csv"
         summary_file = output_dir / summary_file_basename
 
+        # Resolve informatics output root from constants (non-user-tunable).
+        informatics_outputs_dir = INFORMATICS_OUTPUTS_DIR
+        informatics_outputs_path = output_dir / informatics_outputs_dir
+
         # Resolve load BAM directories from constants (non-user-tunable).
         bam_outputs_dir = BAM_OUTPUTS_DIR
-        bam_outputs_path = output_dir / bam_outputs_dir
+        bam_outputs_path = informatics_outputs_path / bam_outputs_dir
 
         # Resolve FASTA output directories from constants (non-user-tunable).
         fasta_outputs_dir = FASTA_OUTPUTS_DIR
-        fasta_outputs_path = output_dir / fasta_outputs_dir
+        fasta_outputs_path = informatics_outputs_path / fasta_outputs_dir
 
         # Resolve BED output directories from constants (non-user-tunable).
         bed_outputs_dir = BED_OUTPUTS_DIR
-        bed_outputs_path = output_dir / bed_outputs_dir
+        bed_outputs_path = informatics_outputs_path / bed_outputs_dir
 
         # Resolve modkit directories from constants (non-user-tunable).
         modkit_outputs_dir = MODKIT_OUTPUTS_DIR
-        modkit_outputs_path = output_dir / modkit_outputs_dir
+        modkit_outputs_path = informatics_outputs_path / modkit_outputs_dir
 
         # Demultiplexing output path
         split_dir = SPLIT_DIR
@@ -1519,6 +1526,8 @@ class ExperimentConfig:
             fastq_barcode_map=merged.get("fastq_barcode_map"),
             fastq_auto_pairing=merged.get("fastq_auto_pairing"),
             bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
+            informatics_outputs_dir=informatics_outputs_dir,
+            informatics_outputs_path=informatics_outputs_path,
             bam_outputs_dir=bam_outputs_dir,
             bam_outputs_path=bam_outputs_path,
             fasta_outputs_dir=fasta_outputs_dir,

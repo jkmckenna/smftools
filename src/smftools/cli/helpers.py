@@ -15,6 +15,7 @@ from smftools.constants import (
     FASTA_OUTPUTS_DIR,
     H5_DIR,
     HMM_DIR,
+    INFORMATICS_OUTPUTS_DIR,
     LATENT_DIR,
     LOAD_DIR,
     MODKIT_OUTPUTS_DIR,
@@ -173,17 +174,20 @@ def get_artifact_paths(cfg, bam_stem: str | None = None) -> ArtifactPaths:
     """
     output_directory = Path(cfg.output_directory)
     load_directory = output_directory / LOAD_DIR
+    informatics_outputs_directory = Path(
+        getattr(cfg, "informatics_outputs_path", output_directory / INFORMATICS_OUTPUTS_DIR)
+    )
     bam_outputs_directory = Path(
-        getattr(cfg, "bam_outputs_path", output_directory / BAM_OUTPUTS_DIR)
+        getattr(cfg, "bam_outputs_path", informatics_outputs_directory / BAM_OUTPUTS_DIR)
     )
     fasta_outputs_directory = Path(
-        getattr(cfg, "fasta_outputs_path", output_directory / FASTA_OUTPUTS_DIR)
+        getattr(cfg, "fasta_outputs_path", informatics_outputs_directory / FASTA_OUTPUTS_DIR)
     )
     bed_outputs_directory = Path(
-        getattr(cfg, "bed_outputs_path", output_directory / BED_OUTPUTS_DIR)
+        getattr(cfg, "bed_outputs_path", informatics_outputs_directory / BED_OUTPUTS_DIR)
     )
     modkit_outputs_directory = Path(
-        getattr(cfg, "modkit_outputs_path", output_directory / MODKIT_OUTPUTS_DIR)
+        getattr(cfg, "modkit_outputs_path", informatics_outputs_directory / MODKIT_OUTPUTS_DIR)
     )
     split_directory = Path(getattr(cfg, "split_path", bam_outputs_directory / SPLIT_DIR))
     bam_qc_directory = bam_outputs_directory / "bam_qc"
