@@ -9,16 +9,16 @@ from pathlib import Path
 from typing import IO, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from smftools.constants import (
-    BAM_SUFFIX,
     BAM_OUTPUTS_DIR,
-    BED_OUTPUTS_DIR,
+    BAM_SUFFIX,
     BARCODE_BOTH_ENDS,
+    BED_OUTPUTS_DIR,
     CONVERSIONS,
     FASTA_OUTPUTS_DIR,
     LOAD_DIR,
-    MODKIT_OUTPUTS_DIR,
     MOD_LIST,
     MOD_MAP,
+    MODKIT_OUTPUTS_DIR,
     REF_COL,
     SAMPLE_COL,
     SPLIT_DIR,

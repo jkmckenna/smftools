@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +19,8 @@ from smftools.constants import (
     LOAD_DIR,
     MODKIT_OUTPUTS_DIR,
     PREPROCESS_DIR,
-    SPLIT_DIR,
     SPATIAL_DIR,
+    SPLIT_DIR,
     VARIANT_DIR,
 )
 from smftools.logging_utils import get_logger
@@ -237,7 +237,13 @@ def read_artifact_manifest(path: str | Path) -> dict[str, Any]:
     """Read artifact manifest JSON (returns default scaffold if missing)."""
     p = Path(path)
     if not p.exists():
-        return {"version": 1, "created_at": _utc_now_iso(), "updated_at": _utc_now_iso(), "artifacts": {}, "steps": []}
+        return {
+            "version": 1,
+            "created_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "artifacts": {},
+            "steps": [],
+        }
     with p.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
     if "artifacts" not in data:
