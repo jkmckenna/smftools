@@ -723,7 +723,7 @@ class ExperimentConfig:
     umi_adapters: List[Optional[str]] = field(default_factory=lambda: [None, None])
     umi_length: Optional[int] = None
     umi_min_entropy: float = 1.65
-    umi_hamming_cluster_distance: int = 2
+    umi_cluster_max_edit_distance: int = 2
     umi_search_window: int = 200
     umi_adapter_matcher: str = "exact"
     umi_adapter_max_edits: Optional[int] = None
@@ -1031,6 +1031,16 @@ class ExperimentConfig:
     bypass_hmm_apply: bool = False
     force_redo_hmm_apply: bool = False
 
+    # AnnData stage override (for CLI commands like plot-current)
+    from_adata_stage: Optional[str] = None
+
+    # Plot-current CLI params
+    plot_current_read_ids: List[str] = field(default_factory=list)
+    plot_current_reference_start: Optional[int] = None
+    plot_current_reference_end: Optional[int] = None
+    plot_current_var_start: Optional[int] = None
+    plot_current_var_end: Optional[int] = None
+
     # metadata
     config_source: Optional[str] = None
 
@@ -1254,9 +1264,15 @@ class ExperimentConfig:
             merged["umi_min_entropy"] = float(
                 _parse_numeric(merged.get("umi_min_entropy", 1.65), 1.65)
             )
-        if "umi_hamming_cluster_distance" in merged:
-            merged["umi_hamming_cluster_distance"] = int(
-                _parse_numeric(merged.get("umi_hamming_cluster_distance", 2), 2)
+        # Backward compat: rename old key to new key
+        if (
+            "umi_hamming_cluster_distance" in merged
+            and "umi_cluster_max_edit_distance" not in merged
+        ):
+            merged["umi_cluster_max_edit_distance"] = merged.pop("umi_hamming_cluster_distance")
+        if "umi_cluster_max_edit_distance" in merged:
+            merged["umi_cluster_max_edit_distance"] = int(
+                _parse_numeric(merged.get("umi_cluster_max_edit_distance", 2), 2)
             )
         if "umi_search_window" in merged:
             merged["umi_search_window"] = int(
@@ -1354,6 +1370,27 @@ class ExperimentConfig:
 
         if "aligner_args" in merged and merged.get("aligner_args") is None:
             merged.pop("aligner_args", None)
+
+        # Plot-current params
+        if "plot_current_read_ids" in merged:
+            merged["plot_current_read_ids"] = _parse_list(merged["plot_current_read_ids"])
+        for _int_key in (
+            "plot_current_reference_start",
+            "plot_current_reference_end",
+            "plot_current_var_start",
+            "plot_current_var_end",
+        ):
+            if _int_key in merged:
+                _val = _parse_numeric(merged.get(_int_key, None), None)
+                merged[_int_key] = None if _val is None else int(_val)
+
+        # from_adata_stage normalization (strip whitespace, allow None)
+        raw_stage = merged.get("from_adata_stage", None)
+        if raw_stage is not None:
+            raw_stage = str(raw_stage).strip()
+            if raw_stage.lower() in ("", "none"):
+                raw_stage = None
+        merged["from_adata_stage"] = raw_stage
 
         # --- Resolve aligner_args into concrete list for the chosen aligner ---
         merged["aligner_args"] = resolve_aligner_args(merged)
@@ -1470,7 +1507,7 @@ class ExperimentConfig:
             umi_adapters=merged.get("umi_adapters", [None, None]),
             umi_length=merged.get("umi_length", None),
             umi_min_entropy=float(merged.get("umi_min_entropy", 1.65)),
-            umi_hamming_cluster_distance=int(merged.get("umi_hamming_cluster_distance", 2)),
+            umi_cluster_max_edit_distance=int(merged.get("umi_cluster_max_edit_distance", 2)),
             umi_search_window=merged.get("umi_search_window", 200),
             umi_adapter_matcher=merged.get("umi_adapter_matcher", "exact"),
             umi_adapter_max_edits=merged.get("umi_adapter_max_edits", None),
@@ -1788,6 +1825,12 @@ class ExperimentConfig:
             references_to_align_for_variant_annotation=merged.get(
                 "references_to_align_for_variant_annotation", [None, None]
             ),
+            from_adata_stage=merged.get("from_adata_stage", None),
+            plot_current_read_ids=merged.get("plot_current_read_ids", []),
+            plot_current_reference_start=merged.get("plot_current_reference_start", None),
+            plot_current_reference_end=merged.get("plot_current_reference_end", None),
+            plot_current_var_start=merged.get("plot_current_var_start", None),
+            plot_current_var_end=merged.get("plot_current_var_end", None),
             config_source=config_source or "<var_dict>",
         )
 

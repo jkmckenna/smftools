@@ -11,6 +11,7 @@ from .cli.chimeric_adata import chimeric_adata
 from .cli.hmm_adata import hmm_adata
 from .cli.latent_adata import latent_adata
 from .cli.load_adata import load_adata
+from .cli.plot_current import plot_current as plot_current_fn
 from .cli.preprocess_adata import preprocess_adata
 from .cli.recipes import full_flow
 from .cli.spatial_adata import spatial_adata
@@ -421,3 +422,17 @@ def subsample_pod5_cmd(pod5_path, read_names, n_reads, outdir):
         read_name_path=subsample_arg,
         output_directory=str(outdir),
     )
+
+
+##########################################
+
+
+####### Plot current traces ###########
+@cli.command("plot-current")
+@click.argument("config_path", type=click.Path(exists=True))
+def plot_current(config_path):
+    """Plot nanopore current traces for specified reads."""
+    plot_current_fn(config_path)
+
+
+##########################################

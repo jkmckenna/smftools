@@ -27,6 +27,7 @@ _LAZY_ATTRS = {
     "plot_pca_explained_variance": "smftools.plotting.latent_plotting",
     "plot_sequence_integer_encoding_clustermaps": "smftools.plotting.variant_plotting",
     "plot_variant_segment_clustermaps": "smftools.plotting.variant_plotting",
+    "plot_variant_segment_clustermaps_multi_obs": "smftools.plotting.variant_plotting",
     "plot_umap": "smftools.plotting.latent_plotting",
     "plot_umap_grid": "smftools.plotting.latent_plotting",
     "plot_bar_relative_risk": "smftools.plotting.position_stats",
@@ -42,6 +43,7 @@ _LAZY_ATTRS = {
     "plot_spatial_autocorr_grid": "smftools.plotting.autocorrelation_plotting",
     "plot_hmm_size_contours": "smftools.plotting.hmm_plotting",
     "plot_read_current_traces": "smftools.plotting.pod5_plotting",
+    "plot_umi_bipartite_summary": "smftools.plotting.umi_plotting",
 }
 
 

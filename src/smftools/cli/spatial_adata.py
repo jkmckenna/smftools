@@ -36,20 +36,14 @@ def spatial_adata(
         Path to the “current” spatial AnnData (or hmm AnnData if we skip to that).
     """
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config
+    from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
 
     # 1) Ensure config + basic paths via load_adata
     cfg = load_experiment_config(config_path)
 
     paths = get_adata_paths(cfg)
 
-    pp_path = paths.pp
-    pp_dedup_path = paths.pp_dedup
     spatial_path = paths.spatial
-    chimeric_path = paths.chimeric
-    variant_path = paths.variant
-    hmm_path = paths.hmm
-    latent_path = paths.latent
 
     # Stage-skipping logic for spatial
     if not getattr(cfg, "force_redo_spatial_analyses", False):
@@ -58,45 +52,22 @@ def spatial_adata(
             logger.info(f"Spatial AnnData found: {spatial_path}\nSkipping smftools spatial")
             return None, spatial_path
 
-    # Helper to load from disk, reusing loaded_adata if it matches
-    def _load(path: Path):
-        adata, _ = safe_read_h5ad(path)
-        return adata
-
-    # 3) Decide which AnnData to use as the *starting point* for spatial analyses
-    if hmm_path.exists():
-        start_adata = _load(hmm_path)
-        source_path = hmm_path
-    elif latent_path.exists():
-        start_adata = _load(latent_path)
-        source_path = latent_path
-    elif spatial_path.exists():
-        start_adata = _load(spatial_path)
-        source_path = spatial_path
-    elif chimeric_path.exists():
-        start_adata = _load(chimeric_path)
-        source_path = chimeric_path
-    elif variant_path.exists():
-        start_adata = _load(variant_path)
-        source_path = variant_path
-    elif pp_dedup_path.exists():
-        start_adata = _load(pp_dedup_path)
-        source_path = pp_dedup_path
-    elif pp_path.exists():
-        start_adata = _load(pp_path)
-        source_path = pp_path
-    else:
+    # Decide which AnnData to use as the *starting point* for spatial analyses
+    source_path, stage = resolve_adata_stage(cfg, paths, min_stage="pp")
+    if source_path is None:
         logger.warning(
             "No suitable AnnData found for spatial analyses (need at least preprocessed)."
         )
         return None, None
+
+    start_adata, _ = safe_read_h5ad(source_path)
 
     # 4) Run the spatial core
     adata_spatial, spatial_path = spatial_adata_core(
         adata=start_adata,
         cfg=cfg,
         spatial_adata_path=spatial_path,
-        pp_adata_path=pp_path,
+        pp_adata_path=paths.pp,
         source_adata_path=source_path,
         config_path=config_path,
     )

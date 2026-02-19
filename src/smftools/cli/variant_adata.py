@@ -27,59 +27,30 @@ def variant_adata(
     - Call `variant_adata_core(...)` when actual work is needed.
     """
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config
+    from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
 
     # 1) Ensure config + basic paths via load_adata
     cfg = load_experiment_config(config_path)
 
     paths = get_adata_paths(cfg)
 
-    pp_path = paths.pp
-    pp_dedup_path = paths.pp_dedup
-    spatial_path = paths.spatial
-    chimeric_path = paths.chimeric
     variant_path = paths.variant
-    hmm_path = paths.hmm
-    latent_path = paths.latent
 
     # Stage-skipping logic
     if not getattr(cfg, "force_redo_variant_analyses", False):
         if variant_path.exists():
             logger.info(f"Variant AnnData found: {variant_path}\nSkipping smftools variant")
-            return None, spatial_path
+            return None, variant_path
 
-    # Helper to load from disk, reusing loaded_adata if it matches
-    def _load(path: Path):
-        adata, _ = safe_read_h5ad(path)
-        return adata
-
-    # 3) Decide which AnnData to use as the *starting point* for  analyses
-    if hmm_path.exists():
-        start_adata = _load(hmm_path)
-        source_path = hmm_path
-    elif latent_path.exists():
-        start_adata = _load(latent_path)
-        source_path = latent_path
-    elif spatial_path.exists():
-        start_adata = _load(spatial_path)
-        source_path = spatial_path
-    elif chimeric_path.exists():
-        start_adata = _load(chimeric_path)
-        source_path = chimeric_path
-    elif variant_path.exists():
-        start_adata = _load(variant_path)
-        source_path = variant_path
-    elif pp_dedup_path.exists():
-        start_adata = _load(pp_dedup_path)
-        source_path = pp_dedup_path
-    elif pp_path.exists():
-        start_adata = _load(pp_path)
-        source_path = pp_path
-    else:
+    # Decide which AnnData to use as the *starting point* for analyses
+    source_path, stage = resolve_adata_stage(cfg, paths, min_stage="pp")
+    if source_path is None:
         logger.warning(
             "No suitable AnnData found for variant analyses (need at least preprocessed)."
         )
         return None, None
+
+    start_adata, _ = safe_read_h5ad(source_path)
 
     # 4) Run the core
     adata_variant, variant_path = variant_adata_core(
@@ -123,6 +94,7 @@ def variant_adata_core(
         plot_mismatch_base_frequency_by_position,
         plot_sequence_integer_encoding_clustermaps,
         plot_variant_segment_clustermaps,
+        plot_variant_segment_clustermaps_multi_obs,
     )
     from ..preprocessing import (
         append_mismatch_frequency_sites,
@@ -403,6 +375,290 @@ def variant_adata_core(
                     marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                     show_position_axis=True,
                     mismatch_type_obs_col="chimeric_variant_sites_type",
+                )
+
+    # ============================================================
+    # 4b) Variant segment clustermaps with UMI dominant-pair status
+    # ============================================================
+    if (
+        seq1_col
+        and seq2_col
+        and getattr(cfg, "use_umi", False)
+        and "RX_is_dominant_pair" in adata.obs.columns
+        and "RX_edge_count" in adata.obs.columns
+    ):
+        segment_layer_name = f"{seq1_col}__{seq2_col}_variant_segments"
+        if segment_layer_name in adata.layers:
+            # Build a 3-state categorical column for the strip
+            umi_status_col = "RX_dominant_pair_status"
+            statuses = []
+            for edge_count, is_dom in zip(
+                adata.obs["RX_edge_count"], adata.obs["RX_is_dominant_pair"]
+            ):
+                if int(edge_count) == 0:
+                    statuses.append("no_UMI_pair")
+                elif bool(is_dom):
+                    statuses.append("dominant")
+                else:
+                    statuses.append("not_dominant")
+            adata.obs[umi_status_col] = pd.Categorical(
+                statuses, categories=["dominant", "not_dominant", "no_UMI_pair"]
+            )
+
+            umi_status_colors = {
+                "dominant": "#2ca02c",  # green
+                "not_dominant": "#d62728",  # red
+                "no_UMI_pair": "#d9d9d9",  # neutral gray
+            }
+
+            umi_segment_dir = (
+                variant_directory
+                / "deduplicated"
+                / "06_variant_segment_clustermaps_with_umi_status"
+            )
+            if umi_segment_dir.exists():
+                logger.info(
+                    "Variant segment UMI-status clustermaps already exist at %s; skipping.",
+                    umi_segment_dir,
+                )
+            else:
+                make_dirs([umi_segment_dir])
+                plot_variant_segment_clustermaps(
+                    adata,
+                    seq1_column=seq1_col,
+                    seq2_column=seq2_col,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    variant_segment_layer=segment_layer_name,
+                    read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                    save_path=umi_segment_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                    show_position_axis=True,
+                    mismatch_type_obs_col=umi_status_col,
+                    mismatch_type_colors=umi_status_colors,
+                    mismatch_type_legend_prefix="RX bipartite",
+                )
+
+    # ============================================================
+    # 4c) Variant segment clustermaps with UMI pass status
+    # ============================================================
+    if (
+        seq1_col
+        and seq2_col
+        and getattr(cfg, "use_umi", False)
+        and (
+            ("U1_valid" in adata.obs.columns and "U2_valid" in adata.obs.columns)
+            or ("U1_pass" in adata.obs.columns and "U2_pass" in adata.obs.columns)
+        )
+    ):
+        segment_layer_name = f"{seq1_col}__{seq2_col}_variant_segments"
+        if segment_layer_name in adata.layers:
+            umi_pass_col = "UMI_pass_status"
+            u1_status_col = "U1_valid" if "U1_valid" in adata.obs.columns else "U1_pass"
+            u2_status_col = "U2_valid" if "U2_valid" in adata.obs.columns else "U2_pass"
+            pass_statuses = []
+            for u1_state, u2_state in zip(adata.obs[u1_status_col], adata.obs[u2_status_col]):
+                u1_ok = bool(u1_state)
+                u2_ok = bool(u2_state)
+                if u1_ok and u2_ok:
+                    pass_statuses.append("both_pass")
+                elif u1_ok:
+                    pass_statuses.append("U1_only")
+                elif u2_ok:
+                    pass_statuses.append("U2_only")
+                else:
+                    pass_statuses.append("neither_pass")
+            adata.obs[umi_pass_col] = pd.Categorical(
+                pass_statuses,
+                categories=["both_pass", "U1_only", "U2_only", "neither_pass"],
+            )
+
+            umi_pass_colors = {
+                "both_pass": "#2ca02c",
+                "U1_only": "#1f77b4",
+                "U2_only": "#ff7f0e",
+                "neither_pass": "#d9d9d9",
+            }
+
+            umi_pass_dir = (
+                variant_directory
+                / "deduplicated"
+                / "07_variant_segment_clustermaps_with_umi_pass_status"
+            )
+            if umi_pass_dir.exists():
+                logger.info(
+                    "Variant segment UMI-pass-status clustermaps already exist at %s; skipping.",
+                    umi_pass_dir,
+                )
+            else:
+                make_dirs([umi_pass_dir])
+                plot_variant_segment_clustermaps(
+                    adata,
+                    seq1_column=seq1_col,
+                    seq2_column=seq2_col,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    variant_segment_layer=segment_layer_name,
+                    read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                    save_path=umi_pass_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                    show_position_axis=True,
+                    mismatch_type_obs_col=umi_pass_col,
+                    mismatch_type_colors=umi_pass_colors,
+                    mismatch_type_legend_prefix="UMI content",
+                )
+
+    # ============================================================
+    # 4d) Variant segment clustermaps with UMI cluster-duplicate status
+    # ============================================================
+    if (
+        seq1_col
+        and seq2_col
+        and getattr(cfg, "use_umi", False)
+        and "U1_cluster_is_duplicate" in adata.obs.columns
+        and "U2_cluster_is_duplicate" in adata.obs.columns
+        and "U1_cluster" in adata.obs.columns
+        and "U2_cluster" in adata.obs.columns
+    ):
+        segment_layer_name = f"{seq1_col}__{seq2_col}_variant_segments"
+        if segment_layer_name in adata.layers:
+            umi_dup_col = "UMI_cluster_duplicate_status"
+            dup_statuses = []
+            for u1_dup, u2_dup, u1_cluster, u2_cluster in zip(
+                adata.obs["U1_cluster_is_duplicate"],
+                adata.obs["U2_cluster_is_duplicate"],
+                adata.obs["U1_cluster"],
+                adata.obs["U2_cluster"],
+            ):
+                has_u1_cluster = pd.notna(u1_cluster)
+                has_u2_cluster = pd.notna(u2_cluster)
+                if not has_u1_cluster and not has_u2_cluster:
+                    dup_statuses.append("no_umi_cluster")
+                    continue
+                u1_is_dup = bool(u1_dup)
+                u2_is_dup = bool(u2_dup)
+                if u1_is_dup and u2_is_dup:
+                    dup_statuses.append("both_duplicate")
+                elif u1_is_dup:
+                    dup_statuses.append("U1_duplicate_only")
+                elif u2_is_dup:
+                    dup_statuses.append("U2_duplicate_only")
+                else:
+                    dup_statuses.append("neither_duplicate")
+            adata.obs[umi_dup_col] = pd.Categorical(
+                dup_statuses,
+                categories=[
+                    "both_duplicate",
+                    "U1_duplicate_only",
+                    "U2_duplicate_only",
+                    "neither_duplicate",
+                    "no_umi_cluster",
+                ],
+            )
+
+            umi_dup_colors = {
+                "both_duplicate": "#b2182b",
+                "U1_duplicate_only": "#2166ac",
+                "U2_duplicate_only": "#ef8a62",
+                "neither_duplicate": "#1a9850",
+                "no_umi_cluster": "#d9d9d9",
+            }
+
+            umi_dup_dir = (
+                variant_directory
+                / "deduplicated"
+                / "08_variant_segment_clustermaps_with_umi_cluster_duplicate_status"
+            )
+            if umi_dup_dir.exists():
+                logger.info(
+                    "Variant segment UMI-cluster-duplicate clustermaps already exist at %s; skipping.",
+                    umi_dup_dir,
+                )
+            else:
+                make_dirs([umi_dup_dir])
+                plot_variant_segment_clustermaps(
+                    adata,
+                    seq1_column=seq1_col,
+                    seq2_column=seq2_col,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    variant_segment_layer=segment_layer_name,
+                    read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                    save_path=umi_dup_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                    show_position_axis=True,
+                    mismatch_type_obs_col=umi_dup_col,
+                    mismatch_type_colors=umi_dup_colors,
+                    mismatch_type_legend_prefix="UMI cluster duplicate",
+                )
+
+    # ============================================================
+    # 4e) Variant segment clustermaps with multiple UMI annotation strips
+    # ============================================================
+    if (
+        seq1_col
+        and seq2_col
+        and "UMI_pass_status" in adata.obs.columns
+        and "UMI_cluster_duplicate_status" in adata.obs.columns
+    ):
+        segment_layer_name = f"{seq1_col}__{seq2_col}_variant_segments"
+        if segment_layer_name in adata.layers:
+            multi_obs_dir = (
+                variant_directory
+                / "deduplicated"
+                / "09_variant_segment_clustermaps_with_multi_umi_obs"
+            )
+            if multi_obs_dir.exists():
+                logger.info(
+                    "Variant segment multi-UMI-obs clustermaps already exist at %s; skipping.",
+                    multi_obs_dir,
+                )
+            else:
+                make_dirs([multi_obs_dir])
+                plot_variant_segment_clustermaps_multi_obs(
+                    adata,
+                    seq1_column=seq1_col,
+                    seq2_column=seq2_col,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    variant_segment_layer=segment_layer_name,
+                    read_span_layer=cfg.mismatch_frequency_read_span_layer,
+                    save_path=multi_obs_dir,
+                    ref1_marker_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
+                    ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
+                    marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                    show_position_axis=True,
+                    annotation_specs=[
+                        {
+                            "obs_col": "UMI_pass_status",
+                            "colors": {
+                                "both_pass": "#2ca02c",
+                                "U1_only": "#1f77b4",
+                                "U2_only": "#ff7f0e",
+                                "neither_pass": "#d9d9d9",
+                            },
+                            "legend_prefix": "UMI content",
+                            "strip_title": "UMI Pass",
+                        },
+                        {
+                            "obs_col": "UMI_cluster_duplicate_status",
+                            "colors": {
+                                "both_duplicate": "#b2182b",
+                                "U1_duplicate_only": "#2166ac",
+                                "U2_duplicate_only": "#ef8a62",
+                                "neither_duplicate": "#1a9850",
+                                "no_umi_cluster": "#d9d9d9",
+                            },
+                            "legend_prefix": "UMI cluster duplicate",
+                            "strip_title": "UMI Dup",
+                        },
+                    ],
                 )
 
     # ============================================================

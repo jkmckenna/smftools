@@ -343,6 +343,31 @@ class TestPreprocessUmiAnnotations:
         assert "params" in stats
         assert stats["params"]["umi_cols"] == ["U1", "U2"]
 
+    def test_preprocess_cluster_duplicate_flags(self, simple_adata):
+        """Test duplicate-like cluster identity flags within sample/reference groups."""
+        result = preprocess_umi_annotations(simple_adata, umi_cols=["U1", "U2"])
+
+        for col in (
+            "U1_cluster_is_duplicate",
+            "U2_cluster_is_duplicate",
+            "RX_cluster_is_duplicate",
+            "any_umi_cluster_is_duplicate",
+        ):
+            assert col in result.obs.columns
+
+        # In exp_S1/ref1, read_0/read_1/read_2 share the same RX cluster.
+        assert bool(result.obs.loc["read_0", "RX_cluster_is_duplicate"])
+        assert bool(result.obs.loc["read_1", "RX_cluster_is_duplicate"])
+        assert bool(result.obs.loc["read_2", "RX_cluster_is_duplicate"])
+
+        # In exp_S2/ref1, read_9 has a unique U1 cluster and unique RX cluster.
+        assert not bool(result.obs.loc["read_9", "U1_cluster_is_duplicate"])
+        assert not bool(result.obs.loc["read_9", "RX_cluster_is_duplicate"])
+
+        # U2 has repeated identities in both groups, so read_9 is still duplicate on U2.
+        assert bool(result.obs.loc["read_9", "U2_cluster_is_duplicate"])
+        assert bool(result.obs.loc["read_9", "any_umi_cluster_is_duplicate"])
+
     def test_add_umi_entropy_obs_fields(self, simple_adata):
         """Test adding UMI entropy columns to obs."""
         result = add_umi_entropy_obs_fields(simple_adata, umi_cols=["U1", "U2"])

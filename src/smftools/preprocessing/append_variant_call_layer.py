@@ -294,6 +294,18 @@ def append_variant_segment_layer(
       2 = seq2 segment
       3 = transition zone between different-class segments
 
+    Per-read outputs in ``adata.obs``:
+      - ``{output_prefix}_breakpoint_count``: number of class transitions.
+      - ``{output_prefix}_variant_breakpoints``: list of putative breakpoint positions
+        (midpoint between flanking informative mismatch sites).
+      - ``variant_breakpoints``: alias of ``{output_prefix}_variant_breakpoints``.
+      - ``{output_prefix}_variant_segment_cigar`` / ``variant_segment_cigar``:
+        run-length string with ``S`` (self) and ``X`` (other).
+      - ``{output_prefix}_variant_self_base_count`` / ``variant_self_base_count``:
+        number of span bases labeled as self.
+      - ``{output_prefix}_variant_other_base_count`` / ``variant_other_base_count``:
+        number of span bases labeled as other.
+
     Args:
         adata: AnnData object.
         seq1_column: Column in ``adata.var`` with the first reference base.
@@ -336,6 +348,7 @@ def append_variant_segment_layer(
 
     segment_layer = np.zeros((n_obs, n_vars), dtype=np.int8)
     breakpoint_counts = np.zeros(n_obs, dtype=np.int32)
+    breakpoint_positions: list[list[float | int]] = [[] for _ in range(n_obs)]
 
     for i in range(n_obs):
         span_row = span_matrix[i]
@@ -365,6 +378,7 @@ def append_variant_segment_layer(
         classes = call_row[informative_positions]  # 1 or 2
 
         n_bp = 0
+        row_breakpoints: list[float | int] = []
         # Walk through consecutive informative positions and fill segments
         prev_pos = informative_positions[0]
         prev_cls = int(classes[0])
@@ -384,6 +398,8 @@ def append_variant_segment_layer(
                 segment_layer[i, prev_pos] = prev_cls
                 segment_layer[i, prev_pos + 1 : cur_pos] = 3
                 n_bp += 1
+                midpoint = (int(prev_pos) + int(cur_pos)) / 2.0
+                row_breakpoints.append(int(midpoint) if midpoint.is_integer() else float(midpoint))
 
             prev_pos = cur_pos
             prev_cls = cur_cls
@@ -396,11 +412,22 @@ def append_variant_segment_layer(
         # since we only extend from prev_pos forward and breakpoints are before prev_pos.
 
         breakpoint_counts[i] = n_bp
+        breakpoint_positions[i] = row_breakpoints
 
     layer_name = f"{output_prefix}_variant_segments"
     adata.layers[layer_name] = segment_layer
 
     adata.obs[f"{output_prefix}_breakpoint_count"] = breakpoint_counts
+    adata.obs[f"{output_prefix}_variant_breakpoints"] = pd.Series(
+        breakpoint_positions,
+        index=adata.obs.index,
+        dtype=object,
+    )
+    adata.obs["variant_breakpoints"] = pd.Series(
+        breakpoint_positions,
+        index=adata.obs.index,
+        dtype=object,
+    )
     adata.obs[f"{output_prefix}_is_chimeric"] = breakpoint_counts > 0
 
     # Per-read chimeric flags from mismatch segments relative to each read's own reference.
@@ -421,6 +448,9 @@ def append_variant_segment_layer(
 
     chimeric_flags = np.zeros(n_obs, dtype=bool)
     chimeric_types: list[str] = ["no_segment_mismatch"] * n_obs
+    self_base_counts = np.zeros(n_obs, dtype=np.int32)
+    other_base_counts = np.zeros(n_obs, dtype=np.int32)
+    segment_cigars: list[str] = [""] * n_obs
 
     for i in range(n_obs):
         covered = np.where(span_matrix[i] > 0)[0]
@@ -436,7 +466,42 @@ def append_variant_segment_layer(
             continue
 
         mismatch_value = 2 if seq_id == 1 else 1
+        self_value = seq_id
         mismatch_mask = in_span == mismatch_value
+
+        self_base_counts[i] = int(np.sum(in_span == self_value))
+        other_base_counts[i] = int(np.sum(in_span == mismatch_value))
+
+        # Build an S/X run-length string from classified span positions.
+        # Values 0 and 3 are treated as run boundaries and excluded from run lengths.
+        runs: list[str] = []
+        run_symbol: str | None = None
+        run_len = 0
+        for val in in_span:
+            sym: str | None
+            if val == self_value:
+                sym = "S"
+            elif val == mismatch_value:
+                sym = "X"
+            else:
+                sym = None
+            if sym is None:
+                if run_symbol is not None and run_len > 0:
+                    runs.append(f"{run_len}{run_symbol}")
+                    run_symbol = None
+                    run_len = 0
+                continue
+            if sym == run_symbol:
+                run_len += 1
+            else:
+                if run_symbol is not None and run_len > 0:
+                    runs.append(f"{run_len}{run_symbol}")
+                run_symbol = sym
+                run_len = 1
+        if run_symbol is not None and run_len > 0:
+            runs.append(f"{run_len}{run_symbol}")
+        segment_cigars[i] = "".join(runs)
+
         if not np.any(mismatch_mask):
             continue
 
@@ -468,6 +533,12 @@ def append_variant_segment_layer(
             "multi_segment_mismatch",
         ],
     )
+    adata.obs[f"{output_prefix}_variant_segment_cigar"] = segment_cigars
+    adata.obs["variant_segment_cigar"] = segment_cigars
+    adata.obs[f"{output_prefix}_variant_self_base_count"] = self_base_counts
+    adata.obs["variant_self_base_count"] = self_base_counts
+    adata.obs[f"{output_prefix}_variant_other_base_count"] = other_base_counts
+    adata.obs["variant_other_base_count"] = other_base_counts
 
     n_chimeric = int(np.sum(breakpoint_counts > 0))
     logger.info(

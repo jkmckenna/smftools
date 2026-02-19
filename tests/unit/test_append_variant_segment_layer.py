@@ -92,3 +92,38 @@ def test_append_variant_segment_layer_adds_chimeric_variant_site_labels() -> Non
     assert observed_types[4] == "multi_segment_mismatch"
     assert observed_types[5] == "left_segment_mismatch"
     assert observed_types[6] == "no_segment_mismatch"
+
+    bp_col = f"{output_prefix}_variant_breakpoints"
+    assert bp_col in adata.obs.columns
+    assert "variant_breakpoints" in adata.obs.columns
+    expected_breakpoints = [
+        [],
+        [],
+        [4.5],
+        [2.5, 6],
+        [2, 4, 6, 8],
+        [4.5],
+        [],
+    ]
+    assert adata.obs[bp_col].tolist() == expected_breakpoints
+    assert adata.obs["variant_breakpoints"].tolist() == expected_breakpoints
+
+    cigar_col = f"{output_prefix}_variant_segment_cigar"
+    assert cigar_col in adata.obs.columns
+    assert "variant_segment_cigar" in adata.obs.columns
+    expected_cigars = ["10S", "10X", "3S3X", "2S1X2S", "2S1X1S1X1S", "3X3S", "10S"]
+    assert adata.obs[cigar_col].tolist() == expected_cigars
+    assert adata.obs["variant_segment_cigar"].tolist() == expected_cigars
+
+    self_count_col = f"{output_prefix}_variant_self_base_count"
+    other_count_col = f"{output_prefix}_variant_other_base_count"
+    assert self_count_col in adata.obs.columns
+    assert other_count_col in adata.obs.columns
+    assert "variant_self_base_count" in adata.obs.columns
+    assert "variant_other_base_count" in adata.obs.columns
+    expected_self_counts = [10, 0, 3, 4, 4, 3, 10]
+    expected_other_counts = [0, 10, 3, 1, 2, 3, 0]
+    assert adata.obs[self_count_col].tolist() == expected_self_counts
+    assert adata.obs["variant_self_base_count"].tolist() == expected_self_counts
+    assert adata.obs[other_count_col].tolist() == expected_other_counts
+    assert adata.obs["variant_other_base_count"].tolist() == expected_other_counts
