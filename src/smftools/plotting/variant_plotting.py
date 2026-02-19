@@ -1234,3 +1234,309 @@ def plot_variant_segment_clustermaps(
             )
 
     return results
+
+
+def plot_variant_segment_clustermaps_multi_obs(
+    adata,
+    seq1_column: str,
+    seq2_column: str,
+    sample_col: str = "Sample_Names",
+    reference_col: str = "Reference_strand",
+    variant_segment_layer: str | None = None,
+    read_span_layer: str = "read_span_mask",
+    sort_by: str = "hierarchical",
+    max_reads: int | None = None,
+    save_path: str | Path | None = None,
+    seq1_color: str = "#8B5CF6",
+    seq2_color: str = "#4682b4",
+    transition_color: str = "#F5F5DC",
+    no_coverage_color: str = "#f0f0f0",
+    ref1_marker_color: str = "white",
+    ref2_marker_color: str = "black",
+    breakpoint_marker_color: str = "red",
+    marker_size: float = 4.0,
+    show_position_axis: bool = False,
+    position_axis_tick_target: int = 25,
+    xtick_rotation: int = 90,
+    xtick_fontsize: int = 9,
+    annotation_specs: Sequence[Dict[str, Any]] | None = None,
+) -> List[Dict[str, Any]]:
+    """Plot variant segment clustermaps with multiple adjacent categorical strips.
+
+    Each annotation strip is configured via ``annotation_specs`` entries:
+    - ``obs_col`` (required): obs column with per-read labels.
+    - ``colors`` (optional): dict label -> color.
+    - ``legend_prefix`` (optional): prefix for legend labels.
+    - ``strip_title`` (optional): title shown above strip.
+    """
+    output_prefix = f"{seq1_column}__{seq2_column}"
+    if variant_segment_layer is None:
+        variant_segment_layer = f"{output_prefix}_variant_segments"
+
+    if variant_segment_layer not in adata.layers:
+        logger.warning("Variant segment layer '%s' not found; skipping.", variant_segment_layer)
+        return []
+
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Plotting variant segment clustermaps with multiple obs strips.")
+
+    suffix = "_strand_FASTA_base"
+    seq1_label = seq1_column[: -len(suffix)] if seq1_column.endswith(suffix) else seq1_column
+    seq2_label = seq2_column[: -len(suffix)] if seq2_column.endswith(suffix) else seq2_column
+
+    seg_cmap = colors.ListedColormap([no_coverage_color, seq1_color, seq2_color, transition_color])
+    seg_norm = colors.BoundaryNorm([0, 0.5, 1.5, 2.5, 3.5], seg_cmap.N)
+
+    variant_call_layer = f"{output_prefix}_variant_call"
+    has_variant_calls = variant_call_layer in adata.layers
+    specs = list(annotation_specs or [])
+
+    results: List[Dict[str, Any]] = []
+
+    for ref in adata.obs[reference_col].cat.categories:
+        for sample in adata.obs[sample_col].cat.categories:
+            row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample)
+            if not bool(row_mask.any()):
+                continue
+
+            subset = adata[row_mask, :].copy()
+            seg_matrix = np.asarray(subset.layers[variant_segment_layer])
+            n_reads = seg_matrix.shape[0]
+
+            if max_reads is not None and n_reads > max_reads:
+                subset = subset[:max_reads, :].copy()
+                seg_matrix = seg_matrix[:max_reads]
+                n_reads = max_reads
+
+            if read_span_layer in subset.layers:
+                span_matrix = np.asarray(subset.layers[read_span_layer])
+                if max_reads is not None:
+                    span_matrix = span_matrix[:max_reads]
+                col_has_coverage = np.any(span_matrix > 0, axis=0)
+            else:
+                col_has_coverage = np.any(seg_matrix > 0, axis=0)
+            if not np.all(col_has_coverage):
+                seg_matrix = seg_matrix[:, col_has_coverage]
+                subset = subset[:, col_has_coverage].copy()
+
+            call_matrix = None
+            if has_variant_calls:
+                call_matrix = np.asarray(subset.layers[variant_call_layer])
+                if max_reads is not None:
+                    call_matrix = call_matrix[:max_reads]
+
+            order = np.arange(n_reads)
+            if sort_by == "hierarchical" and n_reads > 1 and call_matrix is not None:
+                try:
+                    informative_cols = np.any(call_matrix > 0, axis=0)
+                    if informative_cols.any():
+                        cluster_data = call_matrix[:, informative_cols].astype(np.float64)
+                        cluster_data[cluster_data == 1] = 0.0
+                        cluster_data[cluster_data == 2] = 1.0
+                        cluster_data[(cluster_data != 0.0) & (cluster_data != 1.0)] = 0.5
+                        linkage = sch.linkage(cluster_data, method="ward")
+                        order = sch.leaves_list(linkage)
+                except Exception:
+                    pass
+            seg_matrix = seg_matrix[order]
+            if call_matrix is not None:
+                call_matrix = call_matrix[order]
+
+            annotation_data: List[Dict[str, Any]] = []
+            for spec in specs:
+                obs_col = str(spec.get("obs_col", ""))
+                if not obs_col or obs_col not in subset.obs.columns:
+                    continue
+                vals = subset.obs[obs_col].astype("string").to_numpy()[order]
+                labels = ["unknown" if pd.isna(v) else str(v) for v in vals]
+                legend_order = list(dict.fromkeys(labels))
+                color_map = dict(spec.get("colors") or {})
+                if not color_map:
+                    palette = sns.color_palette("tab20", n_colors=max(1, len(legend_order)))
+                    color_map = {lab: colors.to_hex(palette[i]) for i, lab in enumerate(legend_order)}
+                annotation_data.append(
+                    {
+                        "obs_col": obs_col,
+                        "labels": labels,
+                        "legend_order": legend_order,
+                        "colors": color_map,
+                        "legend_prefix": str(spec.get("legend_prefix", obs_col.replace("_", " ").title())),
+                        "strip_title": str(spec.get("strip_title", obs_col.replace("_", " ").title())),
+                    }
+                )
+
+            if annotation_data:
+                fig = plt.figure(figsize=(19, 8))
+                # Dedicated legend panel on the far right prevents clipping/cropping.
+                width_ratios = [0.9] * len(annotation_data) + [20, 6]
+                gs = fig.add_gridspec(1, len(width_ratios), width_ratios=width_ratios, wspace=0.06)
+                strip_axes = [fig.add_subplot(gs[0, i]) for i in range(len(annotation_data))]
+                ax = fig.add_subplot(gs[0, len(annotation_data)])
+                legend_ax = fig.add_subplot(gs[0, len(annotation_data) + 1])
+                legend_ax.axis("off")
+            else:
+                fig, ax = plt.subplots(figsize=(16, 8))
+                strip_axes = []
+                legend_ax = ax
+
+            sns.heatmap(
+                seg_matrix.astype(np.float32),
+                cmap=seg_cmap,
+                norm=seg_norm,
+                ax=ax,
+                yticklabels=False,
+                cbar=False,
+            )
+
+            for strip_ax, ann in zip(strip_axes, annotation_data):
+                cats = ann["legend_order"]
+                cmap = colors.ListedColormap([ann["colors"].get(label, "#636363") for label in cats])
+                norm = colors.BoundaryNorm(np.arange(-0.5, len(cats) + 0.5, 1), cmap.N)
+                code_map = {label: i for i, label in enumerate(cats)}
+                code_arr = np.array([code_map[label] for label in ann["labels"]], dtype=np.int32).reshape(-1, 1)
+                strip_ax.imshow(
+                    code_arr,
+                    cmap=cmap,
+                    norm=norm,
+                    aspect="auto",
+                    interpolation="nearest",
+                    origin="upper",
+                )
+                strip_ax.set_xticks([])
+                strip_ax.set_yticks([])
+                strip_ax.set_title(ann["strip_title"], fontsize=8, pad=10)
+
+            if call_matrix is not None:
+                ref1_rows, ref1_cols = np.where(call_matrix == 1)
+                ref2_rows, ref2_cols = np.where(call_matrix == 2)
+                if len(ref1_rows) > 0:
+                    ax.scatter(
+                        ref1_cols + 0.5,
+                        ref1_rows + 0.5,
+                        c=ref1_marker_color,
+                        s=marker_size,
+                        marker="o",
+                        edgecolors="gray",
+                        linewidths=0.3,
+                        zorder=3,
+                    )
+                if len(ref2_rows) > 0:
+                    ax.scatter(
+                        ref2_cols + 0.5,
+                        ref2_rows + 0.5,
+                        c=ref2_marker_color,
+                        s=marker_size,
+                        marker="o",
+                        edgecolors="gray",
+                        linewidths=0.3,
+                        zorder=3,
+                    )
+
+            bp_rows_list = []
+            bp_cols_list = []
+            for r in range(n_reads):
+                row = seg_matrix[r]
+                is_trans = row == 3
+                if not np.any(is_trans):
+                    continue
+                trans_positions = np.where(is_trans)[0]
+                breaks = np.where(np.diff(trans_positions) > 1)[0] + 1
+                runs = np.split(trans_positions, breaks)
+                for run in runs:
+                    bp_rows_list.append(r)
+                    bp_cols_list.append(run[len(run) // 2])
+            if bp_rows_list:
+                ax.scatter(
+                    np.array(bp_cols_list) + 0.5,
+                    np.array(bp_rows_list) + 0.5,
+                    c=breakpoint_marker_color,
+                    s=marker_size,
+                    marker="o",
+                    edgecolors="gray",
+                    linewidths=0.3,
+                    zorder=4,
+                )
+
+            ax.set_title(f"{ref} — {sample} — {n_reads} reads", fontsize=10)
+            ax.set_ylabel("Reads")
+            if show_position_axis:
+                n_cols = seg_matrix.shape[1]
+                step = max(1, n_cols // position_axis_tick_target)
+                sites = np.arange(0, n_cols, step)
+                ax.set_xticks(sites)
+                ax.set_xticklabels(
+                    subset.var_names[sites].astype(str),
+                    rotation=xtick_rotation,
+                    fontsize=xtick_fontsize,
+                )
+            else:
+                ax.set_xticks([])
+
+            base_legend = [
+                patches.Patch(facecolor=seq1_color, label=f"{seq1_label} segment"),
+                patches.Patch(facecolor=seq2_color, label=f"{seq2_label} segment"),
+                patches.Patch(facecolor=transition_color, label="Transition zone"),
+                patches.Patch(facecolor=no_coverage_color, edgecolor="gray", linewidth=0.5, label="No coverage"),
+                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref1_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq1_label} call"),
+                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref2_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq2_label} call"),
+                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=breakpoint_marker_color, markeredgecolor="gray", markersize=5, label="Breakpoint"),
+            ]
+            lg_main = legend_ax.legend(
+                handles=base_legend,
+                title="Segments",
+                loc="upper left",
+                bbox_to_anchor=(0.0, 1.0),
+                fontsize=7,
+                title_fontsize=8,
+                framealpha=0.8,
+                frameon=False,
+            )
+            legend_ax.add_artist(lg_main)
+
+            y_anchor = 0.68
+            for ann in annotation_data:
+                ann_handles = [
+                    patches.Patch(facecolor=ann["colors"].get(label, "#636363"), label=str(label))
+                    for label in ann["legend_order"]
+                ]
+                lg = legend_ax.legend(
+                    handles=ann_handles,
+                    title=ann["legend_prefix"],
+                    loc="upper left",
+                    bbox_to_anchor=(0.0, y_anchor),
+                    fontsize=7,
+                    title_fontsize=8,
+                    framealpha=0.8,
+                    frameon=False,
+                )
+                legend_ax.add_artist(lg)
+                y_anchor -= max(0.16, 0.04 * max(1, len(ann_handles)))
+
+            fig.tight_layout(rect=(0, 0, 1, 1))
+
+            out_file = None
+            if save_path is not None:
+                safe_name = f"{ref}__{sample}__variant_segments".replace("=", "").replace(",", "_")
+                out_file = save_path / f"{safe_name}.png"
+                fig.savefig(out_file, dpi=300, bbox_inches="tight")
+                plt.close(fig)
+                logger.info("Saved multi-obs variant segment clustermap to %s.", out_file)
+            else:
+                plt.show()
+
+            n_with_bp = int(np.sum(np.any(seg_matrix == 3, axis=1)))
+            results.append(
+                {
+                    "reference": str(ref),
+                    "sample": str(sample),
+                    "n_reads": n_reads,
+                    "n_reads_with_breakpoints": n_with_bp,
+                    "n_obs_annotation_strips": int(len(annotation_data)),
+                    "output_path": str(out_file) if out_file is not None else None,
+                }
+            )
+
+    return results

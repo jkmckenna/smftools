@@ -650,6 +650,11 @@ def preprocess_umi_annotations(
         - {umi_col}_cluster: str - clustered/corrected UMI
         - {umi_col}_cluster_size: int - size of the UMI cluster
         - {combined_col}_cluster: str - combined clustered UMI
+        - {umi_col}_cluster_is_duplicate: bool - clustered UMI identity is non-unique
+          within the (sample_col, reference_col) group
+        - {combined_col}_cluster_is_duplicate: bool - combined clustered UMI identity
+          is non-unique within the (sample_col, reference_col) group
+        - any_umi_cluster_is_duplicate: bool - any cluster duplicate flag is True
         - umi_cluster_key: str - combined key for deduplication
     """
     # Early exits
@@ -840,7 +845,47 @@ def preprocess_umi_annotations(
     elif len(existing_cols) == 1:
         adata.obs[f"{combined_col}_cluster"] = adata.obs[f"{existing_cols[0]}_cluster"]
 
-    # Step 4: Create UMI cluster key for deduplication
+    # Step 4: Mark non-unique cluster identities within group as duplicate-like.
+    duplicate_group_cols = []
+    if sample_col in adata.obs.columns:
+        duplicate_group_cols.append(sample_col)
+    if reference_col in adata.obs.columns:
+        duplicate_group_cols.append(reference_col)
+    duplicate_groups = (
+        adata.obs.groupby(duplicate_group_cols, observed=True)
+        if duplicate_group_cols
+        else [(None, adata.obs)]
+    )
+
+    cluster_dup_cols = []
+    for col in existing_cols:
+        dup_col = f"{col}_cluster_is_duplicate"
+        cluster_dup_cols.append(dup_col)
+        adata.obs[dup_col] = False
+    combined_dup_col = f"{combined_col}_cluster_is_duplicate"
+    cluster_dup_cols.append(combined_dup_col)
+    adata.obs[combined_dup_col] = False
+
+    for _, group_df in duplicate_groups:
+        group_indices = group_df.index
+        for dup_col in cluster_dup_cols:
+            cluster_col = dup_col.replace("_is_duplicate", "")
+            if cluster_col not in adata.obs.columns:
+                continue
+            group_values = adata.obs.loc[group_indices, cluster_col]
+            non_null_values = group_values.dropna()
+            if non_null_values.empty:
+                continue
+            counts = non_null_values.value_counts()
+            duplicate_identities = counts[counts > 1].index
+            if len(duplicate_identities) == 0:
+                continue
+            is_dup = group_values.isin(duplicate_identities) & group_values.notna()
+            adata.obs.loc[group_indices, dup_col] = is_dup
+
+    adata.obs["any_umi_cluster_is_duplicate"] = adata.obs[cluster_dup_cols].any(axis=1)
+
+    # Step 5: Create UMI cluster key for deduplication
     # Combine sample, reference, and UMI cluster for unique molecule identification
     key_parts = []
     if sample_col in adata.obs.columns:
