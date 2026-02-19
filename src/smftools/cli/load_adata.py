@@ -316,7 +316,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     # If the input is a fastq or a directory of fastqs, concatenate them into an unaligned BAM and save the barcode
     elif cfg.input_type == "fastq":
         # Output file for FASTQ concatenation.
-        output_bam = load_directory / "canonical_basecalls.bam"
+        output_bam = bam_outputs_directory / "canonical_basecalls.bam"
         if output_bam.exists():
             logger.debug("Output BAM already exists")
         else:
@@ -360,9 +360,9 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         model_basename = str(model_basename).replace(".", "_")
         if cfg.smf_modality == "direct":
             mod_string = "_".join(cfg.mod_list)
-            bam = load_directory / f"{model_basename}_{mod_string}_calls"
+            bam = bam_outputs_directory / f"{model_basename}_{mod_string}_calls"
         else:
-            bam = load_directory / f"{model_basename}_canonical_basecalls"
+            bam = bam_outputs_directory / f"{model_basename}_canonical_basecalls"
     else:
         bam_base = cfg.input_data_path.stem
         bam = cfg.input_data_path.parent / bam_base
