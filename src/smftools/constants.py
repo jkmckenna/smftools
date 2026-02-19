@@ -65,6 +65,7 @@ UMI_KIT_ALIASES: Final[Mapping[str, str]] = _deep_freeze(_private_umi_kit_aliase
 REF_COL: Final[str] = "Reference_strand"
 SAMPLE_COL: Final[str] = "Experiment_name_and_barcode"
 SAMPLE: Final[str] = "Sample"
+INFORMATICS_OUTPUTS_DIR: Final[str] = "informatics_outputs"
 SPLIT_DIR: Final[str] = "demultiplexed_BAMs"
 BAM_OUTPUTS_DIR: Final[str] = "bam_outputs"
 MODKIT_OUTPUTS_DIR: Final[str] = "modkit_outputs"
