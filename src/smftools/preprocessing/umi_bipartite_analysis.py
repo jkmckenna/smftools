@@ -127,7 +127,11 @@ def analyze_umi_bipartite_graph(
             u1 = str(adata.obs.at[obs_name, u1_col])
             u2 = str(adata.obs.at[obs_name, u2_col])
 
-            edge_count = int(count_matrix.at[u1, u2]) if u1 in count_matrix.index and u2 in count_matrix.columns else 0
+            edge_count = (
+                int(count_matrix.at[u1, u2])
+                if u1 in count_matrix.index and u2 in count_matrix.columns
+                else 0
+            )
             adata.obs.at[obs_name, "RX_edge_count"] = edge_count
 
             u1_fidelity = edge_count / int(u1_totals[u1]) if u1 in u1_totals.index else np.nan
@@ -144,7 +148,11 @@ def analyze_umi_bipartite_graph(
             adata.obs.at[obs_name, "RX_is_dominant_pair"] = is_dominant
 
         # Store h5ad-safe stats (plain dicts)
-        group_label = str(group_key) if not isinstance(group_key, tuple) else "__".join(str(g) for g in group_key)
+        group_label = (
+            str(group_key)
+            if not isinstance(group_key, tuple)
+            else "__".join(str(g) for g in group_key)
+        )
         bipartite_stats[group_label] = {
             "count_matrix": {
                 "index": count_matrix.index.tolist(),

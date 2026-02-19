@@ -1072,7 +1072,11 @@ def plot_variant_segment_clustermaps(
                 )
                 ax_mismatch.set_xticks([])
                 ax_mismatch.set_yticks([])
-                strip_title = mismatch_type_obs_col.replace("_", " ").title() if mismatch_type_obs_col else "Type"
+                strip_title = (
+                    mismatch_type_obs_col.replace("_", " ").title()
+                    if mismatch_type_obs_col
+                    else "Type"
+                )
                 ax_mismatch.set_title(strip_title, fontsize=8, pad=8)
 
             # Overlay variant call circles
@@ -1356,15 +1360,21 @@ def plot_variant_segment_clustermaps_multi_obs(
                 color_map = dict(spec.get("colors") or {})
                 if not color_map:
                     palette = sns.color_palette("tab20", n_colors=max(1, len(legend_order)))
-                    color_map = {lab: colors.to_hex(palette[i]) for i, lab in enumerate(legend_order)}
+                    color_map = {
+                        lab: colors.to_hex(palette[i]) for i, lab in enumerate(legend_order)
+                    }
                 annotation_data.append(
                     {
                         "obs_col": obs_col,
                         "labels": labels,
                         "legend_order": legend_order,
                         "colors": color_map,
-                        "legend_prefix": str(spec.get("legend_prefix", obs_col.replace("_", " ").title())),
-                        "strip_title": str(spec.get("strip_title", obs_col.replace("_", " ").title())),
+                        "legend_prefix": str(
+                            spec.get("legend_prefix", obs_col.replace("_", " ").title())
+                        ),
+                        "strip_title": str(
+                            spec.get("strip_title", obs_col.replace("_", " ").title())
+                        ),
                     }
                 )
 
@@ -1393,10 +1403,14 @@ def plot_variant_segment_clustermaps_multi_obs(
 
             for strip_ax, ann in zip(strip_axes, annotation_data):
                 cats = ann["legend_order"]
-                cmap = colors.ListedColormap([ann["colors"].get(label, "#636363") for label in cats])
+                cmap = colors.ListedColormap(
+                    [ann["colors"].get(label, "#636363") for label in cats]
+                )
                 norm = colors.BoundaryNorm(np.arange(-0.5, len(cats) + 0.5, 1), cmap.N)
                 code_map = {label: i for i, label in enumerate(cats)}
-                code_arr = np.array([code_map[label] for label in ann["labels"]], dtype=np.int32).reshape(-1, 1)
+                code_arr = np.array(
+                    [code_map[label] for label in ann["labels"]], dtype=np.int32
+                ).reshape(-1, 1)
                 strip_ax.imshow(
                     code_arr,
                     cmap=cmap,
@@ -1479,10 +1493,42 @@ def plot_variant_segment_clustermaps_multi_obs(
                 patches.Patch(facecolor=seq1_color, label=f"{seq1_label} segment"),
                 patches.Patch(facecolor=seq2_color, label=f"{seq2_label} segment"),
                 patches.Patch(facecolor=transition_color, label="Transition zone"),
-                patches.Patch(facecolor=no_coverage_color, edgecolor="gray", linewidth=0.5, label="No coverage"),
-                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref1_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq1_label} call"),
-                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref2_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq2_label} call"),
-                plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=breakpoint_marker_color, markeredgecolor="gray", markersize=5, label="Breakpoint"),
+                patches.Patch(
+                    facecolor=no_coverage_color,
+                    edgecolor="gray",
+                    linewidth=0.5,
+                    label="No coverage",
+                ),
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor=ref1_marker_color,
+                    markeredgecolor="gray",
+                    markersize=5,
+                    label=f"{seq1_label} call",
+                ),
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor=ref2_marker_color,
+                    markeredgecolor="gray",
+                    markersize=5,
+                    label=f"{seq2_label} call",
+                ),
+                plt.Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    markerfacecolor=breakpoint_marker_color,
+                    markeredgecolor="gray",
+                    markersize=5,
+                    label="Breakpoint",
+                ),
             ]
             lg_main = legend_ax.legend(
                 handles=base_legend,

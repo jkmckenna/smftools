@@ -359,9 +359,7 @@ def _map_reference_to_signal(
                         )
                         return (sig, f"moves, {strand}") if sig is not None else None
                     else:
-                        sig = _map_proportional(
-                            read, ref_start, ref_end, full_signal, is_reverse
-                        )
+                        sig = _map_proportional(read, ref_start, ref_end, full_signal, is_reverse)
                         return (sig, f"proportional, {strand}") if sig is not None else None
 
         logger.warning(f"Read {read_id} not found in BAM file")

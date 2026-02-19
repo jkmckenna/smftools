@@ -74,4 +74,3 @@ def test_plot_variant_segment_clustermaps_multi_obs(tmp_path):
     assert results[0]["output_path"] is not None
     assert Path(results[0]["output_path"]).is_file()
     assert results[0]["n_obs_annotation_strips"] == 2
-

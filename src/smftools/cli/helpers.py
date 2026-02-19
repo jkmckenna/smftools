@@ -15,7 +15,6 @@ from smftools.constants import (
     SPATIAL_DIR,
     VARIANT_DIR,
 )
-
 from smftools.logging_utils import get_logger
 
 from ..metadata import write_runtime_schema_yaml

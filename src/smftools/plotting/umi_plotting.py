@@ -70,9 +70,14 @@ def plot_umi_bipartite_summary(
     size = np.clip(counts, 1, None)
     size_scaled = 10 + 40 * (size / max(size.max(), 1))
     sc = ax.scatter(
-        u1_fidelity, u2_fidelity,
-        s=size_scaled, c=np.log1p(counts),
-        cmap="YlOrRd", alpha=0.6, edgecolors="black", linewidths=0.3,
+        u1_fidelity,
+        u2_fidelity,
+        s=size_scaled,
+        c=np.log1p(counts),
+        cmap="YlOrRd",
+        alpha=0.6,
+        edgecolors="black",
+        linewidths=0.3,
     )
     ax.set_xlabel("U1 fidelity")
     ax.set_ylabel("U2 fidelity")
@@ -93,10 +98,13 @@ def plot_umi_bipartite_summary(
     reads_in_dominant = int(counts[dominant_mask].sum()) if dominant_mask.any() else 0
     total_reads = int(counts.sum())
     ax.text(
-        0.02, 0.02,
+        0.02,
+        0.02,
         f"Reads in 1:1 pairs: {reads_in_dominant}/{total_reads} "
         f"({reads_in_dominant / max(total_reads, 1):.0%})",
-        transform=ax.transAxes, fontsize=9, va="bottom",
+        transform=ax.transAxes,
+        fontsize=9,
+        va="bottom",
         bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8),
     )
 

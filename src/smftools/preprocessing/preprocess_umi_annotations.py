@@ -725,11 +725,11 @@ def preprocess_umi_annotations(
 
         # Incorporate entropy check into validity when min_entropy is set
         if min_entropy is not None:
-            for i, (flag, umi_entropy) in enumerate(
-                zip(valid_flags, adata.obs[entropy_col])
-            ):
+            for i, (flag, umi_entropy) in enumerate(zip(valid_flags, adata.obs[entropy_col])):
                 if flag:
-                    entropy_ok = bool(pd.notna(umi_entropy) and float(umi_entropy) >= float(min_entropy))
+                    entropy_ok = bool(
+                        pd.notna(umi_entropy) and float(umi_entropy) >= float(min_entropy)
+                    )
                     if not entropy_ok:
                         valid_flags[i] = False
                         invalid_reasons[i] = "low_entropy"

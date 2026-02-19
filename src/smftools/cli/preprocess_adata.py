@@ -202,7 +202,6 @@ def preprocess_adata_core(
         plot_read_span_quality_clustermaps,
     )
     from ..preprocessing import (
-        preprocess_umi_annotations,
         append_base_context,
         append_binary_layer_by_base_context,
         binarize_adata,
@@ -217,6 +216,7 @@ def preprocess_adata_core(
         flag_duplicate_reads,
         invert_adata,
         load_sample_sheet,
+        preprocess_umi_annotations,
         reindex_references_adata,
     )
     from ..readwrite import make_dirs
@@ -269,13 +269,17 @@ def preprocess_adata_core(
             min_entropy=float(cfg.umi_min_entropy),
             cluster_max_edit_distance=int(cfg.umi_cluster_max_edit_distance),
             cluster_directional=True,
-            sample_col=str(getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode")),
+            sample_col=str(
+                getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode")
+            ),
             reference_col=str(getattr(cfg, "reference_column", "Reference_strand")),
         )
         # UMI bipartite graph analysis (obs annotations)
         from ..preprocessing import analyze_umi_bipartite_graph
 
-        _umi_sample_col = str(getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode"))
+        _umi_sample_col = str(
+            getattr(cfg, "sample_sheet_mapping_column", "Experiment_name_and_barcode")
+        )
         _umi_reference_col = str(getattr(cfg, "reference_column", "Reference_strand"))
         analyze_umi_bipartite_graph(
             adata,
@@ -304,7 +308,9 @@ def preprocess_adata_core(
                 parts = group_label.split("__", 1)
                 sample_name = parts[0] if len(parts) > 0 else "all"
                 reference_name = parts[1] if len(parts) > 1 else "all"
-                save_path = pp_umi_bipartite_dir / f"{reference_name}__{sample_name}__umi_bipartite.png"
+                save_path = (
+                    pp_umi_bipartite_dir / f"{reference_name}__{sample_name}__umi_bipartite.png"
+                )
                 plot_umi_bipartite_summary(
                     count_matrix=cm,
                     sample_name=sample_name,

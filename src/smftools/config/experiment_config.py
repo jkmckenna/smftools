@@ -1265,7 +1265,10 @@ class ExperimentConfig:
                 _parse_numeric(merged.get("umi_min_entropy", 1.65), 1.65)
             )
         # Backward compat: rename old key to new key
-        if "umi_hamming_cluster_distance" in merged and "umi_cluster_max_edit_distance" not in merged:
+        if (
+            "umi_hamming_cluster_distance" in merged
+            and "umi_cluster_max_edit_distance" not in merged
+        ):
             merged["umi_cluster_max_edit_distance"] = merged.pop("umi_hamming_cluster_distance")
         if "umi_cluster_max_edit_distance" in merged:
             merged["umi_cluster_max_edit_distance"] = int(

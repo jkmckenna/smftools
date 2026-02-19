@@ -406,9 +406,9 @@ def variant_adata_core(
             )
 
             umi_status_colors = {
-                "dominant": "#2ca02c",      # green
-                "not_dominant": "#d62728",   # red
-                "no_UMI_pair": "#d9d9d9",   # neutral gray
+                "dominant": "#2ca02c",  # green
+                "not_dominant": "#d62728",  # red
+                "no_UMI_pair": "#d9d9d9",  # neutral gray
             }
 
             umi_segment_dir = (
@@ -448,8 +448,10 @@ def variant_adata_core(
         seq1_col
         and seq2_col
         and getattr(cfg, "use_umi", False)
-        and (("U1_valid" in adata.obs.columns and "U2_valid" in adata.obs.columns)
-             or ("U1_pass" in adata.obs.columns and "U2_pass" in adata.obs.columns))
+        and (
+            ("U1_valid" in adata.obs.columns and "U2_valid" in adata.obs.columns)
+            or ("U1_pass" in adata.obs.columns and "U2_pass" in adata.obs.columns)
+        )
     ):
         segment_layer_name = f"{seq1_col}__{seq2_col}_variant_segments"
         if segment_layer_name in adata.layers:
