@@ -179,6 +179,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         annotate_umi_tags_in_bam,
         derive_bm_from_bi_to_sidecar,
         bam_qc,
+        build_barcode_sidecar_from_split_bams,
         build_classified_read_set,
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
@@ -702,6 +703,34 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 "will not be derived. Consider using demux_backend='smftools' or "
                 "setting skip_bam_split=False to enable per-end barcode scoring."
             )
+            # Build a BC-only sidecar from BC tags on the aligned BAM
+            # (these come from basecalling with --kit-name)
+            if barcode_sidecar is None:
+                barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
+                _, read_to_barcode = build_classified_read_set(
+                    bam_path=aligned_sorted_output,
+                )
+                if read_to_barcode:
+                    bc_df = pd.DataFrame(
+                        [
+                            {"read_name": rn, "BC": bc}
+                            for rn, bc in read_to_barcode.items()
+                        ]
+                    )
+                else:
+                    bc_df = pd.DataFrame(columns=["read_name", "BC"])
+                bc_df.to_parquet(barcode_sidecar, index=False)
+                register_sidecar(
+                    sidecar_manifest,
+                    "barcode",
+                    barcode_sidecar,
+                    metadata={"source": "dorado_skip_bam_split_bc_tags"},
+                )
+                logger.info(
+                    "Built BC-only barcode sidecar from aligned BAM: %d reads -> %s",
+                    len(bc_df),
+                    barcode_sidecar,
+                )
     elif cfg.input_already_demuxed or use_smftools_demux:
         if cfg.split_path.is_dir():
             logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
@@ -729,6 +758,20 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         se_bam_files = bam_files
         bam_dir = cfg.split_path
         double_barcoded_path = None
+
+        # Ensure barcode sidecar exists for input_already_demuxed paths
+        # (smftools demux already produces one above; this covers the remaining case)
+        if barcode_sidecar is None and cfg.input_already_demuxed and bam_files:
+            barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
+            build_barcode_sidecar_from_split_bams(
+                bam_files, barcode_sidecar, samtools_backend=cfg.samtools_backend
+            )
+            register_sidecar(
+                sidecar_manifest,
+                "barcode",
+                barcode_sidecar,
+                metadata={"source": "input_already_demuxed_split_bams"},
+            )
 
     else:
         # --- Dorado demux: version-aware branching ---
@@ -905,6 +948,19 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             unclassified_bams = unclassified_se_bams + unclassified_de_bams
             bam_dir = single_barcoded_path
 
+            # Build barcode sidecar from split BAMs for old dorado (< 1.3.1)
+            if barcode_sidecar is None and bam_files:
+                barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
+                build_barcode_sidecar_from_split_bams(
+                    bam_files, barcode_sidecar, samtools_backend=cfg.samtools_backend
+                )
+                register_sidecar(
+                    sidecar_manifest,
+                    "barcode",
+                    barcode_sidecar,
+                    metadata={"source": "dorado_legacy_split_bams"},
+                )
+
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
     if cfg.make_beds and not skip_bam_split:
@@ -989,7 +1045,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             double_barcoded_path=double_barcoded_path,
             samtools_backend=cfg.samtools_backend,
             demux_backend=getattr(cfg, "demux_backend", None),
-            single_bam=aligned_sorted_output if skip_bam_split else None,
+            single_bam=aligned_sorted_output,
             barcode_sidecar=barcode_sidecar,
         )
     else:
@@ -1026,7 +1082,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             skip_unclassified=cfg.skip_unclassified,
             modkit_summary=False,
             threads=cfg.threads,
-            single_bam=aligned_sorted_output if skip_bam_split else None,
+            single_bam=aligned_sorted_output,
         )  # Extract methylations calls for split BAM files into split TSV files
 
         from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
@@ -1049,7 +1105,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             double_barcoded_path,
             cfg.samtools_backend,
             demux_backend=getattr(cfg, "demux_backend", None),
-            single_bam=aligned_sorted_output if skip_bam_split else None,
+            single_bam=aligned_sorted_output,
             barcode_sidecar=barcode_sidecar,
         )
         if cfg.delete_intermediate_tsvs:
@@ -1073,12 +1129,10 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ############################################### Add basic read length, read quality, mapping quality stats ###############################################
 
     logger.info("Adding read length, mapping quality, and modification signal to Anndata")
-    if skip_bam_split:
-        from functools import partial as _partial
+    from functools import partial as _partial
 
-        _extract_features = _partial(extract_read_features_from_bam, primary_only=True)
-    else:
-        _extract_features = extract_read_features_from_bam
+    se_bam_files = [aligned_sorted_output]
+    _extract_features = _partial(extract_read_features_from_bam, primary_only=True)
     add_read_length_and_mapping_qc(
         raw_adata,
         se_bam_files,
@@ -1102,10 +1156,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
 
     logger.info("Adding BAM tags and BAM flags to adata.obs")
-    if skip_bam_split:
-        _extract_tags = _partial(extract_read_tags_from_bam, primary_only=True)
-    else:
-        _extract_tags = extract_read_tags_from_bam
+    _extract_tags = _partial(extract_read_tags_from_bam, primary_only=True)
     add_read_tag_annotations(
         raw_adata,
         se_bam_files,

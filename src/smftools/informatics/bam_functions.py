@@ -3877,6 +3877,68 @@ def build_classified_read_set(
     return classified_reads, read_to_barcode
 
 
+def build_barcode_sidecar_from_split_bams(
+    bam_files: list[Path],
+    output_path: Path,
+    samtools_backend: str | None = None,
+) -> Path:
+    """Extract BC from split BAMs into a barcode sidecar parquet.
+
+    For reads without a BC tag, barcode is inferred from the BAM filename
+    using the same logic as ``_barcode_label_from_sample_name`` in
+    ``converted_BAM_to_adata.py``.
+
+    Writes ``(read_name, BC)`` columns. Returns *output_path*.
+
+    Parameters
+    ----------
+    bam_files : list[Path]
+        Per-barcode BAM files (unclassified BAMs should be excluded by the caller).
+    output_path : Path
+        Destination for the Parquet sidecar.
+    samtools_backend : str | None
+        Passed through to ``_resolve_samtools_backend``.
+
+    Returns
+    -------
+    Path
+        The written Parquet sidecar path.
+    """
+    import pandas as pd
+
+    pysam_mod = _require_pysam()
+    rows: list[dict[str, str]] = []
+
+    for bam_path in bam_files:
+        # Infer barcode label from filename (e.g. "barcode01.bam" -> "01")
+        stem = bam_path.stem
+        match = re.search(r"barcode([0-9A-Za-z\-]+)", stem, flags=re.IGNORECASE)
+        filename_barcode = match.group(1) if match else stem
+
+        with pysam_mod.AlignmentFile(str(bam_path), "rb", check_sq=False) as bam:
+            for read in bam:
+                if read.is_secondary or read.is_supplementary:
+                    continue
+                if read.has_tag("BC"):
+                    bc = str(read.get_tag("BC"))
+                    if bc and bc.lower() != "unclassified":
+                        rows.append({"read_name": read.query_name, "BC": bc})
+                else:
+                    rows.append({"read_name": read.query_name, "BC": filename_barcode})
+
+    bc_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["read_name", "BC"])
+    bc_df = bc_df.drop_duplicates(subset=["read_name"], keep="first")
+    bc_df.to_parquet(output_path, index=False)
+
+    logger.info(
+        "Built barcode sidecar from %d split BAMs: %d reads -> %s",
+        len(bam_files),
+        len(bc_df),
+        output_path,
+    )
+    return output_path
+
+
 def extract_base_identities(
     bam_file,
     record,
