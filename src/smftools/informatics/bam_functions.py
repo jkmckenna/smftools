@@ -3466,6 +3466,93 @@ def count_aligned_reads(bam_file, samtools_backend: str | None = "auto"):
     return _parse_idxstats_output(cp.stdout)
 
 
+def derive_bm_from_bi_to_sidecar(
+    bam_path: str | Path,
+    output_sidecar_path: str | Path,
+    threshold: float = 0.65,
+    samtools_backend: Optional[str] = None,
+) -> Path:
+    """Derive BM values from dorado bi per-end barcode scores and write to a Parquet sidecar.
+
+    Unlike ``annotate_demux_type_from_bi_tag``, this does **not** modify the BAM.
+    It reads BC and bi tags, computes BM classification, and writes
+    ``(read_name, BC, BM)`` rows to a Parquet file.
+
+    Classification logic (same as ``annotate_demux_type_from_bi_tag``):
+
+    - Both bi[3] and bi[6] > threshold → "both"
+    - Only bi[3] > threshold → "read_start_only"
+    - Only bi[6] > threshold → "read_end_only"
+    - Has BC but no bi tag → "unknown"
+    - No BC tag → "unclassified"
+
+    Parameters
+    ----------
+    bam_path : str or Path
+        Path to input BAM file (not modified).
+    output_sidecar_path : str or Path
+        Path to write the Parquet sidecar.
+    threshold : float, default 0.65
+        Minimum per-end score to consider a barcode match.
+    samtools_backend : str, optional
+        Samtools backend (unused here, kept for API consistency).
+
+    Returns
+    -------
+    Path
+        Path to the output Parquet sidecar.
+    """
+    import pandas as pd
+
+    pysam_mod = _require_pysam()
+    bam_path = Path(bam_path)
+    output_sidecar_path = Path(output_sidecar_path)
+
+    rows: list[dict[str, object]] = []
+    counts = {"both": 0, "read_start_only": 0, "read_end_only": 0, "unknown": 0, "unclassified": 0}
+
+    with pysam_mod.AlignmentFile(str(bam_path), "rb", check_sq=False) as inbam:
+        for read in inbam:
+            if read.is_secondary or read.is_supplementary:
+                continue
+
+            bc_value = read.get_tag("BC") if read.has_tag("BC") else None
+
+            if bc_value is None:
+                bm_value = "unclassified"
+            elif not read.has_tag("bi"):
+                bm_value = "unknown"
+            else:
+                bi = read.get_tag("bi")
+                top_score = bi[3] if len(bi) > 3 else -1.0
+                bottom_score = bi[6] if len(bi) > 6 else -1.0
+
+                if top_score > threshold and bottom_score > threshold:
+                    bm_value = "both"
+                elif top_score > threshold:
+                    bm_value = "read_start_only"
+                elif bottom_score > threshold:
+                    bm_value = "read_end_only"
+                else:
+                    bm_value = "unknown"
+
+            counts[bm_value] += 1
+
+            if bc_value not in (None, "unclassified"):
+                rows.append({"read_name": read.query_name, "BC": bc_value, "BM": bm_value})
+
+    bc_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["read_name", "BC", "BM"])
+    bc_df = bc_df.drop_duplicates(subset=["read_name"], keep="first")
+    bc_df.to_parquet(output_sidecar_path, index=False)
+
+    logger.info(
+        "BM sidecar derived from bi tag for %s: %s",
+        bam_path.name,
+        ", ".join(f"{k}={v}" for k, v in counts.items()),
+    )
+    return output_sidecar_path
+
+
 def annotate_demux_type_from_bi_tag(
     bam_path: str | Path, output_path: Optional[str | Path] = None, threshold: float = 0.65
 ) -> Path:
@@ -3788,6 +3875,68 @@ def build_classified_read_set(
 
     classified_reads = set(read_to_barcode.keys())
     return classified_reads, read_to_barcode
+
+
+def build_barcode_sidecar_from_split_bams(
+    bam_files: list[Path],
+    output_path: Path,
+    samtools_backend: str | None = None,
+) -> Path:
+    """Extract BC from split BAMs into a barcode sidecar parquet.
+
+    For reads without a BC tag, barcode is inferred from the BAM filename
+    using the same logic as ``_barcode_label_from_sample_name`` in
+    ``converted_BAM_to_adata.py``.
+
+    Writes ``(read_name, BC)`` columns. Returns *output_path*.
+
+    Parameters
+    ----------
+    bam_files : list[Path]
+        Per-barcode BAM files (unclassified BAMs should be excluded by the caller).
+    output_path : Path
+        Destination for the Parquet sidecar.
+    samtools_backend : str | None
+        Passed through to ``_resolve_samtools_backend``.
+
+    Returns
+    -------
+    Path
+        The written Parquet sidecar path.
+    """
+    import pandas as pd
+
+    pysam_mod = _require_pysam()
+    rows: list[dict[str, str]] = []
+
+    for bam_path in bam_files:
+        # Infer barcode label from filename (e.g. "barcode01.bam" -> "01")
+        stem = bam_path.stem
+        match = re.search(r"barcode([0-9A-Za-z\-]+)", stem, flags=re.IGNORECASE)
+        filename_barcode = match.group(1) if match else stem
+
+        with pysam_mod.AlignmentFile(str(bam_path), "rb", check_sq=False) as bam:
+            for read in bam:
+                if read.is_secondary or read.is_supplementary:
+                    continue
+                if read.has_tag("BC"):
+                    bc = str(read.get_tag("BC"))
+                    if bc and bc.lower() != "unclassified":
+                        rows.append({"read_name": read.query_name, "BC": bc})
+                else:
+                    rows.append({"read_name": read.query_name, "BC": filename_barcode})
+
+    bc_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["read_name", "BC"])
+    bc_df = bc_df.drop_duplicates(subset=["read_name"], keep="first")
+    bc_df.to_parquet(output_path, index=False)
+
+    logger.info(
+        "Built barcode sidecar from %d split BAMs: %d reads -> %s",
+        len(bam_files),
+        len(bc_df),
+        output_path,
+    )
+    return output_path
 
 
 def extract_base_identities(

@@ -176,12 +176,13 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         _build_flanking_from_adapters,
         _get_dorado_version,
         align_and_sort_BAM,
-        annotate_demux_type_from_bi_tag,
         annotate_umi_tags_in_bam,
         bam_qc,
+        build_barcode_sidecar_from_split_bams,
         build_classified_read_set,
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
+        derive_bm_from_bi_to_sidecar,
         derive_umi_orientation_tags_from_aligned_bam,
         extract_and_assign_barcodes_in_bam,
         extract_read_features_from_bam,
@@ -692,6 +693,41 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         unclassified_bams = []
         bam_dir = None
         double_barcoded_path = None
+        # dorado's bi tag is only produced by `dorado demux`, which is
+        # skipped when skip_bam_split=True.  BM cannot be derived without bi,
+        # so no barcode sidecar is written here for the dorado backend.
+        if demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+            logger.warning(
+                "skip_bam_split=True with dorado backend: the bi tag is likely not present "
+                "because dorado demux was not run. BM tag and demux_type (single/double) "
+                "will not be derived. Consider using demux_backend='smftools' or "
+                "setting skip_bam_split=False to enable per-end barcode scoring."
+            )
+            # Build a BC-only sidecar from BC tags on the aligned BAM
+            # (these come from basecalling with --kit-name)
+            if barcode_sidecar is None:
+                barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
+                _, read_to_barcode = build_classified_read_set(
+                    bam_path=aligned_sorted_output,
+                )
+                if read_to_barcode:
+                    bc_df = pd.DataFrame(
+                        [{"read_name": rn, "BC": bc} for rn, bc in read_to_barcode.items()]
+                    )
+                else:
+                    bc_df = pd.DataFrame(columns=["read_name", "BC"])
+                bc_df.to_parquet(barcode_sidecar, index=False)
+                register_sidecar(
+                    sidecar_manifest,
+                    "barcode",
+                    barcode_sidecar,
+                    metadata={"source": "dorado_skip_bam_split_bc_tags"},
+                )
+                logger.info(
+                    "Built BC-only barcode sidecar from aligned BAM: %d reads -> %s",
+                    len(bc_df),
+                    barcode_sidecar,
+                )
     elif cfg.input_already_demuxed or use_smftools_demux:
         if cfg.split_path.is_dir():
             logger.debug(f"{cfg.split_path} already exists. Using existing demultiplexed BAMs.")
@@ -719,6 +755,20 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         se_bam_files = bam_files
         bam_dir = cfg.split_path
         double_barcoded_path = None
+
+        # Ensure barcode sidecar exists for input_already_demuxed paths
+        # (smftools demux already produces one above; this covers the remaining case)
+        if barcode_sidecar is None and cfg.input_already_demuxed and bam_files:
+            barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
+            build_barcode_sidecar_from_split_bams(
+                bam_files, barcode_sidecar, samtools_backend=cfg.samtools_backend
+            )
+            register_sidecar(
+                sidecar_manifest,
+                "barcode",
+                barcode_sidecar,
+                metadata={"source": "input_already_demuxed_split_bams"},
+            )
 
     else:
         # --- Dorado demux: version-aware branching ---
@@ -778,10 +828,45 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 unclassified_bams = [p for p in all_bam_files if "unclassified" in p.name]
                 bam_files = [p for p in all_bam_files if "unclassified" not in p.name]
 
-            # Annotate BM tag from bi per-end scores on each demuxed BAM
-            for bam in bam_files:
-                if "unclassified" not in bam.name:
-                    annotate_demux_type_from_bi_tag(bam)
+            # Derive BM from bi into sidecar (without modifying BAMs).
+            # For no_classify: bi/BC are on the aligned_sorted BAM.
+            # For classify: bi/BC are on the split BAMs after dorado re-classification.
+            barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
+            if demux_mode == "no_classify":
+                derive_bm_from_bi_to_sidecar(
+                    aligned_sorted_output,
+                    barcode_sidecar,
+                    samtools_backend=cfg.samtools_backend,
+                )
+                sidecar_source = "dorado_aligned_sorted_bam"
+            else:
+                # Derive from each split BAM and concatenate
+                sidecar_dfs = []
+                for bam_file in bam_files:
+                    if "unclassified" in bam_file.name:
+                        continue
+                    per_bam_sidecar = bam_file.with_suffix(".barcode_tags.parquet")
+                    derive_bm_from_bi_to_sidecar(
+                        bam_file,
+                        per_bam_sidecar,
+                        samtools_backend=cfg.samtools_backend,
+                    )
+                    sidecar_dfs.append(pd.read_parquet(per_bam_sidecar))
+                if sidecar_dfs:
+                    bc_df = pd.concat(sidecar_dfs, ignore_index=True)
+                    bc_df = bc_df.drop_duplicates(subset=["read_name"], keep="first")
+                else:
+                    bc_df = pd.DataFrame(columns=["read_name", "BC", "BM"])
+                bc_df.to_parquet(barcode_sidecar, index=False)
+                sidecar_source = "dorado_single_pass_demux_bams"
+
+            register_sidecar(
+                sidecar_manifest,
+                "barcode",
+                barcode_sidecar,
+                metadata={"source": sidecar_source},
+            )
+            logger.info("dorado barcode sidecar written: %s", barcode_sidecar)
 
             se_bam_files = bam_files
             bam_dir = cfg.split_path
@@ -859,6 +944,19 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             bam_files = se_bam_files + de_bam_files
             unclassified_bams = unclassified_se_bams + unclassified_de_bams
             bam_dir = single_barcoded_path
+
+            # Build barcode sidecar from split BAMs for old dorado (< 1.3.1)
+            if barcode_sidecar is None and bam_files:
+                barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
+                build_barcode_sidecar_from_split_bams(
+                    bam_files, barcode_sidecar, samtools_backend=cfg.samtools_backend
+                )
+                register_sidecar(
+                    sidecar_manifest,
+                    "barcode",
+                    barcode_sidecar,
+                    metadata={"source": "dorado_legacy_split_bams"},
+                )
 
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
@@ -944,7 +1042,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             double_barcoded_path=double_barcoded_path,
             samtools_backend=cfg.samtools_backend,
             demux_backend=getattr(cfg, "demux_backend", None),
-            single_bam=aligned_sorted_output if skip_bam_split else None,
+            single_bam=aligned_sorted_output,
             barcode_sidecar=barcode_sidecar,
         )
     else:
@@ -981,7 +1079,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             skip_unclassified=cfg.skip_unclassified,
             modkit_summary=False,
             threads=cfg.threads,
-            single_bam=aligned_sorted_output if skip_bam_split else None,
+            single_bam=aligned_sorted_output,
         )  # Extract methylations calls for split BAM files into split TSV files
 
         from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
@@ -1004,7 +1102,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             double_barcoded_path,
             cfg.samtools_backend,
             demux_backend=getattr(cfg, "demux_backend", None),
-            single_bam=aligned_sorted_output if skip_bam_split else None,
+            single_bam=aligned_sorted_output,
             barcode_sidecar=barcode_sidecar,
         )
         if cfg.delete_intermediate_tsvs:
@@ -1028,12 +1126,10 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     ############################################### Add basic read length, read quality, mapping quality stats ###############################################
 
     logger.info("Adding read length, mapping quality, and modification signal to Anndata")
-    if skip_bam_split:
-        from functools import partial as _partial
+    from functools import partial as _partial
 
-        _extract_features = _partial(extract_read_features_from_bam, primary_only=True)
-    else:
-        _extract_features = extract_read_features_from_bam
+    se_bam_files = [aligned_sorted_output]
+    _extract_features = _partial(extract_read_features_from_bam, primary_only=True)
     add_read_length_and_mapping_qc(
         raw_adata,
         se_bam_files,
@@ -1048,19 +1144,16 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     if cfg.smf_modality == "direct":
         default_tags.extend(["MM", "ML"])
     # UMI tags are loaded from Parquet sidecar below (not from BAM)
-    # Barcode tags are loaded from Parquet sidecar below (not from BAM)
-    # Add barcode tags from dorado single-pass demux (BM annotated from bi tag)
+    # Barcode tags (BC/BM) are loaded from Parquet sidecar below (not from BAM)
+    # Only extract BC and bi from BAM for dorado; BM is derived into sidecar
     if demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
         dorado_ver = _get_dorado_version()
         if dorado_ver is not None and dorado_ver >= (1, 3, 1):
-            default_tags.extend(["BC", "BM", "bi"])
+            default_tags.extend(["BC", "bi"])
     bam_tag_names = getattr(cfg, "bam_tag_names", default_tags)
 
     logger.info("Adding BAM tags and BAM flags to adata.obs")
-    if skip_bam_split:
-        _extract_tags = _partial(extract_read_tags_from_bam, primary_only=True)
-    else:
-        _extract_tags = extract_read_tags_from_bam
+    _extract_tags = _partial(extract_read_tags_from_bam, primary_only=True)
     add_read_tag_annotations(
         raw_adata,
         se_bam_files,
@@ -1086,22 +1179,22 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 raw_adata.obs[col] = umi_df[col].values
         del umi_df
 
-    # Load barcode tags from Parquet sidecar (written by extract_and_assign_barcodes_in_bam)
-    if (
-        demux_backend == "smftools"
-        and cfg.barcode_kit
-        and (not barcode_sidecar or not Path(barcode_sidecar).exists())
-    ):
+    # Load barcode tags from Parquet sidecar (written by smftools or derived from dorado bi)
+    _load_barcode_sidecar = False
+    if cfg.barcode_kit and not cfg.input_already_demuxed:
+        if demux_backend == "smftools":
+            _load_barcode_sidecar = True
+        elif demux_backend == "dorado":
+            dorado_ver = _get_dorado_version()
+            if dorado_ver is not None and dorado_ver >= (1, 3, 1):
+                _load_barcode_sidecar = True
+
+    if _load_barcode_sidecar and (not barcode_sidecar or not Path(barcode_sidecar).exists()):
         _resolved_barcode_sidecar = resolve_sidecar(sidecar_manifest, "barcode")
         if _resolved_barcode_sidecar is not None:
             barcode_sidecar = _resolved_barcode_sidecar
 
-    if (
-        demux_backend == "smftools"
-        and cfg.barcode_kit
-        and barcode_sidecar
-        and Path(barcode_sidecar).exists()
-    ):
+    if _load_barcode_sidecar and barcode_sidecar and Path(barcode_sidecar).exists():
         logger.info("Loading barcode tags from Parquet sidecar: %s", barcode_sidecar)
         bc_df = pd.read_parquet(barcode_sidecar).set_index("read_name")
         bc_df = bc_df.reindex(raw_adata.obs_names)
