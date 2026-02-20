@@ -693,5 +693,3 @@ def expand_bi_tag_columns(adata, bi_column="bi"):
     adata.obs["bi_bottom_score"] = bi_bottom_score
 
     logger.info("Created columns: bi_overall_score, bi_top_score, bi_bottom_score, etc.")
-
-

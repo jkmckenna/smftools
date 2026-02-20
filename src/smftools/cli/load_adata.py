@@ -177,12 +177,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         _get_dorado_version,
         align_and_sort_BAM,
         annotate_umi_tags_in_bam,
-        derive_bm_from_bi_to_sidecar,
         bam_qc,
         build_barcode_sidecar_from_split_bams,
         build_classified_read_set,
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
+        derive_bm_from_bi_to_sidecar,
         derive_umi_orientation_tags_from_aligned_bam,
         extract_and_assign_barcodes_in_bam,
         extract_read_features_from_bam,
@@ -712,10 +712,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 )
                 if read_to_barcode:
                     bc_df = pd.DataFrame(
-                        [
-                            {"read_name": rn, "BC": bc}
-                            for rn, bc in read_to_barcode.items()
-                        ]
+                        [{"read_name": rn, "BC": bc} for rn, bc in read_to_barcode.items()]
                     )
                 else:
                     bc_df = pd.DataFrame(columns=["read_name", "BC"])
