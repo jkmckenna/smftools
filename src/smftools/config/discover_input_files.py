@@ -25,7 +25,7 @@ def discover_input_files(
       - If a directory, scans immediate children (recursive=False) or entire tree (recursive=True).
       - Handles multi-suffix files like .fastq.gz, .fq.xz, etc.
     """
-    p = Path(input_data_path)
+    p = Path(input_data_path).resolve()
 
     # normalize bam suffix with a leading dot and lower
     if not bam_suffix.startswith("."):
