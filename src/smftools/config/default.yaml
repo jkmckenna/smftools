@@ -136,10 +136,20 @@ clustermap_demux_types_to_plot:
 read_coord_filter:
  - null
  - null
+# Actual read-length filter on adata.obs['read_length']
 read_len_filter_thresholds:
+  - null
+  - null
+# Mapped-length filter on adata.obs['mapped_length']
+mapped_len_filter_thresholds:
   - 100
   - null
+# Actual read-length/reference-length ratio filter on adata.obs['read_length_to_reference_length_ratio']
 read_len_to_ref_ratio_filter_thresholds:
+  - null
+  - null
+# Mapped-length/reference-length ratio filter on adata.obs['mapped_length_to_reference_length_ratio']
+mapped_len_to_ref_ratio_filter_thresholds:
   - null
   - null
 read_quality_filter_thresholds:
