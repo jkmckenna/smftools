@@ -16,6 +16,7 @@ from .cli.preprocess_adata import preprocess_adata
 from .cli.recipes import full_flow
 from .cli.spatial_adata import spatial_adata
 from .cli.variant_adata import variant_adata
+from ._version import __version__
 from .informatics.pod5_functions import subsample_pod5
 from .logging_utils import get_logger, setup_logging
 from .readwrite import concatenate_h5ads
@@ -44,6 +45,7 @@ def _configure_multiprocessing() -> None:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="smftools")
 @click.option(
     "--log-file",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
