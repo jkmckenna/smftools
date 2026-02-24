@@ -108,7 +108,9 @@ def plot_read_qc_histograms(
                 lo, hi = float(s.min()), float(s.max())
         global_ranges[key] = (lo, hi)
 
-    def _stable_hist_counts(values: np.ndarray, lo: float, hi: float, n_bins: int) -> tuple[np.ndarray, np.ndarray]:
+    def _stable_hist_counts(
+        values: np.ndarray, lo: float, hi: float, n_bins: int
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Compute histogram counts robustly for numeric vectors."""
         if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
             hi = lo + 1.0

@@ -15,7 +15,9 @@ def test_plot_read_qc_histograms_numeric_stable(tmp_path):
     n = 300
     obs = pd.DataFrame(
         {
-            "Experiment_name_and_barcode": pd.Categorical(["NB01"] * (n // 2) + ["NB02"] * (n // 2)),
+            "Experiment_name_and_barcode": pd.Categorical(
+                ["NB01"] * (n // 2) + ["NB02"] * (n // 2)
+            ),
             "read_length": np.concatenate(
                 [
                     np.random.randint(100, 5000, size=n // 2).astype(float),

@@ -16,7 +16,12 @@ def _make_adata() -> ad.AnnData:
             "mapped_length": [2600.0, 3000.0, 3100.0, 3050.0],
             "read_length_to_reference_length_ratio": [0.85, 0.95, 1.05, 1.10],
             "mapped_length_to_reference_length_ratio": [0.80, 0.92, 1.00, 1.08],
-            "mapped_length_to_read_length_ratio": [2600.0 / 2800.0, 1.0, 3100.0 / 3200.0, 3050.0 / 2900.0],
+            "mapped_length_to_read_length_ratio": [
+                2600.0 / 2800.0,
+                1.0,
+                3100.0 / 3200.0,
+                3050.0 / 2900.0,
+            ],
             "read_quality": [20.0, 20.0, 20.0, 20.0],
             "mapping_quality": [60.0, 60.0, 60.0, 60.0],
         },

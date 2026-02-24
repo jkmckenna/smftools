@@ -726,7 +726,9 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
                 )
                 _, read_to_barcode = build_classified_read_set(bam_path=aligned_sorted_output)
                 if read_to_barcode:
-                    bc_df = pd.DataFrame([{"read_name": rn, "BC": bc} for rn, bc in read_to_barcode.items()])
+                    bc_df = pd.DataFrame(
+                        [{"read_name": rn, "BC": bc} for rn, bc in read_to_barcode.items()]
+                    )
                 else:
                     bc_df = pd.DataFrame(columns=["read_name", "BC"])
                 bc_df.to_parquet(barcode_sidecar, index=False)
