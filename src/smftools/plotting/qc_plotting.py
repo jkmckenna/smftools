@@ -58,6 +58,7 @@ def plot_read_qc_histograms(
     """
     logger.info("Plotting read QC histograms to %s.", outdir)
     os.makedirs(outdir, exist_ok=True)
+    bins = max(1, int(bins))
 
     if sample_key not in adata.obs.columns:
         raise KeyError(f"'{sample_key}' not found in adata.obs")
@@ -107,6 +108,23 @@ def plot_read_qc_histograms(
                 lo, hi = float(s.min()), float(s.max())
         global_ranges[key] = (lo, hi)
 
+    def _stable_hist_counts(
+        values: np.ndarray, lo: float, hi: float, n_bins: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute histogram counts robustly for numeric vectors."""
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            hi = lo + 1.0
+        edges = np.linspace(lo, hi, n_bins + 1, dtype=np.float64)
+        try:
+            counts, _ = np.histogram(values, bins=edges)
+            return counts, edges
+        except ValueError:
+            # Defensive fallback for rare numpy histogram edge/broadcast issues.
+            idx = np.searchsorted(edges, values, side="right") - 1
+            idx = np.clip(idx, 0, n_bins - 1)
+            counts = np.bincount(idx, minlength=n_bins)[:n_bins]
+            return counts, edges
+
     def _sanitize(name: str) -> str:
         """Sanitize a string for use in filenames."""
         return "".join(c if c.isalnum() or c in "-._" else "_" for c in str(name))
@@ -146,8 +164,17 @@ def plot_read_qc_histograms(
                     else:
                         # clip to global range for consistent axes
                         lo, hi = global_ranges[key]
-                        x = x.clip(lo, hi)
-                        ax.hist(x.values, bins=bins, range=(lo, hi), edgecolor="black", alpha=0.7)
+                        x_arr = x.clip(lo, hi).to_numpy(dtype=np.float64, copy=False)
+                        counts, edges = _stable_hist_counts(x_arr, lo, hi, bins)
+                        widths = np.diff(edges)
+                        ax.bar(
+                            edges[:-1],
+                            counts,
+                            width=widths,
+                            align="edge",
+                            edgecolor="black",
+                            alpha=0.7,
+                        )
                         ax.set_xlim(lo, hi)
                     if r == 0:
                         ax.set_title(key)

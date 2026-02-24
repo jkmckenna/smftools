@@ -3476,7 +3476,7 @@ def derive_bm_from_bi_to_sidecar(
 
     Unlike ``annotate_demux_type_from_bi_tag``, this does **not** modify the BAM.
     It reads BC and bi tags, computes BM classification, and writes
-    ``(read_name, BC, BM)`` rows to a Parquet file.
+    ``(read_name, BC, BM, bi)`` rows to a Parquet file.
 
     Classification logic (same as ``annotate_demux_type_from_bi_tag``):
 
@@ -3539,9 +3539,12 @@ def derive_bm_from_bi_to_sidecar(
             counts[bm_value] += 1
 
             if bc_value not in (None, "unclassified"):
-                rows.append({"read_name": read.query_name, "BC": bc_value, "BM": bm_value})
+                bi_value = read.get_tag("bi") if read.has_tag("bi") else None
+                rows.append(
+                    {"read_name": read.query_name, "BC": bc_value, "BM": bm_value, "bi": bi_value}
+                )
 
-    bc_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["read_name", "BC", "BM"])
+    bc_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["read_name", "BC", "BM", "bi"])
     bc_df = bc_df.drop_duplicates(subset=["read_name"], keep="first")
     bc_df.to_parquet(output_sidecar_path, index=False)
 
