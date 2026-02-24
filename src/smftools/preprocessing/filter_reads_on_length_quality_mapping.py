@@ -19,6 +19,7 @@ def filter_reads_on_length_quality_mapping(
     mapped_length: Optional[Sequence[float]] = None,  # e.g. [min, max] on mapped_length
     length_ratio: Optional[Sequence[float]] = None,  # e.g. [min, max] on read_length_to_reference_length_ratio
     mapped_length_ratio: Optional[Sequence[float]] = None,  # e.g. [min, max] on mapped_length_to_reference_length_ratio
+    mapped_to_read_ratio: Optional[Sequence[float]] = None,  # e.g. [min, max] on mapped_length_to_read_length_ratio
     read_quality: Optional[Sequence[float]] = None,  # e.g. [min, max]  (commonly min only)
     mapping_quality: Optional[Sequence[float]] = None,  # e.g. [min, max]  (commonly min only)
     uns_flag: str = "filter_reads_on_length_quality_mapping_performed",
@@ -34,6 +35,7 @@ def filter_reads_on_length_quality_mapping(
         mapped_length: Mapped length range as ``[min, max]`` on ``obs['mapped_length']``.
         length_ratio: Read-length-to-reference-length ratio range as ``[min, max]``.
         mapped_length_ratio: Mapped-length-to-reference-length ratio range as ``[min, max]``.
+        mapped_to_read_ratio: Mapped-length-to-read-length ratio range as ``[min, max]``.
         read_quality: Read quality range as ``[min, max]``.
         mapping_quality: Mapping quality range as ``[min, max]``.
         uns_flag: Flag in ``adata.uns`` indicating prior completion.
@@ -106,6 +108,7 @@ def filter_reads_on_length_quality_mapping(
     ml_min, ml_max = _coerce_range(mapped_length)
     lr_min, lr_max = _coerce_range(length_ratio)
     mlr_min, mlr_max = _coerce_range(mapped_length_ratio)
+    mtr_min, mtr_max = _coerce_range(mapped_to_read_ratio)
     rq_min, rq_max = _coerce_range(read_quality)
     mq_min, mq_max = _coerce_range(mapping_quality)
 
@@ -179,6 +182,25 @@ def filter_reads_on_length_quality_mapping(
             logger.info(
                 "Planned mapped_length_ratio filter: min=%s, max=%s", mlr_min, mlr_max
             )
+
+    # mapped-to-read length ratio filter
+    if (mtr_min is not None) or (mtr_max is not None):
+        if "mapped_length_to_read_length_ratio" not in adata_work.obs.columns:
+            logger.warning(
+                "'mapped_length_to_read_length_ratio' not found in adata.obs — skipping mapped_to_read_ratio filter."
+            )
+        else:
+            vals = pd.to_numeric(
+                adata_work.obs["mapped_length_to_read_length_ratio"], errors="coerce"
+            )
+            mask = pd.Series(True, index=adata_work.obs.index)
+            if mtr_min is not None:
+                mask &= vals >= mtr_min
+            if mtr_max is not None:
+                mask &= vals <= mtr_max
+            mask &= vals.notna()
+            combined_mask &= mask
+            logger.info("Planned mapped_to_read_ratio filter: min=%s, max=%s", mtr_min, mtr_max)
 
     # read quality filter (supporting optional range but typically min only)
     if (rq_min is not None) or (rq_max is not None):

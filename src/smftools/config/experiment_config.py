@@ -817,6 +817,9 @@ class ExperimentConfig:
     mapped_len_to_ref_ratio_filter_thresholds: Optional[Sequence[float]] = field(
         default_factory=lambda: [0.4, 1.5]
     )
+    mapped_len_to_read_len_ratio_filter_thresholds: Optional[Sequence[float]] = field(
+        default_factory=lambda: [None, None]
+    )
     read_quality_filter_thresholds: Optional[Sequence[float]] = field(
         default_factory=lambda: [15, None]
     )
@@ -1759,6 +1762,9 @@ class ExperimentConfig:
             ),
             mapped_len_to_ref_ratio_filter_thresholds=merged.get(
                 "mapped_len_to_ref_ratio_filter_thresholds", [0.3, None]
+            ),
+            mapped_len_to_read_len_ratio_filter_thresholds=merged.get(
+                "mapped_len_to_read_len_ratio_filter_thresholds", [None, None]
             ),
             read_quality_filter_thresholds=merged.get("read_quality_filter_thresholds", [15, None]),
             read_mapping_quality_filter_thresholds=merged.get(

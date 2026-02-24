@@ -152,6 +152,10 @@ read_len_to_ref_ratio_filter_thresholds:
 mapped_len_to_ref_ratio_filter_thresholds:
   - null
   - null
+# Mapped-length/read-length ratio filter on adata.obs['mapped_length_to_read_length_ratio']
+mapped_len_to_read_len_ratio_filter_thresholds:
+  - null
+  - null
 read_quality_filter_thresholds:
   - 10
   - null

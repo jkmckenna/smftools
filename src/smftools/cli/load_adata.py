@@ -693,27 +693,40 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         unclassified_bams = []
         bam_dir = None
         double_barcoded_path = None
-        # dorado's bi tag is only produced by `dorado demux`, which is
-        # skipped when skip_bam_split=True.  BM cannot be derived without bi,
-        # so no barcode sidecar is written here for the dorado backend.
+        # For dorado backend in non-split mode:
+        # - if BC+bi tags are present on the aligned BAM, derive BM and write sidecar
+        # - if bi is absent, keep BC-only sidecar behavior and warn that BM/demux_type is unavailable
         if demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
-            logger.warning(
-                "skip_bam_split=True with dorado backend: the bi tag is likely not present "
-                "because dorado demux was not run. BM tag and demux_type (single/double) "
-                "will not be derived. Consider using demux_backend='smftools' or "
-                "setting skip_bam_split=False to enable per-end barcode scoring."
-            )
-            # Build a BC-only sidecar from BC tags on the aligned BAM
-            # (these come from basecalling with --kit-name)
+            tag_info = _bam_has_barcode_info_tags(aligned_sorted_output)
             if barcode_sidecar is None:
                 barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
-                _, read_to_barcode = build_classified_read_set(
-                    bam_path=aligned_sorted_output,
+            if tag_info.get("has_bc") and tag_info.get("has_bi"):
+                derive_bm_from_bi_to_sidecar(
+                    aligned_sorted_output,
+                    barcode_sidecar,
+                    threshold=float(getattr(cfg, "dorado_bm_score_threshold", 0.65)),
+                    samtools_backend=cfg.samtools_backend,
                 )
+                register_sidecar(
+                    sidecar_manifest,
+                    "barcode",
+                    barcode_sidecar,
+                    metadata={"source": "dorado_skip_bam_split_bi_tags"},
+                )
+                logger.info(
+                    "Built barcode sidecar with BC/BM/bi from aligned BAM in non-split dorado mode: %s",
+                    barcode_sidecar,
+                )
+            else:
+                logger.warning(
+                    "skip_bam_split=True with dorado backend: bi tag not found on aligned BAM. "
+                    "BM tag and demux_type (single/double) will not be derived. "
+                    "Building BC-only sidecar. Consider demux_backend='smftools' or "
+                    "setting skip_bam_split=False to enable per-end barcode scoring."
+                )
+                _, read_to_barcode = build_classified_read_set(bam_path=aligned_sorted_output)
                 if read_to_barcode:
-                    bc_df = pd.DataFrame(
-                        [{"read_name": rn, "BC": bc} for rn, bc in read_to_barcode.items()]
-                    )
+                    bc_df = pd.DataFrame([{"read_name": rn, "BC": bc} for rn, bc in read_to_barcode.items()])
                 else:
                     bc_df = pd.DataFrame(columns=["read_name", "BC"])
                 bc_df.to_parquet(barcode_sidecar, index=False)
@@ -1198,13 +1211,13 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         logger.info("Loading barcode tags from Parquet sidecar: %s", barcode_sidecar)
         bc_df = pd.read_parquet(barcode_sidecar).set_index("read_name")
         bc_df = bc_df.reindex(raw_adata.obs_names)
-        for col in ["BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"]:
+        for col in ["BC", "BM", "bi", "B1", "B2", "B3", "B4", "B5", "B6"]:
             if col in bc_df.columns:
                 raw_adata.obs[col] = bc_df[col].values
         del bc_df
 
     # Expand dorado bi array tag into individual float score columns
-    if "bi" in bam_tag_names:
+    if "bi" in raw_adata.obs.columns or "bi" in bam_tag_names:
         expand_bi_tag_columns(raw_adata, bi_column="bi")
 
     # Derive demux_type from BM tag when using smftools or dorado single-pass backend

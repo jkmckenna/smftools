@@ -344,6 +344,7 @@ def preprocess_adata_core(
         mapped_length=cfg.mapped_len_filter_thresholds,
         length_ratio=cfg.read_len_to_ref_ratio_filter_thresholds,
         mapped_length_ratio=cfg.mapped_len_to_ref_ratio_filter_thresholds,
+        mapped_to_read_ratio=cfg.mapped_len_to_read_len_ratio_filter_thresholds,
         read_quality=cfg.read_quality_filter_thresholds,
         mapping_quality=cfg.read_mapping_quality_filter_thresholds,
         bypass=None,

@@ -16,6 +16,7 @@ def _make_adata() -> ad.AnnData:
             "mapped_length": [2600.0, 3000.0, 3100.0, 3050.0],
             "read_length_to_reference_length_ratio": [0.85, 0.95, 1.05, 1.10],
             "mapped_length_to_reference_length_ratio": [0.80, 0.92, 1.00, 1.08],
+            "mapped_length_to_read_length_ratio": [2600.0 / 2800.0, 1.0, 3100.0 / 3200.0, 3050.0 / 2900.0],
             "read_quality": [20.0, 20.0, 20.0, 20.0],
             "mapping_quality": [60.0, 60.0, 60.0, 60.0],
         },
@@ -49,3 +50,16 @@ def test_read_length_thresholds_target_read_length_column():
         mapping_quality=[None, None],
     )
     assert set(out.obs_names) == {"r0", "r3"}
+
+
+def test_mapped_to_read_ratio_thresholds_apply():
+    adata = _make_adata()
+    # mapped_length_to_read_length_ratio values are:
+    # r0=0.9286, r1=1.0, r2=0.96875, r3=1.0517
+    out = filter_reads_on_length_quality_mapping(
+        adata,
+        mapped_to_read_ratio=[0.95, 1.02],
+        read_quality=[None, None],
+        mapping_quality=[None, None],
+    )
+    assert set(out.obs_names) == {"r1", "r2"}
