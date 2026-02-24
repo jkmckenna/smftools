@@ -119,7 +119,7 @@ umi_kit: null  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yam
 umi_yaml: null  # Path to UMI YAML config file (when umi_kit: custom)
 
 skip_bam_split: False # Skip BAM splitting/demux step and load AnnData directly from the aligned/sorted BAM.
-skip_bam_qc: False # Skip samtools/pysam BAM QC generation and MultiQC report generation.
+skip_bam_qc: True # Skip samtools/pysam BAM QC generation and MultiQC report generation.
 
 # Anndata structure
 mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
