@@ -1002,7 +1002,10 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     # 5) Samtools QC metrics on split BAM files
     bam_qc_dir = bam_outputs_directory / "bam_qc"
-    if bam_qc_dir.is_dir():
+    skip_bam_qc = getattr(cfg, "skip_bam_qc", False)
+    if skip_bam_qc:
+        logger.info("skip_bam_qc=True: skipping BAM QC")
+    elif bam_qc_dir.is_dir():
         logger.debug(f"{bam_qc_dir} already exists. Using existing BAM QC calculations.")
     else:
         make_dirs([bam_qc_dir])
@@ -1274,7 +1277,9 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     # multiqc ###
     mqc_dir = bam_outputs_directory / "multiqc"
-    if mqc_dir.is_dir():
+    if skip_bam_qc:
+        logger.info("skip_bam_qc=True: skipping multiqc")
+    elif mqc_dir.is_dir():
         logger.info(f"{mqc_dir} already exists, skipping multiqc")
     else:
         logger.info("Running multiqc")

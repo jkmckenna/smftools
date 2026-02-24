@@ -713,6 +713,7 @@ class ExperimentConfig:
     batch_size: int = 4
     skip_unclassified: bool = True
     skip_bam_split: bool = False
+    skip_bam_qc: bool = False
     delete_batch_hdfs: bool = True
 
     # Sequencing modality and general experiment params
@@ -1294,6 +1295,7 @@ class ExperimentConfig:
             "make_bigwigs",
             "skip_unclassified",
             "skip_bam_split",
+            "skip_bam_qc",
             "delete_batch_hdfs",
         ):
             if bkey in merged:
@@ -1614,6 +1616,7 @@ class ExperimentConfig:
             batch_size=merged.get("batch_size", 4),
             skip_unclassified=merged.get("skip_unclassified", True),
             skip_bam_split=merged.get("skip_bam_split", False),
+            skip_bam_qc=merged.get("skip_bam_qc", False),
             delete_batch_hdfs=merged.get("delete_batch_hdfs", True),
             reference_column=merged.get("reference_column", REF_COL),
             sample_column=merged.get("sample_column", SAMPLE_COL),
