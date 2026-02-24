@@ -3539,7 +3539,12 @@ def derive_bm_from_bi_to_sidecar(
             counts[bm_value] += 1
 
             if bc_value not in (None, "unclassified"):
-                bi_value = read.get_tag("bi") if read.has_tag("bi") else None
+                bi_value = None
+                if read.has_tag("bi"):
+                    raw_bi_value = read.get_tag("bi")
+                    # pysam returns B-type tags as array.array('f'), which pyarrow
+                    # cannot serialize directly from object dtype.
+                    bi_value = [float(v) for v in raw_bi_value]
                 rows.append(
                     {"read_name": read.query_name, "BC": bc_value, "BM": bm_value, "bi": bi_value}
                 )
