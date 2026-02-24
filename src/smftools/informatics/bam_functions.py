@@ -2665,6 +2665,109 @@ def bam_qc(
             )
             read_names = set()
 
+        if not stats and not flagstats:
+            return barcode, results
+
+        # Python backend: materialize filtered BAM and run pysam stats/flagstat.
+        if have_pysam:
+            assert pysam_mod is not None
+            with tempfile.NamedTemporaryFile(
+                suffix=".bam",
+                prefix=f"{barcode}_",
+                dir=str(bam_qc_dir),
+                delete=False,
+            ) as fh:
+                tmp_bam = Path(fh.name)
+            try:
+                with (
+                    pysam_mod.AlignmentFile(str(bam), "rb") as in_bam,
+                    pysam_mod.AlignmentFile(str(tmp_bam), "wb", header=in_bam.header) as out_bam,
+                ):
+                    for read in in_bam.fetch(until_eof=True):
+                        if read.query_name in read_names:
+                            out_bam.write(read)
+
+                if stats:
+                    if not hasattr(pysam_mod, "stats"):
+                        raise RuntimeError("pysam.stats is unavailable in this pysam build.")
+                    out_stats.write_text(pysam_mod.stats(str(tmp_bam)))
+                    results.append((f"stats[{barcode}]", 0))
+                if flagstats:
+                    if not hasattr(pysam_mod, "flagstat"):
+                        raise RuntimeError("pysam.flagstat is unavailable in this pysam build.")
+                    out_flag.write_text(pysam_mod.flagstat(str(tmp_bam)))
+                    results.append((f"flagstat[{barcode}]", 0))
+                return barcode, results
+            finally:
+                if tmp_bam.exists():
+                    tmp_bam.unlink()
+
+        # CLI backend: stream filtered SAM directly into samtools stats/flagstat.
+        def _run_readname_filtered_sam_to_file(
+            bam: Path,
+            read_names: set[str],
+            tool_cmd: list[str],
+            out_path: Path,
+            tag: str,
+        ) -> int:
+            """Filter reads by name and stream SAM directly into a samtools tool.
+
+            This avoids creating temporary BAM files on disk in fallback mode.
+            """
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            tool_last_err: deque[str] = deque(maxlen=80)
+
+            # samtools-only fallback: stream SAM, filter by read_name, pipe to downstream tool.
+            view_last_err: deque[str] = deque(maxlen=80)
+            view_proc = subprocess.Popen(
+                ["samtools", "view", "-h", str(bam)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            with open(out_path, "w") as fh:
+                tool_proc = subprocess.Popen(
+                    tool_cmd, stdin=subprocess.PIPE, stdout=fh, stderr=subprocess.PIPE, text=True
+                )
+                assert view_proc.stdout is not None
+                assert tool_proc.stdin is not None
+                for line in view_proc.stdout:
+                    if line.startswith("@"):
+                        tool_proc.stdin.write(line)
+                        continue
+                    if not line.strip():
+                        continue
+                    qname = line.split("\t", 1)[0]
+                    if qname in read_names:
+                        tool_proc.stdin.write(line)
+                tool_proc.stdin.close()
+
+                assert tool_proc.stderr is not None
+                for line in tool_proc.stderr:
+                    line = line.rstrip()
+                    if line:
+                        tool_last_err.append(line)
+                        logger.debug("[%s][%s] %s", tag, bam.name, line)
+                tool_rc = tool_proc.wait()
+
+            assert view_proc.stderr is not None
+            for line in view_proc.stderr:
+                line = line.rstrip()
+                if line:
+                    view_last_err.append(line)
+                    logger.debug("[view:%s][%s] %s", tag, bam.name, line)
+            view_rc = view_proc.wait()
+            if view_rc != 0:
+                tail = "\n".join(view_last_err)
+                raise RuntimeError(
+                    f"samtools view failed while filtering barcode {barcode} "
+                    f"(exit {view_rc}). Stderr tail:\n{tail}"
+                )
+            if tool_rc != 0:
+                tail = "\n".join(tool_last_err)
+                raise RuntimeError(f"{tag} failed for {bam} (exit {tool_rc}). Stderr tail:\n{tail}")
+            return tool_rc
+
         # Fast path: samtools view -N when available.
         if _samtools_view_supports_name_filter():
             with tempfile.NamedTemporaryFile(
@@ -2698,88 +2801,26 @@ def bam_qc(
                 if readname_file.exists():
                     readname_file.unlink()
 
-        # Fallback path: create a temporary BAM and run samtools stats/flagstat on it.
-        # Prefer pysam when present, otherwise stream-filter SAM with samtools+python.
-        with tempfile.NamedTemporaryFile(
-            suffix=".bam",
-            prefix=f"{barcode}_",
-            dir=str(bam_qc_dir),
-            delete=False,
-        ) as fh:
-            tmp_bam = Path(fh.name)
-        try:
-            if have_pysam:
-                assert pysam_mod is not None
-                with (
-                    pysam_mod.AlignmentFile(str(bam), "rb") as in_bam,
-                    pysam_mod.AlignmentFile(str(tmp_bam), "wb", header=in_bam.header) as out_bam,
-                ):
-                    for read in in_bam.fetch(until_eof=True):
-                        if read.query_name in read_names:
-                            out_bam.write(read)
-            else:
-                # samtools-only fallback: stream SAM, filter rows by read_name, and pack to BAM.
-                view_proc = subprocess.Popen(
-                    ["samtools", "view", "-h", str(bam)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                pack_proc = subprocess.Popen(
-                    ["samtools", "view", "-b", "-o", str(tmp_bam), "-"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                assert view_proc.stdout is not None
-                assert pack_proc.stdin is not None
-                for line in view_proc.stdout:
-                    if line.startswith("@"):
-                        pack_proc.stdin.write(line)
-                        continue
-                    if not line.strip():
-                        continue
-                    qname = line.split("\t", 1)[0]
-                    if qname in read_names:
-                        pack_proc.stdin.write(line)
-
-                pack_proc.stdin.close()
-                view_rc = view_proc.wait()
-                pack_rc = pack_proc.wait()
-                if view_rc != 0:
-                    stderr = view_proc.stderr.read() if view_proc.stderr else ""
-                    raise RuntimeError(
-                        f"samtools view failed while filtering barcode {barcode} "
-                        f"(exit {view_rc}):\n{stderr}"
-                    )
-                if pack_rc != 0:
-                    stderr = pack_proc.stderr.read() if pack_proc.stderr else ""
-                    raise RuntimeError(
-                        f"samtools BAM packing failed for barcode {barcode} "
-                        f"(exit {pack_rc}):\n{stderr}"
-                    )
-
-            if stats:
-                rc = _run_samtools_to_file(
-                    ["samtools", "stats", str(tmp_bam)],
-                    out_stats,
-                    bam,
-                    f"samtools stats[{barcode}]",
-                )
-                results.append((f"stats[{barcode}]", rc))
-            if flagstats:
-                rc = _run_samtools_to_file(
-                    ["samtools", "flagstat", str(tmp_bam)],
-                    out_flag,
-                    bam,
-                    f"samtools flagstat[{barcode}]",
-                )
-                results.append((f"flagstat[{barcode}]", rc))
-            return barcode, results
-        finally:
-            if tmp_bam.exists():
-                tmp_bam.unlink()
+        # Fallback path: stream filtered SAM directly into samtools stats/flagstat.
+        if stats:
+            rc = _run_readname_filtered_sam_to_file(
+                bam,
+                read_names,
+                ["samtools", "stats", "-"],
+                out_stats,
+                f"samtools stats[{barcode}]",
+            )
+            results.append((f"stats[{barcode}]", rc))
+        if flagstats:
+            rc = _run_readname_filtered_sam_to_file(
+                bam,
+                read_names,
+                ["samtools", "flagstat", "-"],
+                out_flag,
+                f"samtools flagstat[{barcode}]",
+            )
+            results.append((f"flagstat[{barcode}]", rc))
+        return barcode, results
 
     def _run_one(bam: Path) -> tuple[Path, list[tuple[str, int]]]:
         """Run stats/flagstat/idxstats for a single BAM.
