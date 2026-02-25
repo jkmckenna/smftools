@@ -803,6 +803,9 @@ class ExperimentConfig:
     clustermap_demux_types_to_plot: List[str] = field(
         default_factory=lambda: ["single", "double", "already"]
     )
+    read_span_quality_clustermap_sort_method: str = "hierarchical"
+    read_span_quality_clustermap_pca_n_components: Optional[int] = 20
+    read_span_quality_clustermap_pca_sort_component: int = 0
 
     # Preprocessing - Read length and quality filter params
     read_coord_filter: Optional[Sequence[float]] = field(default_factory=lambda: [None, None])
@@ -1648,6 +1651,15 @@ class ExperimentConfig:
             reindexed_var_suffix=merged.get("reindexed_var_suffix", "reindexed"),
             clustermap_demux_types_to_plot=merged.get(
                 "clustermap_demux_types_to_plot", ["single", "double", "already"]
+            ),
+            read_span_quality_clustermap_sort_method=merged.get(
+                "read_span_quality_clustermap_sort_method", "hierarchical"
+            ),
+            read_span_quality_clustermap_pca_n_components=_parse_numeric(
+                merged.get("read_span_quality_clustermap_pca_n_components", 20), 20
+            ),
+            read_span_quality_clustermap_pca_sort_component=int(
+                _parse_numeric(merged.get("read_span_quality_clustermap_pca_sort_component", 0), 0)
             ),
             layer_for_clustermap_plotting=merged.get(
                 "layer_for_clustermap_plotting", "nan0_0minus1"

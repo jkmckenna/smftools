@@ -131,6 +131,9 @@ clustermap_demux_types_to_plot:
   - "single"
   - "double"
   - "already"
+read_span_quality_clustermap_sort_method: "hierarchical" # "pca" or "hierarchical"
+read_span_quality_clustermap_pca_n_components: 20
+read_span_quality_clustermap_pca_sort_component: 0 # zero-based component index, ascending
 
 ######## smftools preprocess params #########
 # Read length, quality, and mapping filtering params

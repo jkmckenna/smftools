@@ -25,6 +25,9 @@ def plot_read_span_quality_clustermaps(
     read_span_layer: str = "read_span_mask",
     quality_cmap: str = "viridis",
     read_span_color: str = "#2ca25f",
+    sort_method: str = "hierarchical",
+    pca_n_components: int | None = 20,
+    pca_sort_component: int = 0,
     max_nan_fraction: float | None = None,
     min_quality: float | None = None,
     min_length: int | None = None,
@@ -51,6 +54,10 @@ def plot_read_span_quality_clustermaps(
         read_span_layer: Layer name containing read-span masks.
         quality_cmap: Colormap for base-quality scores.
         read_span_color: Color for read-span mask (1-values); 0-values are white.
+        sort_method: Row ordering strategy ("pca" or "hierarchical").
+        pca_n_components: Number of PCA components to compute for ordering. If ``None``,
+            uses ``min(n_reads, n_positions)``.
+        pca_sort_component: Zero-based PCA component index to sort by (ascending).
         max_nan_fraction: Optional maximum fraction of NaNs allowed per position; positions
             above this threshold are excluded.
         min_quality: Optional minimum read quality filter.
@@ -94,6 +101,42 @@ def plot_read_span_quality_clustermaps(
         filled[nan_rows, nan_cols] = col_means[nan_cols]
         return filled
 
+    def _resolve_sort_method(method: str) -> str:
+        method = str(method).strip().lower()
+        if method in ("hierarchical", "hclust", "ward"):
+            return "hierarchical"
+        if method in ("pca", "pc"):
+            return "pca"
+        raise ValueError("sort_method must be 'pca' or 'hierarchical'.")
+
+    def _resolve_pca_components(n_reads: int, n_positions: int) -> int:
+        if pca_n_components is None:
+            return min(n_reads, n_positions)
+        try:
+            requested = int(pca_n_components)
+        except Exception as exc:
+            raise ValueError("pca_n_components must be an int or None.") from exc
+        if requested < 1:
+            raise ValueError("pca_n_components must be at least 1.")
+        return min(requested, n_reads, n_positions)
+
+    def _pca_sort_order(matrix: np.ndarray) -> np.ndarray:
+        n_reads, n_positions = matrix.shape
+        n_components = _resolve_pca_components(n_reads, n_positions)
+        if n_components < 1 or n_reads < 2:
+            return np.arange(n_reads)
+        centered = matrix - matrix.mean(axis=0, keepdims=True)
+        u, s, _vt = np.linalg.svd(centered, full_matrices=False)
+        scores = u[:, :n_components] * s[:n_components]
+        if pca_sort_component < 0:
+            raise ValueError("pca_sort_component must be >= 0.")
+        if pca_sort_component >= scores.shape[1]:
+            raise ValueError(
+                f"pca_sort_component={pca_sort_component} exceeds available components "
+                f"({scores.shape[1]})."
+            )
+        return np.argsort(scores[:, pca_sort_component], kind="mergesort")
+
     if quality_layer not in adata.layers:
         raise KeyError(f"Layer '{quality_layer}' not found in adata.layers")
     if read_span_layer not in adata.layers:
@@ -102,6 +145,8 @@ def plot_read_span_quality_clustermaps(
         raise ValueError("max_nan_fraction must be between 0 and 1.")
     if position_axis_tick_target < 1:
         raise ValueError("position_axis_tick_target must be at least 1.")
+
+    resolved_sort_method = _resolve_sort_method(sort_method)
 
     results: List[Dict[str, Any]] = []
     save_path = Path(save_path) if save_path is not None else None
@@ -177,7 +222,7 @@ def plot_read_span_quality_clustermaps(
 
             if quality_matrix.shape[0] < 2:
                 logger.debug(
-                    "Skipping hierarchical clustering for %s/%s: only %d read(s).",
+                    "Skipping row ordering for %s/%s: only %d read(s).",
                     sample,
                     ref,
                     quality_matrix.shape[0],
@@ -185,8 +230,11 @@ def plot_read_span_quality_clustermaps(
                 order = np.arange(quality_matrix.shape[0])
             else:
                 quality_filled = _fill_nan_with_col_means(quality_matrix)
-                linkage = sch.linkage(quality_filled, method="ward")
-                order = sch.leaves_list(linkage)
+                if resolved_sort_method == "hierarchical":
+                    linkage = sch.linkage(quality_filled, method="ward")
+                    order = sch.leaves_list(linkage)
+                else:
+                    order = _pca_sort_order(quality_filled)
 
             quality_matrix = quality_matrix[order]
             read_span_matrix = read_span_matrix[order]
