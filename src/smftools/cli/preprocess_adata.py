@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 
 def preprocess_adata(
     config_path: str,
-) -> Tuple[Optional[ad.AnnData], Optional[Path], Optional[ad.AnnData], Optional[Path]]:
+) -> Tuple[Optional[Path], Optional[Path]]:
     """
     CLI-facing wrapper for preprocessing.
 
@@ -34,12 +34,8 @@ def preprocess_adata(
 
     Returns
     -------
-    pp_adata : AnnData | None
-        Preprocessed AnnData (may be None if we skipped work).
     pp_adata_path : Path | None
         Path to preprocessed AnnData.
-    pp_dedup_adata : AnnData | None
-        Preprocessed, duplicate-removed AnnData.
     pp_dedup_adata_path : Path | None
         Path to preprocessed, duplicate-removed AnnData.
     """
@@ -77,9 +73,9 @@ def preprocess_adata(
             source_path = raw_path
         else:
             logger.error("Cannot redo preprocessing: no AnnData available at any stage.")
-            return (None, None, None, None)
+            return (None, None)
 
-        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+        return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
@@ -87,7 +83,6 @@ def preprocess_adata(
             source_adata_path=source_path,
             config_path=config_path,
         )
-        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
     # -----------------------------
     # Case B: redo duplicate detection only
@@ -108,9 +103,9 @@ def preprocess_adata(
                 "Cannot redo duplicate detection: no compatible AnnData available "
                 "(need at least raw or preprocessed)."
             )
-            return (None, None, None, None)
+            return (None, None)
 
-        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+        return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
@@ -118,7 +113,6 @@ def preprocess_adata(
             source_adata_path=source_path,
             config_path=config_path,
         )
-        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
     # -----------------------------
     # Case C: normal behavior (no explicit redo flags)
@@ -129,14 +123,14 @@ def preprocess_adata(
         logger.info(
             f"Skipping preprocessing. Preprocessed deduplicated AnnData found: {pp_dedup_path}"
         )
-        return (None, pp_path, None, pp_dedup_path)
+        return (pp_path, pp_dedup_path)
 
     # If pp exists but pp_dedup does not, load pp and run core
     if pp_exists:
         logger.info(f"Preprocessed AnnData found: {pp_path}")
         adata = _load(pp_path)
         source_path = pp_path
-        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+        return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
@@ -144,13 +138,12 @@ def preprocess_adata(
             source_adata_path=source_path,
             config_path=config_path,
         )
-        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
     # Otherwise, fall back to raw (if available)
     if raw_exists:
         adata = _load(raw_path)
         source_path = raw_path
-        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+        return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
@@ -158,10 +151,9 @@ def preprocess_adata(
             source_adata_path=source_path,
             config_path=config_path,
         )
-        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
     logger.error("No AnnData available at any stage for preprocessing.")
-    return (None, None, None, None)
+    return (None, None)
 
 
 def preprocess_adata_core(
@@ -171,7 +163,7 @@ def preprocess_adata_core(
     pp_dup_rem_adata_path: Path,
     source_adata_path: Optional[Path] = None,
     config_path: Optional[str] = None,
-) -> Tuple[ad.AnnData, Path, ad.AnnData, Path]:
+) -> Tuple[Optional[Path], Optional[Path]]:
     """
     Core preprocessing pipeline.
 
@@ -181,17 +173,12 @@ def preprocess_adata_core(
     - `pp_adata_path` and `pp_dup_rem_adata_path` are the target output paths for
       preprocessed and preprocessed+deduplicated AnnData.
 
-
     Returns
     -------
-    pp_adata : AnnData
-        Preprocessed AnnData (with QC filters, binarization, etc.).
     pp_adata_path : Path
-        Path where pp_adata was written.
-    pp_dedup_adata : AnnData
-        Preprocessed AnnData with duplicate reads removed (for non-direct SMF).
+        Path where the preprocessed AnnData was written.
     pp_dup_rem_adata_path : Path
-        Path where pp_dedup_adata was written.
+        Path where the deduplicated AnnData was written.
     """
     from datetime import datetime
     from pathlib import Path
@@ -618,6 +605,33 @@ def preprocess_adata_core(
         adata_unique = adata
     ########################################################################################################################
 
+    ############################################### Save preprocessed adata with duplicate detection ###############################################
+    if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
+        logger.info("Saving preprocessed adata.")
+        record_smftools_metadata(
+            adata,
+            step_name="preprocess",
+            cfg=cfg,
+            config_path=config_path,
+            input_paths=[source_adata_path] if source_adata_path else None,
+            output_path=pp_adata_path,
+        )
+        write_gz_h5ad(adata, pp_adata_path)
+
+    if not pp_dup_rem_adata_path.exists() or cfg.force_redo_preprocessing:
+        logger.info("Saving preprocessed adata with duplicates removed.")
+        record_smftools_metadata(
+            adata_unique,
+            step_name="preprocess",
+            cfg=cfg,
+            config_path=config_path,
+            input_paths=[pp_adata_path],
+            output_path=pp_dup_rem_adata_path,
+        )
+        write_gz_h5ad(adata_unique, pp_dup_rem_adata_path)
+
+    ########################################################################################################################
+
     ############################################### Plot read span mask + base quality clustermaps ###############################################
     quality_layer = None
     if BASE_QUALITY_SCORES in adata.layers:
@@ -678,31 +692,6 @@ def preprocess_adata_core(
                     max_nan_fraction=0.5,
                 )
 
-    ############################################### Save preprocessed adata with duplicate detection ###############################################
-    if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
-        logger.info("Saving preprocessed adata.")
-        record_smftools_metadata(
-            adata,
-            step_name="preprocess",
-            cfg=cfg,
-            config_path=config_path,
-            input_paths=[source_adata_path] if source_adata_path else None,
-            output_path=pp_adata_path,
-        )
-        write_gz_h5ad(adata, pp_adata_path)
-
-    if not pp_dup_rem_adata_path.exists() or cfg.force_redo_preprocessing:
-        logger.info("Saving preprocessed adata with duplicates removed.")
-        record_smftools_metadata(
-            adata_unique,
-            step_name="preprocess",
-            cfg=cfg,
-            config_path=config_path,
-            input_paths=[pp_adata_path],
-            output_path=pp_dup_rem_adata_path,
-        )
-        write_gz_h5ad(adata_unique, pp_dup_rem_adata_path)
-
     ########################################################################################################################
 
-    return (adata, pp_adata_path, adata_unique, pp_dup_rem_adata_path)
+    return (pp_adata_path, pp_dup_rem_adata_path)
