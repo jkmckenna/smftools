@@ -387,24 +387,16 @@ def flag_duplicate_reads(
                                         fwd_hamming_to_next[sorted_idx[i]] = d
                 return cluster_pairs_local
 
-            # run forward & reverse windows
+            # run forward & reverse windows on all reads.
+            # Previously, reads already matched in the forward pass were excluded
+            # from the reverse pass, which caused reads to be missed when a keeper
+            # only overlaps a further duplicate under the reverse lexicographic
+            # ordering.  Running both passes on the full tensor is correct; the
+            # UnionFind deduplicates any pairs that are re-discovered.
             pairs_fwd = cluster_pass(X_tensor, reverse=False, record_distances=True)
-            involved_in_fwd = set([p for pair in pairs_fwd for p in pair])
-            mask_for_rev = np.ones(N, dtype=bool)
-            if len(involved_in_fwd) > 0:
-                for idx in involved_in_fwd:
-                    mask_for_rev[idx] = False
-            rev_idx_map = np.nonzero(mask_for_rev)[0].tolist()
-            if len(rev_idx_map) > 0:
-                reduced_tensor = X_tensor[rev_idx_map]
-                pairs_rev_local = cluster_pass(reduced_tensor, reverse=True, record_distances=True)
-                remapped_rev_pairs = [
-                    (int(rev_idx_map[i]), int(rev_idx_map[j])) for (i, j) in pairs_rev_local
-                ]
-            else:
-                remapped_rev_pairs = []
+            pairs_rev = cluster_pass(X_tensor, reverse=True, record_distances=True)
 
-            all_pairs = pairs_fwd + remapped_rev_pairs
+            all_pairs = pairs_fwd + pairs_rev
 
             # initial union-find based on lex pairs
             uf = UnionFind(N)
@@ -750,7 +742,14 @@ def flag_duplicate_reads(
         "sequence__lex_is_keeper" if "sequence__lex_is_keeper" in adata_full.obs.columns else None
     )
 
-    for cid, sub in adata_full.obs.groupby("sequence__merged_cluster_id", dropna=False):
+    # Group by (cluster_id, sample, ref) so that per-group cluster IDs starting
+    # from 0 don't collide across different (sample, ref) combinations after concat.
+    _gb_cols = [
+        c
+        for c in ["sequence__merged_cluster_id", sample_col, obs_reference_col]
+        if c in adata_full.obs.columns
+    ]
+    for gkey, sub in adata_full.obs.groupby(_gb_cols, dropna=False, observed=True):
         members_names = sub.index.to_list()
         members_pos = [name_to_pos[n] for n in members_names]
 
@@ -770,7 +769,7 @@ def flag_duplicate_reads(
             lex_keeper_mask=lex_mask_members,
         )
         keeper_name = obs_index_full[keeper_pos]
-        keeper_idx_by_cluster[cid] = keeper_name
+        keeper_idx_by_cluster[gkey] = keeper_name
 
     # enforce: keepers are not duplicates
     is_dup_series = adata_full.obs["is_duplicate"].astype(bool)
