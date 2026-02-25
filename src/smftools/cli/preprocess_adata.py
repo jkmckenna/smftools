@@ -592,6 +592,7 @@ def preprocess_adata_core(
             hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors,
             demux_types=cfg.duplicate_detection_demux_types_to_use,
             demux_col=DEMUX_TYPE,
+            n_jobs=cfg.threads or 1,
         )
 
         # Use the flagged duplicate read groups and perform complexity analysis

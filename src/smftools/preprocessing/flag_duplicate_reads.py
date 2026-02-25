@@ -94,6 +94,449 @@ def merge_uns_preserve(orig_uns: dict, new_uns: dict, prefer: str = "orig") -> d
     return out
 
 
+class UnionFind:
+    """Disjoint-set union-find helper for clustering indices."""
+
+    def __init__(self, size):
+        """Initialize parent pointers for the union-find."""
+        self.parent = list(range(size))
+
+    def find(self, x):
+        """Find the root for a member with path compression."""
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, x, y):
+        """Union the sets that contain x and y."""
+        rx = self.find(x)
+        ry = self.find(y)
+        if rx != ry:
+            self.parent[ry] = rx
+
+
+def _choose_keeper_with_demux_preference(
+    members_idx: List[int],
+    obs_df: "pd.DataFrame",
+    obs_index_list: List[Any],
+    *,
+    demux_col: str = "demux_type",
+    preferred_types: Optional[Sequence[str]] = None,
+    keep_best_metric: Optional[str] = None,
+    keep_best_higher: bool = True,
+    lex_keeper_mask: Optional["np.ndarray"] = None,
+) -> int:
+    """Select the best keeper from a cluster, preferring demux-typed reads.
+
+    Prefer members whose ``demux_col`` ∈ ``preferred_types``.
+    Among candidates, pick by ``keep_best_metric`` (higher/lower).
+    If metric missing/NaN, prefer lex keeper (via mask) among candidates.
+    Fallback: first candidate.
+
+    Args:
+        members_idx: Local integer indices of cluster members.
+        obs_df: DataFrame slice containing at least ``demux_col`` and
+            ``keep_best_metric`` columns (indexed by obs labels).
+        obs_index_list: Mapping from local integer index → obs label.
+        demux_col: Column name for demux type.
+        preferred_types: Demux type values that are preferred.
+        keep_best_metric: Obs column used to rank candidates.
+        keep_best_higher: Whether higher values are preferred.
+        lex_keeper_mask: Boolean mask (aligned to ``members_idx``) marking
+            reads that were lex-keepers in the prior pass.
+
+    Returns:
+        int: The chosen member index (element from ``members_idx``).
+    """
+    # 1) demux-preferred candidates
+    if preferred_types and (demux_col in obs_df.columns):
+        preferred = set(map(str, preferred_types))
+        demux_series = obs_df[demux_col].astype("string")
+        names = [obs_index_list[m] for m in members_idx]
+        is_pref = demux_series.loc[names].isin(preferred).to_numpy()
+        candidates = [members_idx[i] for i, ok in enumerate(is_pref) if ok]
+    else:
+        candidates = []
+
+    if not candidates:
+        candidates = list(members_idx)
+
+    # 2) metric-based within candidates
+    if keep_best_metric and (keep_best_metric in obs_df.columns):
+        cand_names = [obs_index_list[m] for m in candidates]
+        try:
+            vals = pd.to_numeric(
+                obs_df.loc[cand_names, keep_best_metric],
+                errors="coerce",
+            ).to_numpy(dtype=float)
+        except Exception:
+            vals = np.array([np.nan] * len(candidates), dtype=float)
+
+        if not np.all(np.isnan(vals)):
+            if keep_best_higher:
+                vals = np.where(np.isnan(vals), -np.inf, vals)
+                return candidates[int(np.nanargmax(vals))]
+            else:
+                vals = np.where(np.isnan(vals), np.inf, vals)
+                return candidates[int(np.nanargmin(vals))]
+
+    # 3) metric unhelpful — prefer lex keeper if provided
+    if lex_keeper_mask is not None:
+        for i, midx in enumerate(members_idx):
+            if (midx in candidates) and bool(lex_keeper_mask[i]):
+                return midx
+
+    # 4) fallback
+    return candidates[0]
+
+
+def _resolve_n_jobs(n_jobs: int) -> int:
+    """Resolve n_jobs to a concrete worker count.
+
+    Args:
+        n_jobs: Requested number of workers. Negative values use all CPUs.
+
+    Returns:
+        int: Concrete worker count (always >= 1).
+    """
+    if n_jobs < 0:
+        return os.cpu_count() or 1
+    return max(1, n_jobs)
+
+
+def _process_group(args: dict) -> Optional[dict]:
+    """Process a single (sample, ref) group for duplicate detection.
+
+    Receives plain numpy/pandas/scalar data (pickling-safe) and returns
+    plain arrays.  Designed to run in a ``ProcessPoolExecutor`` worker.
+
+    Args:
+        args: Dict with keys ``X_sub``, ``obs_df``, ``obs_index``,
+            ``sample``, ``ref``, and all algorithm hyperparameters.
+
+    Returns:
+        dict with per-read result arrays and a histogram dict, or
+        ``None`` if the group has fewer than 2 reads.
+    """
+    import warnings
+
+    X_sub = args["X_sub"]
+    obs_df = args["obs_df"]
+    obs_index = args["obs_index"]
+    sample = args["sample"]
+    ref = args["ref"]
+    distance_threshold = args["distance_threshold"]
+    window_size = args["window_size"]
+    min_overlap_positions = args["min_overlap_positions"]
+    keep_best_metric = args["keep_best_metric"]
+    keep_best_higher = args["keep_best_higher"]
+    do_hierarchical = args["do_hierarchical"]
+    hierarchical_linkage = args["hierarchical_linkage"]
+    hierarchical_metric = args["hierarchical_metric"]
+    hierarchical_window = args["hierarchical_window"]
+    do_pca = args["do_pca"]
+    pca_n_components = args["pca_n_components"]
+    random_state = args["random_state"]
+    demux_col = args["demux_col"]
+    demux_types = args["demux_types"]
+
+    N = X_sub.shape[0]
+    if N < 2:
+        return None
+
+    # convert to torch for vector ops
+    X_tensor = torch.from_numpy(X_sub.copy())
+
+    # per-read nearest distances
+    fwd_hamming_to_next = np.full((N,), np.nan, dtype=float)
+    rev_hamming_to_prev = np.full((N,), np.nan, dtype=float)
+    hierarchical_min_pair = np.full((N,), np.nan, dtype=float)
+
+    local_hamming_dists: list = []
+    hierarchical_found_dists: list = []
+
+    def cluster_pass(X_tensor_local, reverse=False, window=int(window_size), record_distances=False):
+        """Perform a lexicographic windowed clustering pass."""
+        _X_np = X_tensor_local.numpy()
+        _sortable = np.full(_X_np.shape, -1, dtype=np.int8)
+        _valid = ~np.isnan(_X_np)
+        _sortable[_valid] = _X_np[_valid].astype(np.int8)
+        _u8 = np.ascontiguousarray((_sortable + np.int8(1)).astype(np.uint8))
+        _dt = np.dtype(",".join(["u1"] * _u8.shape[1]))
+        _sorted_idx_np = np.argsort(_u8.view(_dt).ravel(), kind="stable")
+        if reverse:
+            _sorted_idx_np = _sorted_idx_np[::-1]
+        sorted_idx = _sorted_idx_np.tolist()
+        sorted_X = X_tensor_local[sorted_idx]
+        cluster_pairs_local = []
+
+        for i in range(len(sorted_X)):
+            row_i = sorted_X[i]
+            j_range_local = range(i + 1, min(i + 1 + window, len(sorted_X)))
+            if len(j_range_local) == 0:
+                continue
+            block_rows = sorted_X[list(j_range_local)]
+            row_i_exp = row_i.unsqueeze(0)  # (1, D)
+            valid_mask = (~torch.isnan(row_i_exp)) & (~torch.isnan(block_rows))  # (M, D)
+            valid_counts = valid_mask.sum(dim=1).float()
+            enough_overlap = valid_counts >= float(min_overlap_positions)
+            if enough_overlap.any():
+                diffs = (row_i_exp != block_rows) & valid_mask
+                hamming_counts = diffs.sum(dim=1).float()
+                hamming_dists = torch.where(
+                    valid_counts > 0,
+                    hamming_counts / valid_counts,
+                    torch.tensor(float("nan")),
+                )
+                hamming_np = hamming_dists.cpu().numpy().tolist()
+                local_hamming_dists.extend(
+                    [float(x) for x in hamming_np if (not np.isnan(x))]
+                )
+                matches = (hamming_dists < distance_threshold) & (enough_overlap)
+                for offset_local, m in enumerate(matches):
+                    if m:
+                        i_global = sorted_idx[i]
+                        j_global = sorted_idx[i + 1 + offset_local]
+                        cluster_pairs_local.append((i_global, j_global))
+                if record_distances:
+                    next_local_idx = i + 1
+                    if next_local_idx < len(sorted_X):
+                        next_global = sorted_idx[next_local_idx]
+                        vm_pair = (~torch.isnan(row_i)) & (
+                            ~torch.isnan(sorted_X[next_local_idx])
+                        )
+                        vc = vm_pair.sum().item()
+                        if vc >= min_overlap_positions:
+                            d = float(
+                                (
+                                    (row_i[vm_pair] != sorted_X[next_local_idx][vm_pair])
+                                    .sum()
+                                    .item()
+                                )
+                                / vc
+                            )
+                            if reverse:
+                                rev_hamming_to_prev[next_global] = d
+                            else:
+                                fwd_hamming_to_next[sorted_idx[i]] = d
+        return cluster_pairs_local
+
+    # run forward & reverse windows on all reads
+    pairs_fwd = cluster_pass(X_tensor, reverse=False, record_distances=True)
+    pairs_rev = cluster_pass(X_tensor, reverse=True, record_distances=True)
+    all_pairs = pairs_fwd + pairs_rev
+
+    # initial union-find based on lex pairs
+    uf = UnionFind(N)
+    for i, j in all_pairs:
+        uf.union(i, j)
+
+    # initial merged clusters (lex-level)
+    merged_cluster = np.zeros((N,), dtype=int)
+    for i in range(N):
+        merged_cluster[i] = uf.find(i)
+    unique_initial = np.unique(merged_cluster)
+    id_map = {old: new for new, old in enumerate(sorted(unique_initial.tolist()))}
+    merged_cluster_mapped = np.array([id_map[int(x)] for x in merged_cluster], dtype=int)
+
+    # cluster sizes and choose lex-keeper per lex-cluster (demux-aware)
+    cluster_sizes = np.zeros_like(merged_cluster_mapped)
+    cluster_counts = []
+    unique_clusters = np.unique(merged_cluster_mapped)
+    keeper_for_cluster = {}
+
+    for cid in unique_clusters:
+        members = np.where(merged_cluster_mapped == cid)[0].tolist()
+        csize = int(len(members))
+        cluster_counts.append(csize)
+        cluster_sizes[members] = csize
+
+        keeper_for_cluster[cid] = _choose_keeper_with_demux_preference(
+            members,
+            obs_df,
+            obs_index,
+            demux_col=demux_col,
+            preferred_types=demux_types,
+            keep_best_metric=keep_best_metric,
+            keep_best_higher=keep_best_higher,
+            lex_keeper_mask=None,
+        )
+
+    # expose lex keeper info (record only)
+    lex_is_keeper = np.zeros((N,), dtype=bool)
+    lex_is_duplicate = np.zeros((N,), dtype=bool)
+    for cid in unique_clusters:
+        members = np.where(merged_cluster_mapped == cid)[0].tolist()
+        keeper_idx = keeper_for_cluster[cid]
+        lex_is_keeper[keeper_idx] = True
+        for m in members:
+            if m != keeper_idx:
+                lex_is_duplicate[m] = True
+
+    # record lex min pair (min of fwd/rev neighbor) for each read
+    min_pair = np.full((N,), np.nan, dtype=float)
+    for i in range(N):
+        a = fwd_hamming_to_next[i]
+        b = rev_hamming_to_prev[i]
+        vals_pair = []
+        if not np.isnan(a):
+            vals_pair.append(a)
+        if not np.isnan(b):
+            vals_pair.append(b)
+        if vals_pair:
+            min_pair[i] = float(np.nanmin(vals_pair))
+
+    # --- hierarchical on representatives only ---
+    hierarchical_pairs = []  # (rep_global_i, rep_global_j, d)
+    rep_global_indices = sorted(set(keeper_for_cluster.values()))
+    if do_hierarchical and len(rep_global_indices) > 1:
+        if not SKLEARN_AVAILABLE:
+            warnings.warn("sklearn not available; skipping PCA/hierarchical pass.")
+        elif not SCIPY_AVAILABLE:
+            warnings.warn("scipy not available; skipping hierarchical pass.")
+        else:
+            reps_X = X_sub[rep_global_indices, :]
+            reps_arr = np.array(reps_X, dtype=float, copy=True)
+            col_means = np.nanmean(reps_arr, axis=0)
+            col_means = np.where(np.isnan(col_means), 0.0, col_means)
+            inds = np.where(np.isnan(reps_arr))
+            if inds[0].size > 0:
+                reps_arr[inds] = np.take(col_means, inds[1])
+
+            if do_pca and PCA is not None:
+                n_comp = min(int(pca_n_components), reps_arr.shape[1], reps_arr.shape[0])
+                if n_comp <= 0:
+                    reps_for_clustering = reps_arr
+                else:
+                    pca = PCA(
+                        n_components=n_comp,
+                        random_state=int(random_state),
+                        svd_solver="auto",
+                        copy=True,
+                    )
+                    reps_for_clustering = pca.fit_transform(reps_arr)
+            else:
+                reps_for_clustering = reps_arr
+
+            try:
+                pdist_vec = pdist(reps_for_clustering, metric=hierarchical_metric)
+                Z = sch.linkage(pdist_vec, method=hierarchical_linkage)
+                leaves = sch.leaves_list(Z)
+            except Exception as e:
+                warnings.warn(
+                    f"hierarchical pass failed: {e}; skipping hierarchical stage."
+                )
+                leaves = np.arange(len(rep_global_indices), dtype=int)
+
+            order_global_reps = [rep_global_indices[i] for i in leaves]
+            n_reps = len(order_global_reps)
+            for pos in range(n_reps):
+                i_global = order_global_reps[pos]
+                for jpos in range(pos + 1, min(pos + 1 + hierarchical_window, n_reps)):
+                    j_global = order_global_reps[jpos]
+                    vi = X_sub[int(i_global), :]
+                    vj = X_sub[int(j_global), :]
+                    valid_mask_h = (~np.isnan(vi)) & (~np.isnan(vj))
+                    overlap = int(valid_mask_h.sum())
+                    if overlap < min_overlap_positions:
+                        continue
+                    diffs = (vi[valid_mask_h] != vj[valid_mask_h]).sum()
+                    d = float(diffs) / float(overlap)
+                    if d < distance_threshold:
+                        uf.union(int(i_global), int(j_global))
+                        hierarchical_pairs.append((int(i_global), int(j_global), float(d)))
+                        hierarchical_found_dists.append(float(d))
+
+    # after hierarchical unions, reconstruct merged clusters for all reads
+    merged_cluster_after = np.zeros((N,), dtype=int)
+    for i in range(N):
+        merged_cluster_after[i] = uf.find(i)
+    unique_final = np.unique(merged_cluster_after)
+    id_map_final = {old: new for new, old in enumerate(sorted(unique_final.tolist()))}
+    merged_cluster_mapped_final = np.array(
+        [id_map_final[int(x)] for x in merged_cluster_after], dtype=int
+    )
+
+    # compute final cluster members and choose final keeper per final cluster
+    cluster_sizes_final = np.zeros_like(merged_cluster_mapped_final)
+    final_keeper_for_cluster = {}
+    cluster_members_map = {}
+    lex_mask_full = lex_is_keeper
+
+    for cid in np.unique(merged_cluster_mapped_final):
+        members = np.where(merged_cluster_mapped_final == cid)[0].tolist()
+        cluster_members_map[cid] = members
+        cluster_sizes_final[members] = len(members)
+
+        lex_mask_members = np.array([bool(lex_mask_full[m]) for m in members], dtype=bool)
+
+        keeper = _choose_keeper_with_demux_preference(
+            members,
+            obs_df,
+            obs_index,
+            demux_col=demux_col,
+            preferred_types=demux_types,
+            keep_best_metric=keep_best_metric,
+            keep_best_higher=keep_best_higher,
+            lex_keeper_mask=lex_mask_members,
+        )
+        final_keeper_for_cluster[cid] = keeper
+
+    # update sequence__is_duplicate based on final clusters
+    sequence_is_duplicate = np.zeros((N,), dtype=bool)
+    for cid in np.unique(merged_cluster_mapped_final):
+        keeper = final_keeper_for_cluster[cid]
+        members = cluster_members_map[cid]
+        if len(members) > 1:
+            for m in members:
+                if m != keeper:
+                    sequence_is_duplicate[m] = True
+
+    # propagate hierarchical distances into hierarchical_min_pair for all cluster members
+    for i_g, j_g, d in hierarchical_pairs:
+        c_i = merged_cluster_mapped_final[int(i_g)]
+        c_j = merged_cluster_mapped_final[int(j_g)]
+        members_i = cluster_members_map.get(c_i, [int(i_g)])
+        members_j = cluster_members_map.get(c_j, [int(j_g)])
+        for mi in members_i:
+            if np.isnan(hierarchical_min_pair[mi]) or (d < hierarchical_min_pair[mi]):
+                hierarchical_min_pair[mi] = d
+        for mj in members_j:
+            if np.isnan(hierarchical_min_pair[mj]) or (d < hierarchical_min_pair[mj]):
+                hierarchical_min_pair[mj] = d
+
+    # combine min pairs
+    combined_min = min_pair.copy()
+    for i in range(N):
+        hval = hierarchical_min_pair[i]
+        if not np.isnan(hval):
+            if np.isnan(combined_min[i]) or (hval < combined_min[i]):
+                combined_min[i] = hval
+
+    return {
+        "obs_index": obs_index,
+        "sequence__is_duplicate": sequence_is_duplicate,
+        "sequence__merged_cluster_id": merged_cluster_mapped_final,
+        "sequence__cluster_size": cluster_sizes_final,
+        "fwd_hamming_to_next": fwd_hamming_to_next,
+        "rev_hamming_to_prev": rev_hamming_to_prev,
+        "sequence__hier_hamming_to_pair": hierarchical_min_pair,
+        "sequence__min_hamming_to_pair": combined_min,
+        "sequence__lex_is_keeper": lex_is_keeper,
+        "sequence__lex_is_duplicate": lex_is_duplicate,
+        "histogram": {
+            "sample": sample,
+            "reference": ref,
+            "distances": local_hamming_dists,
+            "cluster_counts": [
+                int(x) for x in np.unique(cluster_sizes_final[cluster_sizes_final > 0])
+            ],
+            "hierarchical_pairs": hierarchical_found_dists,
+        },
+    }
+
+
 def flag_duplicate_reads(
     adata: ad.AnnData,
     var_filters_sets: Sequence[dict[str, Any]],
@@ -120,6 +563,7 @@ def flag_duplicate_reads(
     random_state: int = 0,
     demux_types: Optional[Sequence[str]] = None,
     demux_col: str = "demux_type",
+    n_jobs: int = 1,
 ) -> ad.AnnData:
     """Flag duplicate reads with demux-aware keeper preference.
 
@@ -155,6 +599,8 @@ def flag_duplicate_reads(
         random_state: Random seed.
         demux_types: Preferred demux types for keeper selection.
         demux_col: Obs column containing demux type labels.
+        n_jobs: Number of parallel workers for (sample, ref) groups.
+            1 (default) runs serially. Negative values use all available CPUs.
 
     Returns:
         anndata.AnnData: AnnData object with duplicate flags stored in ``adata.obs``.
@@ -165,66 +611,6 @@ def flag_duplicate_reads(
     import anndata as ad
     import numpy as np
     import pandas as pd
-
-    # -------- helper: demux-aware keeper selection --------
-    def _choose_keeper_with_demux_preference(
-        members_idx: List[int],
-        adata_subset: ad.AnnData,
-        obs_index_list: List[Any],
-        *,
-        demux_col: str = "demux_type",
-        preferred_types: Optional[Sequence[str]] = None,
-        keep_best_metric: Optional[str] = None,
-        keep_best_higher: bool = True,
-        lex_keeper_mask: Optional[np.ndarray] = None,  # aligned to members order
-    ) -> int:
-        """
-        Prefer members whose demux_col ∈ preferred_types.
-        Among candidates, pick by keep_best_metric (higher/lower).
-        If metric missing/NaN, prefer lex keeper (via mask) among candidates.
-        Fallback: first candidate.
-        Returns the chosen *member index* (int from members_idx).
-        """
-        # 1) demux-preferred candidates
-        if preferred_types and (demux_col in adata_subset.obs.columns):
-            preferred = set(map(str, preferred_types))
-            demux_series = adata_subset.obs[demux_col].astype("string")
-            names = [obs_index_list[m] for m in members_idx]
-            is_pref = demux_series.loc[names].isin(preferred).to_numpy()
-            candidates = [members_idx[i] for i, ok in enumerate(is_pref) if ok]
-        else:
-            candidates = []
-
-        if not candidates:
-            candidates = list(members_idx)
-
-        # 2) metric-based within candidates
-        if keep_best_metric and (keep_best_metric in adata_subset.obs.columns):
-            cand_names = [obs_index_list[m] for m in candidates]
-            try:
-                vals = pd.to_numeric(
-                    adata_subset.obs.loc[cand_names, keep_best_metric],
-                    errors="coerce",
-                ).to_numpy(dtype=float)
-            except Exception:
-                vals = np.array([np.nan] * len(candidates), dtype=float)
-
-            if not np.all(np.isnan(vals)):
-                if keep_best_higher:
-                    vals = np.where(np.isnan(vals), -np.inf, vals)
-                    return candidates[int(np.nanargmax(vals))]
-                else:
-                    vals = np.where(np.isnan(vals), np.inf, vals)
-                    return candidates[int(np.nanargmin(vals))]
-
-        # 3) metric unhelpful — prefer lex keeper if provided
-        if lex_keeper_mask is not None:
-            for i, midx in enumerate(members_idx):
-                if (midx in candidates) and bool(lex_keeper_mask[i]):
-                    return midx
-
-        # 4) fallback
-        return candidates[0]
 
     # -------- early exits --------
     already = bool(adata.uns.get(uns_flag, False))
@@ -240,33 +626,8 @@ def flag_duplicate_reads(
     if isinstance(metric_keys, str):
         metric_keys = [metric_keys]
 
-    # local UnionFind
-    class UnionFind:
-        """Disjoint-set union-find helper for clustering indices."""
-
-        def __init__(self, size):
-            """Initialize parent pointers for the union-find."""
-            self.parent = list(range(size))
-
-        def find(self, x):
-            """Find the root for a member with path compression."""
-            while self.parent[x] != x:
-                self.parent[x] = self.parent[self.parent[x]]
-                x = self.parent[x]
-            return x
-
-        def union(self, x, y):
-            """Union the sets that contain x and y."""
-            rx = self.find(x)
-            ry = self.find(y)
-            if rx != ry:
-                self.parent[ry] = rx
-
-    histograms = []
-
     # Pre-allocate per-read annotation columns directly on adata.obs.
-    # Results are written in-place after each (sample, ref) group, so
-    # adata_processed_list + ad.concat (the ~2× RAM spike) are no longer needed.
+    # Results are written in-place after Phase C, so no AnnData concat is needed.
     for _col in (
         "fwd_hamming_to_next",
         "rev_hamming_to_prev",
@@ -282,21 +643,20 @@ def flag_duplicate_reads(
     samples = adata.obs[sample_col].astype("category").cat.categories
     references = adata.obs[obs_reference_col].astype("category").cat.categories
 
+    # -------- Phase A: build args per (sample, ref) group --------
+    group_args = []
     for sample in samples:
         for ref in references:
-            logger.info("Processing sample=%s ref=%s", sample, ref)
+            logger.info("Building args for sample=%s ref=%s", sample, ref)
             sample_mask = adata.obs[sample_col] == sample
             ref_mask = adata.obs[obs_reference_col] == ref
             subset_mask = sample_mask & ref_mask
-            adata_subset = adata[subset_mask].copy()
-
-            if adata_subset.n_obs < 2:
+            n_obs = int(subset_mask.sum())
+            if n_obs < 2:
                 logger.info("  Skipping %s_%s (too few reads)", sample, ref)
                 continue
 
-            N = adata_subset.shape[0]
-
-            # Build mask of columns (vars) to use
+            # Build column indices (depends only on ref + adata.var)
             combined_mask = np.zeros(len(adata.var), dtype=bool)
             for var_set in var_filters_sets:
                 if any(str(ref) in str(v) for v in var_set):
@@ -314,336 +674,77 @@ def flag_duplicate_reads(
                 ref,
             )
 
-            # Extract data matrix (dense numpy) for the subset
-            X = adata_subset.X
+            # Extract X without a full AnnData copy
+            adata_subset_view = adata[subset_mask]
+            X = adata_subset_view.X
             if not isinstance(X, np.ndarray):
                 try:
                     X = X.toarray()
                 except Exception:
                     X = np.asarray(X)
-            X_sub = X[:, col_indices].astype(float)  # keep NaNs
+            X_sub = X[:, col_indices].astype(float)
 
-            # convert to torch for some vector ops
-            X_tensor = torch.from_numpy(X_sub.copy())
+            # Extract only the obs columns needed for keeper selection
+            needed_cols = []
+            if demux_col in adata.obs.columns:
+                needed_cols.append(demux_col)
+            if keep_best_metric and keep_best_metric in adata.obs.columns:
+                needed_cols.append(keep_best_metric)
+            obs_idx_labels = adata_subset_view.obs.index
+            obs_df = adata.obs.loc[obs_idx_labels, needed_cols].copy()
 
-            # per-read nearest distances recorded
-            fwd_hamming_to_next = np.full((N,), np.nan, dtype=float)
-            rev_hamming_to_prev = np.full((N,), np.nan, dtype=float)
-            hierarchical_min_pair = np.full((N,), np.nan, dtype=float)
+            group_args.append({
+                "X_sub": X_sub,
+                "obs_df": obs_df,
+                "obs_index": list(obs_idx_labels),
+                "sample": sample,
+                "ref": ref,
+                "distance_threshold": distance_threshold,
+                "window_size": window_size,
+                "min_overlap_positions": min_overlap_positions,
+                "keep_best_metric": keep_best_metric,
+                "keep_best_higher": keep_best_higher,
+                "do_hierarchical": do_hierarchical,
+                "hierarchical_linkage": hierarchical_linkage,
+                "hierarchical_metric": hierarchical_metric,
+                "hierarchical_window": hierarchical_window,
+                "do_pca": do_pca,
+                "pca_n_components": pca_n_components,
+                "pca_center": pca_center,
+                "random_state": random_state,
+                "demux_col": demux_col,
+                "demux_types": list(demux_types) if demux_types is not None else None,
+            })
 
-            # legacy local lexographic pairwise hamming distances (for histogram)
-            local_hamming_dists = []
-            # hierarchical discovered dists (for histogram)
-            hierarchical_found_dists = []
+    if not group_args:
+        return adata.copy(), adata.copy()
 
-            # Lexicographic windowed pass function
-            def cluster_pass(
-                X_tensor_local, reverse=False, window=int(window_size), record_distances=False
-            ):
-                """Perform a lexicographic windowed clustering pass."""
-                N_local = X_tensor_local.shape[0]
-                # Replace Python-loop tuple materialisation with a numpy structured-array
-                # argsort.  Values are ternary {NaN→-1, 0, 1} encoded as uint8 {0,1,2}
-                # so byte-wise struct comparison preserves lex order while short-circuiting
-                # at the first differing column — same semantics as Python tuple sort but
-                # entirely in C.  Benchmark: ~8× faster than the tuple approach for N=3000,
-                # P=500 (SMF-realistic near-duplicate data).
-                _X_np = X_tensor_local.numpy()
-                _sortable = np.full(_X_np.shape, -1, dtype=np.int8)
-                _valid = ~np.isnan(_X_np)
-                _sortable[_valid] = _X_np[_valid].astype(np.int8)
-                _u8 = np.ascontiguousarray((_sortable + np.int8(1)).astype(np.uint8))
-                _dt = np.dtype(",".join(["u1"] * _u8.shape[1]))
-                _sorted_idx_np = np.argsort(_u8.view(_dt).ravel(), kind="stable")
-                if reverse:
-                    _sorted_idx_np = _sorted_idx_np[::-1]
-                sorted_idx = _sorted_idx_np.tolist()
-                sorted_X = X_tensor_local[sorted_idx]
-                cluster_pairs_local = []
+    # -------- Phase B: dispatch (serial or parallel) --------
+    n_workers = min(_resolve_n_jobs(n_jobs), len(group_args))
+    if n_workers <= 1:
+        results = [_process_group(a) for a in group_args]
+    else:
+        from concurrent.futures import ProcessPoolExecutor
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            results = list(executor.map(_process_group, group_args))
 
-                for i in range(len(sorted_X)):
-                    row_i = sorted_X[i]
-                    j_range_local = range(i + 1, min(i + 1 + window, len(sorted_X)))
-                    if len(j_range_local) == 0:
-                        continue
-                    block_rows = sorted_X[list(j_range_local)]
-                    row_i_exp = row_i.unsqueeze(0)  # (1, D)
-                    valid_mask = (~torch.isnan(row_i_exp)) & (~torch.isnan(block_rows))  # (M, D)
-                    valid_counts = valid_mask.sum(dim=1).float()
-                    enough_overlap = valid_counts >= float(min_overlap_positions)
-                    if enough_overlap.any():
-                        diffs = (row_i_exp != block_rows) & valid_mask
-                        hamming_counts = diffs.sum(dim=1).float()
-                        hamming_dists = torch.where(
-                            valid_counts > 0,
-                            hamming_counts / valid_counts,
-                            torch.tensor(float("nan")),
-                        )
-                        # record distances (legacy list of all local comparisons)
-                        hamming_np = hamming_dists.cpu().numpy().tolist()
-                        local_hamming_dists.extend(
-                            [float(x) for x in hamming_np if (not np.isnan(x))]
-                        )
-                        matches = (hamming_dists < distance_threshold) & (enough_overlap)
-                        for offset_local, m in enumerate(matches):
-                            if m:
-                                i_global = sorted_idx[i]
-                                j_global = sorted_idx[i + 1 + offset_local]
-                                cluster_pairs_local.append((i_global, j_global))
-                        if record_distances:
-                            # record next neighbor distance for the item (global index)
-                            next_local_idx = i + 1
-                            if next_local_idx < len(sorted_X):
-                                next_global = sorted_idx[next_local_idx]
-                                vm_pair = (~torch.isnan(row_i)) & (
-                                    ~torch.isnan(sorted_X[next_local_idx])
-                                )
-                                vc = vm_pair.sum().item()
-                                if vc >= min_overlap_positions:
-                                    d = float(
-                                        (
-                                            (row_i[vm_pair] != sorted_X[next_local_idx][vm_pair])
-                                            .sum()
-                                            .item()
-                                        )
-                                        / vc
-                                    )
-                                    if reverse:
-                                        rev_hamming_to_prev[next_global] = d
-                                    else:
-                                        fwd_hamming_to_next[sorted_idx[i]] = d
-                return cluster_pairs_local
+    # -------- Phase C: collect — serial write-back to adata.obs --------
+    histograms = []
+    for result in results:
+        if result is None:
+            continue
+        _idx = result["obs_index"]
+        adata.obs.loc[_idx, "sequence__is_duplicate"] = result["sequence__is_duplicate"]
+        adata.obs.loc[_idx, "sequence__merged_cluster_id"] = result["sequence__merged_cluster_id"]
+        adata.obs.loc[_idx, "sequence__cluster_size"] = result["sequence__cluster_size"]
+        adata.obs.loc[_idx, "fwd_hamming_to_next"] = result["fwd_hamming_to_next"]
+        adata.obs.loc[_idx, "rev_hamming_to_prev"] = result["rev_hamming_to_prev"]
+        adata.obs.loc[_idx, "sequence__hier_hamming_to_pair"] = result["sequence__hier_hamming_to_pair"]
+        adata.obs.loc[_idx, "sequence__min_hamming_to_pair"] = result["sequence__min_hamming_to_pair"]
+        adata.obs.loc[_idx, "sequence__lex_is_keeper"] = result["sequence__lex_is_keeper"]
+        adata.obs.loc[_idx, "sequence__lex_is_duplicate"] = result["sequence__lex_is_duplicate"]
+        histograms.append(result["histogram"])
 
-            # run forward & reverse windows on all reads.
-            # Previously, reads already matched in the forward pass were excluded
-            # from the reverse pass, which caused reads to be missed when a keeper
-            # only overlaps a further duplicate under the reverse lexicographic
-            # ordering.  Running both passes on the full tensor is correct; the
-            # UnionFind deduplicates any pairs that are re-discovered.
-            pairs_fwd = cluster_pass(X_tensor, reverse=False, record_distances=True)
-            pairs_rev = cluster_pass(X_tensor, reverse=True, record_distances=True)
-
-            all_pairs = pairs_fwd + pairs_rev
-
-            # initial union-find based on lex pairs
-            uf = UnionFind(N)
-            for i, j in all_pairs:
-                uf.union(i, j)
-
-            # initial merged clusters (lex-level)
-            merged_cluster = np.zeros((N,), dtype=int)
-            for i in range(N):
-                merged_cluster[i] = uf.find(i)
-            unique_initial = np.unique(merged_cluster)
-            id_map = {old: new for new, old in enumerate(sorted(unique_initial.tolist()))}
-            merged_cluster_mapped = np.array([id_map[int(x)] for x in merged_cluster], dtype=int)
-
-            # cluster sizes and choose lex-keeper per lex-cluster (demux-aware)
-            cluster_sizes = np.zeros_like(merged_cluster_mapped)
-            cluster_counts = []
-            unique_clusters = np.unique(merged_cluster_mapped)
-            keeper_for_cluster = {}
-
-            obs_index = list(adata_subset.obs.index)
-            for cid in unique_clusters:
-                members = np.where(merged_cluster_mapped == cid)[0].tolist()
-                csize = int(len(members))
-                cluster_counts.append(csize)
-                cluster_sizes[members] = csize
-
-                keeper_for_cluster[cid] = _choose_keeper_with_demux_preference(
-                    members,
-                    adata_subset,
-                    obs_index,
-                    demux_col=demux_col,
-                    preferred_types=demux_types,
-                    keep_best_metric=keep_best_metric,
-                    keep_best_higher=keep_best_higher,
-                    lex_keeper_mask=None,  # no lex preference yet
-                )
-
-            # expose lex keeper info (record only)
-            lex_is_keeper = np.zeros((N,), dtype=bool)
-            lex_is_duplicate = np.zeros((N,), dtype=bool)
-            for cid in unique_clusters:
-                members = np.where(merged_cluster_mapped == cid)[0].tolist()
-                keeper_idx = keeper_for_cluster[cid]
-                lex_is_keeper[keeper_idx] = True
-                for m in members:
-                    if m != keeper_idx:
-                        lex_is_duplicate[m] = True
-
-            # record lex min pair (min of fwd/rev neighbor) for each read
-            min_pair = np.full((N,), np.nan, dtype=float)
-            for i in range(N):
-                a = fwd_hamming_to_next[i]
-                b = rev_hamming_to_prev[i]
-                vals = []
-                if not np.isnan(a):
-                    vals.append(a)
-                if not np.isnan(b):
-                    vals.append(b)
-                if vals:
-                    min_pair[i] = float(np.nanmin(vals))
-
-            # --- hierarchical on representatives only ---
-            hierarchical_pairs = []  # (rep_global_i, rep_global_j, d)
-            rep_global_indices = sorted(set(keeper_for_cluster.values()))
-            if do_hierarchical and len(rep_global_indices) > 1:
-                if not SKLEARN_AVAILABLE:
-                    warnings.warn("sklearn not available; skipping PCA/hierarchical pass.")
-                elif not SCIPY_AVAILABLE:
-                    warnings.warn("scipy not available; skipping hierarchical pass.")
-                else:
-                    # build reps array and impute for PCA
-                    reps_X = X_sub[rep_global_indices, :]
-                    reps_arr = np.array(reps_X, dtype=float, copy=True)
-                    col_means = np.nanmean(reps_arr, axis=0)
-                    col_means = np.where(np.isnan(col_means), 0.0, col_means)
-                    inds = np.where(np.isnan(reps_arr))
-                    if inds[0].size > 0:
-                        reps_arr[inds] = np.take(col_means, inds[1])
-
-                    # PCA if requested
-                    if do_pca and PCA is not None:
-                        n_comp = min(int(pca_n_components), reps_arr.shape[1], reps_arr.shape[0])
-                        if n_comp <= 0:
-                            reps_for_clustering = reps_arr
-                        else:
-                            pca = PCA(
-                                n_components=n_comp,
-                                random_state=int(random_state),
-                                svd_solver="auto",
-                                copy=True,
-                            )
-                            reps_for_clustering = pca.fit_transform(reps_arr)
-                    else:
-                        reps_for_clustering = reps_arr
-
-                    # linkage & leaves (ordering)
-                    try:
-                        pdist_vec = pdist(reps_for_clustering, metric=hierarchical_metric)
-                        Z = sch.linkage(pdist_vec, method=hierarchical_linkage)
-                        leaves = sch.leaves_list(Z)
-                    except Exception as e:
-                        warnings.warn(
-                            f"hierarchical pass failed: {e}; skipping hierarchical stage."
-                        )
-                        leaves = np.arange(len(rep_global_indices), dtype=int)
-
-                    # windowed hamming comparisons across ordered reps and union
-                    order_global_reps = [rep_global_indices[i] for i in leaves]
-                    n_reps = len(order_global_reps)
-                    for pos in range(n_reps):
-                        i_global = order_global_reps[pos]
-                        for jpos in range(pos + 1, min(pos + 1 + hierarchical_window, n_reps)):
-                            j_global = order_global_reps[jpos]
-                            vi = X_sub[int(i_global), :]
-                            vj = X_sub[int(j_global), :]
-                            valid_mask = (~np.isnan(vi)) & (~np.isnan(vj))
-                            overlap = int(valid_mask.sum())
-                            if overlap < min_overlap_positions:
-                                continue
-                            diffs = (vi[valid_mask] != vj[valid_mask]).sum()
-                            d = float(diffs) / float(overlap)
-                            if d < distance_threshold:
-                                uf.union(int(i_global), int(j_global))
-                                hierarchical_pairs.append((int(i_global), int(j_global), float(d)))
-                                hierarchical_found_dists.append(float(d))
-
-            # after hierarchical unions, reconstruct merged clusters for all reads
-            merged_cluster_after = np.zeros((N,), dtype=int)
-            for i in range(N):
-                merged_cluster_after[i] = uf.find(i)
-            unique_final = np.unique(merged_cluster_after)
-            id_map_final = {old: new for new, old in enumerate(sorted(unique_final.tolist()))}
-            merged_cluster_mapped_final = np.array(
-                [id_map_final[int(x)] for x in merged_cluster_after], dtype=int
-            )
-
-            # compute final cluster members and choose final keeper per final cluster (demux-aware)
-            cluster_sizes_final = np.zeros_like(merged_cluster_mapped_final)
-            final_keeper_for_cluster = {}
-            cluster_members_map = {}
-
-            obs_index = list(adata_subset.obs.index)
-            lex_mask_full = lex_is_keeper  # use lex keeper as optional tiebreaker
-
-            for cid in np.unique(merged_cluster_mapped_final):
-                members = np.where(merged_cluster_mapped_final == cid)[0].tolist()
-                cluster_members_map[cid] = members
-                cluster_sizes_final[members] = len(members)
-
-                lex_mask_members = np.array([bool(lex_mask_full[m]) for m in members], dtype=bool)
-
-                keeper = _choose_keeper_with_demux_preference(
-                    members,
-                    adata_subset,
-                    obs_index,
-                    demux_col=demux_col,
-                    preferred_types=demux_types,
-                    keep_best_metric=keep_best_metric,
-                    keep_best_higher=keep_best_higher,
-                    lex_keeper_mask=lex_mask_members,
-                )
-                final_keeper_for_cluster[cid] = keeper
-
-            # update sequence__is_duplicate based on final clusters
-            sequence_is_duplicate = np.zeros((N,), dtype=bool)
-            for cid in np.unique(merged_cluster_mapped_final):
-                keeper = final_keeper_for_cluster[cid]
-                members = cluster_members_map[cid]
-                if len(members) > 1:
-                    for m in members:
-                        if m != keeper:
-                            sequence_is_duplicate[m] = True
-
-            # propagate hierarchical distances into hierarchical_min_pair for all cluster members
-            for i_g, j_g, d in hierarchical_pairs:
-                c_i = merged_cluster_mapped_final[int(i_g)]
-                c_j = merged_cluster_mapped_final[int(j_g)]
-                members_i = cluster_members_map.get(c_i, [int(i_g)])
-                members_j = cluster_members_map.get(c_j, [int(j_g)])
-                for mi in members_i:
-                    if np.isnan(hierarchical_min_pair[mi]) or (d < hierarchical_min_pair[mi]):
-                        hierarchical_min_pair[mi] = d
-                for mj in members_j:
-                    if np.isnan(hierarchical_min_pair[mj]) or (d < hierarchical_min_pair[mj]):
-                        hierarchical_min_pair[mj] = d
-
-            # combine min pairs
-            combined_min = min_pair.copy()
-            for i in range(N):
-                hval = hierarchical_min_pair[i]
-                if not np.isnan(hval):
-                    if np.isnan(combined_min[i]) or (hval < combined_min[i]):
-                        combined_min[i] = hval
-
-            # write columns back into adata.obs in-place; adata_subset is discarded
-            _idx = adata_subset.obs.index
-            adata.obs.loc[_idx, "sequence__is_duplicate"] = sequence_is_duplicate
-            adata.obs.loc[_idx, "sequence__merged_cluster_id"] = merged_cluster_mapped_final
-            adata.obs.loc[_idx, "sequence__cluster_size"] = cluster_sizes_final
-            adata.obs.loc[_idx, "fwd_hamming_to_next"] = fwd_hamming_to_next
-            adata.obs.loc[_idx, "rev_hamming_to_prev"] = rev_hamming_to_prev
-            adata.obs.loc[_idx, "sequence__hier_hamming_to_pair"] = hierarchical_min_pair
-            adata.obs.loc[_idx, "sequence__min_hamming_to_pair"] = combined_min
-            adata.obs.loc[_idx, "sequence__lex_is_keeper"] = lex_is_keeper
-            adata.obs.loc[_idx, "sequence__lex_is_duplicate"] = lex_is_duplicate
-
-            histograms.append(
-                {
-                    "sample": sample,
-                    "reference": ref,
-                    "distances": local_hamming_dists,
-                    "cluster_counts": [
-                        int(x) for x in np.unique(cluster_sizes_final[cluster_sizes_final > 0])
-                    ],
-                    "hierarchical_pairs": hierarchical_found_dists,
-                }
-            )
-
-    # adata.obs was annotated in-place — no concat needed.
     # Reads from skipped groups (n_obs < 2) retain their pre-allocated defaults:
     # is_duplicate=False, merged_cluster_id=-1, so they correctly survive into adata_unique.
     if not histograms:
@@ -754,7 +855,7 @@ def flag_duplicate_reads(
 
         keeper_pos = _choose_keeper_with_demux_preference(
             members_pos,
-            adata_full,
+            adata_full.obs,
             obs_index_full,
             demux_col=demux_col,
             preferred_types=demux_types,

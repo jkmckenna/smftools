@@ -285,3 +285,83 @@ class TestReversePassAnnotations:
 
         assert not obs.loc["read_0", "is_duplicate"], "R_A (quality=0.9) should be the keeper."
         assert obs.loc["read_1", "is_duplicate"], "R_D (quality=0.3) should be a duplicate."
+
+
+# ---------------------------------------------------------------------------
+# Parallel equivalence — n_jobs > 1 must give identical results to n_jobs = 1
+# ---------------------------------------------------------------------------
+
+
+class TestParallelEquivalence:
+    """Verify that n_jobs=2 produces identical results to n_jobs=1.
+
+    Uses a 3-group AnnData (3 samples × 1 ref) so that the parallel executor
+    has multiple independent units of work to dispatch.
+    """
+
+    N_POS = 20
+    THRESHOLD = 0.07
+    REF = "refA"
+
+    def _build(self):
+        """Build a 3-group AnnData with one near-duplicate pair per group."""
+        rows = []
+        samples = []
+        refs = []
+        quality = []
+        for i, sample_name in enumerate(["sampleA", "sampleB", "sampleC"]):
+            base_val = float(i % 2)
+            keeper = [base_val] * self.N_POS
+            dup = keeper[:]
+            dup[-1] = 1.0 - base_val  # flip last position
+            rows.append(keeper)
+            rows.append(dup)
+            samples += [sample_name, sample_name]
+            refs += [self.REF, self.REF]
+            quality += [0.9, 0.3]
+
+        X = np.array(rows)
+        return _make_adata(X, samples, refs, quality, ref_name=self.REF)
+
+    def _run(self, adata, n_jobs):
+        return flag_duplicate_reads(
+            adata,
+            var_filters_sets=_var_filters(self.REF),
+            distance_threshold=self.THRESHOLD,
+            obs_reference_col=REF_COL,
+            sample_col=SAMPLE_COL,
+            keep_best_metric=QUALITY_COL,
+            keep_best_higher=True,
+            window_size=50,
+            min_overlap_positions=5,
+            do_hierarchical=False,
+            output_directory=None,
+            n_jobs=n_jobs,
+        )
+
+    def test_parallel_matches_serial(self):
+        """n_jobs=2 must produce the same per-read annotations as n_jobs=1."""
+        adata1 = self._build()
+        adata2 = self._build()
+        _, adata_full_1 = self._run(adata1, n_jobs=1)
+        _, adata_full_2 = self._run(adata2, n_jobs=2)
+
+        obs1 = adata_full_1.obs.sort_index()
+        obs2 = adata_full_2.obs.sort_index()
+
+        dup_cols = [
+            "sequence__is_duplicate",
+            "sequence__merged_cluster_id",
+            "sequence__cluster_size",
+            "sequence__lex_is_keeper",
+            "sequence__lex_is_duplicate",
+            "is_duplicate",
+        ]
+        for col in dup_cols:
+            if col in obs1.columns:
+                pd.testing.assert_series_equal(
+                    obs1[col].reset_index(drop=True),
+                    obs2[col].reset_index(drop=True),
+                    check_names=False,
+                    obj=f"column '{col}'",
+                )
