@@ -528,9 +528,12 @@ def plot_positionwise_matrix_grid(
         plt.close(fig)
 
     if parallel:
-        Parallel(n_jobs=max_threads)(
-            delayed(plot_one_grid)(outer_label) for outer_label in parsed["outer"].unique()
-        )
+        from joblib import parallel_config
+
+        with parallel_config(backend="loky", inner_max_num_threads=1):
+            Parallel(n_jobs=max_threads)(
+                delayed(plot_one_grid)(outer_label) for outer_label in parsed["outer"].unique()
+            )
     else:
         for outer_label in parsed["outer"].unique():
             plot_one_grid(outer_label)

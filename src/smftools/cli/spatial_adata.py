@@ -279,6 +279,7 @@ def spatial_adata_core(
                     sort_by=cfg.spatial_clustermap_sortby,
                     deaminase=deaminase,
                     index_col_suffix=reindex_suffix,
+                    n_jobs=cfg.threads or 1,
                 )
 
     # ============================================================
@@ -320,6 +321,7 @@ def spatial_adata_core(
             sort_by=cfg.spatial_clustermap_sortby,
             deaminase=deaminase,
             index_col_suffix=reindex_suffix,
+            n_jobs=cfg.threads or 1,
         )
 
     # ============================================================
@@ -376,9 +378,12 @@ def spatial_adata_core(
                         cnts = np.zeros(cfg.autocorr_max_lag + 1, dtype=np.int32)
                     return ac, cnts
 
-                res = Parallel(n_jobs=getattr(cfg, "n_jobs", -1))(
-                    delayed(_worker)(X[i]) for i in range(X.shape[0])
-                )
+                from joblib import parallel_config
+
+                with parallel_config(backend="loky", inner_max_num_threads=1):
+                    res = Parallel(n_jobs=cfg.threads or 1)(
+                        delayed(_worker)(X[i]) for i in range(X.shape[0])
+                    )
                 for ac, cnts in res:
                     rows.append(ac)
                     counts.append(cnts)
@@ -516,7 +521,7 @@ def spatial_adata_core(
                 "pad_factor": getattr(cfg, "rolling_pad_factor", 4),
                 "min_count_for_mean": getattr(cfg, "rolling_min_count_for_mean", 10),
                 "max_harmonics": getattr(cfg, "rolling_max_harmonics", 6),
-                "n_jobs": getattr(cfg, "rolling_n_jobs", 4),
+                "n_jobs": cfg.threads or 1,
             }
 
             write_plots = getattr(cfg, "rolling_write_plots", True)

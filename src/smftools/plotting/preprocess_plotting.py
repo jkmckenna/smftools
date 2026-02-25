@@ -17,12 +17,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _resolve_n_jobs(n_jobs: int) -> int:
-    import os
-
-    if n_jobs < 0:
-        return os.cpu_count() or 1
-    return max(1, n_jobs)
+from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
 
 
 def _fill_nan_with_col_means(matrix: np.ndarray) -> np.ndarray:
@@ -415,5 +410,11 @@ def plot_read_span_quality_clustermaps(
 
     from concurrent.futures import ProcessPoolExecutor
 
-    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+    from smftools.parallel_utils import configure_worker_threads
+
+    with ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=configure_worker_threads,
+        initargs=(1,),
+    ) as executor:
         return list(executor.map(_plot_one_group, _iter_group_args()))

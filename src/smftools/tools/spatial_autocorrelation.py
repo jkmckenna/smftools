@@ -680,7 +680,12 @@ def rolling_autocorr_metrics(
 
     # choose mapping (parallel if available)
     if _have_joblib and (n_jobs is not None) and (n_jobs != 1):
-        results = Parallel(n_jobs=n_jobs)(delayed(_process_window)(ws) for ws in window_starts)
+        from joblib import parallel_config
+
+        with parallel_config(backend="loky", inner_max_num_threads=1):
+            results = Parallel(n_jobs=n_jobs)(
+                delayed(_process_window)(ws) for ws in window_starts
+            )
     else:
         results = [_process_window(ws) for ws in window_starts]
 

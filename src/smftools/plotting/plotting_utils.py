@@ -6,9 +6,6 @@ import numpy as np
 import pandas as pd
 
 from smftools.logging_utils import get_logger
-from smftools.optional_imports import require
-
-sns = require("seaborn", extra="plotting", purpose="plot styling")
 
 logger = get_logger(__name__)
 
@@ -122,6 +119,34 @@ def _layer_to_numpy(
     return np.where(np.isnan(arr), col_mean, arr)
 
 
+def _layer_to_numpy_np(
+    arr: np.ndarray,
+    sites: np.ndarray | None = None,
+    *,
+    fill_nan_strategy: str = "value",
+    fill_nan_value: float = -1,
+) -> np.ndarray:
+    """Numpy-only equivalent of ``_layer_to_numpy`` for use in worker processes.
+
+    Operates directly on a pre-extracted numpy array rather than an AnnData object,
+    so it is safe to call in ``ProcessPoolExecutor`` workers.
+    """
+    if sites is not None:
+        arr = arr[:, sites]
+    arr = np.array(arr, copy=True).astype(float)
+
+    if fill_nan_strategy == "none":
+        return arr
+    if fill_nan_strategy not in {"value", "col_mean"}:
+        raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
+    if fill_nan_strategy == "value":
+        return np.where(np.isnan(arr), fill_nan_value, arr)
+    col_mean = np.nanmean(arr, axis=0)
+    if np.any(np.isnan(col_mean)):
+        col_mean = np.where(np.isnan(col_mean), fill_nan_value, col_mean)
+    return np.where(np.isnan(arr), col_mean, arr)
+
+
 def _infer_zero_is_valid(layer_name: str | None, matrix: np.ndarray) -> bool:
     """Infer whether zeros should count as valid (unmethylated) values."""
     if layer_name and "nan0_0minus1" in layer_name:
@@ -217,6 +242,9 @@ def make_row_colors(meta: pd.DataFrame) -> pd.DataFrame:
     Convert metadata columns to RGB colors without invoking pandas Categorical.map
     (MultiIndex-safe, category-safe).
     """
+    from smftools.optional_imports import require
+
+    sns = require("seaborn", extra="plotting", purpose="plot styling")
     row_colors = pd.DataFrame(index=meta.index)
 
     for col in meta.columns:

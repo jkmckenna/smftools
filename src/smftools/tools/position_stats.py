@@ -434,7 +434,9 @@ def compute_positionwise_statistics(
                         pbar_rows = tqdm(
                             total=n_pos, desc=f"{m}: rows ({sample}__{ref})", leave=False
                         )
-                        with tqdm_joblib(pbar_rows):
+                        with tqdm_joblib(pbar_rows), joblib.parallel_config(
+                            backend="loky", inner_max_num_threads=1
+                        ):
                             results = joblib.Parallel(n_jobs=n_jobs, prefer="processes")(tasks)
                         pbar_rows.close()
                         for i, row in results:

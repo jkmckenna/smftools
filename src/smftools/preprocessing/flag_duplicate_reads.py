@@ -191,18 +191,7 @@ def _choose_keeper_with_demux_preference(
     return candidates[0]
 
 
-def _resolve_n_jobs(n_jobs: int) -> int:
-    """Resolve n_jobs to a concrete worker count.
-
-    Args:
-        n_jobs: Requested number of workers. Negative values use all CPUs.
-
-    Returns:
-        int: Concrete worker count (always >= 1).
-    """
-    if n_jobs < 0:
-        return os.cpu_count() or 1
-    return max(1, n_jobs)
+from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
 
 
 def _process_group(args: dict) -> Optional[dict]:
@@ -725,7 +714,14 @@ def flag_duplicate_reads(
         results = [_process_group(a) for a in group_args]
     else:
         from concurrent.futures import ProcessPoolExecutor
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+
+        from smftools.parallel_utils import configure_worker_threads
+
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            initializer=configure_worker_threads,
+            initargs=(1,),
+        ) as executor:
             results = list(executor.map(_process_group, group_args))
 
     # -------- Phase C: collect — serial write-back to adata.obs --------
