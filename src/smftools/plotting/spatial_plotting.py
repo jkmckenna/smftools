@@ -874,6 +874,7 @@ def combined_raw_clustermap(
     fill_nan_strategy: str = "value",
     fill_nan_value: float = -1,
     n_jobs: int = 1,
+    omit_chimeric_reads: bool = False,
 ):
     """
     Plot stacked heatmaps + per-position mean barplots for C, GpC, CpG, and optional A.
@@ -932,7 +933,8 @@ def combined_raw_clustermap(
                 lrr_mask = _mask_or_true("mapped_length_to_reference_length_ratio", (lambda s: s >= float(min_mapped_length_to_reference_length_ratio)) if min_mapped_length_to_reference_length_ratio is not None else (lambda s: pd.Series(True, index=s.index)))
                 demux_mask = _mask_or_true("demux_type", (lambda s: s.astype("string").isin(list(demux_types))) if demux_types is not None else (lambda s: pd.Series(True, index=s.index)))
 
-                row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample) & qmask & lm_mask & lrr_mask & demux_mask
+                chimeric_mask = _mask_or_true("chimeric_variant_sites", lambda s: ~s.astype(bool)) if omit_chimeric_reads else pd.Series(True, index=adata.obs.index)
+                row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample) & qmask & lm_mask & lrr_mask & demux_mask & chimeric_mask
 
                 if not bool(row_mask.any()):
                     logger.warning("No reads for %s - %s after read quality and length filtering.", display_sample, ref)

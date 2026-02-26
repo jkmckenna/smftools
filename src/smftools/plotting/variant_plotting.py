@@ -18,6 +18,8 @@ sns = require("seaborn", extra="plotting", purpose="plot styling")
 
 logger = get_logger(__name__)
 
+from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs  # noqa: E402
+
 DNA_5COLOR_PALETTE = {
     "A": "#00A000",  # green
     "C": "#0000FF",  # blue
@@ -418,6 +420,571 @@ def plot_mismatch_base_frequency_by_position(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Module-level worker functions — picklable for ProcessPoolExecutor workers.
+# Each worker imports its own matplotlib/seaborn under the "Agg" backend so
+# that no display connection is required in subprocess workers.
+# ---------------------------------------------------------------------------
+
+
+def _plot_seq_encoding_one_group(args: dict) -> dict:
+    """Render one (ref, sample) sequence-integer-encoding clustermap and save."""
+    import matplotlib
+    import numpy as np
+    import pandas as pd
+    from pathlib import Path
+
+    from smftools.optional_imports import require
+
+    matplotlib.use("Agg")
+    _colors = require("matplotlib.colors", extra="plotting", purpose="plot rendering")
+    _patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
+    _plt = require("matplotlib.pyplot", extra="plotting", purpose="plot rendering")
+    _sns = require("seaborn", extra="plotting", purpose="plot styling")
+
+    matrix: np.ndarray = args["matrix"]
+    mismatch_matrix = args["mismatch_matrix"]
+    var_names: np.ndarray = args["var_names"]
+    ref: str = args["ref"]
+    sample: str = args["sample"]
+    layer: str = args["layer"]
+    mismatch_layer: str = args["mismatch_layer"]
+    sort_by: str = args["sort_by"]
+    obs_sort_vals = args["obs_sort_vals"]
+    cmap: str = args["cmap"]
+    use_dna_5color_palette: bool = args["use_dna_5color_palette"]
+    int_to_base: dict = args["int_to_base"]
+    mismatch_int_to_base: dict = args["mismatch_int_to_base"]
+    resolved_step = args["resolved_step"]
+    xtick_rotation: int = args["xtick_rotation"]
+    xtick_fontsize: int = args["xtick_fontsize"]
+    show_position_axis: bool = args["show_position_axis"]
+    xtick_step = args["xtick_step"]
+    show_numeric_colorbar: bool = args["show_numeric_colorbar"]
+    save_path = args["save_path"]
+
+    _DNA_PALETTE = {
+        "A": "#00A000",
+        "C": "#0000FF",
+        "G": "#FF7F00",
+        "T": "#FF0000",
+        "OTHER": "#808080",
+    }
+
+    def _normalize_base(base: str) -> str:
+        return base if base in {"A", "C", "G", "T"} else "OTHER"
+
+    # --- row ordering (CPU-heavy: done in worker for parallelism) ---
+    order = None
+    if sort_by.startswith("obs:") and obs_sort_vals is not None:
+        order = np.argsort(obs_sort_vals)
+    elif sort_by == "hierarchical" and matrix.shape[0] > 1:
+        import scipy.cluster.hierarchy as _sch
+
+        linkage = _sch.linkage(np.nan_to_num(matrix), method="ward")
+        order = _sch.leaves_list(linkage)
+    if order is not None:
+        matrix = matrix[order]
+        if mismatch_matrix is not None:
+            mismatch_matrix = mismatch_matrix[order]
+
+    if use_dna_5color_palette and not int_to_base:
+        uniq_vals = np.unique(matrix[~pd.isna(matrix)])
+        guess = {}
+        for val in uniq_vals:
+            try:
+                int_val = int(val)
+            except Exception:
+                continue
+            guess[int_val] = {0: "A", 1: "C", 2: "G", 3: "T"}.get(int_val, "OTHER")
+        int_to_base_local = guess
+    else:
+        int_to_base_local = int_to_base
+
+    has_mismatch = mismatch_matrix is not None
+    fig, axes = _plt.subplots(
+        ncols=2 if has_mismatch else 1,
+        figsize=(18, 6) if has_mismatch else (12, 6),
+        sharey=has_mismatch,
+    )
+    if not isinstance(axes, np.ndarray):
+        axes = np.asarray([axes])
+    ax = axes[0]
+
+    if use_dna_5color_palette and int_to_base_local:
+        int_to_color = {
+            int(int_val): _DNA_PALETTE[_normalize_base(str(base))]
+            for int_val, base in int_to_base_local.items()
+        }
+        for val in np.unique(matrix[~pd.isna(matrix)]):
+            try:
+                int_val = int(val)
+            except Exception:
+                continue
+            if int_val not in int_to_color:
+                int_to_color[int_val] = _DNA_PALETTE["OTHER"]
+
+        ordered = sorted(int_to_color.items(), key=lambda x: x[0])
+        colors_list = [color for _, color in ordered]
+        bounds = [int_val - 0.5 for int_val, _ in ordered]
+        bounds.append(ordered[-1][0] + 0.5)
+
+        cmap_obj = _colors.ListedColormap(colors_list)
+        norm = _colors.BoundaryNorm(bounds, cmap_obj.N)
+        _sns.heatmap(matrix, cmap=cmap_obj, norm=norm, ax=ax, yticklabels=False, cbar=show_numeric_colorbar)
+        ax.legend(
+            handles=[
+                _patches.Patch(facecolor=_DNA_PALETTE["A"], label="A"),
+                _patches.Patch(facecolor=_DNA_PALETTE["C"], label="C"),
+                _patches.Patch(facecolor=_DNA_PALETTE["G"], label="G"),
+                _patches.Patch(facecolor=_DNA_PALETTE["T"], label="T"),
+                _patches.Patch(facecolor=_DNA_PALETTE["OTHER"], label="Other (N / PAD / unknown)"),
+            ],
+            title="Base",
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            frameon=False,
+        )
+    else:
+        _sns.heatmap(matrix, cmap=cmap, ax=ax, yticklabels=False, cbar=True)
+
+    ax.set_title(layer)
+    if resolved_step is not None and resolved_step > 0:
+        sites = np.arange(0, matrix.shape[1], resolved_step)
+        ax.set_xticks(sites)
+        ax.set_xticklabels(var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize)
+    else:
+        ax.set_xticks([])
+    if show_position_axis or xtick_step is not None:
+        ax.set_xlabel("Position")
+
+    if has_mismatch:
+        mismatch_ax = axes[1]
+        mismatch_int_to_base_local = mismatch_int_to_base or int_to_base_local
+        if use_dna_5color_palette and mismatch_int_to_base_local:
+            mismatch_int_to_color = {}
+            for int_val, base in mismatch_int_to_base_local.items():
+                base_upper = str(base).upper()
+                if base_upper == "PAD":
+                    mismatch_int_to_color[int(int_val)] = "#D3D3D3"
+                elif base_upper == "N":
+                    mismatch_int_to_color[int(int_val)] = "#808080"
+                else:
+                    mismatch_int_to_color[int(int_val)] = _DNA_PALETTE[_normalize_base(base_upper)]
+            for val in np.unique(mismatch_matrix[~pd.isna(mismatch_matrix)]):
+                try:
+                    int_val = int(val)
+                except Exception:
+                    continue
+                if int_val not in mismatch_int_to_color:
+                    mismatch_int_to_color[int_val] = _DNA_PALETTE["OTHER"]
+
+            ordered_mm = sorted(mismatch_int_to_color.items(), key=lambda x: x[0])
+            mm_cmap = _colors.ListedColormap([c for _, c in ordered_mm])
+            mm_norm = _colors.BoundaryNorm([v - 0.5 for v, _ in ordered_mm] + [ordered_mm[-1][0] + 0.5], mm_cmap.N)
+            _sns.heatmap(mismatch_matrix, cmap=mm_cmap, norm=mm_norm, ax=mismatch_ax, yticklabels=False, cbar=show_numeric_colorbar)
+            mismatch_ax.legend(
+                handles=[
+                    _patches.Patch(facecolor=_DNA_PALETTE["A"], label="A"),
+                    _patches.Patch(facecolor=_DNA_PALETTE["C"], label="C"),
+                    _patches.Patch(facecolor=_DNA_PALETTE["G"], label="G"),
+                    _patches.Patch(facecolor=_DNA_PALETTE["T"], label="T"),
+                    _patches.Patch(facecolor="#808080", label="Match/N"),
+                    _patches.Patch(facecolor="#D3D3D3", label="PAD"),
+                ],
+                title="Mismatch base",
+                loc="upper left",
+                bbox_to_anchor=(1.02, 1.0),
+                frameon=False,
+            )
+        else:
+            _sns.heatmap(mismatch_matrix, cmap=cmap, ax=mismatch_ax, yticklabels=False, cbar=True)
+
+        mismatch_ax.set_title(mismatch_layer)
+        if resolved_step is not None and resolved_step > 0:
+            sites = np.arange(0, mismatch_matrix.shape[1], resolved_step)
+            mismatch_ax.set_xticks(sites)
+            mismatch_ax.set_xticklabels(var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize)
+        else:
+            mismatch_ax.set_xticks([])
+        if show_position_axis or xtick_step is not None:
+            mismatch_ax.set_xlabel("Position")
+
+    n_reads = matrix.shape[0]
+    fig.suptitle(f"{sample} - {ref} - {n_reads} reads")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+
+    out_file = None
+    if save_path is not None:
+        safe_name = f"{ref}__{sample}__{layer}".replace("=", "").replace(",", "_")
+        out_file = Path(save_path) / f"{safe_name}.png"
+        fig.savefig(out_file, dpi=300, bbox_inches="tight")
+        _plt.close(fig)
+    else:
+        _plt.show()
+
+    return {
+        "reference": ref,
+        "sample": sample,
+        "layer": layer,
+        "n_positions": int(matrix.shape[1]),
+        "mismatch_layer": mismatch_layer if has_mismatch else None,
+        "mismatch_layer_present": bool(has_mismatch),
+        "output_path": str(out_file) if out_file is not None else None,
+    }
+
+
+def _plot_variant_segment_one_group(args: dict) -> dict:
+    """Render one (ref, sample) variant segment clustermap and save."""
+    import matplotlib
+    import numpy as np
+    from pathlib import Path
+
+    from smftools.optional_imports import require
+
+    matplotlib.use("Agg")
+    _colors = require("matplotlib.colors", extra="plotting", purpose="plot rendering")
+    _patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
+    _plt = require("matplotlib.pyplot", extra="plotting", purpose="plot rendering")
+    _sns = require("seaborn", extra="plotting", purpose="plot styling")
+
+    seg_matrix: np.ndarray = args["seg_matrix"]
+    call_matrix = args["call_matrix"]
+    var_names: np.ndarray = args["var_names"]
+    ref: str = args["ref"]
+    sample: str = args["sample"]
+    n_reads: int = args["n_reads"]
+    seq1_label: str = args["seq1_label"]
+    seq2_label: str = args["seq2_label"]
+    seq1_color: str = args["seq1_color"]
+    seq2_color: str = args["seq2_color"]
+    transition_color: str = args["transition_color"]
+    no_coverage_color: str = args["no_coverage_color"]
+    ref1_marker_color: str = args["ref1_marker_color"]
+    ref2_marker_color: str = args["ref2_marker_color"]
+    breakpoint_marker_color: str = args["breakpoint_marker_color"]
+    marker_size: float = args["marker_size"]
+    show_position_axis: bool = args["show_position_axis"]
+    position_axis_tick_target: int = args["position_axis_tick_target"]
+    xtick_rotation: int = args["xtick_rotation"]
+    xtick_fontsize: int = args["xtick_fontsize"]
+    mismatch_type_obs_col: str = args["mismatch_type_obs_col"]
+    row_mismatch_raw = args["row_mismatch_raw"]
+    mismatch_type_colors: dict = args["mismatch_type_colors"]
+    mismatch_type_legend_prefix: str = args["mismatch_type_legend_prefix"]
+    sort_by: str = args["sort_by"]
+    save_path = args["save_path"]
+
+    # --- row ordering (CPU-heavy: done in worker) ---
+    order = np.arange(n_reads)
+    if sort_by == "hierarchical" and n_reads > 1 and call_matrix is not None:
+        try:
+            import scipy.cluster.hierarchy as _sch
+
+            informative_cols = np.any(call_matrix > 0, axis=0)
+            if informative_cols.any():
+                cluster_data = call_matrix[:, informative_cols].astype(np.float64)
+                cluster_data[cluster_data == 1] = 0.0
+                cluster_data[cluster_data == 2] = 1.0
+                cluster_data[(cluster_data != 0.0) & (cluster_data != 1.0)] = 0.5
+                linkage = _sch.linkage(cluster_data, method="ward")
+                order = _sch.leaves_list(linkage)
+        except Exception:
+            pass
+    seg_matrix = seg_matrix[order]
+    if call_matrix is not None:
+        call_matrix = call_matrix[order]
+
+    # apply sort order to mismatch labels
+    row_mismatch_labels = None
+    row_mismatch_legend: list = []
+    if row_mismatch_raw is not None:
+        import pandas as pd
+
+        mm_values = row_mismatch_raw[order]
+        row_mismatch_labels = ["unknown" if pd.isna(v) else str(v) for v in mm_values]
+        row_mismatch_legend = list(dict.fromkeys(row_mismatch_labels))
+
+    seg_cmap = _colors.ListedColormap([no_coverage_color, seq1_color, seq2_color, transition_color])
+    seg_norm = _colors.BoundaryNorm([0, 0.5, 1.5, 2.5, 3.5], seg_cmap.N)
+
+    if row_mismatch_labels is None:
+        fig, ax = _plt.subplots(figsize=(16, 8))
+        ax_mismatch = None
+    else:
+        fig = _plt.figure(figsize=(16, 8))
+        gs = fig.add_gridspec(1, 2, width_ratios=[0.6, 18], wspace=0.02)
+        ax_mismatch = fig.add_subplot(gs[0, 0])
+        ax = fig.add_subplot(gs[0, 1])
+
+    _sns.heatmap(seg_matrix.astype(np.float32), cmap=seg_cmap, norm=seg_norm, ax=ax, yticklabels=False, cbar=False)
+
+    if row_mismatch_labels is not None and ax_mismatch is not None:
+        mismatch_categories = list(dict.fromkeys(row_mismatch_legend))
+        mismatch_color_list = [mismatch_type_colors.get(label, "#636363") for label in mismatch_categories]
+        mismatch_to_code = {label: i for i, label in enumerate(mismatch_categories)}
+        mismatch_codes = np.array([mismatch_to_code[label] for label in row_mismatch_labels], dtype=np.int32).reshape(-1, 1)
+        mm_cmap = _colors.ListedColormap(mismatch_color_list)
+        mm_norm = _colors.BoundaryNorm(np.arange(-0.5, len(mismatch_categories) + 0.5, 1), mm_cmap.N)
+        ax_mismatch.imshow(mismatch_codes, cmap=mm_cmap, norm=mm_norm, aspect="auto", interpolation="nearest", origin="upper")
+        ax_mismatch.set_xticks([])
+        ax_mismatch.set_yticks([])
+        strip_title = mismatch_type_obs_col.replace("_", " ").title() if mismatch_type_obs_col else "Type"
+        ax_mismatch.set_title(strip_title, fontsize=8, pad=8)
+
+    if call_matrix is not None:
+        ref1_rows, ref1_cols = np.where(call_matrix == 1)
+        ref2_rows, ref2_cols = np.where(call_matrix == 2)
+        if len(ref1_rows) > 0:
+            ax.scatter(ref1_cols + 0.5, ref1_rows + 0.5, c=ref1_marker_color, s=marker_size, marker="o",
+                       edgecolors="gray", linewidths=0.3, zorder=3, label=f"{seq1_label} call")
+        if len(ref2_rows) > 0:
+            ax.scatter(ref2_cols + 0.5, ref2_rows + 0.5, c=ref2_marker_color, s=marker_size, marker="o",
+                       edgecolors="gray", linewidths=0.3, zorder=3, label=f"{seq2_label} call")
+
+    bp_rows_list: list = []
+    bp_cols_list: list = []
+    for r in range(n_reads):
+        row = seg_matrix[r]
+        is_trans = row == 3
+        if not np.any(is_trans):
+            continue
+        trans_positions = np.where(is_trans)[0]
+        breaks = np.where(np.diff(trans_positions) > 1)[0] + 1
+        for run in np.split(trans_positions, breaks):
+            bp_rows_list.append(r)
+            bp_cols_list.append(run[len(run) // 2])
+    if bp_rows_list:
+        ax.scatter(np.array(bp_cols_list) + 0.5, np.array(bp_rows_list) + 0.5,
+                   c=breakpoint_marker_color, s=marker_size, marker="o",
+                   edgecolors="gray", linewidths=0.3, zorder=4, label="Breakpoint")
+
+    ax.set_title(f"{ref} — {sample} — {n_reads} reads", fontsize=10)
+    ax.set_ylabel("Reads")
+    if show_position_axis:
+        n_cols = seg_matrix.shape[1]
+        step = max(1, n_cols // position_axis_tick_target)
+        sites = np.arange(0, n_cols, step)
+        ax.set_xticks(sites)
+        ax.set_xticklabels(var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize)
+    else:
+        ax.set_xticks([])
+
+    legend_elements = [
+        _patches.Patch(facecolor=seq1_color, label=f"{seq1_label} segment"),
+        _patches.Patch(facecolor=seq2_color, label=f"{seq2_label} segment"),
+        _patches.Patch(facecolor=transition_color, label="Transition zone"),
+        _patches.Patch(facecolor=no_coverage_color, edgecolor="gray", linewidth=0.5, label="No coverage"),
+        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref1_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq1_label} call"),
+        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref2_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq2_label} call"),
+        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=breakpoint_marker_color, markeredgecolor="gray", markersize=5, label="Breakpoint"),
+    ]
+    if row_mismatch_labels is not None:
+        for label in row_mismatch_legend:
+            legend_elements.append(_patches.Patch(facecolor=mismatch_type_colors.get(label, "#636363"), label=f"{mismatch_type_legend_prefix}: {label}"))
+    ax.legend(handles=legend_elements, loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=7, framealpha=0.8, frameon=False)
+    fig.tight_layout(rect=(0, 0, 0.88, 1))
+
+    out_file = None
+    if save_path is not None:
+        safe_name = f"{ref}__{sample}__variant_segments".replace("=", "").replace(",", "_")
+        out_file = Path(save_path) / f"{safe_name}.png"
+        fig.savefig(out_file, dpi=300, bbox_inches="tight")
+        _plt.close(fig)
+    else:
+        _plt.show()
+
+    n_with_bp = int(np.sum(np.any(seg_matrix == 3, axis=1)))
+    return {
+        "reference": ref,
+        "sample": sample,
+        "n_reads": n_reads,
+        "n_reads_with_breakpoints": n_with_bp,
+        "output_path": str(out_file) if out_file is not None else None,
+    }
+
+
+def _plot_variant_segment_multi_obs_one_group(args: dict) -> dict:
+    """Render one (ref, sample) multi-obs variant segment clustermap and save."""
+    import matplotlib
+    import numpy as np
+    from pathlib import Path
+
+    from smftools.optional_imports import require
+
+    matplotlib.use("Agg")
+    _colors = require("matplotlib.colors", extra="plotting", purpose="plot rendering")
+    _patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
+    _plt = require("matplotlib.pyplot", extra="plotting", purpose="plot rendering")
+    _sns = require("seaborn", extra="plotting", purpose="plot styling")
+
+    seg_matrix: np.ndarray = args["seg_matrix"]
+    call_matrix = args["call_matrix"]
+    var_names: np.ndarray = args["var_names"]
+    ref: str = args["ref"]
+    sample: str = args["sample"]
+    n_reads: int = args["n_reads"]
+    seq1_label: str = args["seq1_label"]
+    seq2_label: str = args["seq2_label"]
+    seq1_color: str = args["seq1_color"]
+    seq2_color: str = args["seq2_color"]
+    transition_color: str = args["transition_color"]
+    no_coverage_color: str = args["no_coverage_color"]
+    ref1_marker_color: str = args["ref1_marker_color"]
+    ref2_marker_color: str = args["ref2_marker_color"]
+    breakpoint_marker_color: str = args["breakpoint_marker_color"]
+    marker_size: float = args["marker_size"]
+    show_position_axis: bool = args["show_position_axis"]
+    position_axis_tick_target: int = args["position_axis_tick_target"]
+    xtick_rotation: int = args["xtick_rotation"]
+    xtick_fontsize: int = args["xtick_fontsize"]
+    annotation_data: list = args["annotation_data"]  # pre-extracted, unordered
+    sort_by: str = args["sort_by"]
+    save_path = args["save_path"]
+
+    # --- row ordering (CPU-heavy: done in worker) ---
+    order = np.arange(n_reads)
+    if sort_by == "hierarchical" and n_reads > 1 and call_matrix is not None:
+        try:
+            import scipy.cluster.hierarchy as _sch
+
+            informative_cols = np.any(call_matrix > 0, axis=0)
+            if informative_cols.any():
+                cluster_data = call_matrix[:, informative_cols].astype(np.float64)
+                cluster_data[cluster_data == 1] = 0.0
+                cluster_data[cluster_data == 2] = 1.0
+                cluster_data[(cluster_data != 0.0) & (cluster_data != 1.0)] = 0.5
+                linkage = _sch.linkage(cluster_data, method="ward")
+                order = _sch.leaves_list(linkage)
+        except Exception:
+            pass
+    seg_matrix = seg_matrix[order]
+    if call_matrix is not None:
+        call_matrix = call_matrix[order]
+
+    # apply sort order to each annotation strip
+    import pandas as pd
+
+    sorted_annotation_data = []
+    for ann in annotation_data:
+        raw_labels = ann["raw_labels"]
+        labels = raw_labels[order]
+        labels_str = ["unknown" if pd.isna(v) else str(v) for v in labels]
+        legend_order = list(dict.fromkeys(labels_str))
+        sorted_annotation_data.append({
+            "labels": labels_str,
+            "legend_order": legend_order,
+            "colors": ann["colors"],
+            "legend_prefix": ann["legend_prefix"],
+            "strip_title": ann["strip_title"],
+        })
+
+    seg_cmap = _colors.ListedColormap([no_coverage_color, seq1_color, seq2_color, transition_color])
+    seg_norm = _colors.BoundaryNorm([0, 0.5, 1.5, 2.5, 3.5], seg_cmap.N)
+
+    if sorted_annotation_data:
+        fig = _plt.figure(figsize=(19, 8))
+        width_ratios = [0.9] * len(sorted_annotation_data) + [20, 6]
+        gs = fig.add_gridspec(1, len(width_ratios), width_ratios=width_ratios, wspace=0.06)
+        strip_axes = [fig.add_subplot(gs[0, i]) for i in range(len(sorted_annotation_data))]
+        ax = fig.add_subplot(gs[0, len(sorted_annotation_data)])
+        legend_ax = fig.add_subplot(gs[0, len(sorted_annotation_data) + 1])
+        legend_ax.axis("off")
+    else:
+        fig, ax = _plt.subplots(figsize=(16, 8))
+        strip_axes = []
+        legend_ax = ax
+
+    _sns.heatmap(seg_matrix.astype(np.float32), cmap=seg_cmap, norm=seg_norm, ax=ax, yticklabels=False, cbar=False)
+
+    for strip_ax, ann in zip(strip_axes, sorted_annotation_data):
+        cats = ann["legend_order"]
+        cmap_strip = _colors.ListedColormap([ann["colors"].get(label, "#636363") for label in cats])
+        norm_strip = _colors.BoundaryNorm(np.arange(-0.5, len(cats) + 0.5, 1), cmap_strip.N)
+        code_map = {label: i for i, label in enumerate(cats)}
+        code_arr = np.array([code_map[label] for label in ann["labels"]], dtype=np.int32).reshape(-1, 1)
+        strip_ax.imshow(code_arr, cmap=cmap_strip, norm=norm_strip, aspect="auto", interpolation="nearest", origin="upper")
+        strip_ax.set_xticks([])
+        strip_ax.set_yticks([])
+        strip_ax.set_title(ann["strip_title"], fontsize=8, pad=10)
+
+    if call_matrix is not None:
+        ref1_rows, ref1_cols = np.where(call_matrix == 1)
+        ref2_rows, ref2_cols = np.where(call_matrix == 2)
+        if len(ref1_rows) > 0:
+            ax.scatter(ref1_cols + 0.5, ref1_rows + 0.5, c=ref1_marker_color, s=marker_size, marker="o", edgecolors="gray", linewidths=0.3, zorder=3)
+        if len(ref2_rows) > 0:
+            ax.scatter(ref2_cols + 0.5, ref2_rows + 0.5, c=ref2_marker_color, s=marker_size, marker="o", edgecolors="gray", linewidths=0.3, zorder=3)
+
+    bp_rows_list: list = []
+    bp_cols_list: list = []
+    for r in range(n_reads):
+        row = seg_matrix[r]
+        is_trans = row == 3
+        if not np.any(is_trans):
+            continue
+        trans_positions = np.where(is_trans)[0]
+        breaks = np.where(np.diff(trans_positions) > 1)[0] + 1
+        for run in np.split(trans_positions, breaks):
+            bp_rows_list.append(r)
+            bp_cols_list.append(run[len(run) // 2])
+    if bp_rows_list:
+        ax.scatter(np.array(bp_cols_list) + 0.5, np.array(bp_rows_list) + 0.5,
+                   c=breakpoint_marker_color, s=marker_size, marker="o",
+                   edgecolors="gray", linewidths=0.3, zorder=4)
+
+    ax.set_title(f"{ref} — {sample} — {n_reads} reads", fontsize=10)
+    ax.set_ylabel("Reads")
+    if show_position_axis:
+        n_cols = seg_matrix.shape[1]
+        step = max(1, n_cols // position_axis_tick_target)
+        sites = np.arange(0, n_cols, step)
+        ax.set_xticks(sites)
+        ax.set_xticklabels(var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize)
+    else:
+        ax.set_xticks([])
+
+    base_legend = [
+        _patches.Patch(facecolor=seq1_color, label=f"{seq1_label} segment"),
+        _patches.Patch(facecolor=seq2_color, label=f"{seq2_label} segment"),
+        _patches.Patch(facecolor=transition_color, label="Transition zone"),
+        _patches.Patch(facecolor=no_coverage_color, edgecolor="gray", linewidth=0.5, label="No coverage"),
+        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref1_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq1_label} call"),
+        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref2_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq2_label} call"),
+        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=breakpoint_marker_color, markeredgecolor="gray", markersize=5, label="Breakpoint"),
+    ]
+    lg_main = legend_ax.legend(handles=base_legend, title="Segments", loc="upper left", bbox_to_anchor=(0.0, 1.0), fontsize=7, title_fontsize=8, framealpha=0.8, frameon=False)
+    legend_ax.add_artist(lg_main)
+
+    y_anchor = 0.68
+    for ann in sorted_annotation_data:
+        ann_handles = [_patches.Patch(facecolor=ann["colors"].get(label, "#636363"), label=str(label)) for label in ann["legend_order"]]
+        lg = legend_ax.legend(handles=ann_handles, title=ann["legend_prefix"], loc="upper left", bbox_to_anchor=(0.0, y_anchor), fontsize=7, title_fontsize=8, framealpha=0.8, frameon=False)
+        legend_ax.add_artist(lg)
+        y_anchor -= max(0.16, 0.04 * max(1, len(ann_handles)))
+
+    fig.tight_layout(rect=(0, 0, 1, 1))
+
+    out_file = None
+    if save_path is not None:
+        safe_name = f"{ref}__{sample}__variant_segments".replace("=", "").replace(",", "_")
+        out_file = Path(save_path) / f"{safe_name}.png"
+        fig.savefig(out_file, dpi=300, bbox_inches="tight")
+        _plt.close(fig)
+    else:
+        _plt.show()
+
+    n_with_bp = int(np.sum(np.any(seg_matrix == 3, axis=1)))
+    return {
+        "reference": ref,
+        "sample": sample,
+        "n_reads": n_reads,
+        "n_reads_with_breakpoints": n_with_bp,
+        "n_obs_annotation_strips": int(len(sorted_annotation_data)),
+        "output_path": str(out_file) if out_file is not None else None,
+    }
+
+
 def plot_sequence_integer_encoding_clustermaps(
     adata,
     sample_col: str = "Sample_Names",
@@ -443,6 +1010,7 @@ def plot_sequence_integer_encoding_clustermaps(
     show_numeric_colorbar: bool = False,
     show_position_axis: bool = False,
     position_axis_tick_target: int = 25,
+    n_jobs: int = 1,
 ):
     """Plot integer-encoded sequence clustermaps per sample/reference.
 
@@ -472,6 +1040,8 @@ def plot_sequence_integer_encoding_clustermaps(
         show_numeric_colorbar: If False, use a legend instead of a numeric colorbar.
         show_position_axis: Whether to draw a position axis with tick labels.
         position_axis_tick_target: Approximate number of ticks to show when auto-sizing.
+        n_jobs: Number of parallel worker processes. ``-1`` uses all available CPUs.
+            Parallelism is only applied when ``save_path`` is set.
 
     Returns:
         List of dictionaries with per-plot metadata and output paths.
@@ -521,9 +1091,6 @@ def plot_sequence_integer_encoding_clustermaps(
         coerced_int_to_base[coerced_key] = str(value)
     int_to_base = coerced_int_to_base
 
-    def normalize_base(base: str) -> str:
-        return base if base in {"A", "C", "G", "T"} else "OTHER"
-
     mismatch_int_to_base = {}
     if mismatch_layer in adata.layers:
         mismatch_encoding_map = adata.uns.get("mismatch_integer_encoding_map", {}) or {}
@@ -571,293 +1138,140 @@ def plot_sequence_integer_encoding_clustermaps(
 
         return mod_mask
 
-    for ref in adata.obs[reference_col].cat.categories:
-        for sample in adata.obs[sample_col].cat.categories:
-            qmask = _mask_or_true(
-                "read_quality",
-                (lambda s: s >= float(min_quality))
-                if (min_quality is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
-            lm_mask = _mask_or_true(
-                "mapped_length",
-                (lambda s: s >= float(min_length))
-                if (min_length is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
-            lrr_mask = _mask_or_true(
-                "mapped_length_to_reference_length_ratio",
-                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
-                if (min_mapped_length_to_reference_length_ratio is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
-            demux_mask = _mask_or_true(
-                "demux_type",
-                (lambda s: s.astype("string").isin(list(demux_types)))
-                if (demux_types is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
+    # ------------------------------------------------------------------
+    # Phase A: build per-group args (serial — accesses adata)
+    # ------------------------------------------------------------------
+    def _iter_group_args():
+        for ref in adata.obs[reference_col].cat.categories:
+            for sample in adata.obs[sample_col].cat.categories:
+                qmask = _mask_or_true(
+                    "read_quality",
+                    (lambda s: s >= float(min_quality))
+                    if (min_quality is not None)
+                    else (lambda s: pd.Series(True, index=s.index)),
+                )
+                lm_mask = _mask_or_true(
+                    "mapped_length",
+                    (lambda s: s >= float(min_length))
+                    if (min_length is not None)
+                    else (lambda s: pd.Series(True, index=s.index)),
+                )
+                lrr_mask = _mask_or_true(
+                    "mapped_length_to_reference_length_ratio",
+                    (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
+                    if (min_mapped_length_to_reference_length_ratio is not None)
+                    else (lambda s: pd.Series(True, index=s.index)),
+                )
+                demux_mask = _mask_or_true(
+                    "demux_type",
+                    (lambda s: s.astype("string").isin(list(demux_types)))
+                    if (demux_types is not None)
+                    else (lambda s: pd.Series(True, index=s.index)),
+                )
 
-            row_mask = (
-                (adata.obs[reference_col] == ref)
-                & (adata.obs[sample_col] == sample)
-                & qmask
-                & lm_mask
-                & lrr_mask
-                & demux_mask
-            )
-            if not bool(row_mask.any()):
-                continue
-
-            subset = adata[row_mask, :].copy()
-            matrix = np.asarray(subset.layers[layer])
-            mismatch_matrix = None
-            if mismatch_layer in subset.layers:
-                mismatch_matrix = np.asarray(subset.layers[mismatch_layer])
-
-            mod_site_mask = _build_mod_site_mask(subset, str(ref))
-            if mod_site_mask is not None:
-                keep_columns = ~mod_site_mask
-                if not np.any(keep_columns):
+                row_mask = (
+                    (adata.obs[reference_col] == ref)
+                    & (adata.obs[sample_col] == sample)
+                    & qmask
+                    & lm_mask
+                    & lrr_mask
+                    & demux_mask
+                )
+                if not bool(row_mask.any()):
                     continue
-                matrix = matrix[:, keep_columns]
-                subset = subset[:, keep_columns].copy()
-                if mismatch_matrix is not None:
-                    mismatch_matrix = mismatch_matrix[:, keep_columns]
 
-            if max_unknown_fraction is not None:
-                unknown_mask = np.isin(matrix, np.asarray(unknown_values))
-                unknown_fraction = unknown_mask.mean(axis=0)
-                keep_columns = unknown_fraction <= max_unknown_fraction
-                if not np.any(keep_columns):
+                subset = adata[row_mask, :].copy()
+                matrix = np.asarray(subset.layers[layer])
+                mismatch_matrix = None
+                if mismatch_layer in subset.layers:
+                    mismatch_matrix = np.asarray(subset.layers[mismatch_layer])
+
+                var_names = np.asarray(subset.var_names)
+
+                mod_site_mask = _build_mod_site_mask(subset, str(ref))
+                if mod_site_mask is not None:
+                    keep_columns = ~mod_site_mask
+                    if not np.any(keep_columns):
+                        continue
+                    matrix = matrix[:, keep_columns]
+                    var_names = var_names[keep_columns]
+                    if mismatch_matrix is not None:
+                        mismatch_matrix = mismatch_matrix[:, keep_columns]
+
+                if max_unknown_fraction is not None:
+                    unknown_mask = np.isin(matrix, np.asarray(unknown_values))
+                    unknown_fraction = unknown_mask.mean(axis=0)
+                    keep_columns = unknown_fraction <= max_unknown_fraction
+                    if not np.any(keep_columns):
+                        continue
+                    matrix = matrix[:, keep_columns]
+                    var_names = var_names[keep_columns]
+                    if mismatch_matrix is not None:
+                        mismatch_matrix = mismatch_matrix[:, keep_columns]
+
+                # extract obs sort values before max_reads truncation
+                obs_sort_vals = None
+                if sort_by.startswith("obs:"):
+                    colname = sort_by.split("obs:")[1]
+                    if colname in subset.obs.columns:
+                        obs_sort_vals = np.asarray(subset.obs[colname].values)
+                    elif sort_by != "none":
+                        raise ValueError("sort_by must be 'none', 'hierarchical', or 'obs:<col>'")
+
+                if max_reads is not None and matrix.shape[0] > max_reads:
+                    matrix = matrix[:max_reads]
+                    if mismatch_matrix is not None:
+                        mismatch_matrix = mismatch_matrix[:max_reads]
+                    if obs_sort_vals is not None:
+                        obs_sort_vals = obs_sort_vals[:max_reads]
+
+                if matrix.size == 0:
                     continue
-                matrix = matrix[:, keep_columns]
-                subset = subset[:, keep_columns].copy()
-                if mismatch_matrix is not None:
-                    mismatch_matrix = mismatch_matrix[:, keep_columns]
 
-            if max_reads is not None and matrix.shape[0] > max_reads:
-                matrix = matrix[:max_reads]
-                subset = subset[:max_reads, :].copy()
-                if mismatch_matrix is not None:
-                    mismatch_matrix = mismatch_matrix[:max_reads]
-
-            if matrix.size == 0:
-                continue
-
-            if use_dna_5color_palette and not int_to_base:
-                uniq_vals = np.unique(matrix[~pd.isna(matrix)])
-                guess = {}
-                for val in uniq_vals:
-                    try:
-                        int_val = int(val)
-                    except Exception:
-                        continue
-                    guess[int_val] = {0: "A", 1: "C", 2: "G", 3: "T"}.get(int_val, "OTHER")
-                int_to_base_local = guess
-            else:
-                int_to_base_local = int_to_base
-
-            order = None
-            if sort_by.startswith("obs:"):
-                colname = sort_by.split("obs:")[1]
-                order = np.argsort(subset.obs[colname].values)
-            elif sort_by == "hierarchical":
-                linkage = sch.linkage(np.nan_to_num(matrix), method="ward")
-                order = sch.leaves_list(linkage)
-            elif sort_by != "none":
-                raise ValueError("sort_by must be 'none', 'hierarchical', or 'obs:<col>'")
-
-            if order is not None:
-                matrix = matrix[order]
-                if mismatch_matrix is not None:
-                    mismatch_matrix = mismatch_matrix[order]
-
-            has_mismatch = mismatch_matrix is not None
-            fig, axes = plt.subplots(
-                ncols=2 if has_mismatch else 1,
-                figsize=(18, 6) if has_mismatch else (12, 6),
-                sharey=has_mismatch,
-            )
-            if not isinstance(axes, np.ndarray):
-                axes = np.asarray([axes])
-            ax = axes[0]
-
-            if use_dna_5color_palette and int_to_base_local:
-                int_to_color = {
-                    int(int_val): DNA_5COLOR_PALETTE[normalize_base(str(base))]
-                    for int_val, base in int_to_base_local.items()
-                }
-                uniq_matrix = np.unique(matrix[~pd.isna(matrix)])
-                for val in uniq_matrix:
-                    try:
-                        int_val = int(val)
-                    except Exception:
-                        continue
-                    if int_val not in int_to_color:
-                        int_to_color[int_val] = DNA_5COLOR_PALETTE["OTHER"]
-
-                ordered = sorted(int_to_color.items(), key=lambda x: x[0])
-                colors_list = [color for _, color in ordered]
-                bounds = [int_val - 0.5 for int_val, _ in ordered]
-                bounds.append(ordered[-1][0] + 0.5)
-
-                cmap_obj = colors.ListedColormap(colors_list)
-                norm = colors.BoundaryNorm(bounds, cmap_obj.N)
-
-                sns.heatmap(
-                    matrix,
-                    cmap=cmap_obj,
-                    norm=norm,
-                    ax=ax,
-                    yticklabels=False,
-                    cbar=show_numeric_colorbar,
-                )
-
-                legend_handles = [
-                    patches.Patch(facecolor=DNA_5COLOR_PALETTE["A"], label="A"),
-                    patches.Patch(facecolor=DNA_5COLOR_PALETTE["C"], label="C"),
-                    patches.Patch(facecolor=DNA_5COLOR_PALETTE["G"], label="G"),
-                    patches.Patch(facecolor=DNA_5COLOR_PALETTE["T"], label="T"),
-                    patches.Patch(
-                        facecolor=DNA_5COLOR_PALETTE["OTHER"],
-                        label="Other (N / PAD / unknown)",
-                    ),
-                ]
-                ax.legend(
-                    handles=legend_handles,
-                    title="Base",
-                    loc="upper left",
-                    bbox_to_anchor=(1.02, 1.0),
-                    frameon=False,
-                )
-            else:
-                sns.heatmap(matrix, cmap=cmap, ax=ax, yticklabels=False, cbar=True)
-
-            ax.set_title(layer)
-
-            resolved_step = _resolve_xtick_step(matrix.shape[1])
-            if resolved_step is not None and resolved_step > 0:
-                sites = np.arange(0, matrix.shape[1], resolved_step)
-                ax.set_xticks(sites)
-                ax.set_xticklabels(
-                    subset.var_names[sites].astype(str),
-                    rotation=xtick_rotation,
-                    fontsize=xtick_fontsize,
-                )
-            else:
-                ax.set_xticks([])
-            if show_position_axis or xtick_step is not None:
-                ax.set_xlabel("Position")
-
-            if has_mismatch:
-                mismatch_ax = axes[1]
-                mismatch_int_to_base_local = mismatch_int_to_base or int_to_base_local
-                if use_dna_5color_palette and mismatch_int_to_base_local:
-                    mismatch_int_to_color = {}
-                    for int_val, base in mismatch_int_to_base_local.items():
-                        base_upper = str(base).upper()
-                        if base_upper == "PAD":
-                            mismatch_int_to_color[int(int_val)] = "#D3D3D3"
-                        elif base_upper == "N":
-                            mismatch_int_to_color[int(int_val)] = "#808080"
-                        else:
-                            mismatch_int_to_color[int(int_val)] = DNA_5COLOR_PALETTE[
-                                normalize_base(base_upper)
-                            ]
-
-                    uniq_mismatch = np.unique(mismatch_matrix[~pd.isna(mismatch_matrix)])
-                    for val in uniq_mismatch:
-                        try:
-                            int_val = int(val)
-                        except Exception:
-                            continue
-                        if int_val not in mismatch_int_to_color:
-                            mismatch_int_to_color[int_val] = DNA_5COLOR_PALETTE["OTHER"]
-
-                    ordered_mismatch = sorted(mismatch_int_to_color.items(), key=lambda x: x[0])
-                    mismatch_colors = [color for _, color in ordered_mismatch]
-                    mismatch_bounds = [int_val - 0.5 for int_val, _ in ordered_mismatch]
-                    mismatch_bounds.append(ordered_mismatch[-1][0] + 0.5)
-
-                    mismatch_cmap = colors.ListedColormap(mismatch_colors)
-                    mismatch_norm = colors.BoundaryNorm(mismatch_bounds, mismatch_cmap.N)
-
-                    sns.heatmap(
-                        mismatch_matrix,
-                        cmap=mismatch_cmap,
-                        norm=mismatch_norm,
-                        ax=mismatch_ax,
-                        yticklabels=False,
-                        cbar=show_numeric_colorbar,
-                    )
-
-                    mismatch_legend_handles = [
-                        patches.Patch(facecolor=DNA_5COLOR_PALETTE["A"], label="A"),
-                        patches.Patch(facecolor=DNA_5COLOR_PALETTE["C"], label="C"),
-                        patches.Patch(facecolor=DNA_5COLOR_PALETTE["G"], label="G"),
-                        patches.Patch(facecolor=DNA_5COLOR_PALETTE["T"], label="T"),
-                        patches.Patch(facecolor="#808080", label="Match/N"),
-                        patches.Patch(facecolor="#D3D3D3", label="PAD"),
-                    ]
-                    mismatch_ax.legend(
-                        handles=mismatch_legend_handles,
-                        title="Mismatch base",
-                        loc="upper left",
-                        bbox_to_anchor=(1.02, 1.0),
-                        frameon=False,
-                    )
-                else:
-                    sns.heatmap(
-                        mismatch_matrix,
-                        cmap=cmap,
-                        ax=mismatch_ax,
-                        yticklabels=False,
-                        cbar=True,
-                    )
-
-                mismatch_ax.set_title(mismatch_layer)
-                if resolved_step is not None and resolved_step > 0:
-                    sites = np.arange(0, mismatch_matrix.shape[1], resolved_step)
-                    mismatch_ax.set_xticks(sites)
-                    mismatch_ax.set_xticklabels(
-                        subset.var_names[sites].astype(str),
-                        rotation=xtick_rotation,
-                        fontsize=xtick_fontsize,
-                    )
-                else:
-                    mismatch_ax.set_xticks([])
-                if show_position_axis or xtick_step is not None:
-                    mismatch_ax.set_xlabel("Position")
-
-            n_reads = matrix.shape[0]
-
-            fig.suptitle(f"{sample} - {ref} - {n_reads} reads")
-            fig.tight_layout(rect=(0, 0, 1, 0.95))
-
-            out_file = None
-            if save_path is not None:
-                safe_name = f"{ref}__{sample}__{layer}".replace("=", "").replace(",", "_")
-                out_file = save_path / f"{safe_name}.png"
-                fig.savefig(out_file, dpi=300, bbox_inches="tight")
-                plt.close(fig)
-                logger.info("Saved sequence encoding clustermap to %s.", out_file)
-            else:
-                plt.show()
-
-            results.append(
-                {
-                    "reference": str(ref),
+                yield {
+                    "matrix": matrix,
+                    "mismatch_matrix": mismatch_matrix,
+                    "var_names": var_names,
+                    "ref": str(ref),
                     "sample": str(sample),
                     "layer": layer,
-                    "n_positions": int(matrix.shape[1]),
-                    "mismatch_layer": mismatch_layer if has_mismatch else None,
-                    "mismatch_layer_present": bool(has_mismatch),
-                    "output_path": str(out_file) if out_file is not None else None,
+                    "mismatch_layer": mismatch_layer,
+                    "sort_by": sort_by,
+                    "obs_sort_vals": obs_sort_vals,
+                    "cmap": cmap,
+                    "use_dna_5color_palette": use_dna_5color_palette,
+                    "int_to_base": int_to_base,
+                    "mismatch_int_to_base": mismatch_int_to_base,
+                    "resolved_step": _resolve_xtick_step(matrix.shape[1]),
+                    "xtick_rotation": xtick_rotation,
+                    "xtick_fontsize": xtick_fontsize,
+                    "show_position_axis": show_position_axis,
+                    "xtick_step": xtick_step,
+                    "show_numeric_colorbar": show_numeric_colorbar,
+                    "save_path": str(save_path) if save_path is not None else None,
                 }
-            )
 
-    return results
+    # ------------------------------------------------------------------
+    # Phase B: dispatch (serial or parallel)
+    # ------------------------------------------------------------------
+    n_workers = _resolve_n_jobs(n_jobs) if save_path is not None else 1
+
+    if n_workers <= 1:
+        return [_plot_seq_encoding_one_group(a) for a in _iter_group_args()]
+
+    from concurrent.futures import ProcessPoolExecutor
+
+    from smftools.parallel_utils import configure_worker_threads
+
+    with ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=configure_worker_threads,
+        initargs=(1,),
+    ) as executor:
+        return list(executor.map(_plot_seq_encoding_one_group, _iter_group_args()))
+
+
+# ---------------------------------------------------------------------------
 
 
 def plot_variant_segment_clustermaps(
@@ -886,6 +1300,7 @@ def plot_variant_segment_clustermaps(
     mismatch_type_obs_col: str | None = None,
     mismatch_type_colors: Dict[str, str] | None = None,
     mismatch_type_legend_prefix: str = "Mismatch type",
+    n_jobs: int = 1,
 ) -> List[Dict[str, Any]]:
     """Plot variant segment heatmaps with variant call and breakpoint overlays.
 
@@ -947,10 +1362,6 @@ def plot_variant_segment_clustermaps(
     seq1_label = seq1_column[: -len(suffix)] if seq1_column.endswith(suffix) else seq1_column
     seq2_label = seq2_column[: -len(suffix)] if seq2_column.endswith(suffix) else seq2_column
 
-    # Colormap: 0=no coverage, 1=seq1, 2=seq2, 3=transition zone (beige)
-    seg_cmap = colors.ListedColormap([no_coverage_color, seq1_color, seq2_color, transition_color])
-    seg_norm = colors.BoundaryNorm([0, 0.5, 1.5, 2.5, 3.5], seg_cmap.N)
-
     if mismatch_type_colors is None:
         mismatch_type_colors = {
             "no_segment_mismatch": "#bdbdbd",
@@ -963,281 +1374,95 @@ def plot_variant_segment_clustermaps(
     variant_call_layer = f"{output_prefix}_variant_call"
     has_variant_calls = variant_call_layer in adata.layers
 
-    results: List[Dict[str, Any]] = []
-
-    for ref in adata.obs[reference_col].cat.categories:
-        for sample in adata.obs[sample_col].cat.categories:
-            row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample)
-            if not bool(row_mask.any()):
-                continue
-
-            subset = adata[row_mask, :].copy()
-            seg_matrix = np.asarray(subset.layers[variant_segment_layer])
-            n_reads, n_pos = seg_matrix.shape
-
-            if max_reads is not None and n_reads > max_reads:
-                subset = subset[:max_reads, :].copy()
-                seg_matrix = seg_matrix[:max_reads]
-                n_reads = max_reads
-
-            # Filter out positions with no coverage in any read
-            if read_span_layer in subset.layers:
-                span_matrix = np.asarray(subset.layers[read_span_layer])
-                if max_reads is not None:
-                    span_matrix = span_matrix[:max_reads]
-                col_has_coverage = np.any(span_matrix > 0, axis=0)
-            else:
-                col_has_coverage = np.any(seg_matrix > 0, axis=0)
-            if not np.all(col_has_coverage):
-                seg_matrix = seg_matrix[:, col_has_coverage]
-                subset = subset[:, col_has_coverage].copy()
-
-            # Load variant call matrix for overlays and clustering
-            call_matrix = None
-            if has_variant_calls:
-                call_matrix = np.asarray(subset.layers[variant_call_layer])
-                if max_reads is not None:
-                    call_matrix = call_matrix[:max_reads]
-
-            # Row ordering — cluster on variant call status
-            order = np.arange(n_reads)
-            if sort_by == "hierarchical" and n_reads > 1 and call_matrix is not None:
-                try:
-                    informative_cols = np.any(call_matrix > 0, axis=0)
-                    if informative_cols.any():
-                        cluster_data = call_matrix[:, informative_cols].astype(np.float64)
-                        cluster_data[cluster_data == 1] = 0.0
-                        cluster_data[cluster_data == 2] = 1.0
-                        cluster_data[(cluster_data != 0.0) & (cluster_data != 1.0)] = 0.5
-                        linkage = sch.linkage(cluster_data, method="ward")
-                        order = sch.leaves_list(linkage)
-                except Exception:
-                    pass
-            seg_matrix = seg_matrix[order]
-            if call_matrix is not None:
-                call_matrix = call_matrix[order]
-
-            row_mismatch_labels = None
-            row_mismatch_legend = []
-            if mismatch_type_obs_col is not None and mismatch_type_obs_col in subset.obs:
-                mm_series = subset.obs[mismatch_type_obs_col]
-                mm_values = mm_series.astype("string").to_numpy()[order]
-                row_mismatch_labels = []
-                for val in mm_values:
-                    if pd.isna(val):
-                        row_mismatch_labels.append("unknown")
-                    else:
-                        row_mismatch_labels.append(str(val))
-                row_mismatch_legend = list(dict.fromkeys(row_mismatch_labels))
-
-            # Plot segment heatmap
-            if row_mismatch_labels is None:
-                fig, ax = plt.subplots(figsize=(16, 8))
-                ax_mismatch = None
-            else:
-                fig = plt.figure(figsize=(16, 8))
-                gs = fig.add_gridspec(1, 2, width_ratios=[0.6, 18], wspace=0.02)
-                ax_mismatch = fig.add_subplot(gs[0, 0])
-                ax = fig.add_subplot(gs[0, 1])
-            sns.heatmap(
-                seg_matrix.astype(np.float32),
-                cmap=seg_cmap,
-                norm=seg_norm,
-                ax=ax,
-                yticklabels=False,
-                cbar=False,
-            )
-
-            if row_mismatch_labels is not None and ax_mismatch is not None:
-                mismatch_categories = list(dict.fromkeys(row_mismatch_legend))
-                mismatch_color_list = [
-                    mismatch_type_colors.get(label, "#636363") for label in mismatch_categories
-                ]
-                mismatch_to_code = {label: i for i, label in enumerate(mismatch_categories)}
-                mismatch_codes = np.array(
-                    [mismatch_to_code[label] for label in row_mismatch_labels], dtype=np.int32
-                ).reshape(-1, 1)
-                mismatch_cmap = colors.ListedColormap(mismatch_color_list)
-                mismatch_norm = colors.BoundaryNorm(
-                    np.arange(-0.5, len(mismatch_categories) + 0.5, 1),
-                    mismatch_cmap.N,
-                )
-                ax_mismatch.imshow(
-                    mismatch_codes,
-                    cmap=mismatch_cmap,
-                    norm=mismatch_norm,
-                    aspect="auto",
-                    interpolation="nearest",
-                    origin="upper",
-                )
-                ax_mismatch.set_xticks([])
-                ax_mismatch.set_yticks([])
-                strip_title = (
-                    mismatch_type_obs_col.replace("_", " ").title()
-                    if mismatch_type_obs_col
-                    else "Type"
-                )
-                ax_mismatch.set_title(strip_title, fontsize=8, pad=8)
-
-            # Overlay variant call circles
-            if call_matrix is not None:
-                ref1_rows, ref1_cols = np.where(call_matrix == 1)
-                ref2_rows, ref2_cols = np.where(call_matrix == 2)
-
-                if len(ref1_rows) > 0:
-                    ax.scatter(
-                        ref1_cols + 0.5,
-                        ref1_rows + 0.5,
-                        c=ref1_marker_color,
-                        s=marker_size,
-                        marker="o",
-                        edgecolors="gray",
-                        linewidths=0.3,
-                        zorder=3,
-                        label=f"{seq1_label} call",
-                    )
-                if len(ref2_rows) > 0:
-                    ax.scatter(
-                        ref2_cols + 0.5,
-                        ref2_rows + 0.5,
-                        c=ref2_marker_color,
-                        s=marker_size,
-                        marker="o",
-                        edgecolors="gray",
-                        linewidths=0.3,
-                        zorder=3,
-                        label=f"{seq2_label} call",
-                    )
-
-            # Overlay breakpoint circles at the midpoint of each transition zone
-            bp_rows_list = []
-            bp_cols_list = []
-            for r in range(n_reads):
-                row = seg_matrix[r]
-                # Find contiguous runs of value 3 (transition zones)
-                is_trans = row == 3
-                if not np.any(is_trans):
+    # ------------------------------------------------------------------
+    # Phase A: build per-group args (serial — accesses adata)
+    # ------------------------------------------------------------------
+    def _iter_group_args():
+        for ref in adata.obs[reference_col].cat.categories:
+            for sample in adata.obs[sample_col].cat.categories:
+                row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample)
+                if not bool(row_mask.any()):
                     continue
-                trans_positions = np.where(is_trans)[0]
-                # Group into contiguous runs
-                breaks = np.where(np.diff(trans_positions) > 1)[0] + 1
-                runs = np.split(trans_positions, breaks)
-                for run in runs:
-                    midpoint = run[len(run) // 2]
-                    bp_rows_list.append(r)
-                    bp_cols_list.append(midpoint)
 
-            if bp_rows_list:
-                ax.scatter(
-                    np.array(bp_cols_list) + 0.5,
-                    np.array(bp_rows_list) + 0.5,
-                    c=breakpoint_marker_color,
-                    s=marker_size,
-                    marker="o",
-                    edgecolors="gray",
-                    linewidths=0.3,
-                    zorder=4,
-                    label="Breakpoint",
-                )
+                subset = adata[row_mask, :].copy()
+                seg_matrix = np.asarray(subset.layers[variant_segment_layer])
+                n_reads = seg_matrix.shape[0]
 
-            ax.set_title(f"{ref} — {sample} — {n_reads} reads", fontsize=10)
-            ax.set_ylabel("Reads")
+                if max_reads is not None and n_reads > max_reads:
+                    subset = subset[:max_reads, :].copy()
+                    seg_matrix = seg_matrix[:max_reads]
+                    n_reads = max_reads
 
-            if show_position_axis:
-                n_cols = seg_matrix.shape[1]
-                step = max(1, n_cols // position_axis_tick_target)
-                sites = np.arange(0, n_cols, step)
-                ax.set_xticks(sites)
-                ax.set_xticklabels(
-                    subset.var_names[sites].astype(str),
-                    rotation=xtick_rotation,
-                    fontsize=xtick_fontsize,
-                )
-            else:
-                ax.set_xticks([])
+                # column filter: drop positions with no coverage
+                if read_span_layer in subset.layers:
+                    span_matrix = np.asarray(subset.layers[read_span_layer])
+                    col_has_coverage = np.any(span_matrix > 0, axis=0)
+                else:
+                    col_has_coverage = np.any(seg_matrix > 0, axis=0)
+                if not np.all(col_has_coverage):
+                    seg_matrix = seg_matrix[:, col_has_coverage]
+                    subset = subset[:, col_has_coverage].copy()
 
-            legend_elements = [
-                patches.Patch(facecolor=seq1_color, label=f"{seq1_label} segment"),
-                patches.Patch(facecolor=seq2_color, label=f"{seq2_label} segment"),
-                patches.Patch(facecolor=transition_color, label="Transition zone"),
-                patches.Patch(
-                    facecolor=no_coverage_color,
-                    edgecolor="gray",
-                    linewidth=0.5,
-                    label="No coverage",
-                ),
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    markerfacecolor=ref1_marker_color,
-                    markeredgecolor="gray",
-                    markersize=5,
-                    label=f"{seq1_label} call",
-                ),
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    markerfacecolor=ref2_marker_color,
-                    markeredgecolor="gray",
-                    markersize=5,
-                    label=f"{seq2_label} call",
-                ),
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    markerfacecolor=breakpoint_marker_color,
-                    markeredgecolor="gray",
-                    markersize=5,
-                    label="Breakpoint",
-                ),
-            ]
-            if row_mismatch_labels is not None:
-                for label in row_mismatch_legend:
-                    legend_elements.append(
-                        patches.Patch(
-                            facecolor=mismatch_type_colors.get(label, "#636363"),
-                            label=f"{mismatch_type_legend_prefix}: {label}",
-                        )
-                    )
-            ax.legend(
-                handles=legend_elements,
-                loc="upper left",
-                bbox_to_anchor=(1.02, 1.0),
-                fontsize=7,
-                framealpha=0.8,
-                frameon=False,
-            )
+                call_matrix = None
+                if has_variant_calls:
+                    call_matrix = np.asarray(subset.layers[variant_call_layer])
 
-            fig.tight_layout(rect=(0, 0, 0.88, 1))
+                var_names = np.asarray(subset.var_names)
 
-            out_file = None
-            if save_path is not None:
-                safe_name = f"{ref}__{sample}__variant_segments".replace("=", "").replace(",", "_")
-                out_file = save_path / f"{safe_name}.png"
-                fig.savefig(out_file, dpi=300, bbox_inches="tight")
-                plt.close(fig)
-                logger.info("Saved variant segment clustermap to %s.", out_file)
-            else:
-                plt.show()
+                # extract mismatch strip values (unordered; worker applies sort order)
+                row_mismatch_raw = None
+                if mismatch_type_obs_col is not None and mismatch_type_obs_col in subset.obs:
+                    row_mismatch_raw = subset.obs[mismatch_type_obs_col].astype("string").to_numpy()
 
-            n_with_bp = int(np.sum(np.any(seg_matrix == 3, axis=1)))
-            results.append(
-                {
-                    "reference": str(ref),
+                yield {
+                    "seg_matrix": seg_matrix,
+                    "call_matrix": call_matrix,
+                    "var_names": var_names,
+                    "ref": str(ref),
                     "sample": str(sample),
                     "n_reads": n_reads,
-                    "n_reads_with_breakpoints": n_with_bp,
-                    "output_path": str(out_file) if out_file is not None else None,
+                    "seq1_label": seq1_label,
+                    "seq2_label": seq2_label,
+                    "seq1_color": seq1_color,
+                    "seq2_color": seq2_color,
+                    "transition_color": transition_color,
+                    "no_coverage_color": no_coverage_color,
+                    "ref1_marker_color": ref1_marker_color,
+                    "ref2_marker_color": ref2_marker_color,
+                    "breakpoint_marker_color": breakpoint_marker_color,
+                    "marker_size": float(marker_size),
+                    "show_position_axis": show_position_axis,
+                    "position_axis_tick_target": position_axis_tick_target,
+                    "xtick_rotation": xtick_rotation,
+                    "xtick_fontsize": xtick_fontsize,
+                    "mismatch_type_obs_col": mismatch_type_obs_col or "",
+                    "row_mismatch_raw": row_mismatch_raw,
+                    "mismatch_type_colors": dict(mismatch_type_colors),
+                    "mismatch_type_legend_prefix": mismatch_type_legend_prefix,
+                    "sort_by": sort_by,
+                    "save_path": str(save_path) if save_path is not None else None,
                 }
-            )
 
-    return results
+    # ------------------------------------------------------------------
+    # Phase B: dispatch (serial or parallel)
+    # ------------------------------------------------------------------
+    n_workers = _resolve_n_jobs(n_jobs) if save_path is not None else 1
+
+    if n_workers <= 1:
+        return [_plot_variant_segment_one_group(a) for a in _iter_group_args()]
+
+    from concurrent.futures import ProcessPoolExecutor
+
+    from smftools.parallel_utils import configure_worker_threads
+
+    with ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=configure_worker_threads,
+        initargs=(1,),
+    ) as executor:
+        return list(executor.map(_plot_variant_segment_one_group, _iter_group_args()))
+
+
 
 
 def plot_variant_segment_clustermaps_multi_obs(
@@ -1264,6 +1489,7 @@ def plot_variant_segment_clustermaps_multi_obs(
     xtick_rotation: int = 90,
     xtick_fontsize: int = 9,
     annotation_specs: Sequence[Dict[str, Any]] | None = None,
+    n_jobs: int = 1,
 ) -> List[Dict[str, Any]]:
     """Plot variant segment clustermaps with multiple adjacent categorical strips.
 
@@ -1272,6 +1498,7 @@ def plot_variant_segment_clustermaps_multi_obs(
     - ``colors`` (optional): dict label -> color.
     - ``legend_prefix`` (optional): prefix for legend labels.
     - ``strip_title`` (optional): title shown above strip.
+    - ``n_jobs``: Number of parallel worker processes (``-1`` = all CPUs).
     """
     output_prefix = f"{seq1_column}__{seq2_column}"
     if variant_segment_layer is None:
@@ -1291,298 +1518,112 @@ def plot_variant_segment_clustermaps_multi_obs(
     seq1_label = seq1_column[: -len(suffix)] if seq1_column.endswith(suffix) else seq1_column
     seq2_label = seq2_column[: -len(suffix)] if seq2_column.endswith(suffix) else seq2_column
 
-    seg_cmap = colors.ListedColormap([no_coverage_color, seq1_color, seq2_color, transition_color])
-    seg_norm = colors.BoundaryNorm([0, 0.5, 1.5, 2.5, 3.5], seg_cmap.N)
-
     variant_call_layer = f"{output_prefix}_variant_call"
     has_variant_calls = variant_call_layer in adata.layers
     specs = list(annotation_specs or [])
 
-    results: List[Dict[str, Any]] = []
-
-    for ref in adata.obs[reference_col].cat.categories:
-        for sample in adata.obs[sample_col].cat.categories:
-            row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample)
-            if not bool(row_mask.any()):
-                continue
-
-            subset = adata[row_mask, :].copy()
-            seg_matrix = np.asarray(subset.layers[variant_segment_layer])
-            n_reads = seg_matrix.shape[0]
-
-            if max_reads is not None and n_reads > max_reads:
-                subset = subset[:max_reads, :].copy()
-                seg_matrix = seg_matrix[:max_reads]
-                n_reads = max_reads
-
-            if read_span_layer in subset.layers:
-                span_matrix = np.asarray(subset.layers[read_span_layer])
-                if max_reads is not None:
-                    span_matrix = span_matrix[:max_reads]
-                col_has_coverage = np.any(span_matrix > 0, axis=0)
-            else:
-                col_has_coverage = np.any(seg_matrix > 0, axis=0)
-            if not np.all(col_has_coverage):
-                seg_matrix = seg_matrix[:, col_has_coverage]
-                subset = subset[:, col_has_coverage].copy()
-
-            call_matrix = None
-            if has_variant_calls:
-                call_matrix = np.asarray(subset.layers[variant_call_layer])
-                if max_reads is not None:
-                    call_matrix = call_matrix[:max_reads]
-
-            order = np.arange(n_reads)
-            if sort_by == "hierarchical" and n_reads > 1 and call_matrix is not None:
-                try:
-                    informative_cols = np.any(call_matrix > 0, axis=0)
-                    if informative_cols.any():
-                        cluster_data = call_matrix[:, informative_cols].astype(np.float64)
-                        cluster_data[cluster_data == 1] = 0.0
-                        cluster_data[cluster_data == 2] = 1.0
-                        cluster_data[(cluster_data != 0.0) & (cluster_data != 1.0)] = 0.5
-                        linkage = sch.linkage(cluster_data, method="ward")
-                        order = sch.leaves_list(linkage)
-                except Exception:
-                    pass
-            seg_matrix = seg_matrix[order]
-            if call_matrix is not None:
-                call_matrix = call_matrix[order]
-
-            annotation_data: List[Dict[str, Any]] = []
-            for spec in specs:
-                obs_col = str(spec.get("obs_col", ""))
-                if not obs_col or obs_col not in subset.obs.columns:
+    # ------------------------------------------------------------------
+    # Phase A: build per-group args (serial — accesses adata)
+    # ------------------------------------------------------------------
+    def _iter_group_args():
+        for ref in adata.obs[reference_col].cat.categories:
+            for sample in adata.obs[sample_col].cat.categories:
+                row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample)
+                if not bool(row_mask.any()):
                     continue
-                vals = subset.obs[obs_col].astype("string").to_numpy()[order]
-                labels = ["unknown" if pd.isna(v) else str(v) for v in vals]
-                legend_order = list(dict.fromkeys(labels))
-                color_map = dict(spec.get("colors") or {})
-                if not color_map:
-                    palette = sns.color_palette("tab20", n_colors=max(1, len(legend_order)))
-                    color_map = {
-                        lab: colors.to_hex(palette[i]) for i, lab in enumerate(legend_order)
-                    }
-                annotation_data.append(
-                    {
-                        "obs_col": obs_col,
-                        "labels": labels,
-                        "legend_order": legend_order,
-                        "colors": color_map,
-                        "legend_prefix": str(
-                            spec.get("legend_prefix", obs_col.replace("_", " ").title())
-                        ),
-                        "strip_title": str(
-                            spec.get("strip_title", obs_col.replace("_", " ").title())
-                        ),
-                    }
-                )
 
-            if annotation_data:
-                fig = plt.figure(figsize=(19, 8))
-                # Dedicated legend panel on the far right prevents clipping/cropping.
-                width_ratios = [0.9] * len(annotation_data) + [20, 6]
-                gs = fig.add_gridspec(1, len(width_ratios), width_ratios=width_ratios, wspace=0.06)
-                strip_axes = [fig.add_subplot(gs[0, i]) for i in range(len(annotation_data))]
-                ax = fig.add_subplot(gs[0, len(annotation_data)])
-                legend_ax = fig.add_subplot(gs[0, len(annotation_data) + 1])
-                legend_ax.axis("off")
-            else:
-                fig, ax = plt.subplots(figsize=(16, 8))
-                strip_axes = []
-                legend_ax = ax
+                subset = adata[row_mask, :].copy()
+                seg_matrix = np.asarray(subset.layers[variant_segment_layer])
+                n_reads = seg_matrix.shape[0]
 
-            sns.heatmap(
-                seg_matrix.astype(np.float32),
-                cmap=seg_cmap,
-                norm=seg_norm,
-                ax=ax,
-                yticklabels=False,
-                cbar=False,
-            )
+                if max_reads is not None and n_reads > max_reads:
+                    subset = subset[:max_reads, :].copy()
+                    seg_matrix = seg_matrix[:max_reads]
+                    n_reads = max_reads
 
-            for strip_ax, ann in zip(strip_axes, annotation_data):
-                cats = ann["legend_order"]
-                cmap = colors.ListedColormap(
-                    [ann["colors"].get(label, "#636363") for label in cats]
-                )
-                norm = colors.BoundaryNorm(np.arange(-0.5, len(cats) + 0.5, 1), cmap.N)
-                code_map = {label: i for i, label in enumerate(cats)}
-                code_arr = np.array(
-                    [code_map[label] for label in ann["labels"]], dtype=np.int32
-                ).reshape(-1, 1)
-                strip_ax.imshow(
-                    code_arr,
-                    cmap=cmap,
-                    norm=norm,
-                    aspect="auto",
-                    interpolation="nearest",
-                    origin="upper",
-                )
-                strip_ax.set_xticks([])
-                strip_ax.set_yticks([])
-                strip_ax.set_title(ann["strip_title"], fontsize=8, pad=10)
+                if read_span_layer in subset.layers:
+                    span_matrix = np.asarray(subset.layers[read_span_layer])
+                    if max_reads is not None:
+                        span_matrix = span_matrix[:max_reads]
+                    col_has_coverage = np.any(span_matrix > 0, axis=0)
+                else:
+                    col_has_coverage = np.any(seg_matrix > 0, axis=0)
+                if not np.all(col_has_coverage):
+                    seg_matrix = seg_matrix[:, col_has_coverage]
+                    subset = subset[:, col_has_coverage].copy()
 
-            if call_matrix is not None:
-                ref1_rows, ref1_cols = np.where(call_matrix == 1)
-                ref2_rows, ref2_cols = np.where(call_matrix == 2)
-                if len(ref1_rows) > 0:
-                    ax.scatter(
-                        ref1_cols + 0.5,
-                        ref1_rows + 0.5,
-                        c=ref1_marker_color,
-                        s=marker_size,
-                        marker="o",
-                        edgecolors="gray",
-                        linewidths=0.3,
-                        zorder=3,
-                    )
-                if len(ref2_rows) > 0:
-                    ax.scatter(
-                        ref2_cols + 0.5,
-                        ref2_rows + 0.5,
-                        c=ref2_marker_color,
-                        s=marker_size,
-                        marker="o",
-                        edgecolors="gray",
-                        linewidths=0.3,
-                        zorder=3,
+                call_matrix = None
+                if has_variant_calls:
+                    call_matrix = np.asarray(subset.layers[variant_call_layer])
+                    if max_reads is not None:
+                        call_matrix = call_matrix[:max_reads]
+
+                annotation_data_raw: List[Dict[str, Any]] = []
+                for spec in specs:
+                    obs_col = str(spec.get("obs_col", ""))
+                    if not obs_col or obs_col not in subset.obs.columns:
+                        continue
+                    raw_labels = subset.obs[obs_col].astype("string").to_numpy()
+                    labels_str = ["unknown" if pd.isna(v) else str(v) for v in raw_labels]
+                    legend_order = list(dict.fromkeys(labels_str))
+                    color_map = dict(spec.get("colors") or {})
+                    if not color_map:
+                        palette = sns.color_palette("tab20", n_colors=max(1, len(legend_order)))
+                        color_map = {
+                            lab: colors.to_hex(palette[i]) for i, lab in enumerate(legend_order)
+                        }
+                    annotation_data_raw.append(
+                        {
+                            "raw_labels": raw_labels,
+                            "colors": color_map,
+                            "legend_prefix": str(
+                                spec.get("legend_prefix", obs_col.replace("_", " ").title())
+                            ),
+                            "strip_title": str(
+                                spec.get("strip_title", obs_col.replace("_", " ").title())
+                            ),
+                        }
                     )
 
-            bp_rows_list = []
-            bp_cols_list = []
-            for r in range(n_reads):
-                row = seg_matrix[r]
-                is_trans = row == 3
-                if not np.any(is_trans):
-                    continue
-                trans_positions = np.where(is_trans)[0]
-                breaks = np.where(np.diff(trans_positions) > 1)[0] + 1
-                runs = np.split(trans_positions, breaks)
-                for run in runs:
-                    bp_rows_list.append(r)
-                    bp_cols_list.append(run[len(run) // 2])
-            if bp_rows_list:
-                ax.scatter(
-                    np.array(bp_cols_list) + 0.5,
-                    np.array(bp_rows_list) + 0.5,
-                    c=breakpoint_marker_color,
-                    s=marker_size,
-                    marker="o",
-                    edgecolors="gray",
-                    linewidths=0.3,
-                    zorder=4,
-                )
-
-            ax.set_title(f"{ref} — {sample} — {n_reads} reads", fontsize=10)
-            ax.set_ylabel("Reads")
-            if show_position_axis:
-                n_cols = seg_matrix.shape[1]
-                step = max(1, n_cols // position_axis_tick_target)
-                sites = np.arange(0, n_cols, step)
-                ax.set_xticks(sites)
-                ax.set_xticklabels(
-                    subset.var_names[sites].astype(str),
-                    rotation=xtick_rotation,
-                    fontsize=xtick_fontsize,
-                )
-            else:
-                ax.set_xticks([])
-
-            base_legend = [
-                patches.Patch(facecolor=seq1_color, label=f"{seq1_label} segment"),
-                patches.Patch(facecolor=seq2_color, label=f"{seq2_label} segment"),
-                patches.Patch(facecolor=transition_color, label="Transition zone"),
-                patches.Patch(
-                    facecolor=no_coverage_color,
-                    edgecolor="gray",
-                    linewidth=0.5,
-                    label="No coverage",
-                ),
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    markerfacecolor=ref1_marker_color,
-                    markeredgecolor="gray",
-                    markersize=5,
-                    label=f"{seq1_label} call",
-                ),
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    markerfacecolor=ref2_marker_color,
-                    markeredgecolor="gray",
-                    markersize=5,
-                    label=f"{seq2_label} call",
-                ),
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="w",
-                    markerfacecolor=breakpoint_marker_color,
-                    markeredgecolor="gray",
-                    markersize=5,
-                    label="Breakpoint",
-                ),
-            ]
-            lg_main = legend_ax.legend(
-                handles=base_legend,
-                title="Segments",
-                loc="upper left",
-                bbox_to_anchor=(0.0, 1.0),
-                fontsize=7,
-                title_fontsize=8,
-                framealpha=0.8,
-                frameon=False,
-            )
-            legend_ax.add_artist(lg_main)
-
-            y_anchor = 0.68
-            for ann in annotation_data:
-                ann_handles = [
-                    patches.Patch(facecolor=ann["colors"].get(label, "#636363"), label=str(label))
-                    for label in ann["legend_order"]
-                ]
-                lg = legend_ax.legend(
-                    handles=ann_handles,
-                    title=ann["legend_prefix"],
-                    loc="upper left",
-                    bbox_to_anchor=(0.0, y_anchor),
-                    fontsize=7,
-                    title_fontsize=8,
-                    framealpha=0.8,
-                    frameon=False,
-                )
-                legend_ax.add_artist(lg)
-                y_anchor -= max(0.16, 0.04 * max(1, len(ann_handles)))
-
-            fig.tight_layout(rect=(0, 0, 1, 1))
-
-            out_file = None
-            if save_path is not None:
-                safe_name = f"{ref}__{sample}__variant_segments".replace("=", "").replace(",", "_")
-                out_file = save_path / f"{safe_name}.png"
-                fig.savefig(out_file, dpi=300, bbox_inches="tight")
-                plt.close(fig)
-                logger.info("Saved multi-obs variant segment clustermap to %s.", out_file)
-            else:
-                plt.show()
-
-            n_with_bp = int(np.sum(np.any(seg_matrix == 3, axis=1)))
-            results.append(
-                {
-                    "reference": str(ref),
+                yield {
+                    "seg_matrix": seg_matrix,
+                    "call_matrix": call_matrix,
+                    "var_names": np.asarray(subset.var_names),
+                    "ref": str(ref),
                     "sample": str(sample),
                     "n_reads": n_reads,
-                    "n_reads_with_breakpoints": n_with_bp,
-                    "n_obs_annotation_strips": int(len(annotation_data)),
-                    "output_path": str(out_file) if out_file is not None else None,
+                    "sort_by": sort_by,
+                    "seq1_label": seq1_label,
+                    "seq2_label": seq2_label,
+                    "seq1_color": seq1_color,
+                    "seq2_color": seq2_color,
+                    "transition_color": transition_color,
+                    "no_coverage_color": no_coverage_color,
+                    "ref1_marker_color": ref1_marker_color,
+                    "ref2_marker_color": ref2_marker_color,
+                    "breakpoint_marker_color": breakpoint_marker_color,
+                    "marker_size": marker_size,
+                    "show_position_axis": show_position_axis,
+                    "position_axis_tick_target": position_axis_tick_target,
+                    "xtick_rotation": xtick_rotation,
+                    "xtick_fontsize": xtick_fontsize,
+                    "annotation_data": annotation_data_raw,
+                    "save_path": str(save_path) if save_path is not None else None,
                 }
-            )
 
-    return results
+    # ------------------------------------------------------------------
+    # Phase B: dispatch
+    # ------------------------------------------------------------------
+    n_workers = _resolve_n_jobs(n_jobs) if save_path is not None else 1
+    if n_workers <= 1:
+        return [_plot_variant_segment_multi_obs_one_group(a) for a in _iter_group_args()]
+    from concurrent.futures import ProcessPoolExecutor
+
+    from smftools.parallel_utils import configure_worker_threads
+
+    with ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=configure_worker_threads,
+        initargs=(1,),
+    ) as executor:
+        return list(executor.map(_plot_variant_segment_multi_obs_one_group, _iter_group_args()))

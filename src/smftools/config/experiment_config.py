@@ -913,6 +913,7 @@ class ExperimentConfig:
     clustermap_cmap_cpg: Optional[str] = "coolwarm"
     clustermap_cmap_a: Optional[str] = "coolwarm"
     spatial_clustermap_sortby: Optional[str] = "gpc"
+    omit_chimeric_reads: bool = False
     overlay_variant_calls: bool = False
     variant_overlay_seq1_color: str = "white"
     variant_overlay_seq2_color: str = "black"
@@ -1669,6 +1670,7 @@ class ExperimentConfig:
             clustermap_cmap_cpg=merged.get("clustermap_cmap_cpg", "coolwarm"),
             clustermap_cmap_a=merged.get("clustermap_cmap_a", "coolwarm"),
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
+            omit_chimeric_reads=_parse_bool(merged.get("omit_chimeric_reads", False)),
             overlay_variant_calls=_parse_bool(merged.get("overlay_variant_calls", False)),
             variant_overlay_seq1_color=merged.get("variant_overlay_seq1_color", "white"),
             variant_overlay_seq2_color=merged.get("variant_overlay_seq2_color", "black"),
