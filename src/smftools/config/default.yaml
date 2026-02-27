@@ -238,7 +238,7 @@ clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
-omit_chimeric_reads: False
+omit_chimeric_reads: True
 
 # Clustermap variant params
 overlay_variant_calls: false
