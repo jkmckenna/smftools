@@ -35,9 +35,8 @@ def test_combined_hmm_raw_clustermap_overlay_uses_global_var_indices(tmp_path, m
     def fake_overlay(*args, **kwargs):
         captured_panels.extend(args[3])
         captured_kwargs.update(kwargs)
-        return True
 
-    monkeypatch.setattr(hmm_plotting, "_overlay_variant_calls_on_panels", fake_overlay)
+    monkeypatch.setattr(hmm_plotting, "_apply_variant_overlay_np", fake_overlay)
 
     hmm_plotting.combined_hmm_raw_clustermap(
         adata,
@@ -64,9 +63,8 @@ def test_combined_hmm_length_clustermap_overlay_uses_global_var_indices(tmp_path
     def fake_overlay(*args, **kwargs):
         captured_panels.extend(args[3])
         captured_kwargs.update(kwargs)
-        return True
 
-    monkeypatch.setattr(hmm_plotting, "_overlay_variant_calls_on_panels", fake_overlay)
+    monkeypatch.setattr(hmm_plotting, "_apply_variant_overlay_np", fake_overlay)
 
     hmm_plotting.combined_hmm_length_clustermap(
         adata,

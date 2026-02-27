@@ -34,6 +34,17 @@ PdfPages = pdf_backend.PdfPages
 
 logger = get_logger(__name__)
 
+from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs  # noqa: E402
+
+
+def _pick_xticks(labels: np.ndarray, n_ticks: int):
+    """Pick evenly-spaced tick indices/labels from an array."""
+    if labels.size == 0:
+        return [], []
+    idx = np.linspace(0, len(labels) - 1, n_ticks).round().astype(int)
+    idx = np.unique(idx)
+    return idx.tolist(), labels[idx].tolist()
+
 
 def _local_sites_to_global_indices(
     adata,
@@ -604,6 +615,277 @@ def _build_length_feature_cmap(
     return cmap, norm
 
 
+def _apply_variant_overlay_np(
+    vc_matrix: np.ndarray,
+    ordered_obs_names: list,
+    subset_obs_names: list,
+    panels_with_site_indices: list,
+    seq1_color: str = "white",
+    seq2_color: str = "black",
+    marker_size: float = 4.0,
+) -> None:
+    """Apply variant call scatter overlay using pre-extracted numpy arrays.
+
+    Parameters
+    ----------
+    vc_matrix : np.ndarray
+        Variant call matrix (n_subset_obs, n_vars) for the group.
+    ordered_obs_names : list
+        Obs names in display order (after binning + sorting).
+    subset_obs_names : list
+        Obs names for the subset in original order (index into vc_matrix rows).
+    panels_with_site_indices : list of (ax, site_indices)
+        Each entry is a matplotlib axes and the global var indices for that panel's columns.
+    seq1_color, seq2_color : str
+        Colors for variant call values 1 and 2.
+    marker_size : float
+        Scatter marker size.
+    """
+    subset_obs_to_row = {name: i for i, name in enumerate(subset_obs_names)}
+    obs_row_in_vc = [subset_obs_to_row[n] for n in ordered_obs_names if n in subset_obs_to_row]
+    heatmap_rows = [i for i, n in enumerate(ordered_obs_names) if n in subset_obs_to_row]
+    if not obs_row_in_vc:
+        return
+    vc_sub = vc_matrix[np.array(obs_row_in_vc), :]
+    has_calls = np.isin(vc_sub, [1, 2]).any(axis=0)
+    call_col_indices = np.where(has_calls)[0]
+    if len(call_col_indices) == 0:
+        return
+    call_sub = vc_sub[:, call_col_indices]
+    heatmap_row_indices = np.array(heatmap_rows)
+    for ax, site_indices in panels_with_site_indices:
+        site_indices = np.asarray(site_indices)
+        if site_indices.size == 0:
+            continue
+        sorted_order = np.argsort(site_indices)
+        sorted_sites = site_indices[sorted_order]
+        ins = np.clip(np.searchsorted(sorted_sites, call_col_indices), 0, len(sorted_sites) - 1)
+        lft = np.clip(ins - 1, 0, len(sorted_sites) - 1)
+        nearest = sorted_order[np.where(
+            np.abs(sorted_sites[lft].astype(float) - call_col_indices.astype(float)) <
+            np.abs(sorted_sites[ins].astype(float) - call_col_indices.astype(float)),
+            lft, ins,
+        )]
+        for call_val, color in [(1, seq1_color), (2, seq2_color)]:
+            lr, lc = np.where(call_sub == call_val)
+            if len(lr):
+                ax.scatter(
+                    nearest[lc] + 0.5, heatmap_row_indices[lr] + 0.5,
+                    c=color, s=marker_size, marker="o",
+                    edgecolors="gray", linewidths=0.3, zorder=3,
+                )
+
+
+def _hmm_raw_one_group(args: dict) -> dict:
+    """Render one (ref, sample) HMM raw clustermap and save. Module-level for pickling."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import numpy as np
+    from pathlib import Path
+
+    import scipy.cluster.hierarchy as sch
+
+    from smftools.optional_imports import require
+
+    _gridspec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plotting")
+    _plt = require("matplotlib.pyplot", extra="plotting", purpose="HMM plots")
+    _sns = require("seaborn", extra="plotting", purpose="plot styling")
+    import smftools.plotting.hmm_plotting as _hmm_mod
+    from smftools.plotting.hmm_plotting import _build_hmm_feature_cmap, _pick_xticks
+    from smftools.plotting.plotting_utils import (
+        _layer_to_numpy_np,
+        _methylation_fraction_for_layer,
+        normalized_mean,
+    )
+
+    ref: str = args["ref"]
+    sample: str = args["sample"]
+    signal_type: str = args["signal_type"]
+    hmm_feature_layer: str = args["hmm_feature_layer"]
+    gpc_sites: np.ndarray = args["gpc_sites"]
+    cpg_sites: np.ndarray = args["cpg_sites"]
+    any_c_sites: np.ndarray = args["any_c_sites"]
+    any_a_sites: np.ndarray = args["any_a_sites"]
+    hmm_sites: np.ndarray = args["hmm_sites"]
+    hmm_labels: np.ndarray = args["hmm_labels"]
+    gpc_labels: np.ndarray = args["gpc_labels"]
+    cpg_labels: np.ndarray = args["cpg_labels"]
+    any_c_labels: np.ndarray = args["any_c_labels"]
+    any_a_labels: np.ndarray = args["any_a_labels"]
+    layer_data: dict = args["layer_data"]
+    layer_gpc: str = args["layer_gpc"]
+    layer_cpg: str = args["layer_cpg"]
+    layer_c: str = args["layer_c"]
+    layer_a: str = args["layer_a"]
+    bins_np: dict = args["bins_np"]
+    sort_by: str = args["sort_by"]
+    obs_sort_values = args.get("obs_sort_values")
+    total_reads: int = args["total_reads"]
+    normalize_hmm: bool = args["normalize_hmm"]
+    fill_nan_strategy: str = args["fill_nan_strategy"]
+    fill_nan_value: float = args["fill_nan_value"]
+    cmap_hmm = args["cmap_hmm"]
+    cmap_gpc: str = args["cmap_gpc"]
+    cmap_cpg: str = args["cmap_cpg"]
+    cmap_c: str = args["cmap_c"]
+    cmap_a: str = args["cmap_a"]
+    n_xticks_hmm: int = args["n_xticks_hmm"]
+    n_xticks_gpc: int = args["n_xticks_gpc"]
+    n_xticks_cpg: int = args["n_xticks_cpg"]
+    n_xticks_any_c: int = args["n_xticks_any_c"]
+    n_xticks_a: int = args["n_xticks_a"]
+    overlay_variant_calls: bool = args["overlay_variant_calls"]
+    vc_matrix = args.get("vc_matrix")
+    subset_obs_names: list = args.get("subset_obs_names", [])
+    panel_global_sites = args.get("panel_global_sites")
+    variant_overlay_seq1_color: str = args["variant_overlay_seq1_color"]
+    variant_overlay_seq2_color: str = args["variant_overlay_seq2_color"]
+    variant_overlay_marker_size: float = args["variant_overlay_marker_size"]
+    save_path = args["save_path"]
+
+    kw = dict(fill_nan_strategy=fill_nan_strategy, fill_nan_value=fill_nan_value)
+    kw_raw = dict(fill_nan_strategy="none", fill_nan_value=fill_nan_value)
+    arr_hmm = layer_data.get(hmm_feature_layer)
+    arr_gpc = layer_data.get(layer_gpc)
+    arr_cpg = layer_data.get(layer_cpg)
+    arr_c = layer_data.get(layer_c)
+    arr_a = layer_data.get(layer_a)
+
+    stacked_hmm, stacked_hmm_raw = [], []
+    stacked_any_c, stacked_any_c_raw = [], []
+    stacked_gpc, stacked_gpc_raw = [], []
+    stacked_cpg, stacked_cpg_raw = [], []
+    stacked_any_a, stacked_any_a_raw = [], []
+    ordered_obs_names: list = []
+    row_labels: list = []
+    bin_labels_list: list = []
+    bin_boundaries: list = []
+    last_idx = 0
+
+    for bin_label, bin_filter in bins_np.items():
+        bin_rows = np.where(bin_filter)[0]
+        n = len(bin_rows)
+        if n == 0:
+            continue
+        pct = (n / total_reads) * 100 if total_reads else 0
+
+        if n < 2:
+            order = np.arange(n)
+        elif sort_by.startswith("obs:") and obs_sort_values is not None:
+            order = np.argsort(obs_sort_values[bin_rows])
+        elif sort_by == "gpc" and gpc_sites.size and arr_gpc is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_gpc[bin_rows], gpc_sites, **kw), method="ward"))
+        elif sort_by == "cpg" and cpg_sites.size and arr_cpg is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_cpg[bin_rows], cpg_sites, **kw), method="ward"))
+        elif sort_by == "c" and any_c_sites.size and arr_c is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_c[bin_rows], any_c_sites, **kw), method="ward"))
+        elif sort_by == "a" and any_a_sites.size and arr_a is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_a[bin_rows], any_a_sites, **kw), method="ward"))
+        elif sort_by == "gpc_cpg" and gpc_sites.size and cpg_sites.size and arr_gpc is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_gpc[bin_rows], None, **kw), method="ward"))
+        elif sort_by == "hmm" and hmm_sites.size and arr_hmm is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_hmm[bin_rows], hmm_sites, **kw), method="ward"))
+        else:
+            order = np.arange(n)
+
+        ordered_rows = bin_rows[order]
+        ordered_obs_names.extend([subset_obs_names[i] for i in ordered_rows])
+
+        if arr_hmm is not None:
+            stacked_hmm.append(_layer_to_numpy_np(arr_hmm[ordered_rows], hmm_sites, **kw))
+            stacked_hmm_raw.append(_layer_to_numpy_np(arr_hmm[ordered_rows], hmm_sites, **kw_raw))
+        if any_c_sites.size and arr_c is not None:
+            stacked_any_c.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw))
+            stacked_any_c_raw.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw_raw))
+        if gpc_sites.size and arr_gpc is not None:
+            stacked_gpc.append(_layer_to_numpy_np(arr_gpc[ordered_rows], gpc_sites, **kw))
+            stacked_gpc_raw.append(_layer_to_numpy_np(arr_gpc[ordered_rows], gpc_sites, **kw_raw))
+        if cpg_sites.size and arr_cpg is not None:
+            stacked_cpg.append(_layer_to_numpy_np(arr_cpg[ordered_rows], cpg_sites, **kw))
+            stacked_cpg_raw.append(_layer_to_numpy_np(arr_cpg[ordered_rows], cpg_sites, **kw_raw))
+        if any_a_sites.size and arr_a is not None:
+            stacked_any_a.append(_layer_to_numpy_np(arr_a[ordered_rows], any_a_sites, **kw))
+            stacked_any_a_raw.append(_layer_to_numpy_np(arr_a[ordered_rows], any_a_sites, **kw_raw))
+
+        row_labels.extend([bin_label] * n)
+        bin_labels_list.append(f"{bin_label}: {n} reads ({pct:.1f}%)")
+        last_idx += n
+        bin_boundaries.append(last_idx)
+
+    if not stacked_hmm:
+        return {"reference": ref, "sample": sample, "output_path": None}
+
+    hmm_matrix_raw = np.vstack(stacked_hmm_raw)
+    mean_hmm = normalized_mean(hmm_matrix_raw) if normalize_hmm else np.nanmean(hmm_matrix_raw, axis=0)
+    hmm_plot_cmap = _build_hmm_feature_cmap(cmap_hmm)
+    panels = [(f"HMM - {hmm_feature_layer}", hmm_matrix_raw, hmm_labels, hmm_plot_cmap, mean_hmm, n_xticks_hmm)]
+
+    if stacked_any_c:
+        m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
+        panels.append(("C", m, any_c_labels, cmap_c, _methylation_fraction_for_layer(m_raw, layer_c), n_xticks_any_c))
+    if stacked_gpc:
+        m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
+        panels.append(("GpC", m, gpc_labels, cmap_gpc, _methylation_fraction_for_layer(m_raw, layer_gpc), n_xticks_gpc))
+    if stacked_cpg:
+        m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
+        panels.append(("CpG", m, cpg_labels, cmap_cpg, _methylation_fraction_for_layer(m_raw, layer_cpg), n_xticks_cpg))
+    if stacked_any_a:
+        m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
+        panels.append(("A", m, any_a_labels, cmap_a, _methylation_fraction_for_layer(m_raw, layer_a), n_xticks_a))
+
+    n_panels = len(panels)
+    fig = _plt.figure(figsize=(4.5 * n_panels, 10))
+    gs = _gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
+    fig.suptitle(f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98)
+    axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
+    axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
+
+    for i, (name, matrix, labels, cmap, mean_vec, n_ticks) in enumerate(panels):
+        _hmm_mod.clean_barplot(axes_bar[i], mean_vec, name)
+        heatmap_kwargs = dict(cmap=cmap, ax=axes_heat[i], yticklabels=False, cbar=False)
+        if name.startswith("HMM -"):
+            heatmap_kwargs.update(vmin=0.0, vmax=1.0)
+        _sns.heatmap(matrix, **heatmap_kwargs)
+        xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
+        axes_heat[i].set_xticks(xtick_pos)
+        axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
+        for boundary in bin_boundaries[:-1]:
+            axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
+
+    if overlay_variant_calls and vc_matrix is not None and panel_global_sites and ordered_obs_names:
+        try:
+            panels_with_ax_sites = [
+                (axes_heat[i], np.asarray(panel_global_sites.get(name, [])))
+                for i, (name, *_) in enumerate(panels)
+                if np.asarray(panel_global_sites.get(name, [])).size > 0
+            ]
+            if panels_with_ax_sites:
+                _hmm_mod._apply_variant_overlay_np(
+                    vc_matrix, ordered_obs_names, subset_obs_names,
+                    panels_with_ax_sites,
+                    seq1_color=variant_overlay_seq1_color,
+                    seq2_color=variant_overlay_seq2_color,
+                    marker_size=variant_overlay_marker_size,
+                )
+        except Exception:
+            pass
+
+    _plt.tight_layout()
+    out_file = None
+    if save_path is not None:
+        sp = Path(save_path)
+        sp.mkdir(parents=True, exist_ok=True)
+        safe_name = f"{ref}__{sample}".replace("/", "_")
+        out_file = sp / f"{safe_name}.png"
+        _plt.savefig(out_file, dpi=300)
+        _plt.close(fig)
+    else:
+        _plt.show()
+
+    return {"reference": ref, "sample": sample, "output_path": str(out_file) if out_file else None}
+
+
 def combined_hmm_raw_clustermap(
     adata,
     sample_col: str = "Sample_Names",
@@ -643,6 +925,8 @@ def combined_hmm_raw_clustermap(
     variant_overlay_seq1_color: str = "white",
     variant_overlay_seq2_color: str = "black",
     variant_overlay_marker_size: float = 4.0,
+    omit_chimeric_reads: bool = False,
+    n_jobs: int = 1,
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
@@ -654,502 +938,426 @@ def combined_hmm_raw_clustermap(
       'gpc', 'cpg', 'c', 'a', 'gpc_cpg', 'none', 'hmm', or 'obs:<col>'
 
     NaN fill strategy is applied in-memory for clustering/plotting only.
+    omit_chimeric_reads: if True, exclude reads where chimeric_variant_sites==True.
+    n_jobs: number of parallel worker processes (-1 = all CPUs).
     """
     if fill_nan_strategy not in {"none", "value", "col_mean"}:
         raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
 
-    def pick_xticks(labels: np.ndarray, n_ticks: int):
-        """Pick tick indices/labels from an array."""
-        if labels.size == 0:
-            return [], []
-        idx = np.linspace(0, len(labels) - 1, n_ticks).round().astype(int)
-        idx = np.unique(idx)
-        return idx.tolist(), labels[idx].tolist()
+    save_path = Path(save_path) if save_path is not None else None
+    if save_path is not None:
+        save_path.mkdir(parents=True, exist_ok=True)
 
-    # Helper: build a True mask if filter is inactive or column missing
+    signal_type = "deamination" if deaminase else "methylation"
+
     def _mask_or_true(series_name: str, predicate):
-        """Return a mask from predicate or an all-True mask."""
         if series_name not in adata.obs:
             return pd.Series(True, index=adata.obs.index)
         s = adata.obs[series_name]
         try:
             return predicate(s)
         except Exception:
-            # Fallback: all True if bad dtype / predicate failure
             return pd.Series(True, index=adata.obs.index)
 
-    results = []
-    signal_type = "deamination" if deaminase else "methylation"
+    # Pre-locate variant call layer once
+    vc_layer_key = None
+    if overlay_variant_calls:
+        for key in adata.layers:
+            if key.endswith("_variant_call"):
+                vc_layer_key = key
+                break
 
-    for ref in adata.obs[reference_col].cat.categories:
-        for sample in adata.obs[sample_col].cat.categories:
-            # Optionally remap sample label for display
-            display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
-            # Row-level masks (obs)
-            qmask = _mask_or_true(
-                "read_quality",
-                (lambda s: s >= float(min_quality))
-                if (min_quality is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
-            lm_mask = _mask_or_true(
-                "mapped_length",
-                (lambda s: s >= float(min_length))
-                if (min_length is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
-            lrr_mask = _mask_or_true(
-                "mapped_length_to_reference_length_ratio",
-                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
-                if (min_mapped_length_to_reference_length_ratio is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
+    qmask = _mask_or_true("read_quality", (lambda s: s >= float(min_quality)) if min_quality is not None else (lambda s: pd.Series(True, index=s.index)))
+    lm_mask = _mask_or_true("mapped_length", (lambda s: s >= float(min_length)) if min_length is not None else (lambda s: pd.Series(True, index=s.index)))
+    lrr_mask = _mask_or_true("mapped_length_to_reference_length_ratio", (lambda s: s >= float(min_mapped_length_to_reference_length_ratio)) if min_mapped_length_to_reference_length_ratio is not None else (lambda s: pd.Series(True, index=s.index)))
+    demux_mask = _mask_or_true("demux_type", (lambda s: s.astype("string").isin(list(demux_types))) if demux_types is not None else (lambda s: pd.Series(True, index=s.index)))
+    chimeric_mask = _mask_or_true("chimeric_variant_sites", lambda s: ~s.astype(bool)) if omit_chimeric_reads else pd.Series(True, index=adata.obs.index)
 
-            demux_mask = _mask_or_true(
-                "demux_type",
-                (lambda s: s.astype("string").isin(list(demux_types)))
-                if (demux_types is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
-
-            ref_mask = adata.obs[reference_col] == ref
-            sample_mask = adata.obs[sample_col] == sample
-
-            row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
-
-            if not bool(row_mask.any()):
-                print(
-                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
-                )
-                continue
-
-            try:
-                # ---- subset reads ----
-                subset = adata[row_mask, :].copy()
-
-                # Column-level mask (var)
-                if min_position_valid_fraction is not None:
-                    valid_key = f"{ref}_valid_fraction"
-                    if valid_key in subset.var:
-                        v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
-                        col_mask = np.asarray(v > float(min_position_valid_fraction), dtype=bool)
-                        if col_mask.any():
-                            subset = subset[:, col_mask].copy()
-                        else:
-                            print(
-                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
-                            )
-                            continue
-
-                if subset.shape[0] == 0:
-                    print(f"No reads left after filtering for {display_sample} - {ref}")
+    # ------------------------------------------------------------------
+    # Phase A: build per-group args (serial — accesses adata)
+    # ------------------------------------------------------------------
+    def _iter_group_args():
+        for ref in adata.obs[reference_col].cat.categories:
+            for sample in adata.obs[sample_col].cat.categories:
+                display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
+                row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample) & qmask & lm_mask & lrr_mask & demux_mask & chimeric_mask
+                if not bool(row_mask.any()):
+                    logger.warning("No reads for %s - %s after filtering.", display_sample, ref)
                     continue
-
-                # ---- bins ----
-                if bins is None:
-                    bins_temp = {"All": np.ones(subset.n_obs, dtype=bool)}
-                else:
-                    bins_temp = bins
-
-                # ---- site masks (robust) ----
-                def _sites(*keys):
-                    """Return indices for the first matching site key."""
-                    for k in keys:
-                        if k in subset.var:
-                            return np.where(subset.var[k].values)[0]
-                    return np.array([], dtype=int)
-
-                gpc_sites = _sites(f"{ref}_GpC_site")
-                cpg_sites = _sites(f"{ref}_CpG_site")
-                any_c_sites = _sites(f"{ref}_any_C_site", f"{ref}_C_site")
-                any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
-
-                # ---- labels via _select_labels ----
-                # HMM uses *all* columns
-                hmm_sites = np.arange(subset.n_vars, dtype=int)
-                hmm_labels = _select_labels(subset, hmm_sites, ref, index_col_suffix)
-                gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
-                cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
-                any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
-                any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
-
-                # storage
-                stacked_hmm = []
-                stacked_hmm_raw = []
-                stacked_any_c = []
-                stacked_any_c_raw = []
-                stacked_gpc = []
-                stacked_gpc_raw = []
-                stacked_cpg = []
-                stacked_cpg_raw = []
-                stacked_any_a = []
-                stacked_any_a_raw = []
-                ordered_obs_names = []
-
-                row_labels, bin_labels, bin_boundaries = [], [], []
-                total_reads = subset.n_obs
-                percentages = {}
-                last_idx = 0
-
-                # ---------------- process bins ----------------
-                for bin_label, bin_filter in bins_temp.items():
-                    sb = subset[bin_filter].copy()
-                    n = sb.n_obs
-                    if n == 0:
+                try:
+                    subset = adata[row_mask, :].copy()
+                    if min_position_valid_fraction is not None:
+                        valid_key = f"{ref}_valid_fraction"
+                        if valid_key in subset.var:
+                            v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
+                            col_mask = np.asarray(v > float(min_position_valid_fraction), dtype=bool)
+                            if col_mask.any():
+                                subset = subset[:, col_mask].copy()
+                            else:
+                                logger.warning("No positions left after valid_fraction filter for %s - %s.", display_sample, ref)
+                                continue
+                    if subset.shape[0] == 0:
                         continue
 
-                    pct = (n / total_reads) * 100 if total_reads else 0
-                    percentages[bin_label] = pct
+                    bins_temp = {"All": np.ones(subset.n_obs, dtype=bool)} if bins is None else bins
 
-                    # ---- sorting ----
+                    def _sites(*keys):
+                        for k in keys:
+                            if k in subset.var:
+                                return np.where(subset.var[k].values)[0]
+                        return np.array([], dtype=int)
+
+                    gpc_sites = _sites(f"{ref}_GpC_site")
+                    cpg_sites = _sites(f"{ref}_CpG_site")
+                    any_c_sites = _sites(f"{ref}_any_C_site", f"{ref}_C_site")
+                    any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
+                    hmm_sites = np.arange(subset.n_vars, dtype=int)
+
+                    hmm_labels = _select_labels(subset, hmm_sites, ref, index_col_suffix)
+                    gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
+                    cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
+                    any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
+                    any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
+
+                    # Extract unique layer arrays
+                    layer_data = {}
+                    for lname in {hmm_feature_layer, layer_gpc, layer_cpg, layer_c, layer_a}:
+                        if lname in subset.layers:
+                            arr = subset.layers[lname]
+                            layer_data[lname] = arr.toarray() if hasattr(arr, "toarray") else np.asarray(arr)
+
+                    bins_np = {label: np.asarray(filt, dtype=bool) for label, filt in bins_temp.items()}
+
+                    obs_sort_values = None
                     if sort_by.startswith("obs:"):
                         colname = sort_by.split("obs:")[1]
-                        order = np.argsort(sb.obs[colname].values)
+                        if colname in subset.obs.columns:
+                            obs_sort_values = subset.obs[colname].values.copy()
 
-                    elif sort_by == "gpc" and gpc_sites.size:
-                        gpc_matrix = _layer_to_numpy(
-                            sb,
-                            layer_gpc,
-                            gpc_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(gpc_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-
-                    elif sort_by == "cpg" and cpg_sites.size:
-                        cpg_matrix = _layer_to_numpy(
-                            sb,
-                            layer_cpg,
-                            cpg_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(cpg_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-
-                    elif sort_by == "c" and any_c_sites.size:
-                        any_c_matrix = _layer_to_numpy(
-                            sb,
-                            layer_c,
-                            any_c_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(any_c_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-
-                    elif sort_by == "a" and any_a_sites.size:
-                        any_a_matrix = _layer_to_numpy(
-                            sb,
-                            layer_a,
-                            any_a_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(any_a_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-
-                    elif sort_by == "gpc_cpg" and gpc_sites.size and cpg_sites.size:
-                        gpc_matrix = _layer_to_numpy(
-                            sb,
-                            layer_gpc,
-                            None,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(gpc_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-
-                    elif sort_by == "hmm" and hmm_sites.size:
-                        hmm_matrix = _layer_to_numpy(
-                            sb,
-                            hmm_feature_layer,
-                            hmm_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(hmm_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-
-                    else:
-                        order = np.arange(n)
-
-                    sb = sb[order]
-                    ordered_obs_names.extend(sb.obs_names.tolist())
-
-                    # ---- collect matrices ----
-                    stacked_hmm.append(
-                        _layer_to_numpy(
-                            sb,
-                            hmm_feature_layer,
-                            None,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                    )
-                    stacked_hmm_raw.append(
-                        _layer_to_numpy(
-                            sb,
-                            hmm_feature_layer,
-                            None,
-                            fill_nan_strategy="none",
-                            fill_nan_value=fill_nan_value,
-                        )
-                    )
-                    if any_c_sites.size:
-                        stacked_any_c.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_c,
-                                any_c_sites,
-                                fill_nan_strategy=fill_nan_strategy,
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                        stacked_any_c_raw.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_c,
-                                any_c_sites,
-                                fill_nan_strategy="none",
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                    if gpc_sites.size:
-                        stacked_gpc.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_gpc,
-                                gpc_sites,
-                                fill_nan_strategy=fill_nan_strategy,
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                        stacked_gpc_raw.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_gpc,
-                                gpc_sites,
-                                fill_nan_strategy="none",
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                    if cpg_sites.size:
-                        stacked_cpg.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_cpg,
-                                cpg_sites,
-                                fill_nan_strategy=fill_nan_strategy,
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                        stacked_cpg_raw.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_cpg,
-                                cpg_sites,
-                                fill_nan_strategy="none",
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                    if any_a_sites.size:
-                        stacked_any_a.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_a,
-                                any_a_sites,
-                                fill_nan_strategy=fill_nan_strategy,
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                        stacked_any_a_raw.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_a,
-                                any_a_sites,
-                                fill_nan_strategy="none",
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-
-                    row_labels.extend([bin_label] * n)
-                    bin_labels.append(f"{bin_label}: {n} reads ({pct:.1f}%)")
-                    last_idx += n
-                    bin_boundaries.append(last_idx)
-
-                # ---------------- stack ----------------
-                hmm_matrix = np.vstack(stacked_hmm)
-                hmm_matrix_raw = np.vstack(stacked_hmm_raw)
-                mean_hmm = (
-                    normalized_mean(hmm_matrix_raw)
-                    if normalize_hmm
-                    else np.nanmean(hmm_matrix_raw, axis=0)
-                )
-                hmm_plot_matrix = hmm_matrix_raw
-                hmm_plot_cmap = _build_hmm_feature_cmap(cmap_hmm)
-
-                panels = [
-                    (
-                        f"HMM - {hmm_feature_layer}",
-                        hmm_plot_matrix,
-                        hmm_labels,
-                        hmm_plot_cmap,
-                        mean_hmm,
-                        n_xticks_hmm,
-                    ),
-                ]
-
-                if stacked_any_c:
-                    m = np.vstack(stacked_any_c)
-                    m_raw = np.vstack(stacked_any_c_raw)
-                    panels.append(
-                        (
-                            "C",
-                            m,
-                            any_c_labels,
-                            cmap_c,
-                            _methylation_fraction_for_layer(m_raw, layer_c),
-                            n_xticks_any_c,
-                        )
-                    )
-
-                if stacked_gpc:
-                    m = np.vstack(stacked_gpc)
-                    m_raw = np.vstack(stacked_gpc_raw)
-                    panels.append(
-                        (
-                            "GpC",
-                            m,
-                            gpc_labels,
-                            cmap_gpc,
-                            _methylation_fraction_for_layer(m_raw, layer_gpc),
-                            n_xticks_gpc,
-                        )
-                    )
-
-                if stacked_cpg:
-                    m = np.vstack(stacked_cpg)
-                    m_raw = np.vstack(stacked_cpg_raw)
-                    panels.append(
-                        (
-                            "CpG",
-                            m,
-                            cpg_labels,
-                            cmap_cpg,
-                            _methylation_fraction_for_layer(m_raw, layer_cpg),
-                            n_xticks_cpg,
-                        )
-                    )
-
-                if stacked_any_a:
-                    m = np.vstack(stacked_any_a)
-                    m_raw = np.vstack(stacked_any_a_raw)
-                    panels.append(
-                        (
-                            "A",
-                            m,
-                            any_a_labels,
-                            cmap_a,
-                            _methylation_fraction_for_layer(m_raw, layer_a),
-                            n_xticks_a,
-                        )
-                    )
-
-                # ---------------- plotting ----------------
-                n_panels = len(panels)
-                fig = plt.figure(figsize=(4.5 * n_panels, 10))
-                gs = gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
-                fig.suptitle(
-                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98
-                )
-
-                axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
-                axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
-
-                for i, (name, matrix, labels, cmap, mean_vec, n_ticks) in enumerate(panels):
-                    # ---- your clean barplot ----
-                    clean_barplot(axes_bar[i], mean_vec, name)
-
-                    # ---- heatmap ----
-                    heatmap_kwargs = dict(
-                        cmap=cmap,
-                        ax=axes_heat[i],
-                        yticklabels=False,
-                        cbar=False,
-                    )
-                    if name.startswith("HMM -"):
-                        heatmap_kwargs.update(vmin=0.0, vmax=1.0)
-                    sns.heatmap(matrix, **heatmap_kwargs)
-
-                    # ---- xticks ----
-                    xtick_pos, xtick_labels = pick_xticks(np.asarray(labels), n_ticks)
-                    axes_heat[i].set_xticks(xtick_pos)
-                    axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
-
-                    for boundary in bin_boundaries[:-1]:
-                        axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
-
-                if overlay_variant_calls and ordered_obs_names:
-                    try:
-                        # Map panel sites from subset-local coordinates to full adata indices
-                        hmm_sites_global = _local_sites_to_global_indices(adata, subset, hmm_sites)
-                        any_c_sites_global = _local_sites_to_global_indices(
-                            adata, subset, any_c_sites
-                        )
-                        gpc_sites_global = _local_sites_to_global_indices(adata, subset, gpc_sites)
-                        cpg_sites_global = _local_sites_to_global_indices(adata, subset, cpg_sites)
-                        any_a_sites_global = _local_sites_to_global_indices(
-                            adata, subset, any_a_sites
-                        )
-
-                        # Build panels_with_indices using site indices for each panel
-                        # Map panel names to their site index arrays
-                        name_to_sites = {
-                            f"HMM - {hmm_feature_layer}": hmm_sites_global,
-                            "C": any_c_sites_global,
-                            "GpC": gpc_sites_global,
-                            "CpG": cpg_sites_global,
-                            "A": any_a_sites_global,
+                    # Variant overlay pre-extraction
+                    vc_matrix = None
+                    panel_global_sites = None
+                    if vc_layer_key is not None:
+                        vc_data = adata.layers[vc_layer_key]
+                        vc_data = vc_data.toarray() if hasattr(vc_data, "toarray") else np.asarray(vc_data)
+                        row_indices = np.where(row_mask.values if hasattr(row_mask, "values") else row_mask)[0]
+                        vc_matrix = vc_data[row_indices, :]
+                        s2g = adata.var_names.get_indexer(subset.var_names)
+                        panel_global_sites = {
+                            f"HMM - {hmm_feature_layer}": s2g[hmm_sites][s2g[hmm_sites] >= 0],
+                            "C": s2g[any_c_sites][s2g[any_c_sites] >= 0] if any_c_sites.size else np.array([], dtype=int),
+                            "GpC": s2g[gpc_sites][s2g[gpc_sites] >= 0] if gpc_sites.size else np.array([], dtype=int),
+                            "CpG": s2g[cpg_sites][s2g[cpg_sites] >= 0] if cpg_sites.size else np.array([], dtype=int),
+                            "A": s2g[any_a_sites][s2g[any_a_sites] >= 0] if any_a_sites.size else np.array([], dtype=int),
                         }
-                        panels_with_indices = []
-                        for idx, (name, *_rest) in enumerate(panels):
-                            sites = name_to_sites.get(name)
-                            if sites is not None and len(sites) > 0:
-                                panels_with_indices.append((axes_heat[idx], sites))
-                        if panels_with_indices:
-                            _overlay_variant_calls_on_panels(
-                                adata,
-                                ref,
-                                ordered_obs_names,
-                                panels_with_indices,
-                                seq1_color=variant_overlay_seq1_color,
-                                seq2_color=variant_overlay_seq2_color,
-                                marker_size=variant_overlay_marker_size,
-                            )
-                    except Exception as overlay_err:
-                        logger.warning(
-                            "Variant overlay failed for %s - %s: %s", sample, ref, overlay_err
-                        )
 
-                plt.tight_layout()
+                    yield {
+                        "ref": str(ref), "sample": str(sample), "display_sample": str(display_sample),
+                        "signal_type": signal_type, "hmm_feature_layer": hmm_feature_layer,
+                        "gpc_sites": gpc_sites, "cpg_sites": cpg_sites,
+                        "any_c_sites": any_c_sites, "any_a_sites": any_a_sites, "hmm_sites": hmm_sites,
+                        "hmm_labels": hmm_labels, "gpc_labels": gpc_labels, "cpg_labels": cpg_labels,
+                        "any_c_labels": any_c_labels, "any_a_labels": any_a_labels,
+                        "layer_data": layer_data, "layer_gpc": layer_gpc, "layer_cpg": layer_cpg,
+                        "layer_c": layer_c, "layer_a": layer_a,
+                        "bins_np": bins_np, "sort_by": sort_by, "obs_sort_values": obs_sort_values,
+                        "total_reads": subset.n_obs, "normalize_hmm": normalize_hmm,
+                        "fill_nan_strategy": fill_nan_strategy, "fill_nan_value": fill_nan_value,
+                        "cmap_hmm": cmap_hmm, "cmap_gpc": cmap_gpc, "cmap_cpg": cmap_cpg,
+                        "cmap_c": cmap_c, "cmap_a": cmap_a,
+                        "n_xticks_hmm": n_xticks_hmm, "n_xticks_gpc": n_xticks_gpc,
+                        "n_xticks_cpg": n_xticks_cpg, "n_xticks_any_c": n_xticks_any_c, "n_xticks_a": n_xticks_a,
+                        "overlay_variant_calls": overlay_variant_calls,
+                        "vc_matrix": vc_matrix, "subset_obs_names": subset.obs_names.tolist(),
+                        "panel_global_sites": panel_global_sites,
+                        "variant_overlay_seq1_color": variant_overlay_seq1_color,
+                        "variant_overlay_seq2_color": variant_overlay_seq2_color,
+                        "variant_overlay_marker_size": variant_overlay_marker_size,
+                        "save_path": str(save_path) if save_path is not None else None,
+                    }
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    continue
 
-                if save_path:
-                    save_path = Path(save_path)
-                    save_path.mkdir(parents=True, exist_ok=True)
-                    safe_name = f"{ref}__{sample}".replace("/", "_")
-                    out_file = save_path / f"{safe_name}.png"
-                    plt.savefig(out_file, dpi=300)
-                    plt.close(fig)
-                else:
-                    plt.show()
+    # ------------------------------------------------------------------
+    # Phase B: dispatch
+    # ------------------------------------------------------------------
+    n_workers = _resolve_n_jobs(n_jobs) if save_path is not None else 1
+    if n_workers <= 1:
+        return [_hmm_raw_one_group(a) for a in _iter_group_args()]
+    from concurrent.futures import ProcessPoolExecutor
 
-            except Exception:
-                import traceback
+    from smftools.parallel_utils import configure_worker_threads
 
-                traceback.print_exc()
-                continue
+    with ProcessPoolExecutor(max_workers=n_workers, initializer=configure_worker_threads, initargs=(1,)) as executor:
+        return list(executor.map(_hmm_raw_one_group, _iter_group_args()))
+
+
+def _hmm_length_one_group(args: dict) -> dict:
+    """Render one (ref, sample) HMM length clustermap and save. Module-level for pickling."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import numpy as np
+    from pathlib import Path
+
+    import scipy.cluster.hierarchy as sch
+
+    from smftools.optional_imports import require
+
+    _gridspec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plotting")
+    _patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
+    _plt = require("matplotlib.pyplot", extra="plotting", purpose="HMM plots")
+    _sns = require("seaborn", extra="plotting", purpose="plot styling")
+    import smftools.plotting.hmm_plotting as _hmm_mod
+    from smftools.plotting.hmm_plotting import (
+        _build_length_feature_cmap,
+        _map_length_matrix_to_subclasses,
+        _pick_xticks,
+    )
+    from smftools.plotting.plotting_utils import (
+        _layer_to_numpy_np,
+        _methylation_fraction_for_layer,
+    )
+
+    ref: str = args["ref"]
+    sample: str = args["sample"]
+    signal_type: str = args["signal_type"]
+    length_layer: str = args["length_layer"]
+    gpc_sites: np.ndarray = args["gpc_sites"]
+    cpg_sites: np.ndarray = args["cpg_sites"]
+    any_c_sites: np.ndarray = args["any_c_sites"]
+    any_a_sites: np.ndarray = args["any_a_sites"]
+    length_sites: np.ndarray = args["length_sites"]
+    length_labels: np.ndarray = args["length_labels"]
+    gpc_labels: np.ndarray = args["gpc_labels"]
+    cpg_labels: np.ndarray = args["cpg_labels"]
+    any_c_labels: np.ndarray = args["any_c_labels"]
+    any_a_labels: np.ndarray = args["any_a_labels"]
+    layer_data: dict = args["layer_data"]
+    layer_gpc: str = args["layer_gpc"]
+    layer_cpg: str = args["layer_cpg"]
+    layer_c: str = args["layer_c"]
+    layer_a: str = args["layer_a"]
+    bins_np: dict = args["bins_np"]
+    sort_by: str = args["sort_by"]
+    obs_sort_values = args.get("obs_sort_values")
+    total_reads: int = args["total_reads"]
+    fill_nan_strategy: str = args["fill_nan_strategy"]
+    fill_nan_value: float = args["fill_nan_value"]
+    cmap_lengths = args["cmap_lengths"]
+    cmap_gpc: str = args["cmap_gpc"]
+    cmap_cpg: str = args["cmap_cpg"]
+    cmap_c: str = args["cmap_c"]
+    cmap_a: str = args["cmap_a"]
+    n_xticks_lengths: int = args["n_xticks_lengths"]
+    n_xticks_gpc: int = args["n_xticks_gpc"]
+    n_xticks_cpg: int = args["n_xticks_cpg"]
+    n_xticks_any_c: int = args["n_xticks_any_c"]
+    n_xticks_a: int = args["n_xticks_a"]
+    feature_ranges = args.get("feature_ranges", ())
+    overlay_variant_calls: bool = args["overlay_variant_calls"]
+    vc_matrix = args.get("vc_matrix")
+    subset_obs_names: list = args.get("subset_obs_names", [])
+    panel_global_sites = args.get("panel_global_sites")
+    variant_overlay_seq1_color: str = args["variant_overlay_seq1_color"]
+    variant_overlay_seq2_color: str = args["variant_overlay_seq2_color"]
+    variant_overlay_marker_size: float = args["variant_overlay_marker_size"]
+    save_path = args["save_path"]
+
+    kw = dict(fill_nan_strategy=fill_nan_strategy, fill_nan_value=fill_nan_value)
+    kw_raw = dict(fill_nan_strategy="none", fill_nan_value=fill_nan_value)
+    arr_length = layer_data.get(length_layer)
+    arr_gpc = layer_data.get(layer_gpc)
+    arr_cpg = layer_data.get(layer_cpg)
+    arr_c = layer_data.get(layer_c)
+    arr_a = layer_data.get(layer_a)
+
+    stacked_lengths, stacked_lengths_raw = [], []
+    stacked_any_c, stacked_any_c_raw = [], []
+    stacked_gpc, stacked_gpc_raw = [], []
+    stacked_cpg, stacked_cpg_raw = [], []
+    stacked_any_a, stacked_any_a_raw = [], []
+    ordered_obs_names: list = []
+    row_labels: list = []
+    bin_labels_list: list = []
+    bin_boundaries: list = []
+    last_idx = 0
+
+    for bin_label, bin_filter in bins_np.items():
+        bin_rows = np.where(bin_filter)[0]
+        n = len(bin_rows)
+        if n == 0:
+            continue
+        pct = (n / total_reads) * 100 if total_reads else 0
+
+        if n < 2:
+            order = np.arange(n)
+        elif sort_by.startswith("obs:") and obs_sort_values is not None:
+            order = np.argsort(obs_sort_values[bin_rows])
+        elif sort_by == "gpc" and gpc_sites.size and arr_gpc is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_gpc[bin_rows], gpc_sites, **kw), method="ward"))
+        elif sort_by == "cpg" and cpg_sites.size and arr_cpg is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_cpg[bin_rows], cpg_sites, **kw), method="ward"))
+        elif sort_by == "c" and any_c_sites.size and arr_c is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_c[bin_rows], any_c_sites, **kw), method="ward"))
+        elif sort_by == "a" and any_a_sites.size and arr_a is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_a[bin_rows], any_a_sites, **kw), method="ward"))
+        elif sort_by == "gpc_cpg" and gpc_sites.size and cpg_sites.size and arr_gpc is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_gpc[bin_rows], None, **kw), method="ward"))
+        elif sort_by == "hmm" and length_sites.size and arr_length is not None:
+            order = sch.leaves_list(sch.linkage(_layer_to_numpy_np(arr_length[bin_rows], length_sites, **kw), method="ward"))
+        else:
+            order = np.arange(n)
+
+        ordered_rows = bin_rows[order]
+        ordered_obs_names.extend([subset_obs_names[i] for i in ordered_rows])
+
+        if arr_length is not None:
+            stacked_lengths.append(_layer_to_numpy_np(arr_length[ordered_rows], None, **kw))
+            stacked_lengths_raw.append(_layer_to_numpy_np(arr_length[ordered_rows], None, **kw_raw))
+        if any_c_sites.size and arr_c is not None:
+            stacked_any_c.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw))
+            stacked_any_c_raw.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw_raw))
+        if gpc_sites.size and arr_gpc is not None:
+            stacked_gpc.append(_layer_to_numpy_np(arr_gpc[ordered_rows], gpc_sites, **kw))
+            stacked_gpc_raw.append(_layer_to_numpy_np(arr_gpc[ordered_rows], gpc_sites, **kw_raw))
+        if cpg_sites.size and arr_cpg is not None:
+            stacked_cpg.append(_layer_to_numpy_np(arr_cpg[ordered_rows], cpg_sites, **kw))
+            stacked_cpg_raw.append(_layer_to_numpy_np(arr_cpg[ordered_rows], cpg_sites, **kw_raw))
+        if any_a_sites.size and arr_a is not None:
+            stacked_any_a.append(_layer_to_numpy_np(arr_a[ordered_rows], any_a_sites, **kw))
+            stacked_any_a_raw.append(_layer_to_numpy_np(arr_a[ordered_rows], any_a_sites, **kw_raw))
+
+        row_labels.extend([bin_label] * n)
+        bin_labels_list.append(f"{bin_label}: {n} reads ({pct:.1f}%)")
+        last_idx += n
+        bin_boundaries.append(last_idx)
+
+    if not stacked_lengths:
+        return {"reference": ref, "sample": sample, "output_path": None}
+
+    length_matrix = np.vstack(stacked_lengths)
+    length_matrix_raw = np.vstack(stacked_lengths_raw)
+    capped_lengths = np.where(length_matrix_raw > 1, 1.0, length_matrix_raw)
+    mean_lengths = np.nanmean(capped_lengths, axis=0)
+    length_plot_matrix = length_matrix_raw
+    length_plot_cmap = cmap_lengths
+    length_plot_norm = None
+
+    feature_class_label = None
+    lower_layer = str(length_layer).lower()
+    hmm_title = length_layer
+    if "accessible" in lower_layer:
+        feature_class_label = "Accessible Patch Sizes"
+        hmm_title = "HMM Accessible Patches"
+    elif "footprint" in lower_layer:
+        feature_class_label = "Footprint Sizes"
+        hmm_title = "HMM Footprints"
+
+    legend_handles = []
+    legend_labels_list: list = []
+    if feature_ranges:
+        length_plot_matrix = _map_length_matrix_to_subclasses(length_matrix_raw, feature_ranges)
+        length_plot_cmap, length_plot_norm = _build_length_feature_cmap(feature_ranges)
+        for min_len, max_len, color in feature_ranges:
+            if max_len >= int(1e9):
+                label = f">= {min_len} bp"
+            else:
+                label = f"{min_len}-{max_len} bp"
+            legend_handles.append(_patches.Patch(facecolor=color, edgecolor="none"))
+            legend_labels_list.append(label)
+
+    panels = [
+        (
+            f"HMM - {hmm_title}",
+            length_plot_matrix,
+            length_labels,
+            length_plot_cmap,
+            mean_lengths,
+            n_xticks_lengths,
+            length_plot_norm,
+        ),
+    ]
+    if stacked_any_c:
+        m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
+        panels.append(("C", m, any_c_labels, cmap_c, _methylation_fraction_for_layer(m_raw, layer_c), n_xticks_any_c, None))
+    if stacked_gpc:
+        m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
+        panels.append(("GpC", m, gpc_labels, cmap_gpc, _methylation_fraction_for_layer(m_raw, layer_gpc), n_xticks_gpc, None))
+    if stacked_cpg:
+        m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
+        panels.append(("CpG", m, cpg_labels, cmap_cpg, _methylation_fraction_for_layer(m_raw, layer_cpg), n_xticks_cpg, None))
+    if stacked_any_a:
+        m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
+        panels.append(("A", m, any_a_labels, cmap_a, _methylation_fraction_for_layer(m_raw, layer_a), n_xticks_a, None))
+
+    n_panels = len(panels)
+    fig = _plt.figure(figsize=(4.5 * n_panels, 10))
+    gs = _gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
+    fig.suptitle(f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98)
+    axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
+    axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
+
+    for i, (name, matrix, labels, cmap, mean_vec, n_ticks, norm) in enumerate(panels):
+        _hmm_mod.clean_barplot(axes_bar[i], mean_vec, name)
+        heatmap_kwargs = dict(cmap=cmap, ax=axes_heat[i], yticklabels=False, cbar=False)
+        if norm is not None:
+            heatmap_kwargs["norm"] = norm
+        _sns.heatmap(matrix, **heatmap_kwargs)
+        xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
+        axes_heat[i].set_xticks(xtick_pos)
+        axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
+        for boundary in bin_boundaries[:-1]:
+            axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
+        if feature_ranges and name.startswith("HMM -") and legend_handles:
+            axes_heat[i].legend(
+                legend_handles,
+                legend_labels_list,
+                fontsize=12,
+                loc="center left",
+                bbox_to_anchor=(-0.85, 0.65),
+                borderaxespad=0.0,
+                frameon=False,
+                title=feature_class_label,
+                title_fontsize=14,
+            )
+
+    if overlay_variant_calls and vc_matrix is not None and panel_global_sites and ordered_obs_names:
+        try:
+            panels_with_ax_sites = [
+                (axes_heat[i], np.asarray(panel_global_sites.get(name, [])))
+                for i, (name, *_) in enumerate(panels)
+                if np.asarray(panel_global_sites.get(name, [])).size > 0
+            ]
+            if panels_with_ax_sites:
+                _hmm_mod._apply_variant_overlay_np(
+                    vc_matrix, ordered_obs_names, subset_obs_names,
+                    panels_with_ax_sites,
+                    seq1_color=variant_overlay_seq1_color,
+                    seq2_color=variant_overlay_seq2_color,
+                    marker_size=variant_overlay_marker_size,
+                )
+        except Exception:
+            pass
+
+    if feature_ranges:
+        fig.subplots_adjust(left=0.18)
+    _plt.tight_layout()
+
+    out_file = None
+    if save_path is not None:
+        sp = Path(save_path)
+        sp.mkdir(parents=True, exist_ok=True)
+        safe_name = f"{ref}__{sample}".replace("/", "_")
+        out_file = sp / f"{safe_name}.png"
+        _plt.savefig(out_file, dpi=300)
+        _plt.close(fig)
+    else:
+        _plt.show()
+
+    return {"reference": ref, "sample": sample, "output_path": str(out_file) if out_file else None}
 
 
 def combined_hmm_length_clustermap(
@@ -1190,26 +1398,28 @@ def combined_hmm_length_clustermap(
     variant_overlay_seq1_color: str = "white",
     variant_overlay_seq2_color: str = "black",
     variant_overlay_marker_size: float = 4.0,
+    omit_chimeric_reads: bool = False,
+    n_jobs: int = 1,
 ):
     """
     Plot clustermaps for length-encoded HMM feature layers with optional subclass colors.
 
     Length-based feature ranges map integer lengths into subclass colors for accessible
     and footprint layers. Raw methylation panels are included when available.
+    omit_chimeric_reads: if True, exclude reads where chimeric_variant_sites==True.
+    n_jobs: number of parallel worker processes (-1 = all CPUs).
     """
     if fill_nan_strategy not in {"none", "value", "col_mean"}:
         raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
 
-    def pick_xticks(labels: np.ndarray, n_ticks: int):
-        """Pick tick indices/labels from an array."""
-        if labels.size == 0:
-            return [], []
-        idx = np.linspace(0, len(labels) - 1, n_ticks).round().astype(int)
-        idx = np.unique(idx)
-        return idx.tolist(), labels[idx].tolist()
+    save_path = Path(save_path) if save_path is not None else None
+    if save_path is not None:
+        save_path.mkdir(parents=True, exist_ok=True)
+
+    signal_type = "deamination" if deaminase else "methylation"
+    feature_ranges = tuple(length_feature_ranges or ())
 
     def _mask_or_true(series_name: str, predicate):
-        """Return a mask from predicate or an all-True mask."""
         if series_name not in adata.obs:
             return pd.Series(True, index=adata.obs.index)
         s = adata.obs[series_name]
@@ -1218,502 +1428,145 @@ def combined_hmm_length_clustermap(
         except Exception:
             return pd.Series(True, index=adata.obs.index)
 
-    results = []
-    signal_type = "deamination" if deaminase else "methylation"
-    feature_ranges = tuple(length_feature_ranges or ())
+    # Pre-locate variant call layer once
+    vc_layer_key = None
+    if overlay_variant_calls:
+        for key in adata.layers:
+            if key.endswith("_variant_call"):
+                vc_layer_key = key
+                break
 
-    for ref in adata.obs[reference_col].cat.categories:
-        for sample in adata.obs[sample_col].cat.categories:
-            display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
-            qmask = _mask_or_true(
-                "read_quality",
-                (lambda s: s >= float(min_quality))
-                if (min_quality is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
-            lm_mask = _mask_or_true(
-                "mapped_length",
-                (lambda s: s >= float(min_length))
-                if (min_length is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
-            lrr_mask = _mask_or_true(
-                "mapped_length_to_reference_length_ratio",
-                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
-                if (min_mapped_length_to_reference_length_ratio is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
+    qmask = _mask_or_true("read_quality", (lambda s: s >= float(min_quality)) if min_quality is not None else (lambda s: pd.Series(True, index=s.index)))
+    lm_mask = _mask_or_true("mapped_length", (lambda s: s >= float(min_length)) if min_length is not None else (lambda s: pd.Series(True, index=s.index)))
+    lrr_mask = _mask_or_true("mapped_length_to_reference_length_ratio", (lambda s: s >= float(min_mapped_length_to_reference_length_ratio)) if min_mapped_length_to_reference_length_ratio is not None else (lambda s: pd.Series(True, index=s.index)))
+    demux_mask = _mask_or_true("demux_type", (lambda s: s.astype("string").isin(list(demux_types))) if demux_types is not None else (lambda s: pd.Series(True, index=s.index)))
+    chimeric_mask = _mask_or_true("chimeric_variant_sites", lambda s: ~s.astype(bool)) if omit_chimeric_reads else pd.Series(True, index=adata.obs.index)
 
-            demux_mask = _mask_or_true(
-                "demux_type",
-                (lambda s: s.astype("string").isin(list(demux_types)))
-                if (demux_types is not None)
-                else (lambda s: pd.Series(True, index=s.index)),
-            )
-
-            ref_mask = adata.obs[reference_col] == ref
-            sample_mask = adata.obs[sample_col] == sample
-
-            row_mask = ref_mask & sample_mask & qmask & lm_mask & lrr_mask & demux_mask
-
-            if not bool(row_mask.any()):
-                print(
-                    f"No reads for {display_sample} - {ref} after read quality and length filtering"
-                )
-                continue
-
-            try:
-                subset = adata[row_mask, :].copy()
-
-                if min_position_valid_fraction is not None:
-                    valid_key = f"{ref}_valid_fraction"
-                    if valid_key in subset.var:
-                        v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
-                        col_mask = np.asarray(v > float(min_position_valid_fraction), dtype=bool)
-                        if col_mask.any():
-                            subset = subset[:, col_mask].copy()
-                        else:
-                            print(
-                                f"No positions left after valid_fraction filter for {display_sample} - {ref}"
-                            )
-                            continue
-
-                if subset.shape[0] == 0:
-                    print(f"No reads left after filtering for {display_sample} - {ref}")
+    # ------------------------------------------------------------------
+    # Phase A: build per-group args (serial — accesses adata)
+    # ------------------------------------------------------------------
+    def _iter_group_args():
+        for ref in adata.obs[reference_col].cat.categories:
+            for sample in adata.obs[sample_col].cat.categories:
+                display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
+                row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample) & qmask & lm_mask & lrr_mask & demux_mask & chimeric_mask
+                if not bool(row_mask.any()):
+                    logger.warning("No reads for %s - %s after filtering.", display_sample, ref)
                     continue
-
-                if bins is None:
-                    bins_temp = {"All": np.ones(subset.n_obs, dtype=bool)}
-                else:
-                    bins_temp = bins
-
-                def _sites(*keys):
-                    """Return indices for the first matching site key."""
-                    for k in keys:
-                        if k in subset.var:
-                            return np.where(subset.var[k].values)[0]
-                    return np.array([], dtype=int)
-
-                gpc_sites = _sites(f"{ref}_GpC_site")
-                cpg_sites = _sites(f"{ref}_CpG_site")
-                any_c_sites = _sites(f"{ref}_any_C_site", f"{ref}_C_site")
-                any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
-
-                length_sites = np.arange(subset.n_vars, dtype=int)
-                length_labels = _select_labels(subset, length_sites, ref, index_col_suffix)
-                gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
-                cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
-                any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
-                any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
-
-                stacked_lengths = []
-                stacked_lengths_raw = []
-                stacked_any_c = []
-                stacked_any_c_raw = []
-                stacked_gpc = []
-                stacked_gpc_raw = []
-                stacked_cpg = []
-                stacked_cpg_raw = []
-                stacked_any_a = []
-                stacked_any_a_raw = []
-                ordered_obs_names = []
-
-                row_labels, bin_labels, bin_boundaries = [], [], []
-                total_reads = subset.n_obs
-                percentages = {}
-                last_idx = 0
-
-                for bin_label, bin_filter in bins_temp.items():
-                    sb = subset[bin_filter].copy()
-                    n = sb.n_obs
-                    if n == 0:
+                try:
+                    subset = adata[row_mask, :].copy()
+                    if min_position_valid_fraction is not None:
+                        valid_key = f"{ref}_valid_fraction"
+                        if valid_key in subset.var:
+                            v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
+                            col_mask = np.asarray(v > float(min_position_valid_fraction), dtype=bool)
+                            if col_mask.any():
+                                subset = subset[:, col_mask].copy()
+                            else:
+                                logger.warning("No positions left after valid_fraction filter for %s - %s.", display_sample, ref)
+                                continue
+                    if subset.shape[0] == 0:
                         continue
 
-                    pct = (n / total_reads) * 100 if total_reads else 0
-                    percentages[bin_label] = pct
+                    bins_temp = {"All": np.ones(subset.n_obs, dtype=bool)} if bins is None else bins
 
+                    def _sites(*keys):
+                        for k in keys:
+                            if k in subset.var:
+                                return np.where(subset.var[k].values)[0]
+                        return np.array([], dtype=int)
+
+                    gpc_sites = _sites(f"{ref}_GpC_site")
+                    cpg_sites = _sites(f"{ref}_CpG_site")
+                    any_c_sites = _sites(f"{ref}_any_C_site", f"{ref}_C_site")
+                    any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
+                    length_sites = np.arange(subset.n_vars, dtype=int)
+
+                    length_labels = _select_labels(subset, length_sites, ref, index_col_suffix)
+                    gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
+                    cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
+                    any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
+                    any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
+
+                    layer_data = {}
+                    for lname in {length_layer, layer_gpc, layer_cpg, layer_c, layer_a}:
+                        if lname in subset.layers:
+                            arr = subset.layers[lname]
+                            layer_data[lname] = arr.toarray() if hasattr(arr, "toarray") else np.asarray(arr)
+
+                    bins_np = {label: np.asarray(filt, dtype=bool) for label, filt in bins_temp.items()}
+
+                    obs_sort_values = None
                     if sort_by.startswith("obs:"):
                         colname = sort_by.split("obs:")[1]
-                        order = np.argsort(sb.obs[colname].values)
-                    elif sort_by == "gpc" and gpc_sites.size:
-                        gpc_matrix = _layer_to_numpy(
-                            sb,
-                            layer_gpc,
-                            gpc_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(gpc_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-                    elif sort_by == "cpg" and cpg_sites.size:
-                        cpg_matrix = _layer_to_numpy(
-                            sb,
-                            layer_cpg,
-                            cpg_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(cpg_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-                    elif sort_by == "c" and any_c_sites.size:
-                        any_c_matrix = _layer_to_numpy(
-                            sb,
-                            layer_c,
-                            any_c_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(any_c_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-                    elif sort_by == "a" and any_a_sites.size:
-                        any_a_matrix = _layer_to_numpy(
-                            sb,
-                            layer_a,
-                            any_a_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(any_a_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-                    elif sort_by == "gpc_cpg" and gpc_sites.size and cpg_sites.size:
-                        gpc_matrix = _layer_to_numpy(
-                            sb,
-                            layer_gpc,
-                            None,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(gpc_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-                    elif sort_by == "hmm" and length_sites.size:
-                        length_matrix = _layer_to_numpy(
-                            sb,
-                            length_layer,
-                            length_sites,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                        linkage = sch.linkage(length_matrix, method="ward")
-                        order = sch.leaves_list(linkage)
-                    else:
-                        order = np.arange(n)
+                        if colname in subset.obs.columns:
+                            obs_sort_values = subset.obs[colname].values.copy()
 
-                    sb = sb[order]
-                    ordered_obs_names.extend(sb.obs_names.tolist())
-
-                    stacked_lengths.append(
-                        _layer_to_numpy(
-                            sb,
-                            length_layer,
-                            None,
-                            fill_nan_strategy=fill_nan_strategy,
-                            fill_nan_value=fill_nan_value,
-                        )
-                    )
-                    stacked_lengths_raw.append(
-                        _layer_to_numpy(
-                            sb,
-                            length_layer,
-                            None,
-                            fill_nan_strategy="none",
-                            fill_nan_value=fill_nan_value,
-                        )
-                    )
-                    if any_c_sites.size:
-                        stacked_any_c.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_c,
-                                any_c_sites,
-                                fill_nan_strategy=fill_nan_strategy,
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                        stacked_any_c_raw.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_c,
-                                any_c_sites,
-                                fill_nan_strategy="none",
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                    if gpc_sites.size:
-                        stacked_gpc.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_gpc,
-                                gpc_sites,
-                                fill_nan_strategy=fill_nan_strategy,
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                        stacked_gpc_raw.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_gpc,
-                                gpc_sites,
-                                fill_nan_strategy="none",
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                    if cpg_sites.size:
-                        stacked_cpg.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_cpg,
-                                cpg_sites,
-                                fill_nan_strategy=fill_nan_strategy,
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                        stacked_cpg_raw.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_cpg,
-                                cpg_sites,
-                                fill_nan_strategy="none",
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                    if any_a_sites.size:
-                        stacked_any_a.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_a,
-                                any_a_sites,
-                                fill_nan_strategy=fill_nan_strategy,
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-                        stacked_any_a_raw.append(
-                            _layer_to_numpy(
-                                sb,
-                                layer_a,
-                                any_a_sites,
-                                fill_nan_strategy="none",
-                                fill_nan_value=fill_nan_value,
-                            )
-                        )
-
-                    row_labels.extend([bin_label] * n)
-                    bin_labels.append(f"{bin_label}: {n} reads ({pct:.1f}%)")
-                    last_idx += n
-                    bin_boundaries.append(last_idx)
-
-                length_matrix = np.vstack(stacked_lengths)
-                length_matrix_raw = np.vstack(stacked_lengths_raw)
-                capped_lengths = np.where(length_matrix_raw > 1, 1.0, length_matrix_raw)
-                mean_lengths = np.nanmean(capped_lengths, axis=0)
-                length_plot_matrix = length_matrix_raw
-                length_plot_cmap = cmap_lengths
-                length_plot_norm = None
-
-                feature_class_label = None
-                lower_layer = str(length_layer).lower()
-                if "accessible" in lower_layer:
-                    feature_class_label = "Accessible Patch Sizes"
-                    hmm_title = "HMM Accessible Patches"
-                elif "footprint" in lower_layer:
-                    feature_class_label = "Footprint Sizes"
-                    hmm_title = "HMM Footprints"
-
-                if feature_ranges:
-                    length_plot_matrix = _map_length_matrix_to_subclasses(
-                        length_matrix_raw, feature_ranges
-                    )
-                    length_plot_cmap, length_plot_norm = _build_length_feature_cmap(feature_ranges)
-                    legend_handles = []
-                    legend_labels = []
-                    for min_len, max_len, color in feature_ranges:
-                        if max_len >= int(1e9):
-                            label = f">= {min_len} bp"
-                        else:
-                            label = f"{min_len}-{max_len} bp"
-                        legend_handles.append(patches.Patch(facecolor=color, edgecolor="none"))
-                        legend_labels.append(label)
-
-                panels = [
-                    (
-                        f"HMM - {hmm_title}",
-                        length_plot_matrix,
-                        length_labels,
-                        length_plot_cmap,
-                        mean_lengths,
-                        n_xticks_lengths,
-                        length_plot_norm,
-                    ),
-                ]
-
-                if stacked_any_c:
-                    m = np.vstack(stacked_any_c)
-                    m_raw = np.vstack(stacked_any_c_raw)
-                    panels.append(
-                        (
-                            "C",
-                            m,
-                            any_c_labels,
-                            cmap_c,
-                            _methylation_fraction_for_layer(m_raw, layer_c),
-                            n_xticks_any_c,
-                            None,
-                        )
-                    )
-
-                if stacked_gpc:
-                    m = np.vstack(stacked_gpc)
-                    m_raw = np.vstack(stacked_gpc_raw)
-                    panels.append(
-                        (
-                            "GpC",
-                            m,
-                            gpc_labels,
-                            cmap_gpc,
-                            _methylation_fraction_for_layer(m_raw, layer_gpc),
-                            n_xticks_gpc,
-                            None,
-                        )
-                    )
-
-                if stacked_cpg:
-                    m = np.vstack(stacked_cpg)
-                    m_raw = np.vstack(stacked_cpg_raw)
-                    panels.append(
-                        (
-                            "CpG",
-                            m,
-                            cpg_labels,
-                            cmap_cpg,
-                            _methylation_fraction_for_layer(m_raw, layer_cpg),
-                            n_xticks_cpg,
-                            None,
-                        )
-                    )
-
-                if stacked_any_a:
-                    m = np.vstack(stacked_any_a)
-                    m_raw = np.vstack(stacked_any_a_raw)
-                    panels.append(
-                        (
-                            "A",
-                            m,
-                            any_a_labels,
-                            cmap_a,
-                            _methylation_fraction_for_layer(m_raw, layer_a),
-                            n_xticks_a,
-                            None,
-                        )
-                    )
-
-                n_panels = len(panels)
-                fig = plt.figure(figsize=(4.5 * n_panels, 10))
-                gs = gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
-                fig.suptitle(
-                    f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98
-                )
-
-                axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
-                axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
-
-                for i, (name, matrix, labels, cmap, mean_vec, n_ticks, norm) in enumerate(panels):
-                    clean_barplot(axes_bar[i], mean_vec, name)
-
-                    heatmap_kwargs = dict(
-                        cmap=cmap,
-                        ax=axes_heat[i],
-                        yticklabels=False,
-                        cbar=False,
-                    )
-                    if norm is not None:
-                        heatmap_kwargs["norm"] = norm
-                    sns.heatmap(matrix, **heatmap_kwargs)
-
-                    xtick_pos, xtick_labels = pick_xticks(np.asarray(labels), n_ticks)
-                    axes_heat[i].set_xticks(xtick_pos)
-                    axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
-
-                    for boundary in bin_boundaries[:-1]:
-                        axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
-
-                    if feature_ranges and name.startswith("HMM -") and legend_handles:
-                        axes_heat[i].legend(
-                            legend_handles,
-                            legend_labels,
-                            fontsize=12,
-                            loc="center left",
-                            bbox_to_anchor=(-0.85, 0.65),
-                            borderaxespad=0.0,
-                            frameon=False,
-                            title=feature_class_label,
-                            title_fontsize=14,
-                        )
-
-                if overlay_variant_calls and ordered_obs_names:
-                    try:
-                        # Map panel sites from subset-local coordinates to full adata indices
-                        length_sites_global = _local_sites_to_global_indices(
-                            adata, subset, length_sites
-                        )
-                        any_c_sites_global = _local_sites_to_global_indices(
-                            adata, subset, any_c_sites
-                        )
-                        gpc_sites_global = _local_sites_to_global_indices(adata, subset, gpc_sites)
-                        cpg_sites_global = _local_sites_to_global_indices(adata, subset, cpg_sites)
-                        any_a_sites_global = _local_sites_to_global_indices(
-                            adata, subset, any_a_sites
-                        )
-
-                        # Build panels_with_indices using site indices for each panel
-                        name_to_sites = {
-                            f"HMM - {length_layer}": length_sites_global,
-                            "C": any_c_sites_global,
-                            "GpC": gpc_sites_global,
-                            "CpG": cpg_sites_global,
-                            "A": any_a_sites_global,
+                    # Variant overlay pre-extraction
+                    vc_matrix = None
+                    panel_global_sites = None
+                    if vc_layer_key is not None:
+                        vc_data = adata.layers[vc_layer_key]
+                        vc_data = vc_data.toarray() if hasattr(vc_data, "toarray") else np.asarray(vc_data)
+                        row_indices = np.where(row_mask.values if hasattr(row_mask, "values") else row_mask)[0]
+                        vc_matrix = vc_data[row_indices, :]
+                        s2g = adata.var_names.get_indexer(subset.var_names)
+                        lower_layer = str(length_layer).lower()
+                        hmm_title_key = length_layer
+                        if "accessible" in lower_layer:
+                            hmm_title_key = "HMM Accessible Patches"
+                        elif "footprint" in lower_layer:
+                            hmm_title_key = "HMM Footprints"
+                        panel_global_sites = {
+                            f"HMM - {hmm_title_key}": s2g[length_sites][s2g[length_sites] >= 0],
+                            "C": s2g[any_c_sites][s2g[any_c_sites] >= 0] if any_c_sites.size else np.array([], dtype=int),
+                            "GpC": s2g[gpc_sites][s2g[gpc_sites] >= 0] if gpc_sites.size else np.array([], dtype=int),
+                            "CpG": s2g[cpg_sites][s2g[cpg_sites] >= 0] if cpg_sites.size else np.array([], dtype=int),
+                            "A": s2g[any_a_sites][s2g[any_a_sites] >= 0] if any_a_sites.size else np.array([], dtype=int),
                         }
-                        panels_with_indices = []
-                        for idx, (name, *_rest) in enumerate(panels):
-                            sites = name_to_sites.get(name)
-                            if sites is not None and len(sites) > 0:
-                                panels_with_indices.append((axes_heat[idx], sites))
-                        if panels_with_indices:
-                            _overlay_variant_calls_on_panels(
-                                adata,
-                                ref,
-                                ordered_obs_names,
-                                panels_with_indices,
-                                seq1_color=variant_overlay_seq1_color,
-                                seq2_color=variant_overlay_seq2_color,
-                                marker_size=variant_overlay_marker_size,
-                            )
-                    except Exception as overlay_err:
-                        logger.warning(
-                            "Variant overlay failed for %s - %s: %s", sample, ref, overlay_err
-                        )
 
-                if feature_ranges:
-                    fig.subplots_adjust(left=0.18)
-                plt.tight_layout()
+                    yield {
+                        "ref": str(ref), "sample": str(sample), "display_sample": str(display_sample),
+                        "signal_type": signal_type, "length_layer": length_layer,
+                        "gpc_sites": gpc_sites, "cpg_sites": cpg_sites,
+                        "any_c_sites": any_c_sites, "any_a_sites": any_a_sites, "length_sites": length_sites,
+                        "length_labels": length_labels, "gpc_labels": gpc_labels, "cpg_labels": cpg_labels,
+                        "any_c_labels": any_c_labels, "any_a_labels": any_a_labels,
+                        "layer_data": layer_data, "layer_gpc": layer_gpc, "layer_cpg": layer_cpg,
+                        "layer_c": layer_c, "layer_a": layer_a,
+                        "bins_np": bins_np, "sort_by": sort_by, "obs_sort_values": obs_sort_values,
+                        "total_reads": subset.n_obs,
+                        "fill_nan_strategy": fill_nan_strategy, "fill_nan_value": fill_nan_value,
+                        "cmap_lengths": cmap_lengths, "cmap_gpc": cmap_gpc, "cmap_cpg": cmap_cpg,
+                        "cmap_c": cmap_c, "cmap_a": cmap_a,
+                        "n_xticks_lengths": n_xticks_lengths, "n_xticks_gpc": n_xticks_gpc,
+                        "n_xticks_cpg": n_xticks_cpg, "n_xticks_any_c": n_xticks_any_c, "n_xticks_a": n_xticks_a,
+                        "feature_ranges": feature_ranges,
+                        "overlay_variant_calls": overlay_variant_calls,
+                        "vc_matrix": vc_matrix, "subset_obs_names": subset.obs_names.tolist(),
+                        "panel_global_sites": panel_global_sites,
+                        "variant_overlay_seq1_color": variant_overlay_seq1_color,
+                        "variant_overlay_seq2_color": variant_overlay_seq2_color,
+                        "variant_overlay_marker_size": variant_overlay_marker_size,
+                        "save_path": str(save_path) if save_path is not None else None,
+                    }
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                    continue
 
-                if save_path:
-                    save_path = Path(save_path)
-                    save_path.mkdir(parents=True, exist_ok=True)
-                    safe_name = f"{ref}__{sample}".replace("/", "_")
-                    out_file = save_path / f"{safe_name}.png"
-                    plt.savefig(out_file, dpi=300)
-                    plt.close(fig)
-                else:
-                    plt.show()
+    # ------------------------------------------------------------------
+    # Phase B: dispatch
+    # ------------------------------------------------------------------
+    n_workers = _resolve_n_jobs(n_jobs) if save_path is not None else 1
+    if n_workers <= 1:
+        return [_hmm_length_one_group(a) for a in _iter_group_args()]
+    from concurrent.futures import ProcessPoolExecutor
 
-                results.append((sample, ref))
+    from smftools.parallel_utils import configure_worker_threads
 
-            except Exception:
-                import traceback
-
-                traceback.print_exc()
-                print(f"Failed {sample} - {ref} - {length_layer}")
-
-    return results
+    with ProcessPoolExecutor(max_workers=n_workers, initializer=configure_worker_threads, initargs=(1,)) as executor:
+        return list(executor.map(_hmm_length_one_group, _iter_group_args()))
 
 
 def plot_hmm_layers_rolling_by_sample_ref(

@@ -665,6 +665,7 @@ def load_defaults_with_inheritance(
 class ExperimentConfig:
     # Compute
     threads: Optional[int] = None
+    plot_threads_fraction: float = 0.5
     device: str = "auto"
 
     # General I/O
@@ -1059,6 +1060,7 @@ class ExperimentConfig:
     force_redo_hmm_fit: bool = False
     bypass_hmm_apply: bool = False
     force_redo_hmm_apply: bool = False
+    force_redo_hmm_plots: bool = False
 
     # AnnData stage override (for CLI commands like plot-current)
     from_adata_stage: Optional[str] = None
@@ -1590,6 +1592,7 @@ class ExperimentConfig:
             umi_yaml=merged.get("umi_yaml", None),
             input_already_demuxed=merged.get("input_already_demuxed", False),
             threads=merged.get("threads"),
+            plot_threads_fraction=float(merged.get("plot_threads_fraction", 0.5)),
             emit_log_file=merged.get("emit_log_file", True),
             log_level=merged.get("log_level", "INFO"),
             sample_sheet_path=merged.get("sample_sheet_path"),
@@ -1900,6 +1903,7 @@ class ExperimentConfig:
             force_redo_hmm_fit=merged.get("force_redo_hmm_fit", False),
             bypass_hmm_apply=merged.get("bypass_hmm_apply", False),
             force_redo_hmm_apply=merged.get("force_redo_hmm_apply", False),
+            force_redo_hmm_plots=merged.get("force_redo_hmm_plots", False),
             references_to_align_for_variant_annotation=merged.get(
                 "references_to_align_for_variant_annotation", [None, None]
             ),

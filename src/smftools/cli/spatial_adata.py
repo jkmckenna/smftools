@@ -279,7 +279,7 @@ def spatial_adata_core(
                     sort_by=cfg.spatial_clustermap_sortby,
                     deaminase=deaminase,
                     index_col_suffix=reindex_suffix,
-                    n_jobs=cfg.threads or 1,
+                    n_jobs=max(1, round((cfg.threads or 1) * getattr(cfg, "plot_threads_fraction", 0.5))),
                     omit_chimeric_reads=cfg.omit_chimeric_reads,
                 )
 
@@ -322,7 +322,7 @@ def spatial_adata_core(
             sort_by=cfg.spatial_clustermap_sortby,
             deaminase=deaminase,
             index_col_suffix=reindex_suffix,
-            n_jobs=cfg.threads or 1,
+            n_jobs=max(1, round((cfg.threads or 1) * getattr(cfg, "plot_threads_fraction", 0.5))),
             omit_chimeric_reads=cfg.omit_chimeric_reads,
         )
 

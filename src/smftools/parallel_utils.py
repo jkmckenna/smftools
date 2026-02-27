@@ -66,6 +66,22 @@ def configure_worker_threads(n_threads: int = 1) -> None:
     os.environ["OPENBLAS_NUM_THREADS"] = thread_str
     os.environ["BLIS_NUM_THREADS"] = thread_str
     os.environ["NUMEXPR_NUM_THREADS"] = thread_str
+    # Apple Accelerate / vecLib (macOS) — does not honour the OpenBLAS/OMP vars
+    os.environ["VECLIB_MAXIMUM_THREADS"] = thread_str
+    os.environ["ACCELERATE_NUM_THREADS"] = thread_str
+
+    # Force matplotlib to the non-GUI Agg backend before any smftools module
+    # imports matplotlib.pyplot.  On macOS the default backend is MacOSX (AppKit)
+    # which initialises GUI event-loop threads even in non-interactive workers,
+    # causing ~200 % CPU per worker process.  This must run before matplotlib is
+    # imported, which is guaranteed here because the initializer executes before
+    # any task module is imported in a spawn-based worker process.
+    os.environ["MPLBACKEND"] = "Agg"
+    try:
+        import matplotlib  # noqa: PLC0415
+        matplotlib.use("Agg")
+    except Exception:
+        pass
 
     # torch reads this at runtime, so it is safe to set even after import.
     try:

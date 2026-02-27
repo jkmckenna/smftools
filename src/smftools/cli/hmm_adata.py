@@ -581,7 +581,7 @@ def hmm_adata(config_path: str):
     paths = get_adata_paths(cfg)
 
     # 2) choose starting AnnData
-    if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply):
+    if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply or getattr(cfg, "force_redo_hmm_plots", False)):
         logger.info(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
         return None
 
@@ -1053,9 +1053,36 @@ def hmm_adata_core(
         )
         write_gz_h5ad(adata, paths.hmm)
 
+    # Backfill chimeric_variant_sites from the variant adata when the source adata
+    # pre-dates the variant stage (e.g. loaded from spatial).  This ensures that
+    # omit_chimeric_reads filtering actually fires in the clustermap plotting calls.
+    if "chimeric_variant_sites" not in adata.obs.columns and paths.variant.exists():
+        try:
+            from ..readwrite import safe_read_h5ad as _safe_read
+            _variant_adata, _ = _safe_read(paths.variant)
+            for _col in ("chimeric_variant_sites", "chimeric_variant_sites_type"):
+                if _col in _variant_adata.obs.columns:
+                    adata.obs[_col] = _variant_adata.obs[_col].reindex(adata.obs.index)
+            logger.info("Backfilled chimeric_variant_sites from variant adata for clustermap filtering.")
+        except Exception as _e:
+            logger.warning("Could not backfill chimeric_variant_sites from variant adata: %s", _e)
+
     ########################################################################################################################
 
     ############################################### HMM based feature plotting ###############################################
+
+    _force_redo_plots = getattr(cfg, "force_redo_hmm_plots", False)
+
+    # Ensure hmm_layers is always defined for the plotting section, even when the
+    # HMM apply block was skipped (e.g. force_redo_hmm_plots without force_redo_hmm_apply).
+    if "hmm_layers" not in locals():
+        _raw_hmm_layers = adata.uns.get("hmm_appended_layers", None)
+        _raw_hmm_layers = list(_raw_hmm_layers) if _raw_hmm_layers is not None else []
+        hmm_layers = [
+            layer
+            for layer in _raw_hmm_layers
+            if not any(s in layer for s in ("_lengths", "_states", "_posterior"))
+        ]
 
     hmm_dir = hmm_directory / "12_hmm_clustermaps"
     make_dirs([hmm_directory, hmm_dir])
@@ -1079,7 +1106,7 @@ def hmm_adata_core(
 
     for layer in layers:
         hmm_cluster_save_dir = hmm_dir / layer
-        if hmm_cluster_save_dir.is_dir():
+        if hmm_cluster_save_dir.is_dir() and not _force_redo_plots:
             pass
         else:
             make_dirs([hmm_cluster_save_dir])
@@ -1117,6 +1144,8 @@ def hmm_adata_core(
                 variant_overlay_seq1_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
                 variant_overlay_seq2_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
                 variant_overlay_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                omit_chimeric_reads=getattr(cfg, "omit_chimeric_reads", True),
+                n_jobs=max(1, round((getattr(cfg, "threads", 1) or 1) * getattr(cfg, "plot_threads_fraction", 0.5))),
             )
 
     hmm_length_dir = hmm_directory / "12b_hmm_length_clustermaps"
@@ -1138,7 +1167,7 @@ def hmm_adata_core(
 
     for layer in length_layers:
         hmm_cluster_save_dir = hmm_length_dir / layer
-        if hmm_cluster_save_dir.is_dir():
+        if hmm_cluster_save_dir.is_dir() and not _force_redo_plots:
             pass
         else:
             make_dirs([hmm_cluster_save_dir])
@@ -1177,11 +1206,13 @@ def hmm_adata_core(
                 variant_overlay_seq1_color=getattr(cfg, "variant_overlay_seq1_color", "white"),
                 variant_overlay_seq2_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
                 variant_overlay_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
+                omit_chimeric_reads=getattr(cfg, "omit_chimeric_reads", True),
+                n_jobs=max(1, round((getattr(cfg, "threads", 1) or 1) * getattr(cfg, "plot_threads_fraction", 0.5))),
             )
 
     hmm_dir = hmm_directory / "13_hmm_bulk_traces"
 
-    if hmm_dir.is_dir():
+    if hmm_dir.is_dir() and not _force_redo_plots:
         logger.debug(f"{hmm_dir} already exists.")
     else:
         make_dirs([hmm_directory, hmm_dir])
@@ -1212,7 +1243,7 @@ def hmm_adata_core(
 
     hmm_dir = hmm_directory / "14_hmm_fragment_distributions"
 
-    if hmm_dir.is_dir():
+    if hmm_dir.is_dir() and not _force_redo_plots:
         logger.debug(f"{hmm_dir} already exists.")
     else:
         make_dirs([hmm_directory, hmm_dir])
@@ -1237,7 +1268,7 @@ def hmm_adata_core(
                 ("A_all_accessible_features_merged_lengths", 800),
             ]
 
-        for layer, max in fragments:
+        for layer, max_length_cap in fragments:
             save_path = hmm_dir / layer
             make_dirs([save_path])
             layer_cmap = _resolve_feature_colormap(layer, cfg, "Greens")
@@ -1249,7 +1280,7 @@ def hmm_adata_core(
                 sample_col=cfg.sample_name_col_for_plotting,
                 ref_obs_col=cfg.reference_column,
                 rows_per_page=6,
-                max_length_cap=max,
+                max_length_cap=max_length_cap,
                 figsize_per_cell=(3.5, 2.2),
                 save_path=save_path,
                 save_pdf=False,

@@ -5,6 +5,7 @@ sample_name_col_for_plotting: 'Experiment_name_and_barcode'
 
 # Compute params
 threads: 4
+plot_threads_fraction: 0.5  # Fraction of threads to use for parallel clustermap plotting (each mpl worker uses ~2 CPU cores on macOS)
 device: "auto"
 
 ######## smftools load params #########
@@ -497,3 +498,4 @@ bypass_hmm_fit: False # Whether to skip HMM fitting for each sample/reference
 force_redo_hmm_fit: False # Whether to redo HMM fitting for each sample/reference
 bypass_hmm_apply: False # Whether to skip HMM application for each sample/reference
 force_redo_hmm_apply: False # Whether to redo HMM application for each sample/reference
+force_redo_hmm_plots: False # Whether to regenerate HMM clustermap/trace/contour plots even if output directories exist
