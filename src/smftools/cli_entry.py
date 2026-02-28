@@ -158,7 +158,7 @@ def full(config_path):
 @cli.command()
 @click.argument(
     "task",
-    type=click.Choice(["load", "preprocess", "spatial", "hmm"], case_sensitive=False),
+    type=click.Choice(["load", "preprocess", "spatial", "variant", "hmm"], case_sensitive=False),
 )
 @click.argument(
     "config_table",
@@ -178,7 +178,7 @@ def full(config_path):
 )
 def batch(task, config_table: Path, column: str, sep: str | None):
     """
-    Run a TASK (load, preprocess, spatial, hmm) on multiple CONFIG_PATHs
+    Run a TASK (load, preprocess, spatial, variant, hmm) on multiple CONFIG_PATHs
     listed in a CSV/TSV or plain TXT file.
 
     Plain text format: one config path per line, no header.
@@ -261,6 +261,7 @@ def batch(task, config_table: Path, column: str, sep: str | None):
         "load": load_adata,
         "preprocess": preprocess_adata,
         "spatial": spatial_adata,
+        "variant": variant_adata,
         "hmm": hmm_adata,
     }
 
