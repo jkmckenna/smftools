@@ -1072,6 +1072,15 @@ class ExperimentConfig:
     plot_current_var_start: Optional[int] = None
     plot_current_var_end: Optional[int] = None
 
+    # Concatenation
+    concatenate_input_dir: Optional[str] = None
+    concatenate_csv_path: Optional[str] = None
+    concatenate_csv_column: str = "h5ad_path"
+    concatenate_file_suffixes: List[str] = field(default_factory=lambda: [".h5ad", ".h5ad.gz"])
+    concatenate_delete_inputs: bool = False
+    concatenate_restore_backups: bool = True
+    concatenate_recompute_pp_vars: bool = False
+
     # metadata
     config_source: Optional[str] = None
 
@@ -1179,94 +1188,120 @@ class ExperimentConfig:
             merged["experiment_name"] = f"{date_str}_SMF_experiment"
 
         # Input file types and path handling
-        input_data_path = Path(merged["input_data_path"])
+        # When input_data_path is not provided (e.g. concatenate command),
+        # skip file discovery and default I/O variables to None.
+        raw_input_data_path = merged.get("input_data_path")
+        if raw_input_data_path is not None and str(raw_input_data_path).strip().lower() not in (
+            "",
+            "none",
+            "null",
+        ):
+            input_data_path = Path(raw_input_data_path)
+            input_type = None
+            input_files = None
 
-        # Detect the input filetype
-        if input_data_path.is_file():
-            suffix = input_data_path.suffix.lower()
-            suffixes = [
-                s.lower() for s in input_data_path.suffixes
-            ]  # handles multi-part extensions
+            # Detect the input filetype
+            if input_data_path.is_file():
+                suffix = input_data_path.suffix.lower()
+                suffixes = [
+                    s.lower() for s in input_data_path.suffixes
+                ]  # handles multi-part extensions
 
-            # recognize multi-suffix cases like .fastq.gz or .fq.gz
-            if any(s in [".pod5", ".p5"] for s in suffixes):
-                input_type = "pod5"
-                input_files = [Path(input_data_path)]
-            elif any(s in [".fast5", ".f5"] for s in suffixes):
-                input_type = "fast5"
-                input_files = [Path(input_data_path)]
-            elif any(s in [".fastq", ".fq"] for s in suffixes):
-                input_type = "fastq"
-                input_files = [Path(input_data_path)]
-            elif any(s in [".bam"] for s in suffixes):
-                input_type = "bam"
-                input_files = [Path(input_data_path)]
-            elif any(s in [".h5ad", ".h5"] for s in suffixes):
-                input_type = "h5ad"
-                input_files = [Path(input_data_path)]
-            else:
-                print("Error detecting input file type")
+                # recognize multi-suffix cases like .fastq.gz or .fq.gz
+                if any(s in [".pod5", ".p5"] for s in suffixes):
+                    input_type = "pod5"
+                    input_files = [Path(input_data_path)]
+                elif any(s in [".fast5", ".f5"] for s in suffixes):
+                    input_type = "fast5"
+                    input_files = [Path(input_data_path)]
+                elif any(s in [".fastq", ".fq"] for s in suffixes):
+                    input_type = "fastq"
+                    input_files = [Path(input_data_path)]
+                elif any(s in [".bam"] for s in suffixes):
+                    input_type = "bam"
+                    input_files = [Path(input_data_path)]
+                elif any(s in [".h5ad", ".h5"] for s in suffixes):
+                    input_type = "h5ad"
+                    input_files = [Path(input_data_path)]
+                else:
+                    print("Error detecting input file type")
 
-        elif input_data_path.is_dir():
-            found = discover_input_files(
-                input_data_path,
-                bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
-                recursive=merged["recursive_input_search"],
-            )
+            elif input_data_path.is_dir():
+                found = discover_input_files(
+                    input_data_path,
+                    bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
+                    recursive=merged["recursive_input_search"],
+                )
 
-            if found["input_is_pod5"]:
-                input_type = "pod5"
-                input_files = found["pod5_paths"]
-            elif found["input_is_fast5"]:
-                input_type = "fast5"
-                input_files = found["fast5_paths"]
-            elif found["input_is_fastq"]:
-                input_type = "fastq"
-                input_files = found["fastq_paths"]
-            elif found["input_is_bam"]:
-                input_type = "bam"
-                input_files = found["bam_paths"]
-            elif found["input_is_h5ad"]:
-                input_type = "h5ad"
-                input_files = found["h5ad_paths"]
+                if found["input_is_pod5"]:
+                    input_type = "pod5"
+                    input_files = found["pod5_paths"]
+                elif found["input_is_fast5"]:
+                    input_type = "fast5"
+                    input_files = found["fast5_paths"]
+                elif found["input_is_fastq"]:
+                    input_type = "fastq"
+                    input_files = found["fastq_paths"]
+                elif found["input_is_bam"]:
+                    input_type = "bam"
+                    input_files = found["bam_paths"]
+                elif found["input_is_h5ad"]:
+                    input_type = "h5ad"
+                    input_files = found["h5ad_paths"]
 
-            print(
-                f"Found {found['all_files_searched']} files; "
-                f"fastq={len(found['fastq_paths'])}, "
-                f"bam={len(found['bam_paths'])}, "
-                f"pod5={len(found['pod5_paths'])}, "
-                f"fast5={len(found['fast5_paths'])}, "
-                f"h5ad={len(found['h5ad_paths'])}"
-            )
+                print(
+                    f"Found {found['all_files_searched']} files; "
+                    f"fastq={len(found['fastq_paths'])}, "
+                    f"bam={len(found['bam_paths'])}, "
+                    f"pod5={len(found['pod5_paths'])}, "
+                    f"fast5={len(found['fast5_paths'])}, "
+                    f"h5ad={len(found['h5ad_paths'])}"
+                )
+        else:
+            input_data_path = None
+            input_type = None
+            input_files = None
 
-        # summary file output path
-        output_dir = Path(merged["output_directory"])
-        summary_file_basename = merged["experiment_name"] + "_output_summary.csv"
-        summary_file = output_dir / summary_file_basename
+        # output_directory and derived paths
+        raw_output_dir = merged.get("output_directory")
+        if raw_output_dir is not None and str(raw_output_dir).strip().lower() not in (
+            "",
+            "none",
+            "null",
+        ):
+            output_dir = Path(raw_output_dir)
+        else:
+            output_dir = None
+
+        if output_dir is not None:
+            summary_file_basename = merged["experiment_name"] + "_output_summary.csv"
+            summary_file = output_dir / summary_file_basename
+        else:
+            summary_file = None
 
         # Resolve informatics output root from constants (non-user-tunable).
         informatics_outputs_dir = INFORMATICS_OUTPUTS_DIR
-        informatics_outputs_path = output_dir / informatics_outputs_dir
+        informatics_outputs_path = output_dir / informatics_outputs_dir if output_dir else None
 
         # Resolve load BAM directories from constants (non-user-tunable).
         bam_outputs_dir = BAM_OUTPUTS_DIR
-        bam_outputs_path = informatics_outputs_path / bam_outputs_dir
+        bam_outputs_path = informatics_outputs_path / bam_outputs_dir if informatics_outputs_path else None
 
         # Resolve FASTA output directories from constants (non-user-tunable).
         fasta_outputs_dir = FASTA_OUTPUTS_DIR
-        fasta_outputs_path = informatics_outputs_path / fasta_outputs_dir
+        fasta_outputs_path = informatics_outputs_path / fasta_outputs_dir if informatics_outputs_path else None
 
         # Resolve BED output directories from constants (non-user-tunable).
         bed_outputs_dir = BED_OUTPUTS_DIR
-        bed_outputs_path = informatics_outputs_path / bed_outputs_dir
+        bed_outputs_path = informatics_outputs_path / bed_outputs_dir if informatics_outputs_path else None
 
         # Resolve modkit directories from constants (non-user-tunable).
         modkit_outputs_dir = MODKIT_OUTPUTS_DIR
-        modkit_outputs_path = informatics_outputs_path / modkit_outputs_dir
+        modkit_outputs_path = informatics_outputs_path / modkit_outputs_dir if informatics_outputs_path else None
 
         # Demultiplexing output path
         split_dir = SPLIT_DIR
-        split_path = bam_outputs_path / split_dir
+        split_path = bam_outputs_path / split_dir if bam_outputs_path else None
 
         # final normalization
         if "strands" in merged:
@@ -1435,6 +1470,31 @@ class ExperimentConfig:
             if _int_key in merged:
                 _val = _parse_numeric(merged.get(_int_key, None), None)
                 merged[_int_key] = None if _val is None else int(_val)
+
+        # Concatenation config parsing
+        for _concat_str_key in ("concatenate_input_dir", "concatenate_csv_path"):
+            if _concat_str_key in merged:
+                val = merged.get(_concat_str_key)
+                merged[_concat_str_key] = (
+                    None
+                    if val is None or str(val).strip().lower() in ("", "none", "null")
+                    else str(val)
+                )
+        if "concatenate_csv_column" in merged:
+            merged["concatenate_csv_column"] = str(
+                merged.get("concatenate_csv_column", "h5ad_path")
+            )
+        if "concatenate_file_suffixes" in merged:
+            merged["concatenate_file_suffixes"] = _parse_list(
+                merged.get("concatenate_file_suffixes")
+            )
+        for _concat_bool_key in (
+            "concatenate_delete_inputs",
+            "concatenate_restore_backups",
+            "concatenate_recompute_pp_vars",
+        ):
+            if _concat_bool_key in merged:
+                merged[_concat_bool_key] = _parse_bool(merged[_concat_bool_key])
 
         # from_adata_stage normalization (strip whitespace, allow None)
         raw_stage = merged.get("from_adata_stage", None)
@@ -1913,6 +1973,15 @@ class ExperimentConfig:
             plot_current_reference_end=merged.get("plot_current_reference_end", None),
             plot_current_var_start=merged.get("plot_current_var_start", None),
             plot_current_var_end=merged.get("plot_current_var_end", None),
+            concatenate_input_dir=merged.get("concatenate_input_dir", None),
+            concatenate_csv_path=merged.get("concatenate_csv_path", None),
+            concatenate_csv_column=merged.get("concatenate_csv_column", "h5ad_path"),
+            concatenate_file_suffixes=merged.get(
+                "concatenate_file_suffixes", [".h5ad", ".h5ad.gz"]
+            ),
+            concatenate_delete_inputs=merged.get("concatenate_delete_inputs", False),
+            concatenate_restore_backups=merged.get("concatenate_restore_backups", True),
+            concatenate_recompute_pp_vars=merged.get("concatenate_recompute_pp_vars", False),
             config_source=config_source or "<var_dict>",
         )
 

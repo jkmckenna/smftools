@@ -240,6 +240,65 @@ def _harmonize_var_schema(adatas: List[ad.AnnData]) -> None:
         a.var = a.var.reindex(columns=all_cols_sorted)
 
 
+_STAGE_SUFFIXES = {
+    "_variant": "variant",
+    "_hmm": "hmm",
+    "_spatial": "spatial",
+    "_latent": "latent",
+    "_chimeric": "chimeric",
+    "_preprocessed_duplicates_removed": "pp_dedup",
+    "_preprocessed": "pp",
+}
+
+
+def _detect_stage_from_paths(h5_paths: list[Path]) -> str | None:
+    """Detect pipeline stage from input filenames.
+
+    Strips ``.h5ad.gz`` / ``.h5ad`` suffix from each filename, then checks
+    which ``_STAGE_SUFFIXES`` key the stem ends with.  If all inputs agree,
+    returns the corresponding stage key.  If mixed or unknown, logs a warning
+    and returns ``None``.
+    """
+    detected: set[str] = set()
+    # Sort longest suffixes first so e.g. _preprocessed_duplicates_removed
+    # matches before _preprocessed
+    ordered_keys = sorted(_STAGE_SUFFIXES.keys(), key=len, reverse=True)
+
+    for p in h5_paths:
+        name = p.name
+        # Strip .h5ad.gz or .h5ad
+        if name.endswith(".h5ad.gz"):
+            stem = name[: -len(".h5ad.gz")]
+        elif name.endswith(".h5ad"):
+            stem = name[: -len(".h5ad")]
+        else:
+            stem = p.stem
+
+        matched = False
+        for suffix_key in ordered_keys:
+            if stem.endswith(suffix_key):
+                detected.add(_STAGE_SUFFIXES[suffix_key])
+                matched = True
+                break
+        if not matched:
+            detected.add("unknown")
+
+    if len(detected) == 1:
+        stage = detected.pop()
+        if stage == "unknown":
+            logger.warning("Could not detect pipeline stage from input filenames")
+            return None
+        logger.info("Detected pipeline stage from input filenames: %s", stage)
+        return stage
+
+    logger.warning(
+        "Mixed pipeline stages detected in input filenames: %s. "
+        "Cannot auto-detect output path; falling back to explicit output_path.",
+        detected,
+    )
+    return None
+
+
 def concatenate_h5ads(
     output_path: str | Path,
     *,
@@ -249,6 +308,8 @@ def concatenate_h5ads(
     file_suffixes: Sequence[str] = (".h5ad", ".h5ad.gz"),
     delete_inputs: bool = False,
     restore_backups: bool = True,
+    recompute_pp_vars: bool = False,
+    config_path: str | Path | None = None,
 ) -> Path:
     """
     Concatenate multiple .h5ad files into one AnnData and write it safely.
@@ -261,6 +322,8 @@ def concatenate_h5ads(
     ----------
     output_path
         Path to the final concatenated .h5ad (can be .h5ad or .h5ad.gz).
+        When ``config_path`` is provided, this may be overridden by auto-
+        detected stage output path.
     input_dir
         Directory containing .h5ad files to concatenate. If None and csv_path
         is also None, defaults to the current working directory.
@@ -274,6 +337,12 @@ def concatenate_h5ads(
         If True, delete the input .h5ad files after successful write of output.
     restore_backups
         Passed through to `safe_read_h5ad(restore_backups=...)`.
+    recompute_pp_vars
+        If True, recompute ``calculate_coverage`` and ``append_base_context``
+        after concatenation using the experiment config.
+    config_path
+        Path to an experiment config CSV.  Used for stage-based output path
+        auto-detection and for recomputing preprocessing ``.var`` columns.
 
     Returns
     -------
@@ -328,9 +397,6 @@ def concatenate_h5ads(
     if not h5_paths:
         raise ValueError("No input .h5ad files found to concatenate.")
 
-    # Ensure directory for output exists
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
     # ------------------------------------------------------------------
     # Concatenate
     # ------------------------------------------------------------------
@@ -374,8 +440,73 @@ def concatenate_h5ads(
             except Exception:
                 final_adata.var[c] = s.astype("string")
 
+    # ------------------------------------------------------------------
+    # Auto-detect output path from stage when config is provided
+    # ------------------------------------------------------------------
+    if config_path is not None:
+        from smftools.cli.helpers import get_adata_paths, load_experiment_config
+
+        cfg = load_experiment_config(str(config_path))
+        stage = _detect_stage_from_paths(h5_paths)
+
+        _STAGE_TO_ATTR = {
+            "variant": "variant",
+            "hmm": "hmm",
+            "spatial": "spatial",
+            "latent": "latent",
+            "chimeric": "chimeric",
+            "pp_dedup": "pp_dedup",
+            "pp": "pp",
+        }
+
+        if stage is not None and stage in _STAGE_TO_ATTR:
+            paths = get_adata_paths(cfg)
+            output_path = getattr(paths, _STAGE_TO_ATTR[stage])
+            logger.info("Auto-detected output path for stage '%s': %s", stage, output_path)
+        else:
+            logger.info("Using explicit output path: %s", output_path)
+
+    # ------------------------------------------------------------------
+    # Recompute preprocessing .var columns if requested
+    # ------------------------------------------------------------------
+    if recompute_pp_vars:
+        if config_path is None:
+            raise ValueError(
+                "recompute_pp_vars requires config_path to be provided."
+            )
+
+        from smftools.preprocessing.append_base_context import append_base_context
+        from smftools.preprocessing.calculate_coverage import calculate_coverage
+
+        # cfg was already loaded above when config_path is not None
+        smf_modality = cfg.smf_modality or "conversion"
+        native = smf_modality == "direct"
+
+        print(f"{time_string()}: Recomputing calculate_coverage after concatenation")
+        calculate_coverage(
+            final_adata,
+            ref_column=cfg.reference_column,
+            position_nan_threshold=1 - cfg.position_max_nan_threshold,
+            smf_modality=smf_modality,
+            target_layer=cfg.output_binary_layer_name,
+            force_redo=True,
+        )
+
+        print(f"{time_string()}: Recomputing append_base_context after concatenation")
+        append_base_context(
+            final_adata,
+            ref_column=cfg.reference_column,
+            use_consensus=False,
+            native=native,
+            mod_target_bases=cfg.mod_target_bases,
+            force_redo=True,
+        )
+
     # Let anndata write pandas StringArray reliably
     ad.settings.allow_write_nullable_strings = True
+
+    # Ensure directory for output exists
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"{time_string()}: Writing concatenated AnnData to {output_path}")
     safe_write_h5ad(final_adata, output_path, backup=restore_backups)
@@ -827,7 +958,7 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
     if report["errors"]:
         logger.error("\nWarnings / errors encountered:")
         for e in report["errors"]:
-            logger.error(" -", e)
+            logger.error(" - %s", e)
 
     logger.info("=== end report ===\n")
 
@@ -1344,34 +1475,34 @@ def safe_read_h5ad(
     if verbose:
         logger.info("\n=== safe_read_h5ad summary ===")
         if report["restored_obs_columns"]:
-            logger.info("Restored obs columns:", report["restored_obs_columns"])
+            logger.info("Restored obs columns: %s", report["restored_obs_columns"])
         if report["restored_var_columns"]:
-            logger.info("Restored var columns:", report["restored_var_columns"])
+            logger.info("Restored var columns: %s", report["restored_var_columns"])
         if report["restored_uns_keys"]:
-            logger.info("Restored uns keys:", report["restored_uns_keys"])
+            logger.info("Restored uns keys: %s", report["restored_uns_keys"])
         if report["parsed_uns_json_keys"]:
-            logger.info("Parsed uns JSON keys:", report["parsed_uns_json_keys"])
+            logger.info("Parsed uns JSON keys: %s", report["parsed_uns_json_keys"])
         if report["restored_layers"]:
-            logger.info("Restored layers:", report["restored_layers"])
+            logger.info("Restored layers: %s", report["restored_layers"])
         if report["restored_obsm"]:
-            logger.info("Restored obsm:", report["restored_obsm"])
+            logger.info("Restored obsm: %s", report["restored_obsm"])
         if report["restored_varm"]:
-            logger.info("Restored varm:", report["restored_varm"])
+            logger.info("Restored varm: %s", report["restored_varm"])
         if report["recategorized_obs"] or report["recategorized_var"]:
             logger.info(
-                "Recategorized columns (obs/var):",
+                "Recategorized columns (obs/var): %s, %s",
                 report["recategorized_obs"],
                 report["recategorized_var"],
             )
         if report["missing_backups"]:
             logger.info(
-                "Missing backups or object columns without backups (investigate):",
+                "Missing backups or object columns without backups (investigate): %s",
                 report["missing_backups"],
             )
         if report["errors"]:
             logger.error("Errors encountered (see report['errors']):")
             for e in report["errors"]:
-                logger.error(" -", e)
+                logger.error(" - %s", e)
         logger.info("=== end summary ===\n")
 
     return adata, report

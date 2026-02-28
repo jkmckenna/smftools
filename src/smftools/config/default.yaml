@@ -455,6 +455,17 @@ hmm_peak_feature_configs:
     peak_threshold: 0.80
     rolling_window: 50 
 
+######## smftools concatenate params #########
+concatenate_input_dir: null  # Directory containing .h5ad/.h5ad.gz files to concatenate
+concatenate_csv_path: null  # CSV/TSV/TXT containing file paths of h5ad files
+concatenate_csv_column: "h5ad_path"  # Column in CSV containing file paths
+concatenate_file_suffixes:
+  - ".h5ad"
+  - ".h5ad.gz"
+concatenate_delete_inputs: False  # Delete input .h5ad files after concatenation
+concatenate_restore_backups: True  # Restore .h5ad backups during reading
+concatenate_recompute_pp_vars: False  # Recompute calculate_coverage and append_base_context after concatenation
+
 # Pipeline control flow - load adata
 force_redo_load_adata: False # Whether to perform load adata command from start
 

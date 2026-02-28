@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Sequence
-
 import click
 import pandas as pd
 
@@ -292,87 +290,106 @@ def batch(task, config_table: Path, column: str, sep: str | None):
 
 ####### concatenate command ###########
 @cli.command("concatenate")
-@click.argument(
-    "output_path",
-    type=click.Path(path_type=Path, dir_okay=False),
+@click.argument("config_path", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--recompute-pp-vars",
+    is_flag=True,
+    help="Recompute calculate_coverage and append_base_context after concatenation.",
 )
 @click.option(
     "--input-dir",
     "-d",
     type=click.Path(path_type=Path, file_okay=False),
     default=None,
-    help="Directory containing .h5ad/.h5ad.gz files to concatenate.",
+    help="Override concatenate_input_dir from config.",
 )
 @click.option(
     "--csv-path",
     "-c",
     type=click.Path(path_type=Path, dir_okay=False),
     default=None,
-    help="CSV/TSV/TXT containing file paths of h5ad files.",
+    help="Override concatenate_csv_path from config.",
 )
 @click.option(
-    "--csv-column",
-    "-C",
-    default="h5ad_path",
-    help="Column in the CSV containing file paths (ignored for TXT).",
-    show_default=True,
-)
-@click.option(
-    "--suffix",
-    "-s",
-    multiple=True,
-    default=[".h5ad", ".h5ad.gz"],
-    help="Allowed file suffixes (repeatable).",
-    show_default=True,
-)
-@click.option(
-    "--delete",
-    is_flag=False,
-    help="Delete input .h5ad files after concatenation.",
-)
-@click.option(
-    "--restore",
-    is_flag=True,
-    help="Restore .h5ad backups during reading.",
+    "--output-path",
+    "-o",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Explicit output path (overrides stage auto-detection).",
 )
 def concatenate_cmd(
-    output_path: Path,
+    config_path: Path,
+    recompute_pp_vars: bool,
     input_dir: Path | None,
     csv_path: Path | None,
-    csv_column: str,
-    suffix: Sequence[str],
-    delete: bool,
-    restore: bool,
+    output_path: Path | None,
 ):
     """
     Concatenate multiple .h5ad files into a single output file.
 
-    Two modes:
+    Reads concatenation parameters from an experiment config CSV.
+    Input source (directory or CSV of paths) is configured via
+    concatenate_input_dir / concatenate_csv_path in the config, or
+    overridden with --input-dir / --csv-path.
 
-        smftools concatenate out.h5ad.gz --input-dir ./dir
+    Output path is auto-detected from the pipeline stage of the input
+    filenames (e.g. *_variant.h5ad → variant output directory). Use
+    --output-path to override.
 
-        smftools concatenate out.h5ad.gz --csv-path paths.csv --csv-column h5ad_path
+    Example:
 
-    TXT input also works (one file path per line).
+        smftools concatenate experiment_config.csv
 
-    Uses safe_read_h5ad() and safe_write_h5ad().
+        smftools concatenate experiment_config.csv --recompute-pp-vars
+
+        smftools concatenate experiment_config.csv --input-dir ./variant_h5ads/
     """
-
-    if input_dir and csv_path:
-        raise click.ClickException("Provide only ONE of --input-dir or --csv-path.")
+    from .cli.helpers import load_experiment_config
 
     try:
+        cfg = load_experiment_config(str(config_path))
+
+        # Resolve input source: CLI flags override config values
+        effective_input_dir = input_dir or (
+            Path(cfg.concatenate_input_dir) if cfg.concatenate_input_dir else None
+        )
+        effective_csv_path = csv_path or (
+            Path(cfg.concatenate_csv_path) if cfg.concatenate_csv_path else None
+        )
+
+        if effective_input_dir and effective_csv_path:
+            raise click.ClickException(
+                "Provide only ONE of --input-dir / concatenate_input_dir or "
+                "--csv-path / concatenate_csv_path."
+            )
+
+        if not effective_input_dir and not effective_csv_path:
+            raise click.ClickException(
+                "No input source specified. Set concatenate_input_dir or "
+                "concatenate_csv_path in the config, or use --input-dir / --csv-path."
+            )
+
+        # Determine whether to recompute: CLI flag OR config value
+        do_recompute = recompute_pp_vars or cfg.concatenate_recompute_pp_vars
+
+        # Use a placeholder output_path when auto-detection is expected
+        effective_output_path = output_path or Path("concatenated_output.h5ad.gz")
+
         out = concatenate_h5ads(
-            output_path=output_path,
-            input_dir=input_dir,
-            csv_path=csv_path,
-            csv_column=csv_column,
-            file_suffixes=tuple(suffix),
-            delete_inputs=delete,
-            restore_backups=restore,
+            output_path=effective_output_path,
+            input_dir=effective_input_dir,
+            csv_path=effective_csv_path,
+            csv_column=cfg.concatenate_csv_column,
+            file_suffixes=tuple(cfg.concatenate_file_suffixes),
+            delete_inputs=cfg.concatenate_delete_inputs,
+            restore_backups=cfg.concatenate_restore_backups,
+            recompute_pp_vars=do_recompute,
+            config_path=config_path,
         )
         click.echo(f"Concatenated file written to: {out}")
 
+    except click.ClickException:
+        raise
     except Exception as e:
         raise click.ClickException(str(e)) from e
 

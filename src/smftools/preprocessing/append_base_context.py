@@ -40,6 +40,13 @@ def append_base_context(
         # QC already performed; nothing to do
         return
 
+    # Detect whether the adata has been inverted (column order reversed).
+    # If so, boolean arrays built from the forward-orientation FASTA sequence
+    # must be reversed before assignment to .var.
+    is_inverted = bool(adata.uns.get("invert_adata_performed", False))
+    if is_inverted:
+        logger.info("Detected inverted adata; base context arrays will be reversed to match column order")
+
     logger.info("Adding base context based on reference FASTA sequence for sample")
     references = adata.obs[ref_column].cat.categories
     site_types = []
@@ -127,7 +134,10 @@ def append_base_context(
 
         for site_type in site_types:
             # Site context annotations for each reference
-            adata.var[f"{ref}_{site_type}"] = boolean_dict[f"{ref}_{site_type}"].astype(bool)
+            arr = boolean_dict[f"{ref}_{site_type}"].astype(bool)
+            if is_inverted:
+                arr = arr[::-1]
+            adata.var[f"{ref}_{site_type}"] = arr
             # Restrict the site type labels to only be in positions that occur at a high enough frequency in the dataset
             if adata.uns.get("calculate_coverage_performed", False):
                 adata.var[f"{ref}_{site_type}_valid_coverage"] = (
