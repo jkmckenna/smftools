@@ -698,6 +698,11 @@ def spatial_adata_core(
     else:
         _corr_keep = ~adata.obs["chimeric_variant_sites"].astype(bool).values if (getattr(cfg, "omit_chimeric_reads", False) and "chimeric_variant_sites" in adata.obs.columns) else None
         _corr_adata = adata[_corr_keep, :] if _corr_keep is not None and not _corr_keep.all() else adata
+        _corr_min_valid = (
+            1 - cfg.position_max_nan_threshold
+            if getattr(cfg, "correlation_matrix_filter_positions", True)
+            else None
+        )
         compute_positionwise_statistics(
             _corr_adata,
             layer="nan0_0minus1",
@@ -709,6 +714,7 @@ def spatial_adata_core(
             encoding="signed",
             max_threads=cfg.threads,
             min_count_for_pairwise=10,
+            min_position_valid_fraction=_corr_min_valid,
         )
 
         plot_positionwise_matrices(
@@ -723,6 +729,10 @@ def spatial_adata_core(
             vmax=None,
             output_dir=corr_dir,
             output_key="positionwise_result",
+            flip_display_axes=getattr(cfg, "correlation_matrix_flip_axes", True),
+            n_ticks=getattr(cfg, "correlation_matrix_n_ticks", 10),
+            tick_fontsize=getattr(cfg, "correlation_matrix_tick_fontsize", 7),
+            tick_rotation=getattr(cfg, "correlation_matrix_tick_rotation", 90.0),
         )
 
     # ============================================================

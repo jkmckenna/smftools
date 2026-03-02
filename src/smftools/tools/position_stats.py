@@ -286,6 +286,7 @@ def compute_positionwise_statistics(
     min_count_for_pairwise: int = 10,
     max_threads: Optional[int] = None,
     reverse_indices_on_store: bool = False,
+    min_position_valid_fraction: Optional[float] = None,
 ) -> None:
     """Compute per-(sample, ref) positionwise matrices for selected methods.
 
@@ -301,6 +302,9 @@ def compute_positionwise_statistics(
         min_count_for_pairwise: Minimum counts for pairwise comparisons.
         max_threads: Maximum number of threads.
         reverse_indices_on_store: Whether to reverse indices on output storage.
+        min_position_valid_fraction: If set, exclude positions where the
+            ``{ref}_valid_fraction`` var column is below this threshold
+            (same filtering as spatial clustermaps).
     """
     joblib = require("joblib", extra="ml-base", purpose="parallel position statistics")
 
@@ -365,6 +369,18 @@ def compute_positionwise_statistics(
                         selected_var_idx = np.nonzero(col_mask)[0]
                 else:
                     selected_var_idx = np.arange(subset.shape[1])
+
+                # filter positions by valid_fraction threshold (like spatial clustermaps)
+                if min_position_valid_fraction is not None:
+                    valid_key = f"{ref}_valid_fraction"
+                    if valid_key in subset.var.columns:
+                        v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
+                        valid_pos_mask = np.zeros(subset.shape[1], dtype=bool)
+                        valid_pos_mask[selected_var_idx] = True
+                        valid_pos_mask &= np.asarray(
+                            v > float(min_position_valid_fraction), dtype=bool
+                        )
+                        selected_var_idx = np.nonzero(valid_pos_mask)[0]
 
                 if selected_var_idx.size == 0:
                     for m in methods:
@@ -492,6 +508,9 @@ def plot_positionwise_matrices(
     flip_display_axes: bool = False,
     rows_per_page: int = 6,
     sample_label_rotation: float = 90.0,
+    n_ticks: int = 10,
+    tick_fontsize: int = 7,
+    tick_rotation: float = 90.0,
 ):
     """
     Plot grids of matrices for each method with pagination and rotated sample-row labels.
@@ -667,8 +686,28 @@ def plot_positionwise_matrices(
                             mat, origin=origin, aspect="auto", vmin=vmn, vmax=vmx, cmap=cmap
                         )
                         any_plotted = True
-                        ax.set_xticks([])
-                        ax.set_yticks([])
+
+                        # position tick labels
+                        labels = np.array(df.columns)
+                        n_pos = len(labels)
+                        n_t = int(max(2, n_ticks))
+                        if n_pos <= n_t:
+                            tick_pos = np.arange(n_pos)
+                        else:
+                            tick_pos = np.unique(
+                                np.round(np.linspace(0, n_pos - 1, n_t)).astype(int)
+                            )
+                        ax.set_xticks(tick_pos)
+                        ax.set_xticklabels(
+                            labels[tick_pos],
+                            rotation=tick_rotation,
+                            fontsize=tick_fontsize,
+                        )
+                        ax.set_yticks(tick_pos)
+                        ax.set_yticklabels(
+                            labels[tick_pos],
+                            fontsize=tick_fontsize,
+                        )
 
                     # top title is reference (only for top-row)
                     if r_idx == 0:

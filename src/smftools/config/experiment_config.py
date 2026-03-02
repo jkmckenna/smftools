@@ -974,6 +974,11 @@ class ExperimentConfig:
     )
     correlation_matrix_cmaps: List[str] = field(default_factory=lambda: ["seismic", "viridis"])
     correlation_matrix_site_types: List[str] = field(default_factory=lambda: ["GpC_site"])
+    correlation_matrix_flip_axes: bool = True
+    correlation_matrix_n_ticks: int = 10
+    correlation_matrix_tick_fontsize: int = 7
+    correlation_matrix_tick_rotation: float = 90.0
+    correlation_matrix_filter_positions: bool = True
 
     # HMM params
     hmm_n_states: int = 2
@@ -1899,6 +1904,21 @@ class ExperimentConfig:
             ),
             correlation_matrix_cmaps=merged.get("correlation_matrix_cmaps", ["seismic", "viridis"]),
             correlation_matrix_site_types=merged.get("correlation_matrix_site_types", ["GpC_site"]),
+            correlation_matrix_flip_axes=_parse_bool(
+                merged.get("correlation_matrix_flip_axes", True)
+            ),
+            correlation_matrix_n_ticks=int(
+                _parse_numeric(merged.get("correlation_matrix_n_ticks", 10), 10)
+            ),
+            correlation_matrix_tick_fontsize=int(
+                _parse_numeric(merged.get("correlation_matrix_tick_fontsize", 7), 7)
+            ),
+            correlation_matrix_tick_rotation=float(
+                _parse_numeric(merged.get("correlation_matrix_tick_rotation", 90.0), 90.0)
+            ),
+            correlation_matrix_filter_positions=_parse_bool(
+                merged.get("correlation_matrix_filter_positions", True)
+            ),
             hamming_vs_metric_keys=merged.get(
                 "hamming_vs_metric_keys", ["Fraction_C_site_modified"]
             ),

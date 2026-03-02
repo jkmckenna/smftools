@@ -310,6 +310,11 @@ correlation_matrix_cmaps:
   - "viridis"
 correlation_matrix_site_types:
   - "GpC_site"
+correlation_matrix_flip_axes: True  # If True, diagonal goes top-left to bottom-right (origin="upper")
+correlation_matrix_n_ticks: 10  # Number of evenly spaced position tick labels along each axis
+correlation_matrix_tick_fontsize: 7  # Font size for position tick labels
+correlation_matrix_tick_rotation: 90  # Rotation angle for position tick labels
+correlation_matrix_filter_positions: True  # Filter positions by NaN threshold (like spatial clustermaps)
 
 ######## smftools hmm params #########
 # HMM params
