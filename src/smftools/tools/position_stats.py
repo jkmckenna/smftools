@@ -287,6 +287,7 @@ def compute_positionwise_statistics(
     max_threads: Optional[int] = None,
     reverse_indices_on_store: bool = False,
     min_position_valid_fraction: Optional[float] = None,
+    index_col_suffix: Optional[str] = None,
 ) -> None:
     """Compute per-(sample, ref) positionwise matrices for selected methods.
 
@@ -305,6 +306,8 @@ def compute_positionwise_statistics(
         min_position_valid_fraction: If set, exclude positions where the
             ``{ref}_valid_fraction`` var column is below this threshold
             (same filtering as spatial clustermaps).
+        index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]``
+            for DataFrame labels instead of ``var_names`` (e.g. ``"reindexed"``).
     """
     joblib = require("joblib", extra="ml-base", purpose="parallel position statistics")
 
@@ -411,7 +414,15 @@ def compute_positionwise_statistics(
                     pbar_outer.update(1)
                     continue
 
-                var_names = list(subset.var_names[selected_var_idx])
+                # Resolve labels: use reindexed var column if available
+                if index_col_suffix is not None:
+                    _label_col = f"{ref}_{index_col_suffix}"
+                    if _label_col in subset.var.columns:
+                        var_names = list(subset.var[_label_col].values[selected_var_idx])
+                    else:
+                        var_names = list(subset.var_names[selected_var_idx])
+                else:
+                    var_names = list(subset.var_names[selected_var_idx])
 
                 # compute per-method
                 for method in methods:
@@ -687,8 +698,17 @@ def plot_positionwise_matrices(
                         )
                         any_plotted = True
 
-                        # position tick labels
-                        labels = np.array(df.columns)
+                        # position tick labels (format whole-number floats as ints)
+                        _raw_cols = np.array(df.columns)
+                        try:
+                            _num = _raw_cols.astype(float)
+                            _finite = _num[np.isfinite(_num)]
+                            if _finite.size > 0 and np.all(_finite == np.floor(_finite)):
+                                labels = np.array([str(int(float(v))) for v in _raw_cols])
+                            else:
+                                labels = _raw_cols.astype(str)
+                        except (ValueError, TypeError):
+                            labels = _raw_cols.astype(str)
                         n_pos = len(labels)
                         n_t = int(max(2, n_ticks))
                         if n_pos <= n_t:

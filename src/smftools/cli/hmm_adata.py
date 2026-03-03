@@ -1014,7 +1014,8 @@ def hmm_adata_core(
 
             adata.uns["hmm_annotated"] = True
 
-            hmm_layers = list(adata.uns.get("hmm_appended_layers", []) or [])
+            _raw = adata.uns.get("hmm_appended_layers", [])
+            hmm_layers = list(_raw) if len(_raw) > 0 else []
             # keep only real feature layers; drop lengths/states/posterior
             hmm_layers = [
                 layer

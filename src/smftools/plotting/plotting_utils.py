@@ -26,6 +26,22 @@ def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
     return np.unique(np.round(pos).astype(int))
 
 
+def _values_to_str_labels(values) -> np.ndarray:
+    """Convert values to string labels, formatting whole-number floats as ints.
+
+    Handles the case where integer var columns have been promoted to float64
+    (e.g. by ``_harmonize_var_schema`` for HDF5 NaN support) so that tick
+    labels read ``"123"`` rather than ``"123.0"``.
+    """
+    arr = np.asarray(values)
+    if arr.dtype.kind == "f":
+        # Check if all finite values are whole numbers
+        finite = arr[np.isfinite(arr)]
+        if finite.size > 0 and np.all(finite == np.floor(finite)):
+            return np.array([str(int(v)) if np.isfinite(v) else str(v) for v in arr])
+    return np.asarray(arr, dtype=str)
+
+
 def _select_labels(
     subset: "ad.AnnData", sites: np.ndarray, reference: str, index_col_suffix: str | None
 ) -> np.ndarray:
@@ -53,7 +69,7 @@ def _select_labels(
         return np.array([])
 
     if index_col_suffix is None:
-        return subset.var_names[sites].astype(str)
+        return _values_to_str_labels(subset.var_names[sites])
 
     colname = f"{reference}_{index_col_suffix}"
 
@@ -63,8 +79,7 @@ def _select_labels(
             f"but it is not present in adata.var."
         )
 
-    labels = subset.var[colname].astype(str).values
-    return labels[sites]
+    return _values_to_str_labels(subset.var[colname].values[sites])
 
 
 def normalized_mean(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarray:

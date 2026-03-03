@@ -715,6 +715,7 @@ def spatial_adata_core(
             max_threads=cfg.threads,
             min_count_for_pairwise=10,
             min_position_valid_fraction=_corr_min_valid,
+            index_col_suffix=reindex_suffix,
         )
 
         plot_positionwise_matrices(
