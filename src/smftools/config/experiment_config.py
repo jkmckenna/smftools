@@ -1084,7 +1084,7 @@ class ExperimentConfig:
     concatenate_file_suffixes: List[str] = field(default_factory=lambda: [".h5ad", ".h5ad.gz"])
     concatenate_delete_inputs: bool = False
     concatenate_restore_backups: bool = True
-    concatenate_recompute_pp_vars: bool = False
+    concatenate_recompute_pp_vars: bool = True
 
     # metadata
     config_source: Optional[str] = None
@@ -2001,7 +2001,7 @@ class ExperimentConfig:
             ),
             concatenate_delete_inputs=merged.get("concatenate_delete_inputs", False),
             concatenate_restore_backups=merged.get("concatenate_restore_backups", True),
-            concatenate_recompute_pp_vars=merged.get("concatenate_recompute_pp_vars", False),
+            concatenate_recompute_pp_vars=merged.get("concatenate_recompute_pp_vars", True),
             config_source=config_source or "<var_dict>",
         )
 

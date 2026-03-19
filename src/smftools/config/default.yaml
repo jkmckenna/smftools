@@ -469,7 +469,7 @@ concatenate_file_suffixes:
   - ".h5ad.gz"
 concatenate_delete_inputs: False  # Delete input .h5ad files after concatenation
 concatenate_restore_backups: True  # Restore .h5ad backups during reading
-concatenate_recompute_pp_vars: False  # Recompute calculate_coverage and append_base_context after concatenation
+concatenate_recompute_pp_vars: True  # Recompute calculate_coverage and append_base_context after concatenation
 
 # Pipeline control flow - load adata
 force_redo_load_adata: False # Whether to perform load adata command from start
