@@ -32,6 +32,7 @@ shap
 tensorly
 torch>=1.9.0
 wandb
+xgboost>=1.7
 
 # QC / viz
 multiqc
