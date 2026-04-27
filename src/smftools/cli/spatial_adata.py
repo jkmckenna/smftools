@@ -279,6 +279,10 @@ def spatial_adata_core(
                     sort_by=cfg.spatial_clustermap_sortby,
                     deaminase=deaminase,
                     index_col_suffix=reindex_suffix,
+                    n_jobs=max(
+                        1, round((cfg.threads or 1) * getattr(cfg, "plot_threads_fraction", 0.5))
+                    ),
+                    omit_chimeric_reads=cfg.omit_chimeric_reads,
                 )
 
     # ============================================================
@@ -320,6 +324,8 @@ def spatial_adata_core(
             sort_by=cfg.spatial_clustermap_sortby,
             deaminase=deaminase,
             index_col_suffix=reindex_suffix,
+            n_jobs=max(1, round((cfg.threads or 1) * getattr(cfg, "plot_threads_fraction", 0.5))),
+            omit_chimeric_reads=cfg.omit_chimeric_reads,
         )
 
     # ============================================================
@@ -346,6 +352,15 @@ def spatial_adata_core(
         ref_col = getattr(cfg, "reference_strand_col", "Reference_strand")
         refs = adata.obs[ref_col].astype("category").cat.categories.tolist()
 
+        # Build chimeric-read exclusion mask (True = keep)
+        if (
+            getattr(cfg, "omit_chimeric_reads", False)
+            and "chimeric_variant_sites" in adata.obs.columns
+        ):
+            _keep = ~adata.obs["chimeric_variant_sites"].astype(bool).values
+        else:
+            _keep = np.ones(adata.n_obs, dtype=bool)
+
         for site_type in cfg.autocorr_site_types:
             layer_key = f"{site_type}_site_binary"
             if layer_key not in adata.layers:
@@ -353,6 +368,8 @@ def spatial_adata_core(
                 continue
 
             X = adata.layers[layer_key]
+            if not _keep.all():
+                X = X[_keep]
             if getattr(X, "shape", (0,))[0] == 0:
                 logger.debug(f"Layer {layer_key} empty — skipping {site_type}.")
                 continue
@@ -376,9 +393,12 @@ def spatial_adata_core(
                         cnts = np.zeros(cfg.autocorr_max_lag + 1, dtype=np.int32)
                     return ac, cnts
 
-                res = Parallel(n_jobs=getattr(cfg, "n_jobs", -1))(
-                    delayed(_worker)(X[i]) for i in range(X.shape[0])
-                )
+                from joblib import parallel_config
+
+                with parallel_config(backend="loky", inner_max_num_threads=1):
+                    res = Parallel(n_jobs=cfg.threads or 1)(
+                        delayed(_worker)(X[i]) for i in range(X.shape[0])
+                    )
                 for ac, cnts in res:
                     rows.append(ac)
                     counts.append(cnts)
@@ -397,8 +417,16 @@ def spatial_adata_core(
             autocorr_matrix = np.asarray(rows, dtype=np.float32)
             counts_matrix = np.asarray(counts, dtype=np.int32)
 
-            adata.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
-            adata.obsm[f"{site_type}_spatial_autocorr_counts"] = counts_matrix
+            if _keep.all():
+                adata.obsm[f"{site_type}_spatial_autocorr"] = autocorr_matrix
+                adata.obsm[f"{site_type}_spatial_autocorr_counts"] = counts_matrix
+            else:
+                full_ac = np.full((adata.n_obs, autocorr_matrix.shape[1]), np.nan, dtype=np.float32)
+                full_ac[_keep] = autocorr_matrix
+                adata.obsm[f"{site_type}_spatial_autocorr"] = full_ac
+                full_cnt = np.zeros((adata.n_obs, counts_matrix.shape[1]), dtype=np.int32)
+                full_cnt[_keep] = counts_matrix
+                adata.obsm[f"{site_type}_spatial_autocorr_counts"] = full_cnt
             adata.uns[f"{site_type}_spatial_autocorr_lags"] = lags
 
             try:
@@ -450,7 +478,7 @@ def spatial_adata_core(
                 sample_mask = adata.obs[sample_col].values == sample_name
 
                 # combined group
-                mask = sample_mask
+                mask = sample_mask[_keep]
                 ac_sel = autocorr_matrix[mask, :]
                 cnt_sel = counts_matrix[mask, :] if counts_matrix is not None else None
                 if ac_sel.size:
@@ -471,7 +499,7 @@ def spatial_adata_core(
                 metrics_by_group[(sample_name, None)] = r
 
                 for ref in refs:
-                    mask_ref = sample_mask & (adata.obs[ref_col].values == ref)
+                    mask_ref = (sample_mask & (adata.obs[ref_col].values == ref))[_keep]
                     ac_sel = autocorr_matrix[mask_ref, :]
                     cnt_sel = counts_matrix[mask_ref, :] if counts_matrix is not None else None
                     if ac_sel.size:
@@ -516,7 +544,7 @@ def spatial_adata_core(
                 "pad_factor": getattr(cfg, "rolling_pad_factor", 4),
                 "min_count_for_mean": getattr(cfg, "rolling_min_count_for_mean", 10),
                 "max_harmonics": getattr(cfg, "rolling_max_harmonics", 6),
-                "n_jobs": getattr(cfg, "rolling_n_jobs", 4),
+                "n_jobs": cfg.threads or 1,
             }
 
             write_plots = getattr(cfg, "rolling_write_plots", True)
@@ -533,9 +561,9 @@ def spatial_adata_core(
 
             for sample_name in samples:
                 sample_mask = adata.obs[sample_col].values == sample_name
-                group_masks = [("all", sample_mask)]
+                group_masks = [("all", sample_mask[_keep])]
                 for ref in refs:
-                    ref_mask = sample_mask & (adata.obs[ref_col].values == ref)
+                    ref_mask = (sample_mask & (adata.obs[ref_col].values == ref))[_keep]
                     group_masks.append((ref, ref_mask))
 
                 for ref_label, mask in group_masks:
@@ -673,8 +701,24 @@ def spatial_adata_core(
     if corr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{corr_dir} already exists. Skipping correlation matrix plotting.")
     else:
+        _corr_keep = (
+            ~adata.obs["chimeric_variant_sites"].astype(bool).values
+            if (
+                getattr(cfg, "omit_chimeric_reads", False)
+                and "chimeric_variant_sites" in adata.obs.columns
+            )
+            else None
+        )
+        _corr_adata = (
+            adata[_corr_keep, :] if _corr_keep is not None and not _corr_keep.all() else adata
+        )
+        _corr_min_valid = (
+            1 - cfg.position_max_nan_threshold
+            if getattr(cfg, "correlation_matrix_filter_positions", True)
+            else None
+        )
         compute_positionwise_statistics(
-            adata,
+            _corr_adata,
             layer="nan0_0minus1",
             methods=cfg.correlation_matrix_types,
             sample_col=cfg.sample_name_col_for_plotting,
@@ -684,10 +728,12 @@ def spatial_adata_core(
             encoding="signed",
             max_threads=cfg.threads,
             min_count_for_pairwise=10,
+            min_position_valid_fraction=_corr_min_valid,
+            index_col_suffix=reindex_suffix,
         )
 
         plot_positionwise_matrices(
-            adata,
+            _corr_adata,
             methods=cfg.correlation_matrix_types,
             sample_col=cfg.sample_name_col_for_plotting,
             ref_col=cfg.reference_column,
@@ -698,6 +744,10 @@ def spatial_adata_core(
             vmax=None,
             output_dir=corr_dir,
             output_key="positionwise_result",
+            flip_display_axes=getattr(cfg, "correlation_matrix_flip_axes", True),
+            n_ticks=getattr(cfg, "correlation_matrix_n_ticks", 10),
+            tick_fontsize=getattr(cfg, "correlation_matrix_tick_fontsize", 7),
+            tick_rotation=getattr(cfg, "correlation_matrix_tick_rotation", 90.0),
         )
 
     # ============================================================

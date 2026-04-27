@@ -5,6 +5,7 @@ sample_name_col_for_plotting: 'Experiment_name_and_barcode'
 
 # Compute params
 threads: 4
+plot_threads_fraction: 0.5  # Fraction of threads to use for parallel clustermap plotting (each mpl worker uses ~2 CPU cores on macOS)
 device: "auto"
 
 ######## smftools load params #########
@@ -22,6 +23,10 @@ input_already_demuxed: False # If the input files are already demultiplexed.
 delete_intermediate_hdfs: True # Whether to delete the intermediate hdfs from the conversion/deamination workflows.
 delete_intermediate_bams: False # Whether to delete intermediate BAM files.
 delete_intermediate_tsvs: False # Whether to delete intermediate TSV files.
+
+# Read subsampling
+max_basecall_reads: null # Maximum number of reads to randomly sample from pod5 inputs before basecalling. null uses all reads.
+max_reads_per_barcode: null # Maximum number of reads per barcode to keep in each split BAM before AnnData creation. null uses all reads.
 
 # Sequencing modality and general experiment params
 smf_modality: 'conversion' # conversion, deaminase, direct
@@ -119,6 +124,7 @@ umi_kit: null  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yam
 umi_yaml: null  # Path to UMI YAML config file (when umi_kit: custom)
 
 skip_bam_split: False # Skip BAM splitting/demux step and load AnnData directly from the aligned/sorted BAM.
+skip_bam_qc: True # Skip samtools/pysam BAM QC generation and MultiQC report generation.
 
 # Anndata structure
 mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
@@ -130,6 +136,9 @@ clustermap_demux_types_to_plot:
   - "single"
   - "double"
   - "already"
+read_span_quality_clustermap_sort_method: "hierarchical" # "pca" or "hierarchical"
+read_span_quality_clustermap_pca_n_components: 20
+read_span_quality_clustermap_pca_sort_component: 0 # zero-based component index, ascending
 
 ######## smftools preprocess params #########
 # Read length, quality, and mapping filtering params
@@ -234,6 +243,7 @@ clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
+omit_chimeric_reads: True
 
 # Clustermap variant params
 overlay_variant_calls: false
@@ -304,6 +314,11 @@ correlation_matrix_cmaps:
   - "viridis"
 correlation_matrix_site_types:
   - "GpC_site"
+correlation_matrix_flip_axes: True  # If True, diagonal goes top-left to bottom-right (origin="upper")
+correlation_matrix_n_ticks: 10  # Number of evenly spaced position tick labels along each axis
+correlation_matrix_tick_fontsize: 7  # Font size for position tick labels
+correlation_matrix_tick_rotation: 90  # Rotation angle for position tick labels
+correlation_matrix_filter_positions: True  # Filter positions by NaN threshold (like spatial clustermaps)
 
 ######## smftools hmm params #########
 # HMM params
@@ -449,6 +464,17 @@ hmm_peak_feature_configs:
     peak_threshold: 0.80
     rolling_window: 50 
 
+######## smftools concatenate params #########
+concatenate_input_dir: null  # Directory containing .h5ad/.h5ad.gz files to concatenate
+concatenate_csv_path: null  # CSV/TSV/TXT containing file paths of h5ad files
+concatenate_csv_column: "h5ad_path"  # Column in CSV containing file paths
+concatenate_file_suffixes:
+  - ".h5ad"
+  - ".h5ad.gz"
+concatenate_delete_inputs: False  # Delete input .h5ad files after concatenation
+concatenate_restore_backups: True  # Restore .h5ad backups during reading
+concatenate_recompute_pp_vars: True  # Recompute calculate_coverage and append_base_context after concatenation
+
 # Pipeline control flow - load adata
 force_redo_load_adata: False # Whether to perform load adata command from start
 
@@ -492,3 +518,4 @@ bypass_hmm_fit: False # Whether to skip HMM fitting for each sample/reference
 force_redo_hmm_fit: False # Whether to redo HMM fitting for each sample/reference
 bypass_hmm_apply: False # Whether to skip HMM application for each sample/reference
 force_redo_hmm_apply: False # Whether to redo HMM application for each sample/reference
+force_redo_hmm_plots: False # Whether to regenerate HMM clustermap/trace/contour plots even if output directories exist

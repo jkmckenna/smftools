@@ -6,9 +6,6 @@ import numpy as np
 import pandas as pd
 
 from smftools.logging_utils import get_logger
-from smftools.optional_imports import require
-
-sns = require("seaborn", extra="plotting", purpose="plot styling")
 
 logger = get_logger(__name__)
 
@@ -27,6 +24,22 @@ def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
 
     pos = np.linspace(0, n_positions - 1, n_ticks)
     return np.unique(np.round(pos).astype(int))
+
+
+def _values_to_str_labels(values) -> np.ndarray:
+    """Convert values to string labels, formatting whole-number floats as ints.
+
+    Handles the case where integer var columns have been promoted to float64
+    (e.g. by ``_harmonize_var_schema`` for HDF5 NaN support) so that tick
+    labels read ``"123"`` rather than ``"123.0"``.
+    """
+    arr = np.asarray(values)
+    if arr.dtype.kind == "f":
+        # Check if all finite values are whole numbers
+        finite = arr[np.isfinite(arr)]
+        if finite.size > 0 and np.all(finite == np.floor(finite)):
+            return np.array([str(int(v)) if np.isfinite(v) else str(v) for v in arr])
+    return np.asarray(arr, dtype=str)
 
 
 def _select_labels(
@@ -56,7 +69,7 @@ def _select_labels(
         return np.array([])
 
     if index_col_suffix is None:
-        return subset.var_names[sites].astype(str)
+        return _values_to_str_labels(subset.var_names[sites])
 
     colname = f"{reference}_{index_col_suffix}"
 
@@ -66,8 +79,7 @@ def _select_labels(
             f"but it is not present in adata.var."
         )
 
-    labels = subset.var[colname].astype(str).values
-    return labels[sites]
+    return _values_to_str_labels(subset.var[colname].values[sites])
 
 
 def normalized_mean(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarray:
@@ -116,6 +128,34 @@ def _layer_to_numpy(
     if fill_nan_strategy == "value":
         return np.where(np.isnan(arr), fill_nan_value, arr)
 
+    col_mean = np.nanmean(arr, axis=0)
+    if np.any(np.isnan(col_mean)):
+        col_mean = np.where(np.isnan(col_mean), fill_nan_value, col_mean)
+    return np.where(np.isnan(arr), col_mean, arr)
+
+
+def _layer_to_numpy_np(
+    arr: np.ndarray,
+    sites: np.ndarray | None = None,
+    *,
+    fill_nan_strategy: str = "value",
+    fill_nan_value: float = -1,
+) -> np.ndarray:
+    """Numpy-only equivalent of ``_layer_to_numpy`` for use in worker processes.
+
+    Operates directly on a pre-extracted numpy array rather than an AnnData object,
+    so it is safe to call in ``ProcessPoolExecutor`` workers.
+    """
+    if sites is not None:
+        arr = arr[:, sites]
+    arr = np.array(arr, copy=True).astype(float)
+
+    if fill_nan_strategy == "none":
+        return arr
+    if fill_nan_strategy not in {"value", "col_mean"}:
+        raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
+    if fill_nan_strategy == "value":
+        return np.where(np.isnan(arr), fill_nan_value, arr)
     col_mean = np.nanmean(arr, axis=0)
     if np.any(np.isnan(col_mean)):
         col_mean = np.where(np.isnan(col_mean), fill_nan_value, col_mean)
@@ -217,6 +257,9 @@ def make_row_colors(meta: pd.DataFrame) -> pd.DataFrame:
     Convert metadata columns to RGB colors without invoking pandas Categorical.map
     (MultiIndex-safe, category-safe).
     """
+    from smftools.optional_imports import require
+
+    sns = require("seaborn", extra="plotting", purpose="plot styling")
     row_colors = pd.DataFrame(index=meta.index)
 
     for col in meta.columns:

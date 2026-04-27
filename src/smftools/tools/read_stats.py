@@ -77,10 +77,13 @@ def calculate_row_entropy(
             probs = counts / counts.sum()
             return entropy(probs, base=2)
 
-        entropies = Parallel(n_jobs=max_threads)(
-            delayed(compute_entropy)(X_bin[i, :])
-            for i in tqdm(range(X_bin.shape[0]), desc=f"Entropy: {ref}")
-        )
+        from joblib import parallel_config
+
+        with parallel_config(backend="loky", inner_max_num_threads=1):
+            entropies = Parallel(n_jobs=max_threads)(
+                delayed(compute_entropy)(X_bin[i, :])
+                for i in tqdm(range(X_bin.shape[0]), desc=f"Entropy: {ref}")
+            )
 
         entropy_values.extend(entropies)
         row_indices.extend(subset.obs_names.tolist())

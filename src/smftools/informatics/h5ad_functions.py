@@ -665,7 +665,19 @@ def expand_bi_tag_columns(adata, bi_column="bi"):
     bi_bottom_score = []
 
     for val in bi_data:
-        if pd.isna(val) or val is None:
+        is_missing = False
+        if val is None:
+            is_missing = True
+        elif isinstance(val, (list, tuple, np.ndarray)):
+            # Sequence-like bi payloads are expected and should not be treated as scalar NA.
+            is_missing = False
+        else:
+            try:
+                is_missing = bool(pd.isna(val))
+            except Exception:
+                is_missing = False
+
+        if is_missing:
             bi_overall.append(np.nan)
             bi_top_start.append(np.nan)
             bi_top_length.append(np.nan)
@@ -675,7 +687,10 @@ def expand_bi_tag_columns(adata, bi_column="bi"):
             bi_bottom_score.append(np.nan)
         else:
             # val should be array-like
-            bi_array = np.array(val) if not isinstance(val, np.ndarray) else val
+            try:
+                bi_array = np.asarray(val, dtype=float)
+            except (TypeError, ValueError):
+                bi_array = np.asarray([], dtype=float)
             bi_overall.append(bi_array[0] if len(bi_array) > 0 else np.nan)
             bi_top_start.append(bi_array[1] if len(bi_array) > 1 else np.nan)
             bi_top_length.append(bi_array[2] if len(bi_array) > 2 else np.nan)

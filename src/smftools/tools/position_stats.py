@@ -286,6 +286,8 @@ def compute_positionwise_statistics(
     min_count_for_pairwise: int = 10,
     max_threads: Optional[int] = None,
     reverse_indices_on_store: bool = False,
+    min_position_valid_fraction: Optional[float] = None,
+    index_col_suffix: Optional[str] = None,
 ) -> None:
     """Compute per-(sample, ref) positionwise matrices for selected methods.
 
@@ -301,6 +303,11 @@ def compute_positionwise_statistics(
         min_count_for_pairwise: Minimum counts for pairwise comparisons.
         max_threads: Maximum number of threads.
         reverse_indices_on_store: Whether to reverse indices on output storage.
+        min_position_valid_fraction: If set, exclude positions where the
+            ``{ref}_valid_fraction`` var column is below this threshold
+            (same filtering as spatial clustermaps).
+        index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]``
+            for DataFrame labels instead of ``var_names`` (e.g. ``"reindexed"``).
     """
     joblib = require("joblib", extra="ml-base", purpose="parallel position statistics")
 
@@ -366,6 +373,18 @@ def compute_positionwise_statistics(
                 else:
                     selected_var_idx = np.arange(subset.shape[1])
 
+                # filter positions by valid_fraction threshold (like spatial clustermaps)
+                if min_position_valid_fraction is not None:
+                    valid_key = f"{ref}_valid_fraction"
+                    if valid_key in subset.var.columns:
+                        v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
+                        valid_pos_mask = np.zeros(subset.shape[1], dtype=bool)
+                        valid_pos_mask[selected_var_idx] = True
+                        valid_pos_mask &= np.asarray(
+                            v > float(min_position_valid_fraction), dtype=bool
+                        )
+                        selected_var_idx = np.nonzero(valid_pos_mask)[0]
+
                 if selected_var_idx.size == 0:
                     for m in methods:
                         adata.uns[output_key][m][label] = pd.DataFrame()
@@ -395,7 +414,15 @@ def compute_positionwise_statistics(
                     pbar_outer.update(1)
                     continue
 
-                var_names = list(subset.var_names[selected_var_idx])
+                # Resolve labels: use reindexed var column if available
+                if index_col_suffix is not None:
+                    _label_col = f"{ref}_{index_col_suffix}"
+                    if _label_col in subset.var.columns:
+                        var_names = list(subset.var[_label_col].values[selected_var_idx])
+                    else:
+                        var_names = list(subset.var_names[selected_var_idx])
+                else:
+                    var_names = list(subset.var_names[selected_var_idx])
 
                 # compute per-method
                 for method in methods:
@@ -434,7 +461,10 @@ def compute_positionwise_statistics(
                         pbar_rows = tqdm(
                             total=n_pos, desc=f"{m}: rows ({sample}__{ref})", leave=False
                         )
-                        with tqdm_joblib(pbar_rows):
+                        with (
+                            tqdm_joblib(pbar_rows),
+                            joblib.parallel_config(backend="loky", inner_max_num_threads=1),
+                        ):
                             results = joblib.Parallel(n_jobs=n_jobs, prefer="processes")(tasks)
                         pbar_rows.close()
                         for i, row in results:
@@ -490,6 +520,9 @@ def plot_positionwise_matrices(
     flip_display_axes: bool = False,
     rows_per_page: int = 6,
     sample_label_rotation: float = 90.0,
+    n_ticks: int = 10,
+    tick_fontsize: int = 7,
+    tick_rotation: float = 90.0,
 ):
     """
     Plot grids of matrices for each method with pagination and rotated sample-row labels.
@@ -665,8 +698,37 @@ def plot_positionwise_matrices(
                             mat, origin=origin, aspect="auto", vmin=vmn, vmax=vmx, cmap=cmap
                         )
                         any_plotted = True
-                        ax.set_xticks([])
-                        ax.set_yticks([])
+
+                        # position tick labels (format whole-number floats as ints)
+                        _raw_cols = np.array(df.columns)
+                        try:
+                            _num = _raw_cols.astype(float)
+                            _finite = _num[np.isfinite(_num)]
+                            if _finite.size > 0 and np.all(_finite == np.floor(_finite)):
+                                labels = np.array([str(int(float(v))) for v in _raw_cols])
+                            else:
+                                labels = _raw_cols.astype(str)
+                        except (ValueError, TypeError):
+                            labels = _raw_cols.astype(str)
+                        n_pos = len(labels)
+                        n_t = int(max(2, n_ticks))
+                        if n_pos <= n_t:
+                            tick_pos = np.arange(n_pos)
+                        else:
+                            tick_pos = np.unique(
+                                np.round(np.linspace(0, n_pos - 1, n_t)).astype(int)
+                            )
+                        ax.set_xticks(tick_pos)
+                        ax.set_xticklabels(
+                            labels[tick_pos],
+                            rotation=tick_rotation,
+                            fontsize=tick_fontsize,
+                        )
+                        ax.set_yticks(tick_pos)
+                        ax.set_yticklabels(
+                            labels[tick_pos],
+                            fontsize=tick_fontsize,
+                        )
 
                     # top title is reference (only for top-row)
                     if r_idx == 0:

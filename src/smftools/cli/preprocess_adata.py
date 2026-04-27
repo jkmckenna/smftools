@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 
 def preprocess_adata(
     config_path: str,
-) -> Tuple[Optional[ad.AnnData], Optional[Path], Optional[ad.AnnData], Optional[Path]]:
+) -> Tuple[Optional[Path], Optional[Path]]:
     """
     CLI-facing wrapper for preprocessing.
 
@@ -34,12 +34,8 @@ def preprocess_adata(
 
     Returns
     -------
-    pp_adata : AnnData | None
-        Preprocessed AnnData (may be None if we skipped work).
     pp_adata_path : Path | None
         Path to preprocessed AnnData.
-    pp_dedup_adata : AnnData | None
-        Preprocessed, duplicate-removed AnnData.
     pp_dedup_adata_path : Path | None
         Path to preprocessed, duplicate-removed AnnData.
     """
@@ -77,9 +73,9 @@ def preprocess_adata(
             source_path = raw_path
         else:
             logger.error("Cannot redo preprocessing: no AnnData available at any stage.")
-            return (None, None, None, None)
+            return (None, None)
 
-        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+        return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
@@ -87,7 +83,6 @@ def preprocess_adata(
             source_adata_path=source_path,
             config_path=config_path,
         )
-        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
     # -----------------------------
     # Case B: redo duplicate detection only
@@ -108,9 +103,9 @@ def preprocess_adata(
                 "Cannot redo duplicate detection: no compatible AnnData available "
                 "(need at least raw or preprocessed)."
             )
-            return (None, None, None, None)
+            return (None, None)
 
-        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+        return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
@@ -118,7 +113,6 @@ def preprocess_adata(
             source_adata_path=source_path,
             config_path=config_path,
         )
-        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
     # -----------------------------
     # Case C: normal behavior (no explicit redo flags)
@@ -129,14 +123,14 @@ def preprocess_adata(
         logger.info(
             f"Skipping preprocessing. Preprocessed deduplicated AnnData found: {pp_dedup_path}"
         )
-        return (None, pp_path, None, pp_dedup_path)
+        return (pp_path, pp_dedup_path)
 
     # If pp exists but pp_dedup does not, load pp and run core
     if pp_exists:
         logger.info(f"Preprocessed AnnData found: {pp_path}")
         adata = _load(pp_path)
         source_path = pp_path
-        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+        return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
@@ -144,13 +138,12 @@ def preprocess_adata(
             source_adata_path=source_path,
             config_path=config_path,
         )
-        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
     # Otherwise, fall back to raw (if available)
     if raw_exists:
         adata = _load(raw_path)
         source_path = raw_path
-        pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path = preprocess_adata_core(
+        return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
             pp_adata_path=pp_path,
@@ -158,10 +151,9 @@ def preprocess_adata(
             source_adata_path=source_path,
             config_path=config_path,
         )
-        return pp_adata, pp_adata_path, pp_dedup_adata, pp_dedup_adata_path
 
     logger.error("No AnnData available at any stage for preprocessing.")
-    return (None, None, None, None)
+    return (None, None)
 
 
 def preprocess_adata_core(
@@ -171,7 +163,7 @@ def preprocess_adata_core(
     pp_dup_rem_adata_path: Path,
     source_adata_path: Optional[Path] = None,
     config_path: Optional[str] = None,
-) -> Tuple[ad.AnnData, Path, ad.AnnData, Path]:
+) -> Tuple[Optional[Path], Optional[Path]]:
     """
     Core preprocessing pipeline.
 
@@ -181,17 +173,12 @@ def preprocess_adata_core(
     - `pp_adata_path` and `pp_dup_rem_adata_path` are the target output paths for
       preprocessed and preprocessed+deduplicated AnnData.
 
-
     Returns
     -------
-    pp_adata : AnnData
-        Preprocessed AnnData (with QC filters, binarization, etc.).
     pp_adata_path : Path
-        Path where pp_adata was written.
-    pp_dedup_adata : AnnData
-        Preprocessed AnnData with duplicate reads removed (for non-direct SMF).
+        Path where the preprocessed AnnData was written.
     pp_dup_rem_adata_path : Path
-        Path where pp_dedup_adata was written.
+        Path where the deduplicated AnnData was written.
     """
     from datetime import datetime
     from pathlib import Path
@@ -592,6 +579,7 @@ def preprocess_adata_core(
             hierarchical_window=cfg.duplicate_detection_window_size_for_hamming_neighbors,
             demux_types=cfg.duplicate_detection_demux_types_to_use,
             demux_col=DEMUX_TYPE,
+            n_jobs=cfg.threads or 1,
         )
 
         # Use the flagged duplicate read groups and perform complexity analysis
@@ -616,60 +604,6 @@ def preprocess_adata_core(
     else:
         adata_unique = adata
     ########################################################################################################################
-
-    ############################################### Plot read span mask + base quality clustermaps ###############################################
-    quality_layer = None
-    if BASE_QUALITY_SCORES in adata.layers:
-        quality_layer = BASE_QUALITY_SCORES
-    elif "base_qualities" in adata.layers:
-        quality_layer = "base_qualities"
-
-    if READ_SPAN_MASK not in adata.layers or quality_layer is None:
-        logger.debug(
-            "read_span_mask and base quality layers not found; skipping read span/base quality clustermaps."
-        )
-    else:
-        if getattr(cfg, "preprocessed_plot_read_span_quality_clustermaps", False):
-            pp_span_quality_dir = preprocess_directory / "06_read_span_and_quality_clustermaps"
-            if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
-                logger.debug(
-                    f"{pp_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
-                )
-            else:
-                make_dirs([pp_span_quality_dir])
-                plot_read_span_quality_clustermaps(
-                    adata,
-                    sample_col=cfg.sample_name_col_for_plotting,
-                    reference_col=cfg.reference_column,
-                    quality_layer=quality_layer,
-                    read_span_layer=READ_SPAN_MASK,
-                    demux_types=cfg.clustermap_demux_types_to_plot,
-                    save_path=pp_span_quality_dir,
-                    show_position_axis=True,
-                    max_nan_fraction=0.5,
-                )
-
-        if getattr(cfg, "preprocessed_dedup_plot_read_span_quality_clustermaps", True):
-            pp_dedup_span_quality_dir = (
-                preprocess_directory / "deduplicated" / "06_read_span_and_quality_clustermaps"
-            )
-            if pp_dedup_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
-                logger.debug(
-                    f"{pp_dedup_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
-                )
-            elif quality_layer in adata_unique.layers and READ_SPAN_MASK in adata_unique.layers:
-                make_dirs([pp_dedup_span_quality_dir])
-                plot_read_span_quality_clustermaps(
-                    adata_unique,
-                    sample_col=cfg.sample_name_col_for_plotting,
-                    reference_col=cfg.reference_column,
-                    quality_layer=quality_layer,
-                    read_span_layer=READ_SPAN_MASK,
-                    demux_types=cfg.clustermap_demux_types_to_plot,
-                    save_path=pp_dedup_span_quality_dir,
-                    show_position_axis=True,
-                    max_nan_fraction=0.5,
-                )
 
     ############################################### Save preprocessed adata with duplicate detection ###############################################
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
@@ -698,4 +632,68 @@ def preprocess_adata_core(
 
     ########################################################################################################################
 
-    return (adata, pp_adata_path, adata_unique, pp_dup_rem_adata_path)
+    ############################################### Plot read span mask + base quality clustermaps ###############################################
+    quality_layer = None
+    if BASE_QUALITY_SCORES in adata.layers:
+        quality_layer = BASE_QUALITY_SCORES
+    elif "base_qualities" in adata.layers:
+        quality_layer = "base_qualities"
+
+    if READ_SPAN_MASK not in adata.layers or quality_layer is None:
+        logger.debug(
+            "read_span_mask and base quality layers not found; skipping read span/base quality clustermaps."
+        )
+    else:
+        if getattr(cfg, "preprocessed_plot_read_span_quality_clustermaps", False):
+            pp_span_quality_dir = preprocess_directory / "06_read_span_and_quality_clustermaps"
+            if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
+                logger.debug(
+                    f"{pp_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
+                )
+            else:
+                make_dirs([pp_span_quality_dir])
+                plot_read_span_quality_clustermaps(
+                    adata,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    quality_layer=quality_layer,
+                    read_span_layer=READ_SPAN_MASK,
+                    sort_method=cfg.read_span_quality_clustermap_sort_method,
+                    pca_n_components=cfg.read_span_quality_clustermap_pca_n_components,
+                    pca_sort_component=cfg.read_span_quality_clustermap_pca_sort_component,
+                    demux_types=cfg.clustermap_demux_types_to_plot,
+                    save_path=pp_span_quality_dir,
+                    show_position_axis=True,
+                    max_nan_fraction=0.5,
+                    n_jobs=cfg.threads or 1,
+                )
+
+        if getattr(cfg, "preprocessed_dedup_plot_read_span_quality_clustermaps", True):
+            pp_dedup_span_quality_dir = (
+                preprocess_directory / "deduplicated" / "06_read_span_and_quality_clustermaps"
+            )
+            if pp_dedup_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
+                logger.debug(
+                    f"{pp_dedup_span_quality_dir} already exists. Skipping read span/base quality clustermaps."
+                )
+            elif quality_layer in adata_unique.layers and READ_SPAN_MASK in adata_unique.layers:
+                make_dirs([pp_dedup_span_quality_dir])
+                plot_read_span_quality_clustermaps(
+                    adata_unique,
+                    sample_col=cfg.sample_name_col_for_plotting,
+                    reference_col=cfg.reference_column,
+                    quality_layer=quality_layer,
+                    read_span_layer=READ_SPAN_MASK,
+                    sort_method=cfg.read_span_quality_clustermap_sort_method,
+                    pca_n_components=cfg.read_span_quality_clustermap_pca_n_components,
+                    pca_sort_component=cfg.read_span_quality_clustermap_pca_sort_component,
+                    demux_types=cfg.clustermap_demux_types_to_plot,
+                    save_path=pp_dedup_span_quality_dir,
+                    show_position_axis=True,
+                    max_nan_fraction=0.5,
+                    n_jobs=cfg.threads or 1,
+                )
+
+    ########################################################################################################################
+
+    return (pp_adata_path, pp_dup_rem_adata_path)

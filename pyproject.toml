@@ -60,9 +60,9 @@ smftools = "smftools.cli_entry:cli"
 [project.optional-dependencies]
 
 dev = [
-    "ruff", 
-    "pre-commit", 
-    "pytest", 
+    "ruff==0.15.0",
+    "pre-commit",
+    "pytest",
     "pytest-cov"]
 
 docs = [
@@ -119,6 +119,11 @@ ml-base = [
     "scikit-learn>=1.0.2",
     "tensorly",
     "torch>=1.9.0",
+    "xgboost>=1.7",
+]
+
+xgboost = [
+    "xgboost>=1.7",
 ]
 
 ml-extended = [
@@ -176,6 +181,7 @@ all = [
     "tensorly",
     "torch>=1.9.0",
     "wandb",
+    "xgboost>=1.7",
 
     # umap
     "pynndescent>=0.5.10",
@@ -219,6 +225,7 @@ all_2 = [
     "tensorly",
     "torch>=1.9.0",
     "wandb",
+    "xgboost>=1.7",
 
     # umap
     "pynndescent>=0.5.10",

@@ -192,6 +192,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         resolve_barcode_config,
         resolve_umi_config,
         split_and_index_BAM,
+        subsample_split_bams,
     )
     from ..informatics.basecalling import canoncall, modcall
     from ..informatics.bed_functions import aligned_BAM_to_bed
@@ -210,7 +211,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     )
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
-    from ..informatics.pod5_functions import fast5_to_pod5
+    from ..informatics.pod5_functions import fast5_to_pod5, subsample_pod5_for_basecalling
     from ..informatics.run_multiqc import run_multiqc
     from ..informatics.sidecar_manifest import (
         register_sidecar,
@@ -459,6 +460,12 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         except Exception:
             logger.warning(
                 "Need to provide a valid path to a dorado model directory to use dorado basecalling"
+            )
+        if getattr(cfg, "max_basecall_reads", None) is not None:
+            cfg.input_data_path = subsample_pod5_for_basecalling(
+                cfg.input_data_path,
+                cfg.max_basecall_reads,
+                load_directory,
             )
         if aligned_sorted_output.exists():
             logger.info(
@@ -975,6 +982,14 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
+    if not skip_bam_split and getattr(cfg, "max_reads_per_barcode", None) is not None:
+        logger.info(f"Subsampling split BAMs to max {cfg.max_reads_per_barcode} reads per barcode.")
+        subsample_split_bams(
+            bam_files,
+            cfg.max_reads_per_barcode,
+            samtools_backend=cfg.samtools_backend,
+        )
+
     if cfg.make_beds and not skip_bam_split:
         # Make beds and provide basic histograms
         demux_bed_output_root = bed_outputs_directory / "demultiplexed"
@@ -1002,7 +1017,10 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     # 5) Samtools QC metrics on split BAM files
     bam_qc_dir = bam_outputs_directory / "bam_qc"
-    if bam_qc_dir.is_dir():
+    skip_bam_qc = getattr(cfg, "skip_bam_qc", False)
+    if skip_bam_qc:
+        logger.info("skip_bam_qc=True: skipping BAM QC")
+    elif bam_qc_dir.is_dir():
         logger.debug(f"{bam_qc_dir} already exists. Using existing BAM QC calculations.")
     else:
         make_dirs([bam_qc_dir])
@@ -1274,7 +1292,9 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
 
     # multiqc ###
     mqc_dir = bam_outputs_directory / "multiqc"
-    if mqc_dir.is_dir():
+    if skip_bam_qc:
+        logger.info("skip_bam_qc=True: skipping multiqc")
+    elif mqc_dir.is_dir():
         logger.info(f"{mqc_dir} already exists, skipping multiqc")
     else:
         logger.info("Running multiqc")

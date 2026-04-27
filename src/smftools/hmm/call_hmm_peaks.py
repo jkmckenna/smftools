@@ -71,7 +71,8 @@ def call_hmm_peaks(
         output_dir.mkdir(parents=True, exist_ok=True)
 
     # Build search pool = union of declared HMM layers and actual layers; exclude helper suffixes
-    declared = list(adata.uns.get("hmm_appended_layers", []) or [])
+    raw = adata.uns.get("hmm_appended_layers", [])
+    declared = list(raw) if len(raw) > 0 else []
     search_pool = [
         layer
         for layer in declared

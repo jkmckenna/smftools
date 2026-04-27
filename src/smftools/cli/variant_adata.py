@@ -289,6 +289,7 @@ def variant_adata_core(
                 max_unknown_fraction=0.5,
                 save_path=seq_clustermap_dir,
                 show_position_axis=True,
+                n_jobs=getattr(cfg, "threads", 1) or 1,
             )
 
         if "mismatch_integer_encoding" in adata.layers:
@@ -318,6 +319,7 @@ def variant_adata_core(
                     show_position_axis=True,
                     exclude_mod_sites=True,
                     mod_site_bases=cfg.mod_target_bases,
+                    n_jobs=getattr(cfg, "threads", 1) or 1,
                 )
 
     # ============================================================
@@ -347,6 +349,7 @@ def variant_adata_core(
                     ref2_marker_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
                     marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                     show_position_axis=True,
+                    n_jobs=getattr(cfg, "threads", 1) or 1,
                 )
 
             segment_type_dir = (
@@ -375,6 +378,7 @@ def variant_adata_core(
                     marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                     show_position_axis=True,
                     mismatch_type_obs_col="chimeric_variant_sites_type",
+                    n_jobs=getattr(cfg, "threads", 1) or 1,
                 )
 
     # ============================================================
@@ -439,6 +443,7 @@ def variant_adata_core(
                     mismatch_type_obs_col=umi_status_col,
                     mismatch_type_colors=umi_status_colors,
                     mismatch_type_legend_prefix="RX bipartite",
+                    n_jobs=getattr(cfg, "threads", 1) or 1,
                 )
 
     # ============================================================
@@ -510,6 +515,7 @@ def variant_adata_core(
                     mismatch_type_obs_col=umi_pass_col,
                     mismatch_type_colors=umi_pass_colors,
                     mismatch_type_legend_prefix="UMI content",
+                    n_jobs=getattr(cfg, "threads", 1) or 1,
                 )
 
     # ============================================================
@@ -596,6 +602,7 @@ def variant_adata_core(
                     mismatch_type_obs_col=umi_dup_col,
                     mismatch_type_colors=umi_dup_colors,
                     mismatch_type_legend_prefix="UMI cluster duplicate",
+                    n_jobs=getattr(cfg, "threads", 1) or 1,
                 )
 
     # ============================================================
@@ -659,6 +666,7 @@ def variant_adata_core(
                             "strip_title": "UMI Dup",
                         },
                     ],
+                    n_jobs=getattr(cfg, "threads", 1) or 1,
                 )
 
     # ============================================================
