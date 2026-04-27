@@ -60,9 +60,9 @@ smftools = "smftools.cli_entry:cli"
 [project.optional-dependencies]
 
 dev = [
-    "ruff", 
-    "pre-commit", 
-    "pytest", 
+    "ruff==0.15.0",
+    "pre-commit",
+    "pytest",
     "pytest-cov"]
 
 docs = [
