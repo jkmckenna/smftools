@@ -581,7 +581,11 @@ def hmm_adata(config_path: str):
     paths = get_adata_paths(cfg)
 
     # 2) choose starting AnnData
-    if paths.hmm.exists() and not (cfg.force_redo_hmm_fit or cfg.force_redo_hmm_apply or getattr(cfg, "force_redo_hmm_plots", False)):
+    if paths.hmm.exists() and not (
+        cfg.force_redo_hmm_fit
+        or cfg.force_redo_hmm_apply
+        or getattr(cfg, "force_redo_hmm_plots", False)
+    ):
         logger.info(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
         return None
 
@@ -1060,11 +1064,14 @@ def hmm_adata_core(
     if "chimeric_variant_sites" not in adata.obs.columns and paths.variant.exists():
         try:
             from ..readwrite import safe_read_h5ad as _safe_read
+
             _variant_adata, _ = _safe_read(paths.variant)
             for _col in ("chimeric_variant_sites", "chimeric_variant_sites_type"):
                 if _col in _variant_adata.obs.columns:
                     adata.obs[_col] = _variant_adata.obs[_col].reindex(adata.obs.index)
-            logger.info("Backfilled chimeric_variant_sites from variant adata for clustermap filtering.")
+            logger.info(
+                "Backfilled chimeric_variant_sites from variant adata for clustermap filtering."
+            )
         except Exception as _e:
             logger.warning("Could not backfill chimeric_variant_sites from variant adata: %s", _e)
 
@@ -1146,7 +1153,13 @@ def hmm_adata_core(
                 variant_overlay_seq2_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
                 variant_overlay_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                 omit_chimeric_reads=getattr(cfg, "omit_chimeric_reads", True),
-                n_jobs=max(1, round((getattr(cfg, "threads", 1) or 1) * getattr(cfg, "plot_threads_fraction", 0.5))),
+                n_jobs=max(
+                    1,
+                    round(
+                        (getattr(cfg, "threads", 1) or 1)
+                        * getattr(cfg, "plot_threads_fraction", 0.5)
+                    ),
+                ),
             )
 
     hmm_length_dir = hmm_directory / "12b_hmm_length_clustermaps"
@@ -1208,7 +1221,13 @@ def hmm_adata_core(
                 variant_overlay_seq2_color=getattr(cfg, "variant_overlay_seq2_color", "black"),
                 variant_overlay_marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                 omit_chimeric_reads=getattr(cfg, "omit_chimeric_reads", True),
-                n_jobs=max(1, round((getattr(cfg, "threads", 1) or 1) * getattr(cfg, "plot_threads_fraction", 0.5))),
+                n_jobs=max(
+                    1,
+                    round(
+                        (getattr(cfg, "threads", 1) or 1)
+                        * getattr(cfg, "plot_threads_fraction", 0.5)
+                    ),
+                ),
             )
 
     hmm_dir = hmm_directory / "13_hmm_bulk_traces"

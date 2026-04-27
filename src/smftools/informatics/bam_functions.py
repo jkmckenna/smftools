@@ -4888,9 +4888,7 @@ def subsample_split_bams(
             )
             continue
 
-        logger.info(
-            f"{bam_path.name}: subsampling {total} -> {max_reads} reads (seed={seed})."
-        )
+        logger.info(f"{bam_path.name}: subsampling {total} -> {max_reads} reads (seed={seed}).")
 
         tmp_path = bam_path.with_suffix(".subsample_tmp.bam")
         with pysam_mod.AlignmentFile(

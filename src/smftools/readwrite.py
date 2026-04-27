@@ -471,9 +471,7 @@ def concatenate_h5ads(
     # ------------------------------------------------------------------
     if recompute_pp_vars:
         if config_path is None:
-            raise ValueError(
-                "recompute_pp_vars requires config_path to be provided."
-            )
+            raise ValueError("recompute_pp_vars requires config_path to be provided.")
 
         from smftools.preprocessing.append_base_context import append_base_context
         from smftools.preprocessing.calculate_coverage import calculate_coverage

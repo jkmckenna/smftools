@@ -15,7 +15,9 @@ def test_bam_qc_barcode_readname_fallback_does_not_create_temp_bam(monkeypatch, 
     def guard_named_temporary_file(*args, **kwargs):
         suffix = kwargs.get("suffix", "")
         if suffix == ".bam":
-            raise AssertionError("Temporary BAM files should not be created during barcode QC fallback")
+            raise AssertionError(
+                "Temporary BAM files should not be created during barcode QC fallback"
+            )
         return real_named_temporary_file(*args, **kwargs)
 
     monkeypatch.setattr(tempfile, "NamedTemporaryFile", guard_named_temporary_file)
@@ -28,7 +30,9 @@ def test_bam_qc_barcode_readname_fallback_does_not_create_temp_bam(monkeypatch, 
             self.stdout = ""
             self.stderr = ""
 
-    monkeypatch.setattr(bam_functions.subprocess, "run", lambda *args, **kwargs: DummyCompletedProcess())
+    monkeypatch.setattr(
+        bam_functions.subprocess, "run", lambda *args, **kwargs: DummyCompletedProcess()
+    )
 
     class _Stream:
         def __init__(self, lines=None):

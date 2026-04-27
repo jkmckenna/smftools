@@ -45,7 +45,9 @@ def append_base_context(
     # must be reversed before assignment to .var.
     is_inverted = bool(adata.uns.get("invert_adata_performed", False))
     if is_inverted:
-        logger.info("Detected inverted adata; base context arrays will be reversed to match column order")
+        logger.info(
+            "Detected inverted adata; base context arrays will be reversed to match column order"
+        )
 
     logger.info("Adding base context based on reference FASTA sequence for sample")
     references = adata.obs[ref_column].cat.categories

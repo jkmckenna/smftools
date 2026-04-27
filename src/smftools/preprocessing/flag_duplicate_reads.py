@@ -17,6 +17,7 @@ from scipy.stats import gaussian_kde
 
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
+from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
 
 from ..readwrite import make_dirs
 
@@ -191,9 +192,6 @@ def _choose_keeper_with_demux_preference(
     return candidates[0]
 
 
-from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
-
-
 def _process_group(args: dict) -> Optional[dict]:
     """Process a single (sample, ref) group for duplicate detection.
 
@@ -245,7 +243,9 @@ def _process_group(args: dict) -> Optional[dict]:
     local_hamming_dists: list = []
     hierarchical_found_dists: list = []
 
-    def cluster_pass(X_tensor_local, reverse=False, window=int(window_size), record_distances=False):
+    def cluster_pass(
+        X_tensor_local, reverse=False, window=int(window_size), record_distances=False
+    ):
         """Perform a lexicographic windowed clustering pass."""
         _X_np = X_tensor_local.numpy()
         _sortable = np.full(_X_np.shape, -1, dtype=np.int8)
@@ -279,9 +279,7 @@ def _process_group(args: dict) -> Optional[dict]:
                     torch.tensor(float("nan")),
                 )
                 hamming_np = hamming_dists.cpu().numpy().tolist()
-                local_hamming_dists.extend(
-                    [float(x) for x in hamming_np if (not np.isnan(x))]
-                )
+                local_hamming_dists.extend([float(x) for x in hamming_np if (not np.isnan(x))])
                 matches = (hamming_dists < distance_threshold) & (enough_overlap)
                 for offset_local, m in enumerate(matches):
                     if m:
@@ -292,17 +290,11 @@ def _process_group(args: dict) -> Optional[dict]:
                     next_local_idx = i + 1
                     if next_local_idx < len(sorted_X):
                         next_global = sorted_idx[next_local_idx]
-                        vm_pair = (~torch.isnan(row_i)) & (
-                            ~torch.isnan(sorted_X[next_local_idx])
-                        )
+                        vm_pair = (~torch.isnan(row_i)) & (~torch.isnan(sorted_X[next_local_idx]))
                         vc = vm_pair.sum().item()
                         if vc >= min_overlap_positions:
                             d = float(
-                                (
-                                    (row_i[vm_pair] != sorted_X[next_local_idx][vm_pair])
-                                    .sum()
-                                    .item()
-                                )
+                                ((row_i[vm_pair] != sorted_X[next_local_idx][vm_pair]).sum().item())
                                 / vc
                             )
                             if reverse:
@@ -413,9 +405,7 @@ def _process_group(args: dict) -> Optional[dict]:
                 Z = sch.linkage(pdist_vec, method=hierarchical_linkage)
                 leaves = sch.leaves_list(Z)
             except Exception as e:
-                warnings.warn(
-                    f"hierarchical pass failed: {e}; skipping hierarchical stage."
-                )
+                warnings.warn(f"hierarchical pass failed: {e}; skipping hierarchical stage.")
                 leaves = np.arange(len(rep_global_indices), dtype=int)
 
             order_global_reps = [rep_global_indices[i] for i in leaves]
@@ -682,28 +672,30 @@ def flag_duplicate_reads(
             obs_idx_labels = adata_subset_view.obs.index
             obs_df = adata.obs.loc[obs_idx_labels, needed_cols].copy()
 
-            group_args.append({
-                "X_sub": X_sub,
-                "obs_df": obs_df,
-                "obs_index": list(obs_idx_labels),
-                "sample": sample,
-                "ref": ref,
-                "distance_threshold": distance_threshold,
-                "window_size": window_size,
-                "min_overlap_positions": min_overlap_positions,
-                "keep_best_metric": keep_best_metric,
-                "keep_best_higher": keep_best_higher,
-                "do_hierarchical": do_hierarchical,
-                "hierarchical_linkage": hierarchical_linkage,
-                "hierarchical_metric": hierarchical_metric,
-                "hierarchical_window": hierarchical_window,
-                "do_pca": do_pca,
-                "pca_n_components": pca_n_components,
-                "pca_center": pca_center,
-                "random_state": random_state,
-                "demux_col": demux_col,
-                "demux_types": list(demux_types) if demux_types is not None else None,
-            })
+            group_args.append(
+                {
+                    "X_sub": X_sub,
+                    "obs_df": obs_df,
+                    "obs_index": list(obs_idx_labels),
+                    "sample": sample,
+                    "ref": ref,
+                    "distance_threshold": distance_threshold,
+                    "window_size": window_size,
+                    "min_overlap_positions": min_overlap_positions,
+                    "keep_best_metric": keep_best_metric,
+                    "keep_best_higher": keep_best_higher,
+                    "do_hierarchical": do_hierarchical,
+                    "hierarchical_linkage": hierarchical_linkage,
+                    "hierarchical_metric": hierarchical_metric,
+                    "hierarchical_window": hierarchical_window,
+                    "do_pca": do_pca,
+                    "pca_n_components": pca_n_components,
+                    "pca_center": pca_center,
+                    "random_state": random_state,
+                    "demux_col": demux_col,
+                    "demux_types": list(demux_types) if demux_types is not None else None,
+                }
+            )
 
     if not group_args:
         return adata.copy(), adata.copy()
@@ -735,8 +727,12 @@ def flag_duplicate_reads(
         adata.obs.loc[_idx, "sequence__cluster_size"] = result["sequence__cluster_size"]
         adata.obs.loc[_idx, "fwd_hamming_to_next"] = result["fwd_hamming_to_next"]
         adata.obs.loc[_idx, "rev_hamming_to_prev"] = result["rev_hamming_to_prev"]
-        adata.obs.loc[_idx, "sequence__hier_hamming_to_pair"] = result["sequence__hier_hamming_to_pair"]
-        adata.obs.loc[_idx, "sequence__min_hamming_to_pair"] = result["sequence__min_hamming_to_pair"]
+        adata.obs.loc[_idx, "sequence__hier_hamming_to_pair"] = result[
+            "sequence__hier_hamming_to_pair"
+        ]
+        adata.obs.loc[_idx, "sequence__min_hamming_to_pair"] = result[
+            "sequence__min_hamming_to_pair"
+        ]
         adata.obs.loc[_idx, "sequence__lex_is_keeper"] = result["sequence__lex_is_keeper"]
         adata.obs.loc[_idx, "sequence__lex_is_duplicate"] = result["sequence__lex_is_duplicate"]
         histograms.append(result["histogram"])
@@ -875,12 +871,24 @@ def flag_duplicate_reads(
 
     # reason column — vectorized (avoids slow row-wise apply)
     _obs = adata_full.obs
-    _dist  = _obs["is_duplicate_distance"].astype(bool)  if "is_duplicate_distance"  in _obs.columns else pd.Series(False, index=_obs.index)
-    _clust = _obs["is_duplicate_clustering"].astype(bool) if "is_duplicate_clustering" in _obs.columns else pd.Series(False, index=_obs.index)
-    _seq   = _obs["sequence__is_duplicate"].astype(bool)  if "sequence__is_duplicate"  in _obs.columns else pd.Series(False, index=_obs.index)
+    _dist = (
+        _obs["is_duplicate_distance"].astype(bool)
+        if "is_duplicate_distance" in _obs.columns
+        else pd.Series(False, index=_obs.index)
+    )
+    _clust = (
+        _obs["is_duplicate_clustering"].astype(bool)
+        if "is_duplicate_clustering" in _obs.columns
+        else pd.Series(False, index=_obs.index)
+    )
+    _seq = (
+        _obs["sequence__is_duplicate"].astype(bool)
+        if "sequence__is_duplicate" in _obs.columns
+        else pd.Series(False, index=_obs.index)
+    )
     _reasons = np.char.add(
         np.char.add(
-            np.where(_dist.values,  "distance_thresh;",        ""),
+            np.where(_dist.values, "distance_thresh;", ""),
             np.where(_clust.values, "hamming_metric_cluster;", ""),
         ),
         np.where(_seq.values, "sequence_cluster;", ""),

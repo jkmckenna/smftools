@@ -983,9 +983,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
     if not skip_bam_split and getattr(cfg, "max_reads_per_barcode", None) is not None:
-        logger.info(
-            f"Subsampling split BAMs to max {cfg.max_reads_per_barcode} reads per barcode."
-        )
+        logger.info(f"Subsampling split BAMs to max {cfg.max_reads_per_barcode} reads per barcode.")
         subsample_split_bams(
             bam_files,
             cfg.max_reads_per_barcode,

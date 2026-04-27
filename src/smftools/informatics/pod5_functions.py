@@ -324,9 +324,7 @@ def subsample_pod5_for_basecalling(
         )
         return input_path
 
-    logger.info(
-        f"Subsampling {max_reads} reads from {total} total pod5 reads (seed={seed})."
-    )
+    logger.info(f"Subsampling {max_reads} reads from {total} total pod5 reads (seed={seed}).")
 
     rng = random.Random(seed)
     sampled = set(rng.sample(range(total), max_reads))

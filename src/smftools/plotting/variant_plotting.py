@@ -429,10 +429,11 @@ def plot_mismatch_base_frequency_by_position(
 
 def _plot_seq_encoding_one_group(args: dict) -> dict:
     """Render one (ref, sample) sequence-integer-encoding clustermap and save."""
+    from pathlib import Path
+
     import matplotlib
     import numpy as np
     import pandas as pd
-    from pathlib import Path
 
     from smftools.optional_imports import require
 
@@ -531,7 +532,9 @@ def _plot_seq_encoding_one_group(args: dict) -> dict:
 
         cmap_obj = _colors.ListedColormap(colors_list)
         norm = _colors.BoundaryNorm(bounds, cmap_obj.N)
-        _sns.heatmap(matrix, cmap=cmap_obj, norm=norm, ax=ax, yticklabels=False, cbar=show_numeric_colorbar)
+        _sns.heatmap(
+            matrix, cmap=cmap_obj, norm=norm, ax=ax, yticklabels=False, cbar=show_numeric_colorbar
+        )
         ax.legend(
             handles=[
                 _patches.Patch(facecolor=_DNA_PALETTE["A"], label="A"),
@@ -552,7 +555,9 @@ def _plot_seq_encoding_one_group(args: dict) -> dict:
     if resolved_step is not None and resolved_step > 0:
         sites = np.arange(0, matrix.shape[1], resolved_step)
         ax.set_xticks(sites)
-        ax.set_xticklabels(var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize)
+        ax.set_xticklabels(
+            var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize
+        )
     else:
         ax.set_xticks([])
     if show_position_axis or xtick_step is not None:
@@ -581,8 +586,17 @@ def _plot_seq_encoding_one_group(args: dict) -> dict:
 
             ordered_mm = sorted(mismatch_int_to_color.items(), key=lambda x: x[0])
             mm_cmap = _colors.ListedColormap([c for _, c in ordered_mm])
-            mm_norm = _colors.BoundaryNorm([v - 0.5 for v, _ in ordered_mm] + [ordered_mm[-1][0] + 0.5], mm_cmap.N)
-            _sns.heatmap(mismatch_matrix, cmap=mm_cmap, norm=mm_norm, ax=mismatch_ax, yticklabels=False, cbar=show_numeric_colorbar)
+            mm_norm = _colors.BoundaryNorm(
+                [v - 0.5 for v, _ in ordered_mm] + [ordered_mm[-1][0] + 0.5], mm_cmap.N
+            )
+            _sns.heatmap(
+                mismatch_matrix,
+                cmap=mm_cmap,
+                norm=mm_norm,
+                ax=mismatch_ax,
+                yticklabels=False,
+                cbar=show_numeric_colorbar,
+            )
             mismatch_ax.legend(
                 handles=[
                     _patches.Patch(facecolor=_DNA_PALETTE["A"], label="A"),
@@ -604,7 +618,9 @@ def _plot_seq_encoding_one_group(args: dict) -> dict:
         if resolved_step is not None and resolved_step > 0:
             sites = np.arange(0, mismatch_matrix.shape[1], resolved_step)
             mismatch_ax.set_xticks(sites)
-            mismatch_ax.set_xticklabels(var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize)
+            mismatch_ax.set_xticklabels(
+                var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize
+            )
         else:
             mismatch_ax.set_xticks([])
         if show_position_axis or xtick_step is not None:
@@ -636,9 +652,10 @@ def _plot_seq_encoding_one_group(args: dict) -> dict:
 
 def _plot_variant_segment_one_group(args: dict) -> dict:
     """Render one (ref, sample) variant segment clustermap and save."""
+    from pathlib import Path
+
     import matplotlib
     import numpy as np
-    from pathlib import Path
 
     from smftools.optional_imports import require
 
@@ -717,30 +734,70 @@ def _plot_variant_segment_one_group(args: dict) -> dict:
         ax_mismatch = fig.add_subplot(gs[0, 0])
         ax = fig.add_subplot(gs[0, 1])
 
-    _sns.heatmap(seg_matrix.astype(np.float32), cmap=seg_cmap, norm=seg_norm, ax=ax, yticklabels=False, cbar=False)
+    _sns.heatmap(
+        seg_matrix.astype(np.float32),
+        cmap=seg_cmap,
+        norm=seg_norm,
+        ax=ax,
+        yticklabels=False,
+        cbar=False,
+    )
 
     if row_mismatch_labels is not None and ax_mismatch is not None:
         mismatch_categories = list(dict.fromkeys(row_mismatch_legend))
-        mismatch_color_list = [mismatch_type_colors.get(label, "#636363") for label in mismatch_categories]
+        mismatch_color_list = [
+            mismatch_type_colors.get(label, "#636363") for label in mismatch_categories
+        ]
         mismatch_to_code = {label: i for i, label in enumerate(mismatch_categories)}
-        mismatch_codes = np.array([mismatch_to_code[label] for label in row_mismatch_labels], dtype=np.int32).reshape(-1, 1)
+        mismatch_codes = np.array(
+            [mismatch_to_code[label] for label in row_mismatch_labels], dtype=np.int32
+        ).reshape(-1, 1)
         mm_cmap = _colors.ListedColormap(mismatch_color_list)
-        mm_norm = _colors.BoundaryNorm(np.arange(-0.5, len(mismatch_categories) + 0.5, 1), mm_cmap.N)
-        ax_mismatch.imshow(mismatch_codes, cmap=mm_cmap, norm=mm_norm, aspect="auto", interpolation="nearest", origin="upper")
+        mm_norm = _colors.BoundaryNorm(
+            np.arange(-0.5, len(mismatch_categories) + 0.5, 1), mm_cmap.N
+        )
+        ax_mismatch.imshow(
+            mismatch_codes,
+            cmap=mm_cmap,
+            norm=mm_norm,
+            aspect="auto",
+            interpolation="nearest",
+            origin="upper",
+        )
         ax_mismatch.set_xticks([])
         ax_mismatch.set_yticks([])
-        strip_title = mismatch_type_obs_col.replace("_", " ").title() if mismatch_type_obs_col else "Type"
+        strip_title = (
+            mismatch_type_obs_col.replace("_", " ").title() if mismatch_type_obs_col else "Type"
+        )
         ax_mismatch.set_title(strip_title, fontsize=8, pad=8)
 
     if call_matrix is not None:
         ref1_rows, ref1_cols = np.where(call_matrix == 1)
         ref2_rows, ref2_cols = np.where(call_matrix == 2)
         if len(ref1_rows) > 0:
-            ax.scatter(ref1_cols + 0.5, ref1_rows + 0.5, c=ref1_marker_color, s=marker_size, marker="o",
-                       edgecolors="gray", linewidths=0.3, zorder=3, label=f"{seq1_label} call")
+            ax.scatter(
+                ref1_cols + 0.5,
+                ref1_rows + 0.5,
+                c=ref1_marker_color,
+                s=marker_size,
+                marker="o",
+                edgecolors="gray",
+                linewidths=0.3,
+                zorder=3,
+                label=f"{seq1_label} call",
+            )
         if len(ref2_rows) > 0:
-            ax.scatter(ref2_cols + 0.5, ref2_rows + 0.5, c=ref2_marker_color, s=marker_size, marker="o",
-                       edgecolors="gray", linewidths=0.3, zorder=3, label=f"{seq2_label} call")
+            ax.scatter(
+                ref2_cols + 0.5,
+                ref2_rows + 0.5,
+                c=ref2_marker_color,
+                s=marker_size,
+                marker="o",
+                edgecolors="gray",
+                linewidths=0.3,
+                zorder=3,
+                label=f"{seq2_label} call",
+            )
 
     bp_rows_list: list = []
     bp_cols_list: list = []
@@ -755,9 +812,17 @@ def _plot_variant_segment_one_group(args: dict) -> dict:
             bp_rows_list.append(r)
             bp_cols_list.append(run[len(run) // 2])
     if bp_rows_list:
-        ax.scatter(np.array(bp_cols_list) + 0.5, np.array(bp_rows_list) + 0.5,
-                   c=breakpoint_marker_color, s=marker_size, marker="o",
-                   edgecolors="gray", linewidths=0.3, zorder=4, label="Breakpoint")
+        ax.scatter(
+            np.array(bp_cols_list) + 0.5,
+            np.array(bp_rows_list) + 0.5,
+            c=breakpoint_marker_color,
+            s=marker_size,
+            marker="o",
+            edgecolors="gray",
+            linewidths=0.3,
+            zorder=4,
+            label="Breakpoint",
+        )
 
     ax.set_title(f"{ref} — {sample} — {n_reads} reads", fontsize=10)
     ax.set_ylabel("Reads")
@@ -766,7 +831,9 @@ def _plot_variant_segment_one_group(args: dict) -> dict:
         step = max(1, n_cols // position_axis_tick_target)
         sites = np.arange(0, n_cols, step)
         ax.set_xticks(sites)
-        ax.set_xticklabels(var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize)
+        ax.set_xticklabels(
+            var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize
+        )
     else:
         ax.set_xticks([])
 
@@ -774,15 +841,56 @@ def _plot_variant_segment_one_group(args: dict) -> dict:
         _patches.Patch(facecolor=seq1_color, label=f"{seq1_label} segment"),
         _patches.Patch(facecolor=seq2_color, label=f"{seq2_label} segment"),
         _patches.Patch(facecolor=transition_color, label="Transition zone"),
-        _patches.Patch(facecolor=no_coverage_color, edgecolor="gray", linewidth=0.5, label="No coverage"),
-        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref1_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq1_label} call"),
-        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref2_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq2_label} call"),
-        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=breakpoint_marker_color, markeredgecolor="gray", markersize=5, label="Breakpoint"),
+        _patches.Patch(
+            facecolor=no_coverage_color, edgecolor="gray", linewidth=0.5, label="No coverage"
+        ),
+        _plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=ref1_marker_color,
+            markeredgecolor="gray",
+            markersize=5,
+            label=f"{seq1_label} call",
+        ),
+        _plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=ref2_marker_color,
+            markeredgecolor="gray",
+            markersize=5,
+            label=f"{seq2_label} call",
+        ),
+        _plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=breakpoint_marker_color,
+            markeredgecolor="gray",
+            markersize=5,
+            label="Breakpoint",
+        ),
     ]
     if row_mismatch_labels is not None:
         for label in row_mismatch_legend:
-            legend_elements.append(_patches.Patch(facecolor=mismatch_type_colors.get(label, "#636363"), label=f"{mismatch_type_legend_prefix}: {label}"))
-    ax.legend(handles=legend_elements, loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=7, framealpha=0.8, frameon=False)
+            legend_elements.append(
+                _patches.Patch(
+                    facecolor=mismatch_type_colors.get(label, "#636363"),
+                    label=f"{mismatch_type_legend_prefix}: {label}",
+                )
+            )
+    ax.legend(
+        handles=legend_elements,
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        fontsize=7,
+        framealpha=0.8,
+        frameon=False,
+    )
     fig.tight_layout(rect=(0, 0, 0.88, 1))
 
     out_file = None
@@ -806,9 +914,10 @@ def _plot_variant_segment_one_group(args: dict) -> dict:
 
 def _plot_variant_segment_multi_obs_one_group(args: dict) -> dict:
     """Render one (ref, sample) multi-obs variant segment clustermap and save."""
+    from pathlib import Path
+
     import matplotlib
     import numpy as np
-    from pathlib import Path
 
     from smftools.optional_imports import require
 
@@ -871,13 +980,15 @@ def _plot_variant_segment_multi_obs_one_group(args: dict) -> dict:
         labels = raw_labels[order]
         labels_str = ["unknown" if pd.isna(v) else str(v) for v in labels]
         legend_order = list(dict.fromkeys(labels_str))
-        sorted_annotation_data.append({
-            "labels": labels_str,
-            "legend_order": legend_order,
-            "colors": ann["colors"],
-            "legend_prefix": ann["legend_prefix"],
-            "strip_title": ann["strip_title"],
-        })
+        sorted_annotation_data.append(
+            {
+                "labels": labels_str,
+                "legend_order": legend_order,
+                "colors": ann["colors"],
+                "legend_prefix": ann["legend_prefix"],
+                "strip_title": ann["strip_title"],
+            }
+        )
 
     seg_cmap = _colors.ListedColormap([no_coverage_color, seq1_color, seq2_color, transition_color])
     seg_norm = _colors.BoundaryNorm([0, 0.5, 1.5, 2.5, 3.5], seg_cmap.N)
@@ -895,15 +1006,31 @@ def _plot_variant_segment_multi_obs_one_group(args: dict) -> dict:
         strip_axes = []
         legend_ax = ax
 
-    _sns.heatmap(seg_matrix.astype(np.float32), cmap=seg_cmap, norm=seg_norm, ax=ax, yticklabels=False, cbar=False)
+    _sns.heatmap(
+        seg_matrix.astype(np.float32),
+        cmap=seg_cmap,
+        norm=seg_norm,
+        ax=ax,
+        yticklabels=False,
+        cbar=False,
+    )
 
     for strip_ax, ann in zip(strip_axes, sorted_annotation_data):
         cats = ann["legend_order"]
         cmap_strip = _colors.ListedColormap([ann["colors"].get(label, "#636363") for label in cats])
         norm_strip = _colors.BoundaryNorm(np.arange(-0.5, len(cats) + 0.5, 1), cmap_strip.N)
         code_map = {label: i for i, label in enumerate(cats)}
-        code_arr = np.array([code_map[label] for label in ann["labels"]], dtype=np.int32).reshape(-1, 1)
-        strip_ax.imshow(code_arr, cmap=cmap_strip, norm=norm_strip, aspect="auto", interpolation="nearest", origin="upper")
+        code_arr = np.array([code_map[label] for label in ann["labels"]], dtype=np.int32).reshape(
+            -1, 1
+        )
+        strip_ax.imshow(
+            code_arr,
+            cmap=cmap_strip,
+            norm=norm_strip,
+            aspect="auto",
+            interpolation="nearest",
+            origin="upper",
+        )
         strip_ax.set_xticks([])
         strip_ax.set_yticks([])
         strip_ax.set_title(ann["strip_title"], fontsize=8, pad=10)
@@ -912,9 +1039,27 @@ def _plot_variant_segment_multi_obs_one_group(args: dict) -> dict:
         ref1_rows, ref1_cols = np.where(call_matrix == 1)
         ref2_rows, ref2_cols = np.where(call_matrix == 2)
         if len(ref1_rows) > 0:
-            ax.scatter(ref1_cols + 0.5, ref1_rows + 0.5, c=ref1_marker_color, s=marker_size, marker="o", edgecolors="gray", linewidths=0.3, zorder=3)
+            ax.scatter(
+                ref1_cols + 0.5,
+                ref1_rows + 0.5,
+                c=ref1_marker_color,
+                s=marker_size,
+                marker="o",
+                edgecolors="gray",
+                linewidths=0.3,
+                zorder=3,
+            )
         if len(ref2_rows) > 0:
-            ax.scatter(ref2_cols + 0.5, ref2_rows + 0.5, c=ref2_marker_color, s=marker_size, marker="o", edgecolors="gray", linewidths=0.3, zorder=3)
+            ax.scatter(
+                ref2_cols + 0.5,
+                ref2_rows + 0.5,
+                c=ref2_marker_color,
+                s=marker_size,
+                marker="o",
+                edgecolors="gray",
+                linewidths=0.3,
+                zorder=3,
+            )
 
     bp_rows_list: list = []
     bp_cols_list: list = []
@@ -929,9 +1074,16 @@ def _plot_variant_segment_multi_obs_one_group(args: dict) -> dict:
             bp_rows_list.append(r)
             bp_cols_list.append(run[len(run) // 2])
     if bp_rows_list:
-        ax.scatter(np.array(bp_cols_list) + 0.5, np.array(bp_rows_list) + 0.5,
-                   c=breakpoint_marker_color, s=marker_size, marker="o",
-                   edgecolors="gray", linewidths=0.3, zorder=4)
+        ax.scatter(
+            np.array(bp_cols_list) + 0.5,
+            np.array(bp_rows_list) + 0.5,
+            c=breakpoint_marker_color,
+            s=marker_size,
+            marker="o",
+            edgecolors="gray",
+            linewidths=0.3,
+            zorder=4,
+        )
 
     ax.set_title(f"{ref} — {sample} — {n_reads} reads", fontsize=10)
     ax.set_ylabel("Reads")
@@ -940,7 +1092,9 @@ def _plot_variant_segment_multi_obs_one_group(args: dict) -> dict:
         step = max(1, n_cols // position_axis_tick_target)
         sites = np.arange(0, n_cols, step)
         ax.set_xticks(sites)
-        ax.set_xticklabels(var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize)
+        ax.set_xticklabels(
+            var_names[sites].astype(str), rotation=xtick_rotation, fontsize=xtick_fontsize
+        )
     else:
         ax.set_xticks([])
 
@@ -948,18 +1102,68 @@ def _plot_variant_segment_multi_obs_one_group(args: dict) -> dict:
         _patches.Patch(facecolor=seq1_color, label=f"{seq1_label} segment"),
         _patches.Patch(facecolor=seq2_color, label=f"{seq2_label} segment"),
         _patches.Patch(facecolor=transition_color, label="Transition zone"),
-        _patches.Patch(facecolor=no_coverage_color, edgecolor="gray", linewidth=0.5, label="No coverage"),
-        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref1_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq1_label} call"),
-        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=ref2_marker_color, markeredgecolor="gray", markersize=5, label=f"{seq2_label} call"),
-        _plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=breakpoint_marker_color, markeredgecolor="gray", markersize=5, label="Breakpoint"),
+        _patches.Patch(
+            facecolor=no_coverage_color, edgecolor="gray", linewidth=0.5, label="No coverage"
+        ),
+        _plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=ref1_marker_color,
+            markeredgecolor="gray",
+            markersize=5,
+            label=f"{seq1_label} call",
+        ),
+        _plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=ref2_marker_color,
+            markeredgecolor="gray",
+            markersize=5,
+            label=f"{seq2_label} call",
+        ),
+        _plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=breakpoint_marker_color,
+            markeredgecolor="gray",
+            markersize=5,
+            label="Breakpoint",
+        ),
     ]
-    lg_main = legend_ax.legend(handles=base_legend, title="Segments", loc="upper left", bbox_to_anchor=(0.0, 1.0), fontsize=7, title_fontsize=8, framealpha=0.8, frameon=False)
+    lg_main = legend_ax.legend(
+        handles=base_legend,
+        title="Segments",
+        loc="upper left",
+        bbox_to_anchor=(0.0, 1.0),
+        fontsize=7,
+        title_fontsize=8,
+        framealpha=0.8,
+        frameon=False,
+    )
     legend_ax.add_artist(lg_main)
 
     y_anchor = 0.68
     for ann in sorted_annotation_data:
-        ann_handles = [_patches.Patch(facecolor=ann["colors"].get(label, "#636363"), label=str(label)) for label in ann["legend_order"]]
-        lg = legend_ax.legend(handles=ann_handles, title=ann["legend_prefix"], loc="upper left", bbox_to_anchor=(0.0, y_anchor), fontsize=7, title_fontsize=8, framealpha=0.8, frameon=False)
+        ann_handles = [
+            _patches.Patch(facecolor=ann["colors"].get(label, "#636363"), label=str(label))
+            for label in ann["legend_order"]
+        ]
+        lg = legend_ax.legend(
+            handles=ann_handles,
+            title=ann["legend_prefix"],
+            loc="upper left",
+            bbox_to_anchor=(0.0, y_anchor),
+            fontsize=7,
+            title_fontsize=8,
+            framealpha=0.8,
+            frameon=False,
+        )
         legend_ax.add_artist(lg)
         y_anchor -= max(0.16, 0.04 * max(1, len(ann_handles)))
 
@@ -1461,8 +1665,6 @@ def plot_variant_segment_clustermaps(
         initargs=(1,),
     ) as executor:
         return list(executor.map(_plot_variant_segment_one_group, _iter_group_args()))
-
-
 
 
 def plot_variant_segment_clustermaps_multi_obs(

@@ -1294,19 +1294,27 @@ class ExperimentConfig:
 
         # Resolve load BAM directories from constants (non-user-tunable).
         bam_outputs_dir = BAM_OUTPUTS_DIR
-        bam_outputs_path = informatics_outputs_path / bam_outputs_dir if informatics_outputs_path else None
+        bam_outputs_path = (
+            informatics_outputs_path / bam_outputs_dir if informatics_outputs_path else None
+        )
 
         # Resolve FASTA output directories from constants (non-user-tunable).
         fasta_outputs_dir = FASTA_OUTPUTS_DIR
-        fasta_outputs_path = informatics_outputs_path / fasta_outputs_dir if informatics_outputs_path else None
+        fasta_outputs_path = (
+            informatics_outputs_path / fasta_outputs_dir if informatics_outputs_path else None
+        )
 
         # Resolve BED output directories from constants (non-user-tunable).
         bed_outputs_dir = BED_OUTPUTS_DIR
-        bed_outputs_path = informatics_outputs_path / bed_outputs_dir if informatics_outputs_path else None
+        bed_outputs_path = (
+            informatics_outputs_path / bed_outputs_dir if informatics_outputs_path else None
+        )
 
         # Resolve modkit directories from constants (non-user-tunable).
         modkit_outputs_dir = MODKIT_OUTPUTS_DIR
-        modkit_outputs_path = informatics_outputs_path / modkit_outputs_dir if informatics_outputs_path else None
+        modkit_outputs_path = (
+            informatics_outputs_path / modkit_outputs_dir if informatics_outputs_path else None
+        )
 
         # Demultiplexing output path
         split_dir = SPLIT_DIR

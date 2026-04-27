@@ -8,6 +8,7 @@ import pandas as pd
 import scipy.cluster.hierarchy as sch
 
 from smftools.logging_utils import get_logger
+from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
 
 logger = get_logger(__name__)
 
@@ -15,9 +16,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Module-level helpers (must be picklable for ProcessPoolExecutor workers)
 # ---------------------------------------------------------------------------
-
-
-from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
 
 
 def _fill_nan_with_col_means(matrix: np.ndarray) -> np.ndarray:
@@ -60,10 +58,11 @@ def _plot_one_group(args: dict) -> dict:
     Module-level so it is picklable by ProcessPoolExecutor workers.
     Each worker imports matplotlib/seaborn independently.
     """
+    from pathlib import Path
+
     import matplotlib
     import numpy as np
     import scipy.cluster.hierarchy as sch
-    from pathlib import Path
 
     from smftools.optional_imports import require
 

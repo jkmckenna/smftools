@@ -683,9 +683,7 @@ def rolling_autocorr_metrics(
         from joblib import parallel_config
 
         with parallel_config(backend="loky", inner_max_num_threads=1):
-            results = Parallel(n_jobs=n_jobs)(
-                delayed(_process_window)(ws) for ws in window_starts
-            )
+            results = Parallel(n_jobs=n_jobs)(delayed(_process_window)(ws) for ws in window_starts)
     else:
         results = [_process_window(ws) for ws in window_starts]
 

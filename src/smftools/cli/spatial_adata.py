@@ -279,7 +279,9 @@ def spatial_adata_core(
                     sort_by=cfg.spatial_clustermap_sortby,
                     deaminase=deaminase,
                     index_col_suffix=reindex_suffix,
-                    n_jobs=max(1, round((cfg.threads or 1) * getattr(cfg, "plot_threads_fraction", 0.5))),
+                    n_jobs=max(
+                        1, round((cfg.threads or 1) * getattr(cfg, "plot_threads_fraction", 0.5))
+                    ),
                     omit_chimeric_reads=cfg.omit_chimeric_reads,
                 )
 
@@ -351,7 +353,10 @@ def spatial_adata_core(
         refs = adata.obs[ref_col].astype("category").cat.categories.tolist()
 
         # Build chimeric-read exclusion mask (True = keep)
-        if getattr(cfg, "omit_chimeric_reads", False) and "chimeric_variant_sites" in adata.obs.columns:
+        if (
+            getattr(cfg, "omit_chimeric_reads", False)
+            and "chimeric_variant_sites" in adata.obs.columns
+        ):
             _keep = ~adata.obs["chimeric_variant_sites"].astype(bool).values
         else:
             _keep = np.ones(adata.n_obs, dtype=bool)
@@ -696,8 +701,17 @@ def spatial_adata_core(
     if corr_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
         logger.debug(f"{corr_dir} already exists. Skipping correlation matrix plotting.")
     else:
-        _corr_keep = ~adata.obs["chimeric_variant_sites"].astype(bool).values if (getattr(cfg, "omit_chimeric_reads", False) and "chimeric_variant_sites" in adata.obs.columns) else None
-        _corr_adata = adata[_corr_keep, :] if _corr_keep is not None and not _corr_keep.all() else adata
+        _corr_keep = (
+            ~adata.obs["chimeric_variant_sites"].astype(bool).values
+            if (
+                getattr(cfg, "omit_chimeric_reads", False)
+                and "chimeric_variant_sites" in adata.obs.columns
+            )
+            else None
+        )
+        _corr_adata = (
+            adata[_corr_keep, :] if _corr_keep is not None and not _corr_keep.all() else adata
+        )
         _corr_min_valid = (
             1 - cfg.position_max_nan_threshold
             if getattr(cfg, "correlation_matrix_filter_positions", True)

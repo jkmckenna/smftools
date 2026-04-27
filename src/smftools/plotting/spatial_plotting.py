@@ -11,6 +11,7 @@ import scipy.cluster.hierarchy as sch
 
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
+from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
 from smftools.plotting.plotting_utils import (
     _fixed_tick_positions,
     _layer_to_numpy,
@@ -632,16 +633,14 @@ def plot_zero_hamming_pair_counts(
     return g
 
 
-from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
-
-
 def _combined_raw_clustermap_one_group(args: dict):
     """Render one (ref, sample) combined raw clustermap. Module-level for pickling."""
     try:
+        from pathlib import Path
+
         import matplotlib
         import numpy as np
         import scipy.cluster.hierarchy as sch
-        from pathlib import Path
 
         from smftools.optional_imports import require
         from smftools.plotting.plotting_utils import (
@@ -718,19 +717,44 @@ def _combined_raw_clustermap_one_group(args: dict):
             if sort_by.startswith("obs:") and obs_sort_values is not None:
                 order = np.argsort(obs_sort_values[bin_row_idx])
             elif sort_by == "gpc" and num_gpc > 0:
-                m = _layer_to_numpy_np(layer_data[layer_gpc][bin_row_idx], gpc_sites, fill_nan_strategy=fill_nan_strategy, fill_nan_value=fill_nan_value)
+                m = _layer_to_numpy_np(
+                    layer_data[layer_gpc][bin_row_idx],
+                    gpc_sites,
+                    fill_nan_strategy=fill_nan_strategy,
+                    fill_nan_value=fill_nan_value,
+                )
                 order = sch.leaves_list(sch.linkage(m, method="ward"))
             elif sort_by == "cpg" and num_cpg > 0:
-                m = _layer_to_numpy_np(layer_data[layer_cpg][bin_row_idx], cpg_sites, fill_nan_strategy=fill_nan_strategy, fill_nan_value=fill_nan_value)
+                m = _layer_to_numpy_np(
+                    layer_data[layer_cpg][bin_row_idx],
+                    cpg_sites,
+                    fill_nan_strategy=fill_nan_strategy,
+                    fill_nan_value=fill_nan_value,
+                )
                 order = sch.leaves_list(sch.linkage(m, method="ward"))
             elif sort_by == "c" and num_any_c > 0:
-                m = _layer_to_numpy_np(layer_data[layer_c][bin_row_idx], any_c_sites, fill_nan_strategy=fill_nan_strategy, fill_nan_value=fill_nan_value)
+                m = _layer_to_numpy_np(
+                    layer_data[layer_c][bin_row_idx],
+                    any_c_sites,
+                    fill_nan_strategy=fill_nan_strategy,
+                    fill_nan_value=fill_nan_value,
+                )
                 order = sch.leaves_list(sch.linkage(m, method="ward"))
             elif sort_by == "gpc_cpg":
-                m = _layer_to_numpy_np(layer_data[layer_gpc][bin_row_idx], None, fill_nan_strategy=fill_nan_strategy, fill_nan_value=fill_nan_value)
+                m = _layer_to_numpy_np(
+                    layer_data[layer_gpc][bin_row_idx],
+                    None,
+                    fill_nan_strategy=fill_nan_strategy,
+                    fill_nan_value=fill_nan_value,
+                )
                 order = sch.leaves_list(sch.linkage(m, method="ward"))
             elif sort_by == "a" and num_any_a > 0:
-                m = _layer_to_numpy_np(layer_data[layer_a][bin_row_idx], any_a_sites, fill_nan_strategy=fill_nan_strategy, fill_nan_value=fill_nan_value)
+                m = _layer_to_numpy_np(
+                    layer_data[layer_a][bin_row_idx],
+                    any_a_sites,
+                    fill_nan_strategy=fill_nan_strategy,
+                    fill_nan_value=fill_nan_value,
+                )
                 order = sch.leaves_list(sch.linkage(m, method="ward"))
             else:
                 order = np.arange(num_reads)
@@ -741,17 +765,33 @@ def _combined_raw_clustermap_one_group(args: dict):
             kw_raw = dict(fill_nan_strategy="none", fill_nan_value=fill_nan_value)
 
             if include_any_c and num_any_c > 0:
-                stacked_any_c.append(_layer_to_numpy_np(layer_data[layer_c][ordered_idx], any_c_sites, **kw))
-                stacked_any_c_raw.append(_layer_to_numpy_np(layer_data[layer_c][ordered_idx], any_c_sites, **kw_raw))
+                stacked_any_c.append(
+                    _layer_to_numpy_np(layer_data[layer_c][ordered_idx], any_c_sites, **kw)
+                )
+                stacked_any_c_raw.append(
+                    _layer_to_numpy_np(layer_data[layer_c][ordered_idx], any_c_sites, **kw_raw)
+                )
             if include_any_c and num_gpc > 0:
-                stacked_gpc.append(_layer_to_numpy_np(layer_data[layer_gpc][ordered_idx], gpc_sites, **kw))
-                stacked_gpc_raw.append(_layer_to_numpy_np(layer_data[layer_gpc][ordered_idx], gpc_sites, **kw_raw))
+                stacked_gpc.append(
+                    _layer_to_numpy_np(layer_data[layer_gpc][ordered_idx], gpc_sites, **kw)
+                )
+                stacked_gpc_raw.append(
+                    _layer_to_numpy_np(layer_data[layer_gpc][ordered_idx], gpc_sites, **kw_raw)
+                )
             if include_any_c and num_cpg > 0:
-                stacked_cpg.append(_layer_to_numpy_np(layer_data[layer_cpg][ordered_idx], cpg_sites, **kw))
-                stacked_cpg_raw.append(_layer_to_numpy_np(layer_data[layer_cpg][ordered_idx], cpg_sites, **kw_raw))
+                stacked_cpg.append(
+                    _layer_to_numpy_np(layer_data[layer_cpg][ordered_idx], cpg_sites, **kw)
+                )
+                stacked_cpg_raw.append(
+                    _layer_to_numpy_np(layer_data[layer_cpg][ordered_idx], cpg_sites, **kw_raw)
+                )
             if include_any_a and num_any_a > 0:
-                stacked_any_a.append(_layer_to_numpy_np(layer_data[layer_a][ordered_idx], any_a_sites, **kw))
-                stacked_any_a_raw.append(_layer_to_numpy_np(layer_data[layer_a][ordered_idx], any_a_sites, **kw_raw))
+                stacked_any_a.append(
+                    _layer_to_numpy_np(layer_data[layer_a][ordered_idx], any_a_sites, **kw)
+                )
+                stacked_any_a_raw.append(
+                    _layer_to_numpy_np(layer_data[layer_a][ordered_idx], any_a_sites, **kw_raw)
+                )
 
             row_labels.extend([bin_label] * num_reads)
             bin_labels_list.append(f"{bin_label}: {num_reads} reads ({percent_reads:.1f}%)")
@@ -767,22 +807,78 @@ def _combined_raw_clustermap_one_group(args: dict):
             gpc_matrix_raw = np.vstack(stacked_gpc_raw) if stacked_gpc_raw else np.empty((0, 0))
             cpg_matrix = np.vstack(stacked_cpg) if stacked_cpg else np.empty((0, 0))
             cpg_matrix_raw = np.vstack(stacked_cpg_raw) if stacked_cpg_raw else np.empty((0, 0))
-            mean_any_c = _methylation_fraction_for_layer(any_c_matrix_raw, layer_c) if any_c_matrix_raw.size else None
-            mean_gpc = _methylation_fraction_for_layer(gpc_matrix_raw, layer_gpc) if gpc_matrix_raw.size else None
-            mean_cpg = _methylation_fraction_for_layer(cpg_matrix_raw, layer_cpg) if cpg_matrix_raw.size else None
+            mean_any_c = (
+                _methylation_fraction_for_layer(any_c_matrix_raw, layer_c)
+                if any_c_matrix_raw.size
+                else None
+            )
+            mean_gpc = (
+                _methylation_fraction_for_layer(gpc_matrix_raw, layer_gpc)
+                if gpc_matrix_raw.size
+                else None
+            )
+            mean_cpg = (
+                _methylation_fraction_for_layer(cpg_matrix_raw, layer_cpg)
+                if cpg_matrix_raw.size
+                else None
+            )
             if any_c_matrix.size:
-                blocks.append(dict(name="c", matrix=any_c_matrix, mean=mean_any_c, labels=any_c_labels, cmap=cmap_c, n_xticks=n_xticks_any_c, title="any C site Modification Signal"))
+                blocks.append(
+                    dict(
+                        name="c",
+                        matrix=any_c_matrix,
+                        mean=mean_any_c,
+                        labels=any_c_labels,
+                        cmap=cmap_c,
+                        n_xticks=n_xticks_any_c,
+                        title="any C site Modification Signal",
+                    )
+                )
             if gpc_matrix.size:
-                blocks.append(dict(name="gpc", matrix=gpc_matrix, mean=mean_gpc, labels=gpc_labels, cmap=cmap_gpc, n_xticks=n_xticks_gpc, title="GpC Modification Signal"))
+                blocks.append(
+                    dict(
+                        name="gpc",
+                        matrix=gpc_matrix,
+                        mean=mean_gpc,
+                        labels=gpc_labels,
+                        cmap=cmap_gpc,
+                        n_xticks=n_xticks_gpc,
+                        title="GpC Modification Signal",
+                    )
+                )
             if cpg_matrix.size:
-                blocks.append(dict(name="cpg", matrix=cpg_matrix, mean=mean_cpg, labels=cpg_labels, cmap=cmap_cpg, n_xticks=n_xticks_cpg, title="CpG Modification Signal"))
+                blocks.append(
+                    dict(
+                        name="cpg",
+                        matrix=cpg_matrix,
+                        mean=mean_cpg,
+                        labels=cpg_labels,
+                        cmap=cmap_cpg,
+                        n_xticks=n_xticks_cpg,
+                        title="CpG Modification Signal",
+                    )
+                )
 
         if include_any_a and stacked_any_a:
             any_a_matrix = np.vstack(stacked_any_a)
             any_a_matrix_raw = np.vstack(stacked_any_a_raw)
-            mean_any_a = _methylation_fraction_for_layer(any_a_matrix_raw, layer_a) if any_a_matrix_raw.size else None
+            mean_any_a = (
+                _methylation_fraction_for_layer(any_a_matrix_raw, layer_a)
+                if any_a_matrix_raw.size
+                else None
+            )
             if any_a_matrix.size:
-                blocks.append(dict(name="a", matrix=any_a_matrix, mean=mean_any_a, labels=any_a_labels, cmap=cmap_a, n_xticks=n_xticks_any_a, title="any A site Modification Signal"))
+                blocks.append(
+                    dict(
+                        name="a",
+                        matrix=any_a_matrix,
+                        mean=mean_any_a,
+                        labels=any_a_labels,
+                        cmap=cmap_a,
+                        n_xticks=n_xticks_any_a,
+                        title="any A site Modification Signal",
+                    )
+                )
 
         if not blocks:
             return None
@@ -798,10 +894,14 @@ def _combined_raw_clustermap_one_group(args: dict):
         for i, blk in enumerate(blocks):
             labels = np.asarray(blk["labels"], dtype=str)
             clean_barplot(axes_bar[i], blk["mean"], blk["title"])
-            _sns.heatmap(blk["matrix"], cmap=blk["cmap"], ax=axes_heat[i], yticklabels=False, cbar=False)
+            _sns.heatmap(
+                blk["matrix"], cmap=blk["cmap"], ax=axes_heat[i], yticklabels=False, cbar=False
+            )
             tick_pos = _fixed_tick_positions(len(labels), blk["n_xticks"])
             axes_heat[i].set_xticks(tick_pos)
-            axes_heat[i].set_xticklabels(labels[tick_pos], rotation=xtick_rotation, fontsize=xtick_fontsize)
+            axes_heat[i].set_xticklabels(
+                labels[tick_pos], rotation=xtick_rotation, fontsize=xtick_fontsize
+            )
             for boundary in bin_boundaries[:-1]:
                 axes_heat[i].axhline(y=boundary, color="black", linewidth=2)
             axes_heat[i].set_xlabel("Position", fontsize=9)
@@ -811,8 +911,7 @@ def _combined_raw_clustermap_one_group(args: dict):
         out_file = None
         if save_path is not None:
             safe_name = (
-                f"{ref}__{display_sample}"
-                .replace("=", "")
+                f"{ref}__{display_sample}".replace("=", "")
                 .replace("__", "_")
                 .replace(",", "_")
                 .replace(" ", "_")
@@ -928,16 +1027,52 @@ def combined_raw_clustermap(
             for sample in adata.obs[sample_col].cat.categories:
                 display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
 
-                qmask = _mask_or_true("read_quality", (lambda s: s >= float(min_quality)) if min_quality is not None else (lambda s: pd.Series(True, index=s.index)))
-                lm_mask = _mask_or_true("mapped_length", (lambda s: s >= float(min_length)) if min_length is not None else (lambda s: pd.Series(True, index=s.index)))
-                lrr_mask = _mask_or_true("mapped_length_to_reference_length_ratio", (lambda s: s >= float(min_mapped_length_to_reference_length_ratio)) if min_mapped_length_to_reference_length_ratio is not None else (lambda s: pd.Series(True, index=s.index)))
-                demux_mask = _mask_or_true("demux_type", (lambda s: s.astype("string").isin(list(demux_types))) if demux_types is not None else (lambda s: pd.Series(True, index=s.index)))
+                qmask = _mask_or_true(
+                    "read_quality",
+                    (lambda s: s >= float(min_quality))
+                    if min_quality is not None
+                    else (lambda s: pd.Series(True, index=s.index)),
+                )
+                lm_mask = _mask_or_true(
+                    "mapped_length",
+                    (lambda s: s >= float(min_length))
+                    if min_length is not None
+                    else (lambda s: pd.Series(True, index=s.index)),
+                )
+                lrr_mask = _mask_or_true(
+                    "mapped_length_to_reference_length_ratio",
+                    (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
+                    if min_mapped_length_to_reference_length_ratio is not None
+                    else (lambda s: pd.Series(True, index=s.index)),
+                )
+                demux_mask = _mask_or_true(
+                    "demux_type",
+                    (lambda s: s.astype("string").isin(list(demux_types)))
+                    if demux_types is not None
+                    else (lambda s: pd.Series(True, index=s.index)),
+                )
 
-                chimeric_mask = _mask_or_true("chimeric_variant_sites", lambda s: ~s.astype(bool)) if omit_chimeric_reads else pd.Series(True, index=adata.obs.index)
-                row_mask = (adata.obs[reference_col] == ref) & (adata.obs[sample_col] == sample) & qmask & lm_mask & lrr_mask & demux_mask & chimeric_mask
+                chimeric_mask = (
+                    _mask_or_true("chimeric_variant_sites", lambda s: ~s.astype(bool))
+                    if omit_chimeric_reads
+                    else pd.Series(True, index=adata.obs.index)
+                )
+                row_mask = (
+                    (adata.obs[reference_col] == ref)
+                    & (adata.obs[sample_col] == sample)
+                    & qmask
+                    & lm_mask
+                    & lrr_mask
+                    & demux_mask
+                    & chimeric_mask
+                )
 
                 if not bool(row_mask.any()):
-                    logger.warning("No reads for %s - %s after read quality and length filtering.", display_sample, ref)
+                    logger.warning(
+                        "No reads for %s - %s after read quality and length filtering.",
+                        display_sample,
+                        ref,
+                    )
                     continue
 
                 try:
@@ -947,15 +1082,23 @@ def combined_raw_clustermap(
                         valid_key = f"{ref}_valid_fraction"
                         if valid_key in subset.var:
                             v = pd.to_numeric(subset.var[valid_key], errors="coerce").to_numpy()
-                            col_mask = np.asarray(v > float(min_position_valid_fraction), dtype=bool)
+                            col_mask = np.asarray(
+                                v > float(min_position_valid_fraction), dtype=bool
+                            )
                             if col_mask.any():
                                 subset = subset[:, col_mask].copy()
                             else:
-                                logger.warning("No positions left after valid_fraction filter for %s - %s.", display_sample, ref)
+                                logger.warning(
+                                    "No positions left after valid_fraction filter for %s - %s.",
+                                    display_sample,
+                                    ref,
+                                )
                                 continue
 
                     if subset.shape[0] == 0:
-                        logger.warning("No reads left after filtering for %s - %s.", display_sample, ref)
+                        logger.warning(
+                            "No reads left after filtering for %s - %s.", display_sample, ref
+                        )
                         continue
 
                     # Site indices and labels
@@ -980,7 +1123,11 @@ def combined_raw_clustermap(
                     for lname in unique_layer_names:
                         if lname in subset.layers:
                             arr = subset.layers[lname]
-                            layer_data[lname] = arr.toarray() if hasattr(arr, "toarray") else np.asarray(arr, dtype=float)
+                            layer_data[lname] = (
+                                arr.toarray()
+                                if hasattr(arr, "toarray")
+                                else np.asarray(arr, dtype=float)
+                            )
 
                     # Bin filters as numpy bool arrays over subset rows
                     if bins is None:
@@ -1035,6 +1182,7 @@ def combined_raw_clustermap(
 
                 except Exception:
                     import traceback
+
                     traceback.print_exc()
                     continue
 

@@ -79,6 +79,7 @@ def configure_worker_threads(n_threads: int = 1) -> None:
     os.environ["MPLBACKEND"] = "Agg"
     try:
         import matplotlib  # noqa: PLC0415
+
         matplotlib.use("Agg")
     except Exception:
         pass
