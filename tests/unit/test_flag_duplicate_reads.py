@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
 
-pytest.importorskip("torch")
-
-import anndata as ad
-
 from smftools.preprocessing.flag_duplicate_reads import flag_duplicate_reads
+
+pytest.importorskip("torch")
 
 
 @pytest.fixture(autouse=True)
