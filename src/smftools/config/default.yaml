@@ -24,6 +24,10 @@ delete_intermediate_hdfs: True # Whether to delete the intermediate hdfs from th
 delete_intermediate_bams: False # Whether to delete intermediate BAM files.
 delete_intermediate_tsvs: False # Whether to delete intermediate TSV files.
 
+# Read subsampling
+max_basecall_reads: null # Maximum number of reads to randomly sample from pod5 inputs before basecalling. null uses all reads.
+max_reads_per_barcode: null # Maximum number of reads per barcode to keep in each split BAM before AnnData creation. null uses all reads.
+
 # Sequencing modality and general experiment params
 smf_modality: 'conversion' # conversion, deaminase, direct
 sequencer: 'ont' # ont, pacbio, illumina

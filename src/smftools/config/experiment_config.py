@@ -717,6 +717,10 @@ class ExperimentConfig:
     skip_bam_qc: bool = False
     delete_batch_hdfs: bool = True
 
+    # Read subsampling
+    max_basecall_reads: Optional[int] = None
+    max_reads_per_barcode: Optional[int] = None
+
     # Sequencing modality and general experiment params
     smf_modality: Optional[str] = None
     sequencer: Optional[str] = None
@@ -1690,6 +1694,8 @@ class ExperimentConfig:
             skip_bam_split=merged.get("skip_bam_split", False),
             skip_bam_qc=merged.get("skip_bam_qc", False),
             delete_batch_hdfs=merged.get("delete_batch_hdfs", True),
+            max_basecall_reads=_parse_numeric(merged.get("max_basecall_reads", None), None),
+            max_reads_per_barcode=_parse_numeric(merged.get("max_reads_per_barcode", None), None),
             reference_column=merged.get("reference_column", REF_COL),
             sample_column=merged.get("sample_column", SAMPLE_COL),
             sample_name_col_for_plotting=merged.get("sample_name_col_for_plotting", "Barcode"),

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import random
 import subprocess
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List, Optional, Tuple
 
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
@@ -274,3 +275,78 @@ def subsample_pod5(
     # Write the subsampled POD5
     with p5.Writer(output_pod5) as writer:
         writer.add_reads(read_records)
+
+
+def subsample_pod5_for_basecalling(
+    input_path: str | Path,
+    max_reads: int,
+    output_dir: str | Path,
+    seed: int = 42,
+) -> Path:
+    """Randomly sample up to *max_reads* reads from pod5 inputs and write a temp pod5.
+
+    Collects read IDs from all pod5 files first (memory-efficient), then samples,
+    then writes only the selected reads.  If the total read count is already <=
+    *max_reads* the original *input_path* is returned unchanged.
+
+    Args:
+        input_path: A single pod5 file or a directory containing pod5 files.
+        max_reads: Maximum number of reads to retain.
+        output_dir: Directory to write the subsampled pod5 file.
+        seed: Random seed for reproducibility.
+
+    Returns:
+        Path to the (possibly new) pod5 file to use for basecalling.
+    """
+    input_path = Path(input_path)
+    output_dir = Path(output_dir)
+
+    # Collect all pod5 file paths
+    if input_path.is_dir():
+        pod5_files: List[Path] = sorted(input_path.glob("*.pod5"))
+        if not pod5_files:
+            logger.warning(f"No pod5 files found in {input_path}, skipping subsample")
+            return input_path
+    else:
+        pod5_files = [input_path]
+
+    # Pass 1: collect (file_index, read_id) pairs without loading signal data
+    all_ids: List[Tuple[int, str]] = []
+    for file_idx, pod5_file in enumerate(pod5_files):
+        with p5.Reader(pod5_file) as reader:
+            for read in reader.reads():
+                all_ids.append((file_idx, str(read.read_id)))
+
+    total = len(all_ids)
+    if total <= max_reads:
+        logger.info(
+            f"Total pod5 reads ({total}) <= max_basecall_reads ({max_reads}), using all reads."
+        )
+        return input_path
+
+    logger.info(
+        f"Subsampling {max_reads} reads from {total} total pod5 reads (seed={seed})."
+    )
+
+    rng = random.Random(seed)
+    sampled = set(rng.sample(range(total), max_reads))
+
+    # Build per-file sets of selected read IDs
+    per_file_ids: List[List[str]] = [[] for _ in pod5_files]
+    for idx, (file_idx, read_id) in enumerate(all_ids):
+        if idx in sampled:
+            per_file_ids[file_idx].append(read_id)
+
+    # Pass 2: write selected reads to output pod5
+    output_pod5 = output_dir / "basecall_subsampled.pod5"
+    with p5.Writer(output_pod5) as writer:
+        for file_idx, pod5_file in enumerate(pod5_files):
+            ids_for_file = per_file_ids[file_idx]
+            if not ids_for_file:
+                continue
+            with p5.Reader(pod5_file) as reader:
+                for read in reader.reads(selection=ids_for_file, missing_ok=True):
+                    writer.add_reads([read.to_read()])
+
+    logger.info(f"Wrote subsampled pod5 to {output_pod5}")
+    return output_pod5

@@ -4836,3 +4836,82 @@ def split_and_index_BAM(
             _index_bam_with_samtools(input_file)
 
     return bam_files
+
+
+def subsample_split_bams(
+    bam_files: List[Path],
+    max_reads: int,
+    samtools_backend: str = "auto",
+    seed: int = 42,
+) -> List[Path]:
+    """Subsample each split BAM in-place to at most *max_reads* reads.
+
+    Uses reservoir sampling so the full BAM is only streamed once per file.
+    BAMs that already have <= *max_reads* reads are left untouched.  Each
+    subsampled BAM is re-indexed after writing.
+
+    Args:
+        bam_files: Per-barcode BAM paths (as produced by split_and_index_BAM /
+            demux_and_index_BAM).
+        max_reads: Maximum number of reads to retain per BAM file.
+        samtools_backend: Backend to use for re-indexing ("auto", "python", "cli").
+        seed: Random seed for reproducibility.
+
+    Returns:
+        The same list of paths (modified in-place on disk).
+    """
+    import random as _random
+
+    pysam_mod = _require_pysam()
+    rng = _random.Random(seed)
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+
+    for bam_path in bam_files:
+        bam_path = Path(bam_path)
+        # Reservoir sampling: collect up to max_reads reads in one pass
+        reservoir: list = []
+        total = 0
+        with pysam_mod.AlignmentFile(str(bam_path), "rb") as src:
+            header = src.header.to_dict()
+            for read in src.fetch(until_eof=True):
+                total += 1
+                if len(reservoir) < max_reads:
+                    reservoir.append(read)
+                else:
+                    j = rng.randint(0, total - 1)
+                    if j < max_reads:
+                        reservoir[j] = read
+
+        if total <= max_reads:
+            logger.debug(
+                f"{bam_path.name}: {total} reads <= max_reads_per_barcode ({max_reads}), skipping."
+            )
+            continue
+
+        logger.info(
+            f"{bam_path.name}: subsampling {total} -> {max_reads} reads (seed={seed})."
+        )
+
+        tmp_path = bam_path.with_suffix(".subsample_tmp.bam")
+        with pysam_mod.AlignmentFile(
+            str(tmp_path), "wb", header=pysam_mod.AlignmentHeader.from_dict(header)
+        ) as dst:
+            for read in reservoir:
+                dst.write(read)
+
+        tmp_path.replace(bam_path)
+
+        # Remove stale index (both naming conventions) and re-index
+        for index_path in (
+            bam_path.with_suffix(bam_path.suffix + ".bai"),
+            Path(str(bam_path) + ".bai"),
+        ):
+            if index_path.exists():
+                index_path.unlink()
+
+        if backend_choice == "python":
+            _index_bam_with_pysam(bam_path)
+        else:
+            _index_bam_with_samtools(bam_path)
+
+    return bam_files
