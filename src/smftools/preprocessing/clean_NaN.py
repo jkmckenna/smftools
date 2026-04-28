@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
+
+import numpy as np
+import scipy.sparse as sp
 
 from smftools.logging_utils import get_logger
 
@@ -9,6 +12,33 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+VALID_NAN_LAYERS = frozenset(
+    ["fill_nans_closest", "nan0_0minus1", "nan1_12", "nan_minus_1", "nan_half"]
+)
+DEFAULT_NAN_LAYERS = ["nan0_0minus1", "nan_half"]
+
+
+def _ffill_bfill_rows(X: np.ndarray) -> np.ndarray:
+    """Forward-then-backward fill NaN values along axis=1 (row-wise).
+
+    Uses a mask-propagation approach to avoid pandas overhead.
+    Operates in float32 and returns float32.
+    """
+    out = X.copy()
+    n_rows, n_cols = out.shape
+
+    # forward fill: carry last non-NaN value rightward
+    for j in range(1, n_cols):
+        mask = np.isnan(out[:, j])
+        out[mask, j] = out[mask, j - 1]
+
+    # backward fill: carry first non-NaN value leftward
+    for j in range(n_cols - 2, -1, -1):
+        mask = np.isnan(out[:, j])
+        out[mask, j] = out[mask, j + 1]
+
+    return out
+
 
 def clean_NaN(
     adata: "ad.AnnData",
@@ -16,8 +46,12 @@ def clean_NaN(
     uns_flag: str = "clean_NaN_performed",
     bypass: bool = False,
     force_redo: bool = True,
+    layers_to_build: Optional[List[str]] = None,
 ) -> None:
     """Append layers to ``adata`` that contain NaN-cleaning strategies.
+
+    Uses numpy float32 operations throughout to avoid the memory overhead of
+    converting to a float64 pandas DataFrame.
 
     Args:
         adata: AnnData object.
@@ -25,46 +59,69 @@ def clean_NaN(
         uns_flag: Flag in ``adata.uns`` indicating prior completion.
         bypass: Whether to skip processing.
         force_redo: Whether to rerun even if ``uns_flag`` is set.
+        layers_to_build: Which NaN-fill strategy layers to create. Valid values:
+            ``fill_nans_closest``, ``nan0_0minus1``, ``nan1_12``,
+            ``nan_minus_1``, ``nan_half``. Defaults to
+            ``["nan0_0minus1", "nan_half"]``.
     """
-
-    from ..readwrite import adata_to_df
 
     # Only run if not already performed
     already = bool(adata.uns.get(uns_flag, False))
     if (already and not force_redo) or bypass:
-        # QC already performed; nothing to do
         return
 
-    # Ensure the specified layer exists
+    if layers_to_build is None:
+        layers_to_build = DEFAULT_NAN_LAYERS
+
+    unknown = set(layers_to_build) - VALID_NAN_LAYERS
+    if unknown:
+        raise ValueError(
+            f"Unknown NaN layer(s): {unknown}. Valid options: {sorted(VALID_NAN_LAYERS)}"
+        )
+
+    if not layers_to_build:
+        logger.info("clean_NaN: layers_to_build is empty, nothing to do.")
+        adata.uns[uns_flag] = True
+        return
+
+    # Ensure the specified source layer exists
     if layer and layer not in adata.layers:
         raise ValueError(f"Layer '{layer}' not found in adata.layers.")
 
-    # Convert to DataFrame
-    df = adata_to_df(adata, layer=layer)
+    # Extract base matrix as float32 (avoids float64 pandas overhead)
+    data = adata.layers[layer] if layer else adata.X
+    if sp.issparse(data):
+        X = data.toarray().astype(np.float32)
+    else:
+        X = np.asarray(data, dtype=np.float32)
 
-    # Fill NaN with closest SMF value (forward then backward fill)
-    logger.info("Making layer: fill_nans_closest")
-    adata.layers["fill_nans_closest"] = df.ffill(axis=1).bfill(axis=1).values
+    nan_mask = np.isnan(X)
 
-    # Replace NaN with 0, and 0 with -1
-    logger.info("Making layer: nan0_0minus1")
-    df_nan0_0minus1 = df.replace(0, -1).fillna(0)
-    adata.layers["nan0_0minus1"] = df_nan0_0minus1.values
+    if "fill_nans_closest" in layers_to_build:
+        logger.info("Making layer: fill_nans_closest")
+        adata.layers["fill_nans_closest"] = _ffill_bfill_rows(X)
 
-    # Replace NaN with 1, and 1 with 2
-    logger.info("Making layer: nan1_12")
-    df_nan1_12 = df.replace(1, 2).fillna(1)
-    adata.layers["nan1_12"] = df_nan1_12.values
+    if "nan0_0minus1" in layers_to_build:
+        logger.info("Making layer: nan0_0minus1")
+        adata.layers["nan0_0minus1"] = np.where(
+            nan_mask, np.float32(0.0), np.where(X == 0, np.float32(-1.0), X)
+        ).astype(np.float32)
 
-    # Replace NaN with -1
-    logger.info("Making layer: nan_minus_1")
-    df_nan_minus_1 = df.fillna(-1)
-    adata.layers["nan_minus_1"] = df_nan_minus_1.values
+    if "nan1_12" in layers_to_build:
+        logger.info("Making layer: nan1_12")
+        adata.layers["nan1_12"] = np.where(
+            nan_mask, np.float32(1.0), np.where(X == 1, np.float32(2.0), X)
+        ).astype(np.float32)
 
-    # Replace NaN with -1
-    logger.info("Making layer: nan_half")
-    df_nan_half = df.fillna(0.5)
-    adata.layers["nan_half"] = df_nan_half.values
+    if "nan_minus_1" in layers_to_build:
+        logger.info("Making layer: nan_minus_1")
+        adata.layers["nan_minus_1"] = np.where(nan_mask, np.float32(-1.0), X).astype(np.float32)
+
+    if "nan_half" in layers_to_build:
+        logger.info("Making layer: nan_half")
+        adata.layers["nan_half"] = np.where(nan_mask, np.float32(0.5), X).astype(np.float32)
+
+    del X, nan_mask
 
     # mark as done
     adata.uns[uns_flag] = True

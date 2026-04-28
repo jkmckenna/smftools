@@ -721,6 +721,9 @@ class ExperimentConfig:
     max_basecall_reads: Optional[int] = None
     max_reads_per_barcode: Optional[int] = None
 
+    # NaN fill strategy layers
+    clean_nan_layers: List[str] = field(default_factory=lambda: ["nan0_0minus1", "nan_half"])
+
     # Sequencing modality and general experiment params
     smf_modality: Optional[str] = None
     sequencer: Optional[str] = None
@@ -1704,6 +1707,9 @@ class ExperimentConfig:
             delete_batch_hdfs=merged.get("delete_batch_hdfs", True),
             max_basecall_reads=_parse_numeric(merged.get("max_basecall_reads", None), None),
             max_reads_per_barcode=_parse_numeric(merged.get("max_reads_per_barcode", None), None),
+            clean_nan_layers=_parse_list(
+                merged.get("clean_nan_layers", ["nan0_0minus1", "nan_half"])
+            ),
             reference_column=merged.get("reference_column", REF_COL),
             sample_column=merged.get("sample_column", SAMPLE_COL),
             sample_name_col_for_plotting=merged.get("sample_name_col_for_plotting", "Barcode"),
