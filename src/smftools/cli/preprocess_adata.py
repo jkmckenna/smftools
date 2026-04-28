@@ -391,10 +391,16 @@ def preprocess_adata_core(
             layer=cfg.output_binary_layer_name,
             bypass=cfg.bypass_clean_nan,
             force_redo=cfg.force_redo_clean_nan,
+            layers_to_build=getattr(cfg, "clean_nan_layers", None),
         )
     else:
         native = False
-        clean_NaN(adata, bypass=cfg.bypass_clean_nan, force_redo=cfg.force_redo_clean_nan)
+        clean_NaN(
+            adata,
+            bypass=cfg.bypass_clean_nan,
+            force_redo=cfg.force_redo_clean_nan,
+            layers_to_build=getattr(cfg, "clean_nan_layers", None),
+        )
 
     ############### Calculate positional coverage by reference set in dataset ###############
     calculate_coverage(

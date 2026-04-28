@@ -107,73 +107,68 @@ def append_binary_layer_by_base_context(
         X = X.toarray()
     X = np.asarray(X, dtype=np.float32)
 
-    # initialize masked arrays filled with NaN
-    masked_gpc = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
-    masked_cpg = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
-    masked_any_c = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
-    masked_other_c = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
-    masked_a = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
-
-    # fill row-blocks per reference (this avoids creating a full row×var boolean mask)
     obs_ref_series = adata.obs[reference_column]
-    for ref in references:
-        rows_mask = obs_ref_series.values == ref
-        if not rows_mask.any():
-            continue
-        row_idx = np.nonzero(rows_mask)[0]  # integer indices of rows for this ref
 
-        # column masks for this ref
-        gpc_cols = gpc_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
-        cpg_cols = cpg_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
-        c_cols = c_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
-        other_c_cols = other_c_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
-        a_cols = a_var_masks.get(ref, np.zeros(n_vars, dtype=bool))
+    def _build_masked(var_masks: dict) -> np.ndarray:
+        """Allocate one NaN-filled layer and fill row-blocks per reference."""
+        arr = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
+        for ref in references:
+            cols = var_masks.get(ref, np.zeros(n_vars, dtype=bool))
+            if not cols.any():
+                continue
+            rows_mask = obs_ref_series.values == ref
+            if not rows_mask.any():
+                continue
+            row_idx = np.nonzero(rows_mask)[0]
+            arr[np.ix_(row_idx, cols)] = X[np.ix_(row_idx, cols)]
+        return arr
 
-        if gpc_cols.any():
-            # assign only the submatrix (rows x selected cols)
-            masked_gpc[np.ix_(row_idx, gpc_cols)] = X[np.ix_(row_idx, gpc_cols)]
-        if cpg_cols.any():
-            masked_cpg[np.ix_(row_idx, cpg_cols)] = X[np.ix_(row_idx, cpg_cols)]
-        if c_cols.any():
-            masked_any_c[np.ix_(row_idx, c_cols)] = X[np.ix_(row_idx, c_cols)]
-        if other_c_cols.any():
-            masked_other_c[np.ix_(row_idx, other_c_cols)] = X[np.ix_(row_idx, other_c_cols)]
-        if a_cols.any():
-            masked_a[np.ix_(row_idx, other_c_cols)] = X[np.ix_(row_idx, other_c_cols)]
+    # Build and store each layer sequentially — only one working array lives in
+    # memory at a time alongside X, keeping peak at ~2× X instead of ~7× X.
 
-    # Build combined layer:
-    # - numeric_sum: sum where either exists, NaN where neither exists
-    #   we compute numeric sum but preserve NaN where both are NaN
-    gpc_nan = np.isnan(masked_gpc)
-    cpg_nan = np.isnan(masked_cpg)
-    combined_sum = np.nan_to_num(masked_gpc, nan=0.0) + np.nan_to_num(masked_cpg, nan=0.0)
-    both_nan = gpc_nan & cpg_nan
-    combined_sum[both_nan] = np.nan
-
-    # Alternative: if you prefer a boolean OR combined layer, uncomment:
-    # combined_bool = (~gpc_nan & (masked_gpc != 0)) | (~cpg_nan & (masked_cpg != 0))
-    # combined_layer = combined_bool.astype(np.float32)
-
+    masked_gpc = _build_masked(gpc_var_masks)
     adata.layers["GpC_site_binary"] = masked_gpc
-    adata.layers["CpG_site_binary"] = masked_cpg
-    adata.layers["GpC_CpG_combined_site_binary"] = combined_sum
-    adata.layers["C_site_binary"] = masked_any_c
-    adata.layers["other_C_site_binary"] = masked_other_c
-    adata.layers["A_site_binary"] = masked_a
-
     if verbose:
+        logger.info("  GpC non-NaN cells: %s", int(np.sum(~np.isnan(masked_gpc))))
+    del masked_gpc
 
-        def _filled_positions(arr):
-            """Count the number of non-NaN positions in an array."""
-            return int(np.sum(~np.isnan(arr)))
+    masked_cpg = _build_masked(cpg_var_masks)
+    adata.layers["CpG_site_binary"] = masked_cpg
+    if verbose:
+        logger.info("  CpG non-NaN cells: %s", int(np.sum(~np.isnan(masked_cpg))))
+    del masked_cpg
 
-        logger.info("Layer build summary (non-NaN cell counts):")
-        logger.info("  GpC: %s", _filled_positions(masked_gpc))
-        logger.info("  CpG: %s", _filled_positions(masked_cpg))
-        logger.info("  GpC+CpG combined: %s", _filled_positions(combined_sum))
-        logger.info("  C: %s", _filled_positions(masked_any_c))
-        logger.info("  other_C: %s", _filled_positions(masked_other_c))
-        logger.info("  A: %s", _filled_positions(masked_a))
+    # Build combined GpC+CpG from the already-stored layers (no extra full arrays)
+    gpc_stored = adata.layers["GpC_site_binary"]
+    cpg_stored = adata.layers["CpG_site_binary"]
+    both_nan = np.isnan(gpc_stored) & np.isnan(cpg_stored)
+    combined_sum = np.nan_to_num(gpc_stored, nan=0.0) + np.nan_to_num(cpg_stored, nan=0.0)
+    combined_sum[both_nan] = np.nan
+    adata.layers["GpC_CpG_combined_site_binary"] = combined_sum
+    if verbose:
+        logger.info("  GpC+CpG combined non-NaN cells: %s", int(np.sum(~np.isnan(combined_sum))))
+    del combined_sum, both_nan, gpc_stored, cpg_stored
+
+    masked_any_c = _build_masked(c_var_masks)
+    adata.layers["C_site_binary"] = masked_any_c
+    if verbose:
+        logger.info("  C non-NaN cells: %s", int(np.sum(~np.isnan(masked_any_c))))
+    del masked_any_c
+
+    masked_other_c = _build_masked(other_c_var_masks)
+    adata.layers["other_C_site_binary"] = masked_other_c
+    if verbose:
+        logger.info("  other_C non-NaN cells: %s", int(np.sum(~np.isnan(masked_other_c))))
+    del masked_other_c
+
+    masked_a = _build_masked(a_var_masks)
+    adata.layers["A_site_binary"] = masked_a
+    if verbose:
+        logger.info("  A non-NaN cells: %s", int(np.sum(~np.isnan(masked_a))))
+    del masked_a
+
+    # Release dense X copy now that all layers are built
+    del X
 
     # mark as done
     adata.uns[uns_flag] = True

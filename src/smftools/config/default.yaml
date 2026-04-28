@@ -28,6 +28,12 @@ delete_intermediate_tsvs: False # Whether to delete intermediate TSV files.
 max_basecall_reads: null # Maximum number of reads to randomly sample from pod5 inputs before basecalling. null uses all reads.
 max_reads_per_barcode: null # Maximum number of reads per barcode to keep in each split BAM before AnnData creation. null uses all reads.
 
+# NaN fill strategy layers to create during clean_NaN step.
+# Valid values: fill_nans_closest, nan0_0minus1, nan1_12, nan_minus_1, nan_half
+clean_nan_layers:
+  - "nan0_0minus1"
+  - "nan_half"
+
 # Sequencing modality and general experiment params
 smf_modality: 'conversion' # conversion, deaminase, direct
 sequencer: 'ont' # ont, pacbio, illumina
