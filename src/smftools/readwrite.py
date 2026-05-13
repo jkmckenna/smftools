@@ -904,7 +904,36 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
             adata_copy.var_names = adata.var_names
 
         # --- write
-        adata_copy.write_h5ad(path, compression=compression)
+        try:
+            adata_copy.write_h5ad(path, compression=compression)
+        except OSError as _write_err:
+            if "object header message is too large" not in str(_write_err):
+                raise
+            # HDF5 compact attribute storage exceeded (too many/long column names).
+            # Retry with track_order=True, which switches to dense attribute storage.
+            import h5py as _h5py
+
+            _orig_file_cls = _h5py.File
+
+            class _TrackOrderFile(_orig_file_cls):
+                def __init__(self, *args, **kwargs):
+                    kwargs.setdefault("track_order", True)
+                    super().__init__(*args, **kwargs)
+
+            _h5py.File = _TrackOrderFile
+            try:
+                if path.exists():
+                    path.unlink()
+                adata_copy.write_h5ad(path, compression=compression)
+                logger.warning(
+                    "Wrote %s with track_order=True due to HDF5 object header size limit "
+                    "(%d obs cols, %d var cols).",
+                    path,
+                    adata_copy.obs.shape[1],
+                    adata_copy.var.shape[1],
+                )
+            finally:
+                _h5py.File = _orig_file_cls
         if verbose:
             logger.debug(f"Saved safely to {path}")
     except Exception as e:
