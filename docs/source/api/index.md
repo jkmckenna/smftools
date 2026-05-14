@@ -12,6 +12,7 @@ import smftools as smf
 informatics
 preprocessing
 tools
+analysis
 datasets
 ```
 
