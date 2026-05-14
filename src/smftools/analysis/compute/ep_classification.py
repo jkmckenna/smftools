@@ -45,8 +45,8 @@ def classify_position(
         e.g. ``"6B6_top"`` — used to find the reindexed coordinate column.
     target_bp : float
         TSS-centred bp coordinate of the anchor (e.g. 0 for TSS, -1690 for enhancer).
-    patch_layers : list of (str, str)
-        Priority-ordered list of (layer_name, class_label) tuples.
+    patch_layers : list
+        Priority-ordered list of ``(layer_name, class_label)`` tuples.
     ref_obs_col : str
         obs column that identifies which reference a read mapped to.
 

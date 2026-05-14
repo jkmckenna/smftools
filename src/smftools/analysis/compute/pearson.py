@@ -1,10 +1,7 @@
 """
-pearson.py — NaN-aware position × position Pearson correlation matrices.
+NaN-aware position × position Pearson correlation matrices.
 
-Functions
----------
-nan_pearson_matrix   Compute Pearson matrix from a reads × positions float array.
-make_ticks           Evenly spaced tick positions and labels for coordinate axes.
+Key functions: :func:`nan_pearson_matrix`, :func:`make_ticks`.
 """
 
 from __future__ import annotations
@@ -18,13 +15,15 @@ def nan_pearson_matrix(X: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    X : (n_reads × n_positions) float array; values typically in {0, 1, NaN}.
+    X : np.ndarray
+        Shape (n_reads × n_positions); values typically in {0, 1, NaN}.
         NaN positions are excluded from column means, then zero-filled before
         the matrix multiply (consistent with the reference EMseq implementation).
 
     Returns
     -------
-    mat : (n_positions × n_positions) float array; NaN where denom == 0.
+    np.ndarray
+        Shape (n_positions × n_positions); NaN where denominator is zero.
     """
     with np.errstate(invalid="ignore"):
         col_mean = np.nanmean(X, axis=0)

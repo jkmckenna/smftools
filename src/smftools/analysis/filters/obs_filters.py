@@ -51,24 +51,35 @@ def build_obs_mask(
 
     Parameters
     ----------
-    obs            : adata.obs DataFrame.
-    barcode        : keep reads with this barcode (obs[barcode_col] == barcode).
-    ref_strand     : keep reads mapped to this reference strand.
-    demux_type     : keep reads with this demux_type (e.g. "double").
-    wt_ref_strands : if ref_strand is in this list, apply the CIGAR deletion filter.
+    obs : pd.DataFrame
+        ``adata.obs`` DataFrame.
+    barcode : str, optional
+        Keep reads with this barcode value.
+    ref_strand : str, optional
+        Keep reads mapped to this reference strand.
+    demux_type : str, optional
+        Keep reads with this demux_type (e.g. ``"double"``).
+    wt_ref_strands : list of str, optional
+        If ``ref_strand`` is in this list, apply the CIGAR deletion filter.
     max_cigar_del : int, optional
         Maximum allowed single deletion in the CIGAR string (bp). Applied only
-        when ref_strand is in wt_ref_strands. Use to exclude enh-del allele
-        reads misassigned to the WT reference.
-    extra_eq       : additional equality filters: {column: value}.
-    barcode_col    : obs column for barcode identity.
-    ref_strand_col : obs column for reference strand.
-    demux_col      : obs column for demultiplexing type.
-    cigar_col      : obs column containing CIGAR strings (used for CIGAR filter).
+        when ``ref_strand`` is in ``wt_ref_strands``. Use to exclude enh-del
+        allele reads misassigned to the WT reference.
+    extra_eq : dict, optional
+        Additional equality filters as ``{column: value}``.
+    barcode_col : str
+        obs column for barcode identity.
+    ref_strand_col : str
+        obs column for reference strand.
+    demux_col : str
+        obs column for demultiplexing type.
+    cigar_col : str
+        obs column containing CIGAR strings.
 
     Returns
     -------
-    mask : bool ndarray of length n_obs.
+    np.ndarray
+        Boolean array of length n_obs.
     """
     mask = np.ones(len(obs), dtype=bool)
 
