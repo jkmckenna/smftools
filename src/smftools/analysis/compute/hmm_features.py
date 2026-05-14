@@ -1,11 +1,10 @@
 """
-hmm_features.py — Interval extraction from binary HMM feature layers.
+Interval extraction from binary HMM feature layers.
 
-Functions
----------
-extract_intervals_from_row   Sizes and neighbor distances for one read's binary HMM row.
+Key function: :func:`extract_intervals_from_row` — returns interval sizes and
+neighbor center-to-center distances for one read's binary HMM row.
 
-Position masking functions live in smftools.analysis.filters.position_filters.
+Position masking utilities live in :mod:`smftools.analysis.filters.position_filters`.
 """
 
 from __future__ import annotations

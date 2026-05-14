@@ -1,14 +1,11 @@
 """
-obs_filters.py — Composable obs-level filters for AnnData.
+Composable obs-level filters for AnnData.
 
-Functions
----------
-max_cigar_deletion    Parse largest deletion from a CIGAR string.
-build_obs_mask        Compose a boolean obs mask from standard DAFseq filter criteria.
+Key functions: :func:`max_cigar_deletion`, :func:`build_obs_mask`.
 
-Typical usage
--------------
-    from tools.obs_filters import build_obs_mask
+Example::
+
+    from smftools.analysis.filters.obs_filters import build_obs_mask
 
     mask = build_obs_mask(
         adata.obs,

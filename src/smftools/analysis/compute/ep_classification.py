@@ -1,20 +1,14 @@
 """
-hmm_ep_classification.py — Enhancer/promoter NDR state classification per read.
+Enhancer/promoter NDR state classification per read.
 
 Classifies each read's chromatin state at two genomic anchor positions (typically
-TSS = 0 and enhancer peak) by checking HMM feature layers in priority order.
+TSS = 0 and enhancer peak) by checking HMM feature layers in priority order:
+``GpC_nucleosome_depleted_region_merged_lengths`` (NDR),
+``GpC_large_accessible_patch_merged_lengths`` (Large),
+``GpC_mid_accessible_patch_merged_lengths`` (Mid),
+``GpC_small_accessible_patch_merged_lengths`` (Small), or None.
 
-Priority order (highest to lowest):
-    GpC_nucleosome_depleted_region_merged_lengths  → NDR
-    GpC_large_accessible_patch_merged_lengths      → Large
-    GpC_mid_accessible_patch_merged_lengths        → Mid
-    GpC_small_accessible_patch_merged_lengths      → Small
-    (none of the above)                            → None
-
-Functions
----------
-classify_position      Classify all reads at one genomic anchor for one reference.
-add_ep_obs_columns     Add Promoter/Enhancer class and open/closed bool columns to adata.obs.
+Key functions: :func:`classify_position`, :func:`add_ep_obs_columns`.
 """
 
 from __future__ import annotations

@@ -5,10 +5,10 @@ import pytest
 
 from smftools.analysis.compute.hmm_features import extract_intervals_from_row
 
-
 # ---------------------------------------------------------------------------
 # extract_intervals_from_row
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 def test_empty_row_returns_empty() -> None:
@@ -80,6 +80,7 @@ def test_three_intervals_two_distances() -> None:
 # extract_intervals_from_row — full_row boundary clipping
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 def test_full_row_clipping_drops_mostly_external_interval() -> None:
     # Full locus: one long interval spanning 0..40
@@ -94,9 +95,11 @@ def test_full_row_clipping_drops_mostly_external_interval() -> None:
 
     sizes_no_clip, _ = extract_intervals_from_row(sub_row, sub_coords)
     sizes_clip, _ = extract_intervals_from_row(
-        sub_row, sub_coords,
-        full_row=full_row, full_coords=full_coords,
+        sub_row,
+        sub_coords,
+        full_row=full_row,
+        full_coords=full_coords,
         max_mask_overlap_frac=0.4,  # drop if >40% outside → 50% > 40% → dropped
     )
     assert len(sizes_no_clip) == 1  # without clipping: interval retained
-    assert len(sizes_clip) == 0     # with clipping: interval dropped (50% outside > 40% threshold)
+    assert len(sizes_clip) == 0  # with clipping: interval dropped (50% outside > 40% threshold)

@@ -21,6 +21,7 @@ def _synthetic_acf(period_bp: float, n_lags: int = 300) -> tuple[np.ndarray, np.
 # ls_periodogram_from_autocorr
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 def test_ls_periodogram_returns_arrays() -> None:
     lags, ac = _synthetic_acf(185.0)
@@ -44,17 +45,18 @@ def test_ls_periodogram_ignores_nan_lags() -> None:
     ac_with_nans = ac.copy()
     ac_with_nans[::5] = np.nan  # introduce gaps
     freqs_clean, power_clean, _ = ls_periodogram_from_autocorr(lags, ac)
-    freqs_nan,   power_nan,   _ = ls_periodogram_from_autocorr(lags, ac_with_nans)
+    freqs_nan, power_nan, _ = ls_periodogram_from_autocorr(lags, ac_with_nans)
     # Both should succeed; peak should be in the same region
     assert freqs_clean is not None and freqs_nan is not None
     peak_clean = 1.0 / freqs_clean[np.argmax(power_clean)]
-    peak_nan   = 1.0 / freqs_nan[np.argmax(power_nan)]
+    peak_nan = 1.0 / freqs_nan[np.argmax(power_nan)]
     assert abs(peak_clean - peak_nan) < 20  # within 20 bp of each other
 
 
 # ---------------------------------------------------------------------------
 # analyze_ls_periodicity
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 def test_analyze_ls_periodicity_detects_known_period() -> None:
@@ -88,6 +90,7 @@ def test_analyze_ls_periodicity_result_keys() -> None:
 # ---------------------------------------------------------------------------
 # analyze_fft_periodicity
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 def test_analyze_fft_periodicity_detects_known_period() -> None:

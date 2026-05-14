@@ -16,6 +16,7 @@ MAX_LAG = 50
 # binary_autocorrelation_with_spacing
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 def test_acf_lag0_is_one() -> None:
     row = np.array([1.0, 0.0, 1.0, 0.0, 1.0])
@@ -81,6 +82,7 @@ def test_acf_periodic_signal_has_peak_at_period() -> None:
 # weighted_mean_autocorr
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 def test_weighted_mean_autocorr_basic() -> None:
     ac = np.array([[1.0, 0.5, 0.3], [1.0, 0.4, 0.2]])
@@ -110,6 +112,7 @@ def test_weighted_mean_autocorr_min_count_masks_sparse_lags() -> None:
 # ---------------------------------------------------------------------------
 # compute_replicate_curve
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 def test_compute_replicate_curve_returns_none_too_few_reads() -> None:

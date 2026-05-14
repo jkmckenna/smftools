@@ -10,12 +10,6 @@ organised into four subpackages by role:
 | `filters` | obs or var DataFrame | boolean `np.ndarray` mask |
 | `config` | none (static) | configuration dicts |
 
-```{eval-rst}
-.. automodule:: smftools.analysis
-   :no-members:
-   :show-inheritance:
-```
-
 ### Compute
 
 Pure statistical compute functions. No AnnData dependency (except `ep_classification`).

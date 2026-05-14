@@ -5,10 +5,10 @@ import pytest
 
 from smftools.analysis.compute.pearson import make_ticks, nan_pearson_matrix
 
-
 # ---------------------------------------------------------------------------
 # nan_pearson_matrix
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.unit
 def test_pearson_shape() -> None:
@@ -44,11 +44,14 @@ def test_pearson_symmetric() -> None:
 
 @pytest.mark.unit
 def test_pearson_with_nans() -> None:
-    X = np.array([
-        [0.0, 1.0, np.nan],
-        [1.0, 0.0, 1.0],
-        [0.0, 1.0, 0.0],
-    ], dtype=float)
+    X = np.array(
+        [
+            [0.0, 1.0, np.nan],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=float,
+    )
     mat = nan_pearson_matrix(X)
     assert mat.shape == (3, 3)
     # NaN columns should not propagate to the entire matrix
@@ -74,6 +77,7 @@ def test_pearson_single_column() -> None:
 # make_ticks
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.unit
 def test_make_ticks_count() -> None:
     coords = np.linspace(-1000, 500, 100)
@@ -94,4 +98,4 @@ def test_make_ticks_indices_in_bounds() -> None:
 def test_make_ticks_labels_are_strings() -> None:
     coords = np.array([-100.0, 0.0, 100.0])
     _, labels = make_ticks(coords, n_ticks=3)
-    assert all(isinstance(l, str) for l in labels)
+    assert all(isinstance(la, str) for la in labels)
