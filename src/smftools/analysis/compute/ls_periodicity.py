@@ -20,8 +20,8 @@ Usage
 """
 
 import numpy as np
-from scipy.signal import lombscargle, find_peaks
 from scipy.fft import rfft, rfftfreq
+from scipy.signal import find_peaks, lombscargle
 
 NRL_SEARCH_BP = (120, 260)
 MIN_FINITE_LAGS = 10
@@ -60,7 +60,7 @@ def ls_periodogram_from_autocorr(
 
     omega = 2.0 * np.pi * freqs
     power_norm = lombscargle(lags_f, ac_f, omega, normalize=True)
-    power_raw  = lombscargle(lags_f, ac_f, omega, normalize=False)
+    power_raw = lombscargle(lags_f, ac_f, omega, normalize=False)
     return freqs, power_norm, power_raw
 
 
@@ -93,19 +93,27 @@ def fwhm_ls(freqs: np.ndarray, power: np.ndarray, peak_idx: int) -> float:
     left = peak_idx
     while left > 0 and power[left] > half:
         left -= 1
-    left_f = (freqs[left] if left == peak_idx else
-              freqs[left] + (half - power[left]) * (freqs[left + 1] - freqs[left]) /
-              (power[left + 1] - power[left]))
+    left_f = (
+        freqs[left]
+        if left == peak_idx
+        else freqs[left]
+        + (half - power[left]) * (freqs[left + 1] - freqs[left]) / (power[left + 1] - power[left])
+    )
 
     right = peak_idx
     while right < len(power) - 1 and power[right] > half:
         right += 1
-    right_f = (freqs[right] if right == peak_idx else
-               freqs[right - 1] + (half - power[right - 1]) * (freqs[right] - freqs[right - 1]) /
-               (power[right] - power[right - 1]))
+    right_f = (
+        freqs[right]
+        if right == peak_idx
+        else freqs[right - 1]
+        + (half - power[right - 1])
+        * (freqs[right] - freqs[right - 1])
+        / (power[right] - power[right - 1])
+    )
 
-    left_nrl  = 1.0 / right_f if right_f > 0 else np.nan
-    right_nrl = 1.0 / left_f  if left_f  > 0 else np.nan
+    left_nrl = 1.0 / right_f if right_f > 0 else np.nan
+    right_nrl = 1.0 / left_f if left_f > 0 else np.nan
     return abs(left_nrl - right_nrl)
 
 
@@ -117,7 +125,7 @@ def snr_ls(
     """Estimate SNR around a spectral peak. Returns (snr, peak_power, bg_median)."""
     pk = power[peak_idx]
     mask = np.ones_like(power, dtype=bool)
-    mask[max(0, peak_idx - exclude_bins): min(len(power), peak_idx + exclude_bins + 1)] = False
+    mask[max(0, peak_idx - exclude_bins) : min(len(power), peak_idx + exclude_bins + 1)] = False
     bg = power[mask]
     bg_med = np.median(bg) if bg.size else np.median(power)
     snr = pk / (bg_med if bg_med > 0 else np.finfo(float).eps)
@@ -145,20 +153,21 @@ def analyze_ls_periodicity(
         return None
 
     return {
-        "ls_nrl_bp":        1.0 / f0,
-        "ls_snr":           snr_ls(power, peak_idx)[0],
-        "ls_peak_power":    float(power[peak_idx]),
+        "ls_nrl_bp": 1.0 / f0,
+        "ls_snr": snr_ls(power, peak_idx)[0],
+        "ls_peak_power": float(power[peak_idx]),
         "ls_peak_power_raw": float(power_raw[peak_idx]),
-        "ls_fwhm_bp":       fwhm_ls(freqs, power, peak_idx),
-        "ls_freqs":         freqs,
-        "ls_power":         power,
-        "ls_power_raw":     power_raw,
+        "ls_fwhm_bp": fwhm_ls(freqs, power, peak_idx),
+        "ls_freqs": freqs,
+        "ls_power": power,
+        "ls_power_raw": power_raw,
     }
 
 
 # ---------------------------------------------------------------------------
 # FFT helpers
 # ---------------------------------------------------------------------------
+
 
 def rolling_mean_nan(x, window: int = FFT_SMOOTHING_WINDOW_BP) -> np.ndarray:
     """Centered rolling mean that ignores NaNs."""
@@ -168,7 +177,7 @@ def rolling_mean_nan(x, window: int = FFT_SMOOTHING_WINDOW_BP) -> np.ndarray:
     out = np.full_like(x, np.nan)
     half = window // 2
     for i in range(len(x)):
-        vals = x[max(0, i - half): min(len(x), i + half + 1)]
+        vals = x[max(0, i - half) : min(len(x), i + half + 1)]
         finite = np.isfinite(vals)
         if np.any(finite):
             out[i] = np.mean(vals[finite])
@@ -224,12 +233,12 @@ def analyze_fft_periodicity(
     right = global_idx
     while right < len(power) - 1 and power[right] > half:
         right += 1
-    left_bp  = 1.0 / freqs[right] if freqs[right] > 0 else np.nan
-    right_bp = 1.0 / freqs[left]  if freqs[left]  > 0 else np.nan
+    left_bp = 1.0 / freqs[right] if freqs[right] > 0 else np.nan
+    right_bp = 1.0 / freqs[left] if freqs[left] > 0 else np.nan
     fwhm_bp = abs(left_bp - right_bp)
 
     mask = np.ones_like(power, dtype=bool)
-    mask[max(0, global_idx - 5): min(len(power), global_idx + 6)] = False
+    mask[max(0, global_idx - 5) : min(len(power), global_idx + 6)] = False
     bg_med = np.median(power[mask]) if mask.any() else np.median(power)
     snr = power[global_idx] / (bg_med if bg_med > 0 else np.finfo(float).eps)
 

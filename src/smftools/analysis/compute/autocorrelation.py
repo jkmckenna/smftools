@@ -70,10 +70,10 @@ def binary_autocorrelation_with_spacing(
             j += 1
         if j - i <= 1:
             continue
-        diffs = pos[i + 1:j] - pos[i]
-        contrib = xc[i] * xc[i + 1:j]
-        lag_sums   += np.bincount(diffs, weights=contrib, minlength=max_lag + 1)[:max_lag + 1]
-        lag_counts += np.bincount(diffs,                  minlength=max_lag + 1)[:max_lag + 1]
+        diffs = pos[i + 1 : j] - pos[i]
+        contrib = xc[i] * xc[i + 1 : j]
+        lag_sums += np.bincount(diffs, weights=contrib, minlength=max_lag + 1)[: max_lag + 1]
+        lag_counts += np.bincount(diffs, minlength=max_lag + 1)[: max_lag + 1]
 
     ac = np.full(max_lag + 1, np.nan, dtype=np.float64)
     nz = lag_counts > 0

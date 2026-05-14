@@ -90,9 +90,7 @@ def load_layer(
     """
     path = cache_dir(cache_root, barcode, ref_strand) / f"{layer_name}.parquet"
     if not path.exists():
-        raise FileNotFoundError(
-            f"Cache not found for {barcode}/{ref_strand}/{layer_name}: {path}"
-        )
+        raise FileNotFoundError(f"Cache not found for {barcode}/{ref_strand}/{layer_name}: {path}")
     df = pd.read_parquet(path)
     coords = np.array(df.columns, dtype=int)
     return df, coords

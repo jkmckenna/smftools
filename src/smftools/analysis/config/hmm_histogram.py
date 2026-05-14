@@ -26,77 +26,73 @@ Per-entry fields
 _NONE = None
 
 HISTOGRAM_CONFIGS: dict[str, dict[str, dict | None]] = {
-
     "C_all_accessible_features_merged": {
         "count": _NONE,
         "size": {
-            "bin_size_bp":       5,
+            "bin_size_bp": 5,
             "rolling_window_bp": 20,
-            "peak_kwargs":  {"height": 0.15, "distance": 4, "prominence": 0.10},
+            "peak_kwargs": {"height": 0.15, "distance": 4, "prominence": 0.10},
             "rolling_color": "#333333",
-            "peak_color":    "#d62728",
+            "peak_color": "#d62728",
         },
         "neighbor_distance": {
-            "bin_size_bp":       5,
+            "bin_size_bp": 5,
             "rolling_window_bp": 20,
-            "peak_kwargs":  {"height": 0.15, "distance": 10, "prominence": 0.10},
+            "peak_kwargs": {"height": 0.15, "distance": 10, "prominence": 0.10},
             "rolling_color": "#333333",
-            "peak_color":    "#d62728",
+            "peak_color": "#d62728",
         },
     },
-
     "C_all_footprint_features": {
         "count": _NONE,
         "size": {
-            "bin_size_bp":       5,
+            "bin_size_bp": 5,
             "rolling_window_bp": 20,
-            "peak_kwargs":  {"height": 0.15, "distance": 4, "prominence": 0.10},
+            "peak_kwargs": {"height": 0.15, "distance": 4, "prominence": 0.10},
             "rolling_color": "#333333",
-            "peak_color":    "#d62728",
+            "peak_color": "#d62728",
         },
         "neighbor_distance": {
-            "bin_size_bp":       5,
+            "bin_size_bp": 5,
             "rolling_window_bp": 20,
-            "peak_kwargs":  {"height": 0.15, "distance": 4, "prominence": 0.10},
+            "peak_kwargs": {"height": 0.15, "distance": 4, "prominence": 0.10},
             "rolling_color": "#333333",
-            "peak_color":    "#d62728",
+            "peak_color": "#d62728",
         },
     },
-
     "C_nucleosome_depleted_region_merged": {
         "count": _NONE,
         "size": {
-            "bin_size_bp":       5,
+            "bin_size_bp": 5,
             "rolling_window_bp": 20,
-            "peak_kwargs":  {"height": 0.15, "distance": 4, "prominence": 0.10},
+            "peak_kwargs": {"height": 0.15, "distance": 4, "prominence": 0.10},
             "rolling_color": "#333333",
-            "peak_color":    "#d62728",
+            "peak_color": "#d62728",
         },
         "neighbor_distance": {
-            "bin_size_bp":       5,
+            "bin_size_bp": 5,
             "rolling_window_bp": 20,
-            "peak_kwargs":  {"height": 0.15, "distance": 10, "prominence": 0.10},
+            "peak_kwargs": {"height": 0.15, "distance": 10, "prominence": 0.10},
             "rolling_color": "#333333",
-            "peak_color":    "#d62728",
+            "peak_color": "#d62728",
         },
     },
-
     "C_putative_nucleosome": {
         "count": _NONE,
         "size": {
-            "bin_size_bp":       5,
+            "bin_size_bp": 5,
             "rolling_window_bp": 20,
-            "peak_kwargs":  {"height": 0.15, "distance": 10, "prominence": 0.10},
+            "peak_kwargs": {"height": 0.15, "distance": 10, "prominence": 0.10},
             "rolling_color": "#333333",
-            "peak_color":    "#d62728",
+            "peak_color": "#d62728",
         },
         "neighbor_distance": {
-            "bin_size_bp":       5,
+            "bin_size_bp": 5,
             "rolling_window_bp": 20,
-            "peak_kwargs":  {"height": 0.15, "distance": 10, "prominence": 0.10},
+            "peak_kwargs": {"height": 0.15, "distance": 10, "prominence": 0.10},
             "rolling_color": "#333333",
-            "peak_color":    "#d62728",
-            "gaussian_fit":  {"fit_range_bp": (0, 300), "fit_color": "#1f77b4"},
+            "peak_color": "#d62728",
+            "gaussian_fit": {"fit_range_bp": (0, 300), "fit_color": "#1f77b4"},
         },
     },
 }

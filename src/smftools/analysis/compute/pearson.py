@@ -28,10 +28,10 @@ def nan_pearson_matrix(X: np.ndarray) -> np.ndarray:
     """
     with np.errstate(invalid="ignore"):
         col_mean = np.nanmean(X, axis=0)
-        Xc  = X - col_mean
+        Xc = X - col_mean
         Xc0 = np.nan_to_num(Xc, nan=0.0)
         cov = Xc0.T @ Xc0
-        col_norm = np.sqrt((Xc0 ** 2).sum(axis=0))
+        col_norm = np.sqrt((Xc0**2).sum(axis=0))
         denom = col_norm[:, None] * col_norm[None, :]
         with np.errstate(divide="ignore", invalid="ignore"):
             mat = np.where(denom != 0.0, cov / denom, np.nan)

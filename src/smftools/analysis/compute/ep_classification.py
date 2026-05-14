@@ -19,15 +19,15 @@ add_ep_obs_columns     Add Promoter/Enhancer class and open/closed bool columns 
 
 from __future__ import annotations
 
+import anndata as ad
 import numpy as np
 import pandas as pd
-import anndata as ad
 
 DEFAULT_PATCH_LAYERS = [
     ("GpC_nucleosome_depleted_region_merged_lengths", "NDR"),
-    ("GpC_large_accessible_patch_merged_lengths",     "Large"),
-    ("GpC_mid_accessible_patch_merged_lengths",       "Mid"),
-    ("GpC_small_accessible_patch_merged_lengths",     "Small"),
+    ("GpC_large_accessible_patch_merged_lengths", "Large"),
+    ("GpC_mid_accessible_patch_merged_lengths", "Mid"),
+    ("GpC_small_accessible_patch_merged_lengths", "Small"),
 ]
 CATEGORIES = ["NDR", "Large", "Mid", "Small", "None"]
 

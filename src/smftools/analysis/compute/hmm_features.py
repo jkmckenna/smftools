@@ -43,14 +43,14 @@ def extract_intervals_from_row(
 
     padded = np.concatenate(([False], binary, [False]))
     starts = np.flatnonzero(~padded[:-1] & padded[1:])
-    ends   = np.flatnonzero( padded[:-1] & ~padded[1:]) - 1
+    ends = np.flatnonzero(padded[:-1] & ~padded[1:]) - 1
 
     sizes: list[int] = []
     centers: list[float] = []
 
     for start_idx, end_idx in zip(starts, ends):
         start_bp = float(coords[start_idx])
-        end_bp   = float(coords[end_idx])
+        end_bp = float(coords[end_idx])
 
         if full_row is not None and full_coords is not None:
             s_match = np.flatnonzero(full_coords == start_bp)
@@ -71,7 +71,5 @@ def extract_intervals_from_row(
         sizes.append(int(round(end_bp - start_bp + 1.0)))
         centers.append((start_bp + end_bp) / 2.0)
 
-    neighbor_dists = (
-        np.diff(np.asarray(centers, dtype=float)).tolist() if len(centers) > 1 else []
-    )
+    neighbor_dists = np.diff(np.asarray(centers, dtype=float)).tolist() if len(centers) > 1 else []
     return sizes, neighbor_dists

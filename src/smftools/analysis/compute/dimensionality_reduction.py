@@ -79,15 +79,8 @@ def make_features_acf(
 
     ac_rows: list[np.ndarray] = []
     for row in mat:
-        ac, _ = binary_autocorrelation_with_spacing(
-            row, pos, max_lag=max_lag, return_counts=True
-        )
-        ac_s = (
-            pd.Series(ac)
-            .rolling(window, min_periods=1, center=True)
-            .mean()
-            .to_numpy()
-        )
+        ac, _ = binary_autocorrelation_with_spacing(row, pos, max_lag=max_lag, return_counts=True)
+        ac_s = pd.Series(ac).rolling(window, min_periods=1, center=True).mean().to_numpy()
         ac_s = np.where(np.isnan(ac_s), 0.0, ac_s)
         ac_rows.append(ac_s)
 
@@ -119,11 +112,11 @@ def run_pipeline(
     (X_pca, X_umap, clusters) or None if too few reads.
     """
     try:
-        from sklearn.decomposition import PCA
-        from sklearn.neighbors import NearestNeighbors
-        import umap as umap_lib
         import igraph as ig
         import leidenalg
+        import umap as umap_lib
+        from sklearn.decomposition import PCA
+        from sklearn.neighbors import NearestNeighbors
     except ImportError as e:
         raise ImportError(
             f"dimensionality_reduction.run_pipeline requires sklearn, umap-learn, "
@@ -139,8 +132,10 @@ def run_pipeline(
 
     X_pca = PCA(n_components=n_pcs, random_state=random_state).fit_transform(feat)
     X_umap = umap_lib.UMAP(
-        n_neighbors=k, n_components=2,
-        random_state=random_state, min_dist=0.3,
+        n_neighbors=k,
+        n_components=2,
+        random_state=random_state,
+        min_dist=0.3,
     ).fit_transform(X_pca)
 
     nn = NearestNeighbors(n_neighbors=k + 1)
@@ -150,8 +145,10 @@ def run_pipeline(
     g = ig.Graph(n=n_reads, edges=edges, directed=False)
     g.simplify()
     partition = leidenalg.find_partition(
-        g, leidenalg.RBConfigurationVertexPartition,
-        resolution_parameter=leiden_resolution, seed=random_state,
+        g,
+        leidenalg.RBConfigurationVertexPartition,
+        resolution_parameter=leiden_resolution,
+        seed=random_state,
     )
     clusters = np.array(partition.membership)
 

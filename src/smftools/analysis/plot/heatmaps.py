@@ -7,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -43,7 +44,8 @@ def plot_pearson_heatmap(
         mat,
         aspect="auto",
         cmap=cmap,
-        vmin=-1, vmax=1,
+        vmin=-1,
+        vmax=1,
         origin="upper",
         interpolation="none",
     )
