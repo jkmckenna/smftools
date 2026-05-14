@@ -81,9 +81,10 @@ def load_layer(
 
     Returns
     -------
-    df     : DataFrame (n_reads × n_positions)
-             Index = obs_name; columns = str(int(TSS_coord)); values = float (NaN = no coverage)
-    coords : ndarray[int]  TSS-centred integer coordinates matching df.columns
+    tuple of (pd.DataFrame, np.ndarray)
+        DataFrame of shape (n_reads × n_positions) — index is obs_name, columns are
+        ``str(int(TSS_coord))``, values are float (NaN = no coverage) — and an
+        int array of TSS-centred coordinates matching the DataFrame columns.
     """
     path = cache_dir(cache_root, barcode, ref_strand) / f"{layer_name}.parquet"
     if not path.exists():
