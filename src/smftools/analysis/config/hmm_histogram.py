@@ -19,8 +19,8 @@ Per-entry fields
   peak_kwargs        : dict | None  kwargs for scipy.signal.find_peaks on [0,1]-normalised curve
   rolling_color      : str          matplotlib color for rolling mean line
   peak_color         : str          matplotlib color for peak annotations
-  gaussian_fit       : dict | None  if present, fit a Gaussian to a bp-range subset
-                                    fields: fit_range_bp (tuple), fit_color (str)
+  gaussian_fit       : dict | None  if present, fit a Gaussian to a bp-range
+      subset; fields are ``fit_range_bp`` (tuple) and ``fit_color`` (str).
 """
 
 _NONE = None

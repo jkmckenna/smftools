@@ -56,9 +56,10 @@ def build_obs_mask(
     ref_strand     : keep reads mapped to this reference strand.
     demux_type     : keep reads with this demux_type (e.g. "double").
     wt_ref_strands : if ref_strand is in this list, apply the CIGAR deletion filter.
-    max_cigar_del  : maximum allowed single deletion in the CIGAR string (bp).
-                     Applied only when ref_strand is in wt_ref_strands.
-                     Use to exclude enh-del allele reads misassigned to the WT reference.
+    max_cigar_del : int, optional
+        Maximum allowed single deletion in the CIGAR string (bp). Applied only
+        when ref_strand is in wt_ref_strands. Use to exclude enh-del allele
+        reads misassigned to the WT reference.
     extra_eq       : additional equality filters: {column: value}.
     barcode_col    : obs column for barcode identity.
     ref_strand_col : obs column for reference strand.
