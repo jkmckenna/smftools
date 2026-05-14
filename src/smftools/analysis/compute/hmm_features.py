@@ -1,11 +1,10 @@
 """
-hmm_features.py — Interval extraction from binary HMM feature layers.
+Interval extraction from binary HMM feature layers.
 
-Functions
----------
-extract_intervals_from_row   Sizes and neighbor distances for one read's binary HMM row.
+Key function: :func:`extract_intervals_from_row` — returns interval sizes and
+neighbor center-to-center distances for one read's binary HMM row.
 
-Position masking functions live in smftools.analysis.filters.position_filters.
+Position masking utilities live in :mod:`smftools.analysis.filters.position_filters`.
 """
 
 from __future__ import annotations
@@ -25,17 +24,22 @@ def extract_intervals_from_row(
 
     Parameters
     ----------
-    row       : 1-D float/int array within the analysis window (0/1/NaN).
-    coords    : TSS-centred bp coordinates matching row.
-    full_row  : optional — the full-locus row used to clip partial-boundary features.
-    full_coords : coordinates for full_row.
-    max_mask_overlap_frac : features where more than this fraction lies outside the
-                            analysis window (as determined via full_row) are dropped.
+    row : np.ndarray
+        1-D float/int array within the analysis window (0/1/NaN).
+    coords : np.ndarray
+        TSS-centred bp coordinates matching row.
+    full_row : np.ndarray, optional
+        Full-locus row used to clip partial-boundary features.
+    full_coords : np.ndarray, optional
+        Coordinates for full_row.
+    max_mask_overlap_frac : float
+        Features where more than this fraction lies outside the analysis window
+        (as determined via full_row) are dropped.
 
     Returns
     -------
-    sizes_bp               : list of interval lengths in bp
-    neighbor_center_dists  : list of center-to-center distances between adjacent intervals
+    tuple of (list of int, list of float)
+        Interval lengths in bp and center-to-center distances between adjacent intervals.
     """
     binary = np.asarray(row > 0, dtype=bool)
     if binary.size == 0 or not np.any(binary):

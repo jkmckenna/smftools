@@ -1,20 +1,14 @@
 """
-hmm_ep_classification.py — Enhancer/promoter NDR state classification per read.
+Enhancer/promoter NDR state classification per read.
 
 Classifies each read's chromatin state at two genomic anchor positions (typically
-TSS = 0 and enhancer peak) by checking HMM feature layers in priority order.
+TSS = 0 and enhancer peak) by checking HMM feature layers in priority order:
+``GpC_nucleosome_depleted_region_merged_lengths`` (NDR),
+``GpC_large_accessible_patch_merged_lengths`` (Large),
+``GpC_mid_accessible_patch_merged_lengths`` (Mid),
+``GpC_small_accessible_patch_merged_lengths`` (Small), or None.
 
-Priority order (highest to lowest):
-    GpC_nucleosome_depleted_region_merged_lengths  → NDR
-    GpC_large_accessible_patch_merged_lengths      → Large
-    GpC_mid_accessible_patch_merged_lengths        → Mid
-    GpC_small_accessible_patch_merged_lengths      → Small
-    (none of the above)                            → None
-
-Functions
----------
-classify_position      Classify all reads at one genomic anchor for one reference.
-add_ep_obs_columns     Add Promoter/Enhancer class and open/closed bool columns to adata.obs.
+Key functions: :func:`classify_position`, :func:`add_ep_obs_columns`.
 """
 
 from __future__ import annotations
@@ -44,17 +38,23 @@ def classify_position(
 
     Parameters
     ----------
-    adata       : AnnData with layers named in patch_layers and var column
-                  f"{ref_strand}_reindexed".
-    ref_strand  : e.g. "6B6_top" — used to find the reindexed coord column.
-    target_bp   : TSS-centred bp coordinate of the anchor (e.g. 0 for TSS, -1690 for enhancer).
-    patch_layers: priority-ordered list of (layer_name, class_label) tuples.
-    ref_obs_col : obs column that identifies which reference a read mapped to.
+    adata : AnnData
+        AnnData with layers named in patch_layers and var column
+        ``{ref_strand}_reindexed``.
+    ref_strand : str
+        e.g. ``"6B6_top"`` — used to find the reindexed coordinate column.
+    target_bp : float
+        TSS-centred bp coordinate of the anchor (e.g. 0 for TSS, -1690 for enhancer).
+    patch_layers : list
+        Priority-ordered list of ``(layer_name, class_label)`` tuples.
+    ref_obs_col : str
+        obs column that identifies which reference a read mapped to.
 
     Returns
     -------
-    classes : object array of length n_obs; values in CATEGORIES.
-              Reads not assigned to this ref_strand remain "None".
+    np.ndarray
+        Object array of length n_obs; values in CATEGORIES.
+        Reads not assigned to this ref_strand remain ``"None"``.
     """
     reindex = pd.to_numeric(adata.var[f"{ref_strand}_reindexed"], errors="coerce").to_numpy()
     pos_idx = int(np.argmin(np.abs(reindex - target_bp)))
@@ -87,14 +87,19 @@ def add_ep_obs_columns(
 
     Parameters
     ----------
-    adata             : AnnData to annotate (modified in-place).
-    references        : list of ref_strand values to classify (e.g. ["6B6_top", "6BALB_cJ_top"]).
-    tss_position      : TSS anchor in TSS-centred bp coordinates (default 0).
-    enhancer_position : enhancer anchor in TSS-centred bp (default -1690).
+    adata : AnnData
+        AnnData to annotate (modified in-place).
+    references : list of str
+        ref_strand values to classify (e.g. ``["6B6_top", "6BALB_cJ_top"]``).
+    tss_position : float
+        TSS anchor in TSS-centred bp coordinates (default 0).
+    enhancer_position : float
+        Enhancer anchor in TSS-centred bp (default -1690).
 
     Returns
     -------
-    adata with four new obs columns added.
+    AnnData
+        Input adata with four new obs columns added.
     """
     n = adata.n_obs
     promoter_class = np.full(n, "None", dtype=object)

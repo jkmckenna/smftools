@@ -1,31 +1,28 @@
 """
-read_cache.py — Reader utilities for the per-read modification matrix cache.
+Reader utilities for the per-read modification matrix cache.
 
 The cache stores pre-materialised, obs-filtered modification matrices as parquet
 files so that analysis scripts can load data without re-reading the full HMM h5ad.
 
-Directory layout (relative to cache_root)
-------------------------------------------
+Cache directory layout (relative to ``cache_root``)::
+
     var_info/
-        <ref_strand>_var_info.parquet   # int TSS_coord (index), C_site, GpC_site (bool)
+        <ref_strand>_var_info.parquet
     <barcode>_<ref_strand>/
-        obs_metadata.parquet            # obs_name (index), all adata.obs cols + max_cigar_del
-        <layer_name>.parquet            # obs_name (index), str(TSS_coord) columns, float values
+        obs_metadata.parquet
+        <layer_name>.parquet
 
-Column naming: parquet columns are str(int(TSS_coord)), e.g. "-1690", "0", "500".
-Cast back to int with:  np.array(df.columns, dtype=int)
+Parquet columns are ``str(int(TSS_coord))`` (e.g. ``"-1690"``, ``"0"``).
+Cast back to int with ``np.array(df.columns, dtype=int)``.
 
-Usage
------
-    from tools.read_cache import load_layer, load_var_info
+Example::
+
+    from smftools.analysis.compute.read_cache import load_layer, load_var_info
 
     df, coords = load_layer(cache_root, "NB01", "6B6_top", "C_site_binary")
     var_info   = load_var_info(cache_root, "6B6_top")
-
-    c_mask   = var_info["C_site"].to_numpy()
-    span_mask = (var_info.index.to_numpy() >= -1490) & (var_info.index.to_numpy() <= -125)
-    keep_cols = [str(c) for c in var_info.index[c_mask & span_mask]]
-    mat       = df[keep_cols].to_numpy()
+    keep_cols  = [str(c) for c in var_info.index[var_info["C_site"].to_numpy()]]
+    mat        = df[keep_cols].to_numpy()
 """
 
 from __future__ import annotations
@@ -84,9 +81,10 @@ def load_layer(
 
     Returns
     -------
-    df     : DataFrame (n_reads × n_positions)
-             Index = obs_name; columns = str(int(TSS_coord)); values = float (NaN = no coverage)
-    coords : ndarray[int]  TSS-centred integer coordinates matching df.columns
+    tuple of (pd.DataFrame, np.ndarray)
+        DataFrame of shape (n_reads × n_positions) — index is obs_name, columns are
+        ``str(int(TSS_coord))``, values are float (NaN = no coverage) — and an
+        int array of TSS-centred coordinates matching the DataFrame columns.
     """
     path = cache_dir(cache_root, barcode, ref_strand) / f"{layer_name}.parquet"
     if not path.exists():
