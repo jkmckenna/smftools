@@ -27,13 +27,6 @@ def call_hmm_peaks(
     Writes:
       - adata.uns["{layer}_{ref}_peak_centers"] = list of centers
       - adata.var["{layer}_{ref}_peak_{center}"] boolean window masks
-      - adata.obs per-read summaries for each peak window:
-            mean_{layer}_{ref}_around_{center}
-            sum_{layer}_{ref}_around_{center}
-            {layer}_{ref}_present_at_{center} (bool)
-        and per site-type:
-            sum_{layer}_{site}_{ref}_around_{center}
-            mean_{layer}_{site}_{ref}_around_{center}
       - adata.var["is_in_any_{layer}_peak_{ref}"]
       - adata.var["is_in_any_peak"] (global)
     """
@@ -126,7 +119,6 @@ def call_hmm_peaks(
             min_distance = max(1, int(config.get("min_distance", 200)))
             peak_width = max(1, int(config.get("peak_width", 200)))
             peak_prom = float(config.get("peak_prominence", 0.2))
-            peak_threshold = float(config.get("peak_threshold", 0.8))
             rolling_window = max(1, int(config.get("rolling_window", 1)))
 
             for layer_name in candidates:
@@ -210,92 +202,17 @@ def call_hmm_peaks(
                     fig.tight_layout()
                     plt.show()
 
-                # Collect new obs columns; assign once per layer/ref
-                new_obs_cols: Dict[str, np.ndarray] = {}
                 feature_peak_cols = []
 
                 for center in np.asarray(peak_centers).tolist():
                     start = center - peak_width // 2
                     end = center + peak_width // 2
 
-                    # var window mask
                     colname = f"{layer_name}_{ref}_peak_{center}"
                     feature_peak_cols.append(colname)
                     all_peak_var_cols.append(colname)
                     peak_mask = (coordinates >= start) & (coordinates <= end)
                     adata.var[colname] = peak_mask
-
-                    # feature-layer summaries for reads in this ref
-                    region = matrix[:, peak_mask]  # (n_ref, n_window)
-
-                    mean_col = f"mean_{layer_name}_{ref}_around_{center}"
-                    sum_col = f"sum_{layer_name}_{ref}_around_{center}"
-                    present_col = f"{layer_name}_{ref}_present_at_{center}"
-
-                    for nm, default, dt in (
-                        (mean_col, np.nan, float),
-                        (sum_col, 0.0, float),
-                        (present_col, False, bool),
-                    ):
-                        if nm not in new_obs_cols:
-                            new_obs_cols[nm] = np.full(adata.n_obs, default, dtype=dt)
-
-                    if region.shape[1] > 0:
-                        means_per_read = np.nanmean(region, axis=1)
-                        sums_per_read = np.nansum(region, axis=1)
-                    else:
-                        means_per_read = np.full(matrix.shape[0], np.nan, dtype=float)
-                        sums_per_read = np.zeros(matrix.shape[0], dtype=float)
-
-                    new_obs_cols[mean_col][ref_mask] = means_per_read
-                    new_obs_cols[sum_col][ref_mask] = sums_per_read
-                    new_obs_cols[present_col][ref_mask] = (
-                        np.nan_to_num(means_per_read, nan=0.0) > peak_threshold
-                    )
-
-                    # site-type summaries from adata.X, not an AnnData view
-                    Xmat = adata.X
-                    for site_type in site_types:
-                        mask_key = f"{ref}_{site_type}_site"
-                        if mask_key not in adata.var:
-                            continue
-
-                        site_mask = adata.var[mask_key].values.astype(bool)
-                        if not site_mask.any():
-                            continue
-
-                        site_coords = coordinates[site_mask]
-                        site_region_mask = (site_coords >= start) & (site_coords <= end)
-                        sum_site_col = f"sum_{layer_name}_{site_type}_{ref}_around_{center}"
-                        mean_site_col = f"mean_{layer_name}_{site_type}_{ref}_around_{center}"
-
-                        if sum_site_col not in new_obs_cols:
-                            new_obs_cols[sum_site_col] = np.zeros(adata.n_obs, dtype=float)
-                        if mean_site_col not in new_obs_cols:
-                            new_obs_cols[mean_site_col] = np.full(adata.n_obs, np.nan, dtype=float)
-
-                        if not site_region_mask.any():
-                            continue
-
-                        full_mask = np.zeros_like(site_mask, dtype=bool)
-                        full_mask[site_mask] = site_region_mask
-
-                        if issparse(Xmat):
-                            site_region = Xmat[ref_mask][:, full_mask]
-                            site_region = site_region.toarray()
-                        else:
-                            Xnp = np.asarray(Xmat)
-                            site_region = Xnp[np.asarray(ref_mask), :][:, np.asarray(full_mask)]
-
-                        if site_region.shape[1] > 0:
-                            new_obs_cols[sum_site_col][ref_mask] = np.nansum(site_region, axis=1)
-                            new_obs_cols[mean_site_col][ref_mask] = np.nanmean(site_region, axis=1)
-
-                # one-shot assignment to avoid fragmentation
-                if new_obs_cols:
-                    adata.obs = adata.obs.assign(
-                        **{k: pd.Series(v, index=adata.obs.index) for k, v in new_obs_cols.items()}
-                    )
 
                 # per (layer, ref) any-peak
                 any_col = f"is_in_any_{layer_name}_peak_{ref}"
