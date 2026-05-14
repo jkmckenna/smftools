@@ -1,26 +1,11 @@
 """
-hmm_histogram.py — Per-feature-type binning, rolling mean, and peak-calling
-config for HMM feature histograms.
+Per-feature-type binning, rolling-mean, and peak-calling config for HMM feature histograms.
 
-Structure
----------
-HISTOGRAM_CONFIGS[feature_layer_name][hist_type] → dict or None
+``HISTOGRAM_CONFIGS[feature_layer_name][hist_type]`` returns a dict or ``None``.
 
-hist_type keys
---------------
-  "count"             — features-per-read histogram
-  "size"              — feature size histogram (bp)
-  "neighbor_distance" — neighbor center-to-center distance histogram (bp)
-
-Per-entry fields
-----------------
-  bin_size_bp        : int | None   bin width in bp; None → sqrt(n) bins
-  rolling_window_bp  : int | None   smoothing window for centered rolling mean
-  peak_kwargs        : dict | None  kwargs for scipy.signal.find_peaks on [0,1]-normalised curve
-  rolling_color      : str          matplotlib color for rolling mean line
-  peak_color         : str          matplotlib color for peak annotations
-  gaussian_fit       : dict | None  if present, fit a Gaussian to a bp-range
-      subset; fields are ``fit_range_bp`` (tuple) and ``fit_color`` (str).
+``hist_type`` is one of ``"count"``, ``"size"``, or ``"neighbor_distance"``.
+Each dict may contain ``bin_size_bp``, ``rolling_window_bp``, ``peak_kwargs``,
+``rolling_color``, ``peak_color``, and optionally ``gaussian_fit``.
 """
 
 _NONE = None

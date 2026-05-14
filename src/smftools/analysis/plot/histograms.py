@@ -41,9 +41,10 @@ def plot_interval_histogram(
     xlabel       : x-axis label.
     color        : bar fill color.
     integer_bins : one bar per integer value (for count histograms).
-    hist_config  : dict from ``smftools.analysis.config.hmm_histogram.HISTOGRAM_CONFIGS``
-                   ``[layer][hist_type]``. Keys: ``bin_size_bp``, ``rolling_window_bp``,
-                   ``peak_kwargs``, ``rolling_color``, ``peak_color``.
+    hist_config : dict, optional
+        Config from ``smftools.analysis.config.hmm_histogram.HISTOGRAM_CONFIGS``
+        ``[layer][hist_type]``. Keys: ``bin_size_bp``, ``rolling_window_bp``,
+        ``peak_kwargs``, ``rolling_color``, ``peak_color``.
     """
     fig, ax = plt.subplots(figsize=figsize)
 
