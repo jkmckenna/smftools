@@ -36,7 +36,7 @@ def rolling_smooth(arr: np.ndarray, win: int = 25) -> np.ndarray:
 
 def plot_autocorr_overlay(
     summary_df: pd.DataFrame,
-    ref_strand: str,
+    ref_strand: str | None,
     output_path: Path,
     group_col: str = "cell_type",
     group_order: list[str] | None = None,
@@ -50,17 +50,19 @@ def plot_autocorr_overlay(
     figsize: tuple[float, float] = (5.5, 2.5),
 ) -> None:
     """
-    Plot per-group mean ± SEM autocorrelation curves for one reference strand.
+    Plot per-group mean ± SEM autocorrelation curves.
 
     Parameters
     ----------
     summary_df   : DataFrame with columns reference_strand, <group_col>, curve_csv.
-    ref_strand   : filter summary_df to this Reference_strand value.
+    ref_strand   : filter summary_df to this reference_strand value.
+        Pass ``None`` to include all rows (e.g. when groups already encode the
+        reference distinction via ``group_col``).
     group_order  : order to plot groups; defaults to unique values in group_col.
     group_colors : {group_value: color}; defaults to matplotlib tab10.
     group_labels : {group_value: display_label}.
     """
-    sub = summary_df[summary_df["reference_strand"] == ref_strand]
+    sub = summary_df if ref_strand is None else summary_df[summary_df["reference_strand"] == ref_strand]
     groups = group_order or sorted(sub[group_col].unique())
     colors = group_colors or {}
     labels = group_labels or {}
@@ -112,7 +114,7 @@ def plot_autocorr_overlay(
 
 def plot_ls_overlay(
     summary_df: pd.DataFrame,
-    ref_strand: str,
+    ref_strand: str | None,
     output_path: Path,
     group_col: str = "cell_type",
     group_order: list[str] | None = None,
@@ -125,12 +127,15 @@ def plot_ls_overlay(
     dpi: int = 300,
     figsize: tuple[float, float] = (3.5, 2.5),
 ) -> None:
-    """Plot mean ± SEM Lomb-Scargle spectra for one reference strand."""
-    sub = summary_df[
-        (summary_df["reference_strand"] == ref_strand)
-        & summary_df["ls_spectrum_csv"].notna()
-        & (summary_df["ls_spectrum_csv"] != "")
-    ]
+    """Plot mean ± SEM Lomb-Scargle spectra.
+
+    Parameters
+    ----------
+    ref_strand : str or None
+        Filter to this reference strand value, or ``None`` to include all rows.
+    """
+    base = summary_df if ref_strand is None else summary_df[summary_df["reference_strand"] == ref_strand]
+    sub = base[base["ls_spectrum_csv"].notna() & (base["ls_spectrum_csv"] != "")]
     groups = group_order or sorted(sub[group_col].unique())
     colors = group_colors or {}
     labels = group_labels or {}
