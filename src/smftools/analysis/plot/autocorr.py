@@ -1,8 +1,9 @@
 """
-autocorr.py — ACF overlay, LS periodogram, and paired barplot rendering.
+autocorr.py — ACF overlay, LS periodogram, paired barplot, and metric histogram rendering.
 
-All functions read summary CSVs produced by a compute pass and write figures.
-Project-specific values (colors, labels, reference ordering) are passed as parameters.
+All functions read summary CSVs (or DataFrames) produced by a compute pass and write
+figures. Project-specific values (colors, labels, reference ordering) are passed as
+parameters.
 """
 
 from __future__ import annotations
@@ -285,6 +286,95 @@ def plot_metric_barplot_paired(
         loc="center left",
         bbox_to_anchor=(1.02, 0.5),
         borderaxespad=0.0,
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0))
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_metric_histogram(
+    df: pd.DataFrame,
+    metric_key: str,
+    output_path: Path,
+    group_col: str = "cell_type",
+    group_order: list[str] | None = None,
+    group_colors: dict[str, str] | None = None,
+    group_labels: dict[str, str] | None = None,
+    ref_col: str | None = "reference_strand",
+    ref_strand: str | None = None,
+    ref_label: str = "",
+    xlabel: str = "",
+    title: str = "",
+    title_suffix: str = "",
+    bins: int | np.ndarray = 30,
+    xlim: tuple[float, float] | None = None,
+    vlines: list[float] | None = None,
+    dpi: int = 300,
+    figsize: tuple[float, float] = (4.5, 2.7),
+) -> None:
+    """
+    Overlaid per-group histograms (density-normalised) of a single-molecule metric.
+
+    Parameters
+    ----------
+    df         : DataFrame with one row per read, columns ``<metric_key>``,
+        ``<group_col>``, and optionally ``<ref_col>``.
+    metric_key : column to histogram, e.g. ``"ls_nrl_bp"``, ``"ls_snr"``,
+        ``"ls_peak_power"``.
+    ref_strand : if given (with ``ref_col``), filter to this reference_strand value.
+    vlines     : optional list of x positions to mark with dotted vertical lines
+        (e.g. an NRL search-band boundary).
+    """
+    sub = df.dropna(subset=[metric_key]).copy()
+    if ref_col is not None and ref_strand is not None and ref_col in sub.columns:
+        sub = sub[sub[ref_col] == ref_strand]
+    if sub.empty:
+        return
+
+    groups = group_order or sorted(sub[group_col].unique())
+    colors = group_colors or {}
+    labels = group_labels or {}
+
+    vals_all = sub[metric_key].to_numpy(dtype=float)
+    if isinstance(bins, int):
+        lo, hi = (xlim if xlim is not None else (np.nanmin(vals_all), np.nanmax(vals_all)))
+        bin_edges = np.linspace(lo, hi, bins + 1)
+    else:
+        bin_edges = bins
+
+    fig, ax = plt.subplots(figsize=figsize)
+    cmap = plt.colormaps["tab10"]
+    for i, grp in enumerate(groups):
+        vals = sub.loc[sub[group_col] == grp, metric_key].to_numpy(dtype=float)
+        if not vals.size:
+            continue
+        color = colors.get(grp, cmap(i % 10))
+        label = f"{labels.get(grp, str(grp))} (n={vals.size})"
+        ax.hist(
+            vals, bins=bin_edges, density=True, histtype="stepfilled",
+            color=color, alpha=0.15, zorder=1,
+        )
+        ax.hist(
+            vals, bins=bin_edges, density=True, histtype="step",
+            color=color, linewidth=1.4, label=label, zorder=2,
+        )
+
+    for x in vlines or []:
+        ax.axvline(x, color="#777777", linewidth=0.6, linestyle=":")
+
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+    ax.set_xlabel(xlabel or metric_key, fontsize=9)
+    ax.set_ylabel("Density", fontsize=9)
+    full_title = title or f"{ref_label} {metric_key}".strip()
+    if title_suffix:
+        full_title += f"\n{title_suffix}"
+    if full_title:
+        ax.set_title(full_title, fontsize=9)
+    ax.tick_params(labelsize=8)
+    ax.grid(alpha=0.15)
+    ax.legend(
+        fontsize=7, frameon=False, loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0
     )
     fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0))
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")

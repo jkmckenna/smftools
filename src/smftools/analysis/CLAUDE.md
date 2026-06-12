@@ -22,7 +22,7 @@ smftools/analysis/
 
 | Module | Key public functions |
 |---|---|
-| `autocorrelation` | `binary_autocorrelation_with_spacing()`, `weighted_mean_autocorr()`, `compute_replicate_curve()` |
+| `autocorrelation` | `binary_autocorrelation_with_spacing()`, `weighted_mean_autocorr()`, `compute_replicate_curve()`, `compute_single_molecule_periodicity()` |
 | `pearson` | `nan_pearson_matrix()`, `make_ticks()` |
 | `hmm_features` | `extract_intervals_from_row()` |
 | `ep_classification` | `classify_position()`, `add_ep_obs_columns()` |
@@ -36,7 +36,7 @@ smftools/analysis/
 |---|---|
 | `heatmaps` | `plot_pearson_heatmap()` |
 | `histograms` | `plot_interval_histogram()`, `gaussian_fit_plot()` |
-| `autocorr` | `plot_autocorr_overlay()`, `plot_ls_overlay()`, `plot_metric_barplot_paired()` |
+| `autocorr` | `plot_autocorr_overlay()`, `plot_ls_overlay()`, `plot_metric_barplot_paired()`, `plot_metric_histogram()` |
 | `locus` | `plot_locus_map()` — planned |
 
 ### `filters/` modules
