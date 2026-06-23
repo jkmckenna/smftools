@@ -65,20 +65,11 @@ def plot_embedding_scatter(
 
     Parameters
     ----------
-    df : DataFrame
-        DataFrame containing x_col, y_col, color_col.
-    color_map : dict or None
-        Category -> hex colour. Categories not present are auto-assigned
-        from a tab10 cycle.
-    color_labels : dict or None
-        Category -> display label for the legend.
-    color_order : list or None
-        Explicit category order for plotting/legend (default: order of
-        first appearance in df[color_col]).
-    marginal_density : bool
-        If True, add 1D KDE marginal panels above (x_col) and to the
-        right (y_col) of the scatter, one curve per category in
-        color_col, each normalised to a probability density.
+    df               : DataFrame containing x_col, y_col, color_col.
+    color_map        : category -> hex colour; missing categories auto-assigned from tab10.
+    color_labels     : category -> display label for the legend.
+    color_order      : explicit category order for plotting/legend (default: first appearance).
+    marginal_density : if True, add 1D KDE marginal panels per category alongside the scatter.
     """
     color_map = dict(color_map or {})
     color_labels = color_labels or {}
@@ -352,13 +343,9 @@ def plot_cluster_composition_barplot(
 
     Parameters
     ----------
-    sample_order : list or None
-        Explicit bar order (default: order of first appearance).
-    cluster_order : list or None
-        Explicit stacking order (default: sorted unique values).
-    cluster_colors : dict or None
-        Cluster -> hex colour. Unspecified clusters are
-        auto-assigned from a tab10 cycle.
+    sample_order   : explicit bar order (default: order of first appearance).
+    cluster_order  : explicit stacking order (default: sorted unique values).
+    cluster_colors : cluster -> hex colour; unspecified clusters auto-assigned from tab10.
     """
     if sample_order is None:
         seen: set = set()
@@ -462,25 +449,12 @@ def plot_cluster_proportion_grouped_barplot(
 
     Parameters
     ----------
-    sample_order : list or None
-        Explicit bar order within each cluster group
-        (default: order of first appearance).
-    cluster_order : list or None
-        Explicit x-axis order (default: sorted unique values).
-    cell_type_colors : dict or None
-        Cell type -> hex colour. Unspecified cell types are
-        auto-assigned from a tab10 cycle.
-    cell_type_labels : dict or None
-        Cell type -> display label for the legend.
-    color_overrides : dict or None
-        Sample (``sample_col`` value) -> hex colour, taking
-        precedence over ``cell_type_colors`` for that bar.
-        Use to distinguish states (e.g. active/inactive)
-        that share a cell type.
-    color_override_labels : dict or None
-        Sample -> legend label, used in place of
-        ``cell_type_labels`` when ``color_overrides``
-        applies to that sample.
+    sample_order          : explicit bar order within each cluster group (default: first appearance).
+    cluster_order         : explicit x-axis order (default: sorted unique values).
+    cell_type_colors      : cell type -> hex colour; unspecified types auto-assigned from tab10.
+    cell_type_labels      : cell type -> display label for the legend.
+    color_overrides       : sample -> hex colour, overriding ``cell_type_colors`` for that bar.
+    color_override_labels : sample -> legend label, overriding ``cell_type_labels`` when colour is overridden.
     """
     from matplotlib.patches import Patch
 
@@ -627,13 +601,9 @@ def plot_explained_variance(
 
     Parameters
     ----------
-    explained_variance_ratio : np.ndarray
-        1D array from sklearn PCA.explained_variance_ratio_,
-        ordered PC1, PC2, ...
-    output_path : Path
-        PNG output path.
-    n_pcs_show : int
-        Number of leading PCs to plot.
+    explained_variance_ratio : 1D array from sklearn PCA.explained_variance_ratio_.
+    output_path              : PNG output path.
+    n_pcs_show               : number of leading PCs to plot.
     """
     evr = np.asarray(explained_variance_ratio)
     n_show = min(n_pcs_show, len(evr))

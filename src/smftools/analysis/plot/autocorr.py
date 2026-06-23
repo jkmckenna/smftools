@@ -55,17 +55,11 @@ def plot_autocorr_overlay(
 
     Parameters
     ----------
-    summary_df : DataFrame with columns reference_strand, <group_col>, curve_csv.
-    ref_strand : str or None
-        Filter summary_df to this reference_strand value.
-        Pass ``None`` to include all rows (e.g. when groups already encode the
-        reference distinction via ``group_col``).
-    group_order : list of str or None
-        Order to plot groups; defaults to unique values in group_col.
-    group_colors : dict or None
-        Mapping of {group_value: color}; defaults to matplotlib tab10.
-    group_labels : dict or None
-        Mapping of {group_value: display_label}.
+    summary_df   : DataFrame with columns reference_strand, ``group_col``, curve_csv.
+    ref_strand   : filter to this reference_strand value, or ``None`` for all rows.
+    group_order  : order to plot groups; defaults to unique values in group_col.
+    group_colors : {group_value: color}; defaults to matplotlib tab10.
+    group_labels : {group_value: display_label}.
     """
     sub = (
         summary_df
@@ -140,8 +134,7 @@ def plot_ls_overlay(
 
     Parameters
     ----------
-    ref_strand : str or None
-        Filter to this reference strand value, or ``None`` to include all rows.
+    ref_strand : filter to this reference strand value, or ``None`` for all rows.
     """
     base = (
         summary_df
@@ -329,17 +322,10 @@ def plot_metric_histogram(
 
     Parameters
     ----------
-    df : DataFrame
-        One row per read, columns ``<metric_key>``,
-        ``<group_col>``, and optionally ``<ref_col>``.
-    metric_key : str
-        Column to histogram, e.g. ``"ls_nrl_bp"``, ``"ls_snr"``,
-        ``"ls_peak_power"``.
-    ref_strand : str or None
-        If given (with ``ref_col``), filter to this reference_strand value.
-    vlines : list of float or None
-        X positions to mark with dotted vertical lines
-        (e.g. an NRL search-band boundary).
+    df         : DataFrame with one row per read; needs ``metric_key``, ``group_col``, and optionally ``ref_col``.
+    metric_key : column to histogram, e.g. ``"ls_nrl_bp"``, ``"ls_snr"``, ``"ls_peak_power"``.
+    ref_strand : if given (with ``ref_col``), filter to this reference_strand value.
+    vlines     : x positions to mark with dotted vertical lines (e.g. NRL search-band boundary).
     """
     sub = df.dropna(subset=[metric_key]).copy()
     if ref_col is not None and ref_strand is not None and ref_col in sub.columns:
