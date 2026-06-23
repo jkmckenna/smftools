@@ -4023,8 +4023,8 @@ def extract_base_identities(
     timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
 
     positions = set(positions)
-    fwd_base_identities = defaultdict(lambda: np.full(max_reference_length, "N", dtype="<U1"))
-    rev_base_identities = defaultdict(lambda: np.full(max_reference_length, "N", dtype="<U1"))
+    fwd_base_identities = defaultdict(lambda: np.full(max_reference_length, b"N", dtype="|S1"))
+    rev_base_identities = defaultdict(lambda: np.full(max_reference_length, b"N", dtype="|S1"))
     mismatch_counts_per_read = defaultdict(lambda: defaultdict(Counter))
     mismatch_base_identities = defaultdict(
         lambda: np.full(

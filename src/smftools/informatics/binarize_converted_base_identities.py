@@ -58,16 +58,16 @@ def binarize_converted_base_identities(
                 out[read_id] = np.full(len(bases), np.nan, dtype=np.float32)
                 continue
 
-            arr = np.asarray(bases, dtype="<U1")
+            arr = np.asarray(bases, dtype="|S1")
             res = np.full(arr.shape, np.nan, dtype=np.float32)
 
             if trend == "C->T":
                 # C (unconverted) -> 0, T (converted) -> 1
-                res[arr == "C"] = 0.0
-                res[arr == "T"] = 1.0
+                res[arr == b"C"] = 0.0
+                res[arr == b"T"] = 1.0
             else:  # "G->A"
-                res[arr == "G"] = 0.0
-                res[arr == "A"] = 1.0
+                res[arr == b"G"] = 0.0
+                res[arr == b"A"] = 1.0
 
             out[read_id] = res
 
@@ -75,10 +75,10 @@ def binarize_converted_base_identities(
 
     # Non-deaminase mapping (bisulfite-style for 5mC; 6mA mapping is protocol dependent)
     bin_maps = {
-        ("top", "5mC"): {"C": 1.0, "T": 0.0},
-        ("bottom", "5mC"): {"G": 1.0, "A": 0.0},
-        ("top", "6mA"): {"A": 1.0, "G": 0.0},
-        ("bottom", "6mA"): {"T": 1.0, "C": 0.0},
+        ("top", "5mC"): {b"C": 1.0, b"T": 0.0},
+        ("bottom", "5mC"): {b"G": 1.0, b"A": 0.0},
+        ("top", "6mA"): {b"A": 1.0, b"G": 0.0},
+        ("bottom", "6mA"): {b"T": 1.0, b"C": 0.0},
     }
     key = (strand, modification_type)
     if key not in bin_maps:
@@ -89,7 +89,7 @@ def binarize_converted_base_identities(
     base_map = bin_maps[key]
 
     for read_id, bases in base_identities.items():
-        arr = np.asarray(bases, dtype="<U1")
+        arr = np.asarray(bases, dtype="|S1")
         res = np.full(arr.shape, np.nan, dtype=np.float32)
         # mask-assign; unknown characters (N, -, etc.) remain NaN
         for b, v in base_map.items():
