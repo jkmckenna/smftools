@@ -3,9 +3,15 @@ embeddings.py — Scatter and density plots for 2D embeddings (PCA/UMAP).
 
 Functions
 ---------
-plot_embedding_scatter           Scatter plot of an embedding, coloured by a categorical column.
-plot_embedding_density_grid      Grid of per-category 2D KDE density panels over a shared extent.
-plot_cluster_composition_barplot Stacked barplot of per-sample cluster proportions.
+plot_embedding_scatter             Scatter plot of an embedding, coloured by a categorical column.
+plot_embedding_density_grid        Grid of per-category 2D KDE density panels over a shared extent.
+plot_cluster_composition_barplot   Stacked barplot of per-sample cluster proportions.
+plot_cluster_proportion_grouped_barplot
+                                    Grouped barplot (cluster on x-axis, one bar per sample
+                                    per cluster) with cell-type fill colours, WT/enh-del
+                                    hatching, and per-biorep points overlaid.
+plot_explained_variance           Scree plot of per-PC explained variance ratio with
+                                    cumulative explained variance overlaid.
 """
 
 from __future__ import annotations
@@ -346,10 +352,214 @@ def plot_cluster_composition_barplot(
     ax.set_ylabel("proportion of reads", fontsize=9)
     ax.set_ylim(0, 1)
     ax.tick_params(axis="y", labelsize=8)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
     if title:
         ax.set_title(title, fontsize=9)
     ax.legend(fontsize=7, frameon=False, loc="center left",
               bbox_to_anchor=(1.02, 0.5), borderaxespad=0, title="Leiden cluster", title_fontsize=7)
     fig.tight_layout(rect=(0, 0, 0.85, 1))
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_cluster_proportion_grouped_barplot(
+    df: pd.DataFrame,
+    sample_col: str,
+    cluster_col: str,
+    biorep_col: str,
+    cell_type_col: str,
+    output_path: Path,
+    sample_order: list | None = None,
+    cluster_order: list | None = None,
+    cluster_labels: dict | None = None,
+    cell_type_colors: dict | None = None,
+    cell_type_labels: dict | None = None,
+    color_overrides: dict | None = None,
+    color_override_labels: dict | None = None,
+    enh_del_keyword: str = "enh-del",
+    point_size: float = 14.0,
+    jitter: float = 0.06,
+    group_width: float = 0.8,
+    figsize: tuple[float, float] = (9.5, 4.5),
+    title: str = "",
+    dpi: int = 300,
+) -> None:
+    """
+    Single-axes grouped barplot of per-sample cluster proportions.
+
+    ``cluster_col`` categories form the x-axis; within each cluster, one bar
+    per category in ``sample_col`` is drawn side by side. Bar fill colour is
+    keyed off ``cell_type_col``; bars whose ``sample_col`` value contains
+    ``enh_del_keyword`` (case-insensitive) are drawn with a cross-hatch,
+    all others solid. For each bar, the height is the mean across
+    ``biorep_col`` of that biorep's proportion of reads in the cluster, with
+    individual biorep proportions overlaid as jittered points. A legend maps
+    cell-type colours and the solid/hatched (WT/enh-del) convention.
+
+    Parameters
+    ----------
+    sample_order     : explicit bar order within each cluster group
+                        (default: order of first appearance).
+    cluster_order    : explicit x-axis order (default: sorted unique values).
+    cell_type_colors : cell type -> hex colour. Unspecified cell types are
+                        auto-assigned from a tab10 cycle.
+    cell_type_labels : cell type -> display label for the legend.
+    color_overrides       : sample (``sample_col`` value) -> hex colour, taking
+                              precedence over ``cell_type_colors`` for that bar.
+                              Use to distinguish states (e.g. active/inactive)
+                              that share a cell type.
+    color_override_labels : sample -> legend label, used in place of
+                              ``cell_type_labels`` when ``color_overrides``
+                              applies to that sample.
+    """
+    from matplotlib.patches import Patch
+
+    if sample_order is None:
+        seen: set = set()
+        sample_order = [v for v in df[sample_col] if v not in seen and not seen.add(v)]
+
+    if cluster_order is None:
+        cluster_order = sorted(df[cluster_col].unique())
+    cluster_labels = cluster_labels or {}
+    cell_type_labels = cell_type_labels or {}
+    color_overrides = color_overrides or {}
+    color_override_labels = color_override_labels or {}
+
+    sample_cell_type = {
+        s: df.loc[df[sample_col] == s, cell_type_col].iloc[0] for s in sample_order
+    }
+    sample_is_enh_del = {
+        s: enh_del_keyword.lower() in str(s).lower() for s in sample_order
+    }
+
+    cycle = itertools.cycle(_TAB10)
+    cell_type_colors = dict(cell_type_colors or {})
+    for ct in dict.fromkeys(sample_cell_type.values()):
+        if ct not in cell_type_colors:
+            cell_type_colors[ct] = next(cycle)
+
+    totals = df.groupby([sample_col, biorep_col]).size()
+    sample_bioreps = {
+        s: sorted({b for (ss, b) in totals.index if ss == s}) for s in sample_order
+    }
+
+    n_samples = len(sample_order)
+    bar_width = group_width / n_samples
+    x = np.arange(len(cluster_order), dtype=float)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    rng = np.random.default_rng(0)
+    ymax = 0.0
+
+    for i, cluster in enumerate(cluster_order):
+        cluster_counts = df[df[cluster_col] == cluster].groupby([sample_col, biorep_col]).size()
+        for j, s in enumerate(sample_order):
+            xpos = x[i] + (j - (n_samples - 1) / 2) * bar_width
+
+            props = []
+            for b in sample_bioreps[s]:
+                total = totals.get((s, b), 0)
+                if total == 0:
+                    continue
+                props.append(cluster_counts.get((s, b), 0) / total)
+            props = np.array(props)
+            mean_prop = props.mean() if len(props) else 0.0
+            sem_prop = props.std(ddof=1) / np.sqrt(len(props)) if len(props) > 1 else 0.0
+            ymax = max(ymax, mean_prop + sem_prop)
+
+            color = color_overrides.get(s, cell_type_colors[sample_cell_type[s]])
+            hatch = "////" if sample_is_enh_del[s] else None
+            ax.bar(xpos, mean_prop, yerr=sem_prop, width=bar_width * 0.9, color=color, hatch=hatch,
+                   edgecolor="black", linewidth=0.5, capsize=3)
+
+            if len(props):
+                jitter_x = xpos + rng.uniform(-jitter, jitter, size=len(props))
+                ax.scatter(jitter_x, props, color=color, s=point_size,
+                           edgecolors="black", linewidths=0.3, zorder=3)
+                ymax = max(ymax, props.max())
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([cluster_labels.get(c, f"cluster {c}") for c in cluster_order], fontsize=8)
+    ax.set_ylabel("proportion of reads", fontsize=9)
+    ax.set_ylim(0, ymax * 1.1 if ymax > 0 else 1.0)
+    ax.tick_params(axis="y", labelsize=8)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    if title:
+        ax.set_title(title, fontsize=9)
+
+    legend_entries: dict[str, str] = {}
+    for s in sample_order:
+        ct = sample_cell_type[s]
+        color = color_overrides.get(s, cell_type_colors[ct])
+        label = color_override_labels.get(s, cell_type_labels.get(ct, ct))
+        legend_entries.setdefault(color, label)
+
+    cell_type_handles = [
+        Patch(facecolor=color, edgecolor="black", label=label)
+        for color, label in legend_entries.items()
+    ]
+    leg1 = ax.legend(handles=cell_type_handles, fontsize=7, frameon=False, title="cell type",
+                     title_fontsize=7, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
+
+    if any(sample_is_enh_del.values()):
+        ax.add_artist(leg1)
+        hatch_handles = [
+            Patch(facecolor="white", edgecolor="black", label="WT"),
+            Patch(facecolor="white", edgecolor="black", hatch="////", label="enh-del"),
+        ]
+        y_anchor = 1.0 - 0.12 * (len(cell_type_handles) + 1.5)
+        ax.legend(handles=hatch_handles, fontsize=7, frameon=False, title="allele",
+                  title_fontsize=7, loc="upper left", bbox_to_anchor=(1.02, y_anchor), borderaxespad=0)
+
+    fig.tight_layout(rect=(0, 0, 0.78, 1))
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_explained_variance(
+    explained_variance_ratio: np.ndarray,
+    output_path: Path,
+    n_pcs_show: int = 20,
+    figsize: tuple[float, float] = (6.0, 4.0),
+    title: str = "",
+    dpi: int = 300,
+) -> None:
+    """
+    Scree plot: bar chart of per-PC explained variance ratio, with cumulative
+    explained variance overlaid on a secondary y-axis.
+
+    Parameters
+    ----------
+    explained_variance_ratio : 1D array from sklearn PCA.explained_variance_ratio_,
+                                ordered PC1, PC2, ...
+    output_path               : PNG output path.
+    n_pcs_show                : number of leading PCs to plot.
+    """
+    evr = np.asarray(explained_variance_ratio)
+    n_show = min(n_pcs_show, len(evr))
+    evr_show = evr[:n_show]
+    cumvar = np.cumsum(evr)[:n_show]
+    x = np.arange(1, n_show + 1)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.bar(x, evr_show, color="#1f77b4", label="per-PC")
+    ax.set_xlabel("principal component", fontsize=9)
+    ax.set_ylabel("explained variance ratio", fontsize=9)
+    ax.set_xticks(x)
+    ax.tick_params(axis="both", labelsize=8)
+
+    ax2 = ax.twinx()
+    ax2.plot(x, cumvar, color="#d62728", marker="o", markersize=3, label="cumulative")
+    ax2.set_ylabel("cumulative explained variance", fontsize=9)
+    ax2.set_ylim(0, 1.0)
+    ax2.tick_params(axis="y", labelsize=8)
+
+    if title:
+        ax.set_title(title, fontsize=9)
+
+    fig.legend(loc="lower right", fontsize=7, frameon=False)
+    fig.tight_layout()
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
