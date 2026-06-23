@@ -6,7 +6,9 @@ Functions
 coverage_filter       Drop low-coverage columns and rows from a reads × positions matrix.
 make_features_raw     NaN → 0.5 imputation for direct use of modification matrix.
 make_features_acf     Per-read ACF features with optional rolling smoothing.
-run_pipeline          PCA → UMAP → KNN graph → Leiden clustering.
+umap_from_pca         UMAP embedding from a cached PCA-space matrix.
+cluster_from_pca      KNN graph + Leiden clustering from a cached PCA-space matrix.
+run_pipeline          PCA → UMAP → KNN graph → Leiden clustering (composes the above).
 """
 
 from __future__ import annotations
@@ -89,54 +91,55 @@ def make_features_acf(
     return feat[valid, :], valid
 
 
-def run_pipeline(
-    feat: np.ndarray,
-    leiden_resolution: float = 0.5,
-    min_reads: int = _DEFAULT_MIN_READS,
+def umap_from_pca(
+    X_pca: np.ndarray,
     n_neighbors: int = 15,
     random_state: int = 42,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+) -> np.ndarray:
     """
-    PCA → UMAP → KNN → Leiden clustering.
+    UMAP embedding from a PCA-space matrix.
 
-    Parameters
-    ----------
-    feat              : (n_reads × n_features) float feature matrix.
-    leiden_resolution : resolution parameter for Leiden community detection.
-    min_reads         : return None if fewer reads than this.
-    n_neighbors       : number of KNN neighbours for graph construction and UMAP.
-    random_state      : seed for reproducibility.
-
-    Returns
-    -------
-    (X_pca, X_umap, clusters) or None if too few reads.
+    Split out of run_pipeline() so a cached X_pca (e.g. ``pca_space.npy``) can
+    be re-embedded with different UMAP parameters without recomputing PCA.
     """
     try:
-        import igraph as ig
-        import leidenalg
         import umap as umap_lib
-        from sklearn.decomposition import PCA
-        from sklearn.neighbors import NearestNeighbors
     except ImportError as e:
-        raise ImportError(
-            f"dimensionality_reduction.run_pipeline requires sklearn, umap-learn, "
-            f"igraph, and leidenalg: {e}"
-        )
+        raise ImportError(f"dimensionality_reduction.umap_from_pca requires umap-learn: {e}")
 
-    n_reads = feat.shape[0]
-    if n_reads < min_reads:
-        return None
-
-    n_pcs = min(50, n_reads - 1, feat.shape[1])
-    k = min(n_neighbors, n_reads - 1)
-
-    X_pca = PCA(n_components=n_pcs, random_state=random_state).fit_transform(feat)
-    X_umap = umap_lib.UMAP(
+    k = min(n_neighbors, X_pca.shape[0] - 1)
+    return umap_lib.UMAP(
         n_neighbors=k,
         n_components=2,
         random_state=random_state,
         min_dist=0.3,
     ).fit_transform(X_pca)
+
+
+def cluster_from_pca(
+    X_pca: np.ndarray,
+    leiden_resolution: float = 0.5,
+    n_neighbors: int = 15,
+    random_state: int = 42,
+) -> np.ndarray:
+    """
+    KNN graph + Leiden clustering from a PCA-space matrix.
+
+    Split out of run_pipeline() so a cached X_pca (e.g. ``pca_space.npy``) can
+    be re-clustered at a different leiden_resolution (or n_neighbors) without
+    recomputing PCA/UMAP.
+    """
+    try:
+        import igraph as ig
+        import leidenalg
+        from sklearn.neighbors import NearestNeighbors
+    except ImportError as e:
+        raise ImportError(
+            f"dimensionality_reduction.cluster_from_pca requires igraph and leidenalg: {e}"
+        )
+
+    n_reads = X_pca.shape[0]
+    k = min(n_neighbors, n_reads - 1)
 
     nn = NearestNeighbors(n_neighbors=k + 1)
     nn.fit(X_pca)
@@ -150,6 +153,53 @@ def run_pipeline(
         resolution_parameter=leiden_resolution,
         seed=random_state,
     )
-    clusters = np.array(partition.membership)
+    return np.array(partition.membership)
 
-    return X_pca, X_umap, clusters
+
+def run_pipeline(
+    feat: np.ndarray,
+    leiden_resolution: float = 0.5,
+    min_reads: int = _DEFAULT_MIN_READS,
+    n_neighbors: int = 15,
+    random_state: int = 42,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """
+    PCA → UMAP → KNN → Leiden clustering.
+
+    Parameters
+    ----------
+    feat              : (n_reads × n_features) float feature matrix.
+    leiden_resolution : resolution parameter for Leiden community detection.
+    min_reads         : return None if fewer reads than this.
+    n_neighbors       : number of KNN neighbours for graph construction and UMAP.
+    random_state      : seed for reproducibility.
+
+    Returns
+    -------
+    (X_pca, X_umap, clusters, explained_variance_ratio) or None if too few reads.
+    X_pca contains all computed PCs (up to 50) -- cache it to re-derive
+    X_umap/clusters via umap_from_pca()/cluster_from_pca() without
+    recomputing PCA.
+    """
+    try:
+        from sklearn.decomposition import PCA
+    except ImportError as e:
+        raise ImportError(f"dimensionality_reduction.run_pipeline requires sklearn: {e}")
+
+    n_reads = feat.shape[0]
+    if n_reads < min_reads:
+        return None
+
+    n_pcs = min(50, n_reads - 1, feat.shape[1])
+
+    pca = PCA(n_components=n_pcs, random_state=random_state)
+    X_pca = pca.fit_transform(feat)
+    X_umap = umap_from_pca(X_pca, n_neighbors=n_neighbors, random_state=random_state)
+    clusters = cluster_from_pca(
+        X_pca,
+        leiden_resolution=leiden_resolution,
+        n_neighbors=n_neighbors,
+        random_state=random_state,
+    )
+
+    return X_pca, X_umap, clusters, pca.explained_variance_ratio_

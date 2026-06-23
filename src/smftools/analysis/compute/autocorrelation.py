@@ -6,6 +6,7 @@ Core functions
 binary_autocorrelation_with_spacing  Per-read ACF over gapped binary positions.
 weighted_mean_autocorr               Combine per-read ACF curves with lag-count weights.
 compute_replicate_curve              Coverage-filter a matrix then compute its mean ACF.
+compute_single_molecule_periodicity  Coverage-filter a matrix then compute per-read LS metrics.
 
 These functions are independent of project constants. Pass positions, matrices, and
 threshold values as explicit parameters.
@@ -14,6 +15,9 @@ threshold values as explicit parameters.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
+
+from . import ls_periodicity
 
 # Defaults; override per call as needed.
 _DEFAULT_MAX_LAG = 1000
@@ -159,3 +163,72 @@ def compute_replicate_curve(
     return weighted_mean_autocorr(
         np.vstack(ac_rows), np.vstack(count_rows), min_count_per_lag=min_count_per_lag
     )
+
+
+def compute_single_molecule_periodicity(
+    mat: np.ndarray,
+    positions: np.ndarray,
+    max_lag: int = _DEFAULT_MAX_LAG,
+    min_col_coverage: float = _DEFAULT_MIN_COL_COVERAGE,
+    min_row_coverage: float = _DEFAULT_MIN_ROW_COVERAGE,
+    nrl_search_bp: tuple[float, float] = ls_periodicity.NRL_SEARCH_BP,
+    period_range_bp: tuple[float, float] = ls_periodicity.LS_PERIOD_RANGE_BP,
+) -> pd.DataFrame:
+    """
+    Per-read Lomb-Scargle periodicity from individual ACF curves.
+
+    Coverage-filters columns as in :func:`compute_replicate_curve`, then for each
+    surviving read computes its own ACF (:func:`binary_autocorrelation_with_spacing`)
+    and runs :func:`ls_periodicity.analyze_ls_periodicity` on it directly — no
+    pooling across reads.
+
+    Reads with too few finite lags or no detectable peak in ``nrl_search_bp``
+    are dropped (see ``ls_periodicity.MIN_FINITE_LAGS``).
+
+    Parameters
+    ----------
+    mat       : (n_reads × n_positions) float; NaN = no coverage.
+    positions : TSS-centred int coordinates matching mat columns.
+
+    Returns
+    -------
+    pd.DataFrame with one row per surviving read and columns:
+    ``row_index`` (index into the input ``mat`` first axis), ``n_finite_lags``,
+    ``ls_nrl_bp``, ``ls_snr``, ``ls_peak_power``, ``ls_fwhm_bp``.
+    """
+    columns = ["row_index", "n_finite_lags", "ls_nrl_bp", "ls_snr", "ls_peak_power", "ls_fwhm_bp"]
+
+    col_cov = np.mean(~np.isnan(mat), axis=0)
+    keep_cols = (col_cov >= min_col_coverage) & np.isfinite(positions)
+    mat = mat[:, keep_cols]
+    pos = positions[keep_cols]
+    if mat.shape[1] < 2:
+        return pd.DataFrame(columns=columns)
+
+    order = np.argsort(pos)
+    mat = mat[:, order]
+    pos = pos[order].astype(int)
+
+    row_cov = np.mean(~np.isnan(mat), axis=1)
+    row_idx = np.flatnonzero(row_cov >= min_row_coverage)
+
+    rows = []
+    for i in row_idx:
+        ac = binary_autocorrelation_with_spacing(mat[i], pos, max_lag=max_lag)
+        result = ls_periodicity.analyze_ls_periodicity(
+            np.arange(max_lag + 1), ac, nrl_search_bp=nrl_search_bp, period_range_bp=period_range_bp
+        )
+        if result is None:
+            continue
+        rows.append(
+            {
+                "row_index": int(i),
+                "n_finite_lags": int(np.sum(np.isfinite(ac))),
+                "ls_nrl_bp": result["ls_nrl_bp"],
+                "ls_snr": result["ls_snr"],
+                "ls_peak_power": result["ls_peak_power"],
+                "ls_fwhm_bp": result["ls_fwhm_bp"],
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
