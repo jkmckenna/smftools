@@ -26,8 +26,18 @@ import pandas as pd
 
 matplotlib.use("Agg")
 
-_TAB10 = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-          "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+_TAB10 = [
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+]
 
 
 def plot_embedding_scatter(
@@ -55,15 +65,20 @@ def plot_embedding_scatter(
 
     Parameters
     ----------
-    df           : DataFrame containing x_col, y_col, color_col.
-    color_map    : category -> hex colour. Categories not present are auto-assigned
-                   from a tab10 cycle.
-    color_labels : category -> display label for the legend.
-    color_order  : explicit category order for plotting/legend (default: order of
-                   first appearance in df[color_col]).
-    marginal_density : if True, add 1D KDE marginal panels above (x_col) and to the
-                   right (y_col) of the scatter, one curve per category in
-                   color_col, each normalised to a probability density.
+    df : DataFrame
+        DataFrame containing x_col, y_col, color_col.
+    color_map : dict or None
+        Category -> hex colour. Categories not present are auto-assigned
+        from a tab10 cycle.
+    color_labels : dict or None
+        Category -> display label for the legend.
+    color_order : list or None
+        Explicit category order for plotting/legend (default: order of
+        first appearance in df[color_col]).
+    marginal_density : bool
+        If True, add 1D KDE marginal panels above (x_col) and to the
+        right (y_col) of the scatter, one curve per category in
+        color_col, each normalised to a probability density.
     """
     color_map = dict(color_map or {})
     color_labels = color_labels or {}
@@ -84,9 +99,13 @@ def plot_embedding_scatter(
             if sub.empty:
                 continue
             ax.scatter(
-                sub[x_col], sub[y_col],
-                s=point_size, alpha=alpha, color=color_map.get(label, "#888888"),
-                label=color_labels.get(label, label), edgecolors="none",
+                sub[x_col],
+                sub[y_col],
+                s=point_size,
+                alpha=alpha,
+                color=color_map.get(label, "#888888"),
+                label=color_labels.get(label, label),
+                edgecolors="none",
             )
 
         ax.set_xlabel(xlabel or x_col, fontsize=9)
@@ -94,8 +113,14 @@ def plot_embedding_scatter(
         if title:
             ax.set_title(title, fontsize=9)
         ax.tick_params(labelsize=8)
-        ax.legend(fontsize=7, frameon=False, loc="center left",
-                  bbox_to_anchor=(1.02, 0.5), borderaxespad=0, markerscale=2)
+        ax.legend(
+            fontsize=7,
+            frameon=False,
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            borderaxespad=0,
+            markerscale=2,
+        )
         fig.tight_layout(rect=(0, 0, 0.82, 1))
         fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
@@ -108,8 +133,12 @@ def plot_embedding_scatter(
 
     fig = plt.figure(figsize=(figsize[0] + 1.4, figsize[1] + 1.4))
     gs = fig.add_gridspec(
-        2, 2, width_ratios=(4, 1), height_ratios=(1, 4),
-        wspace=0.05, hspace=0.05,
+        2,
+        2,
+        width_ratios=(4, 1),
+        height_ratios=(1, 4),
+        wspace=0.05,
+        hspace=0.05,
     )
     ax = fig.add_subplot(gs[1, 0])
     ax_top = fig.add_subplot(gs[0, 0], sharex=ax)
@@ -122,9 +151,13 @@ def plot_embedding_scatter(
         if sub.empty:
             continue
         ax.scatter(
-            sub[x_col], sub[y_col],
-            s=point_size, alpha=alpha, color=color_map.get(label, "#888888"),
-            label=color_labels.get(label, label), edgecolors="none",
+            sub[x_col],
+            sub[y_col],
+            s=point_size,
+            alpha=alpha,
+            color=color_map.get(label, "#888888"),
+            label=color_labels.get(label, label),
+            edgecolors="none",
         )
 
     x_all = df[x_col].to_numpy(dtype=float)
@@ -219,7 +252,7 @@ def plot_embedding_density_grid(
     xmin, xmax = x.min() - xpad, x.max() + xpad
     ymin, ymax = y.min() - ypad, y.max() + ypad
 
-    xx, yy = np.mgrid[xmin:xmax:complex(0, grid_size), ymin:ymax:complex(0, grid_size)]
+    xx, yy = np.mgrid[xmin : xmax : complex(0, grid_size), ymin : ymax : complex(0, grid_size)]
     grid_coords = np.vstack([xx.ravel(), yy.ravel()])
     cell_area = ((xmax - xmin) / grid_size) * ((ymax - ymin) / grid_size)
 
@@ -244,7 +277,8 @@ def plot_embedding_density_grid(
     n_cols_eff = max(1, min(n_cols, n))
     n_rows = int(np.ceil(n / n_cols_eff))
     fig, axes = plt.subplots(
-        n_rows, n_cols_eff,
+        n_rows,
+        n_cols_eff,
         figsize=(figsize_per_panel[0] * n_cols_eff, figsize_per_panel[1] * n_rows),
         squeeze=False,
     )
@@ -255,13 +289,24 @@ def plot_embedding_density_grid(
         z = densities[label]
         n_pts = int((df[facet_col] == label).sum())
         if z is None:
-            ax.text(0.5, 0.5, "n too small", ha="center", va="center",
-                    fontsize=8, transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                "n too small",
+                ha="center",
+                va="center",
+                fontsize=8,
+                transform=ax.transAxes,
+            )
         else:
             im = ax.imshow(
-                z.T, origin="lower", extent=(xmin, xmax, ymin, ymax),
-                aspect="auto", cmap=cmap,
-                vmin=0, vmax=vmax if shared_scale else None,
+                z.T,
+                origin="lower",
+                extent=(xmin, xmax, ymin, ymax),
+                aspect="auto",
+                cmap=cmap,
+                vmin=0,
+                vmax=vmax if shared_scale else None,
             )
         ax.set_title(f"{facet_labels.get(label, label)} (n={n_pts})", fontsize=8)
         ax.tick_params(labelsize=7)
@@ -307,10 +352,13 @@ def plot_cluster_composition_barplot(
 
     Parameters
     ----------
-    sample_order   : explicit bar order (default: order of first appearance).
-    cluster_order  : explicit stacking order (default: sorted unique values).
-    cluster_colors : cluster -> hex colour. Unspecified clusters are
-                     auto-assigned from a tab10 cycle.
+    sample_order : list or None
+        Explicit bar order (default: order of first appearance).
+    cluster_order : list or None
+        Explicit stacking order (default: sorted unique values).
+    cluster_colors : dict or None
+        Cluster -> hex colour. Unspecified clusters are
+        auto-assigned from a tab10 cycle.
     """
     if sample_order is None:
         seen: set = set()
@@ -342,12 +390,20 @@ def plot_cluster_composition_barplot(
     x = np.arange(n_samples)
     bottom = np.zeros(n_samples)
     for j, c in enumerate(cluster_order):
-        ax.bar(x, props[:, j], bottom=bottom, color=cluster_colors[c],
-               label=cluster_labels.get(c, f"cluster {c}"), width=0.7)
+        ax.bar(
+            x,
+            props[:, j],
+            bottom=bottom,
+            color=cluster_colors[c],
+            label=cluster_labels.get(c, f"cluster {c}"),
+            width=0.7,
+        )
         bottom += props[:, j]
 
     ax.set_xticks(x)
-    xticklabels = [f"{sample_labels.get(s, s)}\n(n={counts[i]})" for i, s in enumerate(sample_order)]
+    xticklabels = [
+        f"{sample_labels.get(s, s)}\n(n={counts[i]})" for i, s in enumerate(sample_order)
+    ]
     ax.set_xticklabels(xticklabels, rotation=45, ha="right", fontsize=8)
     ax.set_ylabel("proportion of reads", fontsize=9)
     ax.set_ylim(0, 1)
@@ -356,8 +412,15 @@ def plot_cluster_composition_barplot(
     ax.spines["right"].set_visible(False)
     if title:
         ax.set_title(title, fontsize=9)
-    ax.legend(fontsize=7, frameon=False, loc="center left",
-              bbox_to_anchor=(1.02, 0.5), borderaxespad=0, title="Leiden cluster", title_fontsize=7)
+    ax.legend(
+        fontsize=7,
+        frameon=False,
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        borderaxespad=0,
+        title="Leiden cluster",
+        title_fontsize=7,
+    )
     fig.tight_layout(rect=(0, 0, 0.85, 1))
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
@@ -399,19 +462,25 @@ def plot_cluster_proportion_grouped_barplot(
 
     Parameters
     ----------
-    sample_order     : explicit bar order within each cluster group
-                        (default: order of first appearance).
-    cluster_order    : explicit x-axis order (default: sorted unique values).
-    cell_type_colors : cell type -> hex colour. Unspecified cell types are
-                        auto-assigned from a tab10 cycle.
-    cell_type_labels : cell type -> display label for the legend.
-    color_overrides       : sample (``sample_col`` value) -> hex colour, taking
-                              precedence over ``cell_type_colors`` for that bar.
-                              Use to distinguish states (e.g. active/inactive)
-                              that share a cell type.
-    color_override_labels : sample -> legend label, used in place of
-                              ``cell_type_labels`` when ``color_overrides``
-                              applies to that sample.
+    sample_order : list or None
+        Explicit bar order within each cluster group
+        (default: order of first appearance).
+    cluster_order : list or None
+        Explicit x-axis order (default: sorted unique values).
+    cell_type_colors : dict or None
+        Cell type -> hex colour. Unspecified cell types are
+        auto-assigned from a tab10 cycle.
+    cell_type_labels : dict or None
+        Cell type -> display label for the legend.
+    color_overrides : dict or None
+        Sample (``sample_col`` value) -> hex colour, taking
+        precedence over ``cell_type_colors`` for that bar.
+        Use to distinguish states (e.g. active/inactive)
+        that share a cell type.
+    color_override_labels : dict or None
+        Sample -> legend label, used in place of
+        ``cell_type_labels`` when ``color_overrides``
+        applies to that sample.
     """
     from matplotlib.patches import Patch
 
@@ -426,12 +495,8 @@ def plot_cluster_proportion_grouped_barplot(
     color_overrides = color_overrides or {}
     color_override_labels = color_override_labels or {}
 
-    sample_cell_type = {
-        s: df.loc[df[sample_col] == s, cell_type_col].iloc[0] for s in sample_order
-    }
-    sample_is_enh_del = {
-        s: enh_del_keyword.lower() in str(s).lower() for s in sample_order
-    }
+    sample_cell_type = {s: df.loc[df[sample_col] == s, cell_type_col].iloc[0] for s in sample_order}
+    sample_is_enh_del = {s: enh_del_keyword.lower() in str(s).lower() for s in sample_order}
 
     cycle = itertools.cycle(_TAB10)
     cell_type_colors = dict(cell_type_colors or {})
@@ -440,9 +505,7 @@ def plot_cluster_proportion_grouped_barplot(
             cell_type_colors[ct] = next(cycle)
 
     totals = df.groupby([sample_col, biorep_col]).size()
-    sample_bioreps = {
-        s: sorted({b for (ss, b) in totals.index if ss == s}) for s in sample_order
-    }
+    sample_bioreps = {s: sorted({b for (ss, b) in totals.index if ss == s}) for s in sample_order}
 
     n_samples = len(sample_order)
     bar_width = group_width / n_samples
@@ -470,13 +533,29 @@ def plot_cluster_proportion_grouped_barplot(
 
             color = color_overrides.get(s, cell_type_colors[sample_cell_type[s]])
             hatch = "////" if sample_is_enh_del[s] else None
-            ax.bar(xpos, mean_prop, yerr=sem_prop, width=bar_width * 0.9, color=color, hatch=hatch,
-                   edgecolor="black", linewidth=0.5, capsize=3)
+            ax.bar(
+                xpos,
+                mean_prop,
+                yerr=sem_prop,
+                width=bar_width * 0.9,
+                color=color,
+                hatch=hatch,
+                edgecolor="black",
+                linewidth=0.5,
+                capsize=3,
+            )
 
             if len(props):
                 jitter_x = xpos + rng.uniform(-jitter, jitter, size=len(props))
-                ax.scatter(jitter_x, props, color=color, s=point_size,
-                           edgecolors="black", linewidths=0.3, zorder=3)
+                ax.scatter(
+                    jitter_x,
+                    props,
+                    color=color,
+                    s=point_size,
+                    edgecolors="black",
+                    linewidths=0.3,
+                    zorder=3,
+                )
                 ymax = max(ymax, props.max())
 
     ax.set_xticks(x)
@@ -500,8 +579,16 @@ def plot_cluster_proportion_grouped_barplot(
         Patch(facecolor=color, edgecolor="black", label=label)
         for color, label in legend_entries.items()
     ]
-    leg1 = ax.legend(handles=cell_type_handles, fontsize=7, frameon=False, title="cell type",
-                     title_fontsize=7, loc="upper left", bbox_to_anchor=(1.02, 1.0), borderaxespad=0)
+    leg1 = ax.legend(
+        handles=cell_type_handles,
+        fontsize=7,
+        frameon=False,
+        title="cell type",
+        title_fontsize=7,
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        borderaxespad=0,
+    )
 
     if any(sample_is_enh_del.values()):
         ax.add_artist(leg1)
@@ -510,8 +597,16 @@ def plot_cluster_proportion_grouped_barplot(
             Patch(facecolor="white", edgecolor="black", hatch="////", label="enh-del"),
         ]
         y_anchor = 1.0 - 0.12 * (len(cell_type_handles) + 1.5)
-        ax.legend(handles=hatch_handles, fontsize=7, frameon=False, title="allele",
-                  title_fontsize=7, loc="upper left", bbox_to_anchor=(1.02, y_anchor), borderaxespad=0)
+        ax.legend(
+            handles=hatch_handles,
+            fontsize=7,
+            frameon=False,
+            title="allele",
+            title_fontsize=7,
+            loc="upper left",
+            bbox_to_anchor=(1.02, y_anchor),
+            borderaxespad=0,
+        )
 
     fig.tight_layout(rect=(0, 0, 0.78, 1))
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
@@ -532,10 +627,13 @@ def plot_explained_variance(
 
     Parameters
     ----------
-    explained_variance_ratio : 1D array from sklearn PCA.explained_variance_ratio_,
-                                ordered PC1, PC2, ...
-    output_path               : PNG output path.
-    n_pcs_show                : number of leading PCs to plot.
+    explained_variance_ratio : np.ndarray
+        1D array from sklearn PCA.explained_variance_ratio_,
+        ordered PC1, PC2, ...
+    output_path : Path
+        PNG output path.
+    n_pcs_show : int
+        Number of leading PCs to plot.
     """
     evr = np.asarray(explained_variance_ratio)
     n_show = min(n_pcs_show, len(evr))

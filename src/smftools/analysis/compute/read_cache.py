@@ -52,10 +52,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
 # ---------------------------------------------------------------------------
 # Zarr cache — write
 # ---------------------------------------------------------------------------
+
 
 def write_zarr_cache(
     adata,
@@ -96,11 +96,11 @@ def write_zarr_cache(
 
     # Subset layers
     if layers is not None:
-        available = [l for l in layers if l in adata.layers]
+        available = [layer for layer in layers if layer in adata.layers]
         adata = ad.AnnData(
             obs=adata.obs.copy(),
             var=adata.var.copy(),
-            layers={l: np.asarray(adata.layers[l]) for l in available},
+            layers={l: np.asarray(adata.layers[layer]) for layer in available},
         )
 
     with warnings.catch_warnings():
@@ -111,6 +111,7 @@ def write_zarr_cache(
 # ---------------------------------------------------------------------------
 # Zarr cache — index
 # ---------------------------------------------------------------------------
+
 
 def build_barcode_index(
     zarr_path: Path,
@@ -143,10 +144,10 @@ def build_barcode_index(
     dict
         ``{barcode: {ref_strand: [start, end]}}``
     """
-    barcodes  = np.asarray(barcodes,   dtype=str)
+    barcodes = np.asarray(barcodes, dtype=str)
     ref_strands = np.asarray(ref_strands, dtype=str)
 
-    combined  = np.array([f"{b}\x00{r}" for b, r in zip(barcodes, ref_strands)])
+    combined = np.array([f"{b}\x00{r}" for b, r in zip(barcodes, ref_strands)])
     boundaries = np.concatenate(
         [[0], np.where(combined[:-1] != combined[1:])[0] + 1, [len(combined)]]
     )
@@ -187,9 +188,11 @@ def zarr_cache_exists(zarr_path: Path) -> bool:
 # Zarr cache — read
 # ---------------------------------------------------------------------------
 
+
 def open_zarr_cache(zarr_path: Path):
     """Open a Zarr store in read-only mode and return the root group."""
     import zarr
+
     return zarr.open(Path(zarr_path), mode="r")
 
 
@@ -257,8 +260,9 @@ def load_zarr_obs(
     pd.DataFrame
         obs rows for the selected barcode × ref_strand.
     """
-    import anndata as ad
     import warnings
+
+    import anndata as ad
 
     start, end = _get_slice(index, barcode, ref_strand)
     with warnings.catch_warnings():
@@ -269,8 +273,9 @@ def load_zarr_obs(
 
 def load_zarr_var(zarr_path: Path) -> pd.DataFrame:
     """Load the full var DataFrame from a Zarr cache using anndata."""
-    import anndata as ad
     import warnings
+
+    import anndata as ad
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -290,6 +295,7 @@ def _get_slice(index: dict, barcode: str, ref_strand: str) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 # Parquet cache (legacy)
 # ---------------------------------------------------------------------------
+
 
 def cache_key(barcode: str, ref_strand: str) -> str:
     return f"{barcode}_{ref_strand}"
@@ -346,9 +352,7 @@ def load_layer(
     """
     path = cache_dir(cache_root, barcode, ref_strand) / f"{layer_name}.parquet"
     if not path.exists():
-        raise FileNotFoundError(
-            f"Cache not found for {barcode}/{ref_strand}/{layer_name}: {path}"
-        )
+        raise FileNotFoundError(f"Cache not found for {barcode}/{ref_strand}/{layer_name}: {path}")
     df = pd.read_parquet(path)
     coords = np.array(df.columns, dtype=int)
     return df, coords

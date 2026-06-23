@@ -105,7 +105,8 @@ class ResidualDilatedBlock1d(nn.Module):
         self.se = SqueezeExcite1d(out_channels) if use_se else nn.Identity()
         self.proj = (
             nn.Conv1d(in_channels, out_channels, kernel_size=1)
-            if in_channels != out_channels else nn.Identity()
+            if in_channels != out_channels
+            else nn.Identity()
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -135,7 +136,12 @@ class ResidualDilatedCNN1d(nn.Module):
         self.config = config
         stem_pad = config.stem_kernel_size // 2
         self.stem = nn.Sequential(
-            nn.Conv1d(config.in_channels, config.stem_channels, kernel_size=config.stem_kernel_size, padding=stem_pad),
+            nn.Conv1d(
+                config.in_channels,
+                config.stem_channels,
+                kernel_size=config.stem_kernel_size,
+                padding=stem_pad,
+            ),
             nn.BatchNorm1d(config.stem_channels),
             nn.ReLU(inplace=True),
         )
@@ -306,12 +312,18 @@ def build_cnn_input(
         if learnable_mask.shape[0] != X.shape[1]:
             raise ValueError("learnable_mask length must match X.shape[1]")
     if include_design_mask:
-        blocked = np.zeros(X.shape[1], dtype=np.float32) if learnable_mask is None else (~learnable_mask).astype(np.float32)
+        blocked = (
+            np.zeros(X.shape[1], dtype=np.float32)
+            if learnable_mask is None
+            else (~learnable_mask).astype(np.float32)
+        )
         if learnable_mask is not None:
             signal[:, ~learnable_mask] = 0.0
             observed[:, ~learnable_mask] = 0.0
             channels = [signal[:, np.newaxis, :], observed[:, np.newaxis, :]]
-        blocked = np.broadcast_to(blocked.reshape(1, 1, -1), (X.shape[0], 1, X.shape[1])).astype(np.float32)
+        blocked = np.broadcast_to(blocked.reshape(1, 1, -1), (X.shape[0], 1, X.shape[1])).astype(
+            np.float32
+        )
         channels.append(blocked)
     if include_positional:
         pos = _parse_feature_positions(feature_labels, X.shape[1])
@@ -319,8 +331,12 @@ def build_cnn_input(
         channels.append(pos)
     if include_spacing:
         prev_dist, next_dist = _spacing_channels(feature_labels, X.shape[1], learnable_mask)
-        prev_dist = np.broadcast_to(prev_dist.reshape(1, 1, -1), (X.shape[0], 1, X.shape[1])).astype(np.float32)
-        next_dist = np.broadcast_to(next_dist.reshape(1, 1, -1), (X.shape[0], 1, X.shape[1])).astype(np.float32)
+        prev_dist = np.broadcast_to(
+            prev_dist.reshape(1, 1, -1), (X.shape[0], 1, X.shape[1])
+        ).astype(np.float32)
+        next_dist = np.broadcast_to(
+            next_dist.reshape(1, 1, -1), (X.shape[0], 1, X.shape[1])
+        ).astype(np.float32)
         channels.extend([prev_dist, next_dist])
     return np.concatenate(channels, axis=1)
 
@@ -337,7 +353,11 @@ def build_cnn_baseline(
     if baseline_mode == "preserve_structure" and include_design_mask and X.shape[1] > struct_idx:
         baseline[:, struct_idx, :] = X[:, struct_idx, :]
         struct_idx += 1
-    if baseline_mode in {"preserve_position", "preserve_structure"} and include_positional and X.shape[1] > struct_idx:
+    if (
+        baseline_mode in {"preserve_position", "preserve_structure"}
+        and include_positional
+        and X.shape[1] > struct_idx
+    ):
         baseline[:, struct_idx, :] = X[:, struct_idx, :]
         struct_idx += 1
     if baseline_mode in {"preserve_position", "preserve_structure"} and include_spacing:
@@ -402,7 +422,9 @@ def fit_simple_cnn(
     pos_weight = torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32, device=device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(epochs, 1), eta_min=learning_rate * 0.05)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(epochs, 1), eta_min=learning_rate * 0.05
+    )
 
     X_tr = torch.tensor(X_train, dtype=torch.float32)
     y_tr = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
@@ -464,7 +486,9 @@ def fit_simple_cnn(
     )
 
 
-def predict_cnn_scores(trained_model: TrainedCNNModel, X: np.ndarray, batch_size: int = 512) -> np.ndarray:
+def predict_cnn_scores(
+    trained_model: TrainedCNNModel, X: np.ndarray, batch_size: int = 512
+) -> np.ndarray:
     """
     Return positive-class probabilities for a trained CNN model.
     """
@@ -475,7 +499,7 @@ def predict_cnn_scores(trained_model: TrainedCNNModel, X: np.ndarray, batch_size
     model.eval()
     with torch.no_grad():
         for start in range(0, X_t.shape[0], batch_size):
-            logits = model(X_t[start:start + batch_size])
+            logits = model(X_t[start : start + batch_size])
             probs = torch.sigmoid(logits).squeeze(1)
             outs.append(probs.detach().cpu().numpy())
     return np.concatenate(outs).astype(float)

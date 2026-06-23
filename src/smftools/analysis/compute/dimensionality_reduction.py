@@ -195,7 +195,11 @@ def run_pipeline(
     pca = PCA(n_components=n_pcs, random_state=random_state)
     X_pca = pca.fit_transform(feat)
     X_umap = umap_from_pca(X_pca, n_neighbors=n_neighbors, random_state=random_state)
-    clusters = cluster_from_pca(X_pca, leiden_resolution=leiden_resolution,
-                                 n_neighbors=n_neighbors, random_state=random_state)
+    clusters = cluster_from_pca(
+        X_pca,
+        leiden_resolution=leiden_resolution,
+        n_neighbors=n_neighbors,
+        random_state=random_state,
+    )
 
     return X_pca, X_umap, clusters, pca.explained_variance_ratio_

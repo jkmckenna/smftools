@@ -220,13 +220,15 @@ def compute_single_molecule_periodicity(
         )
         if result is None:
             continue
-        rows.append({
-            "row_index": int(i),
-            "n_finite_lags": int(np.sum(np.isfinite(ac))),
-            "ls_nrl_bp": result["ls_nrl_bp"],
-            "ls_snr": result["ls_snr"],
-            "ls_peak_power": result["ls_peak_power"],
-            "ls_fwhm_bp": result["ls_fwhm_bp"],
-        })
+        rows.append(
+            {
+                "row_index": int(i),
+                "n_finite_lags": int(np.sum(np.isfinite(ac))),
+                "ls_nrl_bp": result["ls_nrl_bp"],
+                "ls_snr": result["ls_snr"],
+                "ls_peak_power": result["ls_peak_power"],
+                "ls_fwhm_bp": result["ls_fwhm_bp"],
+            }
+        )
 
     return pd.DataFrame(rows, columns=columns)

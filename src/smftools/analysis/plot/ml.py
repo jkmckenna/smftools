@@ -107,9 +107,7 @@ def plot_metric_barplot(
     Plot a simple mean ± SEM barplot after grouping rows by ``group_cols``.
     """
     grouped = (
-        summary_df.groupby(group_cols, dropna=False)[metric_col]
-        .agg(["mean", "sem"])
-        .reset_index()
+        summary_df.groupby(group_cols, dropna=False)[metric_col].agg(["mean", "sem"]).reset_index()
     )
     labels = grouped[group_cols].astype(str).agg(" | ".join, axis=1)
     x = np.arange(len(grouped))

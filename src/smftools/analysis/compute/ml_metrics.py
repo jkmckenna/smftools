@@ -14,12 +14,12 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
+    auc,
     balanced_accuracy_score,
     f1_score,
     precision_recall_curve,
     roc_auc_score,
     roc_curve,
-    auc,
 )
 from sklearn.naive_bayes import BernoulliNB
 from sklearn.pipeline import Pipeline

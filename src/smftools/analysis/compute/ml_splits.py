@@ -50,7 +50,9 @@ def summarize_split(
 
     labels = pd.to_numeric(metadata_df[label_col], errors="coerce")
     finite_labels = labels[np.isfinite(labels)]
-    is_binary_01 = set(pd.unique(finite_labels.astype(int))) <= {0, 1} if len(finite_labels) else False
+    is_binary_01 = (
+        set(pd.unique(finite_labels.astype(int))) <= {0, 1} if len(finite_labels) else False
+    )
     if is_binary_01:
         train_y = pd.to_numeric(train_df[label_col], errors="coerce").to_numpy(dtype=float)
         test_y = pd.to_numeric(test_df[label_col], errors="coerce").to_numpy(dtype=float)

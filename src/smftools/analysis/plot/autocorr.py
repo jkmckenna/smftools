@@ -55,15 +55,23 @@ def plot_autocorr_overlay(
 
     Parameters
     ----------
-    summary_df   : DataFrame with columns reference_strand, <group_col>, curve_csv.
-    ref_strand   : filter summary_df to this reference_strand value.
+    summary_df : DataFrame with columns reference_strand, <group_col>, curve_csv.
+    ref_strand : str or None
+        Filter summary_df to this reference_strand value.
         Pass ``None`` to include all rows (e.g. when groups already encode the
         reference distinction via ``group_col``).
-    group_order  : order to plot groups; defaults to unique values in group_col.
-    group_colors : {group_value: color}; defaults to matplotlib tab10.
-    group_labels : {group_value: display_label}.
+    group_order : list of str or None
+        Order to plot groups; defaults to unique values in group_col.
+    group_colors : dict or None
+        Mapping of {group_value: color}; defaults to matplotlib tab10.
+    group_labels : dict or None
+        Mapping of {group_value: display_label}.
     """
-    sub = summary_df if ref_strand is None else summary_df[summary_df["reference_strand"] == ref_strand]
+    sub = (
+        summary_df
+        if ref_strand is None
+        else summary_df[summary_df["reference_strand"] == ref_strand]
+    )
     groups = group_order or sorted(sub[group_col].unique())
     colors = group_colors or {}
     labels = group_labels or {}
@@ -135,7 +143,11 @@ def plot_ls_overlay(
     ref_strand : str or None
         Filter to this reference strand value, or ``None`` to include all rows.
     """
-    base = summary_df if ref_strand is None else summary_df[summary_df["reference_strand"] == ref_strand]
+    base = (
+        summary_df
+        if ref_strand is None
+        else summary_df[summary_df["reference_strand"] == ref_strand]
+    )
     sub = base[base["ls_spectrum_csv"].notna() & (base["ls_spectrum_csv"] != "")]
     groups = group_order or sorted(sub[group_col].unique())
     colors = group_colors or {}
@@ -317,12 +329,16 @@ def plot_metric_histogram(
 
     Parameters
     ----------
-    df         : DataFrame with one row per read, columns ``<metric_key>``,
+    df : DataFrame
+        One row per read, columns ``<metric_key>``,
         ``<group_col>``, and optionally ``<ref_col>``.
-    metric_key : column to histogram, e.g. ``"ls_nrl_bp"``, ``"ls_snr"``,
+    metric_key : str
+        Column to histogram, e.g. ``"ls_nrl_bp"``, ``"ls_snr"``,
         ``"ls_peak_power"``.
-    ref_strand : if given (with ``ref_col``), filter to this reference_strand value.
-    vlines     : optional list of x positions to mark with dotted vertical lines
+    ref_strand : str or None
+        If given (with ``ref_col``), filter to this reference_strand value.
+    vlines : list of float or None
+        X positions to mark with dotted vertical lines
         (e.g. an NRL search-band boundary).
     """
     sub = df.dropna(subset=[metric_key]).copy()
@@ -337,7 +353,7 @@ def plot_metric_histogram(
 
     vals_all = sub[metric_key].to_numpy(dtype=float)
     if isinstance(bins, int):
-        lo, hi = (xlim if xlim is not None else (np.nanmin(vals_all), np.nanmax(vals_all)))
+        lo, hi = xlim if xlim is not None else (np.nanmin(vals_all), np.nanmax(vals_all))
         bin_edges = np.linspace(lo, hi, bins + 1)
     else:
         bin_edges = bins
@@ -351,12 +367,23 @@ def plot_metric_histogram(
         color = colors.get(grp, cmap(i % 10))
         label = f"{labels.get(grp, str(grp))} (n={vals.size})"
         ax.hist(
-            vals, bins=bin_edges, density=True, histtype="stepfilled",
-            color=color, alpha=0.15, zorder=1,
+            vals,
+            bins=bin_edges,
+            density=True,
+            histtype="stepfilled",
+            color=color,
+            alpha=0.15,
+            zorder=1,
         )
         ax.hist(
-            vals, bins=bin_edges, density=True, histtype="step",
-            color=color, linewidth=1.4, label=label, zorder=2,
+            vals,
+            bins=bin_edges,
+            density=True,
+            histtype="step",
+            color=color,
+            linewidth=1.4,
+            label=label,
+            zorder=2,
         )
 
     for x in vlines or []:
