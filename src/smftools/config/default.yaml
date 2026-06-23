@@ -133,7 +133,7 @@ skip_bam_split: False # Skip BAM splitting/demux step and load AnnData directly 
 skip_bam_qc: True # Skip samtools/pysam BAM QC generation and MultiQC report generation.
 
 # Anndata structure
-mapping_threshold: 0.10 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
+mapping_threshold: 0.01 # Minimum proportion of mapped reads that need to fall within a region to include in the final AnnData.
 reference_column: 'Reference_strand'
 sample_column: 'Experiment_name_and_barcode'
 

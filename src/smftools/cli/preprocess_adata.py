@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 from pathlib import Path
 from typing import Optional, Tuple
@@ -10,8 +11,10 @@ from smftools.constants import (
     BASE_QUALITY_SCORES,
     DEMUX_TYPE,
     LOGGING_DIR,
+    MISMATCH_INTEGER_ENCODING,
     PREPROCESS_DIR,
     READ_SPAN_MASK,
+    SEQUENCE_INTEGER_ENCODING,
 )
 from smftools.logging_utils import get_logger, setup_logging
 
@@ -235,6 +238,18 @@ def preprocess_adata_core(
     setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     ######### Begin Preprocessing #########
+
+    # Drop heavy layers not needed during preprocessing to reduce peak memory.
+    # They will be re-attached from the source file before saving.
+    _dropped_layers = []
+    for _layer_name in (SEQUENCE_INTEGER_ENCODING, MISMATCH_INTEGER_ENCODING):
+        if _layer_name in adata.layers:
+            del adata.layers[_layer_name]
+            _dropped_layers.append(_layer_name)
+    if _dropped_layers:
+        logger.info("Temporarily dropped layers for memory: %s", _dropped_layers)
+        gc.collect()
+
     ## Load sample sheet metadata based on barcode mapping ##
     if getattr(cfg, "sample_sheet_path", None):
         load_sample_sheet(
@@ -549,6 +564,8 @@ def preprocess_adata_core(
         new_col=cfg.reindexed_var_suffix,
     )
 
+    gc.collect()
+
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != "direct":
         references = adata.obs[cfg.reference_column].cat.categories
@@ -611,6 +628,25 @@ def preprocess_adata_core(
         adata_unique = adata
     ########################################################################################################################
 
+    ############################################### Re-attach dropped layers from source file ###############################################
+    if _dropped_layers and source_adata_path is not None:
+        logger.info("Re-attaching dropped layers from %s", source_adata_path)
+        source_backed = ad.read_h5ad(source_adata_path, backed="r")
+        for _layer_name in _dropped_layers:
+            if _layer_name in source_backed.layers:
+                obs_mask = source_backed.obs_names.isin(adata.obs_names)
+                layer_data = source_backed[obs_mask].layers[_layer_name].copy()
+                adata.layers[_layer_name] = layer_data
+                if adata_unique is not None and adata_unique is not adata:
+                    unique_mask = source_backed.obs_names.isin(adata_unique.obs_names)
+                    adata_unique.layers[_layer_name] = (
+                        source_backed[unique_mask].layers[_layer_name].copy()
+                    )
+                del layer_data
+        source_backed.file.close()
+        del source_backed
+        gc.collect()
+
     ############################################### Save preprocessed adata with duplicate detection ###############################################
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
         logger.info("Saving preprocessed adata.")
@@ -637,6 +673,8 @@ def preprocess_adata_core(
         write_gz_h5ad(adata_unique, pp_dup_rem_adata_path)
 
     ########################################################################################################################
+
+    gc.collect()
 
     ############################################### Plot read span mask + base quality clustermaps ###############################################
     quality_layer = None
