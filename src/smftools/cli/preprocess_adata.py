@@ -548,22 +548,6 @@ def preprocess_adata_core(
         from_valid_sites_only=True,
     )
 
-    # -----------------------------
-    # Optional inversion along positions axis
-    # -----------------------------
-    if getattr(cfg, "invert_adata", False):
-        adata = invert_adata(adata)
-
-    # -----------------------------
-    # Optional reindexing by reference
-    # -----------------------------
-    reindex_references_adata(
-        adata,
-        reference_col=cfg.reference_column,
-        offsets=cfg.reindexing_offsets,
-        new_col=cfg.reindexed_var_suffix,
-    )
-
     gc.collect()
 
     ############### Duplicate detection for conversion/deamination SMF ###############
@@ -647,6 +631,8 @@ def preprocess_adata_core(
         del source_backed
         gc.collect()
 
+    gc.collect()
+
     ############################################### Save preprocessed adata with duplicate detection ###############################################
     if not pp_adata_path.exists() or cfg.force_redo_preprocessing:
         logger.info("Saving preprocessed adata.")
@@ -659,6 +645,19 @@ def preprocess_adata_core(
             output_path=pp_adata_path,
         )
         write_gz_h5ad(adata, pp_adata_path)
+
+    # Apply inversion and reindexing only to adata_unique (the deduplicated
+    # copy used by downstream analysis).  The full adata is saved without
+    # these transforms to avoid the peak memory of inverting all layers.
+    if adata_unique is not None and adata_unique is not adata:
+        if getattr(cfg, "invert_adata", False):
+            adata_unique = invert_adata(adata_unique)
+        reindex_references_adata(
+            adata_unique,
+            reference_col=cfg.reference_column,
+            offsets=cfg.reindexing_offsets,
+            new_col=cfg.reindexed_var_suffix,
+        )
 
     if not pp_dup_rem_adata_path.exists() or cfg.force_redo_preprocessing:
         logger.info("Saving preprocessed adata with duplicates removed.")
