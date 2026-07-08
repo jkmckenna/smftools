@@ -125,8 +125,8 @@ def plot_ls_overlay(
     group_labels: dict[str, str] | None = None,
     ref_label: str = "",
     title_suffix: str = "",
-    nrl_range: tuple[float, float] = (120.0, 260.0),
-    period_xlim: tuple[float, float] = (80, 400),
+    nrl_range: tuple[float, float] = (150.0, 250.0),
+    period_xlim: tuple[float, float] = (150, 250),
     dpi: int = 300,
     figsize: tuple[float, float] = (3.5, 2.5),
 ) -> None:
@@ -181,6 +181,77 @@ def plot_ls_overlay(
     ax.set_xlabel("Period (bp)", fontsize=9)
     ax.set_ylabel("Normalised LS power", fontsize=9)
     title = f"{ref_label} LS spectrum"
+    if title_suffix:
+        title += f"\n{title_suffix}"
+    ax.set_title(title, fontsize=9)
+    ax.tick_params(labelsize=8)
+    ax.grid(alpha=0.15)
+    ax.legend(
+        fontsize=7, frameon=False, loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0))
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_sm_periodogram_overlay(
+    sm_df: pd.DataFrame,
+    output_path: Path,
+    group_col: str = "cell_type",
+    group_order: list[str] | None = None,
+    group_colors: dict[str, str] | None = None,
+    group_labels: dict[str, str] | None = None,
+    title_suffix: str = "",
+    nrl_range: tuple[float, float] = (150.0, 250.0),
+    period_xlim: tuple[float, float] = (150, 250),
+    dpi: int = 300,
+    figsize: tuple[float, float] = (3.5, 2.5),
+) -> None:
+    """Plot mean ± SEM single-molecule LS spectra averaged over individual reads.
+
+    Parameters
+    ----------
+    sm_df : DataFrame with ``ls_freqs`` and ``ls_power`` list-valued columns,
+        plus a grouping column (default ``cell_type``).
+    """
+    sub = sm_df[sm_df["ls_freqs"].notna() & sm_df["ls_power"].notna()].copy()
+    if sub.empty:
+        return
+
+    groups = group_order or sorted(sub[group_col].unique())
+    colors = group_colors or {}
+    labels = group_labels or {}
+
+    fig, ax = plt.subplots(figsize=figsize)
+    cmap = plt.colormaps["tab10"]
+    for i, grp in enumerate(groups):
+        rows = sub[sub[group_col] == grp]
+        if rows.empty:
+            continue
+        try:
+            power_mat = np.vstack(rows["ls_power"].to_numpy())
+            freqs = rows["ls_freqs"].iloc[0]
+        except (ValueError, TypeError):
+            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            mean_p = np.nanmean(power_mat, axis=0)
+            sem_p = (
+                np.nanstd(power_mat, axis=0, ddof=1) / np.sqrt(power_mat.shape[0])
+                if power_mat.shape[0] > 1
+                else np.zeros_like(mean_p)
+            )
+        periods = 1.0 / freqs
+        color = colors.get(grp, cmap(i % 10))
+        ax.plot(periods, mean_p, color=color, linewidth=1.2, label=labels.get(grp, str(grp)))
+        ax.fill_between(periods, mean_p - sem_p, mean_p + sem_p, color=color, alpha=0.2)
+
+    ax.axvline(nrl_range[0], color="#777777", linewidth=0.6, linestyle=":")
+    ax.axvline(nrl_range[1], color="#777777", linewidth=0.6, linestyle=":")
+    ax.set_xlim(*period_xlim)
+    ax.set_xlabel("Period (bp)", fontsize=9)
+    ax.set_ylabel("Mean per-read LS power", fontsize=9)
+    title = "Single-molecule LS spectrum"
     if title_suffix:
         title += f"\n{title_suffix}"
     ax.set_title(title, fontsize=9)

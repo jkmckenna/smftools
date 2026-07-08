@@ -622,58 +622,60 @@ def flag_duplicate_reads(
     samples = adata.obs[sample_col].astype("category").cat.categories
     references = adata.obs[obs_reference_col].astype("category").cat.categories
 
-    # -------- Phase A: build args per (sample, ref) group --------
-    group_args = []
-    for sample in samples:
-        for ref in references:
-            logger.info("Building args for sample=%s ref=%s", sample, ref)
-            sample_mask = adata.obs[sample_col] == sample
-            ref_mask = adata.obs[obs_reference_col] == ref
-            subset_mask = sample_mask & ref_mask
-            n_obs = int(subset_mask.sum())
-            if n_obs < 2:
-                logger.info("  Skipping %s_%s (too few reads)", sample, ref)
-                continue
+    # -------- Phase A: lazy group arg generator --------
+    # Yields one group's args at a time so only one X_sub matrix is live in
+    # the main process at once, avoiding the peak memory of materializing all
+    # group matrices simultaneously.
+    def _iter_group_args():
+        for sample in samples:
+            for ref in references:
+                logger.info("Building args for sample=%s ref=%s", sample, ref)
+                sample_mask = adata.obs[sample_col] == sample
+                ref_mask = adata.obs[obs_reference_col] == ref
+                subset_mask = sample_mask & ref_mask
+                n_obs = int(subset_mask.sum())
+                if n_obs < 2:
+                    logger.info("  Skipping %s_%s (too few reads)", sample, ref)
+                    continue
 
-            # Build column indices (depends only on ref + adata.var)
-            combined_mask = np.zeros(len(adata.var), dtype=bool)
-            for var_set in var_filters_sets:
-                if any(str(ref) in str(v) for v in var_set):
-                    per_col_mask = np.ones(len(adata.var), dtype=bool)
-                    for key in var_set:
-                        per_col_mask &= np.asarray(adata.var[key].values, dtype=bool)
-                    combined_mask |= per_col_mask
+                # Build column indices (depends only on ref + adata.var)
+                combined_mask = np.zeros(len(adata.var), dtype=bool)
+                for var_set in var_filters_sets:
+                    if any(str(ref) in str(v) for v in var_set):
+                        per_col_mask = np.ones(len(adata.var), dtype=bool)
+                        for key in var_set:
+                            per_col_mask &= np.asarray(adata.var[key].values, dtype=bool)
+                        combined_mask |= per_col_mask
 
-            selected_cols = adata.var.index[combined_mask.tolist()].to_list()
-            col_indices = [adata.var.index.get_loc(c) for c in selected_cols]
-            logger.info(
-                "  Selected %s columns out of %s for %s",
-                len(col_indices),
-                adata.var.shape[0],
-                ref,
-            )
+                selected_cols = adata.var.index[combined_mask.tolist()].to_list()
+                col_indices = [adata.var.index.get_loc(c) for c in selected_cols]
+                logger.info(
+                    "  Selected %s columns out of %s for %s",
+                    len(col_indices),
+                    adata.var.shape[0],
+                    ref,
+                )
 
-            # Extract X without a full AnnData copy
-            adata_subset_view = adata[subset_mask]
-            X = adata_subset_view.X
-            if not isinstance(X, np.ndarray):
-                try:
-                    X = X.toarray()
-                except Exception:
-                    X = np.asarray(X)
-            X_sub = X[:, col_indices].astype(float)
+                # Extract X without a full AnnData copy
+                adata_subset_view = adata[subset_mask]
+                X = adata_subset_view.X
+                if not isinstance(X, np.ndarray):
+                    try:
+                        X = X.toarray()
+                    except Exception:
+                        X = np.asarray(X)
+                X_sub = X[:, col_indices].astype(float)
 
-            # Extract only the obs columns needed for keeper selection
-            needed_cols = []
-            if demux_col in adata.obs.columns:
-                needed_cols.append(demux_col)
-            if keep_best_metric and keep_best_metric in adata.obs.columns:
-                needed_cols.append(keep_best_metric)
-            obs_idx_labels = adata_subset_view.obs.index
-            obs_df = adata.obs.loc[obs_idx_labels, needed_cols].copy()
+                # Extract only the obs columns needed for keeper selection
+                needed_cols = []
+                if demux_col in adata.obs.columns:
+                    needed_cols.append(demux_col)
+                if keep_best_metric and keep_best_metric in adata.obs.columns:
+                    needed_cols.append(keep_best_metric)
+                obs_idx_labels = adata_subset_view.obs.index
+                obs_df = adata.obs.loc[obs_idx_labels, needed_cols].copy()
 
-            group_args.append(
-                {
+                yield {
                     "X_sub": X_sub,
                     "obs_df": obs_df,
                     "obs_index": list(obs_idx_labels),
@@ -695,15 +697,11 @@ def flag_duplicate_reads(
                     "demux_col": demux_col,
                     "demux_types": list(demux_types) if demux_types is not None else None,
                 }
-            )
-
-    if not group_args:
-        return adata.copy(), adata.copy()
 
     # -------- Phase B: dispatch (serial or parallel) --------
-    n_workers = min(_resolve_n_jobs(n_jobs), len(group_args))
+    n_workers = _resolve_n_jobs(n_jobs)
     if n_workers <= 1:
-        results = [_process_group(a) for a in group_args]
+        results = [_process_group(a) for a in _iter_group_args()]
     else:
         from concurrent.futures import ProcessPoolExecutor
 
@@ -714,7 +712,7 @@ def flag_duplicate_reads(
             initializer=configure_worker_threads,
             initargs=(1,),
         ) as executor:
-            results = list(executor.map(_process_group, group_args))
+            results = list(executor.map(_process_group, _iter_group_args()))
 
     # -------- Phase C: collect — serial write-back to adata.obs --------
     histograms = []

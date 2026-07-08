@@ -6,8 +6,10 @@ import pytest
 from smftools.analysis.compute.autocorrelation import (
     binary_autocorrelation_with_spacing,
     compute_replicate_curve,
+    compute_single_molecule_periodicity_direct,
     weighted_mean_autocorr,
 )
+from smftools.analysis.compute.ls_periodicity import MIN_SITES_PER_READ
 
 MAX_LAG = 50
 
@@ -146,3 +148,64 @@ def test_compute_replicate_curve_filters_low_coverage_columns() -> None:
     result = compute_replicate_curve(mat, pos, min_col_coverage=0.05, min_reads=5)
     # Should run on the 5 valid columns only
     assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# compute_single_molecule_periodicity_direct
+# ---------------------------------------------------------------------------
+
+
+def _make_periodic_mat(
+    n_reads: int = 30,
+    n_sites: int = 300,
+    period_bp: float = 185.0,
+    locus_len: int = 4000,
+    rng_seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Synthetic (reads × positions) matrix with sinusoidal accessibility."""
+    rng = np.random.default_rng(rng_seed)
+    positions = np.sort(rng.choice(locus_len, size=n_sites, replace=False)).astype(float)
+    prob = 0.5 + 0.4 * np.cos(2 * np.pi * positions / period_bp)
+    mat = (rng.random((n_reads, n_sites)) < prob).astype(float)
+    return mat, positions
+
+
+@pytest.mark.unit
+def test_compute_sm_periodicity_direct_returns_dataframe() -> None:
+    mat, pos = _make_periodic_mat()
+    df = compute_single_molecule_periodicity_direct(mat, pos)
+    assert not df.empty
+
+
+@pytest.mark.unit
+def test_compute_sm_periodicity_direct_columns() -> None:
+    mat, pos = _make_periodic_mat()
+    df = compute_single_molecule_periodicity_direct(mat, pos)
+    for col in ("row_index", "n_sites", "ls_nrl_bp", "ls_snr", "ls_peak_power", "ls_fwhm_bp"):
+        assert col in df.columns
+
+
+@pytest.mark.unit
+def test_compute_sm_periodicity_direct_too_few_sites_returns_empty() -> None:
+    rng = np.random.default_rng(1)
+    # Each read has fewer sites than MIN_SITES_PER_READ
+    n_cols = MIN_SITES_PER_READ - 5
+    mat = rng.choice([0.0, 1.0], size=(10, n_cols)).astype(float)
+    pos = np.arange(n_cols, dtype=float) * 10
+    df = compute_single_molecule_periodicity_direct(mat, pos)
+    assert df.empty
+
+
+@pytest.mark.unit
+def test_compute_sm_periodicity_direct_row_index_in_bounds() -> None:
+    mat, pos = _make_periodic_mat(n_reads=20)
+    df = compute_single_molecule_periodicity_direct(mat, pos)
+    assert df["row_index"].between(0, 19).all()
+
+
+@pytest.mark.unit
+def test_compute_sm_periodicity_direct_peak_power_in_unit_interval() -> None:
+    mat, pos = _make_periodic_mat()
+    df = compute_single_molecule_periodicity_direct(mat, pos)
+    assert (df["ls_peak_power"] >= 0).all()
+    assert (df["ls_peak_power"] <= 1).all()

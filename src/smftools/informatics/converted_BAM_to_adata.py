@@ -557,10 +557,10 @@ def _encode_sequence_array(
         2. Map A/C/G/T/N bases into integer values.
         3. Mark positions beyond valid_length with the padding value.
     """
-    read_sequence = np.asarray(read_sequence, dtype="<U1")
+    read_sequence = np.asarray(read_sequence, dtype="|S1")
     encoded = np.full(read_sequence.shape, config.unknown_value, dtype=np.int16)
     for base in config.bases:
-        encoded[read_sequence == base] = config.base_to_int[base]
+        encoded[read_sequence == base.encode()] = config.base_to_int[base]
     if valid_length < encoded.size:
         encoded[valid_length:] = config.padding_value
     return encoded
@@ -723,6 +723,7 @@ def process_single_bam(
             read_name_filter=read_name_filter,
         )
         mismatch_trend_series = pd.Series(mismatch_trend_per_read)
+        del mismatch_counts_per_read
 
         # Skip processing if both forward and reverse base identities are empty
         if not fwd_bases and not rev_bases:
@@ -744,6 +745,7 @@ def process_single_bam(
                 mismatch_trend_per_read,
             )
             merged_bin.update(fwd_bin)
+            del fwd_bin
 
         if rev_bases:
             rev_bin = binarize_converted_base_identities(
@@ -754,6 +756,7 @@ def process_single_bam(
                 mismatch_trend_per_read,
             )
             merged_bin.update(rev_bin)
+            del rev_bin
 
         # Skip if merged_bin is empty (no valid binarized data)
         if not merged_bin:
@@ -766,6 +769,7 @@ def process_single_bam(
         # for key in merged_bin:
         #     merged_bin[key] = merged_bin[key].cpu().numpy()  # Move to CPU & convert to NumPy
         bin_df = pd.DataFrame.from_dict(merged_bin, orient="index")
+        del merged_bin
         sorted_index = sorted(bin_df.index)
         bin_df = bin_df.reindex(sorted_index)
 
@@ -795,6 +799,8 @@ def process_single_bam(
                 )
             )
 
+        del fwd_bases, rev_bases
+
         if not batch_files:
             logger.debug(
                 f"[Worker {current_process().pid}] Skipping {sample} - No valid encoded data for {record}."
@@ -820,6 +826,7 @@ def process_single_bam(
         encoded_matrix = np.vstack(
             [encoded_reads.get(read_name, default_sequence) for read_name in sorted_index]
         )
+        del encoded_reads
         default_mismatch_sequence = np.full(
             sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int16
         )
@@ -831,6 +838,7 @@ def process_single_bam(
                 for read_name in sorted_index
             ]
         )
+        del mismatch_base_identities
         default_quality_sequence = np.full(sequence_length, -1, dtype=np.int16)
         quality_matrix = np.vstack(
             [
@@ -838,16 +846,22 @@ def process_single_bam(
                 for read_name in sorted_index
             ]
         )
+        del base_quality_scores
         default_read_span = np.zeros(sequence_length, dtype=np.int16)
         read_span_matrix = np.vstack(
             [read_span_masks.get(read_name, default_read_span) for read_name in sorted_index]
         )
+        del read_span_masks
+        gc.collect()
 
         # Convert to AnnData
         X = bin_df.values.astype(np.float32)
+        obs_names = bin_df.index.astype(str)
+        var_names = bin_df.columns.astype(str)
+        del bin_df
         adata = ad.AnnData(X)
-        adata.obs_names = bin_df.index.astype(str)
-        adata.var_names = bin_df.columns.astype(str)
+        adata.obs_names = obs_names
+        adata.var_names = var_names
         adata.obs[SAMPLE] = [sample] * len(adata)
         if read_to_barcode is not None:
             adata.obs[BARCODE] = [read_to_barcode.get(rn, "unknown") for rn in adata.obs_names]
@@ -899,9 +913,13 @@ def process_single_bam(
 
         # Attach integer sequence encoding to layers
         adata.layers[SEQUENCE_INTEGER_ENCODING] = encoded_matrix
+        del encoded_matrix
         adata.layers[MISMATCH_INTEGER_ENCODING] = mismatch_encoded_matrix
+        del mismatch_encoded_matrix
         adata.layers[BASE_QUALITY_SCORES] = quality_matrix
+        del quality_matrix
         adata.layers[READ_SPAN_MASK] = read_span_matrix
+        del read_span_matrix
 
         adata_list.append(adata)
 

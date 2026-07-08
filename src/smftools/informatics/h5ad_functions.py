@@ -307,22 +307,16 @@ def add_secondary_supplementary_alignment_flags(
 
     from .bam_functions import (
         extract_secondary_supplementary_alignment_spans,
-        find_secondary_supplementary_read_names,
     )
 
-    secondary_reads, supplementary_reads = find_secondary_supplementary_read_names(
-        bam_path,
-        adata.obs_names,
-        samtools_backend=samtools_backend,
-    )
     secondary_spans, supplementary_spans = extract_secondary_supplementary_alignment_spans(
         bam_path,
         adata.obs_names,
         samtools_backend=samtools_backend,
     )
 
-    adata.obs["has_secondary_alignment"] = adata.obs_names.isin(secondary_reads)
-    adata.obs["has_supplementary_alignment"] = adata.obs_names.isin(supplementary_reads)
+    adata.obs["has_secondary_alignment"] = adata.obs_names.isin(secondary_spans.keys())
+    adata.obs["has_supplementary_alignment"] = adata.obs_names.isin(supplementary_spans.keys())
     adata.obs["secondary_alignment_spans"] = [
         secondary_spans.get(read_name) for read_name in adata.obs_names
     ]

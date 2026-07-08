@@ -3,10 +3,11 @@ autocorrelation.py — NaN-aware binary autocorrelation over irregularly spaced 
 
 Core functions
 --------------
-binary_autocorrelation_with_spacing  Per-read ACF over gapped binary positions.
-weighted_mean_autocorr               Combine per-read ACF curves with lag-count weights.
-compute_replicate_curve              Coverage-filter a matrix then compute its mean ACF.
-compute_single_molecule_periodicity  Coverage-filter a matrix then compute per-read LS metrics.
+binary_autocorrelation_with_spacing        Per-read ACF over gapped binary positions.
+weighted_mean_autocorr                     Combine per-read ACF curves with lag-count weights.
+compute_replicate_curve                    Coverage-filter a matrix then compute its mean ACF.
+compute_single_molecule_periodicity        Per-read LS via ACF intermediate (ensemble method).
+compute_single_molecule_periodicity_direct Per-read LS directly on raw signal (direct method).
 
 These functions are independent of project constants. Pass positions, matrices, and
 threshold values as explicit parameters.
@@ -228,6 +229,91 @@ def compute_single_molecule_periodicity(
                 "ls_snr": result["ls_snr"],
                 "ls_peak_power": result["ls_peak_power"],
                 "ls_fwhm_bp": result["ls_fwhm_bp"],
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def compute_single_molecule_periodicity_direct(
+    mat: np.ndarray,
+    positions: np.ndarray,
+    min_col_coverage: float = _DEFAULT_MIN_COL_COVERAGE,
+    min_row_coverage: float = _DEFAULT_MIN_ROW_COVERAGE,
+    nrl_search_bp: tuple[float, float] = ls_periodicity.NRL_SEARCH_BP,
+    period_range_bp: tuple[float, float] = ls_periodicity.NRL_SEARCH_BP,
+    poly_degree: int = ls_periodicity.LS_POLY_DEGREE,
+    min_sites: int = ls_periodicity.MIN_SITES_PER_READ,
+) -> pd.DataFrame:
+    """
+    Per-read Lomb-Scargle periodicity directly from raw C-site binary signal.
+
+    Runs LS on each read's accessibility signal without an ACF intermediate step.
+    A polynomial detrend removes slow accessibility gradients along the locus.
+    More reliable than :func:`compute_single_molecule_periodicity` for sparse
+    single-molecule data where per-read ACF curves have few pairs per lag.
+
+    Parameters
+    ----------
+    mat       : (n_reads × n_positions) float; NaN = no coverage.
+    positions : TSS-centred int coordinates matching mat columns.
+
+    Returns
+    -------
+    pd.DataFrame with one row per surviving read and columns:
+    ``row_index``, ``n_sites``, ``ls_nrl_bp``, ``ls_snr``,
+    ``ls_peak_power``, ``ls_fwhm_bp``, ``ls_freqs`` (array), ``ls_power`` (array).
+    Drop ``ls_freqs``/``ls_power`` before saving to CSV.
+    """
+    columns = [
+        "row_index",
+        "n_sites",
+        "ls_nrl_bp",
+        "ls_snr",
+        "ls_peak_power",
+        "ls_fwhm_bp",
+        "ls_freqs",
+        "ls_power",
+    ]
+
+    col_cov = np.mean(~np.isnan(mat), axis=0)
+    keep_cols = (col_cov >= min_col_coverage) & np.isfinite(positions)
+    mat = mat[:, keep_cols]
+    pos = positions[keep_cols]
+    if mat.shape[1] < 2:
+        return pd.DataFrame(columns=columns)
+
+    order = np.argsort(pos)
+    mat = mat[:, order]
+    pos = pos[order].astype(float)
+
+    row_cov = np.mean(~np.isnan(mat), axis=1)
+    row_idx = np.flatnonzero(row_cov >= min_row_coverage)
+
+    rows = []
+    for i in row_idx:
+        signal = mat[i]
+        result = ls_periodicity.analyze_ls_periodicity_direct(
+            pos,
+            signal,
+            nrl_search_bp=nrl_search_bp,
+            period_range_bp=period_range_bp,
+            poly_degree=poly_degree,
+            min_sites=min_sites,
+        )
+        if result is None:
+            continue
+        n_sites = int(np.sum(np.isfinite(signal)))
+        rows.append(
+            {
+                "row_index": int(i),
+                "n_sites": n_sites,
+                "ls_nrl_bp": result["ls_nrl_bp"],
+                "ls_snr": result["ls_snr"],
+                "ls_peak_power": result["ls_peak_power"],
+                "ls_fwhm_bp": result["ls_fwhm_bp"],
+                "ls_freqs": result["ls_freqs"],
+                "ls_power": result["ls_power"],
             }
         )
 

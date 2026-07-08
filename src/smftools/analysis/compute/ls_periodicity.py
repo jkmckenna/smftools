@@ -1,10 +1,17 @@
 """
-ls_periodicity.py — Lomb-Scargle periodogram utilities for autocorrelation-based
-nucleosome analysis.
+ls_periodicity.py — Lomb-Scargle periodogram utilities for nucleosome analysis.
 
-Uses scipy.signal.lombscargle which operates on finite (lag, autocorr) pairs and
-ignores NaN lags. This is the correct tool when comparing masked vs unmasked
-conditions where the number of valid lags differs.
+Two input modes
+---------------
+ACF-based (ensemble):    ls_periodogram_from_autocorr / analyze_ls_periodicity
+  Input: (lags, autocorr) pairs derived from a weighted-mean ACF curve.
+  Best for replicate-level curves where many reads contribute to each lag.
+
+Direct-signal (per-read): ls_periodogram_from_signal / analyze_ls_periodicity_direct
+  Input: (positions, signal) — raw C_site_binary values at genomic positions.
+  Polynomial-detrends to remove slow accessibility gradients, then runs LS
+  directly without an ACF intermediate step. More reliable for sparse
+  single-molecule data where the per-read ACF has few pairs per lag.
 
 Key difference from FFT
 -----------------------
@@ -13,27 +20,29 @@ LS:  drops NaN lags entirely → spectrum reflects only observed data.
 
 Usage
 -----
-    from tools.ls_periodicity import analyze_ls_periodicity, analyze_fft_periodicity
-
-    result = analyze_ls_periodicity(lags, ac_values)
-    # result is None on failure, else dict with ls_nrl_bp, ls_snr, ls_fwhm_bp, …
+    result = analyze_ls_periodicity(lags, ac_values)          # ACF path
+    result = analyze_ls_periodicity_direct(positions, signal)  # direct path
+    # Both return None on failure, else dict with ls_nrl_bp, ls_snr, ls_peak_power,
+    # ls_peak_power_raw, ls_fwhm_bp, ls_freqs, ls_power, ls_power_raw
 """
 
 import numpy as np
 from scipy.fft import rfft, rfftfreq
 from scipy.signal import find_peaks, lombscargle
 
-NRL_SEARCH_BP = (120, 260)
+NRL_SEARCH_BP = (150, 250)
 MIN_FINITE_LAGS = 10
 LS_PERIOD_RANGE_BP = (80, 400)
 FFT_SMOOTHING_WINDOW_BP = 25
 MAX_HARMONICS = 8
+MIN_SITES_PER_READ = 40
+LS_POLY_DEGREE = 2
 
 
 def ls_periodogram_from_autocorr(
     lags,
     ac_vals,
-    period_range_bp: tuple[float, float] = LS_PERIOD_RANGE_BP,
+    period_range_bp: tuple[float, float] = NRL_SEARCH_BP,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
     Compute Lomb-Scargle periodogram from (lag, autocorr) pairs.
@@ -136,7 +145,7 @@ def analyze_ls_periodicity(
     lags,
     ac_vals,
     nrl_search_bp: tuple[float, float] = NRL_SEARCH_BP,
-    period_range_bp: tuple[float, float] = LS_PERIOD_RANGE_BP,
+    period_range_bp: tuple[float, float] = NRL_SEARCH_BP,
 ) -> dict | None:
     """
     Full LS periodicity analysis on a (lag, autocorr) sequence.
@@ -145,6 +154,123 @@ def analyze_ls_periodicity(
     ls_fwhm_bp, ls_freqs, ls_power, ls_power_raw — or None on failure.
     """
     freqs, power, power_raw = ls_periodogram_from_autocorr(lags, ac_vals, period_range_bp)
+    if freqs is None:
+        return None
+
+    f0, peak_idx = find_peak_ls(freqs, power, nrl_search_bp)
+    if f0 is None:
+        return None
+
+    return {
+        "ls_nrl_bp": 1.0 / f0,
+        "ls_snr": snr_ls(power, peak_idx)[0],
+        "ls_peak_power": float(power[peak_idx]),
+        "ls_peak_power_raw": float(power_raw[peak_idx]),
+        "ls_fwhm_bp": fwhm_ls(freqs, power, peak_idx),
+        "ls_freqs": freqs,
+        "ls_power": power,
+        "ls_power_raw": power_raw,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Direct-signal LS (per-read, no ACF intermediate)
+# ---------------------------------------------------------------------------
+
+
+def ls_periodogram_from_signal(
+    positions,
+    signal,
+    period_range_bp: tuple[float, float] = NRL_SEARCH_BP,
+    poly_degree: int = LS_POLY_DEGREE,
+    min_sites: int = MIN_SITES_PER_READ,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
+    """
+    Lomb-Scargle periodogram from raw C-site binary signal at genomic positions.
+
+    Runs LS directly on the (positions, signal) pairs without an ACF intermediate.
+    A polynomial of degree ``poly_degree`` is subtracted to remove slow accessibility
+    gradients before the spectral analysis.
+
+    Parameters
+    ----------
+    positions : 1-D array of genomic coordinates (bp, TSS-centred).
+    signal    : 1-D float array of C_site_binary values (0/1/NaN); NaN = not covered.
+    period_range_bp : (min_period, max_period) in bp for the frequency grid.
+    poly_degree     : degree of detrending polynomial (default 2).
+    min_sites       : minimum finite sites required to attempt scoring.
+
+    Returns
+    -------
+    (freqs, power_norm, power_raw) on success, or (None, None, None) on failure.
+    Uses the same frequency grid as :func:`ls_periodogram_from_autocorr` so
+    :func:`find_peak_ls`, :func:`snr_ls`, and :func:`fwhm_ls` apply unchanged.
+    """
+    positions = np.asarray(positions, dtype=float)
+    signal = np.asarray(signal, dtype=float)
+
+    finite = np.isfinite(signal)
+    if np.sum(finite) < min_sites:
+        return None, None, None
+
+    x = positions[finite]
+    y = signal[finite]
+
+    if np.std(y) < 1e-8:
+        return None, None, None
+
+    deg = min(poly_degree, max(0, np.unique(x).size - 1))
+    if deg >= 1:
+        y = y - np.polyval(np.polyfit(x, y, deg), x)
+    y = y - np.mean(y)
+
+    if np.std(y) < 1e-8:
+        return None, None, None
+
+    period_min, period_max = period_range_bp
+    periods = np.arange(period_max, period_min - 1, -1, dtype=float)
+    freqs = 1.0 / periods
+    if freqs.size == 0:
+        return None, None, None
+
+    omega = 2.0 * np.pi * freqs
+    power_norm = lombscargle(x, y, omega, normalize=True)
+    power_raw = lombscargle(x, y, omega, normalize=False)
+    return freqs, power_norm, power_raw
+
+
+def analyze_ls_periodicity_direct(
+    positions,
+    signal,
+    nrl_search_bp: tuple[float, float] = NRL_SEARCH_BP,
+    period_range_bp: tuple[float, float] = NRL_SEARCH_BP,
+    poly_degree: int = LS_POLY_DEGREE,
+    min_sites: int = MIN_SITES_PER_READ,
+) -> dict | None:
+    """
+    Full LS periodicity analysis on raw C-site binary signal (direct method).
+
+    Equivalent to :func:`analyze_ls_periodicity` but takes ``(positions, signal)``
+    instead of ``(lags, ac_vals)``. Returns the same dict structure so downstream
+    callers (peak-power histograms, NRL barplots) are interchangeable.
+
+    Parameters
+    ----------
+    positions : 1-D array of genomic coordinates (bp, TSS-centred).
+    signal    : 1-D float array of C_site_binary values (0/1/NaN).
+
+    Returns
+    -------
+    dict with keys: ls_nrl_bp, ls_snr, ls_peak_power, ls_peak_power_raw,
+    ls_fwhm_bp, ls_freqs, ls_power, ls_power_raw — or None on failure.
+    """
+    freqs, power, power_raw = ls_periodogram_from_signal(
+        positions,
+        signal,
+        period_range_bp=period_range_bp,
+        poly_degree=poly_degree,
+        min_sites=min_sites,
+    )
     if freqs is None:
         return None
 
