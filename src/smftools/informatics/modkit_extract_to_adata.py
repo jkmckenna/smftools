@@ -292,6 +292,30 @@ def parallel_load_tsvs(
     if sample_indices is None:
         sample_indices = list(range(len(tsv_batch)))
 
+    # Run in-process, with no nested process pool, whenever there's only one TSV to
+    # load or the caller explicitly asked for no parallelism here (threads<=1). This
+    # also makes it safe to call from inside a multiprocessing.Pool worker (e.g. the
+    # per-batch parallel dispatch in modkit_extract_to_adata) -- Pool workers are
+    # daemonic processes, and daemonic processes are not allowed to spawn their own
+    # child processes, so unconditionally spawning a ProcessPoolExecutor here would
+    # crash with "daemonic processes are not allowed to have children".
+    if threads is None or threads <= 1 or len(tsv_batch) <= 1:
+        for sample_index, tsv in tqdm(
+            zip(sample_indices, tsv_batch),
+            desc=f"Processing batch {batch}",
+            total=batch_size,
+        ):
+            result = process_tsv_with_read_filter(
+                tsv,
+                records_to_analyze,
+                reference_dict,
+                sample_index,
+                read_name_filters.get(sample_index) if read_name_filters else None,
+            )
+            for record, sample_data in result.items():
+                dict_total[record].update(sample_data)
+        return dict_total
+
     with concurrent.futures.ProcessPoolExecutor(max_workers=threads) as executor:
         futures = {
             executor.submit(
@@ -1273,6 +1297,593 @@ def _build_modification_dicts(
     return batch_dicts, dict_to_skip
 
 
+def _estimate_max_workers(
+    sequence_batch_files: dict,
+    mismatch_batch_files: dict,
+    quality_batch_files: dict,
+    read_span_batch_files: dict,
+    threads,
+    mem_multiplier: float = 4.0,
+    mem_safety_fraction: float = 0.7,
+    min_worker_budget_gb: float = 2.0,
+) -> int:
+    """Estimate a safe worker count from available RAM and on-disk batch-file sizes.
+
+    Per-worker peak memory is approximated as `mem_multiplier` times the largest
+    single (sample, record) batch-file-set size on disk (to account for the
+    decoded int16 arrays, per-position NaN matrices, and AnnData object overhead
+    that a raw file size does not capture), floored at `min_worker_budget_gb`.
+    Available memory is read from the OS and only `mem_safety_fraction` of it is
+    budgeted, leaving headroom for the OS, page cache, and other processes.
+
+    Falls back to `threads` (or `os.cpu_count()`) alone, ignoring the memory
+    estimate, if file sizes or system memory cannot be determined (e.g. on a
+    platform without `os.sysconf`).
+    """
+    import os
+
+    cpu_cap = int(threads) if threads else (os.cpu_count() or 4)
+
+    try:
+        worst_case_bytes = 0
+        for key_dict in (
+            sequence_batch_files,
+            mismatch_batch_files,
+            quality_batch_files,
+            read_span_batch_files,
+        ):
+            per_key_totals: dict[str, int] = {}
+            for key, raw_files in key_dict.items():
+                total = 0
+                for p in _normalize_sequence_batch_files(raw_files):
+                    try:
+                        total += p.stat().st_size
+                    except OSError:
+                        pass
+                per_key_totals[key] = per_key_totals.get(key, 0) + total
+            if per_key_totals:
+                worst_case_bytes = max(worst_case_bytes, max(per_key_totals.values()))
+
+        if worst_case_bytes <= 0:
+            return max(1, cpu_cap)
+
+        est_worker_peak_bytes = max(
+            worst_case_bytes * mem_multiplier, min_worker_budget_gb * (1024**3)
+        )
+        total_mem_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        mem_cap = max(1, int((total_mem_bytes * mem_safety_fraction) // est_worker_peak_bytes))
+        return max(1, min(cpu_cap, mem_cap))
+    except Exception:
+        logger.debug("Could not estimate memory-based worker cap; falling back to CPU count")
+        return max(1, cpu_cap)
+
+
+def _resolve_max_workers(
+    max_workers: int | str | None,
+    n_batches: int,
+    threads,
+    sequence_batch_files: dict | None = None,
+    mismatch_batch_files: dict | None = None,
+    quality_batch_files: dict | None = None,
+    read_span_batch_files: dict | None = None,
+) -> int:
+    """Resolve the `max_workers` argument into a concrete, safe worker count.
+
+    - `None` -> 1 (serial; unchanged default behavior from before this parameter existed).
+    - `"auto"` -> memory-and-CPU-aware estimate via `_estimate_max_workers`.
+    - A positive int -> that value, additionally capped by the same memory
+      estimate and by `n_batches` (no point spawning more workers than batches).
+    """
+    if max_workers is None:
+        return 1
+    if isinstance(max_workers, str):
+        if max_workers.lower() != "auto":
+            raise ValueError(f"Unrecognized max_workers value: {max_workers!r}")
+        estimated = _estimate_max_workers(
+            sequence_batch_files or {},
+            mismatch_batch_files or {},
+            quality_batch_files or {},
+            read_span_batch_files or {},
+            threads,
+        )
+        return max(1, min(estimated, n_batches))
+    requested = int(max_workers)
+    if requested <= 1:
+        return 1
+    estimated = _estimate_max_workers(
+        sequence_batch_files or {},
+        mismatch_batch_files or {},
+        quality_batch_files or {},
+        read_span_batch_files or {},
+        threads,
+    )
+    return max(1, min(requested, estimated, n_batches))
+
+
+def _process_one_batch(
+    batch: int,
+    tsv_batch: list,
+    sample_indices_batch,
+    existing_h5s: list,
+    records_to_analyze,
+    reference_dict,
+    max_reference_length: int,
+    mods: list[str],
+    batch_size: int,
+    threads,
+    read_name_filters,
+    use_global_sample_indices: bool,
+    sample_name_map: dict,
+    barcode_map: dict,
+    read_to_barcode,
+    h5_dir,
+    sequence_batch_files: dict,
+    mismatch_batch_files: dict,
+    quality_batch_files: dict,
+    read_span_batch_files: dict,
+) -> None:
+    """Process one batch of TSVs into per-dict-type H5AD files under `h5_dir`.
+
+    This is the exact per-batch body that `modkit_extract_to_adata`'s serial loop
+    used to run inline; it was extracted, unchanged, so it could also be dispatched
+    to a `multiprocessing.Pool` worker for the parallel path (see `max_workers` on
+    `modkit_extract_to_adata`) without duplicating or reimplementing any of its
+    (already fixed/tested) numeric logic. Every argument is picklable (paths,
+    already-computed small dicts of file paths/metadata) -- none of the large
+    per-read dictionaries this function builds internally are ever passed in or
+    returned, so dispatching this function across processes does not incur the
+    "ship a huge dict per task" cost that made the older orphaned
+    `parallel_process_modifications`/`parallel_extract_stranded_methylation` helpers
+    unsafe to use under this codebase's `forkserver` multiprocessing start method.
+
+    Side effects only: writes `<date>_<batch>_<dict_type>_SMF_binarized_sample_hdf5.h5ad.gz`
+    files into `h5_dir`, one per surviving dict type that has at least one mapped read.
+    """
+    import anndata as ad
+
+    from .. import readwrite
+
+    batch_already_processed = sum([1 for h5 in existing_h5s if f"_{batch}_" in h5.name])
+    if batch_already_processed:
+        logger.debug(
+            f"Batch {batch} has already been processed into h5ads. Skipping batch and using existing files"
+        )
+        return
+
+    ###################################################
+    ### Add the tsvs as dataframes to a dictionary (dict_total) keyed by integer index. Also make modification specific dictionaries and strand specific dictionaries.
+    # # Initialize dictionaries and place them in a list
+    batch_dicts = ModkitBatchDictionaries()
+    dict_list = batch_dicts.as_list()
+    sample_types = batch_dicts.sample_types
+    # Cache of (sample, record) -> loaded sequence/mismatch/quality/read-span batches,
+    # reset every batch so its memory is bounded to one batch. See
+    # _load_sample_record_batches_cached for why this reuse is safe.
+    sample_record_batch_cache: dict[str, tuple] = {}
+
+    # Pool workers are daemonic processes, which are not allowed to spawn their own
+    # child processes. When this function is itself running inside a
+    # multiprocessing.Pool worker (the parallel per-batch dispatch path), force the
+    # inner TSV load to run without its own nested process pool -- parallel_load_tsvs
+    # already falls back to a serial in-process loop for threads<=1.
+    import multiprocessing as _mp
+
+    tsv_load_threads = 1 if _mp.current_process().daemon else threads
+
+    # # Step 1):Load the dict_total dictionary with all of the batch tsv files as dataframes.
+    dict_total = parallel_load_tsvs(
+        tsv_batch,
+        records_to_analyze,
+        reference_dict,
+        batch,
+        batch_size=len(tsv_batch),
+        threads=tsv_load_threads,
+        sample_indices=sample_indices_batch,
+        read_name_filters=read_name_filters,
+    )
+
+    batch_dicts, dict_to_skip = _build_modification_dicts(dict_total, mods)
+    dict_list = batch_dicts.as_list()
+    sample_types = batch_dicts.sample_types
+
+    # Iterate over the stranded modification dictionaries and replace the dataframes with a dictionary of read names pointing to a list of values from the dataframe
+    for dict_index, dict_type in enumerate(dict_list):
+        # Only iterate over stranded dictionaries
+        if dict_index not in dict_to_skip:
+            logger.debug(
+                "Extracting methylation states for {} dictionary".format(
+                    sample_types[dict_index]
+                )
+            )
+            for record in dict_type.keys():
+                # Get the dictionary for the modification type of interest from the reference mapping of interest
+                mod_strand_record_sample_dict = dict_type[record]
+                logger.debug(
+                    "Extracting methylation states for {} dictionary".format(record)
+                )
+                # For each sample in a stranded dictionary
+                n_samples = len(mod_strand_record_sample_dict.keys())
+                for sample in tqdm(
+                    mod_strand_record_sample_dict.keys(),
+                    desc=f"Extracting {sample_types[dict_index]} dictionary from record {record} for sample",
+                    total=n_samples,
+                ):
+                    # Load the combined bottom strand dictionary after all the individual dictionaries have been made for the sample
+                    if dict_index == 7:
+                        # Load the minus strand dictionaries for each sample into temporary variables
+                        temp_a_dict = dict_list[2][record][sample].copy()
+                        temp_c_dict = dict_list[5][record][sample].copy()
+                        mod_strand_record_sample_dict[sample] = {}
+                        # Iterate over the reads present in the merge of both dictionaries
+                        for read in set(temp_a_dict) | set(temp_c_dict):
+                            # Add the arrays element-wise if the read is present in both dictionaries
+                            if read in temp_a_dict and read in temp_c_dict:
+                                mod_strand_record_sample_dict[sample][read] = np.where(
+                                    np.isnan(temp_a_dict[read])
+                                    & np.isnan(temp_c_dict[read]),
+                                    np.nan,
+                                    np.nan_to_num(temp_a_dict[read])
+                                    + np.nan_to_num(temp_c_dict[read]),
+                                )
+                            # If the read is present in only one dictionary, copy its value
+                            elif read in temp_a_dict:
+                                mod_strand_record_sample_dict[sample][read] = temp_a_dict[
+                                    read
+                                ]
+                            elif read in temp_c_dict:
+                                mod_strand_record_sample_dict[sample][read] = temp_c_dict[
+                                    read
+                                ]
+                        del temp_a_dict, temp_c_dict
+                    # Load the combined top strand dictionary after all the individual dictionaries have been made for the sample
+                    elif dict_index == 8:
+                        # Load the plus strand dictionaries for each sample into temporary variables
+                        temp_a_dict = dict_list[3][record][sample].copy()
+                        temp_c_dict = dict_list[6][record][sample].copy()
+                        mod_strand_record_sample_dict[sample] = {}
+                        # Iterate over the reads present in the merge of both dictionaries
+                        for read in set(temp_a_dict) | set(temp_c_dict):
+                            # Add the arrays element-wise if the read is present in both dictionaries
+                            if read in temp_a_dict and read in temp_c_dict:
+                                mod_strand_record_sample_dict[sample][read] = np.where(
+                                    np.isnan(temp_a_dict[read])
+                                    & np.isnan(temp_c_dict[read]),
+                                    np.nan,
+                                    np.nan_to_num(temp_a_dict[read])
+                                    + np.nan_to_num(temp_c_dict[read]),
+                                )
+                            # If the read is present in only one dictionary, copy its value
+                            elif read in temp_a_dict:
+                                mod_strand_record_sample_dict[sample][read] = temp_a_dict[
+                                    read
+                                ]
+                            elif read in temp_c_dict:
+                                mod_strand_record_sample_dict[sample][read] = temp_c_dict[
+                                    read
+                                ]
+                        del temp_a_dict, temp_c_dict
+                    # For all other dictionaries
+                    else:
+                        # use temp_df to point to the dataframe held in mod_strand_record_sample_dict[sample]
+                        temp_df = mod_strand_record_sample_dict[sample]
+                        # reassign the dictionary pointer to a nested dictionary.
+                        mod_strand_record_sample_dict[sample] = {}
+
+                        # Get relevant columns as NumPy arrays
+                        read_ids = temp_df[MODKIT_EXTRACT_TSV_COLUMN_READ_ID].values
+                        positions = temp_df[MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION].values
+                        call_codes = temp_df[MODKIT_EXTRACT_TSV_COLUMN_CALL_CODE].values
+                        probabilities = temp_df[MODKIT_EXTRACT_TSV_COLUMN_CALL_PROB].values
+
+                        # Define valid call code categories
+                        modified_codes = MODKIT_EXTRACT_CALL_CODE_MODIFIED
+                        canonical_codes = MODKIT_EXTRACT_CALL_CODE_CANONICAL
+
+                        # Vectorized methylation calculation with NaN for other codes
+                        methylation_prob = np.full_like(
+                            probabilities, np.nan
+                        )  # Default all to NaN
+                        methylation_prob[np.isin(call_codes, list(modified_codes))] = (
+                            probabilities[np.isin(call_codes, list(modified_codes))]
+                        )
+                        methylation_prob[np.isin(call_codes, list(canonical_codes))] = (
+                            1 - probabilities[np.isin(call_codes, list(canonical_codes))]
+                        )
+
+                        # Find unique reads
+                        unique_reads = np.unique(read_ids)
+                        # Preallocate storage for each read
+                        for read in unique_reads:
+                            mod_strand_record_sample_dict[sample][read] = np.full(
+                                max_reference_length, np.nan
+                            )
+
+                        # Efficient NumPy indexing to assign values
+                        for i in range(len(read_ids)):
+                            read = read_ids[i]
+                            pos = positions[i]
+                            prob = methylation_prob[i]
+
+                            # Assign methylation probability
+                            mod_strand_record_sample_dict[sample][read][pos] = prob
+
+    # Save the sample files in the batch as gzipped hdf5 files
+    logger.info("Converting batch {} dictionaries to anndata objects".format(batch))
+    # See _individual_mod_dicts_superseded_by_combined docstring: skips AnnData
+    # construction only (not the upstream array computation which dict_to_skip,
+    # used above in Loop A, already governs correctly).
+    loop_b_skip = dict_to_skip | _individual_mod_dicts_superseded_by_combined(mods)
+    for dict_index, dict_type in enumerate(dict_list):
+        if dict_index not in loop_b_skip:
+            # Collect one AnnData per sample and concatenate once at the end
+            # (instead of concatenating incrementally per sample, which is O(n^2)).
+            adata_list: list[ad.AnnData] = []
+            logger.info(
+                "Converting {} dictionary to an anndata object".format(
+                    sample_types[dict_index]
+                )
+            )
+            for record in dict_type.keys():
+                # Get the dictionary for the modification type of interest from the reference mapping of interest
+                mod_strand_record_sample_dict = dict_type[record]
+                for sample in mod_strand_record_sample_dict.keys():
+                    logger.info(
+                        "Converting {0} dictionary for sample {1} to an anndata object".format(
+                            sample_types[dict_index], sample
+                        )
+                    )
+                    sample = int(sample)
+                    if use_global_sample_indices:
+                        final_sample_index = sample
+                    else:
+                        final_sample_index = sample + (batch * batch_size)
+                    logger.info(
+                        "Final sample index for sample: {}".format(final_sample_index)
+                    )
+                    logger.debug(
+                        "Converting {0} dictionary for sample {1} to a dataframe".format(
+                            sample_types[dict_index],
+                            final_sample_index,
+                        )
+                    )
+                    temp_df = pd.DataFrame.from_dict(
+                        mod_strand_record_sample_dict[sample], orient="index"
+                    )
+                    mod_strand_record_sample_dict[sample] = (
+                        None  # reassign pointer to facilitate memory usage
+                    )
+                    sorted_index = sorted(temp_df.index)
+                    temp_df = temp_df.reindex(sorted_index)
+                    X = temp_df.values
+                    dataset, strand = sample_types[dict_index].split("_")[:2]
+
+                    logger.info(
+                        "Loading {0} dataframe for sample {1} into a temp anndata object".format(
+                            sample_types[dict_index],
+                            final_sample_index,
+                        )
+                    )
+                    temp_adata = ad.AnnData(X)
+                    if temp_adata.shape[0] > 0:
+                        logger.info(
+                            "Adding read names and position ids to {0} anndata for sample {1}".format(
+                                sample_types[dict_index],
+                                final_sample_index,
+                            )
+                        )
+                        temp_adata.obs_names = temp_df.index
+                        temp_adata.obs_names = temp_adata.obs_names.astype(str)
+                        temp_adata.var_names = temp_df.columns
+                        temp_adata.var_names = temp_adata.var_names.astype(str)
+                        logger.info(
+                            "Adding {0} anndata for sample {1}".format(
+                                sample_types[dict_index],
+                                final_sample_index,
+                            )
+                        )
+                        temp_adata.obs[SAMPLE] = [
+                            sample_name_map[final_sample_index]
+                        ] * len(temp_adata)
+                        if read_to_barcode is not None:
+                            temp_adata.obs[BARCODE] = [
+                                read_to_barcode.get(rn, "unknown")
+                                for rn in temp_adata.obs_names
+                            ]
+                        else:
+                            temp_adata.obs[BARCODE] = [
+                                barcode_map[final_sample_index]
+                            ] * len(temp_adata)
+                        temp_adata.obs[REFERENCE] = [f"{record}"] * len(temp_adata)
+                        temp_adata.obs[STRAND] = [strand] * len(temp_adata)
+                        temp_adata.obs[DATASET] = [dataset] * len(temp_adata)
+                        temp_adata.obs[REFERENCE_DATASET_STRAND] = [
+                            f"{record}_{dataset}_{strand}"
+                        ] * len(temp_adata)
+                        temp_adata.obs[REFERENCE_STRAND] = [f"{record}_{strand}"] * len(
+                            temp_adata
+                        )
+
+                        # Load integer-encoded reads for the current sample/record
+                        sequence_files = _normalize_sequence_batch_files(
+                            sequence_batch_files.get(f"{final_sample_index}_{record}", [])
+                        )
+                        mismatch_files = _normalize_sequence_batch_files(
+                            mismatch_batch_files.get(f"{final_sample_index}_{record}", [])
+                        )
+                        quality_files = _normalize_sequence_batch_files(
+                            quality_batch_files.get(f"{final_sample_index}_{record}", [])
+                        )
+                        read_span_files = _normalize_sequence_batch_files(
+                            read_span_batch_files.get(f"{final_sample_index}_{record}", [])
+                        )
+                        if not sequence_files:
+                            logger.warning(
+                                "No encoded sequence batches found for sample %s record %s",
+                                final_sample_index,
+                                record,
+                            )
+                            continue
+                        cache_key = f"{final_sample_index}_{record}"
+                        if cache_key in sample_record_batch_cache:
+                            logger.info(
+                                f"Reusing cached encoded sequences for {cache_key}"
+                            )
+                        else:
+                            logger.info(
+                                f"Loading encoded sequences from {sequence_files}"
+                            )
+                        (
+                            encoded_reads,
+                            fwd_mapped_reads,
+                            rev_mapped_reads,
+                            mismatch_reads,
+                            quality_reads,
+                            read_span_reads,
+                        ) = _load_sample_record_batches_cached(
+                            sample_record_batch_cache,
+                            cache_key,
+                            sequence_files,
+                            mismatch_files,
+                            quality_files,
+                            read_span_files,
+                        )
+
+                        read_names = list(encoded_reads.keys())
+
+                        read_mapping_direction = []
+                        for read_id in temp_adata.obs_names:
+                            if read_id in fwd_mapped_reads:
+                                read_mapping_direction.append("fwd")
+                            elif read_id in rev_mapped_reads:
+                                read_mapping_direction.append("rev")
+                            else:
+                                read_mapping_direction.append("unk")
+
+                        temp_adata.obs[READ_MAPPING_DIRECTION] = read_mapping_direction
+
+                        del temp_df
+
+                        padding_value = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT[
+                            MODKIT_EXTRACT_SEQUENCE_PADDING_BASE
+                        ]
+                        sequence_length = encoded_reads[read_names[0]].shape[0]
+                        encoded_matrix = np.full(
+                            (len(sorted_index), sequence_length),
+                            padding_value,
+                            dtype=np.int16,
+                        )
+
+                        for j, read_name in tqdm(
+                            enumerate(sorted_index),
+                            desc="Loading integer-encoded reads",
+                            total=len(sorted_index),
+                        ):
+                            encoded_matrix[j, :] = encoded_reads[read_name]
+
+                        del encoded_reads
+                        gc.collect()
+
+                        temp_adata.layers[SEQUENCE_INTEGER_ENCODING] = encoded_matrix
+                        if mismatch_reads:
+                            current_reference_length = reference_dict[record][0]
+                            default_mismatch_sequence = np.full(
+                                sequence_length,
+                                MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"],
+                                dtype=np.int16,
+                            )
+                            if current_reference_length < sequence_length:
+                                default_mismatch_sequence[current_reference_length:] = (
+                                    padding_value
+                                )
+                            mismatch_matrix = np.vstack(
+                                [
+                                    mismatch_reads.get(read_name, default_mismatch_sequence)
+                                    for read_name in sorted_index
+                                ]
+                            )
+                            temp_adata.layers[MISMATCH_INTEGER_ENCODING] = mismatch_matrix
+                        if quality_reads:
+                            default_quality_sequence = np.full(
+                                sequence_length, -1, dtype=np.int16
+                            )
+                            quality_matrix = np.vstack(
+                                [
+                                    quality_reads.get(read_name, default_quality_sequence)
+                                    for read_name in sorted_index
+                                ]
+                            )
+                            temp_adata.layers[BASE_QUALITY_SCORES] = quality_matrix
+                        if read_span_reads:
+                            default_read_span = np.zeros(sequence_length, dtype=np.int16)
+                            read_span_matrix = np.vstack(
+                                [
+                                    read_span_reads.get(read_name, default_read_span)
+                                    for read_name in sorted_index
+                                ]
+                            )
+                            temp_adata.layers[READ_SPAN_MASK] = read_span_matrix
+
+                        # Queue this sample's AnnData; concatenated once, after the sample loop.
+                        if temp_adata.shape[0] > 0:
+                            logger.info(
+                                "Queuing {0} anndata object for sample {1}".format(
+                                    sample_types[dict_index],
+                                    final_sample_index,
+                                )
+                            )
+                            adata_list.append(temp_adata)
+                        else:
+                            logger.warning(
+                                f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata"
+                            )
+                        del temp_adata
+
+                        gc.collect()
+                    else:
+                        logger.warning(
+                            f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata. Skipping sample."
+                        )
+
+            if adata_list:
+                logger.info(
+                    "Concatenating {0} anndata objects for {1}".format(
+                        len(adata_list), sample_types[dict_index]
+                    )
+                )
+                adata = ad.concat(adata_list, join="outer", index_unique=None)
+                del adata_list
+                gc.collect()
+                try:
+                    logger.info(
+                        "Writing {0} anndata out as a hdf5 file".format(
+                            sample_types[dict_index]
+                        )
+                    )
+                    adata.write_h5ad(
+                        h5_dir
+                        / "{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz".format(
+                            readwrite.date_string(), batch, sample_types[dict_index]
+                        ),
+                        compression="gzip",
+                    )
+                except Exception:
+                    logger.debug("Skipping writing anndata for sample")
+            else:
+                adata = None
+                logger.debug(
+                    "No samples had mapped reads for {0}; skipping write".format(
+                        sample_types[dict_index]
+                    )
+                )
+
+    try:
+        # Delete the batch dictionaries from memory
+        del dict_list, adata
+    except Exception:
+        pass
+    gc.collect()
+
+
 def modkit_extract_to_adata(
     fasta,
     bam_dir,
@@ -1290,6 +1901,7 @@ def modkit_extract_to_adata(
     demux_backend: str | None = None,
     single_bam=None,
     barcode_sidecar=None,
+    max_workers: int | str | None = None,
 ):
     """Convert modkit extract TSVs and BAMs into an AnnData object.
 
@@ -1311,6 +1923,14 @@ def modkit_extract_to_adata(
             demux_type annotation is skipped here and derived from BM tag later.
         single_bam: When set, use this single BAM instead of bam_dir (non-split mode).
         barcode_sidecar: Path to barcode sidecar parquet for read-to-barcode lookup in non-split mode.
+        max_workers (int | str | None): If None (default), batches are processed serially
+            in-process -- the same behavior as before this parameter existed. If a positive
+            int, up to that many batches are processed concurrently via
+            `multiprocessing.Pool`, using `batch_size` to control how many TSVs/samples
+            each worker task covers (set `batch_size=1` for one worker task per sample,
+            the finest available granularity). If "auto", a worker count is chosen from
+            available CPU count and estimated per-batch memory footprint (see
+            `_estimate_max_workers`).
 
     Returns:
         tuple[ad.AnnData | None, Path]: The final AnnData (if created) and its H5AD path.
@@ -1617,463 +2237,120 @@ def modkit_extract_to_adata(
     ##########################################################################################
 
     ###################################################
-    # Begin iterating over batches
+    ###################################################
+    # Begin iterating over batches -- either serially (max_workers is None, the
+    # original behavior) or dispatched across a process pool (max_workers set).
+    #
+    # Precompute every batch's (tsv slice, sample-index slice) up front. This
+    # sequential slicing must happen in this process (each batch consumes from a
+    # shared, mutating tsv/bam path queue) -- but it is cheap (just list slicing),
+    # unlike the actual per-batch work in _process_one_batch, which is what
+    # benefits from running concurrently.
+    batch_specs: list[tuple[int, list, object]] = []
+    _tsv_remaining = list(tsv_path_list)
     for batch in range(batches):
-        logger.info("Processing tsvs for batch {0} ".format(batch))
-        # For the final batch, just take the remaining tsv and bam files
         if batch == batches - 1:
-            tsv_batch = tsv_path_list
-            bam_batch = bam_path_list
-            if use_global_sample_indices:
-                sample_indices_batch = list(
-                    range(batch * batch_size, batch * batch_size + len(tsv_batch))
-                )
-            else:
-                sample_indices_batch = None
-        # For all other batches, take the next batch of tsvs and bams out of the file queue.
+            tsv_batch = _tsv_remaining
         else:
-            tsv_batch = tsv_path_list[:batch_size]
-            bam_batch = bam_path_list[:batch_size]
-            tsv_path_list = tsv_path_list[batch_size:]
-            bam_path_list = bam_path_list[batch_size:]
-            if use_global_sample_indices:
-                sample_indices_batch = list(
-                    range(batch * batch_size, batch * batch_size + len(tsv_batch))
-                )
-            else:
-                sample_indices_batch = None
-        logger.info("tsvs in batch {0} ".format(tsv_batch))
-
-        batch_already_processed = sum([1 for h5 in existing_h5s if f"_{batch}_" in h5.name])
-        ###################################################
-        if batch_already_processed:
-            logger.debug(
-                f"Batch {batch} has already been processed into h5ads. Skipping batch and using existing files"
+            tsv_batch = _tsv_remaining[:batch_size]
+            _tsv_remaining = _tsv_remaining[batch_size:]
+        if use_global_sample_indices:
+            sample_indices_batch = list(
+                range(batch * batch_size, batch * batch_size + len(tsv_batch))
             )
         else:
-            ###################################################
-            ### Add the tsvs as dataframes to a dictionary (dict_total) keyed by integer index. Also make modification specific dictionaries and strand specific dictionaries.
-            # # Initialize dictionaries and place them in a list
-            batch_dicts = ModkitBatchDictionaries()
-            dict_list = batch_dicts.as_list()
-            sample_types = batch_dicts.sample_types
-            # Cache of (sample, record) -> loaded sequence/mismatch/quality/read-span batches,
-            # reset every batch so its memory is bounded to one batch. See
-            # _load_sample_record_batches_cached for why this reuse is safe.
-            sample_record_batch_cache: dict[str, tuple] = {}
+            sample_indices_batch = None
+        logger.info("tsvs in batch {0} ".format(tsv_batch))
+        batch_specs.append((batch, tsv_batch, sample_indices_batch))
 
-            # # Step 1):Load the dict_total dictionary with all of the batch tsv files as dataframes.
-            dict_total = parallel_load_tsvs(
+    resolved_max_workers = _resolve_max_workers(
+        max_workers,
+        len(batch_specs),
+        threads,
+        sequence_batch_files,
+        mismatch_batch_files,
+        quality_batch_files,
+        read_span_batch_files,
+    )
+
+    if resolved_max_workers <= 1:
+        for batch, tsv_batch, sample_indices_batch in batch_specs:
+            logger.info("Processing tsvs for batch {0} ".format(batch))
+            _process_one_batch(
+                batch,
                 tsv_batch,
+                sample_indices_batch,
+                existing_h5s,
                 records_to_analyze,
                 reference_dict,
-                batch,
-                batch_size=len(tsv_batch),
-                threads=threads,
-                sample_indices=sample_indices_batch,
-                read_name_filters=read_name_filters,
+                max_reference_length,
+                mods,
+                batch_size,
+                threads,
+                read_name_filters,
+                use_global_sample_indices,
+                sample_name_map,
+                barcode_map,
+                read_to_barcode,
+                h5_dir,
+                sequence_batch_files,
+                mismatch_batch_files,
+                quality_batch_files,
+                read_span_batch_files,
             )
+    else:
+        import multiprocessing as mp
 
-            batch_dicts, dict_to_skip = _build_modification_dicts(dict_total, mods)
-            dict_list = batch_dicts.as_list()
-            sample_types = batch_dicts.sample_types
-
-            # Iterate over the stranded modification dictionaries and replace the dataframes with a dictionary of read names pointing to a list of values from the dataframe
-            for dict_index, dict_type in enumerate(dict_list):
-                # Only iterate over stranded dictionaries
-                if dict_index not in dict_to_skip:
-                    logger.debug(
-                        "Extracting methylation states for {} dictionary".format(
-                            sample_types[dict_index]
-                        )
-                    )
-                    for record in dict_type.keys():
-                        # Get the dictionary for the modification type of interest from the reference mapping of interest
-                        mod_strand_record_sample_dict = dict_type[record]
-                        logger.debug(
-                            "Extracting methylation states for {} dictionary".format(record)
-                        )
-                        # For each sample in a stranded dictionary
-                        n_samples = len(mod_strand_record_sample_dict.keys())
-                        for sample in tqdm(
-                            mod_strand_record_sample_dict.keys(),
-                            desc=f"Extracting {sample_types[dict_index]} dictionary from record {record} for sample",
-                            total=n_samples,
-                        ):
-                            # Load the combined bottom strand dictionary after all the individual dictionaries have been made for the sample
-                            if dict_index == 7:
-                                # Load the minus strand dictionaries for each sample into temporary variables
-                                temp_a_dict = dict_list[2][record][sample].copy()
-                                temp_c_dict = dict_list[5][record][sample].copy()
-                                mod_strand_record_sample_dict[sample] = {}
-                                # Iterate over the reads present in the merge of both dictionaries
-                                for read in set(temp_a_dict) | set(temp_c_dict):
-                                    # Add the arrays element-wise if the read is present in both dictionaries
-                                    if read in temp_a_dict and read in temp_c_dict:
-                                        mod_strand_record_sample_dict[sample][read] = np.where(
-                                            np.isnan(temp_a_dict[read])
-                                            & np.isnan(temp_c_dict[read]),
-                                            np.nan,
-                                            np.nan_to_num(temp_a_dict[read])
-                                            + np.nan_to_num(temp_c_dict[read]),
-                                        )
-                                    # If the read is present in only one dictionary, copy its value
-                                    elif read in temp_a_dict:
-                                        mod_strand_record_sample_dict[sample][read] = temp_a_dict[
-                                            read
-                                        ]
-                                    elif read in temp_c_dict:
-                                        mod_strand_record_sample_dict[sample][read] = temp_c_dict[
-                                            read
-                                        ]
-                                del temp_a_dict, temp_c_dict
-                            # Load the combined top strand dictionary after all the individual dictionaries have been made for the sample
-                            elif dict_index == 8:
-                                # Load the plus strand dictionaries for each sample into temporary variables
-                                temp_a_dict = dict_list[3][record][sample].copy()
-                                temp_c_dict = dict_list[6][record][sample].copy()
-                                mod_strand_record_sample_dict[sample] = {}
-                                # Iterate over the reads present in the merge of both dictionaries
-                                for read in set(temp_a_dict) | set(temp_c_dict):
-                                    # Add the arrays element-wise if the read is present in both dictionaries
-                                    if read in temp_a_dict and read in temp_c_dict:
-                                        mod_strand_record_sample_dict[sample][read] = np.where(
-                                            np.isnan(temp_a_dict[read])
-                                            & np.isnan(temp_c_dict[read]),
-                                            np.nan,
-                                            np.nan_to_num(temp_a_dict[read])
-                                            + np.nan_to_num(temp_c_dict[read]),
-                                        )
-                                    # If the read is present in only one dictionary, copy its value
-                                    elif read in temp_a_dict:
-                                        mod_strand_record_sample_dict[sample][read] = temp_a_dict[
-                                            read
-                                        ]
-                                    elif read in temp_c_dict:
-                                        mod_strand_record_sample_dict[sample][read] = temp_c_dict[
-                                            read
-                                        ]
-                                del temp_a_dict, temp_c_dict
-                            # For all other dictionaries
-                            else:
-                                # use temp_df to point to the dataframe held in mod_strand_record_sample_dict[sample]
-                                temp_df = mod_strand_record_sample_dict[sample]
-                                # reassign the dictionary pointer to a nested dictionary.
-                                mod_strand_record_sample_dict[sample] = {}
-
-                                # Get relevant columns as NumPy arrays
-                                read_ids = temp_df[MODKIT_EXTRACT_TSV_COLUMN_READ_ID].values
-                                positions = temp_df[MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION].values
-                                call_codes = temp_df[MODKIT_EXTRACT_TSV_COLUMN_CALL_CODE].values
-                                probabilities = temp_df[MODKIT_EXTRACT_TSV_COLUMN_CALL_PROB].values
-
-                                # Define valid call code categories
-                                modified_codes = MODKIT_EXTRACT_CALL_CODE_MODIFIED
-                                canonical_codes = MODKIT_EXTRACT_CALL_CODE_CANONICAL
-
-                                # Vectorized methylation calculation with NaN for other codes
-                                methylation_prob = np.full_like(
-                                    probabilities, np.nan
-                                )  # Default all to NaN
-                                methylation_prob[np.isin(call_codes, list(modified_codes))] = (
-                                    probabilities[np.isin(call_codes, list(modified_codes))]
-                                )
-                                methylation_prob[np.isin(call_codes, list(canonical_codes))] = (
-                                    1 - probabilities[np.isin(call_codes, list(canonical_codes))]
-                                )
-
-                                # Find unique reads
-                                unique_reads = np.unique(read_ids)
-                                # Preallocate storage for each read
-                                for read in unique_reads:
-                                    mod_strand_record_sample_dict[sample][read] = np.full(
-                                        max_reference_length, np.nan
-                                    )
-
-                                # Efficient NumPy indexing to assign values
-                                for i in range(len(read_ids)):
-                                    read = read_ids[i]
-                                    pos = positions[i]
-                                    prob = methylation_prob[i]
-
-                                    # Assign methylation probability
-                                    mod_strand_record_sample_dict[sample][read][pos] = prob
-
-            # Save the sample files in the batch as gzipped hdf5 files
-            logger.info("Converting batch {} dictionaries to anndata objects".format(batch))
-            # See _individual_mod_dicts_superseded_by_combined docstring: skips AnnData
-            # construction only (not the upstream array computation which dict_to_skip,
-            # used above in Loop A, already governs correctly).
-            loop_b_skip = dict_to_skip | _individual_mod_dicts_superseded_by_combined(mods)
-            for dict_index, dict_type in enumerate(dict_list):
-                if dict_index not in loop_b_skip:
-                    # Collect one AnnData per sample and concatenate once at the end
-                    # (instead of concatenating incrementally per sample, which is O(n^2)).
-                    adata_list: list[ad.AnnData] = []
-                    logger.info(
-                        "Converting {} dictionary to an anndata object".format(
-                            sample_types[dict_index]
-                        )
-                    )
-                    for record in dict_type.keys():
-                        # Get the dictionary for the modification type of interest from the reference mapping of interest
-                        mod_strand_record_sample_dict = dict_type[record]
-                        for sample in mod_strand_record_sample_dict.keys():
-                            logger.info(
-                                "Converting {0} dictionary for sample {1} to an anndata object".format(
-                                    sample_types[dict_index], sample
-                                )
-                            )
-                            sample = int(sample)
-                            if use_global_sample_indices:
-                                final_sample_index = sample
-                            else:
-                                final_sample_index = sample + (batch * batch_size)
-                            logger.info(
-                                "Final sample index for sample: {}".format(final_sample_index)
-                            )
-                            logger.debug(
-                                "Converting {0} dictionary for sample {1} to a dataframe".format(
-                                    sample_types[dict_index],
-                                    final_sample_index,
-                                )
-                            )
-                            temp_df = pd.DataFrame.from_dict(
-                                mod_strand_record_sample_dict[sample], orient="index"
-                            )
-                            mod_strand_record_sample_dict[sample] = (
-                                None  # reassign pointer to facilitate memory usage
-                            )
-                            sorted_index = sorted(temp_df.index)
-                            temp_df = temp_df.reindex(sorted_index)
-                            X = temp_df.values
-                            dataset, strand = sample_types[dict_index].split("_")[:2]
-
-                            logger.info(
-                                "Loading {0} dataframe for sample {1} into a temp anndata object".format(
-                                    sample_types[dict_index],
-                                    final_sample_index,
-                                )
-                            )
-                            temp_adata = ad.AnnData(X)
-                            if temp_adata.shape[0] > 0:
-                                logger.info(
-                                    "Adding read names and position ids to {0} anndata for sample {1}".format(
-                                        sample_types[dict_index],
-                                        final_sample_index,
-                                    )
-                                )
-                                temp_adata.obs_names = temp_df.index
-                                temp_adata.obs_names = temp_adata.obs_names.astype(str)
-                                temp_adata.var_names = temp_df.columns
-                                temp_adata.var_names = temp_adata.var_names.astype(str)
-                                logger.info(
-                                    "Adding {0} anndata for sample {1}".format(
-                                        sample_types[dict_index],
-                                        final_sample_index,
-                                    )
-                                )
-                                temp_adata.obs[SAMPLE] = [
-                                    sample_name_map[final_sample_index]
-                                ] * len(temp_adata)
-                                if read_to_barcode is not None:
-                                    temp_adata.obs[BARCODE] = [
-                                        read_to_barcode.get(rn, "unknown")
-                                        for rn in temp_adata.obs_names
-                                    ]
-                                else:
-                                    temp_adata.obs[BARCODE] = [
-                                        barcode_map[final_sample_index]
-                                    ] * len(temp_adata)
-                                temp_adata.obs[REFERENCE] = [f"{record}"] * len(temp_adata)
-                                temp_adata.obs[STRAND] = [strand] * len(temp_adata)
-                                temp_adata.obs[DATASET] = [dataset] * len(temp_adata)
-                                temp_adata.obs[REFERENCE_DATASET_STRAND] = [
-                                    f"{record}_{dataset}_{strand}"
-                                ] * len(temp_adata)
-                                temp_adata.obs[REFERENCE_STRAND] = [f"{record}_{strand}"] * len(
-                                    temp_adata
-                                )
-
-                                # Load integer-encoded reads for the current sample/record
-                                sequence_files = _normalize_sequence_batch_files(
-                                    sequence_batch_files.get(f"{final_sample_index}_{record}", [])
-                                )
-                                mismatch_files = _normalize_sequence_batch_files(
-                                    mismatch_batch_files.get(f"{final_sample_index}_{record}", [])
-                                )
-                                quality_files = _normalize_sequence_batch_files(
-                                    quality_batch_files.get(f"{final_sample_index}_{record}", [])
-                                )
-                                read_span_files = _normalize_sequence_batch_files(
-                                    read_span_batch_files.get(f"{final_sample_index}_{record}", [])
-                                )
-                                if not sequence_files:
-                                    logger.warning(
-                                        "No encoded sequence batches found for sample %s record %s",
-                                        final_sample_index,
-                                        record,
-                                    )
-                                    continue
-                                cache_key = f"{final_sample_index}_{record}"
-                                if cache_key in sample_record_batch_cache:
-                                    logger.info(
-                                        f"Reusing cached encoded sequences for {cache_key}"
-                                    )
-                                else:
-                                    logger.info(
-                                        f"Loading encoded sequences from {sequence_files}"
-                                    )
-                                (
-                                    encoded_reads,
-                                    fwd_mapped_reads,
-                                    rev_mapped_reads,
-                                    mismatch_reads,
-                                    quality_reads,
-                                    read_span_reads,
-                                ) = _load_sample_record_batches_cached(
-                                    sample_record_batch_cache,
-                                    cache_key,
-                                    sequence_files,
-                                    mismatch_files,
-                                    quality_files,
-                                    read_span_files,
-                                )
-
-                                read_names = list(encoded_reads.keys())
-
-                                read_mapping_direction = []
-                                for read_id in temp_adata.obs_names:
-                                    if read_id in fwd_mapped_reads:
-                                        read_mapping_direction.append("fwd")
-                                    elif read_id in rev_mapped_reads:
-                                        read_mapping_direction.append("rev")
-                                    else:
-                                        read_mapping_direction.append("unk")
-
-                                temp_adata.obs[READ_MAPPING_DIRECTION] = read_mapping_direction
-
-                                del temp_df
-
-                                padding_value = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT[
-                                    MODKIT_EXTRACT_SEQUENCE_PADDING_BASE
-                                ]
-                                sequence_length = encoded_reads[read_names[0]].shape[0]
-                                encoded_matrix = np.full(
-                                    (len(sorted_index), sequence_length),
-                                    padding_value,
-                                    dtype=np.int16,
-                                )
-
-                                for j, read_name in tqdm(
-                                    enumerate(sorted_index),
-                                    desc="Loading integer-encoded reads",
-                                    total=len(sorted_index),
-                                ):
-                                    encoded_matrix[j, :] = encoded_reads[read_name]
-
-                                del encoded_reads
-                                gc.collect()
-
-                                temp_adata.layers[SEQUENCE_INTEGER_ENCODING] = encoded_matrix
-                                if mismatch_reads:
-                                    current_reference_length = reference_dict[record][0]
-                                    default_mismatch_sequence = np.full(
-                                        sequence_length,
-                                        MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"],
-                                        dtype=np.int16,
-                                    )
-                                    if current_reference_length < sequence_length:
-                                        default_mismatch_sequence[current_reference_length:] = (
-                                            padding_value
-                                        )
-                                    mismatch_matrix = np.vstack(
-                                        [
-                                            mismatch_reads.get(read_name, default_mismatch_sequence)
-                                            for read_name in sorted_index
-                                        ]
-                                    )
-                                    temp_adata.layers[MISMATCH_INTEGER_ENCODING] = mismatch_matrix
-                                if quality_reads:
-                                    default_quality_sequence = np.full(
-                                        sequence_length, -1, dtype=np.int16
-                                    )
-                                    quality_matrix = np.vstack(
-                                        [
-                                            quality_reads.get(read_name, default_quality_sequence)
-                                            for read_name in sorted_index
-                                        ]
-                                    )
-                                    temp_adata.layers[BASE_QUALITY_SCORES] = quality_matrix
-                                if read_span_reads:
-                                    default_read_span = np.zeros(sequence_length, dtype=np.int16)
-                                    read_span_matrix = np.vstack(
-                                        [
-                                            read_span_reads.get(read_name, default_read_span)
-                                            for read_name in sorted_index
-                                        ]
-                                    )
-                                    temp_adata.layers[READ_SPAN_MASK] = read_span_matrix
-
-                                # Queue this sample's AnnData; concatenated once, after the sample loop.
-                                if temp_adata.shape[0] > 0:
-                                    logger.info(
-                                        "Queuing {0} anndata object for sample {1}".format(
-                                            sample_types[dict_index],
-                                            final_sample_index,
-                                        )
-                                    )
-                                    adata_list.append(temp_adata)
-                                else:
-                                    logger.warning(
-                                        f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata"
-                                    )
-                                del temp_adata
-
-                                gc.collect()
-                            else:
-                                logger.warning(
-                                    f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata. Skipping sample."
-                                )
-
-                    if adata_list:
-                        logger.info(
-                            "Concatenating {0} anndata objects for {1}".format(
-                                len(adata_list), sample_types[dict_index]
-                            )
-                        )
-                        adata = ad.concat(adata_list, join="outer", index_unique=None)
-                        del adata_list
-                        gc.collect()
-                        try:
-                            logger.info(
-                                "Writing {0} anndata out as a hdf5 file".format(
-                                    sample_types[dict_index]
-                                )
-                            )
-                            adata.write_h5ad(
-                                h5_dir
-                                / "{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz".format(
-                                    readwrite.date_string(), batch, sample_types[dict_index]
-                                ),
-                                compression="gzip",
-                            )
-                        except Exception:
-                            logger.debug("Skipping writing anndata for sample")
-                    else:
-                        adata = None
-                        logger.debug(
-                            "No samples had mapped reads for {0}; skipping write".format(
-                                sample_types[dict_index]
-                            )
-                        )
-
-            try:
-                # Delete the batch dictionaries from memory
-                del dict_list, adata
-            except Exception:
-                pass
-            gc.collect()
+        logger.info(
+            "Processing %d batches across up to %d worker processes",
+            len(batch_specs),
+            resolved_max_workers,
+        )
+        with mp.Pool(processes=resolved_max_workers, maxtasksperchild=1) as pool:
+            async_results = [
+                pool.apply_async(
+                    _process_one_batch,
+                    (
+                        batch,
+                        tsv_batch,
+                        sample_indices_batch,
+                        existing_h5s,
+                        records_to_analyze,
+                        reference_dict,
+                        max_reference_length,
+                        mods,
+                        batch_size,
+                        threads,
+                        read_name_filters,
+                        use_global_sample_indices,
+                        sample_name_map,
+                        barcode_map,
+                        read_to_barcode,
+                        h5_dir,
+                        sequence_batch_files,
+                        mismatch_batch_files,
+                        quality_batch_files,
+                        read_span_batch_files,
+                    ),
+                )
+                for batch, tsv_batch, sample_indices_batch in batch_specs
+            ]
+            pool.close()
+            errors = []
+            for (batch, _tsv_batch, _sample_indices_batch), result in zip(
+                batch_specs, async_results
+            ):
+                try:
+                    result.get()
+                except Exception as exc:  # noqa: BLE001 - surface every worker failure
+                    logger.error("Batch %d failed in worker process: %s", batch, exc)
+                    errors.append((batch, exc))
+            pool.join()
+            if errors:
+                raise RuntimeError(
+                    f"{len(errors)} of {len(batch_specs)} batches failed in worker "
+                    f"processes: {[batch for batch, _ in errors]}"
+                )
 
     # Iterate over all of the batched hdf5 files and concatenate them.
     files = h5_dir.iterdir()

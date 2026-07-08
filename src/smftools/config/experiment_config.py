@@ -103,6 +103,23 @@ def _parse_numeric(v: Any, fallback: Any = None) -> Any:
             return fallback
 
 
+def _parse_max_workers(v: Any) -> Optional[Union[int, str]]:
+    """Parse the `direct_max_workers` config value: None, "auto", or a positive int."""
+    if v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    s = str(v).strip()
+    if s == "" or s.lower() == "none":
+        return None
+    if s.lower() == "auto":
+        return "auto"
+    try:
+        return int(s)
+    except Exception:
+        return None
+
+
 def _try_json_or_literal(s: Any) -> Any:
     """Try parse JSON or python literal; otherwise return original string."""
     if s is None:
@@ -716,6 +733,12 @@ class ExperimentConfig:
     skip_bam_split: bool = False
     skip_bam_qc: bool = False
     delete_batch_hdfs: bool = True
+    # None (default) processes batches serially in-process, unchanged from prior
+    # releases. A positive int processes up to that many batches concurrently via
+    # multiprocessing.Pool (set batch_size=1 for one worker task per sample, the
+    # finest granularity); "auto" picks a worker count from CPU count and estimated
+    # per-batch memory footprint. See modkit_extract_to_adata's max_workers docstring.
+    direct_max_workers: Optional[Union[int, str]] = None
 
     # Read subsampling
     max_basecall_reads: Optional[int] = None
@@ -1705,6 +1728,7 @@ class ExperimentConfig:
             skip_bam_split=merged.get("skip_bam_split", False),
             skip_bam_qc=merged.get("skip_bam_qc", False),
             delete_batch_hdfs=merged.get("delete_batch_hdfs", True),
+            direct_max_workers=_parse_max_workers(merged.get("direct_max_workers", None)),
             max_basecall_reads=_parse_numeric(merged.get("max_basecall_reads", None), None),
             max_reads_per_barcode=_parse_numeric(merged.get("max_reads_per_barcode", None), None),
             clean_nan_layers=_parse_list(

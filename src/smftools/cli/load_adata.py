@@ -1137,6 +1137,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             demux_backend=getattr(cfg, "demux_backend", None),
             single_bam=aligned_sorted_output,
             barcode_sidecar=barcode_sidecar,
+            max_workers=getattr(cfg, "direct_max_workers", None),
         )
         if cfg.delete_intermediate_tsvs:
             delete_tsvs(mod_tsv_dir)
