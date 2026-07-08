@@ -243,10 +243,8 @@ def plot_sm_periodogram_overlay(
             )
         periods = 1.0 / freqs
         color = colors.get(grp, cmap(i % 10))
-        ax.plot(periods, mean_p, color=color, linewidth=1.2,
-                label=labels.get(grp, str(grp)))
-        ax.fill_between(periods, mean_p - sem_p, mean_p + sem_p,
-                        color=color, alpha=0.2)
+        ax.plot(periods, mean_p, color=color, linewidth=1.2, label=labels.get(grp, str(grp)))
+        ax.fill_between(periods, mean_p - sem_p, mean_p + sem_p, color=color, alpha=0.2)
 
     ax.axvline(nrl_range[0], color="#777777", linewidth=0.6, linestyle=":")
     ax.axvline(nrl_range[1], color="#777777", linewidth=0.6, linestyle=":")

@@ -114,8 +114,9 @@ def test_analyze_fft_periodicity_returns_none_for_empty() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _synthetic_signal(period_bp: float, n_sites: int = 200, locus_len: int = 3000,
-                       rng_seed: int = 42) -> tuple[np.ndarray, np.ndarray]:
+def _synthetic_signal(
+    period_bp: float, n_sites: int = 200, locus_len: int = 3000, rng_seed: int = 42
+) -> tuple[np.ndarray, np.ndarray]:
     """Binary signal with sinusoidal accessibility at a known nucleosomal period."""
     rng = np.random.default_rng(rng_seed)
     positions = np.sort(rng.choice(locus_len, size=n_sites, replace=False)).astype(float)
@@ -177,8 +178,16 @@ def test_analyze_ls_periodicity_direct_result_keys() -> None:
     pos, sig = _synthetic_signal(185.0, n_sites=300)
     result = analyze_ls_periodicity_direct(pos, sig)
     assert result is not None
-    for key in ("ls_nrl_bp", "ls_snr", "ls_peak_power", "ls_peak_power_raw",
-                "ls_fwhm_bp", "ls_freqs", "ls_power", "ls_power_raw"):
+    for key in (
+        "ls_nrl_bp",
+        "ls_snr",
+        "ls_peak_power",
+        "ls_peak_power_raw",
+        "ls_fwhm_bp",
+        "ls_freqs",
+        "ls_power",
+        "ls_power_raw",
+    ):
         assert key in result
 
 

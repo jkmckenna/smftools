@@ -265,8 +265,11 @@ def analyze_ls_periodicity_direct(
     ls_fwhm_bp, ls_freqs, ls_power, ls_power_raw — or None on failure.
     """
     freqs, power, power_raw = ls_periodogram_from_signal(
-        positions, signal, period_range_bp=period_range_bp,
-        poly_degree=poly_degree, min_sites=min_sites,
+        positions,
+        signal,
+        period_range_bp=period_range_bp,
+        poly_degree=poly_degree,
+        min_sites=min_sites,
     )
     if freqs is None:
         return None

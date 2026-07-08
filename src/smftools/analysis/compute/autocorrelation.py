@@ -265,8 +265,16 @@ def compute_single_molecule_periodicity_direct(
     ``ls_peak_power``, ``ls_fwhm_bp``, ``ls_freqs`` (array), ``ls_power`` (array).
     Drop ``ls_freqs``/``ls_power`` before saving to CSV.
     """
-    columns = ["row_index", "n_sites", "ls_nrl_bp", "ls_snr", "ls_peak_power", "ls_fwhm_bp",
-               "ls_freqs", "ls_power"]
+    columns = [
+        "row_index",
+        "n_sites",
+        "ls_nrl_bp",
+        "ls_snr",
+        "ls_peak_power",
+        "ls_fwhm_bp",
+        "ls_freqs",
+        "ls_power",
+    ]
 
     col_cov = np.mean(~np.isnan(mat), axis=0)
     keep_cols = (col_cov >= min_col_coverage) & np.isfinite(positions)
@@ -286,7 +294,8 @@ def compute_single_molecule_periodicity_direct(
     for i in row_idx:
         signal = mat[i]
         result = ls_periodicity.analyze_ls_periodicity_direct(
-            pos, signal,
+            pos,
+            signal,
             nrl_search_bp=nrl_search_bp,
             period_range_bp=period_range_bp,
             poly_degree=poly_degree,
