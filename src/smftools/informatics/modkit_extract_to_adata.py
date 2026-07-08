@@ -988,6 +988,99 @@ def _load_integer_batches(batch_files: list[Path | str]) -> dict[str, np.ndarray
     return sequences
 
 
+def _resolve_demux_type_annotation_mode(
+    input_already_demuxed: bool,
+    demux_backend: str | None,
+    double_barcoded_path,
+) -> str:
+    """Decide how (or whether) to annotate `obs[DEMUX_TYPE]` on the final AnnData.
+
+    Regression guard for a crash where `double_barcoded_path` is `None` -- which
+    happens whenever `skip_bam_split=True` was used (no physical BAM splitting, so no
+    dorado `barcoding_summary.txt` was ever produced) -- but the dorado-backend branch
+    unconditionally did `double_barcoded_path / "barcoding_summary.txt"`. There is
+    nothing to derive per-end BM scoring from in that case regardless of backend, so it
+    must be treated the same as the smftools-backend "skip annotation" branch instead of
+    crashing.
+
+    Returns one of: "already", "skip_smftools", "dorado_barcoding_summary",
+    "skip_no_double_barcoded_path".
+    """
+    if input_already_demuxed:
+        return "already"
+    if demux_backend and demux_backend.lower() == "smftools":
+        return "skip_smftools"
+    if double_barcoded_path is not None:
+        return "dorado_barcoding_summary"
+    return "skip_no_double_barcoded_path"
+
+
+def _individual_mod_dicts_superseded_by_combined(mods: list[str]) -> set[int]:
+    """Dict-type indices whose full AnnData construction can be skipped in Loop B.
+
+    When both "6mA" and "5mC" are requested, the final cross-batch assembly only ever
+    reads back the combined-strand dict types (indices 7, 8) -- see the `combined_hdfs`
+    filter later in this module. The individual-modality dict types (m6A bottom/top = 2,
+    3; 5mC bottom/top = 5, 6) are still required upstream, in-memory, to compute the
+    combined per-read arrays, but building/writing full AnnData objects for them is
+    otherwise pure waste. Returns an empty set for single-modification runs, where the
+    individual dict types are the only output and must still be built.
+    """
+    if "6mA" in mods and "5mC" in mods:
+        return {2, 3, 5, 6}
+    return set()
+
+
+def _load_sample_record_batches_cached(
+    cache: dict[str, tuple],
+    cache_key: str,
+    sequence_files: list[Path | str],
+    mismatch_files: list[Path | str],
+    quality_files: list[Path | str],
+    read_span_files: list[Path | str],
+) -> tuple[dict[str, np.ndarray], set[str], set[str], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Load (or reuse from `cache`) the encoded-sequence/mismatch/quality/read-span batch
+    files for one (sample, record) pair.
+
+    The same `cache_key` (`f"{final_sample_index}_{record}"`) is looked up once per
+    modality/strand "dict type" in the caller's loop, but the underlying tmp H5AD files
+    are write-once and never mutated across that loop, so it is safe -- and up to Nx
+    cheaper in disk I/O for N dict types -- to read them from disk only the first time
+    a given key is seen per batch, and reuse the same in-memory dicts for every
+    subsequent dict-type iteration. `cache` should be reset once per outer processing
+    batch so its memory footprint stays bounded to one batch's data, not the whole run.
+
+    Callers must treat the returned dicts as read-only: anything written back into
+    `cache` is shared across all dict-type iterations for this batch.
+    """
+    if cache_key in cache:
+        return cache[cache_key]
+
+    encoded_reads, fwd_mapped_reads, rev_mapped_reads = _load_sequence_batches(sequence_files)
+    mismatch_reads: dict[str, np.ndarray] = {}
+    if mismatch_files:
+        mismatch_reads, _mismatch_fwd_reads, _mismatch_rev_reads = _load_sequence_batches(
+            mismatch_files
+        )
+    quality_reads: dict[str, np.ndarray] = {}
+    if quality_files:
+        quality_reads = _load_integer_batches(quality_files)
+    read_span_reads: dict[str, np.ndarray] = {}
+    if read_span_files:
+        read_span_reads = _load_integer_batches(read_span_files)
+
+    result = (
+        encoded_reads,
+        fwd_mapped_reads,
+        rev_mapped_reads,
+        mismatch_reads,
+        quality_reads,
+        read_span_reads,
+    )
+    cache[cache_key] = result
+    return result
+
+
 def _normalize_sequence_batch_files(batch_files: object) -> list[Path]:
     """Normalize cached batch file entries into a list of Paths.
 
@@ -1564,6 +1657,10 @@ def modkit_extract_to_adata(
             batch_dicts = ModkitBatchDictionaries()
             dict_list = batch_dicts.as_list()
             sample_types = batch_dicts.sample_types
+            # Cache of (sample, record) -> loaded sequence/mismatch/quality/read-span batches,
+            # reset every batch so its memory is bounded to one batch. See
+            # _load_sample_record_batches_cached for why this reuse is safe.
+            sample_record_batch_cache: dict[str, tuple] = {}
 
             # # Step 1):Load the dict_total dictionary with all of the batch tsv files as dataframes.
             dict_total = parallel_load_tsvs(
@@ -1704,10 +1801,15 @@ def modkit_extract_to_adata(
 
             # Save the sample files in the batch as gzipped hdf5 files
             logger.info("Converting batch {} dictionaries to anndata objects".format(batch))
+            # See _individual_mod_dicts_superseded_by_combined docstring: skips AnnData
+            # construction only (not the upstream array computation which dict_to_skip,
+            # used above in Loop A, already governs correctly).
+            loop_b_skip = dict_to_skip | _individual_mod_dicts_superseded_by_combined(mods)
             for dict_index, dict_type in enumerate(dict_list):
-                if dict_index not in dict_to_skip:
-                    # Initialize an hdf5 file for the current modified strand
-                    adata = None
+                if dict_index not in loop_b_skip:
+                    # Collect one AnnData per sample and concatenate once at the end
+                    # (instead of concatenating incrementally per sample, which is O(n^2)).
+                    adata_list: list[ad.AnnData] = []
                     logger.info(
                         "Converting {} dictionary to an anndata object".format(
                             sample_types[dict_index]
@@ -1813,25 +1915,30 @@ def modkit_extract_to_adata(
                                         record,
                                     )
                                     continue
-                                logger.info(f"Loading encoded sequences from {sequence_files}")
+                                cache_key = f"{final_sample_index}_{record}"
+                                if cache_key in sample_record_batch_cache:
+                                    logger.info(
+                                        f"Reusing cached encoded sequences for {cache_key}"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Loading encoded sequences from {sequence_files}"
+                                    )
                                 (
                                     encoded_reads,
                                     fwd_mapped_reads,
                                     rev_mapped_reads,
-                                ) = _load_sequence_batches(sequence_files)
-                                mismatch_reads: dict[str, np.ndarray] = {}
-                                if mismatch_files:
-                                    (
-                                        mismatch_reads,
-                                        _mismatch_fwd_reads,
-                                        _mismatch_rev_reads,
-                                    ) = _load_sequence_batches(mismatch_files)
-                                quality_reads: dict[str, np.ndarray] = {}
-                                if quality_files:
-                                    quality_reads = _load_integer_batches(quality_files)
-                                read_span_reads: dict[str, np.ndarray] = {}
-                                if read_span_files:
-                                    read_span_reads = _load_integer_batches(read_span_files)
+                                    mismatch_reads,
+                                    quality_reads,
+                                    read_span_reads,
+                                ) = _load_sample_record_batches_cached(
+                                    sample_record_batch_cache,
+                                    cache_key,
+                                    sequence_files,
+                                    mismatch_files,
+                                    quality_files,
+                                    read_span_files,
+                                )
 
                                 read_names = list(encoded_reads.keys())
 
@@ -1908,36 +2015,20 @@ def modkit_extract_to_adata(
                                     )
                                     temp_adata.layers[READ_SPAN_MASK] = read_span_matrix
 
-                                # If final adata object already has a sample loaded, concatenate the current sample into the existing adata object
-                                if adata:
-                                    if temp_adata.shape[0] > 0:
-                                        logger.info(
-                                            "Concatenating {0} anndata object for sample {1}".format(
-                                                sample_types[dict_index],
-                                                final_sample_index,
-                                            )
+                                # Queue this sample's AnnData; concatenated once, after the sample loop.
+                                if temp_adata.shape[0] > 0:
+                                    logger.info(
+                                        "Queuing {0} anndata object for sample {1}".format(
+                                            sample_types[dict_index],
+                                            final_sample_index,
                                         )
-                                        adata = ad.concat(
-                                            [adata, temp_adata], join="outer", index_unique=None
-                                        )
-                                        del temp_adata
-                                    else:
-                                        logger.warning(
-                                            f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata"
-                                        )
+                                    )
+                                    adata_list.append(temp_adata)
                                 else:
-                                    if temp_adata.shape[0] > 0:
-                                        logger.info(
-                                            "Initializing {0} anndata object for sample {1}".format(
-                                                sample_types[dict_index],
-                                                final_sample_index,
-                                            )
-                                        )
-                                        adata = temp_adata
-                                    else:
-                                        logger.warning(
-                                            f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata"
-                                        )
+                                    logger.warning(
+                                        f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata"
+                                    )
+                                del temp_adata
 
                                 gc.collect()
                             else:
@@ -1945,21 +2036,37 @@ def modkit_extract_to_adata(
                                     f"{sample} did not have any mapped reads on {record}_{dataset}_{strand}, omiting from final adata. Skipping sample."
                                 )
 
-                    try:
+                    if adata_list:
                         logger.info(
-                            "Writing {0} anndata out as a hdf5 file".format(
+                            "Concatenating {0} anndata objects for {1}".format(
+                                len(adata_list), sample_types[dict_index]
+                            )
+                        )
+                        adata = ad.concat(adata_list, join="outer", index_unique=None)
+                        del adata_list
+                        gc.collect()
+                        try:
+                            logger.info(
+                                "Writing {0} anndata out as a hdf5 file".format(
+                                    sample_types[dict_index]
+                                )
+                            )
+                            adata.write_h5ad(
+                                h5_dir
+                                / "{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz".format(
+                                    readwrite.date_string(), batch, sample_types[dict_index]
+                                ),
+                                compression="gzip",
+                            )
+                        except Exception:
+                            logger.debug("Skipping writing anndata for sample")
+                    else:
+                        adata = None
+                        logger.debug(
+                            "No samples had mapped reads for {0}; skipping write".format(
                                 sample_types[dict_index]
                             )
                         )
-                        adata.write_h5ad(
-                            h5_dir
-                            / "{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz".format(
-                                readwrite.date_string(), batch, sample_types[dict_index]
-                            ),
-                            compression="gzip",
-                        )
-                    except Exception:
-                        logger.debug("Skipping writing anndata for sample")
 
             try:
                 # Delete the batch dictionaries from memory
@@ -1981,19 +2088,18 @@ def modkit_extract_to_adata(
     hdfs.sort()
     logger.info("{0} sample files found: {1}".format(len(hdfs), hdfs))
     hdf_paths = [hd5 for hd5 in hdfs]
-    final_adata = None
-    for hdf_index, hdf in enumerate(hdf_paths):
-        logger.info("Reading in {} hdf5 file".format(hdfs[hdf_index]))
-        temp_adata = ad.read_h5ad(hdf)
-        if final_adata:
-            logger.info(
-                "Concatenating final adata object with {} hdf5 file".format(hdfs[hdf_index])
-            )
-            final_adata = ad.concat([final_adata, temp_adata], join="outer", index_unique=None)
-        else:
-            logger.info("Initializing final adata object with {} hdf5 file".format(hdfs[hdf_index]))
-            final_adata = temp_adata
-        del temp_adata
+    logger.info("Reading in {} batch hdf5 files for final concatenation".format(len(hdf_paths)))
+    batch_adatas = [ad.read_h5ad(hdf) for hdf in hdf_paths]
+    final_adata = (
+        ad.concat(batch_adatas, join="outer", index_unique=None) if batch_adatas else None
+    )
+    del batch_adatas
+    gc.collect()
+    if final_adata is None:
+        raise RuntimeError(
+            "modkit_extract_to_adata produced no batch hdf5 files to concatenate; "
+            "no reads survived filtering or all samples/records were empty."
+        )
 
     # Set obs columns to type 'category'
     for col in final_adata.obs.columns:
@@ -2045,18 +2151,29 @@ def modkit_extract_to_adata(
 
     append_reference_strand_quality_stats(final_adata)
 
-    if input_already_demuxed:
+    demux_type_mode = _resolve_demux_type_annotation_mode(
+        input_already_demuxed, demux_backend, double_barcoded_path
+    )
+    if demux_type_mode == "already":
         final_adata.obs[DEMUX_TYPE] = ["already"] * final_adata.shape[0]
         final_adata.obs[DEMUX_TYPE] = final_adata.obs[DEMUX_TYPE].astype("category")
-    elif demux_backend and demux_backend.lower() == "smftools":
+    elif demux_type_mode == "skip_smftools":
         # Skip demux_type annotation here - will be derived from BM tag after BAM tags are loaded
         logger.info("Skipping demux_type annotation (will be derived from BM tag)")
-    else:
+    elif demux_type_mode == "dorado_barcoding_summary":
         # Dorado backend - use barcoding_summary.txt
         from .h5ad_functions import add_demux_type_annotation
 
         double_barcoded_reads = double_barcoded_path / "barcoding_summary.txt"
         add_demux_type_annotation(final_adata, double_barcoded_reads)
+    else:
+        # Dorado backend but no double-barcoded demux summary is available (e.g.
+        # skip_bam_split=True never produced per-end BM scoring). Nothing to derive
+        # demux_type from, so skip annotation the same way the smftools-backend branch does.
+        logger.info(
+            "No double-barcoded demux summary available (double_barcoded_path is None); "
+            "skipping demux_type annotation"
+        )
 
     # Delete the individual h5ad files and only keep the final concatenated file
     if delete_batch_hdfs:
