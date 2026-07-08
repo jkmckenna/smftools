@@ -283,6 +283,46 @@ def load_zarr_var(zarr_path: Path) -> pd.DataFrame:
     return adata.var.copy()
 
 
+def load_zarr_var_fast(z, zarr_path: Path) -> pd.DataFrame:
+    """Load var columns directly from the Zarr store — avoids full anndata load.
+
+    Reads each column array via ``zarr.open_array``.  ~10x faster than
+    :func:`load_zarr_var` for large stores because it bypasses anndata's
+    categorical / sparse decoding overhead.
+    """
+    import zarr as _zarr
+
+    var_path = Path(zarr_path) / "var"
+    cols = {}
+    for key in z["var"].keys():
+        try:
+            arr = _zarr.open_array(str(var_path / key), mode="r")
+            cols[key] = arr[...]
+        except Exception:
+            pass
+    return pd.DataFrame(cols)
+
+
+def resolve_barcode_str(barcode_int: int | str, index: dict) -> str:
+    """Resolve an integer barcode number to its string key in a Zarr barcode index.
+
+    Tries ``NB{n:02d}`` first (the standard format for most runs), then scans for
+    keys ending in ``_barcode{n:02d}`` to handle SQK-style barcodes used by some
+    earlier runs (e.g. ``SQK-NBD114-24_barcode07``).
+
+    Raises ``KeyError`` if no match is found.
+    """
+    n = int(barcode_int)
+    nb_key = f"NB{n:02d}"
+    if nb_key in index:
+        return nb_key
+    suffix = f"_barcode{n:02d}"
+    for k in index:
+        if k.endswith(suffix):
+            return k
+    raise KeyError(f"Barcode {n} not found in index (tried {nb_key!r})")
+
+
 def _get_slice(index: dict, barcode: str, ref_strand: str) -> tuple[int, int]:
     """Look up [start, end) from the barcode index; raises KeyError if not found."""
     try:
