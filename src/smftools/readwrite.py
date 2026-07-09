@@ -592,7 +592,13 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
           - object columns converted to strings (with backup)
           - categorical columns' categories coerced to str (with backup)
         """
-        df = df.copy()
+        # Shallow copy: only columns actually reassigned below get new memory;
+        # every untouched column keeps sharing the original DataFrame's
+        # underlying array. At production scale (hundreds of thousands of
+        # rows), a blanket deep .copy() of the whole frame just to convert a
+        # handful of object/categorical columns was real, avoidable overhead
+        # held for the entire safe_write_h5ad call.
+        df = df.copy(deep=False)
         for col in list(df.columns):
             ser = df[col]
             # categorical handling

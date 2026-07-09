@@ -18,6 +18,7 @@ from .cli.spatial_adata import spatial_adata
 from .cli.variant_adata import variant_adata
 from .informatics.pod5_functions import subsample_pod5
 from .logging_utils import get_logger, setup_logging
+from .memory_guard import enable_aggregate_memory_cap
 from .readwrite import concatenate_h5ads
 
 
@@ -62,6 +63,11 @@ def cli(log_file: Path | None, log_level: str):
     """Command-line interface for smftools."""
     level = getattr(logging, log_level.upper(), logging.INFO)
     setup_logging(level=level, log_file=log_file)
+    # Before any worker pool exists, so every process this command later forks
+    # (multiprocessing children inherit their parent's cgroup) is covered.
+    # No-op on non-Linux platforms; see smftools.memory_guard for why macOS
+    # protection instead happens per-worker, inside the pipelines that spawn pools.
+    enable_aggregate_memory_cap()
     _configure_multiprocessing()
 
 

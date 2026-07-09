@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import re
@@ -1215,8 +1216,29 @@ def process_bams_parallel(
         logger.warning(f"No valid H5AD files generated. Exiting.")
         return None
 
-    logger.info(f"Concatenating {len(h5ad_files)} H5AD files into final output...")
-    final_adata = ad.concat([ad.read_h5ad(f) for f in h5ad_files], join="outer")
+    # Concatenate on disk (anndata.experimental.concat_on_disk) instead of
+    # eagerly loading every batch h5ad into memory before concatenating: the
+    # previous `[ad.read_h5ad(f) for f in h5ad_files]` held all N batch files
+    # resident at once on top of whatever the worker pool above was still
+    # holding. concat_on_disk streams each input's arrays through in chunks
+    # and never holds more than one input's worth in memory.
+    #
+    # Open real h5py.File handles ourselves rather than passing paths: anndata
+    # dispatches zarr vs h5py by literal `Path.suffix == ".h5ad"`, which is
+    # fragile against any non-standard naming, so this avoids relying on it.
+    import h5py
+    from anndata.experimental import concat_on_disk
+
+    concat_tmp_path = h5_dir / "_final_concat.tmp"
+    if concat_tmp_path.exists():
+        concat_tmp_path.unlink()
+    logger.info(f"Concatenating {len(h5ad_files)} H5AD files on disk into final output...")
+    with contextlib.ExitStack() as stack:
+        input_groups = [stack.enter_context(h5py.File(p, mode="r")) for p in h5ad_files]
+        output_group = stack.enter_context(h5py.File(concat_tmp_path, mode="w"))
+        concat_on_disk(input_groups, output_group, join="outer")
+    final_adata = ad.read_h5ad(concat_tmp_path)
+    concat_tmp_path.unlink()
 
     logger.info(f"Successfully generated final AnnData object.")
     return final_adata

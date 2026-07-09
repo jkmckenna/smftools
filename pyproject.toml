@@ -43,8 +43,10 @@ dependencies = [
     "anndata>=0.10.0",
     "biopython>=1.79",
     "click",
+    "dask[array]",
     "numpy>=1.22.0,<2",
     "pandas>=1.4.2",
+    "psutil>=5.9.0",
     "scipy>=1.7.3",
     "tqdm",
 ]
