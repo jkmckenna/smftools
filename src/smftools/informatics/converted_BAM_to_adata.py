@@ -281,7 +281,14 @@ def converted_BAM_to_adata(
             converted_FASTA_record_seq_map[record] = [record_length, seq]
 
     ## Process BAMs in Parallel
-    final_adata = process_bams_parallel(
+    # final_adata is returned backed (file-backed by concat_tmp_path) rather than
+    # fully materialized: the metadata-only mutations below (uns/var/obs writes,
+    # obs_names_make_unique, category casting) don't need X/layers in memory, and
+    # deferring the full read means we never hold a spurious extra full copy
+    # during this window. concat_tmp_path must stay alive -- and final_adata must
+    # be converted with .to_memory() -- before it's deleted; see the cleanup right
+    # before this function's `return` for where that happens.
+    final_adata, concat_tmp_path = process_bams_parallel(
         bam_path_list,
         records_to_analyze,
         record_FASTA_dict,
@@ -384,6 +391,16 @@ def converted_BAM_to_adata(
     if delete_intermediates:
         logger.info("Deleting intermediate h5ad files")
         delete_intermediate_h5ads_and_tmpdir(h5_dir, tmp_dir)
+
+    # Materialize now: everything above operated backed (metadata writes, plus
+    # on-demand small reads for the per-group consensus/QC loops), so this is
+    # the first point anything needed the whole dataset resident at once.
+    # load_adata_core's own downstream steps (e.g. the Raw_modification_signal
+    # = np.nansum(X, axis=1) reduction in cli/load_adata.py) force this same
+    # materialization anyway if we didn't do it here, so nothing is lost by
+    # making the boundary explicit. Only now is it safe to drop concat_tmp_path.
+    final_adata = final_adata.to_memory()
+    concat_tmp_path.unlink(missing_ok=True)
 
     return final_adata, final_adata_path
 
@@ -817,19 +834,25 @@ def process_single_bam(
             )
             continue
 
+        # int8 (not int16) for every per-base layer -- see the matching note in
+        # modkit_extract_to_adata: encodings 0-5, read-span 0/1, Phred quality
+        # -1..93 all fit int8 (-128..127), halving each layer's footprint in the
+        # final materialized AnnData and its transient copies. The vstack results
+        # are cast down explicitly so this holds regardless of the source arrays'
+        # dtype.
         sequence_length = max_reference_length
         default_sequence = np.full(
-            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int16
+            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int8
         )
         if current_length < sequence_length:
             default_sequence[current_length:] = SEQUENCE_ENCODING_CONFIG.padding_value
 
         encoded_matrix = np.vstack(
             [encoded_reads.get(read_name, default_sequence) for read_name in sorted_index]
-        )
+        ).astype(np.int8, copy=False)
         del encoded_reads
         default_mismatch_sequence = np.full(
-            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int16
+            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int8
         )
         if current_length < sequence_length:
             default_mismatch_sequence[current_length:] = SEQUENCE_ENCODING_CONFIG.padding_value
@@ -838,20 +861,20 @@ def process_single_bam(
                 mismatch_base_identities.get(read_name, default_mismatch_sequence)
                 for read_name in sorted_index
             ]
-        )
+        ).astype(np.int8, copy=False)
         del mismatch_base_identities
-        default_quality_sequence = np.full(sequence_length, -1, dtype=np.int16)
+        default_quality_sequence = np.full(sequence_length, -1, dtype=np.int8)
         quality_matrix = np.vstack(
             [
                 base_quality_scores.get(read_name, default_quality_sequence)
                 for read_name in sorted_index
             ]
-        )
+        ).astype(np.int8, copy=False)
         del base_quality_scores
-        default_read_span = np.zeros(sequence_length, dtype=np.int16)
+        default_read_span = np.zeros(sequence_length, dtype=np.int8)
         read_span_matrix = np.vstack(
             [read_span_masks.get(read_name, default_read_span) for read_name in sorted_index]
-        )
+        ).astype(np.int8, copy=False)
         del read_span_masks
         gc.collect()
 
@@ -1067,7 +1090,7 @@ def process_bams_parallel(
     primary_only: bool = False,
     read_name_filter: set | None = None,
     read_to_barcode: dict[str, str] | None = None,
-) -> ad.AnnData | None:
+) -> tuple[ad.AnnData | None, Path | None]:
     """Process BAM files in parallel and concatenate the resulting AnnData.
 
     Args:
@@ -1088,12 +1111,16 @@ def process_bams_parallel(
         read_to_barcode: If provided, maps read names to barcode labels (non-split mode).
 
     Returns:
-        anndata.AnnData | None: Concatenated AnnData or None if no H5ADs produced.
+        tuple[anndata.AnnData | None, Path | None]: The concatenated AnnData,
+            returned backed="r" (or (None, None) if no H5ADs were produced),
+            and the path it's backed by. The caller owns that path's lifetime:
+            it must not be deleted until the returned AnnData has been fully
+            materialized (`.to_memory()`) or is no longer needed.
 
     Processing Steps:
         1. Spawn worker processes to handle each BAM.
         2. Track completion via a multiprocessing queue.
-        3. Concatenate per-BAM H5AD files into a final AnnData.
+        3. Concatenate per-BAM H5AD files into a final AnnData, returned backed.
     """
     make_dirs(h5_dir)  # Ensure h5_dir exists
 
@@ -1214,7 +1241,7 @@ def process_bams_parallel(
 
     if not h5ad_files:
         logger.warning(f"No valid H5AD files generated. Exiting.")
-        return None
+        return None, None
 
     # Concatenate on disk (anndata.experimental.concat_on_disk) instead of
     # eagerly loading every batch h5ad into memory before concatenating: the
@@ -1237,11 +1264,18 @@ def process_bams_parallel(
         input_groups = [stack.enter_context(h5py.File(p, mode="r")) for p in h5ad_files]
         output_group = stack.enter_context(h5py.File(concat_tmp_path, mode="w"))
         concat_on_disk(input_groups, output_group, join="outer")
-    final_adata = ad.read_h5ad(concat_tmp_path)
-    concat_tmp_path.unlink()
+    # backed="r" instead of an eager read: the caller does several more
+    # metadata-only mutations and (after the streaming-reduction changes
+    # described in process_single_bam) no full-layer reductions before it's
+    # actually ready to materialize, so there is no reason to force the whole
+    # dataset into memory here just to immediately do lightweight obs/var/uns
+    # writes on it. The caller owns concat_tmp_path's lifetime from here:
+    # it must call `.to_memory()` and then delete this path itself once it's
+    # done reading from it (see converted_BAM_to_adata's cleanup section).
+    final_adata = ad.read_h5ad(concat_tmp_path, backed="r")
 
-    logger.info(f"Successfully generated final AnnData object.")
-    return final_adata
+    logger.info(f"Successfully generated final AnnData object (backed).")
+    return final_adata, concat_tmp_path
 
 
 def _log_async_result_errors(results, bam_path_list):

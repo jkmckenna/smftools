@@ -186,6 +186,20 @@ def append_reference_strand_quality_stats(
     n_vars = adata.shape[1]
     has_span_mask = read_span_layer in adata.layers
 
+    # Row-chunk size for the streaming reduction below. The whole point of the
+    # chunked accumulator approach is to never hold a full reference-strand
+    # group's quality/error matrices resident at once: the previous code did
+    # `adata.layers[quality][ref_mask].astype(float)` (float64 -> 4x the int
+    # layer's bytes) and then held several full-group temporaries
+    # simultaneously (the .astype copy, the np.where(coverage,...) copy, the
+    # error_matrix, and nanmean/nanstd internals). On a real ~210k-read group x
+    # ~6.6k positions that peaked at ~45 GiB and was the dominant OOM driver in
+    # the direct-modality load. Here we stream 20k rows at a time in float32 and
+    # keep only tiny per-position float64 accumulators, bounding peak to a few
+    # GiB regardless of group size while producing the same per-position
+    # population mean/std (nanmean/nanstd use ddof=0).
+    chunk_rows = 20000
+
     for ref in references:
         ref_mask = ref_values == ref
         ref_position_mask = adata.var.get(f"position_in_{ref}")
@@ -199,19 +213,49 @@ def append_reference_strand_quality_stats(
         mean_error = np.full(n_vars, np.nan, dtype=float)
         std_error = np.full(n_vars, np.nan, dtype=float)
 
-        if ref_mask.sum() > 0:
-            quality_matrix = np.asarray(adata.layers[quality_layer][ref_mask]).astype(float)
-            quality_matrix[quality_matrix < 0] = np.nan
-            if has_span_mask:
-                coverage_mask = np.asarray(adata.layers[read_span_layer][ref_mask]) > 0
-                quality_matrix = np.where(coverage_mask, quality_matrix, np.nan)
+        ref_idx = np.flatnonzero(np.asarray(ref_mask))
+        if ref_idx.size > 0:
+            # Per-position float64 accumulators (length n_vars, negligible memory).
+            # A value is "valid" (counts toward the stats) when quality >= 0 and,
+            # if a read-span layer exists, the position is covered -- matching the
+            # old code's `quality<0 -> nan` and `where(coverage, ., nan)` masking.
+            count = np.zeros(n_vars, dtype=np.float64)
+            q_sum = np.zeros(n_vars, dtype=np.float64)
+            q_sumsq = np.zeros(n_vars, dtype=np.float64)
+            e_sum = np.zeros(n_vars, dtype=np.float64)
+            e_sumsq = np.zeros(n_vars, dtype=np.float64)
 
-            mean_quality = np.nanmean(quality_matrix, axis=0)
-            std_quality = np.nanstd(quality_matrix, axis=0)
+            for start in range(0, ref_idx.size, chunk_rows):
+                idx = ref_idx[start : start + chunk_rows]
+                q = np.asarray(adata.layers[quality_layer][idx]).astype(np.float32)
+                valid = q >= 0
+                if has_span_mask:
+                    valid &= np.asarray(adata.layers[read_span_layer][idx]) > 0
 
-            error_matrix = np.power(10.0, -quality_matrix / 10.0)
-            mean_error = np.nanmean(error_matrix, axis=0)
-            std_error = np.nanstd(error_matrix, axis=0)
+                qv = np.where(valid, q, np.float32(0.0))
+                count += valid.sum(axis=0, dtype=np.float64)
+                q_sum += qv.sum(axis=0, dtype=np.float64)
+                q_sumsq += (qv.astype(np.float64) ** 2).sum(axis=0)
+
+                # error rate = 10^(-Q/10); only accumulate valid positions
+                e = np.power(np.float32(10.0), -q / np.float32(10.0))
+                ev = np.where(valid, e, np.float32(0.0))
+                e_sum += ev.sum(axis=0, dtype=np.float64)
+                e_sumsq += (ev.astype(np.float64) ** 2).sum(axis=0)
+                del q, valid, qv, e, ev
+
+            nonzero = count > 0
+            with np.errstate(invalid="ignore"):
+                mq = q_sum[nonzero] / count[nonzero]
+                mean_quality[nonzero] = mq
+                std_quality[nonzero] = np.sqrt(
+                    np.maximum(q_sumsq[nonzero] / count[nonzero] - mq**2, 0.0)
+                )
+                me = e_sum[nonzero] / count[nonzero]
+                mean_error[nonzero] = me
+                std_error[nonzero] = np.sqrt(
+                    np.maximum(e_sumsq[nonzero] / count[nonzero] - me**2, 0.0)
+                )
 
         mean_quality = np.where(ref_position_mask.values, mean_quality, np.nan)
         std_quality = np.where(ref_position_mask.values, std_quality, np.nan)

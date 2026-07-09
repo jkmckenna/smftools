@@ -343,7 +343,12 @@ def load_experiment_config(config_path: str):
 def write_gz_h5ad(adata: ad.AnnData, path: Path) -> Path:
     if path.suffix != ".gz":
         path = path.with_name(path.name + ".gz")
-    safe_write_h5ad(adata, path, compression="gzip", backup=True)
+    # Despite the ".gz" name (kept for compatibility with AdataPaths/stage-
+    # resolution and existing on-disk files), this writes an uncompressed
+    # HDF5 container, not a gzip archive. Every file this function produces
+    # is read back by the next pipeline stage -- see safe_write_h5ad's
+    # docstring for why HDF5-internal gzip is the wrong default for that.
+    safe_write_h5ad(adata, path, compression=None, backup=True)
     write_runtime_schema_yaml(adata, path, step_name="runtime")
     return path
 

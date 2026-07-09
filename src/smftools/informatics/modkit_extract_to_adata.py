@@ -2014,10 +2014,22 @@ def _process_one_batch(
                             MODKIT_EXTRACT_SEQUENCE_PADDING_BASE
                         ]
                         sequence_length = encoded_reads[read_names[0]].shape[0]
+                        # int8 (not int16) for every per-base layer: the stored
+                        # values are all tiny -- base encodings 0-5, read-span
+                        # 0/1, Phred quality -1..93 (SAM caps Phred at 93) -- so
+                        # int8 (-128..127) holds them exactly while halving each
+                        # layer's on-disk and in-memory footprint. For the
+                        # direct-modality load this roughly halves the ~15 GiB of
+                        # int16 layers in the final materialized AnnData (and every
+                        # transient that copies them). NOTE: this only takes effect
+                        # for freshly regenerated batch files; pre-existing int16
+                        # batch h5ads must be regenerated (delete the batch outputs
+                        # + completion markers) to benefit, and must not be mixed
+                        # with int8 batches in a single concat.
                         encoded_matrix = np.full(
                             (len(sorted_index), sequence_length),
                             padding_value,
-                            dtype=np.int16,
+                            dtype=np.int8,
                         )
 
                         for j, read_name in tqdm(
@@ -2036,7 +2048,7 @@ def _process_one_batch(
                             default_mismatch_sequence = np.full(
                                 sequence_length,
                                 MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"],
-                                dtype=np.int16,
+                                dtype=np.int8,
                             )
                             if current_reference_length < sequence_length:
                                 default_mismatch_sequence[current_reference_length:] = (
@@ -2047,27 +2059,27 @@ def _process_one_batch(
                                     mismatch_reads.get(read_name, default_mismatch_sequence)
                                     for read_name in sorted_index
                                 ]
-                            )
+                            ).astype(np.int8, copy=False)
                             temp_adata.layers[MISMATCH_INTEGER_ENCODING] = mismatch_matrix
                         if quality_reads:
                             default_quality_sequence = np.full(
-                                sequence_length, -1, dtype=np.int16
+                                sequence_length, -1, dtype=np.int8
                             )
                             quality_matrix = np.vstack(
                                 [
                                     quality_reads.get(read_name, default_quality_sequence)
                                     for read_name in sorted_index
                                 ]
-                            )
+                            ).astype(np.int8, copy=False)
                             temp_adata.layers[BASE_QUALITY_SCORES] = quality_matrix
                         if read_span_reads:
-                            default_read_span = np.zeros(sequence_length, dtype=np.int16)
+                            default_read_span = np.zeros(sequence_length, dtype=np.int8)
                             read_span_matrix = np.vstack(
                                 [
                                     read_span_reads.get(read_name, default_read_span)
                                     for read_name in sorted_index
                                 ]
-                            )
+                            ).astype(np.int8, copy=False)
                             temp_adata.layers[READ_SPAN_MASK] = read_span_matrix
 
                         # Queue this sample's AnnData; concatenated once, after the sample loop.
@@ -2106,12 +2118,17 @@ def _process_one_batch(
                             sample_types[dict_index]
                         )
                     )
+                    # Uncompressed: this is a per-batch intermediate that
+                    # concat_on_disk reads back shortly afterward, not a
+                    # final artifact -- gzip-compressing it only adds
+                    # decompression cost to that merge step for no benefit
+                    # (see safe_write_h5ad's docstring for the same
+                    # reasoning applied to stage-boundary outputs).
                     adata.write_h5ad(
                         h5_dir
                         / "{0}_{1}_{2}_SMF_binarized_sample_hdf5.h5ad.gz".format(
                             readwrite.date_string(), batch, sample_types[dict_index]
                         ),
-                        compression="gzip",
                     )
                 except Exception:
                     logger.debug("Skipping writing anndata for sample")
@@ -2761,9 +2778,20 @@ def modkit_extract_to_adata(
     # once (on top of whatever the worker pool above was still holding), which
     # was a second, independent memory spike that grew with batch count. This
     # streams each input's arrays through in chunks and never holds more than
-    # one input's worth in memory. The result is still reloaded into memory
-    # once afterward, since the annotation/consensus-sequence logic below
-    # mutates `final_adata` in place and needs it as a normal AnnData.
+    # one input's worth in memory.
+    #
+    # final_adata is opened backed="r" rather than eagerly re-read: the
+    # annotation/consensus-sequence/QC logic below only does obs/var/uns
+    # metadata writes plus small on-demand slices of layers per (record,
+    # strand, mapping_dir) group (see append_reference_strand_quality_stats
+    # and the consensus loop), which anndata materializes lazily on access --
+    # so there's no need to force the whole dataset into memory just to run
+    # those. concat_tmp_path must stay alive until final_adata is explicitly
+    # materialized below (`.to_memory()`), *before* delete_batch_hdfs's
+    # cleanup runs -- delete_intermediate_h5ads_and_tmpdir matches any
+    # filename containing "h5ad" as a substring, which concat_tmp_path's name
+    # does, so leaving it around past that point risks it being deleted out
+    # from under an object still backed by it.
     #
     # concat_on_disk's own path handling picks zarr vs h5py by literal
     # `Path.suffix == ".h5ad"`, which misreads our `*.h5ad.gz` batch files
@@ -2782,8 +2810,7 @@ def modkit_extract_to_adata(
         input_groups = [stack.enter_context(h5py.File(p, mode="r")) for p in hdf_paths]
         output_group = stack.enter_context(h5py.File(concat_tmp_path, mode="w"))
         concat_on_disk(input_groups, output_group, join="outer", index_unique=None)
-    final_adata = ad.read_h5ad(concat_tmp_path)
-    concat_tmp_path.unlink()
+    final_adata = ad.read_h5ad(concat_tmp_path, backed="r")
     gc.collect()
 
     # Set obs columns to type 'category'
@@ -2807,14 +2834,22 @@ def modkit_extract_to_adata(
         final_adata.var[f"{record}_bottom_strand_FASTA_base"] = list(complement)
         final_adata.uns[f"{record}_FASTA_sequence"] = sequence
         final_adata.uns["References"][f"{record}_FASTA_sequence"] = sequence
-        # Add consensus sequence of samples mapped to the record to the object
-        record_subset = final_adata[final_adata.obs[REFERENCE] == record]
-        for strand in record_subset.obs[STRAND].cat.categories:
-            strand_subset = record_subset[record_subset.obs[STRAND] == strand]
-            for mapping_dir in strand_subset.obs[READ_MAPPING_DIRECTION].cat.categories:
-                mapping_dir_subset = strand_subset[
-                    strand_subset.obs[READ_MAPPING_DIRECTION] == mapping_dir
-                ]
+        # Add consensus sequence of samples mapped to the record to the object.
+        # Each level below builds a combined boolean mask and indexes directly
+        # into final_adata exactly once, rather than chaining
+        # final_adata[m1][m2][m3]: backed AnnData raises "cannot make a view
+        # of a view" on repeated indexing, which chained subsetting here would
+        # trigger now that final_adata may be backed="r" (see the read above).
+        record_mask = final_adata.obs[REFERENCE] == record
+        record_obs = final_adata.obs.loc[record_mask]
+        for strand in record_obs[STRAND].cat.categories:
+            strand_mask = record_mask & (final_adata.obs[STRAND] == strand)
+            strand_obs = final_adata.obs.loc[strand_mask]
+            for mapping_dir in strand_obs[READ_MAPPING_DIRECTION].cat.categories:
+                combined_mask = strand_mask & (
+                    final_adata.obs[READ_MAPPING_DIRECTION] == mapping_dir
+                )
+                mapping_dir_subset = final_adata[combined_mask]
                 encoded_sequences = mapping_dir_subset.layers[SEQUENCE_INTEGER_ENCODING]
                 layer_counts = [
                     np.sum(encoded_sequences == base_int, axis=0)
@@ -2859,6 +2894,11 @@ def modkit_extract_to_adata(
             "No double-barcoded demux summary available (double_barcoded_path is None); "
             "skipping demux_type annotation"
         )
+
+    # Materialize now, before any cleanup below can touch concat_tmp_path (see
+    # the note above the backed read for why this must happen first).
+    final_adata = final_adata.to_memory()
+    concat_tmp_path.unlink(missing_ok=True)
 
     # Delete the individual h5ad files and only keep the final concatenated file
     if delete_batch_hdfs:
