@@ -110,7 +110,15 @@ def append_binary_layer_by_base_context(
     obs_ref_series = adata.obs[reference_column]
 
     def _build_masked(var_masks: dict) -> np.ndarray:
-        """Allocate one NaN-filled layer and fill row-blocks per reference."""
+        """Allocate one NaN-filled layer and fill row-blocks per reference.
+
+        Kept float32 (not float16): these hold continuous methylation
+        probabilities plus NaN, and float16 both loses probability precision and
+        overflows numpy's float16 accumulator when downstream stats reduce over
+        the read axis. These layers are also redundant -- each is just X masked by
+        a base-context var mask -- so the real win is to stop materializing them
+        and derive on demand, tracked on the layer-audit branch.
+        """
         arr = np.full((n_obs, n_vars), np.nan, dtype=np.float32)
         for ref in references:
             cols = var_masks.get(ref, np.zeros(n_vars, dtype=bool))

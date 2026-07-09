@@ -646,6 +646,23 @@ def preprocess_adata_core(
         )
         write_gz_h5ad(adata, pp_adata_path)
 
+    # Free the full `adata` before the deduplicated transforms/write below, so the
+    # full object and the (separate) deduplicated copy are not both resident at
+    # full layer weight -- that double-materialization is a large part of the
+    # preprocess memory peak on conversion/deaminase runs. Only safe when
+    # `adata_unique` is a genuinely distinct object (for `direct` modality it IS
+    # `adata`, so we must not free it) and when the optional full-`adata`
+    # clustermap below is not going to run (it is the only remaining consumer of
+    # the full object). The clustermap section further down sources its layer-key
+    # checks from whichever object survives.
+    _plot_full_clustermap = getattr(
+        cfg, "preprocessed_plot_read_span_quality_clustermaps", False
+    )
+    if adata_unique is not None and adata_unique is not adata and not _plot_full_clustermap:
+        del adata
+        gc.collect()
+        adata = None
+
     # Apply inversion and reindexing only to adata_unique (the deduplicated
     # copy used by downstream analysis).  The full adata is saved without
     # these transforms to avoid the peak memory of inverting all layers.
@@ -676,18 +693,24 @@ def preprocess_adata_core(
     gc.collect()
 
     ############################################### Plot read span mask + base quality clustermaps ###############################################
+    # `adata` may have been freed above to relieve the double-copy peak; source the
+    # layer-key checks from whichever object survives (adata_unique has the same
+    # layer set).
+    _layer_source = adata if adata is not None else adata_unique
     quality_layer = None
-    if BASE_QUALITY_SCORES in adata.layers:
+    if BASE_QUALITY_SCORES in _layer_source.layers:
         quality_layer = BASE_QUALITY_SCORES
-    elif "base_qualities" in adata.layers:
+    elif "base_qualities" in _layer_source.layers:
         quality_layer = "base_qualities"
 
-    if READ_SPAN_MASK not in adata.layers or quality_layer is None:
+    if READ_SPAN_MASK not in _layer_source.layers or quality_layer is None:
         logger.debug(
             "read_span_mask and base quality layers not found; skipping read span/base quality clustermaps."
         )
     else:
-        if getattr(cfg, "preprocessed_plot_read_span_quality_clustermaps", False):
+        if adata is not None and getattr(
+            cfg, "preprocessed_plot_read_span_quality_clustermaps", False
+        ):
             pp_span_quality_dir = preprocess_directory / "06_read_span_and_quality_clustermaps"
             if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
                 logger.debug(

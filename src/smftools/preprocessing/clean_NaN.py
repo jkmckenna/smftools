@@ -18,6 +18,37 @@ VALID_NAN_LAYERS = frozenset(
 DEFAULT_NAN_LAYERS = ["nan0_0minus1", "nan_half"]
 
 
+def _finalize_layer_dtype(arr: np.ndarray) -> np.ndarray:
+    """Downcast a NaN-fill layer to int8 when it is safe, else keep float32.
+
+    These layers are large and dense (n_reads x n_positions), so halving/quartering
+    their dtype is a meaningful memory win. But two constraints apply:
+
+    - int8 cannot hold NaN, so any layer that still contains NaN must stay float32.
+    - float16 is NOT a safe alternative here: numpy keeps a float16 accumulator in
+      sum/nansum/nanmean, so reducing a float16 layer over the read axis (which many
+      downstream stats do) overflows to inf past ~2048 elements. int8 is safe because
+      numpy upcasts integer reductions to int64.
+
+    So we only downcast to int8 when the built layer is finite and exactly
+    integer-valued within int8 range -- which is the case when clean_NaN ran on a
+    binarized {0,1,NaN} layer (its outputs are then {-1,0,1}/{0,1,2}). When clean_NaN
+    ran on a continuous X (the non-native path), "else X" keeps continuous values and
+    this check correctly leaves the layer float32 rather than truncating it.
+    Layers that carry a non-integer fill (e.g. nan_half's 0.5) also stay float32.
+    """
+    if np.isnan(arr).any():
+        return np.asarray(arr, dtype=np.float32)
+    if (
+        arr.size > 0
+        and np.array_equal(arr, np.trunc(arr))
+        and arr.min() >= -128
+        and arr.max() <= 127
+    ):
+        return arr.astype(np.int8, copy=False)
+    return np.asarray(arr, dtype=np.float32)
+
+
 def _ffill_bfill_rows(X: np.ndarray) -> np.ndarray:
     """Forward-then-backward fill NaN values along axis=1 (row-wise).
 
@@ -99,27 +130,29 @@ def clean_NaN(
 
     if "fill_nans_closest" in layers_to_build:
         logger.info("Making layer: fill_nans_closest")
-        adata.layers["fill_nans_closest"] = _ffill_bfill_rows(X)
+        adata.layers["fill_nans_closest"] = _finalize_layer_dtype(_ffill_bfill_rows(X))
 
     if "nan0_0minus1" in layers_to_build:
         logger.info("Making layer: nan0_0minus1")
-        adata.layers["nan0_0minus1"] = np.where(
-            nan_mask, np.float32(0.0), np.where(X == 0, np.float32(-1.0), X)
-        ).astype(np.float32)
+        adata.layers["nan0_0minus1"] = _finalize_layer_dtype(
+            np.where(nan_mask, np.float32(0.0), np.where(X == 0, np.float32(-1.0), X))
+        )
 
     if "nan1_12" in layers_to_build:
         logger.info("Making layer: nan1_12")
-        adata.layers["nan1_12"] = np.where(
-            nan_mask, np.float32(1.0), np.where(X == 1, np.float32(2.0), X)
-        ).astype(np.float32)
+        adata.layers["nan1_12"] = _finalize_layer_dtype(
+            np.where(nan_mask, np.float32(1.0), np.where(X == 1, np.float32(2.0), X))
+        )
 
     if "nan_minus_1" in layers_to_build:
         logger.info("Making layer: nan_minus_1")
-        adata.layers["nan_minus_1"] = np.where(nan_mask, np.float32(-1.0), X).astype(np.float32)
+        adata.layers["nan_minus_1"] = _finalize_layer_dtype(
+            np.where(nan_mask, np.float32(-1.0), X)
+        )
 
     if "nan_half" in layers_to_build:
         logger.info("Making layer: nan_half")
-        adata.layers["nan_half"] = np.where(nan_mask, np.float32(0.5), X).astype(np.float32)
+        adata.layers["nan_half"] = _finalize_layer_dtype(np.where(nan_mask, np.float32(0.5), X))
 
     del X, nan_mask
 
