@@ -530,41 +530,23 @@ def concatenate_h5ads(
     return output_path
 
 
-def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None, verbose=True):
-    """
-    Save an AnnData safely by sanitizing .obs, .var, .uns, .layers, and .obsm.
+def _sanitize_adata_for_write(adata, *, backup, backup_dir, verbose):
+    """Sanitize obs/var/uns/layers/obsm/varm/X for on-disk writing.
 
-    Returns a report dict and prints a summary of what was converted/backed up/skipped.
-
-    `compression` defaults to None (uncompressed HDF5 chunks), not "gzip". These
-    files are almost always read back by the *next* pipeline stage (or opened
-    backed/lazily), and HDF5's gzip filter forces full-chunk decompression on
-    every touched chunk -- fine for a single sequential full-file read, but
-    catastrophic for scattered/boolean-masked row access (measured: a ~2%
-    scattered row read took 32s under gzip vs. a fraction of a second
-    uncompressed, on a real ~9GB load-stage output). Pass compression="gzip"
-    explicitly only for a deliberate, final archival copy that won't be read
-    back by this pipeline -- and prefer compressing the finished uncompressed
-    file with a real outer `gzip` afterward instead, so the archived copy
-    isn't confusingly opened directly by anndata/h5py as if it were live data.
+    Shared by :func:`safe_write_h5ad` and :func:`safe_write_zarr` so the
+    object-column coercion and pickle-backup behavior stays identical across
+    the HDF5 and zarr backends. Returns a dict with the cleaned structures
+    (``obs``/``var``/``uns``/``layers``/``obsm``/``varm``/``X``) plus the
+    diagnostic ``report``.
     """
     import json
     import os
     import pickle
-    from pathlib import Path
 
-    import anndata as _ad
     import numpy as np
     import pandas as pd
 
-    path = Path(path)
-
-    if not backup_dir:
-        backup_dir = path.parent / str(path.name).split(".")[0]
-    # Coerce to Path: _backup() below builds paths with `backup_dir / name`, which
-    # raises "unsupported operand /: str and str" if a caller passed a plain string.
     backup_dir = Path(backup_dir)
-
     os.makedirs(backup_dir, exist_ok=True)
 
     # report structure
@@ -894,6 +876,63 @@ def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None
             logger.debug(msg)
         X_to_use = adata.X
 
+    return {
+        "obs": obs_clean,
+        "var": var_clean,
+        "uns": uns_clean,
+        "layers": layers_clean,
+        "obsm": obsm_clean,
+        "varm": varm_clean,
+        "X": X_to_use,
+        "report": report,
+    }
+
+
+def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None, verbose=True):
+    """
+    Save an AnnData safely by sanitizing .obs, .var, .uns, .layers, and .obsm.
+
+    Returns a report dict and prints a summary of what was converted/backed up/skipped.
+
+    `compression` defaults to None (uncompressed HDF5 chunks), not "gzip". These
+    files are almost always read back by the *next* pipeline stage (or opened
+    backed/lazily), and HDF5's gzip filter forces full-chunk decompression on
+    every touched chunk -- fine for a single sequential full-file read, but
+    catastrophic for scattered/boolean-masked row access (measured: a ~2%
+    scattered row read took 32s under gzip vs. a fraction of a second
+    uncompressed, on a real ~9GB load-stage output). Pass compression="gzip"
+    explicitly only for a deliberate, final archival copy that won't be read
+    back by this pipeline -- and prefer compressing the finished uncompressed
+    file with a real outer `gzip` afterward instead, so the archived copy
+    isn't confusingly opened directly by anndata/h5py as if it were live data.
+    """
+    import json
+    import os
+    import pickle
+    from pathlib import Path
+
+    import anndata as _ad
+    import numpy as np
+    import pandas as pd
+
+    path = Path(path)
+
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
+    # Coerce to Path: _backup() below builds paths with `backup_dir / name`, which
+    # raises "unsupported operand /: str and str" if a caller passed a plain string.
+    backup_dir = Path(backup_dir)
+
+    os.makedirs(backup_dir, exist_ok=True)
+
+    _san = _sanitize_adata_for_write(
+        adata, backup=backup, backup_dir=backup_dir, verbose=verbose
+    )
+    report = _san["report"]
+    obs_clean, var_clean, uns_clean = _san["obs"], _san["var"], _san["uns"]
+    layers_clean, obsm_clean, varm_clean = _san["layers"], _san["obsm"], _san["varm"]
+    X_to_use = _san["X"]
+
     # ---------- decide whether a sanitized copy is actually needed ----------
     # If nothing above needed converting/backing up/skipping, obs_clean,
     # var_clean, uns_clean, layers_clean, obsm_clean, varm_clean, and X_to_use
@@ -1201,7 +1240,88 @@ def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None
     return report
 
 
-def safe_read_h5ad(
+def safe_write_zarr(
+    adata,
+    path,
+    *,
+    backup=False,
+    backup_dir=None,
+    verbose=True,
+    zarr_format=3,
+    chunks=None,
+):
+    """Sanitize (shared with :func:`safe_write_h5ad`) then write to a zarr store.
+
+    Applies the same obs/var/uns object-column coercion and pickle-backup behavior
+    as :func:`safe_write_h5ad` via :func:`_sanitize_adata_for_write`, then writes
+    zarr. The zarr on-disk format is pinned explicitly (default v3) so the output
+    is deterministic regardless of the installed anndata's default (anndata 0.12
+    defaults to v2; 0.13+ to v3 -- both honor ``settings.zarr_write_format``).
+
+    Intended for partition/spine-scale objects (per-(reference, sample) partitions
+    or the thin molecule-index spine), not the full monolithic AnnData.
+
+    Returns the sanitization report dict.
+    """
+    import anndata as _ad
+
+    path = Path(path)
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
+    backup_dir = Path(backup_dir)
+
+    _san = _sanitize_adata_for_write(
+        adata, backup=backup, backup_dir=backup_dir, verbose=verbose
+    )
+    report = _san["report"]
+    array_changes = bool(
+        report["layers_converted"]
+        or report["layers_skipped"]
+        or report["obsm_converted"]
+        or report["obsm_skipped"]
+        or report["varm_converted"]
+        or report["varm_skipped"]
+        or report["X_replaced_or_converted"]
+    )
+
+    write_kwargs = {} if chunks is None else {"chunks": chunks}
+    # Older anndata may lack the format setting; guard so we never hard-fail on it.
+    has_format_setting = hasattr(_ad.settings, "zarr_write_format")
+    prev_format = _ad.settings.zarr_write_format if has_format_setting else None
+    try:
+        if has_format_setting:
+            _ad.settings.zarr_write_format = zarr_format
+        if array_changes:
+            # A layer/obsm/varm/X genuinely needed conversion: write the sanitized copy.
+            obj = _ad.AnnData(
+                X=_san["X"],
+                obs=_san["obs"],
+                var=_san["var"],
+                layers=_san["layers"],
+                uns=_san["uns"],
+                obsm=_san["obsm"],
+                varm=_san["varm"],
+            )
+            obj.write_zarr(path, **write_kwargs)
+        else:
+            # Metadata-only (the common case): temporarily swap sanitized
+            # obs/var/uns onto the original object and write it in place (X/layers
+            # stream straight from their existing buffers, no duplication), then
+            # restore -- mirrors safe_write_h5ad's peak-memory optimization.
+            _obs, _var, _uns = adata.obs, adata.var, adata.uns
+            try:
+                adata.obs, adata.var, adata.uns = _san["obs"], _san["var"], _san["uns"]
+                adata.write_zarr(path, **write_kwargs)
+            finally:
+                adata.obs, adata.var, adata.uns = _obs, _var, _uns
+    finally:
+        if has_format_setting:
+            _ad.settings.zarr_write_format = prev_format
+
+    return report
+
+
+def safe_read_zarr(
     path,
     backup_dir=None,
     restore_backups=True,
@@ -1209,46 +1329,57 @@ def safe_read_h5ad(
     categorical_threshold=100,
     verbose=True,
 ):
+    """Load an AnnData from a zarr store written by :func:`safe_write_zarr`.
+
+    Mirrors :func:`safe_read_h5ad`, sharing :func:`_restore_after_read` for pickled
+    backup restoration and column re-categorization. Returns ``(adata, report)``.
     """
-    Safely load an AnnData saved by safe_write_h5ad and attempt to restore complex objects
-    from the backup_dir produced during save.
+    import anndata as _ad
 
-    Parameters
-    ----------
-    path : str
-        Path to the cleaned .h5ad produced by safe_write_h5ad.
-    backup_dir : str
-        Directory where safe_write_h5ad stored pickled backups (default "./uns_backups").
-    restore_backups : bool
-        If True, attempt to load pickled backups and restore original objects into adata.
-    re_categorize : bool
-        If True, try to coerce small unique-count string columns back into pandas.Categorical.
-    categorical_threshold : int
-        Max unique values for a column to be considered categorical for automatic recasting.
-    verbose : bool
-        Print progress/summary.
+    path = Path(path)
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
 
-    Returns
-    -------
-    (adata, report) :
-        adata : AnnData
-            The reloaded (and possibly restored) AnnData instance.
-        report : dict
-            A report describing restored items, parsed JSON keys, and any failures.
+    if verbose:
+        logger.info(f"[safe_read_zarr] loading {path}")
+    try:
+        adata = _ad.read_zarr(path)
+    except Exception as e:
+        raise RuntimeError(f"Failed to read zarr at {path}: {e}")
+
+    report = _restore_after_read(
+        adata,
+        backup_dir=backup_dir,
+        restore_backups=restore_backups,
+        re_categorize=re_categorize,
+        categorical_threshold=categorical_threshold,
+        verbose=verbose,
+    )
+    return adata, report
+
+
+def _restore_after_read(
+    adata,
+    *,
+    backup_dir,
+    restore_backups=True,
+    re_categorize=True,
+    categorical_threshold=100,
+    verbose=True,
+):
+    """Restore pickled backups and re-categorize columns on a freshly-read AnnData.
+
+    Format-agnostic tail shared by :func:`safe_read_h5ad` and
+    :func:`safe_read_zarr`. Mutates ``adata`` in place and returns the report.
     """
     import json
     import os
     import pickle
-    from pathlib import Path
 
-    import anndata as _ad
     import numpy as np
     import pandas as pd
 
-    path = Path(path)
-
-    if not backup_dir:
-        backup_dir = path.parent / str(path.name).split(".")[0]
+    backup_dir = Path(backup_dir)
 
     report = {
         "restored_obs_columns": [],
@@ -1263,15 +1394,6 @@ def safe_read_h5ad(
         "missing_backups": [],
         "errors": [],
     }
-
-    if verbose:
-        logger.info(f"[safe_read_h5ad] loading {path}")
-
-    # 1) load the cleaned h5ad
-    try:
-        adata = _ad.read_h5ad(path)
-    except Exception as e:
-        raise RuntimeError(f"Failed to read h5ad at {path}: {e}")
 
     # Ensure backup_dir exists (may be relative to cwd)
     if verbose:
@@ -1618,6 +1740,77 @@ def safe_read_h5ad(
                 logger.error(" - %s", e)
         logger.info("=== end summary ===\n")
 
+
+    return report
+
+
+def safe_read_h5ad(
+    path,
+    backup_dir=None,
+    restore_backups=True,
+    re_categorize=True,
+    categorical_threshold=100,
+    verbose=True,
+):
+    """
+    Safely load an AnnData saved by safe_write_h5ad and attempt to restore complex objects
+    from the backup_dir produced during save.
+
+    Parameters
+    ----------
+    path : str
+        Path to the cleaned .h5ad produced by safe_write_h5ad.
+    backup_dir : str
+        Directory where safe_write_h5ad stored pickled backups (default "./uns_backups").
+    restore_backups : bool
+        If True, attempt to load pickled backups and restore original objects into adata.
+    re_categorize : bool
+        If True, try to coerce small unique-count string columns back into pandas.Categorical.
+    categorical_threshold : int
+        Max unique values for a column to be considered categorical for automatic recasting.
+    verbose : bool
+        Print progress/summary.
+
+    Returns
+    -------
+    (adata, report) :
+        adata : AnnData
+            The reloaded (and possibly restored) AnnData instance.
+        report : dict
+            A report describing restored items, parsed JSON keys, and any failures.
+    """
+    import json
+    import os
+    import pickle
+    from pathlib import Path
+
+    import anndata as _ad
+    import numpy as np
+    import pandas as pd
+
+    path = Path(path)
+
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
+
+
+    if verbose:
+        logger.info(f"[safe_read_h5ad] loading {path}")
+
+    # 1) load the cleaned h5ad
+    try:
+        adata = _ad.read_h5ad(path)
+    except Exception as e:
+        raise RuntimeError(f"Failed to read h5ad at {path}: {e}")
+
+    report = _restore_after_read(
+        adata,
+        backup_dir=backup_dir,
+        restore_backups=restore_backups,
+        re_categorize=re_categorize,
+        categorical_threshold=categorical_threshold,
+        verbose=verbose,
+    )
     return adata, report
 
 
