@@ -154,7 +154,16 @@ torch = [
     "torch>=1.9.0",
 ]
 
+lazy = [
+    # Lazy partitioned-store reads (anndata.experimental.read_lazy).
+    # Optional: materialize() falls back to eager reads without it.
+    "xarray",
+]
+
 all = [
+    # lazy
+    "xarray",
+
     # cluster
     "igraph",
     "leidenalg",
@@ -197,6 +206,9 @@ all = [
 ]
 
 all_2 = [
+    # lazy
+    "xarray",
+
     # cluster
     "igraph",
     "leidenalg",
