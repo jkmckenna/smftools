@@ -379,7 +379,9 @@ def write_experiment_store(
         },
     )
     spine_path = output_dir / SPINE_FILENAME
-    safe_write_h5ad(spine, spine_path, backup=True, verbose=verbose)
+    # backup=False: the spine is fully rebuildable from partitions, so there is no
+    # need to pickle-back-up its (coerced) identity/pointer columns.
+    safe_write_h5ad(spine, spine_path, backup=False, verbose=verbose)
 
     manifest_path = sidecar_manifest_path(output_dir)
     register_sidecar(manifest_path, "partition_store", output_dir / STORE_SUBDIR,
