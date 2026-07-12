@@ -851,30 +851,34 @@ def _sanitize_adata_for_write(adata, *, backup, backup_dir, verbose):
         varm_clean = {}
 
     # ---------- handle X ----------
+    # X may legitimately be None (e.g. an obs-only "spine" AnnData). Leave it as
+    # None: np.asarray(None) yields a 0-d object array that would be coerced to a
+    # 0-d float and break AnnData's 2-D check downstream.
     X_to_use = adata.X
-    try:
-        X_arr = np.asarray(adata.X)
-        if X_arr.dtype == object:
-            try:
-                X_to_use = X_arr.astype(float)
-                report["X_replaced_or_converted"] = "converted_to_float"
-                if verbose:
-                    logger.debug("Converted adata.X object-dtype -> float")
-            except Exception:
-                if backup:
-                    _backup(adata.X, "X_backup")
-                X_to_use = np.zeros_like(X_arr, dtype=float)
-                report["X_replaced_or_converted"] = "replaced_with_zeros_backup"
-                if verbose:
-                    logger.debug(
-                        "adata.X had object dtype and couldn't be converted; replaced with zeros (backup set)."
-                    )
-    except Exception as e:
-        msg = f"Error handling adata.X: {e}"
-        report["errors"].append(msg)
-        if verbose:
-            logger.debug(msg)
-        X_to_use = adata.X
+    if adata.X is not None:
+        try:
+            X_arr = np.asarray(adata.X)
+            if X_arr.dtype == object:
+                try:
+                    X_to_use = X_arr.astype(float)
+                    report["X_replaced_or_converted"] = "converted_to_float"
+                    if verbose:
+                        logger.debug("Converted adata.X object-dtype -> float")
+                except Exception:
+                    if backup:
+                        _backup(adata.X, "X_backup")
+                    X_to_use = np.zeros_like(X_arr, dtype=float)
+                    report["X_replaced_or_converted"] = "replaced_with_zeros_backup"
+                    if verbose:
+                        logger.debug(
+                            "adata.X had object dtype and couldn't be converted; replaced with zeros (backup set)."
+                        )
+        except Exception as e:
+            msg = f"Error handling adata.X: {e}"
+            report["errors"].append(msg)
+            if verbose:
+                logger.debug(msg)
+            X_to_use = adata.X
 
     return {
         "obs": obs_clean,
