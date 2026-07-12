@@ -584,84 +584,29 @@ def _encode_sequence_array(
     return encoded
 
 
-def _write_sequence_batches(
+def _encode_sequence_reads(
     base_identities: Mapping[str, np.ndarray],
-    tmp_dir: Path,
-    record: str,
-    prefix: str,
     valid_length: int,
     config: SequenceEncodingConfig,
-) -> list[str]:
-    """Encode base identities into integer arrays and write batched H5AD files.
+) -> dict[str, np.ndarray]:
+    """Integer-encode a mapping of read base identities in memory.
 
     Args:
-        base_identities: Mapping of read name to base identity arrays.
-        tmp_dir: Directory for temporary H5AD files.
-        record: Reference record identifier.
-        prefix: Prefix used to name batch files.
-        valid_length: Valid reference length for padding determination.
+        base_identities: Mapping of read name to base identity arrays. Entries
+            whose value is ``None`` are skipped.
+        valid_length: Number of valid reference positions for this record, used
+            to place padding beyond the reference span.
         config: Integer encoding configuration.
 
     Returns:
-        list[str]: Paths to written H5AD batch files.
-
-    Processing Steps:
-        1. Encode each read sequence into integers.
-        2. Accumulate encoded reads into batches.
-        3. Persist each batch to an H5AD file with `.uns` storage.
+        dict[str, np.ndarray]: Read name to integer-encoded sequence.
     """
-    batch_files: list[str] = []
-    batch: dict[str, np.ndarray] = {}
-    batch_number = 0
-
+    encoded: dict[str, np.ndarray] = {}
     for read_name, sequence in base_identities.items():
         if sequence is None:
             continue
-        batch[read_name] = _encode_sequence_array(sequence, valid_length, config)
-        if len(batch) >= config.batch_size:
-            save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
-            ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
-            batch_files.append(str(save_name))
-            batch = {}
-            batch_number += 1
-
-    if batch:
-        save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
-        ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
-        batch_files.append(str(save_name))
-
-    return batch_files
-
-
-def _load_sequence_batches(
-    batch_files: list[Path | str],
-) -> tuple[dict[str, np.ndarray], set[str], set[str]]:
-    """Load integer-encoded sequence batches from H5AD files.
-
-    Args:
-        batch_files: H5AD paths containing encoded sequences in `.uns`.
-
-    Returns:
-        tuple[dict[str, np.ndarray], set[str], set[str]]:
-            Read-to-sequence mapping and sets of forward/reverse mapped reads.
-
-    Processing Steps:
-        1. Read each H5AD file.
-        2. Merge `.uns` dictionaries into a single mapping.
-        3. Track forward/reverse read IDs based on filename markers.
-    """
-    sequences: dict[str, np.ndarray] = {}
-    fwd_reads: set[str] = set()
-    rev_reads: set[str] = set()
-    for batch_file in batch_files:
-        batch_path = Path(batch_file)
-        batch_sequences = ad.read_h5ad(batch_path).uns
-        sequences.update(batch_sequences)
-        if "_fwd_" in batch_path.name:
-            fwd_reads.update(batch_sequences.keys())
-        elif "_rev_" in batch_path.name:
-            rev_reads.update(batch_sequences.keys())
-    return sequences, fwd_reads, rev_reads
+        encoded[read_name] = _encode_sequence_array(sequence, valid_length, config)
+    return encoded
 
 
 def process_single_bam(
@@ -791,48 +736,40 @@ def process_single_bam(
         sorted_index = sorted(bin_df.index)
         bin_df = bin_df.reindex(sorted_index)
 
-        # Integer-encode reads if there is valid data
-        batch_files: list[str] = []
+        # Integer-encode reads in memory. Previously each read's encoded sequence
+        # was round-tripped through a throwaway .h5ad batch file (an AnnData whose
+        # `.uns` was used as a key-value store) and immediately read back within
+        # this same worker -- pure serialization + small-file I/O overhead with no
+        # memory benefit, since everything was reloaded into a single dict here
+        # anyway. Encode straight into that dict instead; fwd/rev membership
+        # (previously recovered from the `_fwd_`/`_rev_` batch filenames) comes
+        # directly from the source dict keys.
+        encoded_reads: dict[str, np.ndarray] = {}
+        fwd_reads: set[str] = set()
+        rev_reads: set[str] = set()
         if fwd_bases:
-            batch_files.extend(
-                _write_sequence_batches(
-                    fwd_bases,
-                    tmp_dir,
-                    record,
-                    f"{bam_index}_fwd",
-                    current_length,
-                    SEQUENCE_ENCODING_CONFIG,
-                )
+            fwd_encoded = _encode_sequence_reads(
+                fwd_bases, current_length, SEQUENCE_ENCODING_CONFIG
             )
+            encoded_reads.update(fwd_encoded)
+            fwd_reads.update(fwd_encoded)
 
         if rev_bases:
-            batch_files.extend(
-                _write_sequence_batches(
-                    rev_bases,
-                    tmp_dir,
-                    record,
-                    f"{bam_index}_rev",
-                    current_length,
-                    SEQUENCE_ENCODING_CONFIG,
-                )
+            rev_encoded = _encode_sequence_reads(
+                rev_bases, current_length, SEQUENCE_ENCODING_CONFIG
             )
+            encoded_reads.update(rev_encoded)
+            rev_reads.update(rev_encoded)
 
         del fwd_bases, rev_bases
 
-        if not batch_files:
+        if not encoded_reads:
             logger.debug(
                 f"[Worker {current_process().pid}] Skipping {sample} - No valid encoded data for {record}."
             )
             continue
 
         gc.collect()
-
-        encoded_reads, fwd_reads, rev_reads = _load_sequence_batches(batch_files)
-        if not encoded_reads:
-            logger.debug(
-                f"[Worker {current_process().pid}] Skipping {sample} - No reads found in encoded data for {record}."
-            )
-            continue
 
         # int8 (not int16) for every per-base layer -- see the matching note in
         # modkit_extract_to_adata: encodings 0-5, read-span 0/1, Phred quality
