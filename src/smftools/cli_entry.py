@@ -454,6 +454,78 @@ def subsample_pod5_cmd(pod5_path, read_names, n_reads, outdir):
 ##########################################
 
 
+####### migrate to partitioned store ###########
+@cli.command("migrate-store")
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option(
+    "--stage",
+    default="raw",
+    show_default=True,
+    help="AnnData stage to migrate (raw/pp/pp_dedup/spatial/hmm/latent/variant/chimeric).",
+)
+@click.option(
+    "--input",
+    "input_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Explicit .h5ad(.gz) to migrate (overrides --stage).",
+)
+@click.option(
+    "--outdir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Output directory for the store (default: the stage's directory).",
+)
+def migrate_store_cmd(config_path, stage: str, input_path: Path | None, outdir: Path | None):
+    """
+    Convert an existing AnnData .h5ad into a partitioned zarr store + thin spine +
+    catalog (the 1.0.x storage format), without touching the source h5ad.
+
+    Example:
+
+        smftools migrate-store experiment_config.csv
+
+        smftools migrate-store experiment_config.csv --stage pp_dedup
+    """
+    from .cli.helpers import STAGE_MAP, get_adata_paths, load_experiment_config
+    from .informatics.partition_store import write_experiment_store
+    from .readwrite import safe_read_h5ad
+
+    cfg = load_experiment_config(str(config_path))
+    paths = get_adata_paths(cfg)
+
+    if input_path is not None:
+        src = Path(input_path)
+    else:
+        key = STAGE_MAP.get(stage.lower())
+        if key is None:
+            raise click.ClickException(
+                f"Unknown stage '{stage}'. Valid: {', '.join(sorted(STAGE_MAP))}"
+            )
+        src = getattr(paths, key)
+
+    if not src.exists():
+        raise click.ClickException(f"Source AnnData not found: {src}")
+
+    # Default output dir: the stage directory (h5ads live in <stage>/h5ads/), so the
+    # store/spine/catalog land next to the monolith's directory, matching load.
+    out = Path(outdir) if outdir else src.parent.parent
+    click.echo(f"Reading {src}")
+    adata, _ = safe_read_h5ad(src)
+    result = write_experiment_store(
+        adata,
+        out,
+        experiment=cfg.experiment_name,
+        modality=cfg.smf_modality,
+    )
+    click.echo(f"Store written under {result['store']}")
+    click.echo(f"Spine:   {result['spine']}")
+    click.echo(f"Catalog: {result['catalog']}")
+
+
+##########################################
+
+
 ####### Plot current traces ###########
 @cli.command("plot-current")
 @click.argument("config_path", type=click.Path(exists=True))
