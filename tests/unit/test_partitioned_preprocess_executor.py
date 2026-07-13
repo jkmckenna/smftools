@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from smftools.informatics.partition_read import materialize
+from smftools.informatics.partition_read import materialize, relative_uns_path
 from smftools.informatics.raw_store import write_raw_store
 from smftools.preprocessing.partitioned_executor import (
     execute_partitioned_preprocessing,
@@ -438,8 +438,10 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
     assert not bool(coverage.loc[1, "position_valid"])
 
     spine, _ = safe_read_h5ad(outputs["spine"])
-    assert spine.uns["preprocess_catalog"] == str(outputs["catalog"].resolve())
-    assert spine.uns["preprocess_var"] == str(outputs["var"].resolve())
+    # Stored relative to the run root (tmp_path here), not absolute, so the store
+    # stays readable after the containing directory tree is moved/copied.
+    assert spine.uns["preprocess_catalog"] == relative_uns_path(outputs["catalog"], tmp_path)
+    assert spine.uns["preprocess_var"] == relative_uns_path(outputs["var"], tmp_path)
     assert spine.obs["passes_read_qc"].to_dict() == {"read1": True, "read2": False}
     assert outputs["plots"].is_dir()
     assert set(path.name for path in outputs["plots"].iterdir() if path.is_dir()) == {
@@ -490,7 +492,9 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
         outputs["spine"], spatial_cfg, tmp_path / "spatial_outputs"
     )
     spatial_spine, _ = safe_read_h5ad(spatial["spine"])
-    assert spatial_spine.uns["spatial_source_spine"] == str(outputs["spine"].resolve())
+    assert spatial_spine.uns["spatial_source_spine"] == relative_uns_path(
+        outputs["spine"], tmp_path
+    )
     spatial_tasks = pd.read_parquet(spatial["task_catalog"])
     assert spatial_tasks["n_reads"].sum() == 1
     metrics = pd.read_parquet(spatial["metrics"])
@@ -696,7 +700,9 @@ def test_partitioned_spatial_writes_locus_clustermaps_and_position_matrices(tmp_
         range(cfg.autocorr_max_lag + 1)
     )
     spatial_spine, _ = safe_read_h5ad(spatial["spine"])
-    assert spatial_spine.uns["spatial_task_store"] == str(spatial["task_store"].resolve())
+    assert spatial_spine.uns["spatial_task_store"] == relative_uns_path(
+        spatial["task_store"], tmp_path
+    )
 
 
 def test_read_spatial_statistics_saves_known_direct_periodicity():

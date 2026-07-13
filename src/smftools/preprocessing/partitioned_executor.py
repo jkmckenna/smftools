@@ -13,7 +13,7 @@ import pandas as pd
 from smftools.constants import REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 
-from ..informatics.partition_read import load_spine, materialize
+from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..readwrite import safe_write_h5ad, safe_write_zarr
 from .dispatch_plan import PreprocessTask, plan_preprocess_tasks, write_preprocess_task_catalog
@@ -951,12 +951,19 @@ def execute_partitioned_preprocessing(
     obs_sidecar = append_deaminase_chimera_label(obs_sidecar, cfg)
 
     derived_spine = spine.copy()
-    derived_spine.uns["preprocess_store"] = str((output_dir / PREPROCESS_STORE_SUBDIR).resolve())
-    derived_spine.uns["preprocess_catalog"] = str(catalog_path.resolve())
-    derived_spine.uns["preprocess_source_spine"] = str(spine_path.resolve())
-    derived_spine.uns["source_base_dir"] = str(spine_path.parent.resolve())
-    derived_spine.uns["preprocess_var"] = str(var_catalog.resolve())
-    derived_spine.uns["preprocess_obs"] = str(obs_sidecar.resolve())
+    # Stored relative to the run's output_directory (not output_dir itself), so
+    # these pointers stay correct even after being copied unchanged into a later
+    # stage's spine (spatial/hmm), which lives in a sibling directory -- see
+    # informatics.partition_read._run_root_from_spine_path.
+    run_root = output_dir.parent
+    derived_spine.uns["preprocess_store"] = relative_uns_path(
+        output_dir / PREPROCESS_STORE_SUBDIR, run_root
+    )
+    derived_spine.uns["preprocess_catalog"] = relative_uns_path(catalog_path, run_root)
+    derived_spine.uns["preprocess_source_spine"] = relative_uns_path(spine_path, run_root)
+    derived_spine.uns["source_base_dir"] = relative_uns_path(spine_path.parent, run_root)
+    derived_spine.uns["preprocess_var"] = relative_uns_path(var_catalog, run_root)
+    derived_spine.uns["preprocess_obs"] = relative_uns_path(obs_sidecar, run_root)
     published_layers = sorted({layer for record in records for layer in record.get("layers", [])})
     derived_spine.uns["preprocess_layer_absent_fill"] = {
         layer: float(DERIVED_LAYER_ABSENT_FILL.get(layer, np.nan)) for layer in published_layers

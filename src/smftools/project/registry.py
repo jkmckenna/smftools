@@ -72,13 +72,38 @@ def _locate_spine(experiment_dir: Path) -> Path:
     raise FileNotFoundError(f"no {SPINE_FILENAME} found under {experiment_dir}")
 
 
-def _discover_catalogs(experiment_dir: Path) -> dict[str, str]:
+def _relative_registry_path(path: Path, anchor: Path) -> str:
+    """Return ``path`` as a POSIX-style string relative to ``anchor``, for ``registry.json``.
+
+    Kept relative (not resolved to an absolute string) so the registry -- and the
+    project directory it lives in -- survives being copied to a different machine
+    or mount point, the same way the project's ``runs/`` symlinks already do.
+    Pair with :func:`_resolve_registry_path` on the read side.
+    """
+    import os
+
+    return Path(os.path.relpath(path.resolve(), start=anchor.resolve())).as_posix()
+
+
+def _resolve_registry_path(value: str, anchor: Path) -> Path:
+    """Resolve a ``registry.json`` path value written by :func:`_relative_registry_path`.
+
+    Accepts both the new relative encoding (resolved against ``anchor``, the
+    project dir) and the historical absolute-string encoding (used as-is, for
+    registries written before this fix), so existing registries keep working
+    without needing every experiment re-added.
+    """
+    candidate = Path(value)
+    return candidate if candidate.is_absolute() else (anchor / candidate).resolve()
+
+
+def _discover_catalogs(experiment_dir: Path, project_dir: Path) -> dict[str, str]:
     found: dict[str, str] = {}
     for base in (experiment_dir, experiment_dir / RAW_SUBDIR):
         for name in _CATALOG_NAMES:
             path = base / name
             if path.exists() and name not in found:
-                found[name] = str(path)
+                found[name] = _relative_registry_path(path, project_dir)
     return found
 
 
@@ -113,9 +138,10 @@ def add_experiment(
     exp_id = str(experiment_id or meta.get("experiment") or experiment_dir.name)
 
     existing = registry["experiments"].get(exp_id)
-    if existing and Path(existing["path"]) != experiment_dir:
+    if existing and _resolve_registry_path(existing["path"], project_dir) != experiment_dir:
         raise ValueError(
-            f"experiment id '{exp_id}' already registered at {existing['path']}; pass a distinct --id"
+            f"experiment id '{exp_id}' already registered at "
+            f"{_resolve_registry_path(existing['path'], project_dir)}; pass a distinct --id"
         )
 
     spine_rel = (
@@ -124,7 +150,7 @@ def add_experiment(
         else str(spine_path)
     )
     entry = {
-        "path": str(experiment_dir),
+        "path": _relative_registry_path(experiment_dir, project_dir),
         "name": name or exp_id,
         "modality": meta["modality"],
         "schema_version": meta["schema_version"],
@@ -133,7 +159,7 @@ def add_experiment(
         "n_reads": meta["n_reads"],
         "date_added": existing["date_added"] if existing else _now(),
         "status": "active",
-        "catalogs": _discover_catalogs(experiment_dir),
+        "catalogs": _discover_catalogs(experiment_dir, project_dir),
     }
     registry["experiments"][exp_id] = entry
     save_registry(project_dir, registry)
@@ -155,12 +181,27 @@ def remove_experiment(project_dir: str | Path, experiment_id: str) -> None:
 
 
 def list_experiments(project_dir: str | Path, *, active_only: bool = True) -> list[dict]:
+    """Return registered experiments with ``path``/``catalogs`` resolved to absolute paths.
+
+    ``registry.json`` stores these relative to ``project_dir`` (see
+    :func:`_relative_registry_path`); this is the single point where callers get
+    back concrete, directly-usable paths, so the relative on-disk encoding stays
+    an implementation detail.
+    """
+    project_dir = Path(project_dir)
     registry = load_registry(project_dir)
-    return [
-        {"id": exp_id, **entry}
-        for exp_id, entry in registry["experiments"].items()
-        if not active_only or entry.get("status") == "active"
-    ]
+    results = []
+    for exp_id, entry in registry["experiments"].items():
+        if active_only and entry.get("status") != "active":
+            continue
+        resolved = dict(entry)
+        resolved["path"] = str(_resolve_registry_path(entry["path"], project_dir))
+        resolved["catalogs"] = {
+            name: str(_resolve_registry_path(value, project_dir))
+            for name, value in entry.get("catalogs", {}).items()
+        }
+        results.append({"id": exp_id, **resolved})
+    return results
 
 
 def add_set(

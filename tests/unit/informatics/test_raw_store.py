@@ -4,7 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from smftools.informatics.partition_read import materialize
+from smftools.informatics.partition_read import (
+    materialize,
+    relative_uns_path,
+    resolve_relative_path,
+)
 from smftools.informatics.partition_store import write_dense_cache_from_spine
 from smftools.informatics.raw_store import write_raw_store
 from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
@@ -41,12 +45,18 @@ def _frame() -> pd.DataFrame:
 
 
 def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
+    # bam_outputs/ living alongside the raw store, matching real layout
+    # (raw_outputs/bam_outputs/...), so the relative bam_path encoding below has
+    # a real file to resolve against.
+    bam_path = tmp_path / "bam_outputs" / "aligned.bam"
+    bam_path.parent.mkdir(parents=True)
+    bam_path.touch()
     paths = write_raw_store(
         _frame(),
         tmp_path,
         reference_lengths={"ref1_top": 4, "ref2_top": 6},
         shard_size=2,
-        bam_path="/data/aligned.bam",
+        bam_path=bam_path,
     )
 
     assert len(paths["ragged_store"]) == 2
@@ -65,6 +75,16 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     assert set(catalog["reference"]) == {"ref1_top", "ref2_top"}
     assert catalog["n_reads"].sum() == 4
     assert set(spine.uns["reference_plans"]) == {"ref1_top", "ref2_top"}
+
+    # bam_path is stored relative to the run root (tmp_path.parent here, since
+    # write_raw_store's output_dir *is* the raw store dir), not absolute, so it
+    # stays resolvable after the containing tree is moved to a different machine.
+    run_root = tmp_path.parent
+    stored_bam_path = set(spine.obs["bam_path"])
+    assert stored_bam_path == {relative_uns_path(bam_path, run_root)}
+    resolved = resolve_relative_path(next(iter(stored_bam_path)), run_root)
+    assert resolved == bam_path.resolve()
+    assert resolved.exists()
 
 
 def test_dense_cache_matches_ragged_and_records_barcode_ranges(tmp_path):

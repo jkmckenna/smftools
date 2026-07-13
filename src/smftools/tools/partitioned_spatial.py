@@ -16,7 +16,7 @@ from ..cli.stage_artifacts import (
     prepare_analysis_plot_layout,
     register_plot_artifact,
 )
-from ..informatics.partition_read import load_spine, materialize
+from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..preprocessing.dispatch_plan import (
     BYTES_PER_WORKING_POSITION,
@@ -1365,22 +1365,33 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     )
 
     spatial_spine = spine.copy()
-    spatial_spine.uns["spatial_source_spine"] = str(spine_path.resolve())
-    spatial_spine.uns["spatial_task_catalog"] = str(task_catalog.resolve())
-    spatial_spine.uns["spatial_metrics"] = str(metrics_path.resolve())
-    spatial_spine.uns["spatial_autocorrelation"] = str(autocorrelation_path.resolve())
-    spatial_spine.uns["spatial_position_store"] = str(
-        (output_dir / SPATIAL_PARTIAL_SUBDIR).resolve()
+    # Relative to the run's output_directory, not output_dir -- see
+    # informatics.partition_read._run_root_from_spine_path.
+    run_root = output_dir.parent
+    spatial_spine.uns["spatial_source_spine"] = relative_uns_path(spine_path, run_root)
+    spatial_spine.uns["spatial_task_catalog"] = relative_uns_path(task_catalog, run_root)
+    spatial_spine.uns["spatial_metrics"] = relative_uns_path(metrics_path, run_root)
+    spatial_spine.uns["spatial_autocorrelation"] = relative_uns_path(
+        autocorrelation_path, run_root
     )
-    spatial_spine.uns["spatial_task_store"] = str((output_dir / SPATIAL_PARTIAL_SUBDIR).resolve())
-    spatial_spine.uns["spatial_region_catalog"] = str(region_catalog.resolve())
-    spatial_spine.uns["spatial_matrix_store"] = str((output_dir / SPATIAL_MATRIX_SUBDIR).resolve())
+    spatial_spine.uns["spatial_position_store"] = relative_uns_path(
+        output_dir / SPATIAL_PARTIAL_SUBDIR, run_root
+    )
+    spatial_spine.uns["spatial_task_store"] = relative_uns_path(
+        output_dir / SPATIAL_PARTIAL_SUBDIR, run_root
+    )
+    spatial_spine.uns["spatial_region_catalog"] = relative_uns_path(region_catalog, run_root)
+    spatial_spine.uns["spatial_matrix_store"] = relative_uns_path(
+        output_dir / SPATIAL_MATRIX_SUBDIR, run_root
+    )
     if read_autocorrelation_axis is not None:
-        spatial_spine.uns["spatial_read_autocorrelation_axis"] = str(
-            read_autocorrelation_axis.resolve()
+        spatial_spine.uns["spatial_read_autocorrelation_axis"] = relative_uns_path(
+            read_autocorrelation_axis, run_root
         )
     if read_periodogram_axis is not None:
-        spatial_spine.uns["spatial_read_periodogram_axis"] = str(read_periodogram_axis.resolve())
+        spatial_spine.uns["spatial_read_periodogram_axis"] = relative_uns_path(
+            read_periodogram_axis, run_root
+        )
     spatial_spine.uns["spatial_filter_mask"] = filter_mask or ""
     spatial_spine.uns["spatial_schema_version"] = 2
     output_spine = output_dir / SPATIAL_SPINE_FILENAME

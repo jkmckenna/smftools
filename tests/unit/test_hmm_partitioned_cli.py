@@ -10,7 +10,7 @@ from smftools.cli.hmm_adata import (
     hmm_adata,
 )
 from smftools.hmm.HMM import SingleBernoulliHMM
-from smftools.informatics.partition_read import materialize
+from smftools.informatics.partition_read import materialize, relative_uns_path
 from smftools.informatics.raw_store import write_raw_store
 from smftools.preprocessing.partitioned_executor import execute_partitioned_preprocessing
 from smftools.readwrite import safe_read_h5ad, safe_read_zarr
@@ -234,8 +234,8 @@ def test_partitioned_hmm_writes_task_store_and_rematerializes_layers(tmp_path, m
     task, _ = safe_read_zarr(outputs["task_catalog"].parent / catalog.iloc[0]["group_path"])
     assert set(task.layers) == {"GpC_test_feature"}
     spine, _ = safe_read_h5ad(outputs["spine"])
-    assert spine.uns["hmm_catalog"] == str(outputs["task_catalog"].resolve())
-    assert spine.uns["hmm_source_spine"] == str(preprocess["spine"].resolve())
+    assert spine.uns["hmm_catalog"] == relative_uns_path(outputs["task_catalog"], tmp_path)
+    assert spine.uns["hmm_source_spine"] == relative_uns_path(preprocess["spine"], tmp_path)
     restored = materialize(
         outputs["spine"],
         references="ref_top",

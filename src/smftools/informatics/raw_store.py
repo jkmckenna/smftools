@@ -22,6 +22,7 @@ from smftools.constants import (
 from smftools.logging_utils import get_logger
 
 from ..readwrite import safe_write_h5ad
+from .partition_read import relative_uns_path
 from .ragged_store import (
     RAGGED_ARRAY_COLUMNS,
     READ_ID,
@@ -224,7 +225,12 @@ def write_raw_store(
 
     obs = _build_raw_spine_obs(normalized, shard_by_read, row_by_read)
     if bam_path is not None:
-        obs["bam_path"] = str(Path(bam_path))
+        # Relative to the run's output_directory (not output_dir/raw_dir), not
+        # absolute -- the aligned BAM lives under this same raw store (bam_outputs/),
+        # and this column is copied unchanged into every downstream stage's spine
+        # via spine.copy(), so it needs the same stage-independent anchor as the
+        # uns cross-stage pointers. See _run_root_from_spine_path / relative_uns_path.
+        obs["bam_path"] = relative_uns_path(bam_path, output_dir.parent)
     spine = ad.AnnData(obs=obs)
     plans = plan_references(
         normalized,

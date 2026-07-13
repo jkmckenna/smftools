@@ -25,7 +25,7 @@ from ..cli.stage_artifacts import (
     register_plot_artifact,
 )
 from ..hmm.HMM import mask_layers_outside_read_span, normalize_hmm_feature_sets
-from ..informatics.partition_read import load_spine, materialize
+from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..preprocessing.dispatch_plan import plan_preprocess_tasks
 from ..readwrite import safe_read_zarr, safe_write_h5ad, safe_write_zarr
@@ -461,10 +461,13 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
 
     output_spine = output_dir / HMM_SPINE_FILENAME
     hmm_spine = spine.copy()
-    hmm_spine.uns["hmm_source_spine"] = str(spine_path.resolve())
-    hmm_spine.uns["hmm_catalog"] = str(catalog_path.resolve())
-    hmm_spine.uns["hmm_store"] = str((output_dir / HMM_PARTIAL_SUBDIR).resolve())
-    hmm_spine.uns["hmm_model_store"] = str(models_dir.resolve())
+    # Relative to the run's output_directory, not output_dir -- see
+    # informatics.partition_read._run_root_from_spine_path.
+    run_root = output_dir.parent
+    hmm_spine.uns["hmm_source_spine"] = relative_uns_path(spine_path, run_root)
+    hmm_spine.uns["hmm_catalog"] = relative_uns_path(catalog_path, run_root)
+    hmm_spine.uns["hmm_store"] = relative_uns_path(output_dir / HMM_PARTIAL_SUBDIR, run_root)
+    hmm_spine.uns["hmm_model_store"] = relative_uns_path(models_dir, run_root)
     hmm_spine.uns["hmm_filter_mask"] = filter_mask or ""
     hmm_spine.uns["hmm_layer_absent_fill"] = {
         layer: 0.0 for record in records for layer in record["layers"]

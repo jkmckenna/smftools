@@ -50,23 +50,87 @@ def load_spine(spine_path: str | Path, *, verbose: bool = True) -> "ad.AnnData":
     return spine
 
 
+def relative_uns_path(path: str | Path, anchor: str | Path) -> str:
+    """Return ``path`` as a POSIX-style string relative to ``anchor``, for storing on a spine.
+
+    Used instead of an absolute (``.resolve()``'d) string so cross-artifact pointers
+    (e.g. a preprocess spine's pointer back to its source raw spine, or a raw
+    spine's ``obs["bam_path"]``) survive the containing directory tree being
+    copied to a different machine or mount point. General-purpose despite the
+    name -- applies equally to a ``uns`` value or a per-read ``obs`` column,
+    anything that stores a path string on the spine. Pair with
+    :func:`resolve_relative_path` on the read side.
+
+    For any value that might be inherited unchanged into a later stage's spine via
+    ``spine.copy()`` (e.g. ``source_base_dir``, ``preprocess_catalog``,
+    ``obs["bam_path"]``), pass a stage-independent anchor -- see
+    :func:`_run_root_from_spine_path` -- since a later stage's spine file lives in
+    a different directory than the one that originally wrote the value, so an
+    anchor tied to "wherever this spine currently lives" would resolve correctly
+    there but not once copied elsewhere.
+    """
+    import os
+
+    return Path(os.path.relpath(Path(path).resolve(), start=Path(anchor).resolve())).as_posix()
+
+
+def resolve_relative_path(value: object, anchor: Path | None) -> Path | None:
+    """Resolve a stored spine path value written by :func:`relative_uns_path`.
+
+    Accepts both the new relative encoding (resolved against ``anchor``) and the
+    historical absolute-string encoding (used as-is, for old spines written before
+    this fix), so already-written spines keep working without being regenerated.
+    Returns ``None`` if ``value`` is absent, or relative with no ``anchor`` available.
+    """
+    if not value:
+        return None
+    candidate = Path(str(value))
+    if candidate.is_absolute():
+        return candidate
+    if anchor is None:
+        return None
+    return (anchor / candidate).resolve()
+
+
+def _run_root_from_spine_path(spine_path: Path) -> Path:
+    """Recover the run's ``output_directory`` from a canonical stage spine path.
+
+    Every stage spine lives at ``output_directory/<STAGE_DIR>/spine.h5ad`` (see
+    ``cli.helpers.AdataPaths``), so two parents up from the spine file is always
+    the run's output_directory -- a stable anchor shared by every sibling stage
+    directory (``raw_outputs``, ``preprocess_adata_outputs``, ...), regardless of
+    which stage's spine is currently open. Used to resolve/write cross-stage uns
+    pointers so they stay correct after being copied into a later stage's spine.
+    """
+    return spine_path.parent.parent
+
+
 def _resolve_spine(spine, base_dir):
     """Return ``(spine_adata, base_dir)`` resolving partition path resolution root."""
     if isinstance(spine, (str, Path)):
         spine_path = Path(spine)
         obj = load_spine(spine_path)
-        base = (
-            Path(base_dir)
-            if base_dir is not None
-            else Path(obj.uns.get("source_base_dir", spine_path.parent))
-        )
+        if base_dir is not None:
+            base = Path(base_dir)
+        else:
+            resolved = resolve_relative_path(
+                obj.uns.get("source_base_dir"), _run_root_from_spine_path(spine_path)
+            )
+            base = resolved if resolved is not None else spine_path.parent
         return obj, base
     # in-memory spine
     if base_dir is not None:
         return spine, Path(base_dir)
     source_base_dir = spine.uns.get("source_base_dir")
     if source_base_dir:
-        return spine, Path(source_base_dir)
+        source_path = Path(str(source_base_dir))
+        if source_path.is_absolute():
+            return spine, source_path
+        raise ValueError(
+            "materialize: spine.uns['source_base_dir'] is relative "
+            f"({source_base_dir!r}) but the spine is in-memory with no on-disk "
+            "location to resolve it against -- pass base_dir explicitly."
+        )
     store_root = spine.uns.get("store_root")
     if store_root:
         # partition group_paths are relative to the experiment output dir (store's parent)
@@ -315,15 +379,12 @@ def _load_tiled_cache_selection(
     return _load_partition(path, list(selection.index), layers, lazy, start, end)
 
 
-def _derived_layer_names(spine: "ad.AnnData") -> set[str]:
+def _derived_layer_names(spine: "ad.AnnData", run_root: Path | None) -> set[str]:
     """Return layer names published by partitioned derived-stage stores."""
     names: set[str] = set()
     for catalog_key in ("preprocess_catalog", "hmm_catalog"):
-        catalog_value = spine.uns.get(catalog_key)
-        if not catalog_value:
-            continue
-        catalog_path = Path(str(catalog_value))
-        if not catalog_path.exists():
+        catalog_path = resolve_relative_path(spine.uns.get(catalog_key), run_root)
+        if catalog_path is None or not catalog_path.exists():
             continue
         catalog = pd.read_parquet(catalog_path, columns=["layers"])
         for value in catalog["layers"]:
@@ -338,6 +399,7 @@ def _overlay_preprocess_layers(
     spine: "ad.AnnData",
     result: "ad.AnnData",
     requested_layers: set[str],
+    run_root: Path | None,
 ) -> None:
     """Stitch task-partitioned derived layers onto a materialized slice."""
     from ..readwrite import safe_read_zarr
@@ -360,10 +422,9 @@ def _overlay_preprocess_layers(
     result_rows = {str(read_id): row for row, read_id in enumerate(result.obs_names)}
     result_positions = {int(position): column for column, position in enumerate(positions)}
     for catalog_key in ("preprocess_catalog", "hmm_catalog"):
-        catalog_value = spine.uns.get(catalog_key)
-        if not catalog_value:
+        catalog_path = resolve_relative_path(spine.uns.get(catalog_key), run_root)
+        if catalog_path is None:
             continue
-        catalog_path = Path(str(catalog_value))
         catalog = pd.read_parquet(catalog_path)
         catalog = catalog.loc[
             (catalog["reference"].astype(str) == references[0])
@@ -402,13 +463,14 @@ def _overlay_preprocess_layers(
         result.layers[layer] = values
 
 
-def _overlay_preprocess_var(spine: "ad.AnnData", result: "ad.AnnData") -> None:
+def _overlay_preprocess_var(
+    spine: "ad.AnnData", result: "ad.AnnData", run_root: Path | None
+) -> None:
     """Attach reduced coverage and reference-context columns to a slice."""
-    value = spine.uns.get("preprocess_var")
-    if not value or result.n_vars == 0:
+    if result.n_vars == 0:
         return
-    path = Path(str(value))
-    if not path.exists():
+    path = resolve_relative_path(spine.uns.get("preprocess_var"), run_root)
+    if path is None or not path.exists():
         return
     references = result.obs["Reference_strand"].astype(str).unique()
     if len(references) != 1:
@@ -474,7 +536,13 @@ def materialize(
     import anndata as ad
 
     spine_obj, base = _resolve_spine(spine, base_dir)
-    derived_available = _derived_layer_names(spine_obj)
+    # Cross-stage uns pointers (preprocess_catalog, hmm_catalog, preprocess_var, ...)
+    # are stored relative to the run's output_directory, not `base` (which is the
+    # raw store's own directory) -- see _run_root_from_spine_path. `base` is always
+    # a direct child of output_directory by construction, so its parent recovers it
+    # without needing the original spine_path here.
+    run_root = base.parent
+    derived_available = _derived_layer_names(spine_obj, run_root)
     requested_layer_set = None if layers is None else set(layers)
     requested_derived = (
         derived_available
@@ -501,13 +569,13 @@ def materialize(
     if not _dense_cache_available(sel, base):
         tiled = _load_tiled_cache_selection(spine_obj, sel, base, source_layers, lazy, start, end)
         if tiled is not None:
-            _overlay_preprocess_layers(spine_obj, tiled, requested_derived)
-            _overlay_preprocess_var(spine_obj, tiled)
+            _overlay_preprocess_layers(spine_obj, tiled, requested_derived, run_root)
+            _overlay_preprocess_var(spine_obj, tiled, run_root)
             logger.debug("materialized %d molecules from tiled dense cache", tiled.n_obs)
             return tiled
         result = _load_ragged_selection(spine_obj, sel, base, source_layers, start, end)
-        _overlay_preprocess_layers(spine_obj, result, requested_derived)
-        _overlay_preprocess_var(spine_obj, result)
+        _overlay_preprocess_layers(spine_obj, result, requested_derived, run_root)
+        _overlay_preprocess_var(spine_obj, result, run_root)
         logger.debug("materialized %d molecules from ragged parquet", result.n_obs)
         return result
 
@@ -537,8 +605,8 @@ def materialize(
         if key == "References" or key.endswith("_map"):
             result.uns.setdefault(key, value)
 
-    _overlay_preprocess_layers(spine_obj, result, requested_derived)
-    _overlay_preprocess_var(spine_obj, result)
+    _overlay_preprocess_layers(spine_obj, result, requested_derived, run_root)
+    _overlay_preprocess_var(spine_obj, result, run_root)
 
     logger.debug("materialized %d molecules from %d partition(s)", result.n_obs, len(parts))
     return result

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import anndata as ad
 import pandas as pd
 import pytest
@@ -50,6 +52,47 @@ def test_add_is_idempotent_same_path(tmp_path):
     reg.add_experiment(proj, exp)
     reg.add_experiment(proj, exp)  # re-add same path -> refresh, not duplicate
     assert len(reg.list_experiments(proj)) == 1
+
+
+def test_registry_json_stores_relative_paths_not_absolute(tmp_path):
+    import json
+
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    exp = _make_experiment(
+        tmp_path / "expA", name="expA", modality="direct", reference_uids={"chr1_top": "uid1"}
+    )
+    reg.add_experiment(proj, exp)
+
+    raw = json.loads((proj / reg.REGISTRY_FILENAME).read_text())
+    stored_path = raw["experiments"]["expA"]["path"]
+    assert not Path(stored_path).is_absolute()
+    assert stored_path == "../expA"
+
+
+def test_project_survives_being_copied_to_a_different_absolute_path(tmp_path_factory):
+    """Simulates transferring the whole tree to another machine/mount point."""
+    import shutil
+
+    original_root = tmp_path_factory.mktemp("original")
+    proj = original_root / "project"
+    reg.init_project(proj)
+    exp = _make_experiment(
+        original_root / "expA", name="expA", modality="direct", reference_uids={"chr1_top": "uid1"}
+    )
+    reg.add_experiment(proj, exp)
+
+    # Copy the *whole* tree (project + experiment, preserving their relative
+    # layout) to a completely different absolute root, as if moved to another
+    # machine. The stale absolute path from `original_root` no longer exists.
+    moved_root = tmp_path_factory.mktemp("moved") / "relocated"
+    shutil.copytree(original_root, moved_root)
+    shutil.rmtree(original_root)
+
+    experiments = reg.list_experiments(moved_root / "project")
+    assert len(experiments) == 1
+    assert experiments[0]["path"] == str((moved_root / "expA").resolve())
+    assert Path(experiments[0]["path"]).exists()
 
 
 def test_sets_list_and_query(tmp_path):
