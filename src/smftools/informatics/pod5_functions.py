@@ -350,6 +350,47 @@ def subsample_pod5_for_basecalling(
     return output_pod5
 
 
+def iter_pod5_signals(
+    pod5_path_or_dir: str | Path,
+    read_ids: Iterable[str] | None = None,
+    *,
+    pattern: str = "*.pod5",
+    calibrated: bool = True,
+):
+    """Yield ``(read_id, signal)`` for selected reads across POD5 file(s).
+
+    Args:
+        pod5_path_or_dir: A POD5 file or a directory of POD5 files.
+        read_ids: Optional read ids to fetch (defaults to all reads).
+        pattern: Glob for POD5 files when a directory is given.
+        calibrated: Yield ``signal_pa`` (picoamps) when True, else raw DAC signal.
+
+    Yields:
+        ``(read_id, numpy.ndarray)`` one read at a time (bounded memory).
+    """
+    import numpy as np
+
+    pod5_path_or_dir = Path(pod5_path_or_dir)
+    if pod5_path_or_dir.is_dir():
+        files = sorted(str(p) for p in pod5_path_or_dir.glob(pattern))
+    elif pod5_path_or_dir.is_file():
+        files = [str(pod5_path_or_dir)]
+    else:
+        raise FileNotFoundError(f"Path does not exist: {pod5_path_or_dir}")
+
+    selection = None if read_ids is None else [str(r) for r in read_ids]
+    for path in files:
+        with p5.Reader(path) as reader:
+            reads = (
+                reader.reads(selection=selection, missing_ok=True)
+                if selection is not None
+                else reader.reads()
+            )
+            for read in reads:
+                signal = read.signal_pa if calibrated else read.signal
+                yield str(read.read_id), np.asarray(signal)
+
+
 # --- Per-read POD5 sequencing + signal metadata -------------------------------
 
 # Scalar per-read metadata columns extracted from POD5 (all prefixed ``pod5_`` so

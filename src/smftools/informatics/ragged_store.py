@@ -23,6 +23,8 @@ from smftools.constants import (
     SEQUENCE_INTEGER_ENCODING,
 )
 
+from .signal_features import SIGNAL_FEATURE_COLUMNS
+
 if TYPE_CHECKING:
     import anndata as ad
 
@@ -44,7 +46,17 @@ RAGGED_REQUIRED_COLUMNS = (
     CIGAR,
     ALIGNED_LENGTH,
 )
-RAGGED_ARRAY_COLUMNS = (SEQUENCE, QUALITY, MISMATCH, MODIFICATION_SIGNAL)
+RAGGED_ARRAY_COLUMNS = (SEQUENCE, QUALITY, MISMATCH, MODIFICATION_SIGNAL) + SIGNAL_FEATURE_COLUMNS
+
+# Read-relative signal-feature column -> dense reference-grid layer name. These are
+# only present when raw captured the move table (dorado --emit-moves) + POD5 signal.
+# All are float32 with a NaN default (unobserved positions), like X.
+SIGNAL_FEATURE_LAYERS = {
+    "current_mean": "current_mean",
+    "current_std": "current_std",
+    "dwell": "current_dwell",
+    "signal_start": "current_signal_start",
+}
 
 _CIGAR_TOKEN = re.compile(r"(\d+)([MIDNSHP=X])")
 _QUERY_CONSUMING = frozenset({"M", "I", "S", "=", "X"})
@@ -294,6 +306,20 @@ def materialize_ragged(
     quality = np.full((n_reads, n_positions), -1, dtype=np.int8)
     span = np.zeros((n_reads, n_positions), dtype=np.int8)
 
+    # Optional current signal-feature layers (only when raw captured move tables).
+    requested = None if layers is None else set(layers)
+    signal_feature_layers: dict[str, np.ndarray] = {}
+    for column, layer_name in SIGNAL_FEATURE_LAYERS.items():
+        if column not in frame.columns:
+            continue
+        if requested is not None and layer_name not in requested:
+            continue
+        if not frame[column].notna().any():
+            continue
+        signal_feature_layers[layer_name] = np.full(
+            (n_reads, n_positions), np.nan, dtype=np.float32
+        )
+
     for row_number, (_read_id, row) in enumerate(frame.iterrows()):
         ref_length = lengths[str(row[REFERENCE_STRAND])]
         if end is None and ref_length < full_n_positions:
@@ -311,6 +337,11 @@ def materialize_ragged(
             SEQUENCE: _as_list(row.get(SEQUENCE)),
             MISMATCH: _as_list(row.get(MISMATCH)),
             QUALITY: _as_list(row.get(QUALITY)),
+        }
+        feature_lists = {
+            layer_name: _as_list(row.get(column))
+            for column, layer_name in SIGNAL_FEATURE_LAYERS.items()
+            if layer_name in signal_feature_layers
         }
         for query_position, reference_position in iter_cigar_aligned_pairs(
             str(row[CIGAR]), read_start
@@ -330,12 +361,18 @@ def materialize_ragged(
                 mismatch[row_number, target_position] = arrays[MISMATCH][query_position]
             if arrays[QUALITY]:
                 quality[row_number, target_position] = arrays[QUALITY][query_position]
+            for layer_name, values in feature_lists.items():
+                if values:
+                    signal_feature_layers[layer_name][row_number, target_position] = values[
+                        query_position
+                    ]
 
     available_layers = {
         SEQUENCE_INTEGER_ENCODING: sequence,
         MISMATCH_INTEGER_ENCODING: mismatch,
         BASE_QUALITY_SCORES: quality,
         READ_SPAN_MASK: span,
+        **signal_feature_layers,
     }
     keep = set(available_layers) if layers is None else set(layers)
     unknown_layers = keep.difference(available_layers)

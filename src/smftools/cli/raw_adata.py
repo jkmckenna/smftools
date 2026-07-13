@@ -228,6 +228,86 @@ def _attach_pod5_metadata(frame: pd.DataFrame, *, cfg) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
+def _read_move_tables(
+    bam_path: Path, target_ids: set[str], *, primary_only: bool = True
+) -> dict[str, tuple[list, int]]:
+    """Return ``{read_id: (mv, ts)}`` for reads carrying the dorado move table."""
+    from ..informatics.bam_functions import _require_pysam
+
+    pysam = _require_pysam()
+    tables: dict[str, tuple[list, int]] = {}
+    with pysam.AlignmentFile(str(bam_path), "rb", check_sq=False) as bam:
+        for read in bam.fetch(until_eof=True):
+            if primary_only and (read.is_secondary or read.is_supplementary):
+                continue
+            read_id = str(read.query_name)
+            if read_id not in target_ids or read_id in tables or not read.has_tag("mv"):
+                continue
+            ts = int(read.get_tag("ts")) if read.has_tag("ts") else 0
+            tables[read_id] = (list(read.get_tag("mv")), ts)
+    return tables
+
+
+def _attach_signal_features(frame: pd.DataFrame, *, cfg, aligned_bam: Path) -> pd.DataFrame:
+    """Attach per-base current mean/std/dwell/start from the move table + POD5 signal.
+
+    Composes the dorado move table (``mv``/``ts`` BAM tags, from ``--emit-moves``)
+    with the raw POD5 current to produce read-relative signal-feature arrays; these
+    densify to reference-grid layers via ``materialize_ragged``. Requires POD5 input
+    with move tables preserved on the aligned BAM; skips gracefully otherwise.
+    """
+    if str(getattr(cfg, "input_type", "")).lower() != "pod5":
+        return frame
+    if not getattr(cfg, "extract_signal_features", True):
+        return frame
+    pod5_path = getattr(cfg, "input_data_path", None)
+    if pod5_path is None or not Path(pod5_path).exists():
+        return frame
+
+    target_ids = set(frame["read_id"].astype(str))
+    move_tables = _read_move_tables(Path(aligned_bam), target_ids)
+    if not move_tables:
+        logger.warning(
+            "No move tables (mv tag) found on %s; skipping current signal features. "
+            "Re-run with emit_moves=True and an aligner that preserves tags.",
+            aligned_bam,
+        )
+        return frame
+
+    from ..informatics.pod5_functions import iter_pod5_signals
+    from ..informatics.signal_features import SIGNAL_FEATURE_COLUMNS, read_signal_features
+
+    frame = frame.set_index("read_id", drop=False)
+    for column in SIGNAL_FEATURE_COLUMNS:
+        frame[column] = pd.Series([None] * len(frame), index=frame.index, dtype=object)
+    reverse_by_read = (frame["mapping_direction"].astype(str) == "rev").to_dict()
+    seq_len_by_read = {
+        read_id: (len(sequence) if sequence is not None else 0)
+        for read_id, sequence in frame["sequence"].items()
+    }
+
+    attached = 0
+    for read_id, signal in iter_pod5_signals(pod5_path, read_ids=list(move_tables)):
+        if read_id not in move_tables or read_id not in frame.index:
+            continue
+        mv, ts = move_tables[read_id]
+        features = read_signal_features(
+            mv,
+            ts,
+            bool(reverse_by_read.get(read_id, False)),
+            signal,
+            expected_bases=seq_len_by_read.get(read_id),
+        )
+        if features is None:
+            continue
+        for column in SIGNAL_FEATURE_COLUMNS:
+            frame.at[read_id, column] = features[column].tolist()
+        attached += 1
+
+    logger.info("Attached current signal features for %d/%d read(s)", attached, len(frame))
+    return frame.reset_index(drop=True)
+
+
 def build_ragged_records(
     cfg,
     *,
@@ -294,6 +374,7 @@ def build_ragged_records(
         umi_sidecar=umi_sidecar,
     )
     frame = _attach_pod5_metadata(frame, cfg=cfg)
+    frame = _attach_signal_features(frame, cfg=cfg, aligned_bam=aligned_bam)
     signal_columns: list[str] = []
     if modality == "direct":
         if mod_tsv_dir is None:
