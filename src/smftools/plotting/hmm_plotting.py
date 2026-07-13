@@ -586,6 +586,23 @@ def _build_hmm_feature_cmap(
     return hmm_cmap
 
 
+def _build_nan_aware_cmap(
+    cmap: Any,
+    *,
+    nan_color: str = "#D0D0D0",
+) -> mpl_colors.Colormap:
+    """Return a copy of ``cmap`` with NaNs rendered in ``nan_color``."""
+    if isinstance(cmap, mpl_colors.Colormap):
+        cmap_obj = cmap.copy() if hasattr(cmap, "copy") else cmap
+    else:
+        cmap_obj = plt.get_cmap(cmap)
+        cmap_obj = cmap_obj.copy() if hasattr(cmap_obj, "copy") else cmap_obj
+    cmap_obj.set_bad(nan_color)
+    if hasattr(cmap_obj, "set_under"):
+        cmap_obj.set_under(nan_color)
+    return cmap_obj
+
+
 def _map_length_matrix_to_subclasses(
     length_matrix: np.ndarray,
     feature_ranges: Sequence[Tuple[int, int, Any]],
@@ -841,6 +858,10 @@ def _hmm_raw_one_group(args: dict) -> dict:
         normalized_mean(hmm_matrix_raw) if normalize_hmm else np.nanmean(hmm_matrix_raw, axis=0)
     )
     hmm_plot_cmap = _build_hmm_feature_cmap(cmap_hmm)
+    cmap_c = _build_nan_aware_cmap(cmap_c)
+    cmap_gpc = _build_nan_aware_cmap(cmap_gpc)
+    cmap_cpg = _build_nan_aware_cmap(cmap_cpg)
+    cmap_a = _build_nan_aware_cmap(cmap_a)
     panels = [
         (
             f"HMM - {hmm_feature_layer}",
@@ -853,11 +874,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
     ]
 
     if stacked_any_c:
-        m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
+        _m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
         panels.append(
             (
                 "C",
-                m,
+                m_raw,
                 any_c_labels,
                 cmap_c,
                 _methylation_fraction_for_layer(m_raw, layer_c),
@@ -865,11 +886,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
             )
         )
     if stacked_gpc:
-        m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
+        _m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
         panels.append(
             (
                 "GpC",
-                m,
+                m_raw,
                 gpc_labels,
                 cmap_gpc,
                 _methylation_fraction_for_layer(m_raw, layer_gpc),
@@ -877,11 +898,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
             )
         )
     if stacked_cpg:
-        m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
+        _m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
         panels.append(
             (
                 "CpG",
-                m,
+                m_raw,
                 cpg_labels,
                 cmap_cpg,
                 _methylation_fraction_for_layer(m_raw, layer_cpg),
@@ -889,11 +910,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
             )
         )
     if stacked_any_a:
-        m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
+        _m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
         panels.append(
             (
                 "A",
-                m,
+                m_raw,
                 any_a_labels,
                 cmap_a,
                 _methylation_fraction_for_layer(m_raw, layer_a),
@@ -1403,12 +1424,12 @@ def _hmm_length_one_group(args: dict) -> dict:
     if not stacked_lengths:
         return {"reference": ref, "sample": sample, "output_path": None}
 
-    length_matrix = np.vstack(stacked_lengths)
+    _length_matrix = np.vstack(stacked_lengths)
     length_matrix_raw = np.vstack(stacked_lengths_raw)
     capped_lengths = np.where(length_matrix_raw > 1, 1.0, length_matrix_raw)
     mean_lengths = np.nanmean(capped_lengths, axis=0)
     length_plot_matrix = length_matrix_raw
-    length_plot_cmap = cmap_lengths
+    length_plot_cmap = _build_nan_aware_cmap(cmap_lengths)
     length_plot_norm = None
 
     feature_class_label = None
@@ -1445,12 +1466,16 @@ def _hmm_length_one_group(args: dict) -> dict:
             length_plot_norm,
         ),
     ]
+    cmap_c = _build_nan_aware_cmap(cmap_c)
+    cmap_gpc = _build_nan_aware_cmap(cmap_gpc)
+    cmap_cpg = _build_nan_aware_cmap(cmap_cpg)
+    cmap_a = _build_nan_aware_cmap(cmap_a)
     if stacked_any_c:
-        m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
+        _m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
         panels.append(
             (
                 "C",
-                m,
+                m_raw,
                 any_c_labels,
                 cmap_c,
                 _methylation_fraction_for_layer(m_raw, layer_c),
@@ -1459,11 +1484,11 @@ def _hmm_length_one_group(args: dict) -> dict:
             )
         )
     if stacked_gpc:
-        m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
+        _m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
         panels.append(
             (
                 "GpC",
-                m,
+                m_raw,
                 gpc_labels,
                 cmap_gpc,
                 _methylation_fraction_for_layer(m_raw, layer_gpc),
@@ -1472,11 +1497,11 @@ def _hmm_length_one_group(args: dict) -> dict:
             )
         )
     if stacked_cpg:
-        m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
+        _m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
         panels.append(
             (
                 "CpG",
-                m,
+                m_raw,
                 cpg_labels,
                 cmap_cpg,
                 _methylation_fraction_for_layer(m_raw, layer_cpg),
@@ -1485,11 +1510,11 @@ def _hmm_length_one_group(args: dict) -> dict:
             )
         )
     if stacked_any_a:
-        m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
+        _m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
         panels.append(
             (
                 "A",
-                m,
+                m_raw,
                 any_a_labels,
                 cmap_a,
                 _methylation_fraction_for_layer(m_raw, layer_a),

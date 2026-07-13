@@ -6,7 +6,7 @@ matplotlib.use("Agg")
 import numpy as np
 from matplotlib import colors
 
-from smftools.plotting.hmm_plotting import _build_hmm_feature_cmap
+from smftools.plotting.hmm_plotting import _build_hmm_feature_cmap, _build_nan_aware_cmap
 
 
 def test_build_hmm_feature_cmap_sets_zero_and_nan_colors():
@@ -17,3 +17,10 @@ def test_build_hmm_feature_cmap_sets_zero_and_nan_colors():
 
     masked = np.ma.masked_invalid(np.array([np.nan]))
     assert np.allclose(cmap(masked)[0], colors.to_rgba("#ffffff"))
+
+
+def test_build_nan_aware_cmap_sets_nan_color_for_named_cmap():
+    cmap = _build_nan_aware_cmap("viridis", nan_color="#d0d0d0")
+
+    masked = np.ma.masked_invalid(np.array([np.nan]))
+    assert np.allclose(cmap(masked)[0], colors.to_rgba("#d0d0d0"))
