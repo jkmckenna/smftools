@@ -192,6 +192,42 @@ def _attach_direct_signals(
     return frame.reset_index(drop=True), sorted(signal_columns)
 
 
+def _attach_pod5_metadata(frame: pd.DataFrame, *, cfg) -> pd.DataFrame:
+    """Link each read to its origin POD5 and attach scalar sequencing/signal metadata.
+
+    Only runs for POD5 inputs. Scalar ``pod5_*`` columns are carried onto the
+    molecule spine by ``raw_store``; the optional full current trace
+    (``pod5_current_pa``) stays in the parquet shard.
+    """
+    if str(getattr(cfg, "input_type", "")).lower() != "pod5":
+        return frame
+    if not getattr(cfg, "extract_pod5_metadata", True):
+        return frame
+    pod5_path = getattr(cfg, "input_data_path", None)
+    if pod5_path is None or not Path(pod5_path).exists():
+        logger.warning("input_type=pod5 but input_data_path is missing; skipping POD5 metadata")
+        return frame
+
+    from ..informatics.pod5_functions import extract_pod5_read_metadata
+
+    metadata = extract_pod5_read_metadata(
+        pod5_path,
+        target_ids=frame["read_id"].astype(str),
+        n_jobs=getattr(cfg, "threads", 1),
+        include_current=bool(getattr(cfg, "raw_store_pod5_current", False)),
+        verbose=False,
+    )
+    if metadata.empty:
+        logger.warning("No POD5 metadata matched the extracted reads")
+        return frame
+
+    frame = frame.set_index("read_id", drop=False)
+    for column in metadata.columns:
+        frame[column] = metadata[column].reindex(frame.index)
+    logger.info("Linked %d read(s) to origin POD5 with sequencing/signal metadata", len(metadata))
+    return frame.reset_index(drop=True)
+
+
 def build_ragged_records(
     cfg,
     *,
@@ -257,6 +293,7 @@ def build_ragged_records(
         barcode_sidecar=barcode_sidecar,
         umi_sidecar=umi_sidecar,
     )
+    frame = _attach_pod5_metadata(frame, cfg=cfg)
     signal_columns: list[str] = []
     if modality == "direct":
         if mod_tsv_dir is None:

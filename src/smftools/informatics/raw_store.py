@@ -89,6 +89,17 @@ def _build_raw_spine_obs(
             continue
         obs[column] = frame[column].to_numpy()
 
+    # Carry POD5 sequencing/signal metadata (scalar ``pod5_*`` columns). Ragged
+    # arrays such as ``pod5_current_pa`` are skipped here and stay in the parquet.
+    for column in frame.columns:
+        column = str(column)
+        if not column.startswith("pod5_") or column in obs.columns:
+            continue
+        non_null = frame[column].dropna()
+        if not non_null.empty and isinstance(non_null.iloc[0], (list, tuple)):
+            continue
+        obs[column] = frame[column].to_numpy()
+
     obs["reference_start"] = frame["reference_start"].to_numpy(dtype="int64")
     obs["reference_end"] = (frame["reference_start"] + frame["aligned_length"]).to_numpy(
         dtype="int64"

@@ -348,3 +348,165 @@ def subsample_pod5_for_basecalling(
 
     logger.info(f"Wrote subsampled pod5 to {output_pod5}")
     return output_pod5
+
+
+# --- Per-read POD5 sequencing + signal metadata -------------------------------
+
+# Scalar per-read metadata columns extracted from POD5 (all prefixed ``pod5_`` so
+# raw_store carries them onto the molecule spine automatically).
+POD5_METADATA_COLUMNS = (
+    "pod5_origin",
+    "pod5_read_number",
+    "pod5_channel",
+    "pod5_well",
+    "pod5_pore_type",
+    "pod5_num_samples",
+    "pod5_median_before",
+    "pod5_open_pore_level",
+    "pod5_calibration_offset",
+    "pod5_calibration_scale",
+    "pod5_predicted_scale",
+    "pod5_predicted_shift",
+    "pod5_tracked_scale",
+    "pod5_tracked_shift",
+    "pod5_start_sample",
+    "pod5_num_minknow_events",
+    "pod5_end_reason",
+    "pod5_end_reason_forced",
+    "pod5_sample_rate",
+    "pod5_run_id",
+    "pod5_flow_cell_id",
+    "pod5_sequencing_kit",
+    "pod5_experiment_name",
+    "pod5_sample_id",
+)
+
+
+def _nested(obj: object, *names: str) -> object | None:
+    """Return a nested attribute (``obj.a.b``) tolerating missing links."""
+    for name in names:
+        if obj is None:
+            return None
+        obj = getattr(obj, name, None)
+    return obj
+
+
+def _pod5_read_metadata_record(read, basename: str, include_current: bool) -> dict:
+    """Extract one read's scalar sequencing/signal metadata (defensive to schema)."""
+    end_reason = getattr(read, "end_reason", None)
+    reason = getattr(end_reason, "reason", None)
+    record = {
+        "read_id": str(read.read_id),
+        "pod5_origin": basename,
+        "pod5_read_number": getattr(read, "read_number", None),
+        "pod5_channel": _nested(read, "pore", "channel"),
+        "pod5_well": _nested(read, "pore", "well"),
+        "pod5_pore_type": _nested(read, "pore", "pore_type"),
+        "pod5_num_samples": getattr(read, "num_samples", None),
+        "pod5_median_before": getattr(read, "median_before", None),
+        "pod5_open_pore_level": getattr(read, "open_pore_level", None),
+        "pod5_calibration_offset": _nested(read, "calibration", "offset"),
+        "pod5_calibration_scale": _nested(read, "calibration", "scale"),
+        "pod5_predicted_scale": _nested(read, "predicted_scaling", "scale"),
+        "pod5_predicted_shift": _nested(read, "predicted_scaling", "shift"),
+        "pod5_tracked_scale": _nested(read, "tracked_scaling", "scale"),
+        "pod5_tracked_shift": _nested(read, "tracked_scaling", "shift"),
+        "pod5_start_sample": getattr(read, "start_sample", None),
+        "pod5_num_minknow_events": getattr(read, "num_minknow_events", None),
+        "pod5_end_reason": getattr(reason, "name", None) if reason is not None else None,
+        "pod5_end_reason_forced": getattr(end_reason, "forced", None),
+        "pod5_sample_rate": _nested(read, "run_info", "sample_rate"),
+        "pod5_run_id": _nested(read, "run_info", "acquisition_id"),
+        "pod5_flow_cell_id": _nested(read, "run_info", "flow_cell_id"),
+        "pod5_sequencing_kit": _nested(read, "run_info", "sequencing_kit"),
+        "pod5_experiment_name": _nested(read, "run_info", "experiment_name"),
+        "pod5_sample_id": _nested(read, "run_info", "sample_id"),
+    }
+    if include_current:
+        # Full calibrated current trace (picoamps). Large (many samples/base) and
+        # ragged; stays in the parquet shard only, never on the spine.
+        signal_pa = getattr(read, "signal_pa", None)
+        record["pod5_current_pa"] = None if signal_pa is None else list(signal_pa)
+    return record
+
+
+def _collect_pod5_metadata_from_file(
+    pod5_path: str, target_ids: set[str] | None, include_current: bool
+) -> list[dict]:
+    """Worker: scan one POD5 file for per-read metadata (filtered by target_ids)."""
+    basename = os.path.basename(pod5_path)
+    records: list[dict] = []
+    with p5.Reader(pod5_path) as reader:
+        for read in reader.reads():
+            rid = str(read.read_id)
+            if target_ids is None or rid in target_ids:
+                records.append(_pod5_read_metadata_record(read, basename, include_current))
+    return records
+
+
+def extract_pod5_read_metadata(
+    pod5_path_or_dir: str | Path,
+    target_ids: Iterable[str] | None = None,
+    *,
+    pattern: str = "*.pod5",
+    n_jobs: int | None = 1,
+    include_current: bool = False,
+    verbose: bool = True,
+):
+    """Extract per-read POD5 sequencing + signal metadata into a DataFrame.
+
+    Links each read to its origin POD5 and captures scalar run/pore/signal
+    metadata (channel, well, calibration, median_before, sample_rate, flow cell,
+    kit, etc.). The full current trace is only included when ``include_current`` is
+    True and is left in the returned frame as ``pod5_current_pa`` (ragged); it is
+    never promoted to the spine.
+
+    Args:
+        pod5_path_or_dir: A POD5 file or a directory of POD5 files.
+        target_ids: Optional read ids to keep (defaults to all reads).
+        pattern: Glob for POD5 files when a directory is given.
+        n_jobs: Worker processes; <=1 runs serially.
+        include_current: Also capture the calibrated current trace per read.
+        verbose: Log progress.
+
+    Returns:
+        pandas.DataFrame indexed by ``read_id`` (empty if no reads matched).
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    import pandas as pd
+
+    pod5_path_or_dir = Path(pod5_path_or_dir)
+    if pod5_path_or_dir.is_dir():
+        pod5_files = sorted(str(p) for p in pod5_path_or_dir.glob(pattern))
+        if not pod5_files:
+            raise FileNotFoundError(f"No POD5 files matching {pattern!r} in {pod5_path_or_dir}")
+    elif pod5_path_or_dir.is_file():
+        pod5_files = [str(pod5_path_or_dir)]
+    else:
+        raise FileNotFoundError(f"Path does not exist: {pod5_path_or_dir}")
+
+    target = None if target_ids is None else {str(t) for t in target_ids}
+    records: list[dict] = []
+    if n_jobs is None or n_jobs <= 1:
+        for path in pod5_files:
+            records.extend(_collect_pod5_metadata_from_file(path, target, include_current))
+    else:
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            futures = {
+                executor.submit(_collect_pod5_metadata_from_file, path, target, include_current): path
+                for path in pod5_files
+            }
+            for future in as_completed(futures):
+                try:
+                    records.extend(future.result())
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Failed reading POD5 %s: %s", futures[future], exc)
+
+    frame = pd.DataFrame.from_records(records)
+    if frame.empty:
+        return frame
+    frame = frame.drop_duplicates("read_id").set_index("read_id")
+    if verbose:
+        logger.info("Extracted POD5 metadata for %d read(s)", len(frame))
+    return frame
