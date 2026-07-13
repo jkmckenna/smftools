@@ -160,9 +160,18 @@ lazy = [
     "xarray",
 ]
 
+catalog = [
+    # Project-level cross-experiment catalog engine.
+    # Optional: the project catalog falls back to a pandas/pyarrow union without it.
+    "duckdb",
+]
+
 all = [
     # lazy
     "xarray",
+
+    # catalog
+    "duckdb",
 
     # cluster
     "igraph",
@@ -208,6 +217,9 @@ all = [
 all_2 = [
     # lazy
     "xarray",
+
+    # catalog
+    "duckdb",
 
     # cluster
     "igraph",
