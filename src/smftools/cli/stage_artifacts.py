@@ -18,6 +18,7 @@ DEFAULT_PLOT_CATEGORIES = (
 )
 STAGE_PLOT_CATEGORIES = {
     "preprocess": (
+        "barcode_summary",
         "read_qc",
         "modification_qc",
         "duplicate_qc",
@@ -36,6 +37,7 @@ STAGE_PLOT_CATEGORIES = {
     "spatial": (
         "clustermaps",
         "autocorrelation",
+        "periodicity",
         "rolling_metrics",
         "position_correlation",
         "embeddings",

@@ -44,13 +44,47 @@ def spatial_adata(
     paths = get_adata_paths(cfg)
 
     spatial_path = paths.spatial
+    partitioned_spatial_path = paths.spatial_spine
+    partitioned_source_path = paths.preprocess_spine
+    execution_mode = str(getattr(cfg, "spatial_execution_mode", "auto")).lower()
+    if execution_mode not in {"auto", "legacy", "partitioned"}:
+        raise ValueError("spatial_execution_mode must be auto, legacy, or partitioned")
 
     # Stage-skipping logic for spatial
     if not getattr(cfg, "force_redo_spatial_analyses", False):
+        if (
+            execution_mode != "legacy"
+            and partitioned_spatial_path is not None
+            and partitioned_spatial_path.exists()
+        ):
+            logger.info(
+                "Partitioned spatial spine found: %s\nSkipping smftools spatial",
+                partitioned_spatial_path,
+            )
+            return None, partitioned_spatial_path
         # If spatial exists, we consider spatial analyses already done.
-        if spatial_path.exists():
+        if execution_mode != "partitioned" and spatial_path.exists():
             logger.info(f"Spatial AnnData found: {spatial_path}\nSkipping smftools spatial")
             return None, spatial_path
+
+    use_partitioned = execution_mode == "partitioned" or (
+        execution_mode == "auto"
+        and partitioned_source_path is not None
+        and partitioned_source_path.exists()
+    )
+    if use_partitioned:
+        if partitioned_source_path is None or not partitioned_source_path.exists():
+            raise FileNotFoundError(
+                "partitioned spatial analysis requires preprocess_adata_outputs/spine.h5ad"
+            )
+        from ..tools.partitioned_spatial import execute_partitioned_spatial
+
+        outputs = execute_partitioned_spatial(
+            partitioned_source_path,
+            cfg,
+            Path(cfg.output_directory) / SPATIAL_DIR,
+        )
+        return None, outputs["spine"]
 
     # Decide which AnnData to use as the *starting point* for spatial analyses
     source_path, stage = resolve_adata_stage(cfg, paths, min_stage="pp")

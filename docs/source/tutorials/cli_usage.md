@@ -137,12 +137,36 @@ General AnnData structures added by `chimeric`:
 The spatial command runs downstream spatial analyses on the preprocessed data. It:
 
 - Requires at least a preprocessed AnnData object.
+- Automatically uses the partitioned preprocessing spine when one is available.
+- Filters tasks to `passes_dedup` (or `passes_qc` when deduplication is unavailable).
+- Dispatches non-empty reference/window/barcode chunks under the configured memory target.
+- Writes linked Parquet metrics, barcode autocorrelation, position-profile sidecars, and a thin
+  spatial spine without copying preprocessing matrices.
+- Generates full-reference barcode clustermaps and position matrices for every locus-mode
+  reference strand.
+- In genome mode, `spatial_regions_bed` selects the 0-based, half-open regions used for dense
+  clustermap and position-matrix products; native chromosome names apply to both strands.
+- Saves per-read ACF arrays and lag-pair counts in `read_metrics.zarr` `obsm` entries inside each
+  general spatial task-store partition.
+- Runs direct-signal Lomb-Scargle per read and site type, saving the normalized periodogram,
+  nucleosome-repeat-length peak (`ls_nrl_bp`), peak power, raw peak power, SNR, FWHM, and scoring
+  status in the same partition's `obsm` and `obs` entries.
+- Stores lag and frequency/period coordinates in partition `uns`, with shared stage axis Parquets
+  for catalog-level access.
+- Plots barcode-stratified peak metrics and aligned bulk/barcode-mean Lomb-Scargle periodograms in
+  the spatial `periodicity` category when `spatial_plot_read_lomb_scargle` is enabled.
+- Plots per-read ACF and periodogram clustermaps under category-specific `read_clustermaps`
+  directories when `spatial_plot_read_metric_clustermaps` is enabled.
 - Optionally loads sample sheet metadata.
 - Optionally inverts and reindexes the data along the positions axis.
 - Generates clustermaps for preprocessed (and deduplicated) AnnData.
 - Computes spatial autocorrelation, rolling metrics, and grid summaries.
 - Generates positionwise correlation matrices.
 - Writes the spatial AnnData output.
+
+The optional dense-only analyses in the remaining bullets apply to
+`spatial_execution_mode: legacy`. Use `auto` (default), `partitioned`, or `legacy` to choose the
+execution path explicitly.
 
 ### `smftools hmm`
 

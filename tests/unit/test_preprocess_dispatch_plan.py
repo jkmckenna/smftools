@@ -1,7 +1,10 @@
+from types import SimpleNamespace
+
 import anndata as ad
 import pandas as pd
 
 from smftools.preprocessing.dispatch_plan import plan_preprocess_tasks
+from smftools.tools.partitioned_spatial import _dense_product_regions, _region_tasks
 
 
 def _spine():
@@ -80,3 +83,39 @@ def test_missing_barcode_is_preserved_as_unclassified():
     tasks = plan_preprocess_tasks(spine)
 
     assert any(task.barcode == "unclassified" and task.read_ids == ("locus1",) for task in tasks)
+
+
+def test_filter_mask_excludes_failed_reads_before_planning():
+    spine = _spine()
+    spine.obs["passes_dedup"] = [True, False, True, False]
+
+    tasks = plan_preprocess_tasks(spine, filter_mask="passes_dedup")
+
+    planned_reads = {read_id for task in tasks for read_id in task.read_ids}
+    assert planned_reads == {"locus1", "genome1"}
+
+
+def test_spatial_bed_replaces_genome_tiles_but_preserves_full_locus(tmp_path):
+    spine = _spine()
+    spine.obs["passes_dedup"] = True
+    spine.uns["reference_lengths"] = {"locus_top": 40, "chr1_top": 30}
+    bed = tmp_path / "regions.bed"
+    bed.write_text("chr1\t5\t17\tpeak_a\n", encoding="utf-8")
+    cfg = SimpleNamespace(
+        spatial_regions_bed=str(bed),
+        target_task_memory_mb=1,
+        autocorr_max_lag=2,
+    )
+
+    tasks, bed_regions = _region_tasks(spine, cfg, "passes_dedup")
+
+    locus_tasks = [task for task in tasks if task.analysis_mode == "locus"]
+    genome_tasks = [task for task in tasks if task.analysis_mode == "genome"]
+    assert {(task.core_start, task.core_end) for task in locus_tasks} == {(0, 40)}
+    assert {(task.core_start, task.core_end) for task in genome_tasks} == {(5, 17)}
+    assert set(bed_regions["reference"]) == {"chr1_top"}
+    dense_regions = _dense_product_regions(spine, bed_regions)
+    assert set(map(tuple, dense_regions[["reference", "start", "end"]].to_numpy())) == {
+        ("locus_top", 0, 40),
+        ("chr1_top", 5, 17),
+    }

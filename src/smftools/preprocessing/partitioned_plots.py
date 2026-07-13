@@ -31,6 +31,13 @@ def _sample_column(obs: pd.DataFrame) -> str:
     raise KeyError("preprocessing obs lacks a sample/barcode column")
 
 
+def _barcode_column(obs: pd.DataFrame) -> str:
+    for column in ("Barcode", "barcode", "Sample", "Experiment_name_and_barcode"):
+        if column in obs:
+            return column
+    raise KeyError("preprocessing obs lacks a barcode/sample column")
+
+
 def _metric_dashboard(obs, columns, pass_column, path, title):
     import matplotlib.pyplot as plt
 
@@ -61,51 +68,230 @@ def _metric_dashboard(obs, columns, pass_column, path, title):
     return True
 
 
-def _sample_retention_plot(obs, sample_column, path):
-    import matplotlib.pyplot as plt
+def _barcode_reference_summary(
+    obs: pd.DataFrame,
+    barcode_column: str,
+    metric_columns: list[str],
+    complexity_results: dict | None,
+) -> pd.DataFrame:
+    """Return one native-unit summary row per barcode and mapped reference."""
+    complexity = {}
+    for key, result in (complexity_results or {}).items():
+        if not isinstance(key, tuple) or len(key) != 2:
+            continue
+        complexity[(str(key[0]), str(key[1]))] = result
 
-    stages = [
-        column
+    records = []
+    grouped = obs.groupby([barcode_column, REFERENCE_STRAND], sort=True, observed=True)
+    for (barcode, reference), group in grouped:
+        record = {
+            "barcode": str(barcode),
+            "reference": str(reference),
+            "n_reads": int(len(group)),
+        }
         for column in (
             "passes_read_qc",
             "passes_modification_qc",
             "passes_qc",
             "passes_dedup",
+        ):
+            if column in group:
+                values = group[column].astype(bool)
+                label = column.removeprefix("passes_")
+                record[f"n_{label}_pass"] = int(values.sum())
+                record[f"{label}_pass_fraction"] = float(values.mean())
+
+        qc_mask = (
+            group["passes_qc"].astype(bool)
+            if "passes_qc" in group
+            else pd.Series(True, index=group.index)
         )
-        if column in obs
-    ]
-    grouped = obs.groupby(sample_column, sort=True, observed=True)
-    fractions = pd.DataFrame({stage: grouped[stage].mean() for stage in stages}).sort_index()
-    figure, axis = plt.subplots(figsize=(9, max(5, 0.22 * len(fractions))))
-    image = axis.imshow(fractions.to_numpy(), aspect="auto", vmin=0, vmax=1, cmap="YlGnBu")
-    axis.set_xticks(range(len(stages)), [stage.removeprefix("passes_") for stage in stages])
-    axis.set_yticks(range(len(fractions)), fractions.index.astype(str), fontsize=6)
-    axis.set(title="Per-sample retention through preprocessing", xlabel="Stage")
-    figure.colorbar(image, ax=axis, label="Fraction retained", shrink=0.8)
-    figure.tight_layout()
-    figure.savefig(path, dpi=160)
-    plt.close(figure)
+        duplicate_values = (
+            group.loc[qc_mask, "is_duplicate"].astype(bool)
+            if "is_duplicate" in group
+            else pd.Series(dtype=bool)
+        )
+        record["n_qc_reads_for_duplicate_detection"] = int(qc_mask.sum())
+        record["n_duplicate_reads"] = int(duplicate_values.sum())
+        record["duplicate_fraction"] = (
+            float(duplicate_values.mean()) if not duplicate_values.empty else np.nan
+        )
+
+        for column in metric_columns:
+            if column not in group:
+                continue
+            values = pd.to_numeric(group[column], errors="coerce").dropna()
+            if values.empty:
+                continue
+            record[f"{column}_q25"] = float(values.quantile(0.25))
+            record[f"{column}_median"] = float(values.median())
+            record[f"{column}_q75"] = float(values.quantile(0.75))
+
+        result = complexity.get((str(barcode), str(reference)))
+        if result is not None:
+            record["library_complexity_estimate"] = float(result["C0"])
+            record["n_unique_molecules_observed"] = int(result["n_unique"])
+            record["complexity_reads_used"] = int(result["n_reads"])
+        records.append(record)
+    return pd.DataFrame.from_records(records).sort_values(["reference", "barcode"])
 
 
-def _sample_metric_medians(obs, sample_column, columns, path, title):
+def _barcode_reference_overviews(summary, layout):
     import matplotlib.pyplot as plt
 
-    columns = [column for column in columns if column in obs]
-    numeric = obs[[sample_column, *columns]].copy()
-    for column in columns:
-        numeric[column] = pd.to_numeric(numeric[column], errors="coerce")
-    medians = numeric.groupby(sample_column, sort=True, observed=True)[columns].median()
-    standardized = (medians - medians.median()) / medians.std().replace(0, np.nan)
-    standardized = standardized.fillna(0).clip(-3, 3)
-    figure, axis = plt.subplots(figsize=(10, max(5, 0.22 * len(standardized))))
-    image = axis.imshow(standardized.to_numpy(), aspect="auto", vmin=-3, vmax=3, cmap="coolwarm")
-    axis.set_xticks(range(len(columns)), columns, rotation=35, ha="right", fontsize=7)
-    axis.set_yticks(range(len(standardized)), standardized.index.astype(str), fontsize=6)
-    axis.set_title(title)
-    figure.colorbar(image, ax=axis, label="Robust sample median z-score", shrink=0.8)
-    figure.tight_layout()
-    figure.savefig(path, dpi=160)
-    plt.close(figure)
+    for reference, frame in summary.groupby("reference", sort=True, observed=True):
+        frame = frame.sort_values("barcode").reset_index(drop=True)
+        barcodes = frame["barcode"].astype(str)
+        y = np.arange(len(frame))
+        figure, axes = plt.subplots(
+            3,
+            2,
+            figsize=(15, max(9, 0.38 * len(frame))),
+            sharey=True,
+        )
+
+        count_columns = [
+            ("n_reads", "input", "#264653"),
+            ("n_qc_pass", "QC pass", "#2a9d8f"),
+            ("n_dedup_pass", "deduplicated", "#e9c46a"),
+        ]
+        available_counts = [item for item in count_columns if item[0] in frame]
+        height = 0.75 / max(1, len(available_counts))
+        for index, (column, label, color) in enumerate(available_counts):
+            axes[0, 0].barh(
+                y + (index - (len(available_counts) - 1) / 2) * height,
+                frame[column].fillna(0),
+                height=height,
+                label=label,
+                color=color,
+            )
+        axes[0, 0].set(title="Read counts", xlabel="Reads")
+        axes[0, 0].legend(frameon=False, fontsize=8)
+
+        retention_columns = [
+            ("read_qc_pass_fraction", "read QC"),
+            ("modification_qc_pass_fraction", "modification QC"),
+            ("qc_pass_fraction", "combined QC"),
+            ("dedup_pass_fraction", "after deduplication"),
+        ]
+        for column, label in retention_columns:
+            if column in frame:
+                axes[0, 1].scatter(frame[column], y, s=20, label=label)
+        axes[0, 1].set(title="Retention", xlabel="Fraction of input reads", xlim=(0, 1.02))
+        axes[0, 1].legend(frameon=False, fontsize=8)
+
+        for column, label, color in (
+            ("read_quality_median", "read quality", "#277da1"),
+            ("mapping_quality_median", "mapping quality", "#f9844a"),
+        ):
+            if column in frame:
+                axes[1, 0].scatter(frame[column], y, s=20, label=label, color=color)
+        axes[1, 0].set(title="Median quality scores", xlabel="Phred score")
+        axes[1, 0].legend(frameon=False, fontsize=8)
+
+        for column, label, color in (
+            ("read_length_median", "read length", "#577590"),
+            ("mapped_length_median", "mapped length", "#90be6d"),
+        ):
+            if column in frame:
+                axes[1, 1].scatter(frame[column], y, s=20, label=label, color=color)
+        axes[1, 1].set(title="Median molecule lengths", xlabel="Bases")
+        axes[1, 1].legend(frameon=False, fontsize=8)
+
+        axes[2, 0].barh(y, frame["duplicate_fraction"].fillna(0), color="#e76f51")
+        axes[2, 0].set(
+            title="Duplicate fraction among QC-passing reads",
+            xlabel="Duplicate fraction",
+            xlim=(0, 1.02),
+        )
+
+        complexity_columns = [
+            ("n_unique_molecules_observed", "observed unique", "#43aa8b"),
+            ("library_complexity_estimate", "fitted complexity", "#f9c74f"),
+        ]
+        available_complexity = [item for item in complexity_columns if item[0] in frame]
+        height = 0.75 / max(1, len(available_complexity))
+        for index, (column, label, color) in enumerate(available_complexity):
+            axes[2, 1].barh(
+                y + (index - (len(available_complexity) - 1) / 2) * height,
+                frame[column].fillna(0),
+                height=height,
+                label=label,
+                color=color,
+            )
+        axes[2, 1].set(title="Library complexity", xlabel="Molecules")
+        if available_complexity:
+            axes[2, 1].legend(frameon=False, fontsize=8)
+
+        for axis in axes[:, 0]:
+            axis.set_yticks(y, barcodes, fontsize=7)
+        figure.suptitle(f"Barcode summary / {reference}")
+        figure.tight_layout()
+        safe_reference = str(reference).replace("/", "_")
+        path = layout.categories["barcode_summary"] / f"{safe_reference}__overview.png"
+        figure.savefig(path, dpi=160)
+        plt.close(figure)
+        _register(
+            layout,
+            path,
+            "barcode_summary",
+            "barcode_reference_overview",
+            reference=str(reference),
+        )
+
+
+def _barcode_distribution_plots(obs, barcode_column, metrics, layout, *, category, plot_type):
+    import matplotlib.pyplot as plt
+
+    metrics = [column for column in metrics if column in obs]
+    if not metrics:
+        return
+    for reference, reference_obs in obs.groupby(REFERENCE_STRAND, sort=True, observed=True):
+        barcodes = sorted(reference_obs[barcode_column].dropna().astype(str).unique())
+        n_columns = min(2, len(metrics))
+        n_rows = math.ceil(len(metrics) / n_columns)
+        figure, axes = plt.subplots(
+            n_rows,
+            n_columns,
+            figsize=(max(13, 0.45 * len(barcodes)), 4 * n_rows),
+            squeeze=False,
+        )
+        axes = axes.ravel()
+        for axis, metric in zip(axes, metrics):
+            distributions = [
+                pd.to_numeric(
+                    reference_obs.loc[reference_obs[barcode_column].astype(str) == barcode, metric],
+                    errors="coerce",
+                ).dropna()
+                for barcode in barcodes
+            ]
+            axis.boxplot(
+                distributions,
+                tick_labels=barcodes,
+                showfliers=False,
+                patch_artist=True,
+                boxprops={"facecolor": "#a8dadc", "edgecolor": "#457b9d"},
+                medianprops={"color": "#c1121f", "linewidth": 1.2},
+            )
+            axis.tick_params(axis="x", labelrotation=90, labelsize=6)
+            axis.set(title=metric, ylabel=metric)
+            if metric.startswith("Fraction_") or metric.endswith("_ratio"):
+                axis.set_ylim(0, 1.05)
+        for axis in axes[len(metrics) :]:
+            axis.set_visible(False)
+        figure.suptitle(f"Barcode distributions / {reference}")
+        figure.tight_layout()
+        safe_reference = str(reference).replace("/", "_")
+        path = layout.categories[category] / f"{safe_reference}__barcode_distributions.png"
+        figure.savefig(path, dpi=160)
+        plt.close(figure)
+        _register(
+            layout,
+            path,
+            category,
+            plot_type,
+            reference=str(reference),
+        )
 
 
 def _duplicate_diagnostics(obs, sample_column, layout, threshold):
@@ -269,9 +455,17 @@ def _complexity_plots(obs, sample_column, layout, cfg):
         bypass=bool(getattr(cfg, "bypass_complexity_analysis", False)),
     )
     if not results:
-        return
-    for path in sorted(output.glob("complexity_*.png")):
-        _register(layout, path, "library_complexity", "library_complexity_curve")
+        return results
+    for key in results:
+        group_label = "__".join(map(str, key if isinstance(key, tuple) else (key,)))
+        safe_label = "".join(
+            character if character.isalnum() or character in "-._" else "_"
+            for character in group_label
+        )
+        path = output / f"complexity_{safe_label}.png"
+        if path.exists():
+            _register(layout, path, "library_complexity", "library_complexity_curve")
+    return results
 
 
 def _read_span_quality_plots(spine_path, layout, max_reads=300, max_positions=1800):
@@ -357,7 +551,7 @@ def generate_preprocess_summary_plots(
 
     obs = pd.read_parquet(obs_path)
     var = pd.read_parquet(var_path)
-    sample_column = _sample_column(obs)
+    barcode_column = _barcode_column(obs)
     read_metrics = [
         "read_length",
         "mapped_length",
@@ -365,7 +559,6 @@ def generate_preprocess_summary_plots(
         "mapping_quality",
         "mapped_length_to_reference_length_ratio",
         "mapped_length_to_read_length_ratio",
-        "Raw_modification_signal",
     ]
     modification_metrics = [
         "Raw_modification_signal",
@@ -379,15 +572,6 @@ def generate_preprocess_summary_plots(
     path = plot_layout.categories["read_qc"] / "read_qc_metric_dashboard.png"
     if _metric_dashboard(obs, read_metrics, "passes_read_qc", path, "Read QC: pass vs fail"):
         _register(plot_layout, path, "read_qc", "read_qc_metric_dashboard")
-    path = plot_layout.categories["read_qc"] / "sample_retention.png"
-    _sample_retention_plot(obs, sample_column, path)
-    _register(plot_layout, path, "read_qc", "sample_retention_heatmap")
-    path = plot_layout.categories["read_qc"] / "sample_read_metric_medians.png"
-    _sample_metric_medians(
-        obs, sample_column, read_metrics, path, "Sample-level read metric medians"
-    )
-    _register(plot_layout, path, "read_qc", "sample_read_metric_medians")
-
     path = plot_layout.categories["modification_qc"] / "modification_qc_dashboard.png"
     if _metric_dashboard(
         obs,
@@ -397,20 +581,39 @@ def generate_preprocess_summary_plots(
         "Modification QC: pass vs fail",
     ):
         _register(plot_layout, path, "modification_qc", "modification_qc_metric_dashboard")
-    path = plot_layout.categories["modification_qc"] / "sample_modification_medians.png"
-    _sample_metric_medians(
-        obs,
-        sample_column,
-        modification_metrics,
-        path,
-        "Sample-level modification metric medians",
-    )
-    _register(plot_layout, path, "modification_qc", "sample_modification_medians")
-
     threshold = float(getattr(cfg, "duplicate_detection_distance_threshold", 0.07))
-    _duplicate_diagnostics(obs, sample_column, plot_layout, threshold)
+    _duplicate_diagnostics(obs, barcode_column, plot_layout, threshold)
+    complexity_results = None
     if cfg is not None and "duplicate_cluster_id" in obs:
-        _complexity_plots(obs, sample_column, plot_layout, cfg)
+        complexity_results = _complexity_plots(obs, barcode_column, plot_layout, cfg)
+
+    summary_metrics = list(dict.fromkeys([*read_metrics, *modification_metrics]))
+    summary = _barcode_reference_summary(
+        obs,
+        barcode_column,
+        summary_metrics,
+        complexity_results,
+    )
+    summary_dir = plot_layout.categories["barcode_summary"]
+    summary.to_parquet(summary_dir / "barcode_reference_summary.parquet", index=False)
+    summary.to_csv(summary_dir / "barcode_reference_summary.csv", index=False)
+    _barcode_reference_overviews(summary, plot_layout)
+    _barcode_distribution_plots(
+        obs,
+        barcode_column,
+        read_metrics,
+        plot_layout,
+        category="read_qc",
+        plot_type="barcode_reference_read_metric_distributions",
+    )
+    _barcode_distribution_plots(
+        obs,
+        barcode_column,
+        modification_metrics,
+        plot_layout,
+        category="modification_qc",
+        plot_type="barcode_reference_modification_distributions",
+    )
 
     for reference, reference_var in var.groupby("reference", sort=True, observed=True):
         figure, axis = plt.subplots(figsize=(8, 3.5))

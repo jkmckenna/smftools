@@ -58,6 +58,7 @@ def plan_preprocess_tasks(
     *,
     target_task_memory_mb: int = 512,
     partition_by_barcode: bool = True,
+    filter_mask: str | None = None,
 ) -> list[PreprocessTask]:
     """Plan bounded tasks by reference, genomic window, barcode, and read chunk.
 
@@ -68,6 +69,10 @@ def plan_preprocess_tasks(
     if target_task_memory_mb <= 0:
         raise ValueError("target_task_memory_mb must be positive")
     obs = spine.obs
+    if filter_mask is not None:
+        if filter_mask not in obs:
+            raise KeyError(f"spine.obs lacks requested filter mask {filter_mask!r}")
+        obs = obs.loc[obs[filter_mask].astype(bool)]
     required = {REFERENCE_STRAND, "reference_start", "reference_end"}
     missing = required.difference(obs.columns)
     if missing:

@@ -51,13 +51,33 @@ smftools chimeric "/Path_to_experiment_config.csv"
 
 ## Spatial Usage
 
-This command performs spatial analysis on the anndata object.
+This command performs spatial analysis on preprocessed data.
 
 ```shell
 smftools spatial "/Path_to_experiment_config.csv"
 ```
 
-- Currently Includes: Position X Position correlation matrices, read x position clustermaps, and spatial autocorrelation. 
+When a partitioned preprocessing spine is available, spatial analysis automatically runs as
+bounded reference/window/barcode tasks over QC-passing deduplicated reads. It writes a linked
+spatial spine, barcode-stratified autocorrelation tables, position profiles, and registered plots.
+Set `spatial_execution_mode` to `auto`, `partitioned`, or `legacy` to control selection.
+Locus-mode references automatically receive full-reference clustermaps and position matrices per
+reference strand. For genome-mode references, set `spatial_regions_bed` to a standard 0-based,
+half-open BED file; dense products are then limited to those intervals. BED chromosome names may
+be exact reference-strand names or native reference names that apply to both strands.
+
+Partitioned spatial analysis also saves read-level ACF and direct-signal Lomb-Scargle results by
+default. Each task directory in the general spatial `store` contains a `read_metrics.zarr` AnnData
+partition. Per-read ACF, pair-count, and normalized periodogram arrays use `obsm`; peak period,
+peak power, raw peak power, SNR, FWHM, site count, and scoring status use `obs`; lag and
+frequency/period coordinates use `uns`. This matches preprocessing-store conventions without
+expanding the thin spatial spine. Automated periodicity plots summarize peak-period and peak-power
+distributions, scoring fraction, and barcode-mean spectra for each reference region and site type.
+Per-reference-and-barcode read clustermaps show the individual ACF and Lomb-Scargle power profiles
+with aligned mean curves above each heatmap.
+
+The legacy dense path continues to provide whole-reference position correlation matrices,
+clustermaps, and the existing AnnData-embedded spatial results.
 
 ## HMM Usage
 

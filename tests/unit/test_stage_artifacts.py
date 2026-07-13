@@ -62,6 +62,7 @@ def test_analysis_stage_uses_specific_plot_categories(tmp_path):
     assert set(layout.categories) == {
         "clustermaps",
         "autocorrelation",
+        "periodicity",
         "rolling_metrics",
         "position_correlation",
         "embeddings",

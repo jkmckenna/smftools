@@ -1061,6 +1061,19 @@ class ExperimentConfig:
     genome_tile_halo: int = 1000
     parquet_start_bin_size: int = 1000000
     preprocess_execution_mode: str = "auto"
+    spatial_execution_mode: str = "auto"
+    spatial_regions_bed: Optional[str] = None
+    spatial_generate_clustermaps: bool = True
+    spatial_generate_position_matrices: bool = True
+    spatial_matrix_min_reads: int = 2
+    spatial_save_read_autocorrelation: bool = True
+    spatial_compute_read_lomb_scargle: bool = True
+    spatial_plot_read_lomb_scargle: bool = True
+    spatial_plot_read_metric_clustermaps: bool = True
+    spatial_lomb_scargle_period_range_bp: List[float] = field(default_factory=lambda: [80.0, 400.0])
+    spatial_lomb_scargle_peak_range_bp: List[float] = field(default_factory=lambda: [150.0, 250.0])
+    spatial_lomb_scargle_poly_degree: int = 2
+    spatial_lomb_scargle_min_sites: int = 40
 
     # Pipeline control flow - preprocessing and QC
     force_redo_preprocessing: bool = False
@@ -1995,6 +2008,47 @@ class ExperimentConfig:
                 _parse_numeric(merged.get("parquet_start_bin_size", 1000000), 1000000)
             ),
             preprocess_execution_mode=str(merged.get("preprocess_execution_mode", "auto")),
+            spatial_execution_mode=str(merged.get("spatial_execution_mode", "auto")),
+            spatial_regions_bed=merged.get("spatial_regions_bed"),
+            spatial_generate_clustermaps=_parse_bool(
+                merged.get("spatial_generate_clustermaps", True)
+            ),
+            spatial_generate_position_matrices=_parse_bool(
+                merged.get("spatial_generate_position_matrices", True)
+            ),
+            spatial_matrix_min_reads=int(
+                _parse_numeric(merged.get("spatial_matrix_min_reads", 2), 2)
+            ),
+            spatial_save_read_autocorrelation=_parse_bool(
+                merged.get("spatial_save_read_autocorrelation", True)
+            ),
+            spatial_compute_read_lomb_scargle=_parse_bool(
+                merged.get("spatial_compute_read_lomb_scargle", True)
+            ),
+            spatial_plot_read_lomb_scargle=_parse_bool(
+                merged.get("spatial_plot_read_lomb_scargle", True)
+            ),
+            spatial_plot_read_metric_clustermaps=_parse_bool(
+                merged.get("spatial_plot_read_metric_clustermaps", True)
+            ),
+            spatial_lomb_scargle_period_range_bp=[
+                float(value)
+                for value in _parse_list(
+                    merged.get("spatial_lomb_scargle_period_range_bp", [80, 400])
+                )
+            ],
+            spatial_lomb_scargle_peak_range_bp=[
+                float(value)
+                for value in _parse_list(
+                    merged.get("spatial_lomb_scargle_peak_range_bp", [150, 250])
+                )
+            ],
+            spatial_lomb_scargle_poly_degree=int(
+                _parse_numeric(merged.get("spatial_lomb_scargle_poly_degree", 2), 2)
+            ),
+            spatial_lomb_scargle_min_sites=int(
+                _parse_numeric(merged.get("spatial_lomb_scargle_min_sites", 40), 40)
+            ),
             force_redo_preprocessing=merged.get("force_redo_preprocessing", False),
             force_reload_sample_sheet=merged.get("force_reload_sample_sheet", True),
             bypass_add_read_length_and_mapping_qc=merged.get(

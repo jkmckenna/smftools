@@ -493,6 +493,19 @@ genome_tile_size: 10000 # Core genomic positions per genome-mode work unit
 genome_tile_halo: 1000 # Context positions loaded on each side of a genome tile
 parquet_start_bin_size: 1000000 # Reference-start bin used to partition ragged parquet
 preprocess_execution_mode: auto # auto, legacy, or partitioned; auto partitions any raw/load spine
+spatial_execution_mode: auto # auto, legacy, or partitioned; auto partitions a preprocess spine
+spatial_regions_bed: null # Optional 0-based half-open BED regions for genome matrix/clustermap analyses
+spatial_generate_clustermaps: True # Generate bounded barcode clustermaps per locus/BED region
+spatial_generate_position_matrices: True # Generate bounded position matrices per locus/BED region
+spatial_matrix_min_reads: 2 # Minimum barcode reads required for dense region products
+spatial_save_read_autocorrelation: True # Save per-read ACF and lag-pair counts in partitioned sidecars
+spatial_compute_read_lomb_scargle: True # Save direct-signal per-read Lomb-Scargle periodograms
+spatial_plot_read_lomb_scargle: True # Plot barcode summaries and mean periodogram heatmaps
+spatial_plot_read_metric_clustermaps: True # Plot per-read ACF and periodogram clustermaps by barcode
+spatial_lomb_scargle_period_range_bp: [80, 400] # Periodogram range in base pairs
+spatial_lomb_scargle_peak_range_bp: [150, 250] # Peak-search range in base pairs
+spatial_lomb_scargle_poly_degree: 2 # Polynomial degree used to detrend each read
+spatial_lomb_scargle_min_sites: 40 # Minimum finite sites required to score a read
 
 # Pipeline control flow - Preprocessing and QC
 force_redo_preprocessing: False # Whether to force redo the entire preprocessing workflow from the initial raw anndata.
