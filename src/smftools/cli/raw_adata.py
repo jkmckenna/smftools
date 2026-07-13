@@ -385,11 +385,24 @@ def build_ragged_records(
         f"{reference}_FASTA_sequence": sequence
         for reference, (sequence, _complement) in chromosome_sequences.items()
     }
+
+    # Canonical, name-independent reference identity (sequence hash) per Reference_strand.
+    # Same underlying locus sequence across experiments -> same uid, regardless of name.
+    from ..informatics.reference_identity import reference_uid as _reference_uid
+
+    reference_uids: dict[str, str] = {}
+    for reference_strand, length in reference_lengths.items():
+        chromosome = str(reference_strand).rsplit("_", 1)[0]
+        seq_pair = chromosome_sequences.get(chromosome)
+        if seq_pair is not None:
+            reference_uids[str(reference_strand)] = _reference_uid(seq_pair[0], length)
+
     return (
         frame,
         reference_lengths,
         {
             "References": references,
+            "reference_uids": reference_uids,
             "signal_columns": signal_columns,
             "modality": modality,
             "sequence_integer_encoding_map": dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT),
