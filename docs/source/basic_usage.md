@@ -22,6 +22,12 @@ This command takes a user passed config file handling:
 
 ![](_static/smftools_informatics_diagram.png)
 
+For `smf_modality: deaminase` experiments, `raw` also derives per-read strand-switch metrics
+(`ct_event_count`, `ga_event_count`, `strand_segment_purity`) from the alignment CIGAR and, unless
+`bypass_raw_chimera_rate_plot` is set, writes a reference x barcode heatmap of the resulting
+PCR-chimera rate to `raw_outputs/plots/reference_barcode_chimera_rate.png` (with a companion
+`.csv` table) so you can spot problem barcodes before preprocessing.
+
 ## Preprocess Usage
 
 This command performs preprocessing on the anndata object.
@@ -31,6 +37,20 @@ smftools preprocess "/Path_to_experiment_config.csv"
 ```
 
 ![](_static/smftools_preprocessing_diagram.png)
+
+Two read-level filters/labels run as part of this stage:
+
+- **CIGAR-based internal indel filtering.** Reads whose longest internal insertion or deletion
+  (from the alignment CIGAR) exceeds `max_internal_insertion_length` / `max_internal_deletion_length`
+  (default 10bp each) are dropped. Set either to `null` to disable that check, or set
+  `bypass_filter_reads_on_cigar_indels: True` to skip the step entirely.
+- **Deaminase PCR-chimera labeling** (`smf_modality: deaminase` only). Reads whose deamination
+  signature switches from a C->T span to a G->A span partway through the read (evidence of two
+  templates fused during PCR) are flagged in `obs["deaminase_PCR_chimera"]` -- these reads are
+  **labeled, not removed**, so you can filter or inspect them downstream. Sensitivity is controlled
+  by `deaminase_chimera_min_events_per_span`, `deaminase_chimera_min_segment_purity`, and
+  `deaminase_chimera_max_single_strand_fraction`; set `bypass_label_deaminase_pcr_chimeras: True`
+  to skip.
 
 
 ## Variant Usage
@@ -87,6 +107,10 @@ This command performs hmm based feature annotation on the anndata object.
 smftools hmm "/Path_to_experiment_config.csv"
 ```
 
+`hmm_execution_mode` accepts `auto`, `partitioned`, or `legacy`. The default `auto` mode uses a
+partitioned spatial/preprocessing spine when available and writes bounded HMM task Zarr groups, a
+task catalog, model store, plot catalog, and linked thin spine under `hmm_adata_outputs`.
+
 - Main outputs wills be stored in adata.layers
 
 
@@ -100,7 +124,9 @@ smftools latent "/Path_to_experiment_config.csv"
 
 ## Full Usage
 
-This command is a wrapper that sequentially runs load, preprocess, variant, chimeric, spatial, hmm, latent workflows.
+This command runs the standard workflow in order: raw store creation, preprocessing, spatial
+analysis, and HMM annotation. Each stage retains its normal restart/skip behavior, so an existing
+valid stage output is reused unless its force-redo configuration is enabled.
 
 ```shell
 smftools full "/Path_to_experiment_config.csv"
@@ -114,6 +140,80 @@ smftools batch preprocess "/Path_to_experiment_config_path_list.csv"
 ```
 
 - Nice when analyzing multiple experiments
+
+## Project Usage
+
+A **project** is a lightweight cross-experiment registry: it never copies or merges data, it just
+keeps pointers to experiment output directories (each containing a `spine.h5ad`) plus a table that
+harmonizes reference names across experiments (by sequence identity, so the same locus can be
+called different things in different experiments). Use it when you want to query or analyze
+multiple experiments together without materializing one giant combined AnnData ahead of time.
+
+```shell
+# Create a project registry.
+smftools project init "/Path_to_project_directory"
+
+# Register an experiment by pointer (its raw_outputs directory, containing spine.h5ad).
+smftools project add "/Path_to_project_directory" "/Path_to_experiment_output_dir/raw_outputs"
+
+# List registered experiments and harmonized references.
+smftools project list "/Path_to_project_directory"
+
+# Materialize one canonical reference across every matching experiment into a single AnnData.
+smftools project materialize "/Path_to_project_directory" my_canonical_reference \
+    -o "/Path_to_output.h5ad.gz"
+
+# Mark an experiment inactive (soft delete; registry entries are append-only).
+smftools project remove "/Path_to_project_directory" experiment_id
+```
+
+- `project add` reads each experiment's `spine.h5ad` `uns` metadata (modality, sequence-hash
+  reference identities) to register it -- no matrices are opened.
+- `project materialize` resolves the canonical reference name back to each matching experiment's
+  own reference name(s), materializes each experiment's slice independently, and concatenates them
+  with an added `obs["experiment"]` column -- there is never a global merge across experiments.
+- `smftools export-fastq --project ...` (below) and other cross-experiment tooling build on the
+  same registry.
+
+## Export FASTQ Usage
+
+This command writes one FASTQ (gzip-compressed by default) per barcode, containing only reads that
+passed QC, for a single experiment or an entire project. Sequence and quality are read directly
+from the raw ragged store, so no BAM re-parsing is needed.
+
+```shell
+# Single experiment: QC-passed read set is resolved from the most complete preprocessing
+# artifact available (partitioned preprocess spine, falling back to the legacy deduplicated
+# or QC-filtered AnnData).
+smftools export-fastq --config "/Path_to_experiment_config.csv" --outdir "/Path_to_fastq_output_dir"
+
+# Whole project: writes one FASTQ per <experiment_id>__<barcode>, skipping experiments that
+# have not run partitioned preprocessing.
+smftools export-fastq --project "/Path_to_project_directory" --outdir "/Path_to_fastq_output_dir"
+```
+
+- `--group-by` overrides the obs column used to group reads (single-experiment only; defaults to
+  `sample_name_col_for_plotting`, falling back to `Sample` then `Barcode`).
+- `--allow-unfiltered` writes every raw read instead of raising/skipping when no QC-passed read set
+  is available yet (i.e. before `smftools preprocess` has been run).
+- `--no-gzip` writes plain `.fastq` instead of `.fastq.gz`.
+- A `fastq_manifest.csv` (barcode, read count, output path) is written alongside the FASTQs.
+
+## Migrate Store Usage
+
+This command converts an existing monolithic AnnData `.h5ad` into a partitioned zarr store + thin
+spine + catalog, without modifying the source file. Useful for bringing an older single-file
+AnnData stage into the partitioned storage format used by later pipeline stages.
+
+```shell
+smftools migrate-store "/Path_to_experiment_config.csv"
+smftools migrate-store "/Path_to_experiment_config.csv" --stage pp_dedup
+```
+
+- `--stage` selects which AnnData stage to migrate (`raw`/`pp`/`pp_dedup`/`spatial`/`hmm`/`latent`/
+  `variant`/`chimeric`; default `raw`).
+- `--input` migrates an explicit `.h5ad(.gz)` file instead, overriding `--stage`.
+- `--outdir` overrides the output directory (default: the stage's normal directory).
 
 ## Concatenate Usage
 

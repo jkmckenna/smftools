@@ -29,7 +29,13 @@ The raw command prepares sequencing inputs and writes the read-relative source o
 - Extracts one parquet row per physical read with CIGAR and query-coordinate signal arrays.
 - Stores sequence, base-quality, mismatch, and modification values as Arrow list columns.
 - Writes a thin molecule-index `spine.h5ad` containing identity and artifact pointers.
-- Adds read-level QC, UMI, and barcode metadata without constructing padded dense matrices.
+- Adds read-level QC, UMI, and barcode metadata without constructing padded dense matrices,
+  including per-read `max_insertion_length`/`max_deletion_length` (longest internal indel from the
+  alignment CIGAR), later consumed by `preprocess`'s CIGAR-indel filter.
+- For `smf_modality: deaminase`, derives per-read C->T/G->A strand-switch metrics
+  (`ct_event_count`, `ga_event_count`, `strand_segment_purity`, `strand_switch_position`) from the
+  alignment CIGAR and writes a reference x barcode PCR-chimera-rate QC heatmap (`.png` + `.csv`)
+  unless `bypass_raw_chimera_rate_plot` is set.
 - Runs MultiQC while preserving the aligned BAM as a source artifact.
 
 All artifacts produced by this command are grouped under `raw_outputs/`.
@@ -48,12 +54,20 @@ The preprocess command performs QC, binarization, filtering, and duplicate detec
 - Requires an Anndata created by smftools load.
 - Loads sample sheet metadata (if provided).
 - Generates read length/quality QC plots and filters reads on these metrics.
+- Filters reads whose longest internal insertion/deletion (from the alignment CIGAR) exceeds
+  `max_internal_insertion_length`/`max_internal_deletion_length` (default 10bp each; set either to
+  `null` to disable, or `bypass_filter_reads_on_cigar_indels: True` to skip the step).
 - Binarizes direct-modification calls based on thresholds (hard or fit thresholds).
 - Cleans NaNs from adata.X and stores in adata.layers (nan0_0minus1, nan_half).
 - Computes positional coverage and base-context annotations (GpC, CpG, ambiguous, other C, any C).
 - Calculates read modification statistics and QC plots.
 - Filters reads based on modification thresholds.
 - Adds base-context binary modification layers.
+- For `smf_modality: deaminase`, labels reads whose deamination signature switches from a C->T
+  span to a G->A span partway through the read (evidence of a PCR chimera) in
+  `obs["deaminase_PCR_chimera"]`. Reads are labeled, not removed. Controlled by
+  `deaminase_chimera_min_events_per_span`, `deaminase_chimera_min_segment_purity`,
+  `deaminase_chimera_max_single_strand_fraction`, and `bypass_label_deaminase_pcr_chimeras`.
 - Optionally inverts and reindexes the data along the var (positions) axis.
 - Flags duplicate reads based on nearest neighbor hamming distance of overlapping valid sites (Conversion/deamination).
 - Performs complexity analyses using duplicate read clusters and Lander/Waterman fits (conversion/deamination workflows).
@@ -68,6 +82,7 @@ General AnnData structures added by `preprocess`:
 - optional UMI preprocessing fields when `use_umi=True`, including validity and clustering annotations (for example `U1_valid`, `U2_valid`, `U1_cluster`, `U2_cluster`, `RX_cluster`).
 - optional UMI bipartite graph annotations and dominance metrics (for example edge-count/dominant-pair style fields) plus group-level stats in `uns`.
 - duplicate-detection fields for non-direct modalities (for example merged cluster IDs/sizes and duplicate flags).
+- `deaminase_PCR_chimera` (deaminase modality only): boolean flag for reads whose deamination signature switches strand partway through (see above).
 - `var`
 - per-reference position masks and site-context columns used downstream (for example `position_in_<reference>` and `<reference>_<site_type>_site`).
 - optional reindex columns from `reindex_references_adata` (suffix controlled by `reindexed_var_suffix`).
@@ -195,7 +210,80 @@ The latent command constructs latent representations of the data. It:
 
 The full command is a workflow wrapper. It runs the following sequentially:
 
-- Load / preprocess / variant / chimeric / spatial / hmm / latent.
+- `raw`
+- `preprocess`
+- `spatial`
+- `hmm`
+
+Each stage uses its normal output discovery and force-redo settings. With `hmm_execution_mode:
+auto`, a partitioned spatial or preprocessing spine dispatches bounded HMM tasks by reference,
+genomic core/halo, barcode, and read chunk. HMM layers are stored in task Zarr groups and linked by
+a thin HMM spine rather than materializing the full experiment.
+
+### `smftools project`
+
+The project command group manages a lightweight cross-experiment registry (`init`/`add`/`remove`/
+`list`/`materialize`). A project never copies or merges experiment data -- it keeps pointers to
+each experiment's output directory (any directory containing a `spine.h5ad`, i.e. its
+`raw_outputs/`) plus a table harmonizing reference names across experiments by sequence identity,
+so the same locus can be addressed by one canonical name even if experiments called it something
+different.
+
+- `project init PROJECT_DIR` creates the registry (`registry.json`) and a `sets/` directory for
+  named experiment sets.
+- `project add PROJECT_DIR EXPERIMENT_DIR` registers an experiment by pointer, reading its
+  `spine.h5ad` `uns` metadata (modality, sequence-hash reference identities) -- no matrices are
+  opened. Reports any reference-name conflicts detected against already-registered experiments.
+- `project list PROJECT_DIR` lists registered experiments and the harmonized reference table.
+- `project materialize PROJECT_DIR CANONICAL_REFERENCE -o OUTPUT.h5ad.gz` resolves the canonical
+  reference back to each matching experiment's own reference name(s), materializes each
+  experiment's slice independently, and concatenates them (adding an `obs["experiment"]` column) --
+  there is never a global merge across experiments. Supports `--set`/`--modality` filters and
+  `--start`/`--end` genomic windows.
+- `project remove PROJECT_DIR EXPERIMENT_ID` marks an experiment inactive (soft delete; the
+  registry is append-only).
+
+`smftools export-fastq --project ...` builds on the same registry.
+
+### `smftools export-fastq`
+
+Writes one FASTQ (`.fastq.gz` by default) per barcode of QC-passed reads, for a single experiment
+or an entire project. Sequence and quality are read directly from the raw ragged store, so no BAM
+re-parsing is needed.
+
+```shell
+smftools export-fastq --config /path/to/experiment_config.csv --outdir /path/to/fastq_outdir
+smftools export-fastq --project /path/to/project_dir --outdir /path/to/fastq_outdir
+```
+
+- Exactly one of `--config` or `--project` is required.
+- Single-experiment mode resolves the QC-passed read set from the most complete preprocessing
+  artifact available, in priority order: the partitioned preprocess spine's `passes_dedup` (falling
+  back to `passes_qc` then `passes_read_qc`), then the legacy deduplicated AnnData's read set, then
+  the legacy QC-filtered AnnData's read set. Raises unless `--allow-unfiltered` is passed if none of
+  these are available.
+- `--group-by` overrides the grouping obs column (default: `sample_name_col_for_plotting`, falling
+  back to `Sample` then `Barcode`).
+- Project mode namespaces output filenames as `<experiment_id>__<barcode>.fastq.gz` and only
+  includes experiments that have run partitioned preprocessing (others are skipped with a warning
+  unless `--allow-unfiltered`); `--experiments` restricts to an explicit comma-separated id list.
+- `--no-gzip` writes plain `.fastq`. A `fastq_manifest.csv` (barcode, read count, path) is written
+  alongside the FASTQs.
+
+### `smftools migrate-store`
+
+Converts an existing monolithic AnnData `.h5ad` into a partitioned zarr store + thin spine +
+catalog, without modifying the source file.
+
+```shell
+smftools migrate-store /path/to/experiment_config.csv
+smftools migrate-store /path/to/experiment_config.csv --stage pp_dedup
+```
+
+- `--stage` selects which AnnData stage to migrate (`raw`/`pp`/`pp_dedup`/`spatial`/`hmm`/`latent`/
+  `variant`/`chimeric`; default `raw`).
+- `--input` migrates an explicit `.h5ad(.gz)` file instead, overriding `--stage`.
+- `--outdir` overrides the output directory (default: the stage's normal directory).
 
 
 ## Batch processing

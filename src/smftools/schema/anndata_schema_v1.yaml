@@ -117,6 +117,48 @@ stages:
         notes: "Classification of demultiplexing status."
         requires: [["obs_names"]]
         optional_inputs: []
+      max_insertion_length:
+        dtype: "float"
+        created_by: "smftools.cli.raw_adata._attach_obs_metadata"
+        modified_by: []
+        notes: "Longest internal insertion (bp) from the alignment CIGAR; consumed by preprocess's CIGAR-indel filter."
+        requires: [["obs.cigar"]]
+        optional_inputs: []
+      max_deletion_length:
+        dtype: "float"
+        created_by: "smftools.cli.raw_adata._attach_obs_metadata"
+        modified_by: []
+        notes: "Longest internal deletion (bp) from the alignment CIGAR; consumed by preprocess's CIGAR-indel filter."
+        requires: [["obs.cigar"]]
+        optional_inputs: []
+      ct_event_count:
+        dtype: "int"
+        created_by: "smftools.informatics.ragged_store.alignment_to_ragged_record"
+        modified_by: []
+        notes: "Per-read C->T (top-consistent) deamination event count, from the alignment CIGAR. Deaminase modality only."
+        requires: [["obs.cigar"]]
+        optional_inputs: []
+      ga_event_count:
+        dtype: "int"
+        created_by: "smftools.informatics.ragged_store.alignment_to_ragged_record"
+        modified_by: []
+        notes: "Per-read G->A (bottom-consistent) deamination event count, from the alignment CIGAR. Deaminase modality only."
+        requires: [["obs.cigar"]]
+        optional_inputs: []
+      strand_segment_purity:
+        dtype: "float"
+        created_by: "smftools.informatics.ragged_store.alignment_to_ragged_record"
+        modified_by: []
+        notes: "Best two-segment purity of the ordered C->T/G->A vote track; ~1.0 for a pure read or a clean PCR chimera, lower for a noisy read. Deaminase modality only."
+        requires: [["obs.ct_event_count", "obs.ga_event_count"]]
+        optional_inputs: []
+      strand_switch_position:
+        dtype: "int"
+        created_by: "smftools.informatics.ragged_store.alignment_to_ragged_record"
+        modified_by: []
+        notes: "Reference coordinate of the best opposite-majority C->T/G->A split, or -1 if none. Deaminase modality only."
+        requires: [["obs.ct_event_count", "obs.ga_event_count"]]
+        optional_inputs: []
     var:
       reference_position:
         dtype: "int"
@@ -161,6 +203,13 @@ stages:
         notes: "Cluster identifier for duplicate detection."
         requires: [["layers.nan0_0minus1"]]
         optional_inputs: ["obs.demux_type"]
+      deaminase_PCR_chimera:
+        dtype: "bool"
+        created_by: "smftools.preprocessing.label_deaminase_pcr_chimeras"
+        modified_by: []
+        notes: "Flags reads whose deamination signature switches from a C->T span to a G->A span partway through the read (PCR chimera evidence). Reads are labeled, not removed. Deaminase modality only."
+        requires: [["obs.ct_event_count", "obs.ga_event_count", "obs.strand_segment_purity"]]
+        optional_inputs: []
     layers:
       nan0_0minus1:
         dtype: "float"

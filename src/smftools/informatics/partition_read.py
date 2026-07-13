@@ -315,20 +315,21 @@ def _load_tiled_cache_selection(
 
 
 def _derived_layer_names(spine: "ad.AnnData") -> set[str]:
-    """Return layer names published by the partitioned preprocess store."""
-    catalog_value = spine.uns.get("preprocess_catalog")
-    if not catalog_value:
-        return set()
-    catalog_path = Path(str(catalog_value))
-    if not catalog_path.exists():
-        return set()
-    catalog = pd.read_parquet(catalog_path, columns=["layers"])
+    """Return layer names published by partitioned derived-stage stores."""
     names: set[str] = set()
-    for value in catalog["layers"]:
-        if isinstance(value, str):
-            names.add(value)
-        else:
-            names.update(map(str, value))
+    for catalog_key in ("preprocess_catalog", "hmm_catalog"):
+        catalog_value = spine.uns.get(catalog_key)
+        if not catalog_value:
+            continue
+        catalog_path = Path(str(catalog_value))
+        if not catalog_path.exists():
+            continue
+        catalog = pd.read_parquet(catalog_path, columns=["layers"])
+        for value in catalog["layers"]:
+            if isinstance(value, str):
+                names.add(value)
+            else:
+                names.update(map(str, value))
     return names
 
 
@@ -337,49 +338,58 @@ def _overlay_preprocess_layers(
     result: "ad.AnnData",
     requested_layers: set[str],
 ) -> None:
-    """Stitch task-partitioned preprocessing layers onto a materialized slice."""
+    """Stitch task-partitioned derived layers onto a materialized slice."""
     from ..readwrite import safe_read_zarr
 
     if not requested_layers:
         return
-    catalog_path = Path(str(spine.uns["preprocess_catalog"]))
-    catalog = pd.read_parquet(catalog_path)
     references = result.obs["Reference_strand"].astype(str).unique()
     positions = np.asarray(result.var_names, dtype=np.int64)
     if len(references) != 1 or positions.size == 0:
-        raise ValueError("derived preprocessing layers require one non-empty reference slice")
-    catalog = catalog.loc[
-        (catalog["reference"].astype(str) == references[0])
-        & (catalog["core_start"] < positions.max() + 1)
-        & (catalog["core_end"] > positions.min())
-    ]
-    absent_fill = dict(spine.uns.get("preprocess_layer_absent_fill", {}))
+        raise ValueError("derived layers require one non-empty reference slice")
+    absent_fill = {
+        **dict(spine.uns.get("preprocess_layer_absent_fill", {})),
+        **dict(spine.uns.get("hmm_layer_absent_fill", {})),
+    }
     assembled = {
         layer: np.full(result.shape, float(absent_fill.get(layer, np.nan)), dtype=np.float32)
         for layer in requested_layers
     }
-    assigned = {layer: np.zeros(result.shape, dtype=bool) for layer in requested_layers}
     source_dtypes: dict[str, np.dtype] = {}
     result_rows = {str(read_id): row for row, read_id in enumerate(result.obs_names)}
     result_positions = {int(position): column for column, position in enumerate(positions)}
-    for record in catalog.to_dict("records"):
-        path = catalog_path.parent / str(record["group_path"])
-        part, _ = safe_read_zarr(path, verbose=False)
-        shared_reads = [read_id for read_id in map(str, part.obs_names) if read_id in result_rows]
-        shared_positions = [
-            position for position in map(int, part.var_names) if position in result_positions
-        ]
-        if not shared_reads or not shared_positions:
+    for catalog_key in ("preprocess_catalog", "hmm_catalog"):
+        catalog_value = spine.uns.get(catalog_key)
+        if not catalog_value:
             continue
-        source_rows = [part.obs_names.get_loc(read_id) for read_id in shared_reads]
-        source_columns = [part.var_names.get_loc(str(position)) for position in shared_positions]
-        target_rows = [result_rows[read_id] for read_id in shared_reads]
-        target_columns = [result_positions[position] for position in shared_positions]
-        for layer in requested_layers.intersection(part.layers.keys()):
-            values = np.asarray(part.layers[layer])[np.ix_(source_rows, source_columns)]
-            assembled[layer][np.ix_(target_rows, target_columns)] = values
-            assigned[layer][np.ix_(target_rows, target_columns)] = True
-            source_dtypes.setdefault(layer, values.dtype)
+        catalog_path = Path(str(catalog_value))
+        catalog = pd.read_parquet(catalog_path)
+        catalog = catalog.loc[
+            (catalog["reference"].astype(str) == references[0])
+            & (catalog["core_start"] < positions.max() + 1)
+            & (catalog["core_end"] > positions.min())
+        ]
+        for record in catalog.to_dict("records"):
+            path = catalog_path.parent / str(record["group_path"])
+            part, _ = safe_read_zarr(path, verbose=False)
+            shared_reads = [
+                read_id for read_id in map(str, part.obs_names) if read_id in result_rows
+            ]
+            shared_positions = [
+                position for position in map(int, part.var_names) if position in result_positions
+            ]
+            if not shared_reads or not shared_positions:
+                continue
+            source_rows = [part.obs_names.get_loc(read_id) for read_id in shared_reads]
+            source_columns = [
+                part.var_names.get_loc(str(position)) for position in shared_positions
+            ]
+            target_rows = [result_rows[read_id] for read_id in shared_reads]
+            target_columns = [result_positions[position] for position in shared_positions]
+            for layer in requested_layers.intersection(part.layers.keys()):
+                values = np.asarray(part.layers[layer])[np.ix_(source_rows, source_columns)]
+                assembled[layer][np.ix_(target_rows, target_columns)] = values
+                source_dtypes.setdefault(layer, values.dtype)
 
     for layer in requested_layers:
         values = assembled[layer]

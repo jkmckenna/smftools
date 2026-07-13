@@ -4,14 +4,26 @@
 .. autosummary::
    :toctree: generated/tools
    
+   smftools.tools.calculate_knn
+   smftools.tools.calculate_leiden
+   smftools.tools.calculate_nmf
+   smftools.tools.calculate_pca
    smftools.tools.calculate_umap
    smftools.tools.cluster_adata_on_methylation
    smftools.tools.general_tools
+   smftools.tools.partitioned_hmm
+   smftools.tools.partitioned_spatial
    smftools.tools.position_stats
    smftools.tools.read_stats
+   smftools.tools.rolling_nn_distance
+   smftools.tools.sequence_alignment
    smftools.tools.spatial_autocorrelation
    smftools.tools.subset_adata
+   smftools.tools.tensor_factorization
 ```
+
+`partitioned_hmm` and `partitioned_spatial` implement the bounded-task partitioned execution paths
+for the `smftools hmm` and `smftools spatial` CLI commands.
 
 ```{eval-rst}
 .. automodule:: smftools.tools
