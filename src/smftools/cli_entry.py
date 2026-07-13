@@ -664,6 +664,103 @@ def project_materialize_cmd(project_dir, canonical_reference, output, set_name, 
 ##########################################
 
 
+####### FASTQ export ###########
+@cli.command("export-fastq")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Experiment config (single-experiment export).",
+)
+@click.option(
+    "--project",
+    "project_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Project directory (cross-experiment export).",
+)
+@click.option(
+    "--outdir",
+    "-o",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Output directory for FASTQ files + manifest CSV.",
+)
+@click.option(
+    "--group-by",
+    default=None,
+    help="obs column to group reads by (single-experiment only; default: Sample/Barcode).",
+)
+@click.option(
+    "--experiments",
+    default=None,
+    help="Comma-separated experiment ids to include (project only; default: all active).",
+)
+@click.option(
+    "--allow-unfiltered",
+    is_flag=True,
+    help="Write all reads when no QC-passed read set is available, instead of raising/skipping.",
+)
+@click.option(
+    "--no-gzip",
+    is_flag=True,
+    help="Write plain .fastq instead of .fastq.gz.",
+)
+def export_fastq_cmd(
+    config_path: Path | None,
+    project_dir: Path | None,
+    outdir: Path,
+    group_by: str | None,
+    experiments: str | None,
+    allow_unfiltered: bool,
+    no_gzip: bool,
+):
+    """Write one FASTQ per barcode of QC-passed reads, for an experiment or a project.
+
+    Reads sequence/quality directly from the raw ragged store; the QC-passed read
+    set is resolved from the most complete preprocessing artifact available.
+
+    Example:
+
+        smftools export-fastq --config experiment_config.csv --outdir ./fastqs
+
+        smftools export-fastq --project ./my_project --outdir ./fastqs
+    """
+    if bool(config_path) == bool(project_dir):
+        raise click.ClickException("Provide exactly one of --config or --project.")
+
+    if config_path:
+        from .cli.export_fastq import export_fastq_for_experiment
+
+        out = export_fastq_for_experiment(
+            str(config_path),
+            outdir,
+            group_by=group_by,
+            allow_unfiltered=allow_unfiltered,
+            gzip_output=not no_gzip,
+        )
+    else:
+        from .cli.export_fastq import export_fastq_for_project
+
+        experiment_list = (
+            [item.strip() for item in experiments.split(",") if item.strip()]
+            if experiments
+            else None
+        )
+        out = export_fastq_for_project(
+            project_dir,
+            outdir,
+            experiments=experiment_list,
+            allow_unfiltered=allow_unfiltered,
+            gzip_output=not no_gzip,
+        )
+    click.echo(f"Wrote FASTQ export to: {out}")
+
+
+##########################################
+
+
 ####### Plot current traces ###########
 @cli.command("plot-current")
 @click.argument("config_path", type=click.Path(exists=True))

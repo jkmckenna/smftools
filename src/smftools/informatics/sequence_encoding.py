@@ -70,3 +70,19 @@ def decode_int_sequence(
 
     fallback = unknown_base
     return [int_to_base.get(int(value), fallback) for value in encoded_sequence]
+
+
+def phred_to_fastq_quality_string(quality_scores: Iterable[int]) -> str:
+    """Encode integer Phred quality scores as a FASTQ Phred+33 quality string.
+
+    Values are clamped to ``[0, 93]``, the printable-ASCII range for Phred+33
+    encoding. This also maps the ragged store's ``-1`` missing-quality sentinel
+    (see ``ragged_store.alignment_to_ragged_record``) to Phred 0 (``"!"``).
+
+    Args:
+        quality_scores: Iterable of per-base integer Phred quality scores.
+
+    Returns:
+        str: FASTQ quality line, one ASCII character per base.
+    """
+    return "".join(chr(min(max(int(value), 0), 93) + 33) for value in quality_scores)
