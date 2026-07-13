@@ -15,11 +15,11 @@ from smftools.constants import (
     FASTA_OUTPUTS_DIR,
     H5_DIR,
     HMM_DIR,
-    INFORMATICS_OUTPUTS_DIR,
     LATENT_DIR,
     LOAD_DIR,
     MODKIT_OUTPUTS_DIR,
     PREPROCESS_DIR,
+    RAW_DIR,
     SPATIAL_DIR,
     SPLIT_DIR,
     VARIANT_DIR,
@@ -62,14 +62,15 @@ class AdataPaths:
     store: Path | None = None
     spine: Path | None = None
     catalog: Path | None = None
+    raw_spine: Path | None = None
 
 
 @dataclass
 class ArtifactPaths:
     """Canonical path bundle for split `smftools load` sub-steps.
 
-    This draft path resolver centralizes commonly shared files so future CLI
-    commands (`basecall`, `align`, `barcode`, `umi`, `modbase`, etc.) can use a
+    This path resolver centralizes commonly shared files so CLI
+    raw sub-steps (`basecall`, `align`, `barcode`, `umi`, `modbase`) use a
     single source of truth for input/output locations.
     """
 
@@ -84,6 +85,10 @@ class ArtifactPaths:
     mod_tsv_directory: Path
     mod_bed_directory: Path
     sidecar_manifest: Path
+    raw_directory: Path
+    spine: Path
+    dense_store: Path
+    dense_catalog: Path
 
     unaligned_bam: Path
     aligned_bam: Path
@@ -136,6 +141,7 @@ def get_adata_paths(cfg) -> AdataPaths:
     store = load_dir / "store"
     spine = load_dir / "spine.h5ad"
     catalog = load_dir / "catalog.parquet"
+    raw_spine = output_directory / RAW_DIR / "spine.h5ad"
 
     return AdataPaths(
         raw=raw,
@@ -149,6 +155,7 @@ def get_adata_paths(cfg) -> AdataPaths:
         store=store,
         spine=spine,
         catalog=catalog,
+        raw_spine=raw_spine,
     )
 
 
@@ -190,7 +197,7 @@ def get_artifact_paths(cfg, bam_stem: str | None = None) -> ArtifactPaths:
     output_directory = Path(cfg.output_directory)
     load_directory = output_directory / LOAD_DIR
     informatics_outputs_directory = Path(
-        getattr(cfg, "informatics_outputs_path", output_directory / INFORMATICS_OUTPUTS_DIR)
+        getattr(cfg, "informatics_outputs_path", output_directory / RAW_DIR)
     )
     bam_outputs_directory = Path(
         getattr(cfg, "bam_outputs_path", informatics_outputs_directory / BAM_OUTPUTS_DIR)
@@ -208,7 +215,7 @@ def get_artifact_paths(cfg, bam_stem: str | None = None) -> ArtifactPaths:
     bam_qc_directory = bam_outputs_directory / "bam_qc"
     mod_tsv_directory = modkit_outputs_directory / "mod_tsvs"
     mod_bed_directory = modkit_outputs_directory / "mod_beds"
-    sidecar_manifest = bam_outputs_directory / "sidecar_manifest.json"
+    sidecar_manifest = output_directory / RAW_DIR / "sidecar_manifest.json"
 
     bam_suffix = str(getattr(cfg, "bam_suffix", ".bam") or ".bam")
     if not bam_suffix.startswith("."):
@@ -232,6 +239,10 @@ def get_artifact_paths(cfg, bam_stem: str | None = None) -> ArtifactPaths:
         mod_tsv_directory=mod_tsv_directory,
         mod_bed_directory=mod_bed_directory,
         sidecar_manifest=sidecar_manifest,
+        raw_directory=output_directory / RAW_DIR,
+        spine=load_directory / "spine.h5ad",
+        dense_store=load_directory / "store",
+        dense_catalog=load_directory / "catalog.parquet",
         unaligned_bam=unaligned_bam,
         aligned_bam=aligned_bam,
         aligned_sorted_bam=aligned_sorted_bam,

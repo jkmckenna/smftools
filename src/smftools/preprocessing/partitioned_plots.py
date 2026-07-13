@@ -1,0 +1,445 @@
+"""Automated, bounded diagnostics for partitioned preprocessing outputs."""
+
+from __future__ import annotations
+
+import math
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from smftools.constants import BASE_QUALITY_SCORES, READ_SPAN_MASK, REFERENCE_STRAND
+
+
+def _register(layout, path, category, plot_type, **metadata):
+    from ..cli.stage_artifacts import register_plot_artifact
+
+    register_plot_artifact(
+        layout,
+        path,
+        stage="preprocess",
+        category=category,
+        plot_type=plot_type,
+        **metadata,
+    )
+
+
+def _sample_column(obs: pd.DataFrame) -> str:
+    for column in ("Experiment_name_and_barcode", "Sample", "Barcode"):
+        if column in obs:
+            return column
+    raise KeyError("preprocessing obs lacks a sample/barcode column")
+
+
+def _metric_dashboard(obs, columns, pass_column, path, title):
+    import matplotlib.pyplot as plt
+
+    columns = [column for column in columns if column in obs]
+    if not columns:
+        return False
+    n_columns = min(3, len(columns))
+    n_rows = math.ceil(len(columns) / n_columns)
+    figure, axes = plt.subplots(n_rows, n_columns, figsize=(5 * n_columns, 3.4 * n_rows))
+    axes = np.atleast_1d(axes).ravel()
+    passed = obs[pass_column].astype(bool)
+    for axis, column in zip(axes, columns):
+        for label, mask, color in (
+            ("pass", passed, "#197278"),
+            ("fail", ~passed, "#d95d39"),
+        ):
+            values = pd.to_numeric(obs.loc[mask, column], errors="coerce").dropna()
+            if not values.empty:
+                axis.hist(values, bins=45, alpha=0.6, label=label, color=color)
+        axis.set(title=column, ylabel="Reads")
+    for axis in axes[len(columns) :]:
+        axis.set_visible(False)
+    axes[0].legend(frameon=False)
+    figure.suptitle(title)
+    figure.tight_layout()
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
+    return True
+
+
+def _sample_retention_plot(obs, sample_column, path):
+    import matplotlib.pyplot as plt
+
+    stages = [
+        column
+        for column in (
+            "passes_read_qc",
+            "passes_modification_qc",
+            "passes_qc",
+            "passes_dedup",
+        )
+        if column in obs
+    ]
+    grouped = obs.groupby(sample_column, sort=True, observed=True)
+    fractions = pd.DataFrame({stage: grouped[stage].mean() for stage in stages}).sort_index()
+    figure, axis = plt.subplots(figsize=(9, max(5, 0.22 * len(fractions))))
+    image = axis.imshow(fractions.to_numpy(), aspect="auto", vmin=0, vmax=1, cmap="YlGnBu")
+    axis.set_xticks(range(len(stages)), [stage.removeprefix("passes_") for stage in stages])
+    axis.set_yticks(range(len(fractions)), fractions.index.astype(str), fontsize=6)
+    axis.set(title="Per-sample retention through preprocessing", xlabel="Stage")
+    figure.colorbar(image, ax=axis, label="Fraction retained", shrink=0.8)
+    figure.tight_layout()
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+
+
+def _sample_metric_medians(obs, sample_column, columns, path, title):
+    import matplotlib.pyplot as plt
+
+    columns = [column for column in columns if column in obs]
+    numeric = obs[[sample_column, *columns]].copy()
+    for column in columns:
+        numeric[column] = pd.to_numeric(numeric[column], errors="coerce")
+    medians = numeric.groupby(sample_column, sort=True, observed=True)[columns].median()
+    standardized = (medians - medians.median()) / medians.std().replace(0, np.nan)
+    standardized = standardized.fillna(0).clip(-3, 3)
+    figure, axis = plt.subplots(figsize=(10, max(5, 0.22 * len(standardized))))
+    image = axis.imshow(standardized.to_numpy(), aspect="auto", vmin=-3, vmax=3, cmap="coolwarm")
+    axis.set_xticks(range(len(columns)), columns, rotation=35, ha="right", fontsize=7)
+    axis.set_yticks(range(len(standardized)), standardized.index.astype(str), fontsize=6)
+    axis.set_title(title)
+    figure.colorbar(image, ax=axis, label="Robust sample median z-score", shrink=0.8)
+    figure.tight_layout()
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+
+
+def _duplicate_diagnostics(obs, sample_column, layout, threshold):
+    import matplotlib.pyplot as plt
+
+    if "passes_qc" in obs:
+        obs = obs.loc[obs["passes_qc"].astype(bool)].copy()
+    hamming = "sequence__min_hamming_to_pair"
+    distance_columns = {
+        "minimum": hamming,
+        "forward neighbor": "fwd_hamming_to_next",
+        "reverse neighbor": "rev_hamming_to_prev",
+        "hierarchical neighbor": "sequence__hier_hamming_to_pair",
+    }
+    colors = {
+        "minimum": "#6d597a",
+        "forward neighbor": "#2a9d8f",
+        "reverse neighbor": "#e9c46a",
+        "hierarchical neighbor": "#e76f51",
+    }
+    references = sorted(obs[REFERENCE_STRAND].astype(str).unique())
+    if hamming in obs:
+        n_columns = min(3, len(references))
+        n_rows = math.ceil(len(references) / n_columns)
+        figure, axes = plt.subplots(n_rows, n_columns, figsize=(5 * n_columns, 3.4 * n_rows))
+        axes = np.atleast_1d(axes).ravel()
+        for axis, reference in zip(axes, references):
+            reference_obs = obs.loc[obs[REFERENCE_STRAND].astype(str) == reference]
+            distance_values = {}
+            for label, column in distance_columns.items():
+                if column not in reference_obs:
+                    continue
+                values = pd.to_numeric(reference_obs[column], errors="coerce").dropna()
+                if not values.empty:
+                    distance_values[label] = values
+            maximum = max(
+                (float(values.max()) for values in distance_values.values()),
+                default=threshold,
+            )
+            axis_maximum = min(1.0, max(0.1, maximum * 1.05, threshold * 1.2))
+            bins = np.linspace(0, axis_maximum, 46)
+            for label, values in distance_values.items():
+                axis.hist(
+                    values,
+                    bins=bins,
+                    histtype="step",
+                    linewidth=1.4,
+                    color=colors[label],
+                    label=label,
+                )
+            axis.axvline(threshold, color="#c1121f", linestyle="--", linewidth=1)
+            axis.set(title=reference, xlabel="Hamming distance", ylabel="Reads")
+            axis.set_xlim(0, axis_maximum)
+            axis.legend(frameon=False, fontsize=7)
+        for axis in axes[len(references) :]:
+            axis.set_visible(False)
+        figure.suptitle("Nearest-read Hamming distance by reference")
+        figure.tight_layout()
+        path = layout.categories["duplicate_qc"] / "hamming_distance_by_reference.png"
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        _register(layout, path, "duplicate_qc", "hamming_distance_by_reference")
+
+        metric = next(
+            (
+                column
+                for column in ("Fraction_C_site_modified", "Raw_modification_signal")
+                if column in obs
+            ),
+            None,
+        )
+        if metric:
+            frame = obs[[hamming, metric, "is_duplicate"]].dropna().copy()
+            if len(frame) > 20_000:
+                frame = frame.sample(20_000, random_state=0)
+            figure, axis = plt.subplots(figsize=(7, 5))
+            for duplicate, color, label in (
+                (False, "#457b9d", "unique"),
+                (True, "#e63946", "duplicate"),
+            ):
+                subset = frame.loc[frame["is_duplicate"].astype(bool) == duplicate]
+                axis.scatter(
+                    subset[hamming], subset[metric], s=8, alpha=0.35, color=color, label=label
+                )
+            axis.axvline(threshold, color="#c1121f", linestyle="--", linewidth=1)
+            axis.set(
+                xlabel="Minimum Hamming distance",
+                ylabel=metric,
+                title="Hamming distance vs read metric",
+            )
+            axis.legend(frameon=False)
+            figure.tight_layout()
+            path = layout.categories["duplicate_qc"] / "hamming_vs_read_metric.png"
+            figure.savefig(path, dpi=150)
+            plt.close(figure)
+            _register(layout, path, "duplicate_qc", "hamming_vs_read_metric")
+
+    if {"duplicate_cluster_id", "duplicate_cluster_size"}.issubset(obs):
+        clusters = obs.loc[obs["duplicate_cluster_id"] >= 0].drop_duplicates("duplicate_cluster_id")
+        sizes = pd.to_numeric(clusters["duplicate_cluster_size"], errors="coerce").dropna()
+        if not sizes.empty:
+            max_size = max(1, int(sizes.max()))
+            bins = np.arange(0.5, max_size + 1.5)
+            figure, axis = plt.subplots(figsize=(7, 5))
+            axis.hist(sizes, bins=bins, color="#457b9d", edgecolor="white")
+            axis.set(
+                xlabel="Reads per duplicate cluster",
+                ylabel="Clusters",
+                title="Duplicate cluster-size distribution",
+                yscale="log" if len(sizes) > 10 else "linear",
+            )
+            figure.tight_layout()
+            path = layout.categories["duplicate_qc"] / "duplicate_cluster_sizes.png"
+            figure.savefig(path, dpi=150)
+            plt.close(figure)
+            _register(layout, path, "duplicate_qc", "duplicate_cluster_size_histogram")
+
+    rates = obs.pivot_table(
+        index=sample_column,
+        columns=REFERENCE_STRAND,
+        values="is_duplicate",
+        aggfunc="mean",
+        observed=True,
+    )
+    figure, axis = plt.subplots(figsize=(9, max(5, 0.22 * len(rates))))
+    image = axis.imshow(rates.fillna(0).to_numpy(), aspect="auto", vmin=0, vmax=1, cmap="magma")
+    axis.set_xticks(range(len(rates.columns)), rates.columns.astype(str), rotation=35, ha="right")
+    axis.set_yticks(range(len(rates)), rates.index.astype(str), fontsize=6)
+    axis.set_title("Duplicate fraction by sample and reference")
+    figure.colorbar(image, ax=axis, label="Duplicate fraction", shrink=0.8)
+    figure.tight_layout()
+    path = layout.categories["duplicate_qc"] / "duplicate_rate_by_sample_reference.png"
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+    _register(layout, path, "duplicate_qc", "duplicate_rate_by_sample_reference")
+
+
+def _complexity_plots(obs, sample_column, layout, cfg):
+    import anndata as ad
+
+    from .calculate_complexity_II import calculate_complexity_II
+
+    output = layout.categories["library_complexity"]
+    output.mkdir(parents=True, exist_ok=True)
+    if "passes_qc" in obs:
+        obs = obs.loc[obs["passes_qc"].astype(bool)].copy()
+    adata = ad.AnnData(obs=obs.set_index("read_id", drop=False))
+    results = calculate_complexity_II(
+        adata,
+        output_directory=output,
+        sample_col=sample_column,
+        ref_col=REFERENCE_STRAND,
+        cluster_col="duplicate_cluster_id",
+        plot=True,
+        save_plot=True,
+        n_boot=int(getattr(cfg, "preprocess_plot_complexity_bootstraps", 20)),
+        n_depths=10,
+        random_state=0,
+        csv_summary=True,
+        force_redo=True,
+        bypass=bool(getattr(cfg, "bypass_complexity_analysis", False)),
+    )
+    if not results:
+        return
+    for path in sorted(output.glob("complexity_*.png")):
+        _register(layout, path, "library_complexity", "library_complexity_curve")
+
+
+def _read_span_quality_plots(spine_path, layout, max_reads=300, max_positions=1800):
+    import matplotlib.pyplot as plt
+
+    from ..cli.stage_input import iter_stage_slices
+
+    for stage_slice in iter_stage_slices(
+        spine_path,
+        layers=[READ_SPAN_MASK, BASE_QUALITY_SCORES],
+    ):
+        core = stage_slice.core()
+        sample_column = _sample_column(core.obs)
+        for sample, sample_obs in core.obs.groupby(sample_column, sort=True, observed=True):
+            read_ids = list(map(str, sample_obs.index))
+            if len(read_ids) > max_reads:
+                indices = np.linspace(0, len(read_ids) - 1, max_reads, dtype=int)
+                read_ids = [read_ids[index] for index in indices]
+            subset = core[read_ids]
+            column_step = max(1, math.ceil(subset.n_vars / max_positions))
+            positions = np.asarray(subset.var_names, dtype=np.int64)[::column_step]
+            span = np.asarray(subset.layers[READ_SPAN_MASK])[:, ::column_step]
+            quality = np.asarray(subset.layers[BASE_QUALITY_SCORES], dtype=float)[:, ::column_step]
+            quality[(span == 0) | (quality < 0)] = np.nan
+            quality_count = np.sum(~np.isnan(quality), axis=0)
+            quality_mean = np.divide(
+                np.nansum(quality, axis=0),
+                quality_count,
+                out=np.full(quality.shape[1], np.nan, dtype=float),
+                where=quality_count != 0,
+            )
+            figure, axes = plt.subplots(2, 2, figsize=(13, 7), height_ratios=(1, 4))
+            axes[0, 0].plot(positions, span.mean(axis=0), color="#2a9d8f", linewidth=0.8)
+            axes[0, 0].set(title="Mean read span", ylim=(0, 1.02))
+            axes[0, 1].plot(positions, quality_mean, color="#3a86ff", linewidth=0.8)
+            axes[0, 1].set(title="Mean base quality")
+            axes[1, 0].imshow(
+                span, aspect="auto", interpolation="nearest", cmap="Greens", vmin=0, vmax=1
+            )
+            image = axes[1, 1].imshow(
+                quality, aspect="auto", interpolation="nearest", cmap="viridis", vmin=0, vmax=50
+            )
+            axes[1, 0].set(
+                xlabel="Reference position", ylabel="Sampled reads", title="Read-span mask"
+            )
+            axes[1, 1].set(xlabel="Reference position", title="Base-quality scores")
+            figure.colorbar(image, ax=axes[1, 1], label="Phred score", shrink=0.8)
+            figure.suptitle(f"{sample} / {stage_slice.reference} ({len(sample_obs)} reads)")
+            figure.tight_layout()
+            core_suffix = (
+                ""
+                if stage_slice.analysis_mode == "locus"
+                else f"__{stage_slice.core_start}_{stage_slice.core_end}"
+            )
+            path = layout.categories["read_span_quality"] / (
+                f"{str(stage_slice.reference).replace('/', '_')}__"
+                f"{str(sample).replace('/', '_')}{core_suffix}.png"
+            )
+            figure.savefig(path, dpi=140)
+            plt.close(figure)
+            _register(
+                layout,
+                path,
+                "read_span_quality",
+                "read_span_base_quality",
+                reference=stage_slice.reference,
+                sample=str(sample),
+                core_start=stage_slice.core_start,
+                core_end=stage_slice.core_end,
+            )
+
+
+def generate_preprocess_summary_plots(
+    obs_path,
+    var_path,
+    plot_layout,
+    *,
+    cfg=None,
+    spine_path=None,
+) -> None:
+    """Generate global, sample-stratified, and bounded matrix diagnostics."""
+    import matplotlib.pyplot as plt
+
+    obs = pd.read_parquet(obs_path)
+    var = pd.read_parquet(var_path)
+    sample_column = _sample_column(obs)
+    read_metrics = [
+        "read_length",
+        "mapped_length",
+        "read_quality",
+        "mapping_quality",
+        "mapped_length_to_reference_length_ratio",
+        "mapped_length_to_read_length_ratio",
+        "Raw_modification_signal",
+    ]
+    modification_metrics = [
+        "Raw_modification_signal",
+        *[
+            column
+            for column in obs
+            if column.startswith("Fraction_") and column.endswith("_modified")
+        ],
+    ]
+
+    path = plot_layout.categories["read_qc"] / "read_qc_metric_dashboard.png"
+    if _metric_dashboard(obs, read_metrics, "passes_read_qc", path, "Read QC: pass vs fail"):
+        _register(plot_layout, path, "read_qc", "read_qc_metric_dashboard")
+    path = plot_layout.categories["read_qc"] / "sample_retention.png"
+    _sample_retention_plot(obs, sample_column, path)
+    _register(plot_layout, path, "read_qc", "sample_retention_heatmap")
+    path = plot_layout.categories["read_qc"] / "sample_read_metric_medians.png"
+    _sample_metric_medians(
+        obs, sample_column, read_metrics, path, "Sample-level read metric medians"
+    )
+    _register(plot_layout, path, "read_qc", "sample_read_metric_medians")
+
+    path = plot_layout.categories["modification_qc"] / "modification_qc_dashboard.png"
+    if _metric_dashboard(
+        obs,
+        modification_metrics,
+        "passes_modification_qc",
+        path,
+        "Modification QC: pass vs fail",
+    ):
+        _register(plot_layout, path, "modification_qc", "modification_qc_metric_dashboard")
+    path = plot_layout.categories["modification_qc"] / "sample_modification_medians.png"
+    _sample_metric_medians(
+        obs,
+        sample_column,
+        modification_metrics,
+        path,
+        "Sample-level modification metric medians",
+    )
+    _register(plot_layout, path, "modification_qc", "sample_modification_medians")
+
+    threshold = float(getattr(cfg, "duplicate_detection_distance_threshold", 0.07))
+    _duplicate_diagnostics(obs, sample_column, plot_layout, threshold)
+    if cfg is not None and "duplicate_cluster_id" in obs:
+        _complexity_plots(obs, sample_column, plot_layout, cfg)
+
+    for reference, reference_var in var.groupby("reference", sort=True, observed=True):
+        figure, axis = plt.subplots(figsize=(8, 3.5))
+        axis.plot(
+            reference_var["position"],
+            reference_var["valid_fraction"],
+            color="#31572c",
+            linewidth=0.8,
+        )
+        axis.set(
+            xlabel="Reference position",
+            ylabel="Valid read fraction",
+            title=f"Coverage: {reference}",
+            ylim=(0, 1.02),
+        )
+        figure.tight_layout()
+        path = (
+            plot_layout.categories["coverage"] / f"{str(reference).replace('/', '_')}_coverage.png"
+        )
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        _register(
+            plot_layout, path, "coverage", "valid_fraction_by_position", reference=str(reference)
+        )
+
+    if spine_path is not None:
+        _read_span_quality_plots(
+            spine_path,
+            plot_layout,
+            max_reads=int(getattr(cfg, "preprocess_plot_max_heatmap_reads", 300)),
+            max_positions=int(getattr(cfg, "preprocess_plot_max_heatmap_positions", 1800)),
+        )

@@ -29,7 +29,7 @@ def preprocess_adata(
 
     Called by: `smftools preprocess <config_path>`
 
-    - Ensure a raw AnnData exists (or some later-stage AnnData) via `load_adata`.
+    - Resolve a raw spine/AnnData or a later-stage AnnData.
     - Determine which AnnData stages exist (raw, pp, pp_dedup, spatial, hmm).
     - Respect cfg flags (force_redo_preprocessing, force_redo_flag_duplicate_reads).
     - Decide what starting AnnData to load (or whether to early-return).
@@ -55,13 +55,61 @@ def preprocess_adata(
     pp_dedup_path = paths.pp_dedup
 
     raw_exists = raw_path.exists()
+    dense_spine_exists = bool(paths.spine and paths.spine.exists())
+    raw_spine_exists = bool(paths.raw_spine and paths.raw_spine.exists())
     pp_exists = pp_path.exists()
     pp_dedup_exists = pp_dedup_path.exists()
+    partitioned_pp_path = (
+        Path(cfg.output_directory) / PREPROCESS_DIR / "spine.h5ad"
+        if getattr(cfg, "output_directory", None) is not None
+        else None
+    )
+
+    def _use_partitioned(source_path: Path) -> bool:
+        mode = str(getattr(cfg, "preprocess_execution_mode", "auto")).lower()
+        if mode not in {"auto", "legacy", "partitioned"}:
+            raise ValueError("preprocess_execution_mode must be auto, legacy, or partitioned")
+        if mode == "legacy":
+            return False
+        if mode == "partitioned":
+            return True
+        if source_path not in {paths.spine, paths.raw_spine}:
+            return False
+        try:
+            from ..informatics.partition_read import load_spine
+
+            spine = load_spine(source_path)
+        except Exception:
+            return False
+        plans = spine.uns.get("reference_plans", {})
+        return bool(dict(plans))
+
+    def _run_partitioned(source_path: Path):
+        from ..preprocessing.partitioned_executor import (
+            execute_partitioned_preprocessing,
+        )
+
+        output_dir = Path(cfg.output_directory) / PREPROCESS_DIR
+        outputs = execute_partitioned_preprocessing(source_path, cfg, output_dir)
+        return outputs["spine"], None
 
     # Helper: read from disk
     def _load(path: Path):
+        if path in {paths.spine, paths.raw_spine}:
+            from ..informatics.partition_read import materialize
+
+            return materialize(path)
         adata, _ = safe_read_h5ad(path)
         return adata
+
+    def _raw_source() -> Path | None:
+        if dense_spine_exists:
+            return paths.spine
+        if raw_spine_exists:
+            return paths.raw_spine
+        if raw_exists:
+            return raw_path
+        return None
 
     # -----------------------------
     # Case A: full redo of preprocessing
@@ -71,9 +119,10 @@ def preprocess_adata(
         if pp_exists:
             adata = _load(pp_path)
             source_path = pp_path
-        elif raw_exists:
-            adata = _load(raw_path)
-            source_path = raw_path
+        elif (source_path := _raw_source()) is not None:
+            if _use_partitioned(source_path):
+                return _run_partitioned(source_path)
+            adata = _load(source_path)
         else:
             logger.error("Cannot redo preprocessing: no AnnData available at any stage.")
             return (None, None)
@@ -98,9 +147,13 @@ def preprocess_adata(
         if pp_exists:
             adata = _load(pp_path)
             source_path = pp_path
-        elif raw_exists:
-            adata = _load(raw_path)
-            source_path = raw_path
+        elif (source_path := _raw_source()) is not None:
+            if _use_partitioned(source_path):
+                raise ValueError(
+                    "partitioned duplicate detection is not implemented yet; "
+                    "run partitioned preprocessing without force_redo_flag_duplicate_reads"
+                )
+            adata = _load(source_path)
         else:
             logger.error(
                 "Cannot redo duplicate detection: no compatible AnnData available "
@@ -120,6 +173,13 @@ def preprocess_adata(
     # -----------------------------
     # Case C: normal behavior (no explicit redo flags)
     # -----------------------------
+
+    if partitioned_pp_path is not None and partitioned_pp_path.exists():
+        logger.info(
+            "Skipping preprocessing. Partitioned preprocessing spine found: %s",
+            partitioned_pp_path,
+        )
+        return partitioned_pp_path, None
 
     # If pp_dedup exists, just return paths (no recomputation)
     if pp_dedup_exists:
@@ -143,9 +203,10 @@ def preprocess_adata(
         )
 
     # Otherwise, fall back to raw (if available)
-    if raw_exists:
-        adata = _load(raw_path)
-        source_path = raw_path
+    if (source_path := _raw_source()) is not None:
+        if _use_partitioned(source_path):
+            return _run_partitioned(source_path)
+        adata = _load(source_path)
         return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
@@ -655,9 +716,7 @@ def preprocess_adata_core(
     # clustermap below is not going to run (it is the only remaining consumer of
     # the full object). The clustermap section further down sources its layer-key
     # checks from whichever object survives.
-    _plot_full_clustermap = getattr(
-        cfg, "preprocessed_plot_read_span_quality_clustermaps", False
-    )
+    _plot_full_clustermap = getattr(cfg, "preprocessed_plot_read_span_quality_clustermaps", False)
     if adata_unique is not None and adata_unique is not adata and not _plot_full_clustermap:
         del adata
         gc.collect()

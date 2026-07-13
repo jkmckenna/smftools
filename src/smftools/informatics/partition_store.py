@@ -384,18 +384,250 @@ def write_experiment_store(
     safe_write_h5ad(spine, spine_path, backup=False, verbose=verbose)
 
     manifest_path = sidecar_manifest_path(output_dir)
-    register_sidecar(manifest_path, "partition_store", output_dir / STORE_SUBDIR,
-                     metadata={"n_partitions": len(partitions)})
+    register_sidecar(
+        manifest_path,
+        "partition_store",
+        output_dir / STORE_SUBDIR,
+        metadata={"n_partitions": len(partitions)},
+    )
     register_sidecar(manifest_path, "spine", spine_path)
     register_sidecar(manifest_path, "catalog", catalog_path)
 
     logger.info(
         "Experiment store written: %d partitions, spine=%s, catalog=%s",
-        len(partitions), spine_path.name, catalog_path.name,
+        len(partitions),
+        spine_path.name,
+        catalog_path.name,
     )
     return {
         "store": output_dir / STORE_SUBDIR,
         "spine": spine_path,
+        "catalog": catalog_path,
+        "manifest": manifest_path,
+    }
+
+
+def write_dense_cache_from_spine(
+    spine_path: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    obs_chunk: int = DEFAULT_OBS_CHUNK,
+    zarr_format: int = 3,
+    verbose: bool = False,
+) -> dict[str, Path]:
+    """Materialize and persist a reference-partitioned dense cache.
+
+    Each reference is densified independently from the ragged store, ordered by
+    barcode, and written before the next reference is loaded. This bounds peak
+    memory by the largest reference partition and preserves one shared row layout.
+    """
+    from ..readwrite import safe_read_h5ad, safe_write_h5ad, safe_write_zarr
+    from .partition_read import _resolve_ragged_paths, materialize
+
+    spine_path = Path(spine_path)
+    output_dir = Path(output_dir) if output_dir is not None else spine_path.parent
+    output_spine_path = output_dir / SPINE_FILENAME
+    spine, _ = safe_read_h5ad(spine_path)
+    if REFERENCE_STRAND not in spine.obs:
+        raise KeyError(f"spine.obs lacks required column {REFERENCE_STRAND!r}")
+    ragged_paths: list[Path] = []
+    if output_dir != spine_path.parent and "ragged_store" in spine.uns:
+        ragged_paths = _resolve_ragged_paths(spine, spine_path.parent)
+        spine.uns["ragged_store"] = [str(path.resolve()) for path in ragged_paths]
+        if "ragged_shard" in spine.obs:
+            spine.obs["ragged_shard"] = [
+                str((spine_path.parent / str(path)).resolve())
+                if not Path(str(path)).is_absolute()
+                else str(path)
+                for path in spine.obs["ragged_shard"]
+            ]
+        interval_catalog = spine.uns.get("interval_catalog")
+        if interval_catalog and not Path(str(interval_catalog)).is_absolute():
+            spine.uns["interval_catalog"] = str(
+                (spine_path.parent / str(interval_catalog)).resolve()
+            )
+
+    store_root = output_dir / STORE_SUBDIR
+    store_root.mkdir(parents=True, exist_ok=True)
+    references = sorted(spine.obs[REFERENCE_STRAND].astype(str).unique())
+    raw_plans = spine.uns.get("reference_plans", {})
+    reference_plans = dict(raw_plans) if hasattr(raw_plans, "items") else {}
+    partitions: list[PartitionInfo] = []
+    catalog_rows: list[dict[str, object]] = []
+    used_paths: set[str] = set()
+
+    for reference in references:
+        raw_plan = reference_plans.get(reference, {})
+        plan = dict(raw_plan) if hasattr(raw_plan, "items") else {}
+        cache_mode = str(plan.get("cache_mode", "full"))
+        if cache_mode == "none":
+            logger.info("Skipping dense cache for %s (cache_mode=none)", reference)
+            continue
+        if cache_mode == "tiled":
+            reference_length = int(plan["reference_length"])
+            tile_size = int(plan["tile_size"])
+            tile_halo = int(plan["tile_halo"])
+            for core_start in range(0, reference_length, tile_size):
+                core_end = min(core_start + tile_size, reference_length)
+                load_start = max(0, core_start - tile_halo)
+                load_end = min(reference_length, core_end + tile_halo)
+                reference_obs = spine.obs.loc[spine.obs[REFERENCE_STRAND].astype(str) == reference]
+                core_obs = reference_obs.loc[
+                    (reference_obs["reference_start"].astype("int64") < core_end)
+                    & (reference_obs["reference_end"].astype("int64") > core_start)
+                ]
+                if core_obs.empty:
+                    continue
+                try:
+                    dense = materialize(
+                        spine_path,
+                        references=reference,
+                        read_ids=core_obs.index,
+                        start=load_start,
+                        end=load_end,
+                    )
+                except ValueError as exc:
+                    if "selection matched no molecules" in str(exc):
+                        continue
+                    raise
+                rel_path = (
+                    Path(STORE_SUBDIR)
+                    / _slug(reference)
+                    / "tiles"
+                    / f"{core_start:012d}-{core_end:012d}"
+                )
+                partition_path = output_dir / rel_path
+                chunks = (min(obs_chunk, dense.n_obs), dense.n_vars)
+                safe_write_zarr(
+                    dense,
+                    partition_path,
+                    backup=True,
+                    verbose=verbose,
+                    zarr_format=zarr_format,
+                    chunks=chunks,
+                )
+                catalog_rows.append(
+                    {
+                        "partition_id": f"{_slug(reference)}:{core_start}-{core_end}",
+                        "cache_kind": "tiled",
+                        "reference": reference,
+                        "barcode": "*",
+                        "row_start": 0,
+                        "row_end": dense.n_obs,
+                        "n_reads": dense.n_obs,
+                        "n_positions": dense.n_vars,
+                        "core_start": core_start,
+                        "core_end": core_end,
+                        "load_start": load_start,
+                        "load_end": load_end,
+                        "group_path": rel_path.as_posix(),
+                    }
+                )
+            continue
+        if cache_mode != "full":
+            raise ValueError(f"unsupported cache mode {cache_mode!r} for {reference}")
+
+        dense = materialize(spine_path, references=reference)
+        order_columns = [column for column in (BARCODE, SAMPLE) if column in dense.obs]
+        order_frame = dense.obs.assign(_read_id=dense.obs_names.astype(str))
+        order = order_frame.sort_values(order_columns + ["_read_id"], kind="stable").index
+        dense = dense[list(order)].copy()
+
+        base_rel = Path(STORE_SUBDIR) / _slug(reference)
+        rel_path = base_rel
+        suffix = 1
+        while rel_path.as_posix() in used_paths:
+            rel_path = base_rel.with_name(f"{base_rel.name}_{suffix}")
+            suffix += 1
+        used_paths.add(rel_path.as_posix())
+        partition_path = output_dir / rel_path
+        chunks = (min(obs_chunk, dense.n_obs), dense.n_vars)
+        safe_write_zarr(
+            dense,
+            partition_path,
+            backup=True,
+            verbose=verbose,
+            zarr_format=zarr_format,
+            chunks=chunks,
+        )
+        partitions.append(
+            PartitionInfo(
+                partition_id=_slug(reference),
+                reference=reference,
+                sample="*",
+                group_path=rel_path.as_posix(),
+                n_reads=dense.n_obs,
+                n_positions=dense.n_vars,
+                read_ids=list(map(str, dense.obs_names)),
+            )
+        )
+
+        barcode_values = (
+            dense.obs[BARCODE].astype(str)
+            if BARCODE in dense.obs
+            else pd.Series("*", index=dense.obs_names)
+        )
+        start = 0
+        for barcode, group in barcode_values.groupby(barcode_values, sort=False):
+            end = start + len(group)
+            catalog_rows.append(
+                {
+                    "partition_id": _slug(reference),
+                    "cache_kind": "full",
+                    "reference": reference,
+                    "barcode": str(barcode),
+                    "row_start": start,
+                    "row_end": end,
+                    "n_reads": len(group),
+                    "n_positions": dense.n_vars,
+                    "group_path": rel_path.as_posix(),
+                }
+            )
+            start = end
+
+    pointers: dict[str, tuple[str, int]] = {}
+    for partition in partitions:
+        for row, read_id in enumerate(partition.read_ids):
+            pointers[read_id] = (partition.group_path, row)
+    spine.obs["partition"] = [
+        pointers.get(str(read_id), ("", -1))[0] for read_id in spine.obs_names
+    ]
+    spine.obs["partition_row"] = [
+        pointers.get(str(read_id), ("", -1))[1] for read_id in spine.obs_names
+    ]
+    spine.uns["store_root"] = store_root.as_posix()
+    # AnnData reads string lists from HDF5 as numpy arrays. Normalize them back
+    # to plain lists before safe_write_h5ad so the sanitizer preserves JSON list
+    # semantics rather than storing a string representation of the array.
+    for key in ("ragged_store", "signal_columns"):
+        value = spine.uns.get(key)
+        if isinstance(value, str) and value.startswith("["):
+            quoted_items = re.findall(r"['\"]([^'\"]+)['\"]", value)
+            if quoted_items or value.strip() == "[]":
+                value = quoted_items
+        if value is not None and not isinstance(value, str):
+            spine.uns[key] = [str(item) for item in value]
+
+    catalog_path = output_dir / CATALOG_FILENAME
+    pd.DataFrame(catalog_rows).to_parquet(catalog_path, index=False)
+    spine.uns["catalog"] = catalog_path.name
+    safe_write_h5ad(spine, output_spine_path, backup=False, verbose=verbose)
+
+    manifest_path = sidecar_manifest_path(output_dir)
+    register_sidecar(manifest_path, "dense_store", store_root)
+    register_sidecar(manifest_path, "catalog", catalog_path)
+    register_sidecar(manifest_path, "spine", output_spine_path)
+    if ragged_paths:
+        register_sidecar(
+            manifest_path,
+            "ragged_store",
+            ragged_paths[0].parent,
+            metadata={"shards": len(ragged_paths)},
+        )
+    logger.info("Wrote dense cache with %d reference partition(s)", len(partitions))
+    return {
+        "store": store_root,
+        "spine": output_spine_path,
         "catalog": catalog_path,
         "manifest": manifest_path,
     }

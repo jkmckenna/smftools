@@ -3988,6 +3988,104 @@ def build_barcode_sidecar_from_split_bams(
     return output_path
 
 
+def extract_read_relative_base_identities(
+    bam_file,
+    record,
+    reference_sequence,
+    samtools_backend: str | None = "auto",
+    primary_only: bool = True,
+    read_name_filter: set | None = None,
+):
+    """Extract aligned reads as query-coordinate ragged records.
+
+    Unlike :func:`extract_base_identities`, this function does not allocate a
+    reference-length array per read. Reference-grid placement is deferred to
+    :func:`smftools.informatics.ragged_store.materialize_ragged`.
+
+    Args:
+        bam_file: Indexed BAM containing aligned reads.
+        record: Reference record to fetch.
+        reference_sequence: Unpadded FASTA sequence for ``record``.
+        samtools_backend: Samtools-compatible alignment backend.
+        primary_only: Skip secondary and supplementary alignments when true.
+        read_name_filter: Optional set of read names to retain.
+
+    Returns:
+        list[dict[str, object]]: One validated-compatible ragged record per read.
+    """
+    from .ragged_store import alignment_to_ragged_record
+
+    backend_choice = _resolve_samtools_backend(samtools_backend)
+    records = []
+    if backend_choice == "python":
+        pysam_mod = _require_pysam()
+        with pysam_mod.AlignmentFile(str(bam_file), "rb") as bam:
+            for read in bam.fetch(record):
+                if read.is_unmapped:
+                    continue
+                if primary_only and (read.is_secondary or read.is_supplementary):
+                    continue
+                if read_name_filter is not None and read.query_name not in read_name_filter:
+                    continue
+                records.append(
+                    alignment_to_ragged_record(
+                        read,
+                        reference_sequence,
+                        reference=str(record),
+                    )
+                )
+        return records
+
+    from types import SimpleNamespace
+
+    bam_path = Path(bam_file)
+    _ensure_bam_index(bam_path, backend_choice)
+    exclude_flag = "2308" if primary_only else "4"
+    cmd = ["samtools", "view", "-F", exclude_flag, str(bam_path), str(record)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) < 11:
+            continue
+        read_name = fields[0]
+        if read_name_filter is not None and read_name not in read_name_filter:
+            continue
+        flag = int(fields[1])
+        cigar = fields[5]
+        sequence = fields[9]
+        if cigar == "*" or sequence == "*":
+            continue
+        quality_string = fields[10]
+        qualities = (
+            [ord(character) - 33 for character in quality_string]
+            if quality_string and quality_string != "*"
+            else None
+        )
+        read = SimpleNamespace(
+            is_unmapped=False,
+            is_reverse=bool(flag & 16),
+            query_name=read_name,
+            query_sequence=sequence,
+            query_qualities=qualities,
+            reference_name=str(record),
+            reference_start=int(fields[3]) - 1,
+            cigarstring=cigar,
+        )
+        records.append(
+            alignment_to_ragged_record(
+                read,
+                reference_sequence,
+                reference=str(record),
+            )
+        )
+    return_code = proc.wait()
+    if return_code != 0:
+        stderr = proc.stderr.read() if proc.stderr else ""
+        raise RuntimeError(f"samtools view failed (exit {return_code}):\n{stderr}")
+    return records
+
+
 def extract_base_identities(
     bam_file,
     record,

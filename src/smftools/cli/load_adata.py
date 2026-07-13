@@ -8,7 +8,13 @@ from typing import Iterable, Union
 import numpy as np
 import pandas as pd
 
-from smftools.constants import BARCODE_KIT_ALIASES, LOAD_DIR, LOGGING_DIR, UMI_KIT_ALIASES
+from smftools.constants import (
+    BARCODE_KIT_ALIASES,
+    LOAD_DIR,
+    LOGGING_DIR,
+    RAW_DIR,
+    UMI_KIT_ALIASES,
+)
 from smftools.logging_utils import get_logger, setup_logging
 
 from .helpers import AdataPaths
@@ -139,7 +145,27 @@ def load_adata(config_path: str):
     return adata, adata_path, cfg
 
 
-def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
+def load_dense_cache(config_path: str):
+    """Ensure raw artifacts exist, then build the optional dense zarr cache."""
+    from ..informatics.partition_store import write_dense_cache_from_spine
+    from ..readwrite import safe_read_h5ad
+    from .raw_adata import raw_adata
+
+    _spine, spine_path, cfg = raw_adata(config_path)
+    cache_paths = write_dense_cache_from_spine(
+        spine_path, output_dir=Path(cfg.output_directory) / LOAD_DIR
+    )
+    spine, _ = safe_read_h5ad(cache_paths["spine"])
+    return spine, cache_paths["spine"], cfg
+
+
+def load_adata_core(
+    cfg,
+    paths: AdataPaths,
+    config_path: str | None = None,
+    *,
+    raw_only: bool = False,
+):
     """
     Core load pipeline.
 
@@ -230,7 +256,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
 
     output_directory = Path(cfg.output_directory)
-    load_directory = output_directory / LOAD_DIR
+    load_directory = output_directory / (RAW_DIR if raw_only else LOAD_DIR)
     bam_outputs_directory = Path(cfg.bam_outputs_path)
     fasta_outputs_directory = Path(cfg.fasta_outputs_path)
     bed_outputs_directory = Path(cfg.bed_outputs_path)
@@ -365,13 +391,15 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             bam = bam_outputs_directory / f"{model_basename}_{mod_string}_calls"
         else:
             bam = bam_outputs_directory / f"{model_basename}_canonical_basecalls"
+        unaligned_output = bam.with_suffix(cfg.bam_suffix)
     else:
-        bam_base = cfg.input_data_path.stem
-        bam = cfg.input_data_path.parent / bam_base
+        # Preserve the exact BAM input path. Path.with_suffix() would incorrectly
+        # turn names such as ``sample.repaired.bam`` into ``sample.bam`` after the
+        # terminal .bam suffix has already been removed.
+        unaligned_output = Path(cfg.input_data_path)
+        bam = unaligned_output.with_suffix("")
 
     # Generate path names for the unaligned, aligned, as well as the aligned/sorted bam.
-    unaligned_output = bam.with_suffix(cfg.bam_suffix)
-
     aligned_BAM = (
         bam_outputs_directory / (bam.stem + "_aligned")
     )  # doing this allows specifying an input bam in a seperate directory as the aligned output bams
@@ -1047,6 +1075,61 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             barcode_readname_map=_qc_barcode_readname_map,
         )
     ########################################################################################################################
+
+    if raw_only:
+        if cfg.smf_modality == "direct":
+            from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
+
+            if not mod_bed_dir.is_dir():
+                make_dirs([mod_bed_dir])
+                modQC(aligned_sorted_output, cfg.thresholds)
+                make_modbed(aligned_sorted_output, cfg.thresholds, mod_bed_dir)
+            make_dirs([mod_tsv_dir])
+            extract_mods(
+                cfg.thresholds,
+                mod_tsv_dir,
+                bam_dir if bam_dir is not None else cfg.split_path,
+                cfg.bam_suffix,
+                skip_unclassified=cfg.skip_unclassified,
+                modkit_summary=False,
+                threads=cfg.threads,
+                single_bam=aligned_sorted_output,
+            )
+
+        from ..informatics.raw_store import write_raw_store
+        from ..readwrite import safe_read_h5ad
+        from .raw_adata import build_ragged_records
+
+        logger.info("Extracting read-relative raw records from aligned BAM")
+        frame, reference_lengths, extra_uns = build_ragged_records(
+            cfg,
+            fasta=fasta,
+            aligned_bam=aligned_sorted_output,
+            barcode_sidecar=barcode_sidecar,
+            umi_sidecar=umi_sidecar,
+            mod_tsv_dir=mod_tsv_dir,
+        )
+        raw_paths = write_raw_store(
+            frame,
+            load_directory,
+            reference_lengths=reference_lengths,
+            shard_size=int(getattr(cfg, "raw_parquet_shard_size", 100_000)),
+            start_bin_size=int(getattr(cfg, "parquet_start_bin_size", 1_000_000)),
+            analysis_mode=getattr(cfg, "analysis_mode", "auto"),
+            load_cache_mode=getattr(cfg, "load_cache_mode", "auto"),
+            max_full_matrix_gb=float(getattr(cfg, "max_full_matrix_gb", 8.0)),
+            genome_tile_size=int(getattr(cfg, "genome_tile_size", 10_000)),
+            genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
+            bam_path=aligned_sorted_output,
+            extra_uns=extra_uns,
+        )
+        mqc_dir = bam_outputs_directory / "multiqc"
+        if skip_bam_qc:
+            logger.info("skip_bam_qc=True: skipping multiqc")
+        elif not mqc_dir.is_dir():
+            run_multiqc(bam_qc_dir, mqc_dir)
+        spine, _ = safe_read_h5ad(raw_paths["spine"])
+        return spine, raw_paths["spine"], cfg
 
     ################################### 7) AnnData loading ######################################################################
     if cfg.smf_modality != "direct":

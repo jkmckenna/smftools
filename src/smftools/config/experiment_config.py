@@ -926,6 +926,7 @@ class ExperimentConfig:
     duplicate_detection_do_hierarchical: bool = True
     duplicate_detection_hierarchical_linkage: str = "average"
     duplicate_detection_do_pca: bool = False
+    duplicate_detection_max_reads_per_window: int = 50000
 
     # Preprocessing - Position QC
     position_max_nan_threshold: float = 0.1
@@ -1051,6 +1052,15 @@ class ExperimentConfig:
 
     # Pipeline control flow - load adata
     force_redo_load_adata: bool = False
+    raw_parquet_shard_size: int = 100000
+    analysis_mode: str = "auto"
+    load_cache_mode: str = "auto"
+    max_full_matrix_gb: float = 8.0
+    target_task_memory_mb: int = 512
+    genome_tile_size: int = 10000
+    genome_tile_halo: int = 1000
+    parquet_start_bin_size: int = 1000000
+    preprocess_execution_mode: str = "auto"
 
     # Pipeline control flow - preprocessing and QC
     force_redo_preprocessing: bool = False
@@ -1942,6 +1952,9 @@ class ExperimentConfig:
                 "duplicate_detection_hierarchical_linkage", "average"
             ),
             duplicate_detection_do_pca=merged.get("duplicate_detection_do_pca", False),
+            duplicate_detection_max_reads_per_window=int(
+                _parse_numeric(merged.get("duplicate_detection_max_reads_per_window", 50000), 50000)
+            ),
             position_max_nan_threshold=merged.get("position_max_nan_threshold", 0.1),
             correlation_matrix_types=merged.get(
                 "correlation_matrix_types", ["pearson", "binary_covariance"]
@@ -1967,6 +1980,21 @@ class ExperimentConfig:
                 "hamming_vs_metric_keys", ["Fraction_C_site_modified"]
             ),
             force_redo_load_adata=merged.get("force_redo_load_adata", False),
+            raw_parquet_shard_size=int(
+                _parse_numeric(merged.get("raw_parquet_shard_size", 100000), 100000)
+            ),
+            analysis_mode=str(merged.get("analysis_mode", "auto")),
+            load_cache_mode=str(merged.get("load_cache_mode", "auto")),
+            max_full_matrix_gb=float(_parse_numeric(merged.get("max_full_matrix_gb", 8.0), 8.0)),
+            target_task_memory_mb=int(
+                _parse_numeric(merged.get("target_task_memory_mb", 512), 512)
+            ),
+            genome_tile_size=int(_parse_numeric(merged.get("genome_tile_size", 10000), 10000)),
+            genome_tile_halo=int(_parse_numeric(merged.get("genome_tile_halo", 1000), 1000)),
+            parquet_start_bin_size=int(
+                _parse_numeric(merged.get("parquet_start_bin_size", 1000000), 1000000)
+            ),
+            preprocess_execution_mode=str(merged.get("preprocess_execution_mode", "auto")),
             force_redo_preprocessing=merged.get("force_redo_preprocessing", False),
             force_reload_sample_sheet=merged.get("force_reload_sample_sheet", True),
             bypass_add_read_length_and_mapping_qc=merged.get(

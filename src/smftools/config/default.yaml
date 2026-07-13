@@ -222,6 +222,7 @@ duplicate_detection_min_overlapping_positions: 20 # The minimum amount of valid 
 duplicate_detection_do_hierarchical: True # Whether to follow up fwd/rev lexicographic duplicate detection with hieratchical clustering based method
 duplicate_detection_hierarchical_linkage: "average" # Method for hierarchical clustering distance calculation
 duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkage based duplicate detection.
+duplicate_detection_max_reads_per_window: 50000 # Fail rather than silently approximate above this per-sample/core read count
 
 # Position QC params
 position_max_nan_threshold: 0.8 # The maximum amount of nans to tolerate in a column
@@ -483,6 +484,15 @@ concatenate_recompute_pp_vars: True  # Recompute calculate_coverage and append_b
 
 # Pipeline control flow - load adata
 force_redo_load_adata: False # Whether to perform load adata command from start
+raw_parquet_shard_size: 100000 # Maximum reads per raw parquet shard
+analysis_mode: auto # auto, locus, or genome; auto plans each reference independently
+load_cache_mode: auto # auto, full, tiled, or none
+max_full_matrix_gb: 8.0 # Dense-size threshold used by automatic per-reference planning
+target_task_memory_mb: 512 # Target memory for future preprocessing work units
+genome_tile_size: 10000 # Core genomic positions per genome-mode work unit
+genome_tile_halo: 1000 # Context positions loaded on each side of a genome tile
+parquet_start_bin_size: 1000000 # Reference-start bin used to partition ragged parquet
+preprocess_execution_mode: auto # auto, legacy, or partitioned; auto partitions any raw/load spine
 
 # Pipeline control flow - Preprocessing and QC
 force_redo_preprocessing: False # Whether to force redo the entire preprocessing workflow from the initial raw anndata.

@@ -1,3 +1,5 @@
+import shutil
+
 import anndata as ad
 import numpy as np
 import pandas as pd
@@ -5,6 +7,8 @@ import pytest
 
 from smftools.informatics.partition_read import materialize
 from smftools.informatics.partition_store import write_experiment_store
+from smftools.informatics.ragged_store import write_ragged_parquet
+from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
 
 LAYERS = ("sequence_integer_encoding", "read_span_mask")
 
@@ -99,3 +103,40 @@ def test_materialize_empty_selection_raises(store):
     a, spine_path = store
     with pytest.raises(ValueError):
         materialize(spine_path, references="does_not_exist")
+
+
+def test_materialize_falls_back_to_ragged_when_dense_cache_is_missing(tmp_path):
+    source = _synth(n_refs=1, n_samples=1, per=5, n_pos=8)
+    source.layers["read_span_mask"][:] = 1
+    paths = write_experiment_store(source, tmp_path, experiment="e", modality="conversion")
+
+    rows = []
+    for read_id in source.obs_names:
+        row = source.obs_names.get_loc(read_id)
+        rows.append(
+            {
+                "read_id": str(read_id),
+                "reference": "ref0",
+                "Reference_strand": "ref0_top",
+                "reference_start": 0,
+                "cigar": "8M",
+                "aligned_length": 8,
+                "sequence": source.layers["sequence_integer_encoding"][row].tolist(),
+                "modification_signal": np.asarray(source.X[row]).ravel().tolist(),
+            }
+        )
+    ragged_path = write_ragged_parquet(pd.DataFrame(rows), tmp_path / "raw" / "reads.parquet")
+
+    spine, _ = safe_read_h5ad(paths["spine"])
+    spine.uns["ragged_store"] = str(ragged_path.relative_to(tmp_path))
+    spine.uns["reference_lengths"] = {"ref0_top": 8}
+    safe_write_h5ad(spine, paths["spine"], verbose=False)
+
+    dense = materialize(paths["spine"], references="ref0_top")
+    shutil.rmtree(paths["store"])
+    ragged = materialize(paths["spine"], references="ref0_top")
+
+    assert list(ragged.obs_names) == list(dense.obs_names)
+    np.testing.assert_array_equal(ragged.X, dense.X)
+    for layer in ("sequence_integer_encoding", "read_span_mask"):
+        np.testing.assert_array_equal(ragged.layers[layer], dense.layers[layer])

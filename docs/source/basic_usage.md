@@ -1,8 +1,15 @@
 # Basic Usage
 
-## Load Usage
+## Raw And Load Usage
 
-Many use cases for smftools begin here. For most users, the call below will be sufficient to convert any raw SMF dataset from Nanopore/Illumina to an AnnData object:
+In v2, workflows begin by preparing BAM artifacts and the ragged per-read source of truth:
+
+```shell
+smftools raw "/Path_to_experiment_config.csv"
+```
+
+Dense reference-grid data is materialized on demand. To persist the full dense zarr cache ahead of
+downstream work, run the optional command:
 
 ```shell
 smftools load "/Path_to_experiment_config.csv"

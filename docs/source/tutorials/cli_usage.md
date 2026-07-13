@@ -6,32 +6,40 @@ Most CLI workflows start with an experiment configuration CSV that points to you
 output directory. Once the configuration is ready, you can run commands such as:
 
 ```shell
+smftools raw /path/to/experiment_config.csv
+# Optional: pre-build the dense reference-grid cache.
 smftools load /path/to/experiment_config.csv
 smftools preprocess /path/to/experiment_config.csv
 smftools full /path/to/experiment_config.csv
 smftools batch full /path/to/config_paths.csv
 ```
 
-Each command will create (or reuse) stage-specific AnnData files in the output directory. Later
-commands reuse results from earlier stages unless you explicitly force a redo via configuration
-flags.
+Each command creates or reuses stage-specific artifacts in the output directory. Later commands
+reuse results from earlier stages unless you explicitly force a redo via configuration flags.
 
 ## What each command does
 
-### `smftools load`
+### `smftools raw`
 
-The load command builds the raw AnnData object from your raw sequencing data. It:
+The raw command prepares sequencing inputs and writes the read-relative source of truth. It:
 
 - Handles input formats (fast5/pod5/fastq/bam).
 - Performs basecalling, alignment, demultiplexing, and BAM QC.
 - Optionally generates BED/bigWig outputs for alignment summaries.
-- Constructs the raw AnnData object (Single molecules x Positional coordinates).
-- adata.X contains binarized modification data (conversion/deaminase), or modification probabilitiesc (native).
-- Adds basic read-level QC annotations (Read start, end, length, mean quality).
-- Adds layers encoding read DNA sequences, base quality scores, base mismatches.
-- Maintains BAM tags/flags in adata.obs (UMI and barcode annotations loaded from Parquet sidecars).
-- Writes the raw AnnData to the canonical output path and runs MultiQC.
-- Optionally deletes intermediate BAMs, H5ADs, and TSVs.
+- Extracts one parquet row per physical read with CIGAR and query-coordinate signal arrays.
+- Stores sequence, base-quality, mismatch, and modification values as Arrow list columns.
+- Writes a thin molecule-index `spine.h5ad` containing identity and artifact pointers.
+- Adds read-level QC, UMI, and barcode metadata without constructing padded dense matrices.
+- Runs MultiQC while preserving the aligned BAM as a source artifact.
+
+All artifacts produced by this command are grouped under `raw_outputs/`.
+
+### `smftools load`
+
+The load command is optional in v2. It runs `raw` when needed, densifies one reference at a time,
+and persists a barcode-ordered zarr cache. Downstream accessors use this cache when present and
+otherwise densify the requested slice directly from ragged parquet.
+The cache, catalog, and dense-index spine are stored under `load_adata_outputs/`.
 
 ### `smftools preprocess`
 

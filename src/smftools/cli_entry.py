@@ -10,9 +10,10 @@ from ._version import __version__
 from .cli.chimeric_adata import chimeric_adata
 from .cli.hmm_adata import hmm_adata
 from .cli.latent_adata import latent_adata
-from .cli.load_adata import load_adata
+from .cli.load_adata import load_dense_cache
 from .cli.plot_current import plot_current as plot_current_fn
 from .cli.preprocess_adata import preprocess_adata
+from .cli.raw_adata import raw_adata
 from .cli.recipes import full_flow
 from .cli.spatial_adata import spatial_adata
 from .cli.variant_adata import variant_adata
@@ -74,9 +75,16 @@ def cli(log_file: Path | None, log_level: str):
 ####### Load anndata from raw data ###########
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
+def raw(config_path):
+    """Prepare BAM artifacts and write the ragged raw store."""
+    raw_adata(config_path)
+
+
+@cli.command()
+@click.argument("config_path", type=click.Path(exists=True))
 def load(config_path):
-    """Load raw data into AnnData."""
-    load_adata(config_path)
+    """Optionally pre-build the dense zarr cache from raw artifacts."""
+    load_dense_cache(config_path)
 
 
 ##########################################
@@ -152,7 +160,7 @@ def chimeric(config_path):
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def full(config_path):
-    """Workflow: load preprocess spatial variant chimeric hmm latent"""
+    """Workflow: raw preprocess spatial variant chimeric hmm latent"""
     full_flow(config_path)
 
 
@@ -163,7 +171,10 @@ def full(config_path):
 @cli.command()
 @click.argument(
     "task",
-    type=click.Choice(["load", "preprocess", "spatial", "variant", "hmm"], case_sensitive=False),
+    type=click.Choice(
+        ["raw", "load", "preprocess", "spatial", "variant", "hmm"],
+        case_sensitive=False,
+    ),
 )
 @click.argument(
     "config_table",
@@ -183,7 +194,7 @@ def full(config_path):
 )
 def batch(task, config_table: Path, column: str, sep: str | None):
     """
-    Run a TASK (load, preprocess, spatial, variant, hmm) on multiple CONFIG_PATHs
+    Run a TASK (raw, load, preprocess, spatial, variant, hmm) on multiple CONFIG_PATHs
     listed in a CSV/TSV or plain TXT file.
 
     Plain text format: one config path per line, no header.
@@ -263,7 +274,8 @@ def batch(task, config_table: Path, column: str, sep: str | None):
     # ----------------------------
     task = task.lower()
     task_funcs = {
-        "load": load_adata,
+        "raw": raw_adata,
+        "load": load_dense_cache,
         "preprocess": preprocess_adata,
         "spatial": spatial_adata,
         "variant": variant_adata,
