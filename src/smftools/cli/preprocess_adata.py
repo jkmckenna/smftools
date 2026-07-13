@@ -267,6 +267,7 @@ def preprocess_adata_core(
         filter_reads_on_modification_thresholds,
         flag_duplicate_reads,
         invert_adata,
+        label_deaminase_pcr_chimeras,
         load_sample_sheet,
         preprocess_umi_annotations,
         reindex_references_adata,
@@ -621,6 +622,16 @@ def preprocess_adata_core(
     )
 
     gc.collect()
+
+    ############### Label deaminase PCR chimeras (C->T <-> G->A strand switch) ###############
+    if smf_modality == "deaminase":
+        adata = label_deaminase_pcr_chimeras(
+            adata,
+            min_events_per_span=cfg.deaminase_chimera_min_events_per_span,
+            min_segment_purity=cfg.deaminase_chimera_min_segment_purity,
+            max_single_strand_fraction=cfg.deaminase_chimera_max_single_strand_fraction,
+            bypass=cfg.bypass_label_deaminase_pcr_chimeras,
+        )
 
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != "direct":

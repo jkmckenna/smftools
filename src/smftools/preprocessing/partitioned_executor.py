@@ -412,6 +412,30 @@ def append_modification_qc_mask(obs_path: str | Path, cfg) -> Path:
     return obs_path
 
 
+def append_deaminase_chimera_label(obs_path: str | Path, cfg) -> Path:
+    """Label deaminase PCR chimeras on the obs sidecar from strand-switch metrics."""
+    if str(getattr(cfg, "smf_modality", "conversion")) != "deaminase":
+        return Path(obs_path)
+
+    from .label_deaminase_pcr_chimeras import label_deaminase_pcr_chimeras
+
+    obs_path = Path(obs_path)
+    obs = pd.read_parquet(obs_path).set_index("read_id", drop=False)
+    input_adata = ad.AnnData(obs=obs.drop(columns="read_id"))
+    labeled = label_deaminase_pcr_chimeras(
+        input_adata,
+        min_events_per_span=cfg.deaminase_chimera_min_events_per_span,
+        min_segment_purity=cfg.deaminase_chimera_min_segment_purity,
+        max_single_strand_fraction=cfg.deaminase_chimera_max_single_strand_fraction,
+        bypass=bool(getattr(cfg, "bypass_label_deaminase_pcr_chimeras", False)),
+    )
+    if "deaminase_PCR_chimera" not in labeled.obs:  # bypassed
+        return obs_path
+    obs["deaminase_PCR_chimera"] = labeled.obs["deaminase_PCR_chimera"].to_numpy()
+    obs.reset_index(drop=True).to_parquet(obs_path, index=False)
+    return obs_path
+
+
 def reduce_duplicate_reads(
     preprocess_spine_path: str | Path,
     obs_path: str | Path,
@@ -742,6 +766,7 @@ def execute_partitioned_preprocessing(
     )
     obs_sidecar = reduce_read_modification_stats(catalog_path, var_catalog, obs_sidecar)
     obs_sidecar = append_modification_qc_mask(obs_sidecar, cfg)
+    obs_sidecar = append_deaminase_chimera_label(obs_sidecar, cfg)
 
     derived_spine = spine.copy()
     derived_spine.uns["preprocess_store"] = str((output_dir / PREPROCESS_STORE_SUBDIR).resolve())

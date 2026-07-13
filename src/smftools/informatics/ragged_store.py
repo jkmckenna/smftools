@@ -107,6 +107,57 @@ def cigar_max_indel_runs(cigar: str) -> tuple[int, int]:
     return max_insertion, max_deletion
 
 
+def strand_switch_metrics(signs: list[int]) -> tuple[float, int]:
+    """Summarize an ordered deamination-vote track for PCR-chimera detection.
+
+    ``signs`` is a reference-ordered list of per-position strand votes, ``+1`` for a
+    C->T (top-consistent) event and ``-1`` for a G->A (bottom-consistent) event. A
+    pure molecule is all one sign; a PCR chimera is a run of one sign followed by a
+    run of the other.
+
+    Returns ``(segment_purity, switch_index)`` where:
+
+    - ``segment_purity`` is the best two-segment purity over all split points, i.e.
+      ``(max(#+, #-) left + max(#+, #-) right) / n``. It is ~1.0 for both a pure
+      molecule and a clean chimera, and lower for a randomly interspersed (noisy)
+      read. With fewer than two votes it is 1.0 (trivially consistent).
+    - ``switch_index`` is the index ``k`` (split before position ``k``) of the best
+      split whose left/right majorities have *opposite* sign, or ``-1`` if no split
+      separates opposite majorities. Callers map ``k`` to a reference coordinate.
+    """
+    n = len(signs)
+    if n < 2:
+        return 1.0, -1
+
+    total_plus = sum(1 for s in signs if s > 0)
+    # Prefix count of +1 votes: prefix_plus[k] = #(+1) in signs[:k].
+    prefix_plus = [0] * (n + 1)
+    for i, s in enumerate(signs):
+        prefix_plus[i + 1] = prefix_plus[i] + (1 if s > 0 else 0)
+
+    best_purity = 0.0
+    best_switch_index = -1
+    best_switch_purity = -1.0
+    for k in range(1, n):
+        left_plus = prefix_plus[k]
+        left_minus = k - left_plus
+        right_plus = total_plus - left_plus
+        right_minus = (n - k) - right_plus
+
+        purity = (max(left_plus, left_minus) + max(right_plus, right_minus)) / n
+        if purity > best_purity:
+            best_purity = purity
+
+        # A "switch" requires the two segments to be dominated by opposite signs.
+        left_sign = 1 if left_plus >= left_minus else -1
+        right_sign = 1 if right_plus >= right_minus else -1
+        if left_sign != right_sign and purity > best_switch_purity:
+            best_switch_purity = purity
+            best_switch_index = k
+
+    return best_purity, best_switch_index
+
+
 def iter_cigar_aligned_pairs(cigar: str, reference_start: int) -> Iterator[tuple[int, int]]:
     """Yield ``(query_position, reference_position)`` for aligned CIGAR bases."""
     query_position = 0
@@ -231,6 +282,11 @@ def alignment_to_ragged_record(
     mismatch = [unknown] * len(query_sequence)
     c_to_t = 0
     g_to_a = 0
+    # Reference-ordered deamination votes (+1 = C->T/top, -1 = G->A/bottom) and their
+    # reference coordinates, used to detect within-read C->T <-> G->A strand switches
+    # (PCR chimeras). iter_cigar_aligned_pairs yields positions in increasing order.
+    strand_vote_signs: list[int] = []
+    strand_vote_positions: list[int] = []
     reference_sequence = reference_sequence.upper()
     for query_position, reference_position in iter_cigar_aligned_pairs(cigar, read.reference_start):
         if reference_position >= len(reference_sequence):
@@ -239,8 +295,14 @@ def alignment_to_ragged_record(
         reference_base = reference_sequence[reference_position]
         if query_base != reference_base and query_base != "N" and reference_base != "N":
             mismatch[query_position] = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT.get(query_base, unknown)
-            c_to_t += int(reference_base == "C" and query_base == "T")
-            g_to_a += int(reference_base == "G" and query_base == "A")
+            if reference_base == "C" and query_base == "T":
+                c_to_t += 1
+                strand_vote_signs.append(1)
+                strand_vote_positions.append(reference_position)
+            elif reference_base == "G" and query_base == "A":
+                g_to_a += 1
+                strand_vote_signs.append(-1)
+                strand_vote_positions.append(reference_position)
 
     if c_to_t == g_to_a and c_to_t > 0:
         mismatch_trend = "equal"
@@ -251,6 +313,15 @@ def alignment_to_ragged_record(
     else:
         mismatch_trend = "none"
 
+    segment_purity, switch_index = strand_switch_metrics(strand_vote_signs)
+    if switch_index < 0:
+        switch_position = -1
+    else:
+        # Midpoint of the reference coordinates flanking the best opposite-majority split.
+        left = strand_vote_positions[switch_index - 1]
+        right = strand_vote_positions[switch_index]
+        switch_position = (left + right) // 2
+
     reference_name = reference or str(read.reference_name)
     strand = "bottom" if read.is_reverse else "top"
     return {
@@ -260,6 +331,10 @@ def alignment_to_ragged_record(
         "strand": strand,
         "mapping_direction": "rev" if read.is_reverse else "fwd",
         "Read_mismatch_trend": mismatch_trend,
+        "ct_event_count": c_to_t,
+        "ga_event_count": g_to_a,
+        "strand_segment_purity": segment_purity,
+        "strand_switch_position": switch_position,
         REFERENCE_START: int(read.reference_start),
         CIGAR: cigar,
         ALIGNED_LENGTH: cigar_reference_length(cigar),

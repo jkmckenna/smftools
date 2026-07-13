@@ -186,6 +186,17 @@ max_internal_deletion_length: 10
 bypass_filter_reads_on_cigar_indels: False
 force_redo_filter_reads_on_cigar_indels: True
 
+# Deaminase PCR-chimera labeling (deaminase modality only). Reads showing a span of
+# C->T (top) events and a span of G->A (bottom) events are labeled in
+# obs['deaminase_PCR_chimera'] (reads are kept, not removed). A read is flagged when
+# both strand signatures have >= min_events_per_span events, the best single-switch
+# two-segment model has purity >= min_segment_purity, and the read is not more than
+# max_single_strand_fraction one-sided.
+bypass_label_deaminase_pcr_chimeras: False
+deaminase_chimera_min_events_per_span: 3
+deaminase_chimera_min_segment_purity: 0.9
+deaminase_chimera_max_single_strand_fraction: 0.8
+
 # Read modification filtering params
 read_mod_filtering_gpc_thresholds:
   - 0.025
@@ -398,10 +409,12 @@ hmm_feature_colormaps:
   cpg_patch: "#6D4C41"
 hmm_merge_layer_features:
   - ["all_accessible_features", 60]
+  - ["all_footprint_features", 10]
 clustermap_cmap_hmm: "coolwarm"
 hmm_clustermap_feature_layers:
   - all_accessible_features
   - all_accessible_features_merged
+  - all_footprint_features_merged
   - nucleosome_depleted_region_merged
   - small_bound_stretch
   - medium_bound_stretch
@@ -409,6 +422,7 @@ hmm_clustermap_feature_layers:
 hmm_clustermap_length_layers:
   - all_accessible_features_merged
   - all_footprint_features
+  - all_footprint_features_merged
 hmm_clustermap_sortby: "hmm"
 hmm_peak_feature_configs:
   all_accessible_features:

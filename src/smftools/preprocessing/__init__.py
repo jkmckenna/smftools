@@ -23,6 +23,7 @@ _LAZY_ATTRS = {
     "filter_reads_on_modification_thresholds": "smftools.preprocessing.filter_reads_on_modification_thresholds",
     "flag_duplicate_reads": "smftools.preprocessing.flag_duplicate_reads",
     "invert_adata": "smftools.preprocessing.invert_adata",
+    "label_deaminase_pcr_chimeras": "smftools.preprocessing.label_deaminase_pcr_chimeras",
     "load_sample_sheet": "smftools.preprocessing.load_sample_sheet",
     "add_umi_entropy_obs_fields": "smftools.preprocessing.preprocess_umi_annotations",
     "add_umi_hamming_clusters": "smftools.preprocessing.preprocess_umi_annotations",

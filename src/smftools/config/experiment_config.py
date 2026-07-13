@@ -868,6 +868,12 @@ class ExperimentConfig:
     bypass_filter_reads_on_cigar_indels: bool = False
     force_redo_filter_reads_on_cigar_indels: bool = True
 
+    # Preprocessing - Deaminase PCR-chimera labeling params (deaminase modality only)
+    bypass_label_deaminase_pcr_chimeras: bool = False
+    deaminase_chimera_min_events_per_span: int = 3
+    deaminase_chimera_min_segment_purity: float = 0.9
+    deaminase_chimera_max_single_strand_fraction: float = 0.8
+
     # Preprocessing - Optional reindexing params
     reindexing_offsets: Dict[str, int] = field(default_factory=dict)
     reindexed_var_suffix: Optional[str] = "reindexed"
@@ -1045,13 +1051,26 @@ class ExperimentConfig:
     cpg: Optional[bool] = False
     hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
     hmm_feature_colormaps: Dict[str, Any] = field(default_factory=dict)
-    hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 60)])
+    hmm_merge_layer_features: Optional[List[Tuple]] = field(
+        default_factory=lambda: [
+            ("all_accessible_features", 60),
+            ("all_footprint_features", 10),
+        ]
+    )
     clustermap_cmap_hmm: Optional[str] = "coolwarm"
     hmm_clustermap_feature_layers: List[str] = field(
-        default_factory=lambda: ["all_accessible_features", "all_accessible_features_merged"]
+        default_factory=lambda: [
+            "all_accessible_features",
+            "all_accessible_features_merged",
+            "all_footprint_features_merged",
+        ]
     )
     hmm_clustermap_length_layers: List[str] = field(
-        default_factory=lambda: ["all_footprint_features"]
+        default_factory=lambda: [
+            "all_accessible_features_merged",
+            "all_footprint_features",
+            "all_footprint_features_merged",
+        ]
     )
     hmm_clustermap_sortby: Optional[str] = "hmm"
     hmm_peak_feature_configs: Dict[str, Any] = field(default_factory=dict)
@@ -1638,11 +1657,14 @@ class ExperimentConfig:
         hmm_clustermap_feature_layers = _parse_list(
             merged.get(
                 "hmm_clustermap_feature_layers",
-                "all_accessible_features,all_accessible_features_merged",
+                "all_accessible_features,all_accessible_features_merged,all_footprint_features_merged",
             )
         )
         hmm_clustermap_length_layers = _parse_list(
-            merged.get("hmm_clustermap_length_layers", "all_footprint_features")
+            merged.get(
+                "hmm_clustermap_length_layers",
+                "all_accessible_features_merged,all_footprint_features,all_footprint_features_merged",
+            )
         )
 
         hmm_fit_strategy = str(merged.get("hmm_fit_strategy", "per_group")).strip()
@@ -1943,6 +1965,20 @@ class ExperimentConfig:
             ),
             force_redo_filter_reads_on_cigar_indels=merged.get(
                 "force_redo_filter_reads_on_cigar_indels", True
+            ),
+            bypass_label_deaminase_pcr_chimeras=merged.get(
+                "bypass_label_deaminase_pcr_chimeras", False
+            ),
+            deaminase_chimera_min_events_per_span=int(
+                _parse_numeric(merged.get("deaminase_chimera_min_events_per_span", 3), 3)
+            ),
+            deaminase_chimera_min_segment_purity=float(
+                _parse_numeric(merged.get("deaminase_chimera_min_segment_purity", 0.9), 0.9)
+            ),
+            deaminase_chimera_max_single_strand_fraction=float(
+                _parse_numeric(
+                    merged.get("deaminase_chimera_max_single_strand_fraction", 0.8), 0.8
+                )
             ),
             read_mod_filtering_gpc_thresholds=merged.get(
                 "read_mod_filtering_gpc_thresholds", [0.025, 0.975]

@@ -105,6 +105,49 @@ def _cfg():
     )
 
 
+def _deaminase_frame():
+    frame = _frame()
+    # Strand-switch metrics carried from raw extraction (see ragged_store).
+    # read1 is a clean C->T/G->A chimera; read2 is one-sided (pure top).
+    frame["ct_event_count"] = [8, 9]
+    frame["ga_event_count"] = [8, 0]
+    frame["strand_segment_purity"] = [1.0, 1.0]
+    frame["strand_switch_position"] = [6, -1]
+    return frame
+
+
+def _deaminase_cfg():
+    cfg = _cfg()
+    cfg.smf_modality = "deaminase"
+    cfg.bypass_label_deaminase_pcr_chimeras = False
+    cfg.deaminase_chimera_min_events_per_span = 3
+    cfg.deaminase_chimera_min_segment_purity = 0.9
+    cfg.deaminase_chimera_max_single_strand_fraction = 0.8
+    return cfg
+
+
+def test_partitioned_executor_labels_deaminase_pcr_chimeras(tmp_path):
+    raw = write_raw_store(
+        _deaminase_frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+
+    outputs = execute_partitioned_preprocessing(
+        raw["spine"], _deaminase_cfg(), tmp_path / "preprocess_outputs"
+    )
+
+    # Label lands on the obs sidecar parquet ...
+    obs = pd.read_parquet(outputs["obs"]).set_index("read_id")
+    assert obs["deaminase_PCR_chimera"].to_dict() == {"read1": True, "read2": False}
+
+    # ... and propagates onto the derived spine obs.
+    spine, _ = safe_read_h5ad(outputs["spine"])
+    assert spine.obs["deaminase_PCR_chimera"].to_dict() == {"read1": True, "read2": False}
+
+
 def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage(tmp_path):
     raw = write_raw_store(
         _frame(),
