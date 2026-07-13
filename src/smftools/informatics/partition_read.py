@@ -492,6 +492,86 @@ def _overlay_preprocess_var(
         result.var["N_Reference_strand_with_position"] = valid.astype(np.int64)
 
 
+def _overlay_spatial_read_metrics(
+    spine: "ad.AnnData",
+    result: "ad.AnnData",
+    requested: bool | set[str],
+    run_root: Path | None,
+) -> None:
+    """Attach spatial-stage per-read outputs (autocorrelation, Lomb-Scargle, ...).
+
+    Unlike preprocess/hmm derived layers (read x position, same shape as ``result``),
+    spatial's per-task read outputs are read x lag or read x frequency arrays -- a
+    different axis than genomic position -- so they're attached to ``obs``/``obsm``
+    instead of ``layers``. Gated behind the opt-in ``read_metrics`` argument (not
+    loaded whenever available, unlike layers): opening every matching task's
+    ``read_metrics.zarr`` isn't free, and most callers don't need it.
+    """
+    from ..readwrite import safe_read_zarr
+
+    if not requested:
+        return
+    catalog_path = resolve_relative_path(spine.uns.get("spatial_task_catalog"), run_root)
+    if catalog_path is None or not catalog_path.exists():
+        return
+    references = result.obs["Reference_strand"].astype(str).unique()
+    catalog = pd.read_parquet(catalog_path)
+    catalog = catalog.loc[
+        catalog["reference"].astype(str).isin(references) & catalog["read_metrics_path"].notna()
+    ]
+    if catalog.empty:
+        return
+
+    result_rows = {str(read_id): row for row, read_id in enumerate(result.obs_names)}
+    assembled_obs: dict[str, np.ndarray] = {}
+    assembled_obsm: dict[str, np.ndarray] = {}
+    task_specific_uns = {"task_id", "reference", "barcode", "core_start", "core_end"}
+    catalog_dir = catalog_path.parent
+    want_all = requested is True
+
+    for record in catalog.to_dict("records"):
+        part, _ = safe_read_zarr(catalog_dir / str(record["read_metrics_path"]), verbose=False)
+        shared_reads = [read_id for read_id in map(str, part.obs_names) if read_id in result_rows]
+        if not shared_reads:
+            continue
+        source_rows = [part.obs_names.get_loc(read_id) for read_id in shared_reads]
+        target_rows = [result_rows[read_id] for read_id in shared_reads]
+
+        for column in part.obs.columns:
+            if not want_all and column not in requested:
+                continue
+            values = part.obs[column].to_numpy()
+            if column not in assembled_obs:
+                # Absent reads (not covered by any spatial task) are filled with
+                # NaN, so numeric columns are always float -- an int source dtype
+                # can't hold NaN, and silently produces garbage via unsafe casting.
+                numeric = np.issubdtype(values.dtype, np.number)
+                assembled_obs[column] = np.full(
+                    result.n_obs, np.nan if numeric else None, dtype=np.float64 if numeric else object
+                )
+            assembled_obs[column][target_rows] = values[source_rows]
+
+        for key in part.obsm.keys():
+            if not want_all and key not in requested:
+                continue
+            values = np.asarray(part.obsm[key])
+            if key not in assembled_obsm:
+                assembled_obsm[key] = np.full(
+                    (result.n_obs, values.shape[1]), np.nan, dtype=np.float32
+                )
+            assembled_obsm[key][target_rows, :] = values[source_rows, :]
+
+        for uns_key, uns_value in part.uns.items():
+            if uns_key in task_specific_uns:
+                continue
+            result.uns.setdefault(uns_key, uns_value)
+
+    for column, values in assembled_obs.items():
+        result.obs[column] = values
+    for key, values in assembled_obsm.items():
+        result.obsm[key] = values
+
+
 def materialize(
     spine,
     *,
@@ -501,6 +581,7 @@ def materialize(
     read_ids=None,
     obs_mask=None,
     layers: Iterable[str] | None = None,
+    read_metrics: bool | Iterable[str] = False,
     lazy: bool = False,
     start: int | None = None,
     end: int | None = None,
@@ -520,6 +601,12 @@ def materialize(
         read_ids: Optional explicit read id(s) to include.
         obs_mask: Optional boolean array aligned to ``spine.obs`` rows.
         layers: Optional subset of layers to load (default: all).
+        read_metrics: Attach spatial-stage per-read outputs (autocorrelation,
+            Lomb-Scargle periodograms, ...) if the spine has a spatial stage
+            available -- ``True`` for everything found, a name subset, or ``False``
+            (default) to skip. Unlike ``layers``, off by default: it's a different
+            axis than genomic position (obs/obsm, not layers) and opening every
+            matching task's ``read_metrics.zarr`` isn't free.
         lazy: Use ``anndata.experimental.read_lazy`` (needs ``xarray``); falls back
             to eager ``safe_read_zarr`` if unavailable.
         start: Optional zero-based inclusive genomic start.
@@ -542,6 +629,9 @@ def materialize(
     # a direct child of output_directory by construction, so its parent recovers it
     # without needing the original spine_path here.
     run_root = base.parent
+    requested_read_metrics: bool | set[str] = (
+        read_metrics if isinstance(read_metrics, bool) else set(read_metrics)
+    )
     derived_available = _derived_layer_names(spine_obj, run_root)
     requested_layer_set = None if layers is None else set(layers)
     requested_derived = (
@@ -571,11 +661,13 @@ def materialize(
         if tiled is not None:
             _overlay_preprocess_layers(spine_obj, tiled, requested_derived, run_root)
             _overlay_preprocess_var(spine_obj, tiled, run_root)
+            _overlay_spatial_read_metrics(spine_obj, tiled, requested_read_metrics, run_root)
             logger.debug("materialized %d molecules from tiled dense cache", tiled.n_obs)
             return tiled
         result = _load_ragged_selection(spine_obj, sel, base, source_layers, start, end)
         _overlay_preprocess_layers(spine_obj, result, requested_derived, run_root)
         _overlay_preprocess_var(spine_obj, result, run_root)
+        _overlay_spatial_read_metrics(spine_obj, result, requested_read_metrics, run_root)
         logger.debug("materialized %d molecules from ragged parquet", result.n_obs)
         return result
 
@@ -607,6 +699,7 @@ def materialize(
 
     _overlay_preprocess_layers(spine_obj, result, requested_derived, run_root)
     _overlay_preprocess_var(spine_obj, result, run_root)
+    _overlay_spatial_read_metrics(spine_obj, result, requested_read_metrics, run_root)
 
     logger.debug("materialized %d molecules from %d partition(s)", result.n_obs, len(parts))
     return result

@@ -704,6 +704,34 @@ def test_partitioned_spatial_writes_locus_clustermaps_and_position_matrices(tmp_
         spatial["task_store"], tmp_path
     )
 
+    # materialize(read_metrics=...) re-attaches spatial's per-read outputs -- a
+    # later stage (or the project layer) can pull them back from spatial's spine
+    # without needing to know spatial's internal task-store layout.
+    with_metrics = materialize(spatial["spine"], references="ref_top", read_metrics=True)
+    assert set(with_metrics.obs["C_ls_status"]) == {"insufficient_sites_or_signal"}
+    # C_n_sites is int-sourced; every read is covered by the one spatial task here,
+    # but the absent-fill path (float, not int) must still hold for reads a task
+    # doesn't cover -- an int dtype can't represent that and silently corrupts
+    # instead of raising.
+    assert with_metrics.obs["C_n_sites"].dtype == np.float64
+    assert with_metrics.obsm["C_spatial_autocorr"].shape == (2, cfg.autocorr_max_lag + 1)
+    assert with_metrics.obsm["C_lomb_scargle_power"].shape == (2, 321)
+    assert list(with_metrics.uns["C_spatial_autocorr_lags"]) == list(
+        range(cfg.autocorr_max_lag + 1)
+    )
+
+    # Off by default, and filterable to a name subset.
+    without_metrics = materialize(spatial["spine"], references="ref_top")
+    assert "C_ls_status" not in without_metrics.obs
+    assert "C_spatial_autocorr" not in without_metrics.obsm
+
+    filtered = materialize(
+        spatial["spine"], references="ref_top", read_metrics={"C_spatial_autocorr"}
+    )
+    assert "C_spatial_autocorr" in filtered.obsm
+    assert "C_lomb_scargle_power" not in filtered.obsm
+    assert "C_ls_status" not in filtered.obs
+
 
 def test_read_spatial_statistics_saves_known_direct_periodicity():
     rng = np.random.default_rng(42)

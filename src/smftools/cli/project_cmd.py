@@ -59,10 +59,18 @@ def project_materialize(
     *,
     set_name: str | None = None,
     modality: str | None = None,
+    stage: str | None = None,
     start: int | None = None,
     end: int | None = None,
+    read_metrics: bool = False,
 ) -> Path:
-    """Materialize a canonical reference across matching experiments and write it."""
+    """Materialize a canonical reference across matching experiments and write it.
+
+    ``stage`` picks a specific pipeline stage per experiment (``raw``,
+    ``preprocess``, ``spatial``, ``hmm``, ...); the default falls back through
+    the most-derived stage available per experiment, since a later stage's
+    spine already carries forward everything earlier stages produced.
+    """
     from ..project.catalog import project_adata
     from ..readwrite import safe_write_h5ad
 
@@ -71,8 +79,10 @@ def project_materialize(
         canonical_reference,
         set_name=set_name,
         modality=modality,
+        stage=stage,
         start=start,
         end=end,
+        read_metrics=read_metrics,
     )
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

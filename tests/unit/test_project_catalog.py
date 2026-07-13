@@ -94,3 +94,61 @@ def test_saved_query_set_selection(project_with_two_experiments):
 def test_select_no_match_is_empty(project_with_two_experiments):
     proj, _uid = project_with_two_experiments
     assert ProjectCatalog.open(proj).select(canonical_reference="nonexistent").empty
+
+
+def test_project_adata_stage_selection(tmp_path):
+    """Experiments at different pipeline stages: auto picks the most-derived
+    stage per experiment; an explicit stage skips (not crashes on) experiments
+    that haven't reached it yet."""
+    import anndata as ad
+
+    from smftools.informatics.partition_read import relative_uns_path
+    from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
+
+    uid = reference_uid(SEQUENCE, 12)
+    # Real nested layout (run_dir/raw_outputs/, run_dir/preprocess_adata_outputs/,
+    # ...), not the flat single-dir shorthand `_make_raw_experiment` normally
+    # uses, since this test needs sibling stage dirs under one run root.
+    run_dir = tmp_path / "expA_run"
+    _make_raw_experiment(run_dir / "raw_outputs", reference_strand="geneA_top", uid=uid, n=4)
+    _make_raw_experiment(tmp_path / "expB_run" / "raw_outputs", reference_strand="geneB_top", uid=uid, n=3)
+
+    # Give expA a "preprocess" stage too: a spine.copy() with one marker obs
+    # column added and source_base_dir pointing back at the raw stage (so
+    # materialize() can still reach the ragged shards), matching the real shape
+    # of a preprocess-stage spine (see preprocessing.partitioned_executor).
+    raw_spine, _ = safe_read_h5ad(run_dir / "raw_outputs" / "spine.h5ad")
+    preprocess_spine: ad.AnnData = raw_spine.copy()
+    preprocess_spine.obs["passes_qc"] = True
+    preprocess_dir = run_dir / "preprocess_adata_outputs"
+    preprocess_dir.mkdir()
+    preprocess_spine.uns["source_base_dir"] = relative_uns_path(run_dir / "raw_outputs", run_dir)
+    safe_write_h5ad(preprocess_spine, preprocess_dir / "spine.h5ad", backup=False, verbose=False)
+
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    exp_a_id, entry_a = reg.add_experiment(
+        proj, tmp_path / "expA_run" / "raw_outputs", experiment_id="expA"
+    )
+    exp_b_id, entry_b = reg.add_experiment(
+        proj, tmp_path / "expB_run" / "raw_outputs", experiment_id="expB"
+    )
+    assert set(entry_a["spines"]) == {"raw", "preprocess"}
+    assert set(entry_b["spines"]) == {"raw"}
+
+    # Auto: expA materializes from its preprocess spine (has passes_qc), expB
+    # from its raw spine (no preprocess stage) -- both included, no crash.
+    auto = project_adata(proj, uid)
+    assert set(auto.obs["experiment"]) == {exp_a_id, exp_b_id}
+    a_rows = auto.obs["experiment"] == exp_a_id
+    assert bool(auto.obs.loc[a_rows, "passes_qc"].all())
+
+    # Explicit stage="preprocess": only expA has reached it; expB is skipped
+    # with a warning rather than raising.
+    preprocess_only = project_adata(proj, uid, stage="preprocess")
+    assert set(preprocess_only.obs["experiment"]) == {exp_a_id}
+
+    # Explicit stage="raw": both experiments have it, neither has passes_qc.
+    raw_only = project_adata(proj, uid, stage="raw")
+    assert set(raw_only.obs["experiment"]) == {exp_a_id, exp_b_id}
+    assert "passes_qc" not in raw_only.obs

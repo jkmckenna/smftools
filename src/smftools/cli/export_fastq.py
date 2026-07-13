@@ -151,26 +151,6 @@ def export_fastq_for_experiment(
     return outdir
 
 
-def _resolve_project_preprocess_spine(raw_experiment_dir: Path) -> Path | None:
-    """Best-effort sibling lookup for an experiment's partitioned preprocess spine.
-
-    Registered experiment directories point at the raw ragged store (containing
-    ``spine.h5ad`` directly), which is normally ``<output_directory>/raw_outputs``;
-    the preprocess spine lives at the sibling ``<output_directory>/preprocess_adata_outputs/
-    spine.h5ad``. Also tries treating the registered directory as the top-level
-    ``output_directory`` itself, in case of an unconventional registration.
-    """
-    from ..constants import PREPROCESS_DIR
-
-    for candidate in (
-        raw_experiment_dir.parent / PREPROCESS_DIR / "spine.h5ad",
-        raw_experiment_dir / PREPROCESS_DIR / "spine.h5ad",
-    ):
-        if candidate.exists():
-            return candidate
-    return None
-
-
 def export_fastq_for_project(
     project_dir: str | Path,
     outdir: str | Path,
@@ -212,13 +192,15 @@ def export_fastq_for_project(
     overall_manifest: dict[str, dict[str, object]] = {}
     for entry in entries:
         exp_id = str(entry["id"])
-        raw_dir = Path(entry["path"])
-        raw_spine_path = raw_dir / entry["spine"]
-        if not raw_spine_path.exists():
+        raw_spine_path = entry.get("spines", {}).get("raw")
+        if not raw_spine_path or not Path(raw_spine_path).exists():
             logger.warning("skipping %r: raw spine not found at %s", exp_id, raw_spine_path)
             continue
+        raw_spine_path = Path(raw_spine_path)
 
-        preprocess_spine_path = _resolve_project_preprocess_spine(raw_dir)
+        preprocess_spine_path = entry.get("spines", {}).get("preprocess")
+        if preprocess_spine_path and not Path(preprocess_spine_path).exists():
+            preprocess_spine_path = None
         if preprocess_spine_path is None and not allow_unfiltered:
             logger.warning(
                 "skipping %r: no preprocess spine found; run partitioned preprocessing "
@@ -231,7 +213,7 @@ def export_fastq_for_project(
         base_dir = raw_spine_path.parent
 
         if preprocess_spine_path is not None:
-            spine = load_spine(preprocess_spine_path)
+            spine = load_spine(Path(preprocess_spine_path))
             accepted = None
             for column in _QC_PASS_COLUMNS:
                 if column in spine.obs.columns:

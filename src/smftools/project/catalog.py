@@ -147,9 +147,11 @@ def project_adata(
     set_name=None,
     modality=None,
     experiments=None,
+    stage: str | None = None,
     start: int | None = None,
     end: int | None = None,
     layers=None,
+    read_metrics=False,
     lazy: bool = False,
 ):
     """Materialize + concat a canonical reference across the matching experiments.
@@ -157,10 +159,20 @@ def project_adata(
     Resolves the canonical reference back to each experiment's own reference name(s),
     ``materialize``s each experiment's slice, and concatenates along obs (shared
     coordinate system) -- no global merge. Adds an ``experiment`` obs column.
+
+    Each experiment's spine is picked independently: ``stage`` picks a specific
+    pipeline stage (``"raw"``, ``"preprocess"``, ``"spatial"``, ``"hmm"``, ...) and
+    skips experiments that haven't reached it; ``None`` (default) falls back
+    through the most-derived stage available per experiment (see
+    ``project.registry.STAGE_PRIORITY``), since a later stage's spine already
+    carries forward everything earlier stages produced -- see
+    ``informatics.partition_read.materialize``'s layer/read-metric overlays.
+    Experiments with no matching spine at all are skipped with a warning.
     """
     import anndata as ad
 
     from ..informatics.partition_read import materialize
+    from .registry import resolve_experiment_spine
 
     catalog = ProjectCatalog.open(project_dir)
     selection = catalog.select(
@@ -172,25 +184,38 @@ def project_adata(
     if selection.empty:
         raise ValueError(f"no experiment references match canonical_reference={canonical_reference!r}")
 
-    exp_paths = {
-        entry["id"]: (Path(entry["path"]), entry.get("spine", "spine.h5ad"))
-        for entry in catalog.experiments()
-    }
+    entries = {entry["id"]: entry for entry in catalog.experiments()}
     parts = []
     for exp_id, group in selection.groupby("experiment", sort=True):
-        exp_dir, spine_rel = exp_paths[exp_id]
+        entry = entries.get(exp_id)
+        resolved = resolve_experiment_spine(entry, stage) if entry is not None else None
+        if resolved is None:
+            logger.warning(
+                "skipping experiment %r: no spine available for stage=%r",
+                exp_id,
+                stage or "any (auto)",
+            )
+            continue
+        resolved_stage, spine_path = resolved
         reference_strands = sorted(group["reference_strand"].unique())
         sub = materialize(
-            exp_dir / spine_rel,
+            spine_path,
             references=reference_strands,
             start=start,
             end=end,
             layers=layers,
+            read_metrics=read_metrics,
             lazy=lazy,
         )
         sub.obs["experiment"] = str(exp_id)
+        sub.uns["project_stage"] = resolved_stage
         parts.append(sub)
 
+    if not parts:
+        raise ValueError(
+            f"no experiment matched canonical_reference={canonical_reference!r} had a spine "
+            f"available for stage={stage or 'any (auto)'!r}"
+        )
     if len(parts) == 1:
         return parts[0]
     return ad.concat(parts, join="outer", merge="first", uns_merge="first")

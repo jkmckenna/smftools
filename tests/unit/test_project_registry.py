@@ -65,9 +65,15 @@ def test_registry_json_stores_relative_paths_not_absolute(tmp_path):
     reg.add_experiment(proj, exp)
 
     raw = json.loads((proj / reg.REGISTRY_FILENAME).read_text())
-    stored_path = raw["experiments"]["expA"]["path"]
+    entry = raw["experiments"]["expA"]
+    # "path" is now the run root (expA's parent, since expA held a spine
+    # directly -- see discover_stage_spines), not expA itself.
+    stored_path = entry["path"]
     assert not Path(stored_path).is_absolute()
-    assert stored_path == "../expA"
+    assert stored_path == ".."
+    stored_spine = entry["spines"]["raw"]
+    assert not Path(stored_spine).is_absolute()
+    assert stored_spine == "../expA/spine.h5ad"
 
 
 def test_project_survives_being_copied_to_a_different_absolute_path(tmp_path_factory):
@@ -91,8 +97,92 @@ def test_project_survives_being_copied_to_a_different_absolute_path(tmp_path_fac
 
     experiments = reg.list_experiments(moved_root / "project")
     assert len(experiments) == 1
-    assert experiments[0]["path"] == str((moved_root / "expA").resolve())
-    assert Path(experiments[0]["path"]).exists()
+    assert experiments[0]["path"] == str(moved_root.resolve())
+    assert experiments[0]["spines"]["raw"] == str((moved_root / "expA" / "spine.h5ad").resolve())
+    assert Path(experiments[0]["spines"]["raw"]).exists()
+
+
+def _make_run(run_dir, *, stages, name, modality, reference_uids, n_reads=3):
+    """Build a run directory with a spine under each of `stages` (subset of
+    STAGE_DIRS keys), simulating an experiment partway through -- or all the way
+    through -- the raw -> preprocess -> spatial -> hmm pipeline."""
+    for stage in stages:
+        stage_dir = run_dir / reg.STAGE_DIRS[stage]
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        spine = ad.AnnData(obs=pd.DataFrame(index=[f"{name}_r{i}" for i in range(n_reads)]))
+        spine.uns["modality"] = modality
+        spine.uns["experiment"] = name
+        spine.uns["raw_schema_version"] = 2
+        spine.uns["reference_uids"] = reference_uids
+        safe_write_h5ad(spine, stage_dir / "spine.h5ad", backup=False, verbose=False)
+    return run_dir
+
+
+def test_discover_stage_spines_from_run_root(tmp_path):
+    run_dir = _make_run(
+        tmp_path / "expA",
+        stages=["raw", "preprocess", "hmm"],
+        name="expA",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    # Pointing at the run's top-level output directory ...
+    run_root, spines = reg.discover_stage_spines(run_dir)
+    assert run_root == run_dir
+    assert set(spines) == {"raw", "preprocess", "hmm"}
+    # ... and pointing directly at one stage dir (the original convention) find
+    # the same sibling spines.
+    run_root2, spines2 = reg.discover_stage_spines(run_dir / reg.STAGE_DIRS["raw"])
+    assert run_root2 == run_dir
+    assert set(spines2) == {"raw", "preprocess", "hmm"}
+
+
+def test_add_experiment_records_every_available_stage(tmp_path):
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    run_dir = _make_run(
+        tmp_path / "expA",
+        stages=["raw", "preprocess", "hmm"],
+        name="expA",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    exp_id, entry = reg.add_experiment(proj, run_dir)
+    assert set(entry["spines"]) == {"raw", "preprocess", "hmm"}
+
+    [listed] = reg.list_experiments(proj)
+    assert set(listed["spines"]) == {"raw", "preprocess", "hmm"}
+    assert listed["spines"]["hmm"] == str((run_dir / reg.STAGE_DIRS["hmm"] / "spine.h5ad").resolve())
+
+
+def test_resolve_experiment_spine_prefers_most_derived_stage(tmp_path):
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    _make_run(
+        tmp_path / "expA",
+        stages=["raw", "preprocess", "hmm"],
+        name="expA",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    _make_run(
+        tmp_path / "expB",
+        stages=["raw"],
+        name="expB",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    reg.add_experiment(proj, tmp_path / "expA")
+    reg.add_experiment(proj, tmp_path / "expB")
+    entries = {entry["id"]: entry for entry in reg.list_experiments(proj)}
+
+    # Auto (no explicit stage): most-derived stage available per experiment.
+    assert reg.resolve_experiment_spine(entries["expA"])[0] == "hmm"
+    assert reg.resolve_experiment_spine(entries["expB"])[0] == "raw"
+
+    # Explicit stage: honored if present, None if the experiment hasn't reached it.
+    assert reg.resolve_experiment_spine(entries["expA"], stage="raw")[0] == "raw"
+    assert reg.resolve_experiment_spine(entries["expB"], stage="hmm") is None
 
 
 def test_sets_list_and_query(tmp_path):

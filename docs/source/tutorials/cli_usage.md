@@ -229,22 +229,30 @@ a thin HMM spine rather than materializing the full experiment.
 
 The project command group manages a lightweight cross-experiment registry (`init`/`add`/`remove`/
 `list`/`materialize`). A project never copies or merges experiment data -- it keeps pointers to
-each experiment's output directory (any directory containing a `spine.h5ad`, i.e. its
-`raw_outputs/`) plus a table harmonizing reference names across experiments by sequence identity,
-so the same locus can be addressed by one canonical name even if experiments called it something
-different.
+each experiment's run directory plus a table harmonizing reference names across experiments by
+sequence identity, so the same locus can be addressed by one canonical name even if experiments
+called it something different.
 
 - `project init PROJECT_DIR` creates the registry (`registry.json`) and a `sets/` directory for
   named experiment sets.
-- `project add PROJECT_DIR EXPERIMENT_DIR` registers an experiment by pointer, reading its
-  `spine.h5ad` `uns` metadata (modality, sequence-hash reference identities) -- no matrices are
-  opened. Reports any reference-name conflicts detected against already-registered experiments.
-- `project list PROJECT_DIR` lists registered experiments and the harmonized reference table.
+- `project add PROJECT_DIR EXPERIMENT_DIR` registers an experiment by pointer. `EXPERIMENT_DIR` may
+  be the run's top-level output directory or one stage directory inside it (e.g. `raw_outputs/`) --
+  either way, every pipeline stage spine found (`raw`, `preprocess`, `spatial`, `hmm`, ...) is
+  recorded, not just one. Reads the raw spine's `uns` metadata (modality, sequence-hash reference
+  identities) -- no matrices are opened. Reports any reference-name conflicts detected against
+  already-registered experiments.
+- `project list PROJECT_DIR` lists registered experiments (including which stages each has
+  reached) and the harmonized reference table.
 - `project materialize PROJECT_DIR CANONICAL_REFERENCE -o OUTPUT.h5ad.gz` resolves the canonical
   reference back to each matching experiment's own reference name(s), materializes each
   experiment's slice independently, and concatenates them (adding an `obs["experiment"]` column) --
-  there is never a global merge across experiments. Supports `--set`/`--modality` filters and
-  `--start`/`--end` genomic windows.
+  there is never a global merge across experiments. Each experiment's spine is picked
+  independently: `--stage` requests a specific pipeline stage (skipping experiments that haven't
+  reached it); the default falls back through the most-derived stage available per experiment
+  (HMM > spatial > preprocess > raw), since a later stage's spine already carries forward
+  everything earlier stages produced. `--read-metrics` additionally attaches spatial's per-read
+  outputs (autocorrelation, Lomb-Scargle) where available. Supports `--set`/`--modality` filters
+  and `--start`/`--end` genomic windows.
 - `project remove PROJECT_DIR EXPERIMENT_ID` marks an experiment inactive (soft delete; the
   registry is append-only).
 

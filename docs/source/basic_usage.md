@@ -152,16 +152,20 @@ A **project** is a lightweight cross-experiment registry: it never copies or mer
 keeps pointers to experiment output directories (each containing a `spine.h5ad`) plus a table that
 harmonizes reference names across experiments (by sequence identity, so the same locus can be
 called different things in different experiments). Use it when you want to query or analyze
-multiple experiments together without materializing one giant combined AnnData ahead of time.
+multiple experiments together without materializing one giant combined AnnData ahead of time. See
+[Organizing data, experiments, and projects](tutorials/directory_organization.md) for a full
+directory layout, a step-by-step experiment-to-project walkthrough, and how to move or share that
+directory tree across machines.
 
 ```shell
 # Create a project registry.
 smftools project init "/Path_to_project_directory"
 
-# Register an experiment by pointer (its raw_outputs directory, containing spine.h5ad).
-smftools project add "/Path_to_project_directory" "/Path_to_experiment_output_dir/raw_outputs"
+# Register an experiment by pointer (its output directory -- or one stage dir
+# inside it, e.g. raw_outputs -- either works, every stage found is recorded).
+smftools project add "/Path_to_project_directory" "/Path_to_experiment_output_dir"
 
-# List registered experiments and harmonized references.
+# List registered experiments (with which stages each has reached) and harmonized references.
 smftools project list "/Path_to_project_directory"
 
 # Materialize one canonical reference across every matching experiment into a single AnnData.
@@ -172,11 +176,15 @@ smftools project materialize "/Path_to_project_directory" my_canonical_reference
 smftools project remove "/Path_to_project_directory" experiment_id
 ```
 
-- `project add` reads each experiment's `spine.h5ad` `uns` metadata (modality, sequence-hash
-  reference identities) to register it -- no matrices are opened.
+- `project add` discovers every pipeline stage spine under the given directory and reads the raw
+  spine's `uns` metadata (modality, sequence-hash reference identities) to register it -- no
+  matrices are opened.
 - `project materialize` resolves the canonical reference name back to each matching experiment's
   own reference name(s), materializes each experiment's slice independently, and concatenates them
   with an added `obs["experiment"]` column -- there is never a global merge across experiments.
+  Each experiment's spine is picked independently, defaulting to the most-derived stage available
+  (`--stage` pins all experiments to one specific stage instead); `--read-metrics` additionally
+  attaches spatial's per-read outputs where available.
 - `smftools project export-fastq ...` (below) and other cross-experiment tooling build on the
   same registry.
 

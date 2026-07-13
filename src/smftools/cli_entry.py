@@ -565,7 +565,11 @@ def project_list_cmd(project_dir: Path):
     experiments, references = project_list(project_dir)
     click.echo(f"{len(experiments)} experiment(s):")
     for entry in experiments:
-        click.echo(f"  {entry['id']}  ({entry['modality']}, {entry['n_reads']} reads)  {entry['path']}")
+        stages = ",".join(sorted(entry.get("spines", {})))
+        click.echo(
+            f"  {entry['id']}  ({entry['modality']}, {entry['n_reads']} reads, "
+            f"stages: {stages})  {entry['path']}"
+        )
     if not references.empty:
         n_canon = references["canonical_reference"].nunique()
         click.echo(f"{n_canon} canonical reference(s) across the project.")
@@ -577,9 +581,25 @@ def project_list_cmd(project_dir: Path):
 @click.option("--output", "-o", type=click.Path(path_type=Path), required=True, help="Output .h5ad(.gz).")
 @click.option("--set", "set_name", default=None, help="Restrict to a named experiment set.")
 @click.option("--modality", default=None, help="Restrict to a modality.")
+@click.option(
+    "--stage",
+    default=None,
+    help=(
+        "Pipeline stage to materialize per experiment (raw/preprocess/spatial/hmm/"
+        "latent/variant/chimeric). Default: most-derived stage available per "
+        "experiment, since a later stage already carries forward earlier stages' data."
+    ),
+)
 @click.option("--start", type=int, default=None, help="Genomic window start (with --end).")
 @click.option("--end", type=int, default=None, help="Genomic window end (with --start).")
-def project_materialize_cmd(project_dir, canonical_reference, output, set_name, modality, start, end):
+@click.option(
+    "--read-metrics",
+    is_flag=True,
+    help="Also attach spatial-stage per-read outputs (autocorrelation, Lomb-Scargle) when available.",
+)
+def project_materialize_cmd(
+    project_dir, canonical_reference, output, set_name, modality, stage, start, end, read_metrics
+):
     """Materialize CANONICAL_REFERENCE across matching experiments into one AnnData."""
     from .cli.project_cmd import project_materialize
 
@@ -589,8 +609,10 @@ def project_materialize_cmd(project_dir, canonical_reference, output, set_name, 
         output,
         set_name=set_name,
         modality=modality,
+        stage=stage,
         start=start,
         end=end,
+        read_metrics=read_metrics,
     )
     click.echo(f"Wrote {out}")
 
