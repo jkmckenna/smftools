@@ -52,6 +52,16 @@ def calculate_position_Youden(
     roc_curve = sklearn_metrics.roc_curve
 
     control_samples = [positive_control_sample, negative_control_sample]
+    if infer_on_percentile and inference_variable not in adata.obs:
+        if hasattr(adata.X, "toarray"):
+            values = adata.X.toarray()
+        else:
+            values = np.asarray(adata.X)
+        if values.size == 0:
+            raise KeyError(
+                f"missing inference_variable {inference_variable!r} and AnnData has no X values"
+            )
+        adata.obs[inference_variable] = np.nansum(values, axis=1)
     references = adata.obs[ref_column].cat.categories
     # Iterate over each category in the specified obs_column
     for ref in references:

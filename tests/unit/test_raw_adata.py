@@ -1,3 +1,4 @@
+import gzip
 from types import SimpleNamespace
 
 import numpy as np
@@ -65,6 +66,40 @@ def test_attach_direct_signals_converts_reference_to_query_coordinates(tmp_path)
     np.testing.assert_allclose(
         result.at[0, "modification_signal_A_plus"],
         [0.8, np.nan, np.nan, 0.3, np.nan],
+        equal_nan=True,
+    )
+
+
+def test_attach_direct_signals_reads_gzipped_modkit_extract(tmp_path):
+    frame = pd.DataFrame(
+        [
+            {
+                "read_id": "read1",
+                "reference": "chr1",
+                "reference_start": 5,
+                "cigar": "2M1I2M",
+            }
+        ]
+    )
+    calls = pd.DataFrame(
+        {
+            "chrom": ["chr1"],
+            "ref_position": [5],
+            "modified_primary_base": ["A"],
+            "ref_strand": ["+"],
+            "read_id": ["read1"],
+            "call_code": ["a"],
+            "call_prob": [0.8],
+        }
+    )
+    with gzip.open(tmp_path / "calls.tsv.gz", "wt", encoding="utf-8") as handle:
+        calls.to_csv(handle, sep="\t", index=False)
+
+    result, columns = _attach_direct_signals(frame, tmp_path)
+    assert columns == ["modification_signal_A_plus"]
+    np.testing.assert_allclose(
+        result.at[0, "modification_signal"],
+        [0.8, np.nan, np.nan, np.nan, np.nan],
         equal_nan=True,
     )
 

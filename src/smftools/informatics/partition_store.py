@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING, Sequence
 
 import pandas as pd
@@ -133,6 +134,7 @@ def write_partitioned_store(
 
     store_root = output_dir / STORE_SUBDIR
     store_root.mkdir(parents=True, exist_ok=True)
+    t0 = perf_counter()
 
     refs = adata.obs[reference_col].astype(str)
     samples = adata.obs[sample_col].astype(str)
@@ -142,6 +144,7 @@ def write_partitioned_store(
     partitions: list[PartitionInfo] = []
     used_dirs: set[str] = set()
     for ref, sample in pairs:
+        part_t0 = perf_counter()
         mask = (refs == ref).values & (samples == sample).values
         part = adata[mask].copy()
         n_reads = part.n_obs
@@ -179,9 +182,20 @@ def write_partitioned_store(
                 read_ids=list(map(str, part.obs_names)),
             )
         )
-        logger.debug("wrote partition %s (%d reads x %d pos)", rel_dir, n_reads, part.n_vars)
+        logger.info(
+            "Wrote partition %s (%d reads x %d pos) in %.2fs",
+            rel_dir,
+            n_reads,
+            part.n_vars,
+            perf_counter() - part_t0,
+        )
 
-    logger.info("Wrote %d partitions under %s", len(partitions), store_root)
+    logger.info(
+        "Wrote %d partitions under %s in %.2fs",
+        len(partitions),
+        store_root,
+        perf_counter() - t0,
+    )
     return partitions
 
 
@@ -347,6 +361,7 @@ def write_experiment_store(
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    t0 = perf_counter()
 
     partitions = write_partitioned_store(
         adata,
@@ -394,10 +409,11 @@ def write_experiment_store(
     register_sidecar(manifest_path, "catalog", catalog_path)
 
     logger.info(
-        "Experiment store written: %d partitions, spine=%s, catalog=%s",
+        "Experiment store written: %d partitions, spine=%s, catalog=%s in %.2fs",
         len(partitions),
         spine_path.name,
         catalog_path.name,
+        perf_counter() - t0,
     )
     return {
         "store": output_dir / STORE_SUBDIR,

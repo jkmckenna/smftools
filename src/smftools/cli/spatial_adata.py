@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import LOGGING_DIR, SPATIAL_DIR
-from smftools.logging_utils import get_logger, setup_logging
+from smftools.constants import SPATIAL_DIR
+from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -35,11 +34,17 @@ def spatial_adata(
     spatial_adata_path : Path | None
         Path to the “current” spatial AnnData (or hmm AnnData if we skip to that).
     """
+    from ..logging_utils import setup_stage_logging
     from ..readwrite import safe_read_h5ad
     from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
 
     # 1) Ensure config + basic paths via load_adata
     cfg = load_experiment_config(config_path)
+
+    # Configure logging once, before any branch below (skip / partitioned / legacy)
+    # might return without ever reaching spatial_adata_core.
+    if getattr(cfg, "output_directory", None) is not None:
+        setup_stage_logging(cfg, Path(cfg.output_directory) / SPATIAL_DIR)
 
     paths = get_adata_paths(cfg)
 
@@ -146,7 +151,6 @@ def spatial_adata_core(
     """
     import os
     import warnings
-    from datetime import datetime
     from pathlib import Path
 
     import numpy as np
@@ -179,24 +183,12 @@ def spatial_adata_core(
     # -----------------------------
     # General setup
     # -----------------------------
-    date_str = datetime.today().strftime("%y%m%d")
-    now = datetime.now()
-    time_str = now.strftime("%H%M%S")
-    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
-
+    # Logging is configured once by the spatial_adata() wrapper before dispatch,
+    # covering both this (legacy) path and the partitioned executor path.
     output_directory = Path(cfg.output_directory)
     spatial_directory = output_directory / SPATIAL_DIR
-    logging_directory = spatial_directory / LOGGING_DIR
 
     make_dirs([output_directory, spatial_directory])
-
-    if cfg.emit_log_file:
-        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
-        make_dirs([logging_directory])
-    else:
-        log_file = None
-
-    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     smf_modality = cfg.smf_modality
     if smf_modality == "conversion":

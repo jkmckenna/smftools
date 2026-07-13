@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 from typing import Mapping
 from urllib.parse import quote
 
@@ -154,6 +155,7 @@ def write_raw_store(
         raise ValueError("shard_size must be positive")
     if start_bin_size <= 0:
         raise ValueError("start_bin_size must be positive")
+    t0 = perf_counter()
     normalized = validate_ragged_frame(frame).reset_index(drop=True)
     if normalized.empty:
         raise ValueError("cannot write an empty raw store")
@@ -165,6 +167,13 @@ def write_raw_store(
         normalized["reference_start"] + normalized["aligned_length"]
     ).astype("int64")
     normalized["start_bin"] = (normalized["reference_start"] // start_bin_size).astype("int64")
+    logger.info(
+        "Writing raw store: %d reads, %d reference strand(s), shard_size=%d, start_bin_size=%d",
+        len(normalized),
+        normalized[REFERENCE_STRAND].astype(str).nunique(),
+        shard_size,
+        start_bin_size,
+    )
 
     shard_paths: list[Path] = []
     catalog_rows: list[dict[str, object]] = []
@@ -174,8 +183,15 @@ def write_raw_store(
         [REFERENCE_STRAND, "start_bin", "reference_start", READ_ID], kind="stable"
     ).groupby([REFERENCE_STRAND, "start_bin"], sort=True, observed=True)
     for (reference, start_bin), group in grouped:
+        group_t0 = perf_counter()
         reference_dir = raw_dir / f"reference={_reference_path_component(str(reference))}"
         bin_dir = reference_dir / f"start_bin={int(start_bin):012d}"
+        logger.debug(
+            "Writing raw shard group reference=%s start_bin=%d (%d reads)",
+            reference,
+            int(start_bin),
+            len(group),
+        )
         for shard_index, start in enumerate(range(0, len(group), shard_size)):
             shard = group.iloc[start : start + shard_size]
             path = bin_dir / RAW_SHARD_TEMPLATE.format(index=shard_index)
@@ -196,6 +212,12 @@ def write_raw_store(
                     "group_path": relative_path,
                 }
             )
+        logger.debug(
+            "Finished raw shard group reference=%s start_bin=%d in %.2fs",
+            reference,
+            int(start_bin),
+            perf_counter() - group_t0,
+        )
 
     catalog_path = output_dir / INTERVAL_CATALOG_FILENAME
     pd.DataFrame(catalog_rows).to_parquet(catalog_path, index=False)
@@ -239,7 +261,12 @@ def write_raw_store(
     )
     register_sidecar(manifest_path, "spine", spine_path)
     register_sidecar(manifest_path, "interval_catalog", catalog_path)
-    logger.info("Wrote raw store with %d reads in %d shard(s)", len(normalized), len(shard_paths))
+    logger.info(
+        "Wrote raw store with %d reads in %d shard(s) in %.2fs",
+        len(normalized),
+        len(shard_paths),
+        perf_counter() - t0,
+    )
     return {
         "spine": spine_path,
         "ragged_store": shard_paths,

@@ -2,10 +2,14 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from smftools.informatics.partition_read import materialize
 from smftools.informatics.raw_store import write_raw_store
-from smftools.preprocessing.partitioned_executor import execute_partitioned_preprocessing
+from smftools.preprocessing.partitioned_executor import (
+    execute_partitioned_preprocessing,
+    fit_direct_modality_youden_thresholds,
+)
 from smftools.readwrite import safe_read_h5ad, safe_read_zarr
 from smftools.tools.partitioned_spatial import (
     _compute_read_spatial_statistics,
@@ -124,6 +128,164 @@ def _deaminase_cfg():
     cfg.deaminase_chimera_min_segment_purity = 0.9
     cfg.deaminase_chimera_max_single_strand_fraction = 0.8
     return cfg
+
+
+def _direct_youden_frame():
+    def _read(read_id, sample, signal):
+        return {
+            "read_id": read_id,
+            "reference": "ref",
+            "Reference_strand": "ref_top",
+            "barcode": "bc1",
+            "sample": sample,
+            "reference_start": 0,
+            "cigar": "4M",
+            "aligned_length": 4,
+            "sequence": [0, 1, 2, 3],
+            "quality": [30, 30, 30, 30],
+            "mismatch": [4, 4, 4, 4],
+            "modification_signal": signal,
+            "read_length": 4,
+            "mapped_length": 4,
+            "reference_length": 12,
+            "read_quality": 30,
+            "mapping_quality": 60,
+            "read_length_to_reference_length_ratio": 4 / 12,
+            "mapped_length_to_reference_length_ratio": 4 / 12,
+            "mapped_length_to_read_length_ratio": 1.0,
+        }
+
+    # Positions 0-3 are covered by both control samples with a clean
+    # separation (positive=1.0, negative=0.0) so Youden fitting has an
+    # unambiguous threshold to find. "high1" is a non-control read used only
+    # to check threshold *application* -- the fitted threshold for perfectly
+    # separable data lands exactly on the smallest positive-control value
+    # (1.0 here), and binarize_on_Youden classifies with strict ``>``, so a
+    # control read sitting exactly at that value is a boundary tie, not a
+    # meaningful check of which side of the threshold it falls on.
+    return pd.DataFrame(
+        [
+            _read("pos1", "positive_ctrl", [1.0, 1.0, 1.0, 1.0]),
+            _read("pos2", "positive_ctrl", [1.0, 1.0, 1.0, 1.0]),
+            _read("neg1", "negative_ctrl", [0.0, 0.0, 0.0, 0.0]),
+            _read("neg2", "negative_ctrl", [0.0, 0.0, 0.0, 0.0]),
+            _read("high1", "experimental", [5.0, 5.0, 5.0, 5.0]),
+        ]
+    )
+
+
+def _direct_youden_cfg():
+    cfg = _cfg()
+    cfg.smf_modality = "direct"
+    cfg.sample_column = "Sample"
+    cfg.fit_position_methylation_thresholds = True
+    cfg.positive_control_sample_methylation_fitting = "positive_ctrl"
+    cfg.negative_control_sample_methylation_fitting = "negative_ctrl"
+    cfg.infer_on_percentile_sample_methylation_fitting = False
+    cfg.inference_variable_sample_methylation_fitting = "Raw_modification_signal"
+    cfg.fit_j_threshold = 0.5
+    cfg.binarize_on_fixed_methlyation_threshold = 0.5
+    return cfg
+
+
+def test_partitioned_executor_fits_youden_thresholds_for_direct_modality(tmp_path):
+    pytest.importorskip("pyarrow")
+    raw = write_raw_store(
+        _direct_youden_frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    output_dir = tmp_path / "preprocess_outputs"
+
+    outputs = execute_partitioned_preprocessing(raw["spine"], _direct_youden_cfg(), output_dir)
+
+    # The fit pre-pass ran once per reference (not raising the old
+    # "not yet supported" error) and left the same ROC diagnostics the
+    # legacy path saves.
+    roc_dir = output_dir / "02B_Position_wide_Youden_threshold_performance"
+    assert roc_dir.is_dir()
+    assert any(roc_dir.iterdir())
+
+    derived = materialize(outputs["spine"], layers=["binarized_methylation"])
+    by_read = dict(zip(derived.obs_names, derived.layers["binarized_methylation"]))
+    assert list(by_read["high1"][:4]) == [1.0, 1.0, 1.0, 1.0]
+    for read_id in ("neg1", "neg2"):
+        assert list(by_read[read_id][:4]) == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_youden_fit_loads_spine_once_and_reuses_it(tmp_path, monkeypatch):
+    spine = SimpleNamespace(
+        obs=pd.DataFrame(
+            {
+                "Reference_strand": pd.Categorical(["ref_top", "ref_top"]),
+                "Sample": ["positive_ctrl", "negative_ctrl"],
+                "Raw_modification_signal": [2.0, 0.0],
+            },
+            index=["read1", "read2"],
+        ),
+        var=pd.DataFrame(index=pd.Index([0, 1], name="position")),
+        var_names=pd.Index([0, 1]),
+        uns={},
+    )
+    cfg = SimpleNamespace(
+        reference_column="Reference_strand",
+        positive_control_sample_methylation_fitting="positive_ctrl",
+        negative_control_sample_methylation_fitting="negative_ctrl",
+        fit_j_threshold=0.5,
+        sample_column="Sample",
+        infer_on_percentile_sample_methylation_fitting=False,
+        inference_variable_sample_methylation_fitting="Raw_modification_signal",
+    )
+    materialize_calls = []
+    load_spine_calls = []
+
+    def fake_load_spine(path, *, verbose=True):
+        load_spine_calls.append((path, verbose))
+        return spine
+
+    def fake_materialize(spine_arg, *, references):
+        materialize_calls.append((spine_arg, references))
+        return SimpleNamespace(
+            obs=spine.obs.loc[spine.obs["Reference_strand"] == references].copy(),
+            var=pd.DataFrame(
+                {
+                    f"{references}_position_methylation_thresholding_Youden_stats": [
+                        (0.5, 0.9),
+                        (0.5, 0.9),
+                    ],
+                    f"{references}_position_passed_Youden_thresholding_QC": [True, True],
+                },
+                index=spine.var.index,
+            ),
+            var_names=spine.var_names,
+            uns={},
+        )
+
+    def fake_calculate_position_Youden(ref_adata, **kwargs):
+        return None
+
+    import importlib
+
+    youden_module = importlib.import_module("smftools.preprocessing.calculate_position_Youden")
+    monkeypatch.setattr(
+        "smftools.preprocessing.partitioned_executor.load_spine", fake_load_spine
+    )
+    monkeypatch.setattr(
+        "smftools.preprocessing.partitioned_executor.materialize", fake_materialize
+    )
+    monkeypatch.setattr(youden_module, "calculate_position_Youden", fake_calculate_position_Youden)
+
+    fit_direct_modality_youden_thresholds(
+        tmp_path / "spine.h5ad",
+        cfg,
+        ["ref_top"],
+        tmp_path / "out",
+    )
+
+    assert load_spine_calls == [(tmp_path / "spine.h5ad", False)]
+    assert materialize_calls == [(spine, "ref_top")]
 
 
 def test_partitioned_executor_labels_deaminase_pcr_chimeras(tmp_path):

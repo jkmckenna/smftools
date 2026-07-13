@@ -41,11 +41,11 @@ def read_catalog(catalog_path: str | Path) -> pd.DataFrame:
     return pd.read_parquet(catalog_path)
 
 
-def load_spine(spine_path: str | Path) -> "ad.AnnData":
+def load_spine(spine_path: str | Path, *, verbose: bool = True) -> "ad.AnnData":
     """Load the thin molecule-index spine written by ``write_experiment_store``."""
     from ..readwrite import safe_read_h5ad
 
-    spine, _ = safe_read_h5ad(spine_path)
+    spine, _ = safe_read_h5ad(spine_path, verbose=verbose)
     return spine
 
 

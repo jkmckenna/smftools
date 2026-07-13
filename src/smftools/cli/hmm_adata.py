@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import copy
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from smftools.constants import HMM_DIR, LOGGING_DIR
-from smftools.logging_utils import get_logger, setup_logging
+from smftools.constants import HMM_DIR
+from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
 # FIX: import _to_dense_np to avoid NameError
@@ -583,11 +582,17 @@ def hmm_adata(config_path: str):
     - Decide which AnnData to start from (hmm > spatial > pp_dedup > pp > raw)
     - Call hmm_adata_core(cfg, adata, paths)
     """
+    from ..logging_utils import setup_stage_logging
     from ..readwrite import safe_read_h5ad
     from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
 
     # 1) load cfg / stage paths
     cfg = load_experiment_config(config_path)
+
+    # Configure logging once, before any branch below (skip / partitioned / legacy)
+    # might return without ever reaching hmm_adata_core.
+    if getattr(cfg, "output_directory", None) is not None:
+        setup_stage_logging(cfg, Path(cfg.output_directory) / HMM_DIR)
 
     paths = get_adata_paths(cfg)
     execution_mode = str(getattr(cfg, "hmm_execution_mode", "auto")).lower()
@@ -674,8 +679,6 @@ def hmm_adata_core(
     Does NOT decide which h5ad to start from – that is the wrapper's job.
     """
 
-    from datetime import datetime
-
     import numpy as np
 
     from ..hmm import call_hmm_peaks
@@ -690,28 +693,15 @@ def hmm_adata_core(
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
-    date_str = datetime.today().strftime("%y%m%d")
-    now = datetime.now()
-    time_str = now.strftime("%H%M%S")
-
-    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
-
+    # Logging is configured once by the hmm_adata() wrapper before dispatch,
+    # covering both this (legacy) path and the partitioned executor path.
     smf_modality = cfg.smf_modality
     deaminase = smf_modality == "deaminase"
 
     output_directory = Path(cfg.output_directory)
     hmm_directory = output_directory / HMM_DIR
-    logging_directory = hmm_directory / LOGGING_DIR
 
     make_dirs([output_directory, hmm_directory])
-
-    if cfg.emit_log_file:
-        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
-        make_dirs([logging_directory])
-    else:
-        log_file = None
-
-    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     # -----------------------------
     # Optional sample sheet metadata

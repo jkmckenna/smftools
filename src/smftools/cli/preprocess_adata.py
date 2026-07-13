@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gc
-import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -10,13 +9,12 @@ import anndata as ad
 from smftools.constants import (
     BASE_QUALITY_SCORES,
     DEMUX_TYPE,
-    LOGGING_DIR,
     MISMATCH_INTEGER_ENCODING,
     PREPROCESS_DIR,
     READ_SPAN_MASK,
     SEQUENCE_INTEGER_ENCODING,
 )
-from smftools.logging_utils import get_logger, setup_logging
+from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -42,11 +40,17 @@ def preprocess_adata(
     pp_dedup_adata_path : Path | None
         Path to preprocessed, duplicate-removed AnnData.
     """
+    from ..logging_utils import setup_stage_logging
     from ..readwrite import safe_read_h5ad
     from .helpers import get_adata_paths, load_experiment_config
 
     # 1) Ensure config is loaded and at least *some* AnnData stage exists
     cfg = load_experiment_config(config_path)
+
+    # Configure logging once, before any branch below (skip / partitioned / legacy)
+    # might return without ever reaching preprocess_adata_core.
+    if getattr(cfg, "output_directory", None) is not None:
+        setup_stage_logging(cfg, Path(cfg.output_directory) / PREPROCESS_DIR)
 
     # 2) Compute canonical paths
     paths = get_adata_paths(cfg)
@@ -244,7 +248,6 @@ def preprocess_adata_core(
     pp_dup_rem_adata_path : Path
         Path where the deduplicated AnnData was written.
     """
-    from datetime import datetime
     from pathlib import Path
 
     from ..metadata import record_smftools_metadata
@@ -276,11 +279,8 @@ def preprocess_adata_core(
     from .helpers import write_gz_h5ad
 
     ################################### 1) Load existing  ###################################
-    date_str = datetime.today().strftime("%y%m%d")
-    now = datetime.now()
-    time_str = now.strftime("%H%M%S")
-
-    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+    # Logging is configured once by the preprocess_adata() wrapper before dispatch,
+    # covering both this (legacy) path and the partitioned executor path.
 
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality  # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
@@ -288,17 +288,8 @@ def preprocess_adata_core(
         cfg.output_directory
     )  # Path to the output directory to make for the analysis. Necessary.
     preprocess_directory = output_directory / PREPROCESS_DIR
-    logging_directory = preprocess_directory / LOGGING_DIR
 
     make_dirs([output_directory, preprocess_directory])
-
-    if cfg.emit_log_file:
-        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
-        make_dirs([logging_directory])
-    else:
-        log_file = None
-
-    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     ######### Begin Preprocessing #########
 

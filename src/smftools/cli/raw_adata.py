@@ -154,7 +154,7 @@ def _attach_direct_signals(
         [float("nan")] * cigar_query_length(cigar) for cigar in frame["cigar"]
     ]
     signal_columns: set[str] = set()
-    tsv_paths = sorted(mod_tsv_dir.glob("*.tsv"))
+    tsv_paths = sorted(mod_tsv_dir.glob("*.tsv")) + sorted(mod_tsv_dir.glob("*.tsv.gz"))
     if not tsv_paths:
         raise FileNotFoundError(f"no modkit extract TSVs found under {mod_tsv_dir}")
     calls = pd.concat((pd.read_csv(path, sep="\t") for path in tsv_paths), ignore_index=True)

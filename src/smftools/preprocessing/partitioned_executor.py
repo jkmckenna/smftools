@@ -27,6 +27,7 @@ PREPROCESS_TASK_CATALOG = "task_catalog.parquet"
 PREPROCESS_PARTITION_CATALOG = "catalog.parquet"
 PREPROCESS_VAR_CATALOG = "var.parquet"
 PREPROCESS_OBS_SIDECAR = "obs.parquet"
+YOUDEN_FIT_SUBDIR = "02B_Position_wide_Youden_threshold_performance"
 
 DERIVED_LAYER_ABSENT_FILL = {
     "nan0_0minus1": 0.0,
@@ -51,7 +52,96 @@ def _task_path(output_dir: Path, task: PreprocessTask) -> Path:
     )
 
 
-def _run_local_transforms(adata: ad.AnnData, cfg) -> tuple[list[str], list[str]]:
+def fit_direct_modality_youden_thresholds(
+    spine_path: str | Path,
+    cfg,
+    references: Iterable[str],
+    output_dir: str | Path,
+) -> dict[str, pd.DataFrame]:
+    """Fit per-position Youden methylation thresholds once per reference.
+
+    Threshold fitting (``calculate_position_Youden``) needs the whole control-sample
+    population for a reference at once -- it can't run per bounded task the way the
+    rest of partitioned preprocessing does. This runs as a pre-pass before task
+    dispatch: for each reference, materialize that reference's full (unwindowed)
+    read population, fit thresholds once, then discard it. Each per-task local
+    transform then looks up its own window's thresholds from the returned tables
+    instead of needing the full population itself.
+
+    Returns:
+        Mapping of reference -> DataFrame indexed by genomic position (int) with
+        columns ``threshold``, ``j_statistic``, ``passed_qc``.
+    """
+    from .calculate_position_Youden import calculate_position_Youden
+
+    ref_column = str(cfg.reference_column)
+    roc_dir = Path(output_dir) / YOUDEN_FIT_SUBDIR
+    roc_dir.mkdir(parents=True, exist_ok=True)
+    spine = load_spine(spine_path, verbose=False)
+
+    thresholds: dict[str, pd.DataFrame] = {}
+    for reference in references:
+        ref_adata = materialize(spine, references=reference)
+        if ref_column in ref_adata.obs and hasattr(ref_adata.obs[ref_column], "cat"):
+            ref_adata.obs[ref_column] = ref_adata.obs[ref_column].cat.remove_unused_categories()
+        calculate_position_Youden(
+            ref_adata,
+            positive_control_sample=cfg.positive_control_sample_methylation_fitting,
+            negative_control_sample=cfg.negative_control_sample_methylation_fitting,
+            J_threshold=cfg.fit_j_threshold,
+            ref_column=ref_column,
+            sample_column=cfg.sample_column,
+            infer_on_percentile=cfg.infer_on_percentile_sample_methylation_fitting,
+            inference_variable=cfg.inference_variable_sample_methylation_fitting,
+            save=True,
+            output_directory=roc_dir,
+        )
+        stats_col = f"{reference}_position_methylation_thresholding_Youden_stats"
+        qc_col = f"{reference}_position_passed_Youden_thresholding_QC"
+        stats = ref_adata.var[stats_col].to_numpy()
+        thresholds[reference] = pd.DataFrame(
+            {
+                "threshold": [t[0] if isinstance(t, (tuple, list)) else np.nan for t in stats],
+                "j_statistic": [t[1] if isinstance(t, (tuple, list)) else np.nan for t in stats],
+                "passed_qc": ref_adata.var[qc_col].to_numpy(dtype=bool),
+            },
+            index=pd.Index(np.asarray(ref_adata.var_names, dtype=np.int64), name="position"),
+        )
+        del ref_adata
+    del spine
+    return thresholds
+
+
+def _apply_youden_thresholds(
+    adata: ad.AnnData,
+    cfg,
+    reference: str,
+    thresholds: pd.DataFrame,
+    target_layer: str,
+) -> None:
+    """Inject one reference's fitted thresholds into a task's window, then binarize."""
+    from .binarize_on_Youden import binarize_on_Youden
+
+    positions = np.asarray(adata.var_names, dtype=np.int64)
+    aligned = thresholds.reindex(positions)
+    stats_col = f"{reference}_position_methylation_thresholding_Youden_stats"
+    qc_col = f"{reference}_position_passed_Youden_thresholding_QC"
+    adata.var[stats_col] = list(
+        zip(aligned["threshold"].to_numpy(), aligned["j_statistic"].to_numpy())
+    )
+    adata.var[qc_col] = aligned["passed_qc"].fillna(False).to_numpy(dtype=bool)
+    binarize_on_Youden(
+        adata,
+        ref_column=str(cfg.reference_column),
+        output_layer_name=target_layer,
+    )
+
+
+def _run_local_transforms(
+    adata: ad.AnnData,
+    cfg,
+    youden_thresholds: dict[str, pd.DataFrame] | None = None,
+) -> tuple[list[str], list[str]]:
     """Apply transforms whose outputs are valid independently per read/window."""
     from .append_base_context import append_base_context
     from .binarize import binarize_adata
@@ -62,15 +152,22 @@ def _run_local_transforms(adata: ad.AnnData, cfg) -> tuple[list[str], list[str]]
     target_layer = str(getattr(cfg, "output_binary_layer_name", "binarized_methylation"))
     if modality == "direct":
         if getattr(cfg, "fit_position_methylation_thresholds", False):
-            raise ValueError(
-                "partitioned preprocessing does not yet support fitted position thresholds"
+            reference = str(adata.obs[REFERENCE_STRAND].astype(str).iloc[0])
+            if not youden_thresholds or reference not in youden_thresholds:
+                raise ValueError(
+                    f"missing fitted Youden thresholds for reference {reference!r}; "
+                    "fit_direct_modality_youden_thresholds must run before task dispatch"
+                )
+            _apply_youden_thresholds(
+                adata, cfg, reference, youden_thresholds[reference], target_layer
             )
-        binarize_adata(
-            adata,
-            source="X",
-            target_layer=target_layer,
-            threshold=float(cfg.binarize_on_fixed_methlyation_threshold),
-        )
+        else:
+            binarize_adata(
+                adata,
+                source="X",
+                target_layer=target_layer,
+                threshold=float(cfg.binarize_on_fixed_methlyation_threshold),
+            )
         nan_source = target_layer
     else:
         nan_source = None
@@ -152,6 +249,8 @@ def execute_preprocess_task(
     task: PreprocessTask,
     cfg,
     output_dir: str | Path,
+    *,
+    youden_thresholds: dict[str, pd.DataFrame] | None = None,
 ) -> dict[str, object]:
     """Materialize, transform, core-crop, and write one preprocessing task."""
     output_dir = Path(output_dir)
@@ -164,7 +263,7 @@ def execute_preprocess_task(
     )
     if REFERENCE_STRAND in adata.obs and hasattr(adata.obs[REFERENCE_STRAND], "cat"):
         adata.obs[REFERENCE_STRAND] = adata.obs[REFERENCE_STRAND].cat.remove_unused_categories()
-    derived_layers, derived_var = _run_local_transforms(adata, cfg)
+    derived_layers, derived_var = _run_local_transforms(adata, cfg, youden_thresholds)
     result = _core_result(adata, task, derived_layers, derived_var, cfg)
     path = _task_path(output_dir, task)
     chunks = (max(1, min(result.n_obs, 10_000)), max(1, result.n_vars))
@@ -755,7 +854,26 @@ def execute_partitioned_preprocessing(
     )
     task_catalog = write_preprocess_task_catalog(task_list, output_dir / PREPROCESS_TASK_CATALOG)
     obs_sidecar = write_read_qc_sidecar(spine, cfg, output_dir / PREPROCESS_OBS_SIDECAR)
-    records = [execute_preprocess_task(spine_path, task, cfg, output_dir) for task in task_list]
+
+    youden_thresholds: dict[str, pd.DataFrame] | None = None
+    if str(cfg.smf_modality) == "direct" and getattr(
+        cfg, "fit_position_methylation_thresholds", False
+    ):
+        fit_references = sorted({task.reference for task in task_list})
+        logger.info(
+            "Fitting Youden position thresholds for %d reference(s) before task dispatch",
+            len(fit_references),
+        )
+        youden_thresholds = fit_direct_modality_youden_thresholds(
+            spine_path, cfg, fit_references, output_dir
+        )
+
+    records = [
+        execute_preprocess_task(
+            spine_path, task, cfg, output_dir, youden_thresholds=youden_thresholds
+        )
+        for task in task_list
+    ]
     catalog_path = output_dir / PREPROCESS_PARTITION_CATALOG
     pd.DataFrame(records).to_parquet(catalog_path, index=False)
     var_catalog = reduce_partial_coverage(
