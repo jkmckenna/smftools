@@ -7,20 +7,9 @@ import click
 import pandas as pd
 
 from ._version import __version__
-from .cli.chimeric_adata import chimeric_adata
-from .cli.hmm_adata import hmm_adata
-from .cli.latent_adata import latent_adata
-from .cli.load_adata import load_dense_cache
-from .cli.plot_current import plot_current as plot_current_fn
-from .cli.preprocess_adata import preprocess_adata
-from .cli.raw_adata import raw_adata
 from .cli.recipes import full_flow
-from .cli.spatial_adata import spatial_adata
-from .cli.variant_adata import variant_adata
-from .informatics.pod5_functions import subsample_pod5
 from .logging_utils import get_logger, setup_logging
 from .memory_guard import enable_aggregate_memory_cap
-from .readwrite import concatenate_h5ads
 
 
 def _configure_multiprocessing() -> None:
@@ -77,6 +66,8 @@ def cli(log_file: Path | None, log_level: str):
 @click.argument("config_path", type=click.Path(exists=True))
 def raw(config_path):
     """Prepare BAM artifacts and write the ragged raw store."""
+    from .cli.raw_adata import raw_adata
+
     raw_adata(config_path)
 
 
@@ -84,6 +75,8 @@ def raw(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def load(config_path):
     """Optionally pre-build the dense zarr cache from raw artifacts."""
+    from .cli.load_adata import load_dense_cache
+
     load_dense_cache(config_path)
 
 
@@ -95,6 +88,8 @@ def load(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def preprocess(config_path):
     """Preprocessing."""
+    from .cli.preprocess_adata import preprocess_adata
+
     preprocess_adata(config_path)
 
 
@@ -106,6 +101,8 @@ def preprocess(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def spatial(config_path):
     """Spatial signal analysis"""
+    from .cli.spatial_adata import spatial_adata
+
     spatial_adata(config_path)
 
 
@@ -117,6 +114,8 @@ def spatial(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def hmm(config_path):
     """HMM feature annotations and plotting"""
+    from .cli.hmm_adata import hmm_adata
+
     hmm_adata(config_path)
 
 
@@ -128,6 +127,8 @@ def hmm(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def latent(config_path):
     """Latent representations of signal"""
+    from .cli.latent_adata import latent_adata
+
     latent_adata(config_path)
 
 
@@ -139,6 +140,8 @@ def latent(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def variant(config_path):
     """Sequence variation analyses"""
+    from .cli.variant_adata import variant_adata
+
     variant_adata(config_path)
 
 
@@ -150,6 +153,8 @@ def variant(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def chimeric(config_path):
     """Finding putative PCR chimeras"""
+    from .cli.chimeric_adata import chimeric_adata
+
     chimeric_adata(config_path)
 
 
@@ -273,13 +278,43 @@ def batch(task, config_table: Path, column: str, sep: str | None):
     # Map task to function
     # ----------------------------
     task = task.lower()
+    def _raw(cfg_path: str):
+        from .cli.raw_adata import raw_adata
+
+        return raw_adata(cfg_path)
+
+    def _load(cfg_path: str):
+        from .cli.load_adata import load_dense_cache
+
+        return load_dense_cache(cfg_path)
+
+    def _preprocess(cfg_path: str):
+        from .cli.preprocess_adata import preprocess_adata
+
+        return preprocess_adata(cfg_path)
+
+    def _spatial(cfg_path: str):
+        from .cli.spatial_adata import spatial_adata
+
+        return spatial_adata(cfg_path)
+
+    def _variant(cfg_path: str):
+        from .cli.variant_adata import variant_adata
+
+        return variant_adata(cfg_path)
+
+    def _hmm(cfg_path: str):
+        from .cli.hmm_adata import hmm_adata
+
+        return hmm_adata(cfg_path)
+
     task_funcs = {
-        "raw": raw_adata,
-        "load": load_dense_cache,
-        "preprocess": preprocess_adata,
-        "spatial": spatial_adata,
-        "variant": variant_adata,
-        "hmm": hmm_adata,
+        "raw": _raw,
+        "load": _load,
+        "preprocess": _preprocess,
+        "spatial": _spatial,
+        "variant": _variant,
+        "hmm": _hmm,
     }
 
     func = task_funcs[task]
@@ -364,6 +399,7 @@ def concatenate_cmd(
         smftools concatenate experiment_config.csv --input-dir ./variant_h5ads/
     """
     from .cli.helpers import load_experiment_config
+    from .readwrite import concatenate_h5ads
 
     try:
         cfg = load_experiment_config(str(config_path))
@@ -447,6 +483,7 @@ def subsample_pod5_cmd(pod5_path, read_names, n_reads, outdir):
     """
     Subsample POD5 file(s) by read ID list or random sampling.
     """
+    from .informatics.pod5_functions import subsample_pod5
 
     # --- Validate mutually exclusive options ---
     if (read_names is None and n_reads is None) or (read_names and n_reads):
