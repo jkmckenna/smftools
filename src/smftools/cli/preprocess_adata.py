@@ -262,6 +262,7 @@ def preprocess_adata_core(
         calculate_position_Youden,
         calculate_read_modification_stats,
         clean_NaN,
+        filter_reads_on_cigar_indels,
         filter_reads_on_length_quality_mapping,
         filter_reads_on_modification_thresholds,
         flag_duplicate_reads,
@@ -412,6 +413,16 @@ def preprocess_adata_core(
         mapping_quality=cfg.read_mapping_quality_filter_thresholds,
         bypass=None,
         force_redo=None,
+    )
+    print(adata.shape)
+
+    # Filter reads with large internal insertions/deletions (from the alignment CIGAR).
+    adata = filter_reads_on_cigar_indels(
+        adata,
+        max_insertion_length=cfg.max_internal_insertion_length,
+        max_deletion_length=cfg.max_internal_deletion_length,
+        bypass=cfg.bypass_filter_reads_on_cigar_indels,
+        force_redo=cfg.force_redo_filter_reads_on_cigar_indels,
     )
     print(adata.shape)
 

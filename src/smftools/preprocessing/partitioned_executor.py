@@ -249,6 +249,7 @@ def reduce_partial_coverage(
 
 def write_read_qc_sidecar(spine, cfg, output_path: str | Path) -> Path:
     """Compute read-level QC as an aligned mask without deleting spine rows."""
+    from .filter_reads_on_cigar_indels import filter_reads_on_cigar_indels
     from .filter_reads_on_length_quality_mapping import (
         filter_reads_on_length_quality_mapping,
     )
@@ -265,6 +266,13 @@ def write_read_qc_sidecar(spine, cfg, output_path: str | Path) -> Path:
         read_quality=cfg.read_quality_filter_thresholds,
         mapping_quality=cfg.read_mapping_quality_filter_thresholds,
         bypass=bool(getattr(cfg, "bypass_filter_reads_on_length_quality_mapping", False)),
+        force_redo=True,
+    )
+    filtered = filter_reads_on_cigar_indels(
+        filtered,
+        max_insertion_length=getattr(cfg, "max_internal_insertion_length", 10),
+        max_deletion_length=getattr(cfg, "max_internal_deletion_length", 10),
+        bypass=bool(getattr(cfg, "bypass_filter_reads_on_cigar_indels", False)),
         force_redo=True,
     )
     output = spine.obs.copy()

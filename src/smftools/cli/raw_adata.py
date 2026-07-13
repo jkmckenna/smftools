@@ -80,6 +80,7 @@ def _attach_obs_metadata(
 ) -> pd.DataFrame:
     """Attach scalar barcode, UMI, and read-QC metadata to ragged records."""
     from ..informatics.bam_functions import extract_read_features_from_bam
+    from ..informatics.ragged_store import cigar_max_indel_runs
 
     frame = frame.set_index("read_id", drop=False)
     for sidecar in (
@@ -120,6 +121,14 @@ def _attach_obs_metadata(
     frame["read_length_to_reference_length_ratio"] = read_length / reference_length
     frame["mapped_length_to_reference_length_ratio"] = mapped_length / reference_length
     frame["mapped_length_to_read_length_ratio"] = mapped_length / read_length
+
+    # Longest internal insertion/deletion run per read, from the alignment CIGAR.
+    # Carried onto the molecule spine so preprocessing can filter reads with large
+    # internal indels (e.g. spurious gaps) without re-reading the BAM.
+    if "cigar" in frame:
+        indel_runs = [cigar_max_indel_runs(str(cigar)) for cigar in frame["cigar"]]
+        frame["max_insertion_length"] = [runs[0] for runs in indel_runs]
+        frame["max_deletion_length"] = [runs[1] for runs in indel_runs]
     if getattr(cfg, "skip_unclassified", False):
         frame = frame.loc[frame["barcode"] != "unclassified"]
     return frame.reset_index(drop=True)

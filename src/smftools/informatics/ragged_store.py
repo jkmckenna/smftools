@@ -86,6 +86,27 @@ def cigar_reference_length(cigar: str) -> int:
     return sum(length for length, op in parse_cigar(cigar) if op in _REFERENCE_CONSUMING)
 
 
+def cigar_max_indel_runs(cigar: str) -> tuple[int, int]:
+    """Return ``(max_insertion_run, max_deletion_run)`` for a CIGAR string.
+
+    Each value is the length of the single longest internal insertion (``I``) or
+    deletion (``D``) operation. Insertions and deletions in a SAM CIGAR are always
+    internal to the aligned span (read ends are represented as soft/hard clips),
+    so no edge trimming is required. Returns ``(0, 0)`` for an unmapped/absent
+    CIGAR (``"*"`` or empty) rather than raising.
+    """
+    if not isinstance(cigar, str) or not cigar or cigar == "*":
+        return 0, 0
+    max_insertion = 0
+    max_deletion = 0
+    for length, op in parse_cigar(cigar):
+        if op == "I" and length > max_insertion:
+            max_insertion = length
+        elif op == "D" and length > max_deletion:
+            max_deletion = length
+    return max_insertion, max_deletion
+
+
 def iter_cigar_aligned_pairs(cigar: str, reference_start: int) -> Iterator[tuple[int, int]]:
     """Yield ``(query_position, reference_position)`` for aligned CIGAR bases."""
     query_position = 0

@@ -18,6 +18,7 @@ _LAZY_ATTRS = {
     "calculate_read_modification_stats": "smftools.preprocessing.calculate_read_modification_stats",
     "clean_NaN": "smftools.preprocessing.clean_NaN",
     "filter_adata_by_nan_proportion": "smftools.preprocessing.filter_adata_by_nan_proportion",
+    "filter_reads_on_cigar_indels": "smftools.preprocessing.filter_reads_on_cigar_indels",
     "filter_reads_on_length_quality_mapping": "smftools.preprocessing.filter_reads_on_length_quality_mapping",
     "filter_reads_on_modification_thresholds": "smftools.preprocessing.filter_reads_on_modification_thresholds",
     "flag_duplicate_reads": "smftools.preprocessing.flag_duplicate_reads",

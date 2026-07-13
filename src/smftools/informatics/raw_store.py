@@ -63,6 +63,8 @@ _RAW_SCALAR_OBS_COLUMNS = (
     "read_length_to_reference_length_ratio",
     "mapped_length_to_reference_length_ratio",
     "mapped_length_to_read_length_ratio",
+    "max_insertion_length",
+    "max_deletion_length",
 )
 
 

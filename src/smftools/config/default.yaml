@@ -178,6 +178,14 @@ read_mapping_quality_filter_thresholds:
   - null
   - null
 
+# CIGAR-based internal indel filtering. Reads whose longest internal insertion or
+# deletion run (from the alignment CIGAR) exceeds these lengths (bp) are removed.
+# Set a value to null to disable that check.
+max_internal_insertion_length: 10
+max_internal_deletion_length: 10
+bypass_filter_reads_on_cigar_indels: False
+force_redo_filter_reads_on_cigar_indels: True
+
 # Read modification filtering params
 read_mod_filtering_gpc_thresholds:
   - 0.025
@@ -392,6 +400,8 @@ hmm_merge_layer_features:
   - ["all_accessible_features", 60]
 clustermap_cmap_hmm: "coolwarm"
 hmm_clustermap_feature_layers:
+  - all_accessible_features
+  - all_accessible_features_merged
   - nucleosome_depleted_region_merged
   - small_bound_stretch
   - medium_bound_stretch
@@ -494,6 +504,7 @@ genome_tile_halo: 1000 # Context positions loaded on each side of a genome tile
 parquet_start_bin_size: 1000000 # Reference-start bin used to partition ragged parquet
 preprocess_execution_mode: auto # auto, legacy, or partitioned; auto partitions any raw/load spine
 spatial_execution_mode: auto # auto, legacy, or partitioned; auto partitions a preprocess spine
+hmm_execution_mode: auto # auto, legacy, or partitioned; auto partitions a spatial/preprocess spine
 spatial_regions_bed: null # Optional 0-based half-open BED regions for genome matrix/clustermap analyses
 spatial_generate_clustermaps: True # Generate bounded barcode clustermaps per locus/BED region
 spatial_generate_position_matrices: True # Generate bounded position matrices per locus/BED region

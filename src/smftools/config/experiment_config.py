@@ -862,6 +862,12 @@ class ExperimentConfig:
         default_factory=lambda: [None, None]
     )
 
+    # Preprocessing - CIGAR-based internal indel filter params
+    max_internal_insertion_length: Optional[float] = 10
+    max_internal_deletion_length: Optional[float] = 10
+    bypass_filter_reads_on_cigar_indels: bool = False
+    force_redo_filter_reads_on_cigar_indels: bool = True
+
     # Preprocessing - Optional reindexing params
     reindexing_offsets: Dict[str, int] = field(default_factory=dict)
     reindexed_var_suffix: Optional[str] = "reindexed"
@@ -1042,10 +1048,10 @@ class ExperimentConfig:
     hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 60)])
     clustermap_cmap_hmm: Optional[str] = "coolwarm"
     hmm_clustermap_feature_layers: List[str] = field(
-        default_factory=lambda: ["all_accessible_features"]
+        default_factory=lambda: ["all_accessible_features", "all_accessible_features_merged"]
     )
     hmm_clustermap_length_layers: List[str] = field(
-        default_factory=lambda: ["all_accessible_features"]
+        default_factory=lambda: ["all_footprint_features"]
     )
     hmm_clustermap_sortby: Optional[str] = "hmm"
     hmm_peak_feature_configs: Dict[str, Any] = field(default_factory=dict)
@@ -1062,6 +1068,7 @@ class ExperimentConfig:
     parquet_start_bin_size: int = 1000000
     preprocess_execution_mode: str = "auto"
     spatial_execution_mode: str = "auto"
+    hmm_execution_mode: str = "auto"
     spatial_regions_bed: Optional[str] = None
     spatial_generate_clustermaps: bool = True
     spatial_generate_position_matrices: bool = True
@@ -1629,10 +1636,13 @@ class ExperimentConfig:
         hmm_methbases = list(hmm_methbases)
         hmm_merge_layer_features = _parse_list(merged.get("hmm_merge_layer_features", None))
         hmm_clustermap_feature_layers = _parse_list(
-            merged.get("hmm_clustermap_feature_layers", "all_accessible_features")
+            merged.get(
+                "hmm_clustermap_feature_layers",
+                "all_accessible_features,all_accessible_features_merged",
+            )
         )
         hmm_clustermap_length_layers = _parse_list(
-            merged.get("hmm_clustermap_length_layers", hmm_clustermap_feature_layers)
+            merged.get("hmm_clustermap_length_layers", "all_footprint_features")
         )
 
         hmm_fit_strategy = str(merged.get("hmm_fit_strategy", "per_group")).strip()
@@ -1922,6 +1932,18 @@ class ExperimentConfig:
             read_mapping_quality_filter_thresholds=merged.get(
                 "read_mapping_quality_filter_thresholds", [None, None]
             ),
+            max_internal_insertion_length=_parse_numeric(
+                merged.get("max_internal_insertion_length", 10), None
+            ),
+            max_internal_deletion_length=_parse_numeric(
+                merged.get("max_internal_deletion_length", 10), None
+            ),
+            bypass_filter_reads_on_cigar_indels=merged.get(
+                "bypass_filter_reads_on_cigar_indels", False
+            ),
+            force_redo_filter_reads_on_cigar_indels=merged.get(
+                "force_redo_filter_reads_on_cigar_indels", True
+            ),
             read_mod_filtering_gpc_thresholds=merged.get(
                 "read_mod_filtering_gpc_thresholds", [0.025, 0.975]
             ),
@@ -2009,6 +2031,7 @@ class ExperimentConfig:
             ),
             preprocess_execution_mode=str(merged.get("preprocess_execution_mode", "auto")),
             spatial_execution_mode=str(merged.get("spatial_execution_mode", "auto")),
+            hmm_execution_mode=str(merged.get("hmm_execution_mode", "auto")),
             spatial_regions_bed=merged.get("spatial_regions_bed"),
             spatial_generate_clustermaps=_parse_bool(
                 merged.get("spatial_generate_clustermaps", True)
