@@ -1,0 +1,249 @@
+from types import SimpleNamespace
+
+import anndata as ad
+import numpy as np
+import pandas as pd
+
+from smftools.cli.hmm_adata import (
+    _feature_ranges_for_merged_layer,
+    _resolve_pos_mask_for_methbase,
+    hmm_adata,
+)
+from smftools.hmm.HMM import SingleBernoulliHMM
+from smftools.informatics.partition_read import materialize
+from smftools.informatics.raw_store import write_raw_store
+from smftools.preprocessing.partitioned_executor import execute_partitioned_preprocessing
+from smftools.readwrite import safe_read_h5ad, safe_read_zarr
+from smftools.tools.partitioned_hmm import (
+    _apply_merges,
+    _matching_hmm_layers,
+    execute_partitioned_hmm,
+)
+
+
+def _frame():
+    return pd.DataFrame(
+        [
+            {
+                "read_id": "read1",
+                "reference": "ref",
+                "Reference_strand": "ref_top",
+                "barcode": "bc1",
+                "sample": "bc1",
+                "reference_start": 0,
+                "cigar": "4M",
+                "aligned_length": 4,
+                "sequence": [0, 1, 2, 3],
+                "quality": [30, 30, 30, 30],
+                "mismatch": [4, 4, 4, 4],
+                "modification_signal": [1.0, np.nan, 0.0, 1.0],
+                "read_length": 4,
+                "mapped_length": 4,
+                "reference_length": 12,
+                "read_quality": 30,
+                "mapping_quality": 60,
+                "read_length_to_reference_length_ratio": 4 / 12,
+                "mapped_length_to_reference_length_ratio": 4 / 12,
+                "mapped_length_to_read_length_ratio": 1.0,
+            },
+            {
+                "read_id": "read2",
+                "reference": "ref",
+                "Reference_strand": "ref_top",
+                "barcode": "bc1",
+                "sample": "bc1",
+                "reference_start": 5,
+                "cigar": "4M",
+                "aligned_length": 4,
+                "sequence": [0, 1, 2, 3],
+                "quality": [31, 31, 31, 31],
+                "mismatch": [4, 4, 4, 4],
+                "modification_signal": [0.0, 1.0, 1.0, 0.0],
+                "read_length": 4,
+                "mapped_length": 4,
+                "reference_length": 12,
+                "read_quality": 31,
+                "mapping_quality": 50,
+                "read_length_to_reference_length_ratio": 4 / 12,
+                "mapped_length_to_reference_length_ratio": 4 / 12,
+                "mapped_length_to_read_length_ratio": 1.0,
+            },
+        ]
+    )
+
+
+def _preprocess_cfg():
+    return SimpleNamespace(
+        smf_modality="conversion",
+        output_binary_layer_name="binarized_methylation",
+        bypass_clean_nan=False,
+        clean_nan_layers=["nan0_0minus1", "nan_half"],
+        reference_column="Reference_strand",
+        mod_target_bases=["GpC", "CpG"],
+        bypass_append_base_context=False,
+        target_task_memory_mb=1,
+        position_max_nan_threshold=0.6,
+        read_len_filter_thresholds=[None, None],
+        mapped_len_filter_thresholds=[None, None],
+        read_len_to_ref_ratio_filter_thresholds=[None, None],
+        mapped_len_to_ref_ratio_filter_thresholds=[None, None],
+        mapped_len_to_read_len_ratio_filter_thresholds=[None, None],
+        read_quality_filter_thresholds=[None, None],
+        read_mapping_quality_filter_thresholds=[None, None],
+        bypass_filter_reads_on_length_quality_mapping=False,
+        read_mod_filtering_gpc_thresholds=None,
+        read_mod_filtering_cpg_thresholds=None,
+        read_mod_filtering_c_thresholds=None,
+        read_mod_filtering_a_thresholds=None,
+        read_mod_filtering_use_other_c_as_background=False,
+        min_valid_fraction_positions_in_read_vs_ref=None,
+        bypass_filter_reads_on_modification_thresholds=False,
+        bypass_flag_duplicate_reads=True,
+        sample_name_col_for_plotting="Sample",
+    )
+
+
+def test_hmm_wrapper_dispatches_partitioned_spatial_spine(tmp_path, monkeypatch):
+    from smftools.cli import helpers
+    from smftools.tools import partitioned_hmm
+
+    spatial_spine = tmp_path / "spatial_adata_outputs" / "spine.h5ad"
+    spatial_spine.parent.mkdir()
+    spatial_spine.touch()
+    paths = SimpleNamespace(
+        hmm=tmp_path / "missing_hmm.h5ad.gz",
+        hmm_spine=tmp_path / "hmm_adata_outputs" / "spine.h5ad",
+        spatial_spine=spatial_spine,
+        preprocess_spine=None,
+    )
+    cfg = SimpleNamespace(
+        output_directory=tmp_path,
+        hmm_execution_mode="auto",
+        force_redo_hmm_fit=False,
+        force_redo_hmm_apply=False,
+        force_redo_hmm_plots=False,
+        from_adata_stage=None,
+    )
+    captured = {}
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg: paths)
+
+    def execute(source, executor_cfg, output_dir):
+        captured.update(source=source, cfg=executor_cfg, output_dir=output_dir)
+        return {"spine": paths.hmm_spine}
+
+    monkeypatch.setattr(partitioned_hmm, "execute_partitioned_hmm", execute)
+
+    assert hmm_adata("experiment.csv") == (None, paths.hmm_spine)
+    assert captured["source"] == spatial_spine
+    assert captured["output_dir"] == tmp_path / "hmm_adata_outputs"
+
+
+def test_hmm_position_mask_normalizes_nullable_boolean_values():
+    adata = ad.AnnData(
+        X=np.zeros((1, 3)),
+        var=pd.DataFrame(
+            {"ref_top_C_site": pd.array([True, pd.NA, False], dtype="boolean")},
+            index=["0", "1", "2"],
+        ),
+    )
+
+    mask = _resolve_pos_mask_for_methbase(adata, "ref_top", "C")
+
+    assert mask.dtype == bool
+    assert mask.tolist() == [True, False, False]
+
+
+def test_partitioned_hmm_resolves_feature_and_footprint_length_layers():
+    records = [
+        {
+            "layers": [
+                "C_all_accessible_features",
+                "C_all_accessible_features_lengths",
+                "C_all_footprint_features_lengths",
+            ]
+        }
+    ]
+
+    assert _matching_hmm_layers(records, ["all_accessible_features"]) == [
+        "C_all_accessible_features"
+    ]
+    assert _matching_hmm_layers(records, ["all_footprint_features"], lengths=True) == [
+        "C_all_footprint_features_lengths"
+    ]
+
+
+def test_footprint_merge_writes_binary_and_derived_length_layers():
+    values = np.zeros((1, 14), dtype=np.uint8)
+    values[0, :2] = 1
+    values[0, 12:] = 1
+    adata = ad.AnnData(
+        obs=pd.DataFrame({"reference_start": [0], "reference_end": [13]}, index=["read1"]),
+        var=pd.DataFrame(index=pd.Index(map(str, range(14)))),
+        layers={"C_all_footprint_features": values},
+    )
+    feature_sets = {
+        "accessible": {"features": {"small_accessible_patch": [3, 20]}},
+        "footprint": {"features": {"small_bound_stretch": [6, 30]}},
+    }
+    cfg = SimpleNamespace(
+        hmm_merged_suffix="_merged",
+        hmm_merge_layer_features=[("all_footprint_features", 10)],
+    )
+    adata.uns["hmm_appended_layers"] = np.asarray(["C_all_footprint_features"])
+
+    _apply_merges(adata, SingleBernoulliHMM(), "C", feature_sets, cfg)
+
+    merged = np.asarray(adata.layers["C_all_footprint_features_merged"])
+    lengths = np.asarray(adata.layers["C_all_footprint_features_merged_lengths"])
+    assert np.all(merged == 1)
+    assert np.all(lengths == 14)
+    assert "C_small_bound_stretch_merged" in adata.layers
+    assert "C_small_accessible_patch_merged" not in adata.layers
+    assert "C_all_footprint_features_merged" in adata.uns["hmm_appended_layers"]
+    assert _feature_ranges_for_merged_layer("all_footprint_features", feature_sets) == {
+        "small_bound_stretch": [6, 30]
+    }
+
+
+def test_partitioned_hmm_writes_task_store_and_rematerializes_layers(tmp_path, monkeypatch):
+    from smftools.tools import partitioned_hmm
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+
+    def annotate(adata, task, cfg, models_dir):
+        adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
+        adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
+        return ["GpC_test_feature"]
+
+    monkeypatch.setattr(partitioned_hmm, "_annotate_task", annotate)
+    cfg = SimpleNamespace(target_task_memory_mb=1)
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+    catalog = pd.read_parquet(outputs["task_catalog"])
+    assert len(catalog) == 1
+    task, _ = safe_read_zarr(outputs["task_catalog"].parent / catalog.iloc[0]["group_path"])
+    assert set(task.layers) == {"GpC_test_feature"}
+    spine, _ = safe_read_h5ad(outputs["spine"])
+    assert spine.uns["hmm_catalog"] == str(outputs["task_catalog"].resolve())
+    assert spine.uns["hmm_source_spine"] == str(preprocess["spine"].resolve())
+    restored = materialize(
+        outputs["spine"],
+        references="ref_top",
+        read_ids=["read1", "read2"],
+        start=0,
+        end=12,
+        layers=["GpC_test_feature"],
+    )
+    assert np.all(restored.layers["GpC_test_feature"] == 1)
+    plot_types = set(pd.read_parquet(outputs["plot_catalog"])["plot_type"])
+    assert "barcode_hmm_feature_fraction" in plot_types

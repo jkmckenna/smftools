@@ -948,6 +948,22 @@ class BaseHMM(nn.Module):
                 s = e
         return out
 
+    @staticmethod
+    def _register_appended_layers(adata, names: Sequence[str]) -> None:
+        """Record derived layers while tolerating array-backed ``uns`` reloads."""
+        key = "hmm_appended_layers"
+        existing = adata.uns.get(key)
+        if existing is None:
+            registered = []
+        elif isinstance(existing, str):
+            registered = [existing]
+        else:
+            registered = list(existing)
+        for name in names:
+            if name not in registered:
+                registered.append(name)
+        adata.uns[key] = registered
+
     # ------------------------- merging -------------------------
 
     def merge_intervals_to_new_layer(
@@ -1008,13 +1024,7 @@ class BaseHMM(nn.Module):
         adata.layers[merged_name] = out
         adata.layers[merged_len_name] = self._write_lengths_for_binary_layer(out)
 
-        # bookkeeping
-        key = "hmm_appended_layers"
-        if adata.uns.get(key) is None:
-            adata.uns[key] = []
-        for nm in (merged_name, merged_len_name):
-            if nm not in adata.uns[key]:
-                adata.uns[key].append(nm)
+        self._register_appended_layers(adata, (merged_name, merged_len_name))
 
         return merged_name
 
@@ -1070,12 +1080,7 @@ class BaseHMM(nn.Module):
                 np.asarray(adata.layers[nm])
             )
 
-        key = "hmm_appended_layers"
-        if adata.uns.get(key) is None:
-            adata.uns[key] = []
-        for nm in created:
-            if nm not in adata.uns[key]:
-                adata.uns[key].append(nm)
+        self._register_appended_layers(adata, created)
 
         return created
 

@@ -188,6 +188,9 @@ def _resolve_pos_mask_for_methbase(subset, ref: str, methbase: str) -> Optional[
     """
     key = str(methbase).strip().lower()
 
+    def _mask(column: str) -> np.ndarray:
+        return subset.var[column].astype("boolean").fillna(False).to_numpy(dtype=bool)
+
     logger.debug("Resolving position mask for methbase=%s on ref=%s", key, ref)
 
     if key in ("a",):
@@ -195,13 +198,13 @@ def _resolve_pos_mask_for_methbase(subset, ref: str, methbase: str) -> Optional[
         if col not in subset.var:
             return None
         logger.debug("Using positions with A calls from column: %s", col)
-        return np.asarray(subset.var[col])
+        return _mask(col)
 
     if key in ("c", "any_c", "anyc", "any-c"):
         for col in (f"{ref}_any_C_site", f"{ref}_C_site"):
             if col in subset.var:
                 logger.debug("Using positions with C calls from column: %s", col)
-                return np.asarray(subset.var[col])
+                return _mask(col)
         return None
 
     if key in ("gpc", "gpc_site", "gpc-site"):
@@ -209,21 +212,21 @@ def _resolve_pos_mask_for_methbase(subset, ref: str, methbase: str) -> Optional[
         if col not in subset.var:
             return None
         logger.debug("Using positions with GpC calls from column: %s", col)
-        return np.asarray(subset.var[col])
+        return _mask(col)
 
     if key in ("cpg", "cpg_site", "cpg-site"):
         col = f"{ref}_CpG_site"
         if col not in subset.var:
             return None
         logger.debug("Using positions with CpG calls from column: %s", col)
-        return np.asarray(subset.var[col])
+        return _mask(col)
 
     alt = f"{ref}_{methbase}_site"
     if alt not in subset.var:
         return None
 
     logger.debug("Using positions from column: %s", alt)
-    return np.asarray(subset.var[alt])
+    return _mask(alt)
 
 
 def build_single_channel(
@@ -428,7 +431,7 @@ class HMMTrainer:
     def _path(self, kind: str, sample: str, ref: str, label: str) -> Path:
         # kind: "GLOBAL" | "PER" | "ADAPT"
         def safe(s):
-            str(s).replace("/", "_")
+            return str(s).replace("/", "_")
 
         return self.models_dir / f"{kind}_{safe(sample)}_{safe(ref)}_{safe(label)}.pt"
 
@@ -559,6 +562,14 @@ def _fully_qualified_merge_layers(cfg, prefix: str) -> List[Tuple[str, int]]:
     return out
 
 
+def _feature_ranges_for_merged_layer(core_layer: str, feature_sets: dict) -> dict:
+    """Return only the size classes belonging to an aggregate feature layer."""
+    for group_name, feature_set in feature_sets.items():
+        if str(core_layer) == f"all_{group_name}_features":
+            return feature_set.get("features", {}) or {}
+    return {}
+
+
 def hmm_adata(config_path: str):
     """
     CLI-facing wrapper for HMM analysis.
@@ -579,22 +590,59 @@ def hmm_adata(config_path: str):
     cfg = load_experiment_config(config_path)
 
     paths = get_adata_paths(cfg)
+    execution_mode = str(getattr(cfg, "hmm_execution_mode", "auto")).lower()
+    if execution_mode not in {"auto", "legacy", "partitioned"}:
+        raise ValueError("hmm_execution_mode must be auto, legacy, or partitioned")
 
     # 2) choose starting AnnData
-    if paths.hmm.exists() and not (
+    force_redo = (
         cfg.force_redo_hmm_fit
         or cfg.force_redo_hmm_apply
         or getattr(cfg, "force_redo_hmm_plots", False)
+    )
+    partitioned_output = getattr(paths, "hmm_spine", None)
+    if (
+        execution_mode != "legacy"
+        and partitioned_output is not None
+        and Path(partitioned_output).exists()
+        and not force_redo
     ):
+        logger.info("Skipping HMM. Partitioned HMM spine found: %s", partitioned_output)
+        return None, Path(partitioned_output)
+    if execution_mode != "partitioned" and paths.hmm.exists() and not force_redo:
         logger.info(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
         return None
+
+    partitioned_source = None
+    if getattr(cfg, "from_adata_stage", None) is None and execution_mode != "legacy":
+        for candidate in (
+            getattr(paths, "spatial_spine", None),
+            getattr(paths, "preprocess_spine", None),
+        ):
+            if candidate is not None and Path(candidate).exists():
+                partitioned_source = Path(candidate)
+                break
+    if execution_mode == "partitioned" and partitioned_source is None:
+        raise FileNotFoundError(
+            "partitioned HMM requires spatial_adata_outputs/spine.h5ad or "
+            "preprocess_adata_outputs/spine.h5ad"
+        )
+    if partitioned_source is not None:
+        from ..tools.partitioned_hmm import execute_partitioned_hmm
+
+        outputs = execute_partitioned_hmm(
+            partitioned_source,
+            cfg,
+            Path(cfg.output_directory) / HMM_DIR,
+        )
+        return None, outputs["spine"]
 
     source_path, stage = resolve_adata_stage(cfg, paths)
     if source_path is None:
         raise FileNotFoundError(
-            "No AnnData available for HMM: expected at least raw or preprocessed h5ad."
+            "No AnnData available for HMM: expected a partitioned spatial/preprocess "
+            "spine or at least a legacy raw/preprocessed h5ad."
         )
-
     adata, _ = safe_read_h5ad(source_path)
 
     # 4) delegate to core
@@ -832,19 +880,19 @@ def hmm_adata_core(
                                         overwrite=True,
                                     )
                                     masked_layers = [merged_base, f"{merged_base}_lengths"]
-                                    # write merged size classes based on whichever group core_layer corresponds to
-                                    for group, fs in feature_sets_access.items():
-                                        fmap = fs.get("features", {}) or {}
-                                        if fmap:
-                                            created = hmm.write_size_class_layers_from_binary(
-                                                subset,
-                                                merged_base,
-                                                out_prefix=str(mb),
-                                                feature_ranges=fmap,
-                                                suffix=merged_suffix,
-                                                overwrite=True,
-                                            )
-                                            masked_layers.extend(created)
+                                    fmap = _feature_ranges_for_merged_layer(
+                                        core_layer, feature_sets_access
+                                    )
+                                    if fmap:
+                                        created = hmm.write_size_class_layers_from_binary(
+                                            subset,
+                                            merged_base,
+                                            out_prefix=str(mb),
+                                            feature_ranges=fmap,
+                                            suffix=merged_suffix,
+                                            overwrite=True,
+                                        )
+                                        masked_layers.extend(created)
                                     mask_layers_outside_read_span(
                                         subset,
                                         masked_layers,
@@ -924,18 +972,19 @@ def hmm_adata_core(
                                             overwrite=True,
                                         )
                                         masked_layers = [merged_base, f"{merged_base}_lengths"]
-                                        for group, fs in feature_sets_access.items():
-                                            fmap = fs.get("features", {}) or {}
-                                            if fmap:
-                                                created = hmmc.write_size_class_layers_from_binary(
-                                                    subset,
-                                                    merged_base,
-                                                    out_prefix="Combined",
-                                                    feature_ranges=fmap,
-                                                    suffix=merged_suffix,
-                                                    overwrite=True,
-                                                )
-                                                masked_layers.extend(created)
+                                        fmap = _feature_ranges_for_merged_layer(
+                                            core_layer, feature_sets_access
+                                        )
+                                        if fmap:
+                                            created = hmmc.write_size_class_layers_from_binary(
+                                                subset,
+                                                merged_base,
+                                                out_prefix="Combined",
+                                                feature_ranges=fmap,
+                                                suffix=merged_suffix,
+                                                overwrite=True,
+                                            )
+                                            masked_layers.extend(created)
                                         mask_layers_outside_read_span(
                                             subset,
                                             masked_layers,

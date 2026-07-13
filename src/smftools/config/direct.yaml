@@ -47,4 +47,13 @@ hmm_methbases:
   - "A"
 
 hmm_merge_layer_features:
-  - ["A_all_accessible_features", 60]
+  - ["all_accessible_features", 60]
+  - ["all_footprint_features", 10]
+hmm_clustermap_feature_layers:
+  - all_accessible_features
+  - all_accessible_features_merged
+  - all_footprint_features_merged
+hmm_clustermap_length_layers:
+  - all_accessible_features_merged
+  - all_footprint_features
+  - all_footprint_features_merged
