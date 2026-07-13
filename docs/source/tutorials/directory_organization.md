@@ -144,6 +144,37 @@ ln -s ../../../runs/<run_name>/<date>_outputs <run_name>
    smftools project export-fastq analyses/projects/<project_name> --outdir ./fastqs
    ```
 
+## Registering legacy (pre-partitioned-store) runs
+
+Older smftools runs produced a single monolithic `.h5ad`/`.h5ad.gz` per stage
+(e.g. `<experiment>_preprocessed_duplicates_removed.h5ad.gz`) instead of the
+partitioned spine + task-store layout described above. There's no need to
+convert these before joining a project — `project add` accepts a file path
+directly, and `materialize()` detects a legacy spine (no `uns["is_spine"]`)
+and reads it directly instead of through the partition machinery, so every
+later `project` query treats it the same as a modern run:
+
+```shell
+smftools project add analyses/projects/<project_name> \
+    /path/to/<experiment>_preprocessed_duplicates_removed.h5ad.gz \
+    --id <experiment> --stage preprocess
+```
+
+`--stage` names which pipeline stage the file represents; omit it and
+smftools guesses from the filename (`_preprocessed` → preprocess, `_spatial`
+→ spatial, `_hmm` → hmm, ..., defaulting to `raw`). Register each stage file
+for the same experiment with repeated calls (same `--id`) — stages accumulate
+onto the same registry entry rather than replacing each other, so registering
+`_hmm.h5ad.gz` after `_preprocessed.h5ad.gz` doesn't lose the earlier one.
+
+The legacy file itself is only ever **read**, never modified: reference
+identity for cross-experiment harmonization is computed on the fly from
+`uns["References"]` at registration time (falling back to it only when the
+file predates `uns["reference_uids"]`) rather than being cached back into the
+source. This keeps the original monolithic file byte-for-byte untouched, so
+it's safe to register into a project without disturbing whatever else still
+depends on it.
+
 ## Every stage is visible to the project
 
 Within one experiment, later pipeline stages don't lose access to earlier

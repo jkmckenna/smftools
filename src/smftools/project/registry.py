@@ -185,6 +185,79 @@ def _discover_catalogs(spines: dict[str, Path], project_dir: Path) -> dict[str, 
     return found
 
 
+# Legacy monolithic filename suffix -> stage, matching cli.helpers.get_adata_paths'
+# naming (e.g. "<experiment>_preprocessed_duplicates_removed.h5ad.gz"). Checked
+# longest/most-specific first. A bare "<experiment>.h5ad.gz" (no suffix) has no
+# match and falls back to "raw" in infer_legacy_stage.
+_LEGACY_STAGE_SUFFIXES = (
+    ("_preprocessed_duplicates_removed", "preprocess"),
+    ("_preprocessed", "preprocess"),
+    ("_spatial", "spatial"),
+    ("_hmm", "hmm"),
+    ("_latent", "latent"),
+    ("_variant", "variant"),
+    ("_chimeric", "chimeric"),
+)
+
+
+def infer_legacy_stage(spine_path: Path) -> str:
+    """Best-effort pipeline stage for a legacy monolithic h5ad, from its filename.
+
+    Pass an explicit ``stage=`` to :func:`add_experiment` instead when a file
+    doesn't follow the standard naming (or the guess is wrong).
+    """
+    stem = spine_path.name
+    for suffix in (".h5ad.gz", ".h5ad"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    for suffix, stage in _LEGACY_STAGE_SUFFIXES:
+        if stem.endswith(suffix):
+            return stage
+    return "raw"
+
+
+def _legacy_reference_uids(spine, ref_column: str = "Reference_strand") -> dict[str, str]:
+    """Best-effort ``reference_uids`` for a spine, without mutating its source file.
+
+    Modern spines already carry ``uns["reference_uids"]`` (a sequence-hash
+    identity computed once at raw-ingestion time, see ``cli.raw_adata``) and are
+    returned as-is. A legacy monolithic AnnData (pre-partitioned-store pipeline)
+    predates that field, but still carries ``uns["References"][f"{chromosome}_
+    FASTA_sequence"]`` -- the same reference-sequence storage the modern
+    computation itself reads from -- so the identity hash can be computed here
+    on the fly at registration time instead of requiring the source file to be
+    rewritten. Not cached back into it: input data stays untouched, so this
+    re-runs (cheaply -- it's a handful of sha256 hashes, not a matrix op) every
+    time the experiment is (re-)registered.
+
+    Caveat: without the exact reference length the modern computation trims to
+    (see ``informatics.reference_identity.reference_uid``), this hashes the
+    full stored sequence instead. That's internally consistent across legacy
+    experiments, and matches modern uids in the common case where
+    ``uns["References"]`` already stores the untrimmed canonical sequence, but
+    isn't guaranteed to byte-for-byte match a modern uid for the same locus if
+    trimming/padding conventions ever differed.
+    """
+    from ..informatics.reference_identity import reference_uid
+
+    existing = dict(spine.uns.get("reference_uids", {}) or {})
+    if existing:
+        return {str(k): str(v) for k, v in existing.items()}
+
+    sequences = dict(spine.uns.get("References", {}) or {})
+    if not sequences or ref_column not in spine.obs:
+        return {}
+
+    uids: dict[str, str] = {}
+    for reference_strand in spine.obs[ref_column].astype(str).unique():
+        chromosome = str(reference_strand).rsplit("_", 1)[0]
+        sequence = sequences.get(f"{chromosome}_FASTA_sequence")
+        if sequence:
+            uids[str(reference_strand)] = reference_uid(str(sequence))
+    return uids
+
+
 def _read_spine_metadata(spine_path: Path) -> dict:
     from ..readwrite import safe_read_h5ad
 
@@ -192,7 +265,7 @@ def _read_spine_metadata(spine_path: Path) -> dict:
     uns = spine.uns
     return {
         "modality": str(uns.get("modality", "unknown")),
-        "reference_uids": {str(k): str(v) for k, v in dict(uns.get("reference_uids", {}) or {}).items()},
+        "reference_uids": _legacy_reference_uids(spine),
         "experiment": uns.get("experiment"),
         "schema_version": int(uns.get("raw_schema_version", 0) or 0),
         "n_reads": int(spine.n_obs),
@@ -205,17 +278,46 @@ def add_experiment(
     *,
     experiment_id: str | None = None,
     name: str | None = None,
+    stage: str | None = None,
 ) -> tuple[str, dict]:
     """Register (or refresh) one experiment by pointer. Append-only; O(1).
 
-    ``experiment_dir`` may point at the run's top-level output directory or at
-    one stage directory inside it (e.g. ``raw_outputs/``) -- see
-    :func:`discover_stage_spines`. Every stage spine found under it is recorded,
-    not just one, so a later `project` query can pick whichever stage it needs.
+    ``experiment_dir`` may be a directory or a file:
+
+    - **Directory** (the common case): the run's top-level output directory, or
+      one stage directory inside it (e.g. ``raw_outputs/``) -- see
+      :func:`discover_stage_spines`. Every partitioned stage spine found under
+      it is recorded.
+    - **File**: one legacy monolithic ``.h5ad``/``.h5ad.gz``, from before the
+      partitioned-store pipeline. ``stage`` names which pipeline stage it
+      represents; omit it to best-effort infer from the filename (see
+      :func:`infer_legacy_stage`). Register each legacy stage file for the same
+      experiment with repeated calls (same resulting ``experiment_id``) --
+      spines accumulate rather than replace, so nothing registered earlier is
+      lost. The source file is only ever read here, never modified: reference
+      identity for harmonization is computed on the fly instead of being
+      cached back into it (see :func:`_legacy_reference_uids`).
+
+    Either way, a later `project` query treats the result the same --
+    ``materialize()`` detects a legacy spine (no ``uns["is_spine"]``) and reads
+    it directly instead of through the partition machinery, so callers never
+    need to know which kind of spine they got.
+
+    Calling again with the same directory/experiment_id refreshes: newly
+    discovered or newly registered stages merge into the existing entry rather
+    than replacing it.
     """
     project_dir = Path(project_dir)
-    run_root, spines = discover_stage_spines(Path(experiment_dir).resolve())
+    experiment_path = Path(experiment_dir).resolve()
     registry = load_registry(project_dir)
+
+    is_legacy_call = experiment_path.is_file()
+    if is_legacy_call:
+        stage_name = stage or infer_legacy_stage(experiment_path)
+        spines = {stage_name: experiment_path}
+        run_root = experiment_path.parent
+    else:
+        run_root, spines = discover_stage_spines(experiment_path)
 
     metadata_stage = (
         "raw" if "raw" in spines else next((s for s in STAGE_PRIORITY if s in spines), next(iter(spines)))
@@ -224,11 +326,13 @@ def add_experiment(
     exp_id = str(experiment_id or meta.get("experiment") or run_root.name)
 
     existing = registry["experiments"].get(exp_id)
-    if existing and "spines" in existing:
-        # Only enforce the collision check against entries already on the current
-        # (run_root-anchored) schema; a pre-schema-2 entry pointed `path` at one
-        # stage dir specifically, so its path can't be compared to run_root
-        # directly -- treat re-adding it as the expected schema upgrade instead.
+    if existing and "spines" in existing and not is_legacy_call:
+        # Directory-discovered entries are anchored at run_root, so a mismatch
+        # means this id is already used by a different run -- refuse to merge.
+        # Legacy (file) registrations are explicit and per-file, with no shared
+        # root across repeated calls for the same experiment, so this check
+        # doesn't apply there -- accumulating legacy stage files under one id
+        # is the whole point.
         existing_root = _resolve_registry_path(existing["path"], project_dir)
         if existing_root != run_root:
             raise ValueError(
@@ -236,19 +340,26 @@ def add_experiment(
                 "pass a distinct --id"
             )
 
+    merged_spines = dict(existing.get("spines", {})) if existing else {}
+    merged_spines.update(
+        {stg: _relative_registry_path(path, project_dir) for stg, path in spines.items()}
+    )
+    merged_references = dict(existing.get("references", {})) if existing else {}
+    merged_references.update(meta["reference_uids"])
+    merged_catalogs = dict(existing.get("catalogs", {})) if existing else {}
+    merged_catalogs.update(_discover_catalogs(spines, project_dir))
+
     entry = {
         "path": _relative_registry_path(run_root, project_dir),
-        "name": name or exp_id,
+        "name": name or (existing["name"] if existing else exp_id),
         "modality": meta["modality"],
         "schema_version": meta["schema_version"],
-        "spines": {
-            stage: _relative_registry_path(path, project_dir) for stage, path in spines.items()
-        },
-        "references": meta["reference_uids"],
+        "spines": merged_spines,
+        "references": merged_references,
         "n_reads": meta["n_reads"],
         "date_added": existing["date_added"] if existing else _now(),
         "status": "active",
-        "catalogs": _discover_catalogs(spines, project_dir),
+        "catalogs": merged_catalogs,
     }
     registry["experiments"][exp_id] = entry
     save_registry(project_dir, registry)
@@ -257,7 +368,7 @@ def add_experiment(
         exp_id,
         entry["n_reads"],
         len(entry["references"]),
-        ", ".join(sorted(spines)),
+        ", ".join(sorted(merged_spines)),
     )
     return exp_id, entry
 

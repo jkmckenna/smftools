@@ -240,7 +240,13 @@ called it something different.
   either way, every pipeline stage spine found (`raw`, `preprocess`, `spatial`, `hmm`, ...) is
   recorded, not just one. Reads the raw spine's `uns` metadata (modality, sequence-hash reference
   identities) -- no matrices are opened. Reports any reference-name conflicts detected against
-  already-registered experiments.
+  already-registered experiments. `EXPERIMENT_DIR` may also be a single legacy monolithic
+  `.h5ad`/`.h5ad.gz` file predating the partitioned-store pipeline -- pass `--stage` to name which
+  pipeline stage it represents (guessed from the filename if omitted); repeated calls with the same
+  `--id` for different legacy stage files accumulate onto one registry entry instead of replacing
+  it, and the source file is only ever read, never modified (reference identity is computed on the
+  fly instead of being cached back into it). See
+  [Registering legacy (pre-partitioned-store) runs](directory_organization.md#registering-legacy-pre-partitioned-store-runs).
 - `project list PROJECT_DIR` lists registered experiments (including which stages each has
   reached) and the harmonized reference table.
 - `project materialize PROJECT_DIR CANONICAL_REFERENCE -o OUTPUT.h5ad.gz` resolves the canonical

@@ -106,10 +106,19 @@ def _run_root_from_spine_path(spine_path: Path) -> Path:
 
 
 def _resolve_spine(spine, base_dir):
-    """Return ``(spine_adata, base_dir)`` resolving partition path resolution root."""
+    """Return ``(spine_adata, base_dir)`` resolving partition path resolution root.
+
+    A legacy (pre-partitioned-store) monolithic AnnData has no ``uns["is_spine"]``
+    flag and no partitions to resolve at all, so `base` is a best-effort/unused
+    value for it -- never an error, since ``materialize()`` dispatches legacy
+    spines to :func:`_materialize_legacy` immediately after this call, before
+    `base` is used for anything.
+    """
     if isinstance(spine, (str, Path)):
         spine_path = Path(spine)
         obj = load_spine(spine_path)
+        if not bool(obj.uns.get("is_spine", False)):
+            return obj, Path(base_dir) if base_dir is not None else spine_path.parent
         if base_dir is not None:
             base = Path(base_dir)
         else:
@@ -119,6 +128,8 @@ def _resolve_spine(spine, base_dir):
             base = resolved if resolved is not None else spine_path.parent
         return obj, base
     # in-memory spine
+    if not bool(spine.uns.get("is_spine", False)):
+        return spine, Path(base_dir) if base_dir is not None else None
     if base_dir is not None:
         return spine, Path(base_dir)
     source_base_dir = spine.uns.get("source_base_dir")
@@ -572,6 +583,44 @@ def _overlay_spatial_read_metrics(
         result.obsm[key] = values
 
 
+def _materialize_legacy(
+    spine: "ad.AnnData",
+    *,
+    references,
+    samples,
+    read_ids,
+    obs_mask,
+    layers,
+    start,
+    end,
+) -> "ad.AnnData":
+    """Materialize a selection directly from an already-loaded legacy AnnData.
+
+    A legacy monolithic AnnData (pre-partitioned-store pipeline: no
+    ``uns["is_spine"]``) already holds ``X`` and every layer fully in memory --
+    there's no partition/ragged-store index to resolve, so this is a plain
+    boolean-mask slice rather than the dense/tiled/ragged dispatch the rest of
+    ``materialize()`` does. Derived-layer and read-metric overlays don't apply
+    (a legacy file has no task catalog to pull them from), so callers just get
+    back whatever was already in the source file.
+    """
+    sel = _select_spine_obs(spine, references, samples, read_ids, obs_mask, start, end)
+    if sel.shape[0] == 0:
+        raise ValueError("materialize: selection matched no molecules")
+    result = spine[list(sel.index)].copy()
+    if start is not None:
+        positions = np.asarray(result.var_names, dtype=np.int64)
+        core_mask = (positions >= int(start)) & (positions < int(end))
+        result = result[:, core_mask].copy()
+    if layers is not None:
+        keep = set(layers)
+        for layer_name in list(result.layers.keys()):
+            if layer_name not in keep:
+                del result.layers[layer_name]
+    logger.debug("materialized %d molecules from legacy monolithic spine", result.n_obs)
+    return result
+
+
 def materialize(
     spine,
     *,
@@ -623,6 +672,19 @@ def materialize(
     import anndata as ad
 
     spine_obj, base = _resolve_spine(spine, base_dir)
+    if not bool(spine_obj.uns.get("is_spine", False)):
+        # Legacy monolithic AnnData (pre-partitioned-store pipeline): already
+        # fully loaded, nothing to resolve against partitions/ragged shards.
+        return _materialize_legacy(
+            spine_obj,
+            references=references,
+            samples=samples,
+            read_ids=read_ids,
+            obs_mask=obs_mask,
+            layers=layers,
+            start=start,
+            end=end,
+        )
     # Cross-stage uns pointers (preprocess_catalog, hmm_catalog, preprocess_var, ...)
     # are stored relative to the run's output_directory, not `base` (which is the
     # raw store's own directory) -- see _run_root_from_spine_path. `base` is always

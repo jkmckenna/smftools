@@ -22,14 +22,22 @@ def project_add(
     *,
     experiment_id: str | None = None,
     name: str | None = None,
+    stage: str | None = None,
 ) -> tuple[str, dict, list[str]]:
-    """Register an experiment and return ``(id, entry, reference_conflicts)``."""
+    """Register an experiment and return ``(id, entry, reference_conflicts)``.
+
+    ``stage`` only applies when ``experiment_dir`` is a legacy monolithic
+    ``.h5ad``/``.h5ad.gz`` file (see :func:`smftools.project.registry.add_experiment`);
+    it names which pipeline stage that file represents, overriding the
+    filename-based guess. Ignored for directory-based registration, since that
+    path discovers every stage automatically.
+    """
     from ..project.catalog import ProjectCatalog
     from ..project.reference_registry import detect_reference_conflicts
     from ..project.registry import add_experiment
 
     exp_id, entry = add_experiment(
-        project_dir, experiment_dir, experiment_id=experiment_id, name=name
+        project_dir, experiment_dir, experiment_id=experiment_id, name=name, stage=stage
     )
     conflicts = detect_reference_conflicts(ProjectCatalog.open(project_dir).references())
     for warning in conflicts:

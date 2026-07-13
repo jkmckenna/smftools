@@ -140,3 +140,66 @@ def test_materialize_falls_back_to_ragged_when_dense_cache_is_missing(tmp_path):
     np.testing.assert_array_equal(ragged.X, dense.X)
     for layer in ("sequence_integer_encoding", "read_span_mask"):
         np.testing.assert_array_equal(ragged.layers[layer], dense.layers[layer])
+
+
+@pytest.fixture
+def legacy_spine_path(tmp_path):
+    """A plain monolithic AnnData with no uns["is_spine"] -- the pre-partitioned-
+    store shape (X + layers fully resident, no partition/ragged-store pointers)."""
+    a = _synth()
+    a.obs["reference_start"] = 0
+    a.obs["reference_end"] = a.shape[1]
+    path = tmp_path / "legacy_preprocessed.h5ad"
+    safe_write_h5ad(a, path, backup=False, verbose=False)
+    assert "is_spine" not in a.uns
+    return a, path
+
+
+def test_materialize_legacy_spine_detected_and_sliced_by_reference(legacy_spine_path):
+    a, path = legacy_spine_path
+    got = materialize(path, references="ref1_top")
+    exp = a[a.obs["Reference_strand"].astype(str) == "ref1_top"]
+    assert set(got.obs_names) == set(exp.obs_names)
+    got = got[list(exp.obs_names)]
+    assert np.array_equal(np.asarray(got.X), np.asarray(exp.X), equal_nan=True)
+    for layer in LAYERS:
+        assert np.array_equal(np.asarray(got.layers[layer]), np.asarray(exp.layers[layer]))
+
+
+def test_materialize_legacy_spine_by_sample_and_read_ids(legacy_spine_path):
+    a, path = legacy_spine_path
+    got = materialize(path, samples="bc00")
+    assert set(got.obs_names) == set(a.obs_names[a.obs["Sample"].astype(str) == "bc00"])
+
+    ids = [str(a.obs_names[i]) for i in (5, 3)]
+    got2 = materialize(path, read_ids=ids)
+    assert set(got2.obs_names) == set(ids)
+
+
+def test_materialize_legacy_spine_layers_filter(legacy_spine_path):
+    _a, path = legacy_spine_path
+    got = materialize(path, references="ref2_top", layers=["read_span_mask"])
+    assert set(got.layers.keys()) == {"read_span_mask"}
+
+
+def test_materialize_legacy_spine_genomic_window(legacy_spine_path):
+    a, path = legacy_spine_path
+    got = materialize(path, references="ref0_top", start=3, end=7)
+    assert list(got.var_names) == ["3", "4", "5", "6"]
+    exp = a[a.obs["Reference_strand"].astype(str) == "ref0_top", 3:7]
+    assert np.array_equal(np.asarray(got[list(exp.obs_names)].X), np.asarray(exp.X), equal_nan=True)
+
+
+def test_materialize_legacy_spine_in_memory_needs_no_base_dir(legacy_spine_path):
+    """base_dir only matters for partition resolution; a legacy in-memory spine
+    (no uns["is_spine"]) has nothing to resolve, so it must not raise even
+    though the pre-existing in-memory-spine error path normally requires it."""
+    a, _path = legacy_spine_path
+    got = materialize(a, references="ref1_top")
+    assert set(got.obs_names) == set(a.obs_names[a.obs["Reference_strand"].astype(str) == "ref1_top"])
+
+
+def test_materialize_legacy_spine_empty_selection_raises(legacy_spine_path):
+    _a, path = legacy_spine_path
+    with pytest.raises(ValueError):
+        materialize(path, references="does_not_exist")

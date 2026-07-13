@@ -527,15 +527,31 @@ def project_init_cmd(project_dir: Path):
 
 @project_group.command("add")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=True, path_type=Path))
 @click.option("--id", "experiment_id", default=None, help="Explicit experiment id.")
 @click.option("--name", default=None, help="Friendly experiment name.")
-def project_add_cmd(project_dir: Path, experiment_dir: Path, experiment_id, name):
-    """Register EXPERIMENT_DIR into PROJECT_DIR (by pointer; append-only)."""
+@click.option(
+    "--stage",
+    default=None,
+    help=(
+        "Pipeline stage this registration represents (raw, preprocess, spatial, hmm, "
+        "latent, variant, chimeric). Only meaningful when EXPERIMENT_DIR is a legacy "
+        "monolithic .h5ad/.h5ad.gz file; otherwise every stage is auto-discovered and "
+        "this is ignored. Omit to infer from the legacy file's name."
+    ),
+)
+def project_add_cmd(project_dir: Path, experiment_dir: Path, experiment_id, name, stage):
+    """Register EXPERIMENT_DIR into PROJECT_DIR (by pointer; append-only).
+
+    EXPERIMENT_DIR may be a run directory (auto-discovers every pipeline stage
+    found under it) or a single legacy monolithic .h5ad/.h5ad.gz file from
+    before the partitioned-store pipeline (use --stage to name which stage it
+    represents; the source file is only ever read, never modified).
+    """
     from .cli.project_cmd import project_add
 
     exp_id, entry, conflicts = project_add(
-        project_dir, experiment_dir, experiment_id=experiment_id, name=name
+        project_dir, experiment_dir, experiment_id=experiment_id, name=name, stage=stage
     )
     click.echo(
         f"Registered '{exp_id}' ({entry['modality']}, {entry['n_reads']} reads, "

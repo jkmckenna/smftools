@@ -185,6 +185,137 @@ def test_resolve_experiment_spine_prefers_most_derived_stage(tmp_path):
     assert reg.resolve_experiment_spine(entries["expB"], stage="hmm") is None
 
 
+@pytest.mark.parametrize(
+    "filename,expected",
+    [
+        ("myexp.h5ad", "raw"),
+        ("myexp.h5ad.gz", "raw"),
+        ("myexp_preprocessed.h5ad.gz", "preprocess"),
+        ("myexp_preprocessed_duplicates_removed.h5ad.gz", "preprocess"),
+        ("myexp_spatial.h5ad.gz", "spatial"),
+        ("myexp_hmm.h5ad", "hmm"),
+        ("myexp_latent.h5ad.gz", "latent"),
+        ("myexp_variant.h5ad.gz", "variant"),
+        ("myexp_chimeric.h5ad.gz", "chimeric"),
+    ],
+)
+def test_infer_legacy_stage_from_filename(tmp_path, filename, expected):
+    assert reg.infer_legacy_stage(tmp_path / filename) == expected
+
+
+def _legacy_monolithic_spine(*, reference_uids=None, references_fasta=None, ref_strands=None):
+    n = 3
+    obs = pd.DataFrame(index=[f"r{i}" for i in range(n)])
+    if ref_strands is not None:
+        obs["Reference_strand"] = ref_strands
+    spine = ad.AnnData(obs=obs)
+    spine.uns["modality"] = "direct"
+    spine.uns["experiment"] = "legacyExp"
+    if reference_uids is not None:
+        spine.uns["reference_uids"] = reference_uids
+    if references_fasta is not None:
+        spine.uns["References"] = references_fasta
+    return spine
+
+
+def test_legacy_reference_uids_prefers_existing():
+    spine = _legacy_monolithic_spine(reference_uids={"chr1_top": "uidX"})
+    assert reg._legacy_reference_uids(spine) == {"chr1_top": "uidX"}
+
+
+def test_legacy_reference_uids_computed_on_the_fly_from_fasta():
+    spine = _legacy_monolithic_spine(
+        ref_strands=["chr1_top", "chr1_top", "chr1_bottom"],
+        references_fasta={"chr1_FASTA_sequence": "ACGTACGTAC"},
+    )
+    uids = reg._legacy_reference_uids(spine)
+    assert set(uids) == {"chr1_top", "chr1_bottom"}
+    # Same underlying sequence -> same computed identity for both strands.
+    assert uids["chr1_top"] == uids["chr1_bottom"]
+    # Source object itself was never mutated with the computed uids.
+    assert "reference_uids" not in spine.uns
+
+
+def test_legacy_reference_uids_empty_when_no_sequence_info():
+    spine = _legacy_monolithic_spine()
+    assert reg._legacy_reference_uids(spine) == {}
+
+
+def _write_legacy_h5ad(path, *, stage_hint="", reference_uids=None, ref_strands=None, fasta=None):
+    spine = _legacy_monolithic_spine(
+        reference_uids=reference_uids, references_fasta=fasta, ref_strands=ref_strands
+    )
+    safe_write_h5ad(spine, path, backup=False, verbose=False)
+    assert "is_spine" not in spine.uns
+    return path
+
+
+def test_add_experiment_registers_legacy_file_with_inferred_stage(tmp_path):
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    legacy_file = _write_legacy_h5ad(
+        tmp_path / "legacyExp_preprocessed.h5ad",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    exp_id, entry = reg.add_experiment(proj, legacy_file, experiment_id="legacyExp")
+    assert exp_id == "legacyExp"
+    assert set(entry["spines"]) == {"preprocess"}
+    resolved = reg._resolve_registry_path(entry["spines"]["preprocess"], proj)
+    assert resolved == legacy_file.resolve()
+
+
+def test_add_experiment_legacy_file_explicit_stage_overrides_inference(tmp_path):
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    # Filename looks like "raw" (no suffix match) but caller says it's hmm.
+    legacy_file = _write_legacy_h5ad(tmp_path / "weird_name.h5ad", reference_uids={"chr1_top": "uid1"})
+    exp_id, entry = reg.add_experiment(proj, legacy_file, experiment_id="legacyExp", stage="hmm")
+    assert set(entry["spines"]) == {"hmm"}
+
+
+def test_add_experiment_legacy_files_accumulate_across_calls(tmp_path):
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    raw_file = _write_legacy_h5ad(
+        tmp_path / "legacyExp.h5ad", reference_uids={"chr1_top": "uid1"}
+    )
+    preprocess_file = _write_legacy_h5ad(
+        tmp_path / "legacyExp_preprocessed.h5ad", reference_uids={"chr1_top": "uid1"}
+    )
+    hmm_file = _write_legacy_h5ad(
+        tmp_path / "legacyExp_hmm.h5ad", reference_uids={"chr1_top": "uid1"}
+    )
+
+    reg.add_experiment(proj, raw_file, experiment_id="legacyExp")
+    reg.add_experiment(proj, preprocess_file, experiment_id="legacyExp")
+    exp_id, entry = reg.add_experiment(proj, hmm_file, experiment_id="legacyExp")
+
+    # Nothing registered by an earlier call was lost -- all three stages present.
+    assert set(entry["spines"]) == {"raw", "preprocess", "hmm"}
+    [listed] = reg.list_experiments(proj)
+    assert set(listed["spines"]) == {"raw", "preprocess", "hmm"}
+
+
+def test_add_experiment_legacy_file_never_mutates_source(tmp_path):
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    legacy_file = _write_legacy_h5ad(
+        tmp_path / "legacyExp.h5ad",
+        ref_strands=["chr1_top", "chr1_top", "chr1_bottom"],
+        fasta={"chr1_FASTA_sequence": "ACGTACGTAC"},
+    )
+    before_bytes = legacy_file.read_bytes()
+    before_mtime = legacy_file.stat().st_mtime_ns
+
+    exp_id, entry = reg.add_experiment(proj, legacy_file, experiment_id="legacyExp")
+
+    # Reference identity was computed on the fly (no uns["reference_uids"] on
+    # the source file), yet the source file's bytes/mtime are untouched.
+    assert entry["references"]
+    assert legacy_file.read_bytes() == before_bytes
+    assert legacy_file.stat().st_mtime_ns == before_mtime
+
+
 def test_sets_list_and_query(tmp_path):
     proj = tmp_path / "p"
     reg.init_project(proj)
