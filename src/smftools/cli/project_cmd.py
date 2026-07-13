@@ -9,11 +9,21 @@ from smftools.logging_utils import get_logger
 logger = get_logger(__name__)
 
 
-def project_init(project_dir: str | Path) -> Path:
-    """Initialize a project directory + empty registry."""
-    from ..project.registry import init_project
+def project_init(project_dir: str | Path, *, name: str | None = None) -> tuple[Path, list[Path]]:
+    """Initialize a project directory + empty registry, plus starter docs/dirs.
 
-    return init_project(project_dir)
+    Returns ``(registry_path, scaffolded_paths)``. ``scaffolded_paths`` covers the
+    README/AGENTS/CLAUDE/PLAN/project.yaml starter files and the project_scripts/
+    project_outputs working directories (see ``project.scaffold``) -- only the
+    ones actually created this call, since re-running ``init`` never overwrites
+    existing files.
+    """
+    from ..project.registry import init_project
+    from ..project.scaffold import scaffold_project
+
+    registry_path = init_project(project_dir)
+    scaffolded = scaffold_project(project_dir, name=name)
+    return registry_path, scaffolded
 
 
 def project_add(

@@ -58,7 +58,10 @@ matching the `data/<run_name>/` folder it reads from.
 
 ### `analyses/projects/<project_name>/`
 
-A project **references** runs — it never copies or merges their data:
+A project **references** runs — it never copies or merges their data.
+`smftools project init` scaffolds the directory with both the machine-managed
+registry and a set of starter docs/working directories (skipping anything that
+already exists, so it's safe to re-run):
 
 ```text
 <project_name>/
@@ -66,8 +69,19 @@ A project **references** runs — it never copies or merges their data:
 ├── sets/                  # Named experiment subsets
 ├── runs/                  # Symlinks only -- no data
 │   └── <run_name> -> ../../../runs/<run_name>/<date>_outputs
-└── README.md
+├── project_scripts/       # Project-specific drivers/constants (importable package)
+├── project_outputs/       # Materialized/derived outputs (project materialize -o, figures)
+├── project.yaml           # Human-curated run/reference manifest (not read by smftools)
+├── README.md
+├── AGENTS.md              # Working context for coding agents
+├── CLAUDE.md              # Points Claude Code at AGENTS.md
+└── PLAN.md                # Current objective / status / next steps
 ```
+
+The `registry.json`/`sets/`/`runs/` pieces are the only ones smftools itself
+reads back — `project_scripts/`, `project_outputs/`, `project.yaml`, and the
+README/AGENTS/CLAUDE/PLAN docs are starting points for you (or a coding agent)
+to fill in as the project develops.
 
 The symlink points at the run's `<date>_outputs/` directory — registration
 discovers *every* pipeline stage under it (`raw_outputs/`, `preprocess_adata_outputs/`,

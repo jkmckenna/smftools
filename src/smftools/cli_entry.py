@@ -517,12 +517,20 @@ def project_group():
 
 @project_group.command("init")
 @click.argument("project_dir", type=click.Path(path_type=Path))
-def project_init_cmd(project_dir: Path):
-    """Initialize a project directory + registry."""
+@click.option("--name", default=None, help="Project name used in scaffolded docs (default: directory name).")
+def project_init_cmd(project_dir: Path, name):
+    """Initialize a project directory + registry, plus starter docs/dirs.
+
+    Creates registry.json, sets/, project_scripts/, project_outputs/, and starter
+    README.md/AGENTS.md/CLAUDE.md/PLAN.md/project.yaml files. Safe to re-run --
+    only ever fills in what's missing, never overwrites existing files.
+    """
     from .cli.project_cmd import project_init
 
-    path = project_init(project_dir)
-    click.echo(f"Initialized project registry: {path}")
+    registry_path, scaffolded = project_init(project_dir, name=name)
+    click.echo(f"Initialized project registry: {registry_path}")
+    for path in scaffolded:
+        click.echo(f"  created {path}")
 
 
 @project_group.command("add")

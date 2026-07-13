@@ -234,7 +234,11 @@ sequence identity, so the same locus can be addressed by one canonical name even
 called it something different.
 
 - `project init PROJECT_DIR` creates the registry (`registry.json`) and a `sets/` directory for
-  named experiment sets.
+  named experiment sets, plus starter working directories (`project_scripts/`, `project_outputs/`)
+  and docs (`README.md`, `AGENTS.md`, `CLAUDE.md`, `PLAN.md`, `project.yaml`) -- none of which
+  smftools reads back, they just give the project directory a useful starting point. `--name`
+  sets the name used in the scaffolded docs (default: the directory name). Safe to re-run: never
+  overwrites anything that already exists.
 - `project add PROJECT_DIR EXPERIMENT_DIR` registers an experiment by pointer. `EXPERIMENT_DIR` may
   be the run's top-level output directory or one stage directory inside it (e.g. `raw_outputs/`) --
   either way, every pipeline stage spine found (`raw`, `preprocess`, `spatial`, `hmm`, ...) is

@@ -44,6 +44,28 @@ def _make_raw_experiment(out_dir, *, reference_strand, uid, npos=12, n=4):
     return out_dir
 
 
+def test_project_init_cli_scaffolds_docs_and_working_dirs(tmp_path):
+    proj = tmp_path / "project"
+    runner = CliRunner()
+
+    r = runner.invoke(cli_entry.cli, ["project", "init", str(proj)])
+    assert r.exit_code == 0, r.output
+    assert "Initialized project registry" in r.output
+    assert "created" in r.output
+
+    for filename in ("README.md", "AGENTS.md", "CLAUDE.md", "PLAN.md", "project.yaml"):
+        assert (proj / filename).is_file()
+    assert (proj / "project_scripts").is_dir()
+    assert (proj / "project_outputs").is_dir()
+
+    # Re-running is a no-op for the scaffold (idempotent registry init too).
+    readme = proj / "README.md"
+    readme.write_text("# hand-edited\n")
+    r2 = runner.invoke(cli_entry.cli, ["project", "init", str(proj)])
+    assert r2.exit_code == 0, r2.output
+    assert readme.read_text() == "# hand-edited\n"
+
+
 def test_project_cli_end_to_end(tmp_path):
     uid = reference_uid(SEQUENCE, 12)
     _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
