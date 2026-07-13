@@ -61,8 +61,14 @@ def cli(log_file: Path | None, log_level: str):
     _configure_multiprocessing()
 
 
+####### Experiment-scoped pipeline stages ###########
+@cli.group("experiment")
+def experiment_group():
+    """Run pipeline stages for a single experiment (one config path in)."""
+
+
 ####### Load anndata from raw data ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def raw(config_path):
     """Prepare BAM artifacts and write the ragged raw store."""
@@ -71,7 +77,7 @@ def raw(config_path):
     raw_adata(config_path)
 
 
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def load(config_path):
     """Optionally pre-build the dense zarr cache from raw artifacts."""
@@ -84,7 +90,7 @@ def load(config_path):
 
 
 ####### Preprocessing ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def preprocess(config_path):
     """Preprocessing."""
@@ -97,7 +103,7 @@ def preprocess(config_path):
 
 
 ####### Spatial ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def spatial(config_path):
     """Spatial signal analysis"""
@@ -110,7 +116,7 @@ def spatial(config_path):
 
 
 ####### HMM ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def hmm(config_path):
     """HMM feature annotations and plotting"""
@@ -123,7 +129,7 @@ def hmm(config_path):
 
 
 ####### Latent ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def latent(config_path):
     """Latent representations of signal"""
@@ -136,7 +142,7 @@ def latent(config_path):
 
 
 ####### Variant ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def variant(config_path):
     """Sequence variation analyses"""
@@ -149,7 +155,7 @@ def variant(config_path):
 
 
 ####### Chimeric ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def chimeric(config_path):
     """Finding putative PCR chimeras"""
@@ -162,7 +168,7 @@ def chimeric(config_path):
 
 
 ####### Recipes ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def full(config_path):
     """Workflow: raw preprocess spatial hmm."""
@@ -173,7 +179,7 @@ def full(config_path):
 
 
 ####### batch command ###########
-@cli.command()
+@experiment_group.command()
 @click.argument(
     "task",
     type=click.Choice(
@@ -343,7 +349,7 @@ def batch(task, config_table: Path, column: str, sep: str | None):
 
 
 ####### concatenate command ###########
-@cli.command("concatenate")
+@experiment_group.command("concatenate")
 @click.argument("config_path", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--recompute-pp-vars",
@@ -392,11 +398,11 @@ def concatenate_cmd(
 
     Example:
 
-        smftools concatenate experiment_config.csv
+        smftools experiment concatenate experiment_config.csv
 
-        smftools concatenate experiment_config.csv --recompute-pp-vars
+        smftools experiment concatenate experiment_config.csv --recompute-pp-vars
 
-        smftools concatenate experiment_config.csv --input-dir ./variant_h5ads/
+        smftools experiment concatenate experiment_config.csv --input-dir ./variant_h5ads/
     """
     from .cli.helpers import load_experiment_config
     from .readwrite import concatenate_h5ads
@@ -503,78 +509,6 @@ def subsample_pod5_cmd(pod5_path, read_names, n_reads, outdir):
 ##########################################
 
 
-####### migrate to partitioned store ###########
-@cli.command("migrate-store")
-@click.argument("config_path", type=click.Path(exists=True))
-@click.option(
-    "--stage",
-    default="raw",
-    show_default=True,
-    help="AnnData stage to migrate (raw/pp/pp_dedup/spatial/hmm/latent/variant/chimeric).",
-)
-@click.option(
-    "--input",
-    "input_path",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Explicit .h5ad(.gz) to migrate (overrides --stage).",
-)
-@click.option(
-    "--outdir",
-    type=click.Path(path_type=Path, file_okay=False),
-    default=None,
-    help="Output directory for the store (default: the stage's directory).",
-)
-def migrate_store_cmd(config_path, stage: str, input_path: Path | None, outdir: Path | None):
-    """
-    Convert an existing AnnData .h5ad into a partitioned zarr store + thin spine +
-    catalog (the 1.0.x storage format), without touching the source h5ad.
-
-    Example:
-
-        smftools migrate-store experiment_config.csv
-
-        smftools migrate-store experiment_config.csv --stage pp_dedup
-    """
-    from .cli.helpers import STAGE_MAP, get_adata_paths, load_experiment_config
-    from .informatics.partition_store import write_experiment_store
-    from .readwrite import safe_read_h5ad
-
-    cfg = load_experiment_config(str(config_path))
-    paths = get_adata_paths(cfg)
-
-    if input_path is not None:
-        src = Path(input_path)
-    else:
-        key = STAGE_MAP.get(stage.lower())
-        if key is None:
-            raise click.ClickException(
-                f"Unknown stage '{stage}'. Valid: {', '.join(sorted(STAGE_MAP))}"
-            )
-        src = getattr(paths, key)
-
-    if not src.exists():
-        raise click.ClickException(f"Source AnnData not found: {src}")
-
-    # Default output dir: the stage directory (h5ads live in <stage>/h5ads/), so the
-    # store/spine/catalog land next to the monolith's directory, matching load.
-    out = Path(outdir) if outdir else src.parent.parent
-    click.echo(f"Reading {src}")
-    adata, _ = safe_read_h5ad(src)
-    result = write_experiment_store(
-        adata,
-        out,
-        experiment=cfg.experiment_name,
-        modality=cfg.smf_modality,
-    )
-    click.echo(f"Store written under {result['store']}")
-    click.echo(f"Spine:   {result['spine']}")
-    click.echo(f"Catalog: {result['catalog']}")
-
-
-##########################################
-
-
 ####### Project-level cross-experiment catalog ###########
 @cli.group("project")
 def project_group():
@@ -665,21 +599,8 @@ def project_materialize_cmd(project_dir, canonical_reference, output, set_name, 
 
 
 ####### FASTQ export ###########
-@cli.command("export-fastq")
-@click.option(
-    "--config",
-    "config_path",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="Experiment config (single-experiment export).",
-)
-@click.option(
-    "--project",
-    "project_dir",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    default=None,
-    help="Project directory (cross-experiment export).",
-)
+@experiment_group.command("export-fastq")
+@click.argument("config_path", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--outdir",
     "-o",
@@ -690,12 +611,7 @@ def project_materialize_cmd(project_dir, canonical_reference, output, set_name, 
 @click.option(
     "--group-by",
     default=None,
-    help="obs column to group reads by (single-experiment only; default: Sample/Barcode).",
-)
-@click.option(
-    "--experiments",
-    default=None,
-    help="Comma-separated experiment ids to include (project only; default: all active).",
+    help="obs column to group reads by (default: Sample/Barcode).",
 )
 @click.option(
     "--allow-unfiltered",
@@ -707,54 +623,85 @@ def project_materialize_cmd(project_dir, canonical_reference, output, set_name, 
     is_flag=True,
     help="Write plain .fastq instead of .fastq.gz.",
 )
-def export_fastq_cmd(
-    config_path: Path | None,
-    project_dir: Path | None,
+def export_fastq_experiment_cmd(
+    config_path: Path,
     outdir: Path,
     group_by: str | None,
-    experiments: str | None,
     allow_unfiltered: bool,
     no_gzip: bool,
 ):
-    """Write one FASTQ per barcode of QC-passed reads, for an experiment or a project.
+    """Write one FASTQ per barcode of QC-passed reads, for one experiment.
 
     Reads sequence/quality directly from the raw ragged store; the QC-passed read
     set is resolved from the most complete preprocessing artifact available.
 
     Example:
 
-        smftools export-fastq --config experiment_config.csv --outdir ./fastqs
-
-        smftools export-fastq --project ./my_project --outdir ./fastqs
+        smftools experiment export-fastq experiment_config.csv --outdir ./fastqs
     """
-    if bool(config_path) == bool(project_dir):
-        raise click.ClickException("Provide exactly one of --config or --project.")
+    from .cli.export_fastq import export_fastq_for_experiment
 
-    if config_path:
-        from .cli.export_fastq import export_fastq_for_experiment
+    out = export_fastq_for_experiment(
+        str(config_path),
+        outdir,
+        group_by=group_by,
+        allow_unfiltered=allow_unfiltered,
+        gzip_output=not no_gzip,
+    )
+    click.echo(f"Wrote FASTQ export to: {out}")
 
-        out = export_fastq_for_experiment(
-            str(config_path),
-            outdir,
-            group_by=group_by,
-            allow_unfiltered=allow_unfiltered,
-            gzip_output=not no_gzip,
-        )
-    else:
-        from .cli.export_fastq import export_fastq_for_project
 
-        experiment_list = (
-            [item.strip() for item in experiments.split(",") if item.strip()]
-            if experiments
-            else None
-        )
-        out = export_fastq_for_project(
-            project_dir,
-            outdir,
-            experiments=experiment_list,
-            allow_unfiltered=allow_unfiltered,
-            gzip_output=not no_gzip,
-        )
+@project_group.command("export-fastq")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--outdir",
+    "-o",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Output directory for FASTQ files + manifest CSV.",
+)
+@click.option(
+    "--experiments",
+    default=None,
+    help="Comma-separated experiment ids to include (default: all active).",
+)
+@click.option(
+    "--allow-unfiltered",
+    is_flag=True,
+    help="Write all reads when no QC-passed read set is available, instead of raising/skipping.",
+)
+@click.option(
+    "--no-gzip",
+    is_flag=True,
+    help="Write plain .fastq instead of .fastq.gz.",
+)
+def export_fastq_project_cmd(
+    project_dir: Path,
+    outdir: Path,
+    experiments: str | None,
+    allow_unfiltered: bool,
+    no_gzip: bool,
+):
+    """Write one FASTQ per barcode of QC-passed reads, across every registered experiment.
+
+    Example:
+
+        smftools project export-fastq ./my_project --outdir ./fastqs
+    """
+    from .cli.export_fastq import export_fastq_for_project
+
+    experiment_list = (
+        [item.strip() for item in experiments.split(",") if item.strip()]
+        if experiments
+        else None
+    )
+    out = export_fastq_for_project(
+        project_dir,
+        outdir,
+        experiments=experiment_list,
+        allow_unfiltered=allow_unfiltered,
+        gzip_output=not no_gzip,
+    )
     click.echo(f"Wrote FASTQ export to: {out}")
 
 
@@ -762,10 +709,12 @@ def export_fastq_cmd(
 
 
 ####### Plot current traces ###########
-@cli.command("plot-current")
+@experiment_group.command("plot-current")
 @click.argument("config_path", type=click.Path(exists=True))
 def plot_current(config_path):
     """Plot nanopore current traces for specified reads."""
+    from .cli.plot_current import plot_current as plot_current_fn
+
     plot_current_fn(config_path)
 
 

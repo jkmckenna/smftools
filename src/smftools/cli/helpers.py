@@ -57,8 +57,10 @@ class AdataPaths:
     latent: Path
     variant: Path
     chimeric: Path
-    # Partitioned-store artifacts for the load stage (1.0.x). Emitted alongside the
-    # monolithic raw h5ad; see informatics/partition_store.write_experiment_store.
+    # Optional dense zarr cache for the load stage, built on demand by
+    # `smftools load` / cli.load_adata.load_dense_cache (see
+    # informatics/partition_store.write_dense_cache_from_spine). Not written by
+    # the default raw_adata()/full_flow path.
     store: Path | None = None
     spine: Path | None = None
     catalog: Path | None = None
@@ -138,8 +140,8 @@ def get_adata_paths(cfg) -> AdataPaths:
     variant = output_directory / VARIANT_DIR / H5_DIR / f"{pp_dedup_base}_variant.h5ad.gz"
     chimeric = output_directory / CHIMERIC_DIR / H5_DIR / f"{pp_dedup_base}_chimeric.h5ad.gz"
 
-    # Partitioned-store artifacts live in the load directory (output/LOAD_DIR),
-    # matching write_experiment_store(output_dir=load_directory) in load_adata_core.
+    # Dense-cache artifacts live in the load directory (output/LOAD_DIR), matching
+    # write_dense_cache_from_spine(output_dir=load_directory) in load_dense_cache.
     load_dir = output_directory / LOAD_DIR
     store = load_dir / "store"
     spine = load_dir / "spine.h5ad"

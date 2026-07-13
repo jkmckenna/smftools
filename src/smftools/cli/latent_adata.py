@@ -120,7 +120,7 @@ def latent_adata(
     """
     CLI-facing wrapper for representation learning.
 
-    Called by: `smftools latent <config_path>`
+    Called by: `smftools experiment latent <config_path>`
 
     Responsibilities:
     - Determine which AnnData stages exist (pp, pp_dedup, spatial, hmm).

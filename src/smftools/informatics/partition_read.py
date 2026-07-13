@@ -42,7 +42,8 @@ def read_catalog(catalog_path: str | Path) -> pd.DataFrame:
 
 
 def load_spine(spine_path: str | Path, *, verbose: bool = True) -> "ad.AnnData":
-    """Load the thin molecule-index spine written by ``write_experiment_store``."""
+    """Load the thin molecule-index spine (e.g. written by ``write_raw_store``,
+    ``execute_partitioned_preprocessing``, or another stage's spine writer)."""
     from ..readwrite import safe_read_h5ad
 
     spine, _ = safe_read_h5ad(spine_path, verbose=verbose)

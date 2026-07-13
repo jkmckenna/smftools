@@ -182,7 +182,7 @@ def test_export_fastq_for_experiment_missing_raw_spine_raises(tmp_path, patch_co
     )
     patch_config(SimpleNamespace(sample_name_col_for_plotting="Sample"), paths)
 
-    with pytest.raises(FileNotFoundError, match="smftools raw"):
+    with pytest.raises(FileNotFoundError, match="smftools experiment raw"):
         export_fastq_for_experiment("fake.csv", tmp_path / "fastq_out")
 
 

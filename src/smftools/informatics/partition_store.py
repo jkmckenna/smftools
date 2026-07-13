@@ -1,18 +1,23 @@
-"""Partitioned zarr store + thin molecule-index spine + partition catalog.
+"""Zarr partition + thin molecule-index spine + partition catalog helpers.
 
-This is the storage layer for the 1.0.0 output re-architecture. Instead of one
-monolithic ``.h5ad`` per experiment, an experiment is written as:
+``write_dense_cache_from_spine`` is the actively-used piece: it builds the
+optional dense zarr cache (``smftools load`` / ``cli.load_adata.load_dense_cache``)
+from a raw ragged store, and is what ``AdataPaths.store``/``.spine``/``.catalog``
+point at.
 
-- ``store/<reference>/<sample>/``: one anndata-native **zarr partition** per
-  ``(Reference_strand, Sample)`` group, holding that group's ``X`` + heavy layers
-  (chunked along ``obs``). Each partition keeps its own ``var``/``uns`` and is
-  self-describing.
-- ``spine.h5ad``: a **thin molecule-index AnnData** -- one ``obs`` row per read,
-  carrying identity columns plus pointers (``partition``, ``partition_row``,
-  ``bam_path``) that link each molecule to its data in the partitions / BAM. It
-  holds no ``X`` or layers.
-- ``catalog.parquet``: one row per partition, for fast indexed selection without
-  scanning the store tree.
+The lower-level ``write_partitioned_store``/``build_spine``/``write_catalog``/
+``write_experiment_store`` functions predate the raw/load split (they were the
+storage layer for the original 1.0.0 output re-architecture spike, partitioning
+an arbitrary in-memory AnnData by ``(Reference_strand, Sample)`` with no genomic
+windowing). Nothing in the current pipeline writes that format anymore -- the
+CLI command and load_adata_core auto-emit that used to produce it have been
+removed. They're kept only because ``materialize()``'s generic dense-partition
+read path (tests/unit/informatics/test_partition_read.py,
+test_partition_store.py) still uses them as a convenient way to build an
+arbitrary multi-reference/multi-sample dense fixture without needing a full
+ragged/CIGAR-based raw store. Do not wire them back into production code; if
+that read path needs new coverage, build it from ``write_dense_cache_from_spine``
+or ``write_raw_store`` instead.
 
 The partition + spine writes go through :func:`smftools.readwrite.safe_write_zarr`
 / :func:`safe_write_h5ad`, so the same sanitization + pickle-backup behavior used

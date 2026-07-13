@@ -1388,38 +1388,6 @@ def load_adata_core(
     write_gz_h5ad(raw_adata, raw_adata_path)
     ########################################################################################################################
 
-    ############################################### Additionally emit partitioned zarr store (additive) ###############################################
-    # Transition (1.0.x): the monolithic raw h5ad written above stays canonical --
-    # downstream stages still read it -- while we ALSO emit a per-(Reference_strand,
-    # Sample) zarr store + thin molecule-index spine + catalog. This lets the new
-    # storage format be validated on real runs before stages are ported to read it.
-    # Non-fatal: a store-write failure must never break the (working) monolith path.
-    if getattr(cfg, "emit_partitioned_store", True):
-        try:
-            from ..informatics.partition_store import write_experiment_store
-
-            spine_path = load_directory / "spine.h5ad"
-            if spine_path.exists() and not getattr(cfg, "force_redo_load_adata", False):
-                logger.info(f"Partitioned store already exists ({spine_path}); skipping emission.")
-            else:
-                logger.info("Emitting partitioned zarr store + spine + catalog (additive)")
-                bam_for_store = (
-                    str(aligned_sorted_output) if aligned_sorted_output.exists() else None
-                )
-                store_paths = write_experiment_store(
-                    raw_adata,
-                    load_directory,
-                    experiment=cfg.experiment_name,
-                    modality=cfg.smf_modality,
-                    bam_path=bam_for_store,
-                )
-                logger.info(f"Partitioned store written under {store_paths['store']}")
-        except Exception as e:
-            logger.warning(
-                f"Failed to emit partitioned store (non-fatal; monolith h5ad unaffected): {e}"
-            )
-    ########################################################################################################################
-
     ############################################### MultiQC HTML Report ###############################################
 
     # multiqc ###

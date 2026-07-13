@@ -25,7 +25,7 @@ def preprocess_adata(
     """
     CLI-facing wrapper for preprocessing.
 
-    Called by: `smftools preprocess <config_path>`
+    Called by: `smftools experiment preprocess <config_path>`
 
     - Resolve a raw spine/AnnData or a later-stage AnnData.
     - Determine which AnnData stages exist (raw, pp, pp_dedup, spatial, hmm).

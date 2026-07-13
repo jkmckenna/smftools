@@ -127,7 +127,7 @@ def test_artifact_paths_include_raw_and_dense_outputs(tmp_path):
 def test_cli_exposes_raw_and_optional_load_commands():
     from smftools.cli_entry import cli
 
-    result = CliRunner().invoke(cli, ["--help"])
+    result = CliRunner().invoke(cli, ["experiment", "--help"])
     assert result.exit_code == 0
     assert "raw" in result.output
     assert "Optionally pre-build the dense zarr cache" in result.output
@@ -182,6 +182,26 @@ def test_load_dense_cache_runs_raw_then_cache_builder(tmp_path, monkeypatch):
     monkeypatch.setattr(readwrite, "safe_read_h5ad", lambda path: ("cached-spine", None))
 
     assert load_dense_cache("experiment.csv") == ("cached-spine", source_spine, cfg)
+
+
+def test_get_adata_paths_includes_dense_cache_artifacts(tmp_path):
+    from smftools.cli.helpers import get_adata_paths
+    from smftools.constants import LOAD_DIR
+
+    cfg = SimpleNamespace(
+        output_directory=str(tmp_path),
+        experiment_name="EXP",
+        smf_modality="conversion",
+    )
+    p = get_adata_paths(cfg)
+    load_dir = tmp_path / LOAD_DIR
+    # These are the dense zarr cache paths write_dense_cache_from_spine writes
+    # to via `smftools load` / load_dense_cache -- not written by the default
+    # raw_adata()/full_flow path.
+    assert p.store == load_dir / "store"
+    assert p.spine == load_dir / "spine.h5ad"
+    assert p.catalog == load_dir / "catalog.parquet"
+    assert p.raw.parent.parent == load_dir
 
 
 def test_preprocess_wrapper_accepts_raw_spine_source(tmp_path, monkeypatch):

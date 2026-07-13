@@ -52,7 +52,7 @@ def _resolve_qc_obs(paths, *, allow_unfiltered: bool):
     if not allow_unfiltered:
         raise ValueError(
             "no QC-passed read set found (preprocess spine / pp_dedup / pp not present); "
-            "run `smftools preprocess <config_path>` first, or pass allow_unfiltered=True"
+            "run `smftools experiment preprocess <config_path>` first, or pass allow_unfiltered=True"
         )
     logger.warning("no preprocessing artifacts found; exporting ALL raw reads (unfiltered)")
     from ..informatics.partition_read import load_spine as _load_spine
@@ -108,7 +108,7 @@ def export_fastq_for_experiment(
 
     Raises:
         FileNotFoundError: If no raw ragged spine exists for this config (run
-            ``smftools raw <config_path>`` first).
+            ``smftools experiment raw <config_path>`` first).
         ValueError: If no QC-passed read set is available and
             ``allow_unfiltered`` is not set.
     """
@@ -122,7 +122,7 @@ def export_fastq_for_experiment(
     if not paths.raw_spine or not paths.raw_spine.exists():
         raise FileNotFoundError(
             f"no raw ragged spine found at {paths.raw_spine}; "
-            f"run `smftools raw {config_path}` first"
+            f"run `smftools experiment raw {config_path}` first"
         )
     raw_spine = load_spine(paths.raw_spine)
     base_dir = paths.raw_spine.parent

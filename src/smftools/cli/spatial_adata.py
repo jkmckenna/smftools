@@ -17,7 +17,7 @@ def spatial_adata(
     """
     CLI-facing wrapper for spatial analyses.
 
-    Called by: `smftools spatial <config_path>`
+    Called by: `smftools experiment spatial <config_path>`
 
     Responsibilities:
     - Ensure a usable AnnData exists via `load_adata` + `preprocess_adata`.

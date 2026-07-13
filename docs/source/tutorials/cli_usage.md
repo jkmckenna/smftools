@@ -2,16 +2,21 @@
 
 ## Quick start
 
+Experiment-scoped commands (everything that takes a single experiment config) live under
+`smftools experiment`. Project-scoped commands (everything that spans multiple registered
+experiments) live under `smftools project`. Anything outside those two groups (e.g.
+`subsample-pod5`) is a standalone utility with no experiment/project config of its own.
+
 Most CLI workflows start with an experiment configuration CSV that points to your data, FASTA, and
 output directory. Once the configuration is ready, you can run commands such as:
 
 ```shell
-smftools raw /path/to/experiment_config.csv
+smftools experiment raw /path/to/experiment_config.csv
 # Optional: pre-build the dense reference-grid cache.
-smftools load /path/to/experiment_config.csv
-smftools preprocess /path/to/experiment_config.csv
-smftools full /path/to/experiment_config.csv
-smftools batch full /path/to/config_paths.csv
+smftools experiment load /path/to/experiment_config.csv
+smftools experiment preprocess /path/to/experiment_config.csv
+smftools experiment full /path/to/experiment_config.csv
+smftools experiment batch raw /path/to/config_paths.csv
 ```
 
 Each command creates or reuses stage-specific artifacts in the output directory. Later commands
@@ -19,7 +24,7 @@ reuse results from earlier stages unless you explicitly force a redo via configu
 
 ## What each command does
 
-### `smftools raw`
+### `smftools experiment raw`
 
 The raw command prepares sequencing inputs and writes the read-relative source of truth. It:
 
@@ -40,18 +45,18 @@ The raw command prepares sequencing inputs and writes the read-relative source o
 
 All artifacts produced by this command are grouped under `raw_outputs/`.
 
-### `smftools load`
+### `smftools experiment load`
 
 The load command is optional in v2. It runs `raw` when needed, densifies one reference at a time,
 and persists a barcode-ordered zarr cache. Downstream accessors use this cache when present and
 otherwise densify the requested slice directly from ragged parquet.
 The cache, catalog, and dense-index spine are stored under `load_adata_outputs/`.
 
-### `smftools preprocess`
+### `smftools experiment preprocess`
 
 The preprocess command performs QC, binarization, filtering, and duplicate detection. It:
 
-- Requires an Anndata created by smftools load.
+- Requires an Anndata created by `smftools experiment load`.
 - Loads sample sheet metadata (if provided).
 - Generates read length/quality QC plots and filters reads on these metrics.
 - Filters reads whose longest internal insertion/deletion (from the alignment CIGAR) exceeds
@@ -95,7 +100,7 @@ General AnnData structures added by `preprocess`:
 - `uns`
 - preprocessing stage metadata/flags plus auxiliary analysis outputs (for example UMI bipartite summaries and complexity-analysis summaries/fit outputs).
 
-### `smftools variant`
+### `smftools experiment variant`
 
 The variant command focuses on DNA sequence variation analyses. It:
 
@@ -122,7 +127,7 @@ General AnnData structures added by `variant`:
 - `uns`
 - workflow completion flags (e.g., `append_variant_call_layer_performed`, `append_variant_segment_layer_performed`) and prior mismatch/substitution metadata used by variant calling.
 
-### `smftools chimeric`
+### `smftools experiment chimeric`
 
 The chimeric command is meant to find putative PCR chimeras. It:
 
@@ -147,7 +152,7 @@ General AnnData structures added by `chimeric`:
 - `"{rolling_nn_obsm_key}_zero_pairs_map"` and `"{rolling_nn_obsm_key}_reference_map"`.
 - optional stored segment records (`...__zero_hamming_segments`) and plotting metadata (`..._starts`, `..._window`, `..._step`, etc.), depending on cleanup settings in config.
 
-### `smftools spatial`
+### `smftools experiment spatial`
 
 The spatial command runs downstream spatial analyses on the preprocessed data. It:
 
@@ -183,7 +188,7 @@ The optional dense-only analyses in the remaining bullets apply to
 `spatial_execution_mode: legacy`. Use `auto` (default), `partitioned`, or `legacy` to choose the
 execution path explicitly.
 
-### `smftools hmm`
+### `smftools experiment hmm`
 
 The hmm command adds HMM-based feature annotation and summary plots. It:
 
@@ -194,7 +199,7 @@ The hmm command adds HMM-based feature annotation and summary plots. It:
 - Generates clustermaps, bulk feature traces, and fragment size distribution plots for HMM layers.
 - Writes the HMM AnnData output.
 
-### `smftools latent`
+### `smftools experiment latent`
 
 The latent command constructs latent representations of the data. It:
 
@@ -206,7 +211,7 @@ The latent command constructs latent representations of the data. It:
     - Non-negative matrix factorization (NMF)
     - Canonical polyadic decomposition (PARAFAC)
 
-### `smftools full`
+### `smftools experiment full`
 
 The full command is a workflow wrapper. It runs the following sequentially:
 
@@ -243,47 +248,32 @@ different.
 - `project remove PROJECT_DIR EXPERIMENT_ID` marks an experiment inactive (soft delete; the
   registry is append-only).
 
-`smftools export-fastq --project ...` builds on the same registry.
+`smftools project export-fastq ...` builds on the same registry.
 
-### `smftools export-fastq`
+### `smftools experiment export-fastq` / `smftools project export-fastq`
 
 Writes one FASTQ (`.fastq.gz` by default) per barcode of QC-passed reads, for a single experiment
-or an entire project. Sequence and quality are read directly from the raw ragged store, so no BAM
-re-parsing is needed.
+or an entire project -- available under both hierarchies, sharing the same underlying export logic.
+Sequence and quality are read directly from the raw ragged store, so no BAM re-parsing is needed.
 
 ```shell
-smftools export-fastq --config /path/to/experiment_config.csv --outdir /path/to/fastq_outdir
-smftools export-fastq --project /path/to/project_dir --outdir /path/to/fastq_outdir
+smftools experiment export-fastq /path/to/experiment_config.csv --outdir /path/to/fastq_outdir
+smftools project export-fastq /path/to/project_dir --outdir /path/to/fastq_outdir
 ```
 
-- Exactly one of `--config` or `--project` is required.
-- Single-experiment mode resolves the QC-passed read set from the most complete preprocessing
-  artifact available, in priority order: the partitioned preprocess spine's `passes_dedup` (falling
-  back to `passes_qc` then `passes_read_qc`), then the legacy deduplicated AnnData's read set, then
-  the legacy QC-filtered AnnData's read set. Raises unless `--allow-unfiltered` is passed if none of
-  these are available.
-- `--group-by` overrides the grouping obs column (default: `sample_name_col_for_plotting`, falling
-  back to `Sample` then `Barcode`).
-- Project mode namespaces output filenames as `<experiment_id>__<barcode>.fastq.gz` and only
-  includes experiments that have run partitioned preprocessing (others are skipped with a warning
-  unless `--allow-unfiltered`); `--experiments` restricts to an explicit comma-separated id list.
+- `smftools experiment export-fastq` resolves the QC-passed read set from the most complete
+  preprocessing artifact available, in priority order: the partitioned preprocess spine's
+  `passes_dedup` (falling back to `passes_qc` then `passes_read_qc`), then the legacy deduplicated
+  AnnData's read set, then the legacy QC-filtered AnnData's read set. Raises unless
+  `--allow-unfiltered` is passed if none of these are available.
+- `--group-by` (experiment command only) overrides the grouping obs column (default:
+  `sample_name_col_for_plotting`, falling back to `Sample` then `Barcode`).
+- `smftools project export-fastq` namespaces output filenames as
+  `<experiment_id>__<barcode>.fastq.gz` and only includes experiments that have run partitioned
+  preprocessing (others are skipped with a warning unless `--allow-unfiltered`); `--experiments`
+  restricts to an explicit comma-separated id list.
 - `--no-gzip` writes plain `.fastq`. A `fastq_manifest.csv` (barcode, read count, path) is written
   alongside the FASTQs.
-
-### `smftools migrate-store`
-
-Converts an existing monolithic AnnData `.h5ad` into a partitioned zarr store + thin spine +
-catalog, without modifying the source file.
-
-```shell
-smftools migrate-store /path/to/experiment_config.csv
-smftools migrate-store /path/to/experiment_config.csv --stage pp_dedup
-```
-
-- `--stage` selects which AnnData stage to migrate (`raw`/`pp`/`pp_dedup`/`spatial`/`hmm`/`latent`/
-  `variant`/`chimeric`; default `raw`).
-- `--input` migrates an explicit `.h5ad(.gz)` file instead, overriding `--stage`.
-- `--outdir` overrides the output directory (default: the stage's normal directory).
 
 
 ## Batch processing
@@ -291,7 +281,7 @@ smftools migrate-store /path/to/experiment_config.csv --stage pp_dedup
 Use the batch command to run a single task across multiple experiments.
 
 ```shell
-smftools batch preprocess /path/to/config_paths.csv
+smftools experiment batch preprocess /path/to/config_paths.csv
 ```
 
 The batch command accepts:
@@ -302,7 +292,7 @@ The batch command accepts:
 You can override the column name or delimiter if needed:
 
 ```shell
-smftools batch spatial /path/to/configs.tsv --column my_config --sep $'\t'
+smftools experiment batch spatial /path/to/configs.tsv --column my_config --sep $'\t'
 ```
 
 Each path is validated; missing configs are skipped with a message, while valid configs run the

@@ -35,7 +35,7 @@ def test_full_cli_invokes_four_stage_recipe(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(cli_entry, "full_flow", lambda path: calls.append(path))
 
-    result = CliRunner().invoke(cli_entry.cli, ["full", str(config)])
+    result = CliRunner().invoke(cli_entry.cli, ["experiment", "full", str(config)])
 
     assert result.exit_code == 0
     assert calls == [str(config)]

@@ -18,7 +18,7 @@ def variant_adata(
     """
     CLI-facing wrapper for variant analyses.
 
-    Called by: `smftools variant <config_path>`
+    Called by: `smftools experiment variant <config_path>`
 
     Responsibilities:
     - Ensure a usable AnnData exists.

@@ -154,7 +154,7 @@ def chimeric_adata(
     """
     CLI-facing wrapper for chimeric analyses.
 
-    Called by: `smftools chimeric <config_path>`
+    Called by: `smftools experiment chimeric <config_path>`
 
     Responsibilities:
     - Ensure a usable AnnData exists.

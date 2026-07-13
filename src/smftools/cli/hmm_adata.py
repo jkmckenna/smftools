@@ -574,7 +574,7 @@ def hmm_adata(config_path: str):
     CLI-facing wrapper for HMM analysis.
 
     Command line entrypoint:
-        smftools hmm <config_path>
+        smftools experiment hmm <config_path>
 
     Responsibilities:
     - Build cfg via load_adata()

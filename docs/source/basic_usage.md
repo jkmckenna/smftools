@@ -2,17 +2,22 @@
 
 ## Raw And Load Usage
 
+Experiment-scoped commands (everything that takes a single experiment config) live under
+`smftools experiment`. Project-scoped commands (everything that spans multiple registered
+experiments) live under `smftools project`. Anything outside those two groups (e.g.
+`subsample-pod5`) is a standalone utility with no experiment/project config of its own.
+
 In v2, workflows begin by preparing BAM artifacts and the ragged per-read source of truth:
 
 ```shell
-smftools raw "/Path_to_experiment_config.csv"
+smftools experiment raw "/Path_to_experiment_config.csv"
 ```
 
 Dense reference-grid data is materialized on demand. To persist the full dense zarr cache ahead of
 downstream work, run the optional command:
 
 ```shell
-smftools load "/Path_to_experiment_config.csv"
+smftools experiment load "/Path_to_experiment_config.csv"
 ```
 
 This command takes a user passed config file handling:
@@ -33,7 +38,7 @@ PCR-chimera rate to `raw_outputs/plots/reference_barcode_chimera_rate.png` (with
 This command performs preprocessing on the anndata object.
 
 ```shell
-smftools preprocess "/Path_to_experiment_config.csv"
+smftools experiment preprocess "/Path_to_experiment_config.csv"
 ```
 
 ![](_static/smftools_preprocessing_diagram.png)
@@ -58,7 +63,7 @@ Two read-level filters/labels run as part of this stage:
 This command performs DNA sequence variation based analyses on the anndata object.
 
 ```shell
-smftools variant "/Path_to_experiment_config.csv"
+smftools experiment variant "/Path_to_experiment_config.csv"
 ```
 
 ## Chimeric Usage
@@ -66,7 +71,7 @@ smftools variant "/Path_to_experiment_config.csv"
 This command performs putative PCR chimera detection on the anndata object.
 
 ```shell
-smftools chimeric "/Path_to_experiment_config.csv"
+smftools experiment chimeric "/Path_to_experiment_config.csv"
 ```
 
 ## Spatial Usage
@@ -74,7 +79,7 @@ smftools chimeric "/Path_to_experiment_config.csv"
 This command performs spatial analysis on preprocessed data.
 
 ```shell
-smftools spatial "/Path_to_experiment_config.csv"
+smftools experiment spatial "/Path_to_experiment_config.csv"
 ```
 
 When a partitioned preprocessing spine is available, spatial analysis automatically runs as
@@ -104,7 +109,7 @@ clustermaps, and the existing AnnData-embedded spatial results.
 This command performs hmm based feature annotation on the anndata object.
 
 ```shell
-smftools hmm "/Path_to_experiment_config.csv"
+smftools experiment hmm "/Path_to_experiment_config.csv"
 ```
 
 `hmm_execution_mode` accepts `auto`, `partitioned`, or `legacy`. The default `auto` mode uses a
@@ -119,7 +124,7 @@ task catalog, model store, plot catalog, and linked thin spine under `hmm_adata_
 This command constructs various latent representations of the anndata object.
 
 ```shell
-smftools latent "/Path_to_experiment_config.csv"
+smftools experiment latent "/Path_to_experiment_config.csv"
 ```
 
 ## Full Usage
@@ -129,14 +134,14 @@ analysis, and HMM annotation. Each stage retains its normal restart/skip behavio
 valid stage output is reused unless its force-redo configuration is enabled.
 
 ```shell
-smftools full "/Path_to_experiment_config.csv"
+smftools experiment full "/Path_to_experiment_config.csv"
 ```
 
 ## Batch Usage
 
 This command performs batch processing of any of the above commands across multiple experiments. It takes in a tsv, txt, or csv of experiment specific config csvs.
 ```shell
-smftools batch preprocess "/Path_to_experiment_config_path_list.csv"
+smftools experiment batch preprocess "/Path_to_experiment_config_path_list.csv"
 ```
 
 - Nice when analyzing multiple experiments
@@ -172,59 +177,45 @@ smftools project remove "/Path_to_project_directory" experiment_id
 - `project materialize` resolves the canonical reference name back to each matching experiment's
   own reference name(s), materializes each experiment's slice independently, and concatenates them
   with an added `obs["experiment"]` column -- there is never a global merge across experiments.
-- `smftools export-fastq --project ...` (below) and other cross-experiment tooling build on the
+- `smftools project export-fastq ...` (below) and other cross-experiment tooling build on the
   same registry.
 
 ## Export FASTQ Usage
 
 This command writes one FASTQ (gzip-compressed by default) per barcode, containing only reads that
 passed QC, for a single experiment or an entire project. Sequence and quality are read directly
-from the raw ragged store, so no BAM re-parsing is needed.
+from the raw ragged store, so no BAM re-parsing is needed. It's available under both hierarchies:
 
 ```shell
 # Single experiment: QC-passed read set is resolved from the most complete preprocessing
 # artifact available (partitioned preprocess spine, falling back to the legacy deduplicated
 # or QC-filtered AnnData).
-smftools export-fastq --config "/Path_to_experiment_config.csv" --outdir "/Path_to_fastq_output_dir"
+smftools experiment export-fastq "/Path_to_experiment_config.csv" --outdir "/Path_to_fastq_output_dir"
 
 # Whole project: writes one FASTQ per <experiment_id>__<barcode>, skipping experiments that
 # have not run partitioned preprocessing.
-smftools export-fastq --project "/Path_to_project_directory" --outdir "/Path_to_fastq_output_dir"
+smftools project export-fastq "/Path_to_project_directory" --outdir "/Path_to_fastq_output_dir"
 ```
 
-- `--group-by` overrides the obs column used to group reads (single-experiment only; defaults to
+- `--group-by` overrides the obs column used to group reads (experiment command only; defaults to
   `sample_name_col_for_plotting`, falling back to `Sample` then `Barcode`).
+- `--experiments` restricts the project command to a comma-separated list of experiment ids
+  (default: all active).
 - `--allow-unfiltered` writes every raw read instead of raising/skipping when no QC-passed read set
-  is available yet (i.e. before `smftools preprocess` has been run).
+  is available yet (i.e. before `smftools experiment preprocess` has been run).
 - `--no-gzip` writes plain `.fastq` instead of `.fastq.gz`.
 - A `fastq_manifest.csv` (barcode, read count, output path) is written alongside the FASTQs.
-
-## Migrate Store Usage
-
-This command converts an existing monolithic AnnData `.h5ad` into a partitioned zarr store + thin
-spine + catalog, without modifying the source file. Useful for bringing an older single-file
-AnnData stage into the partitioned storage format used by later pipeline stages.
-
-```shell
-smftools migrate-store "/Path_to_experiment_config.csv"
-smftools migrate-store "/Path_to_experiment_config.csv" --stage pp_dedup
-```
-
-- `--stage` selects which AnnData stage to migrate (`raw`/`pp`/`pp_dedup`/`spatial`/`hmm`/`latent`/
-  `variant`/`chimeric`; default `raw`).
-- `--input` migrates an explicit `.h5ad(.gz)` file instead, overriding `--stage`.
-- `--outdir` overrides the output directory (default: the stage's normal directory).
 
 ## Concatenate Usage
 
 This command concatenates multiple h5ad files and saves them to a new output. The h5ads to concatenate are provided as a txt, tsv, or h5ad file of paths.
 ```shell
-smftools concatenate output.h5ad -c "/Path_to_h5ad_path_list.csv"
+smftools experiment concatenate "/Path_to_experiment_config.csv" -c "/Path_to_h5ad_path_list.csv"
 ```
 
 Alternatively, you can just concatenate all h5ads within a given directory.
 ```shell
-smftools concatenate output.h5ad -d "/Path_to_h5ad_file_dir/"
+smftools experiment concatenate "/Path_to_experiment_config.csv" -d "/Path_to_h5ad_file_dir/"
 ```
 
 - Mainly used for combining multiple experiments into a single anndata object.
@@ -242,9 +233,9 @@ smftools subsample-pod5 -n 1000 -o "/Path_to_output_directory" "/Path_to_input_P
 
 ## Optional run logging
 
-If you want to maintain run log files of CLI processes, you can use the following syntax to any of the CLI commands. Here is an example using smftools load with logging performed on INFO level logging outputs and above.
+If you want to maintain run log files of CLI processes, you can use the following syntax to any of the CLI commands. Here is an example using `smftools experiment load` with logging performed on INFO level logging outputs and above.
 ```shell
-smftools --log-file "/Path_to_output_log_file.log" --log-level INFO load "/Path_to_input_config.csv"
+smftools --log-file "/Path_to_output_log_file.log" --log-level INFO experiment load "/Path_to_input_config.csv"
 ```
 
 ## Reading AnnData objects created by smftools
