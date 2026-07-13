@@ -215,6 +215,95 @@ def test_partitioned_executor_fits_youden_thresholds_for_direct_modality(tmp_pat
         assert list(by_read[read_id][:4]) == [0.0, 0.0, 0.0, 0.0]
 
 
+def _direct_youden_genome_frame():
+    def _read(read_id, sample, reference_start, signal):
+        return {
+            "read_id": read_id,
+            "reference": "ref",
+            "Reference_strand": "ref_top",
+            "barcode": "bc1",
+            "sample": sample,
+            "reference_start": reference_start,
+            "cigar": "4M",
+            "aligned_length": 4,
+            "sequence": [0, 1, 2, 3],
+            "quality": [30, 30, 30, 30],
+            "mismatch": [4, 4, 4, 4],
+            "modification_signal": signal,
+            "read_length": 4,
+            "mapped_length": 4,
+            "reference_length": 12,
+            "read_quality": 30,
+            "mapping_quality": 60,
+            "read_length_to_reference_length_ratio": 4 / 12,
+            "mapped_length_to_reference_length_ratio": 4 / 12,
+            "mapped_length_to_read_length_ratio": 1.0,
+        }
+
+    # Two well-separated tiles (genome_tile_size=4 below): positions 0-3 (tile
+    # core 0) and positions 8-11 (tile core 2), each with its own control
+    # population, so a correct implementation must fit each tile's window
+    # independently and combine them rather than needing the whole reference
+    # materialized at once.
+    return pd.DataFrame(
+        [
+            _read("pos1", "positive_ctrl", 0, [1.0, 1.0, 1.0, 1.0]),
+            _read("pos2", "positive_ctrl", 0, [1.0, 1.0, 1.0, 1.0]),
+            _read("neg1", "negative_ctrl", 0, [0.0, 0.0, 0.0, 0.0]),
+            _read("neg2", "negative_ctrl", 0, [0.0, 0.0, 0.0, 0.0]),
+            _read("high1", "experimental", 0, [5.0, 5.0, 5.0, 5.0]),
+            _read("pos3", "positive_ctrl", 8, [1.0, 1.0, 1.0, 1.0]),
+            _read("pos4", "positive_ctrl", 8, [1.0, 1.0, 1.0, 1.0]),
+            _read("neg3", "negative_ctrl", 8, [0.0, 0.0, 0.0, 0.0]),
+            _read("neg4", "negative_ctrl", 8, [0.0, 0.0, 0.0, 0.0]),
+            _read("high2", "experimental", 8, [5.0, 5.0, 5.0, 5.0]),
+        ]
+    )
+
+
+def test_partitioned_executor_fits_youden_thresholds_for_genome_mode(tmp_path):
+    pytest.importorskip("pyarrow")
+    raw = write_raw_store(
+        _direct_youden_genome_frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="genome",
+        genome_tile_size=4,
+        genome_tile_halo=1,
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    output_dir = tmp_path / "preprocess_outputs"
+
+    outputs = execute_partitioned_preprocessing(raw["spine"], _direct_youden_cfg(), output_dir)
+
+    catalog = pd.read_parquet(outputs["catalog"])
+    # Both covered tiles (core_start 0 and 8) got tasks; the empty middle tile
+    # (core_start 4, no reads) did not.
+    assert set(catalog["core_start"]) == {0, 8}
+
+    # The fit pre-pass ran once per covered window (per-tile ROC diagnostics),
+    # not once for the whole (chromosome-scale, in real usage) reference. The
+    # empty middle tile (core_start 4) is skipped, same as task planning.
+    roc_dir = output_dir / "02B_Position_wide_Youden_threshold_performance"
+    assert roc_dir.is_dir()
+    window_dirs = sorted(p.name for p in roc_dir.iterdir() if p.is_dir())
+    assert window_dirs == ["window_00000", "window_00002"]
+
+    derived = materialize(
+        outputs["spine"], references="ref_top", start=0, end=12, layers=["binarized_methylation"]
+    )
+    by_read = dict(zip(derived.obs_names, derived.layers["binarized_methylation"]))
+    for read_id, positions in (("high1", slice(0, 4)), ("high2", slice(8, 12))):
+        assert list(by_read[read_id][positions]) == [1.0, 1.0, 1.0, 1.0]
+    for read_id, positions in (
+        ("neg1", slice(0, 4)),
+        ("neg2", slice(0, 4)),
+        ("neg3", slice(8, 12)),
+        ("neg4", slice(8, 12)),
+    ):
+        assert list(by_read[read_id][positions]) == [0.0, 0.0, 0.0, 0.0]
+
+
 def test_youden_fit_loads_spine_once_and_reuses_it(tmp_path, monkeypatch):
     spine = SimpleNamespace(
         obs=pd.DataFrame(
@@ -222,12 +311,18 @@ def test_youden_fit_loads_spine_once_and_reuses_it(tmp_path, monkeypatch):
                 "Reference_strand": pd.Categorical(["ref_top", "ref_top"]),
                 "Sample": ["positive_ctrl", "negative_ctrl"],
                 "Raw_modification_signal": [2.0, 0.0],
+                "reference_start": [0, 0],
+                "reference_end": [2, 2],
             },
             index=["read1", "read2"],
         ),
         var=pd.DataFrame(index=pd.Index([0, 1], name="position")),
         var_names=pd.Index([0, 1]),
-        uns={},
+        uns={
+            "reference_plans": {
+                "ref_top": {"analysis_mode": "locus", "reference_length": 2}
+            }
+        },
     )
     cfg = SimpleNamespace(
         reference_column="Reference_strand",
@@ -245,8 +340,8 @@ def test_youden_fit_loads_spine_once_and_reuses_it(tmp_path, monkeypatch):
         load_spine_calls.append((path, verbose))
         return spine
 
-    def fake_materialize(spine_arg, *, references):
-        materialize_calls.append((spine_arg, references))
+    def fake_materialize(spine_arg, *, references, samples, base_dir, start, end):
+        materialize_calls.append((spine_arg, references, samples, base_dir, start, end))
         return SimpleNamespace(
             obs=spine.obs.loc[spine.obs["Reference_strand"] == references].copy(),
             var=pd.DataFrame(
@@ -285,7 +380,12 @@ def test_youden_fit_loads_spine_once_and_reuses_it(tmp_path, monkeypatch):
     )
 
     assert load_spine_calls == [(tmp_path / "spine.h5ad", False)]
-    assert materialize_calls == [(spine, "ref_top")]
+    # No source_base_dir in the (mock) spine's uns, so base_dir falls back to
+    # the spine file's own directory. Locus mode is a single window spanning
+    # the whole (2-position) reference, so start/end cover it exactly once.
+    assert materialize_calls == [
+        (spine, "ref_top", ["positive_ctrl", "negative_ctrl"], tmp_path, 0, 2)
+    ]
 
 
 def test_partitioned_executor_labels_deaminase_pcr_chimeras(tmp_path):

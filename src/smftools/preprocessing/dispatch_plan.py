@@ -53,6 +53,32 @@ def _plan_dict(spine, reference: str) -> dict[str, object]:
     return dict(plan)
 
 
+def reference_windows(spine, reference: str) -> list[tuple[int, int, int, int]]:
+    """Return ``(core_start, core_end, load_start, load_end)`` windows for one reference.
+
+    Locus mode is a single window spanning the whole reference. Genome mode tiles
+    it per the reference's storage plan: each window loads a haloed interval but
+    owns only its non-overlapping core, so callers that need every position
+    covered exactly once should keep only each window's core range.
+    """
+    plan = _plan_dict(spine, reference)
+    reference_length = int(plan["reference_length"])
+    analysis_mode = str(plan["analysis_mode"])
+    if analysis_mode == "locus":
+        return [(0, reference_length, 0, reference_length)]
+    tile_size = int(plan["tile_size"])
+    tile_halo = int(plan["tile_halo"])
+    return [
+        (
+            core_start,
+            min(core_start + tile_size, reference_length),
+            max(0, core_start - tile_halo),
+            min(reference_length, core_start + tile_size + tile_halo),
+        )
+        for core_start in range(0, reference_length, tile_size)
+    ]
+
+
 def plan_preprocess_tasks(
     spine,
     *,
@@ -83,25 +109,9 @@ def plan_preprocess_tasks(
 
     for reference in sorted(obs[REFERENCE_STRAND].astype(str).unique()):
         plan = _plan_dict(spine, reference)
-        reference_length = int(plan["reference_length"])
         analysis_mode = str(plan["analysis_mode"])
-        tile_size = int(plan["tile_size"])
-        tile_halo = int(plan["tile_halo"])
         reference_obs = obs.loc[obs[REFERENCE_STRAND].astype(str) == reference]
-        windows = (
-            [(0, reference_length, 0, reference_length)]
-            if analysis_mode == "locus"
-            else [
-                (
-                    core_start,
-                    min(core_start + tile_size, reference_length),
-                    max(0, core_start - tile_halo),
-                    min(reference_length, core_start + tile_size + tile_halo),
-                )
-                for core_start in range(0, reference_length, tile_size)
-            ]
-        )
-        for core_start, core_end, load_start, load_end in windows:
+        for core_start, core_end, load_start, load_end in reference_windows(spine, reference):
             # Core overlap assigns ownership. Halo-only reads must not create work
             # for a genomic span with no data of its own.
             overlapping = reference_obs.loc[

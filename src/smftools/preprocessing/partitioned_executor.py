@@ -61,53 +61,117 @@ def fit_direct_modality_youden_thresholds(
     """Fit per-position Youden methylation thresholds once per reference.
 
     Threshold fitting (``calculate_position_Youden``) needs the whole control-sample
-    population for a reference at once -- it can't run per bounded task the way the
-    rest of partitioned preprocessing does. This runs as a pre-pass before task
-    dispatch: for each reference, materialize that reference's full (unwindowed)
-    read population, fit thresholds once, then discard it. Each per-task local
-    transform then looks up its own window's thresholds from the returned tables
-    instead of needing the full population itself.
+    population covering a position at once -- it can't run per bounded task the way
+    the rest of partitioned preprocessing does. This runs as a pre-pass before task
+    dispatch, reusing the same per-reference windowing (``reference_windows``) that
+    task planning uses: for locus references that's a single window spanning the
+    whole reference (small, so no tiling needed); for genome-mode references it's
+    the same haloed tiles the rest of partitioned preprocessing already bounds
+    memory with, since a read only ever covers a small local span of a
+    chromosome-scale reference. Each window's fit keeps only its own core range
+    (the halo is covered by an adjacent window) before results from all windows
+    for a reference are concatenated into one lookup table.
 
     Returns:
         Mapping of reference -> DataFrame indexed by genomic position (int) with
         columns ``threshold``, ``j_statistic``, ``passed_qc``.
     """
     from .calculate_position_Youden import calculate_position_Youden
+    from .dispatch_plan import reference_windows
 
     ref_column = str(cfg.reference_column)
     roc_dir = Path(output_dir) / YOUDEN_FIT_SUBDIR
     roc_dir.mkdir(parents=True, exist_ok=True)
+    # Load once and reuse across references/windows rather than re-reading
+    # spine.h5ad repeatedly. materialize() only infers base_dir from a *path*,
+    # and the raw spine deliberately doesn't carry its own source_base_dir
+    # (derived spines inherit its uns wholesale and need to fall back to
+    # their own on-disk location, not the original raw store's), so it must
+    # be passed explicitly whenever an in-memory spine object is handed in.
+    spine_path = Path(spine_path)
     spine = load_spine(spine_path, verbose=False)
+    base_dir = Path(spine.uns.get("source_base_dir", spine_path.parent))
+
+    positive_sample = cfg.positive_control_sample_methylation_fitting
+    negative_sample = cfg.negative_control_sample_methylation_fitting
+    # When explicit control samples are configured, restrict materialization
+    # to just those samples -- narrower than calculate_position_Youden's own
+    # post-hoc filtering, which matters once a window covers many multiplexed
+    # samples. Percentile-based inference needs every read's signal in the
+    # window to compute its cutoffs, so it can't take this shortcut.
+    control_samples = (
+        [positive_sample, negative_sample] if positive_sample and negative_sample else None
+    )
 
     thresholds: dict[str, pd.DataFrame] = {}
     for reference in references:
-        ref_adata = materialize(spine, references=reference)
-        if ref_column in ref_adata.obs and hasattr(ref_adata.obs[ref_column], "cat"):
-            ref_adata.obs[ref_column] = ref_adata.obs[ref_column].cat.remove_unused_categories()
-        calculate_position_Youden(
-            ref_adata,
-            positive_control_sample=cfg.positive_control_sample_methylation_fitting,
-            negative_control_sample=cfg.negative_control_sample_methylation_fitting,
-            J_threshold=cfg.fit_j_threshold,
-            ref_column=ref_column,
-            sample_column=cfg.sample_column,
-            infer_on_percentile=cfg.infer_on_percentile_sample_methylation_fitting,
-            inference_variable=cfg.inference_variable_sample_methylation_fitting,
-            save=True,
-            output_directory=roc_dir,
+        windows = reference_windows(spine, reference)
+        reference_obs = spine.obs.loc[spine.obs[REFERENCE_STRAND].astype(str) == str(reference)]
+        window_tables: list[pd.DataFrame] = []
+        for window_index, (core_start, core_end, load_start, load_end) in enumerate(windows):
+            # Skip windows whose core owns no reads at all -- same ownership
+            # rule plan_preprocess_tasks uses, and avoids materialize()
+            # raising on a genuinely empty selection for a sparsely-covered
+            # genome-mode reference.
+            overlapping = reference_obs.loc[
+                (reference_obs["reference_start"].astype("int64") < core_end)
+                & (reference_obs["reference_end"].astype("int64") > core_start)
+            ]
+            if overlapping.empty:
+                continue
+            ref_adata = materialize(
+                spine,
+                references=reference,
+                samples=control_samples,
+                base_dir=base_dir,
+                start=load_start,
+                end=load_end,
+            )
+            if ref_column in ref_adata.obs and hasattr(ref_adata.obs[ref_column], "cat"):
+                ref_adata.obs[ref_column] = ref_adata.obs[ref_column].cat.remove_unused_categories()
+            window_roc_dir = roc_dir if len(windows) == 1 else roc_dir / f"window_{window_index:05d}"
+            if len(windows) != 1:
+                window_roc_dir.mkdir(parents=True, exist_ok=True)
+            calculate_position_Youden(
+                ref_adata,
+                positive_control_sample=positive_sample,
+                negative_control_sample=negative_sample,
+                J_threshold=cfg.fit_j_threshold,
+                ref_column=ref_column,
+                sample_column=cfg.sample_column,
+                infer_on_percentile=cfg.infer_on_percentile_sample_methylation_fitting,
+                inference_variable=cfg.inference_variable_sample_methylation_fitting,
+                save=True,
+                output_directory=window_roc_dir,
+            )
+            stats_col = f"{reference}_position_methylation_thresholding_Youden_stats"
+            qc_col = f"{reference}_position_passed_Youden_thresholding_QC"
+            stats = ref_adata.var[stats_col].to_numpy()
+            table = pd.DataFrame(
+                {
+                    "threshold": [
+                        t[0] if isinstance(t, (tuple, list)) else np.nan for t in stats
+                    ],
+                    "j_statistic": [
+                        t[1] if isinstance(t, (tuple, list)) else np.nan for t in stats
+                    ],
+                    "passed_qc": ref_adata.var[qc_col].to_numpy(dtype=bool),
+                },
+                index=pd.Index(np.asarray(ref_adata.var_names, dtype=np.int64), name="position"),
+            )
+            # Keep only this window's core range: halo positions are owned by
+            # (and already fit within) an adjacent window.
+            core_mask = (table.index >= core_start) & (table.index < core_end)
+            window_tables.append(table.loc[core_mask])
+            del ref_adata
+        thresholds[reference] = (
+            pd.concat(window_tables).sort_index()
+            if window_tables
+            else pd.DataFrame(
+                columns=["threshold", "j_statistic", "passed_qc"],
+                index=pd.Index([], dtype=np.int64, name="position"),
+            )
         )
-        stats_col = f"{reference}_position_methylation_thresholding_Youden_stats"
-        qc_col = f"{reference}_position_passed_Youden_thresholding_QC"
-        stats = ref_adata.var[stats_col].to_numpy()
-        thresholds[reference] = pd.DataFrame(
-            {
-                "threshold": [t[0] if isinstance(t, (tuple, list)) else np.nan for t in stats],
-                "j_statistic": [t[1] if isinstance(t, (tuple, list)) else np.nan for t in stats],
-                "passed_qc": ref_adata.var[qc_col].to_numpy(dtype=bool),
-            },
-            index=pd.Index(np.asarray(ref_adata.var_names, dtype=np.int64), name="position"),
-        )
-        del ref_adata
     del spine
     return thresholds
 
