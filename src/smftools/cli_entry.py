@@ -160,7 +160,7 @@ def chimeric(config_path):
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def full(config_path):
-    """Workflow: raw preprocess spatial variant chimeric hmm latent"""
+    """Workflow: raw preprocess spatial hmm."""
     full_flow(config_path)
 
 
@@ -533,6 +533,95 @@ def migrate_store_cmd(config_path, stage: str, input_path: Path | None, outdir: 
     click.echo(f"Store written under {result['store']}")
     click.echo(f"Spine:   {result['spine']}")
     click.echo(f"Catalog: {result['catalog']}")
+
+
+##########################################
+
+
+####### Project-level cross-experiment catalog ###########
+@cli.group("project")
+def project_group():
+    """Register experiments into a project and query/analyze across them."""
+
+
+@project_group.command("init")
+@click.argument("project_dir", type=click.Path(path_type=Path))
+def project_init_cmd(project_dir: Path):
+    """Initialize a project directory + registry."""
+    from .cli.project_cmd import project_init
+
+    path = project_init(project_dir)
+    click.echo(f"Initialized project registry: {path}")
+
+
+@project_group.command("add")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--id", "experiment_id", default=None, help="Explicit experiment id.")
+@click.option("--name", default=None, help="Friendly experiment name.")
+def project_add_cmd(project_dir: Path, experiment_dir: Path, experiment_id, name):
+    """Register EXPERIMENT_DIR into PROJECT_DIR (by pointer; append-only)."""
+    from .cli.project_cmd import project_add
+
+    exp_id, entry, conflicts = project_add(
+        project_dir, experiment_dir, experiment_id=experiment_id, name=name
+    )
+    click.echo(
+        f"Registered '{exp_id}' ({entry['modality']}, {entry['n_reads']} reads, "
+        f"{len(entry['references'])} references)"
+    )
+    for warning in conflicts:
+        click.echo(f"  WARNING: {warning}")
+
+
+@project_group.command("remove")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("experiment_id")
+def project_remove_cmd(project_dir: Path, experiment_id: str):
+    """Mark an experiment inactive in the project."""
+    from .cli.project_cmd import project_remove
+
+    project_remove(project_dir, experiment_id)
+    click.echo(f"Removed '{experiment_id}' (marked inactive)")
+
+
+@project_group.command("list")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def project_list_cmd(project_dir: Path):
+    """List registered experiments and harmonized references."""
+    from .cli.project_cmd import project_list
+
+    experiments, references = project_list(project_dir)
+    click.echo(f"{len(experiments)} experiment(s):")
+    for entry in experiments:
+        click.echo(f"  {entry['id']}  ({entry['modality']}, {entry['n_reads']} reads)  {entry['path']}")
+    if not references.empty:
+        n_canon = references["canonical_reference"].nunique()
+        click.echo(f"{n_canon} canonical reference(s) across the project.")
+
+
+@project_group.command("materialize")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("canonical_reference")
+@click.option("--output", "-o", type=click.Path(path_type=Path), required=True, help="Output .h5ad(.gz).")
+@click.option("--set", "set_name", default=None, help="Restrict to a named experiment set.")
+@click.option("--modality", default=None, help="Restrict to a modality.")
+@click.option("--start", type=int, default=None, help="Genomic window start (with --end).")
+@click.option("--end", type=int, default=None, help="Genomic window end (with --start).")
+def project_materialize_cmd(project_dir, canonical_reference, output, set_name, modality, start, end):
+    """Materialize CANONICAL_REFERENCE across matching experiments into one AnnData."""
+    from .cli.project_cmd import project_materialize
+
+    out = project_materialize(
+        project_dir,
+        canonical_reference,
+        output,
+        set_name=set_name,
+        modality=modality,
+        start=start,
+        end=end,
+    )
+    click.echo(f"Wrote {out}")
 
 
 ##########################################
