@@ -1123,6 +1123,22 @@ def load_adata_core(
             bam_path=aligned_sorted_output,
             extra_uns=extra_uns,
         )
+        if str(cfg.smf_modality) == "deaminase" and not getattr(
+            cfg, "bypass_raw_chimera_rate_plot", False
+        ):
+            try:
+                from ..plotting import plot_reference_barcode_chimera_rate
+
+                plot_reference_barcode_chimera_rate(
+                    frame,
+                    load_directory / "plots",
+                    min_events_per_span=cfg.deaminase_chimera_min_events_per_span,
+                    min_segment_purity=cfg.deaminase_chimera_min_segment_purity,
+                    max_single_strand_fraction=cfg.deaminase_chimera_max_single_strand_fraction,
+                )
+            except Exception:
+                logger.warning("Failed to plot reference x barcode chimera rate.", exc_info=True)
+
         mqc_dir = bam_outputs_directory / "multiqc"
         if skip_bam_qc:
             logger.info("skip_bam_qc=True: skipping multiqc")

@@ -12,6 +12,49 @@ CHIMERA_OBS_COLUMN = "deaminase_PCR_chimera"
 _REQUIRED_COLUMNS = ("ct_event_count", "ga_event_count", "strand_segment_purity")
 
 
+def deaminase_chimera_mask(
+    ct_event_count,
+    ga_event_count,
+    strand_segment_purity,
+    *,
+    min_events_per_span: int = 3,
+    min_segment_purity: float = 0.9,
+    max_single_strand_fraction: float = 0.8,
+) -> np.ndarray:
+    """Return the boolean deaminase PCR-chimera mask for per-read strand metrics.
+
+    A read is a chimera when both strand signatures are present in sufficient number,
+    the best single-switch (two-segment) model is highly pure, and the read is not
+    overwhelmingly one-sided. Comparisons against NaN metrics evaluate ``False``, so
+    unusable rows are never flagged.
+
+    Args:
+        ct_event_count: Per-read C->T (top-consistent) event counts.
+        ga_event_count: Per-read G->A (bottom-consistent) event counts.
+        strand_segment_purity: Per-read best two-segment purity.
+        min_events_per_span: Minimum C->T and G->A events required on each side.
+        min_segment_purity: Minimum best two-segment purity to accept a clean switch.
+        max_single_strand_fraction: Maximum one-sidedness for a read to qualify.
+
+    Returns:
+        numpy.ndarray: Boolean array aligned to the inputs.
+    """
+    ct = pd.to_numeric(pd.Series(ct_event_count), errors="coerce").to_numpy(dtype=float)
+    ga = pd.to_numeric(pd.Series(ga_event_count), errors="coerce").to_numpy(dtype=float)
+    purity = pd.to_numeric(pd.Series(strand_segment_purity), errors="coerce").to_numpy(dtype=float)
+
+    total = ct + ga
+    with np.errstate(invalid="ignore", divide="ignore"):
+        single_strand_fraction = np.where(total > 0, np.maximum(ct, ga) / total, 1.0)
+
+    return (
+        (ct >= float(min_events_per_span))
+        & (ga >= float(min_events_per_span))
+        & (purity >= float(min_segment_purity))
+        & (single_strand_fraction <= float(max_single_strand_fraction))
+    )
+
+
 def label_deaminase_pcr_chimeras(
     adata: ad.AnnData,
     min_events_per_span: int = 3,
@@ -69,20 +112,13 @@ def label_deaminase_pcr_chimeras(
         adata.uns[uns_flag] = True
         return adata
 
-    ct = pd.to_numeric(adata.obs["ct_event_count"], errors="coerce").to_numpy(dtype=float)
-    ga = pd.to_numeric(adata.obs["ga_event_count"], errors="coerce").to_numpy(dtype=float)
-    purity = pd.to_numeric(adata.obs["strand_segment_purity"], errors="coerce").to_numpy(dtype=float)
-
-    total = ct + ga
-    with np.errstate(invalid="ignore", divide="ignore"):
-        single_strand_fraction = np.where(total > 0, np.maximum(ct, ga) / total, 1.0)
-
-    # Comparisons against NaN metrics evaluate False, so unusable rows are not flagged.
-    chimera = (
-        (ct >= float(min_events_per_span))
-        & (ga >= float(min_events_per_span))
-        & (purity >= float(min_segment_purity))
-        & (single_strand_fraction <= float(max_single_strand_fraction))
+    chimera = deaminase_chimera_mask(
+        adata.obs["ct_event_count"],
+        adata.obs["ga_event_count"],
+        adata.obs["strand_segment_purity"],
+        min_events_per_span=min_events_per_span,
+        min_segment_purity=min_segment_purity,
+        max_single_strand_fraction=max_single_strand_fraction,
     )
 
     adata.obs[obs_column] = chimera

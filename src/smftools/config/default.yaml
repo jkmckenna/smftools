@@ -196,6 +196,8 @@ bypass_label_deaminase_pcr_chimeras: False
 deaminase_chimera_min_events_per_span: 3
 deaminase_chimera_min_segment_purity: 0.9
 deaminase_chimera_max_single_strand_fraction: 0.8
+# Emit a per reference x barcode chimera-rate QC heatmap in the raw stage.
+bypass_raw_chimera_rate_plot: False
 
 # Read modification filtering params
 read_mod_filtering_gpc_thresholds:

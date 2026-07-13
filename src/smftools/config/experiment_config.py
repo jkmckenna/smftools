@@ -873,6 +873,8 @@ class ExperimentConfig:
     deaminase_chimera_min_events_per_span: int = 3
     deaminase_chimera_min_segment_purity: float = 0.9
     deaminase_chimera_max_single_strand_fraction: float = 0.8
+    # Raw - emit per reference x barcode chimera-rate QC plot (deaminase modality only)
+    bypass_raw_chimera_rate_plot: bool = False
 
     # Preprocessing - Optional reindexing params
     reindexing_offsets: Dict[str, int] = field(default_factory=dict)
@@ -1980,6 +1982,7 @@ class ExperimentConfig:
                     merged.get("deaminase_chimera_max_single_strand_fraction", 0.8), 0.8
                 )
             ),
+            bypass_raw_chimera_rate_plot=merged.get("bypass_raw_chimera_rate_plot", False),
             read_mod_filtering_gpc_thresholds=merged.get(
                 "read_mod_filtering_gpc_thresholds", [0.025, 0.975]
             ),

@@ -209,6 +209,132 @@ def plot_read_qc_histograms(
         plt.close(fig)
 
 
+def plot_reference_barcode_chimera_rate(
+    obs,
+    outdir,
+    *,
+    barcode_column="barcode",
+    reference_column="Reference_strand",
+    min_events_per_span=3,
+    min_segment_purity=0.9,
+    max_single_strand_fraction=0.8,
+    filename="reference_barcode_chimera_rate.png",
+    dpi=150,
+):
+    """Summarize the deaminase PCR-chimera rate per reference and barcode.
+
+    Applies the same strand-switch thresholds used by the preprocess labeling step
+    to the raw per-read metrics (``ct_event_count``, ``ga_event_count``,
+    ``strand_segment_purity``), then plots a reference x barcode heatmap of the
+    fraction of reads flagged as chimeric (cells annotated with rate and read count).
+    A ``*.csv`` companion table is written alongside the PNG.
+
+    Args:
+        obs: DataFrame with the strand-switch metric columns plus ``barcode_column``
+            and ``reference_column`` (e.g. the raw spine ``obs`` or ragged frame).
+        outdir: Directory to write the plot and summary table into.
+        barcode_column: Column holding the per-read barcode/sample label.
+        reference_column: Column holding the mapped reference (strand) label.
+        min_events_per_span: Minimum C->T and G->A events required on each side.
+        min_segment_purity: Minimum best two-segment purity to accept a clean switch.
+        max_single_strand_fraction: Maximum one-sidedness for a read to qualify.
+        filename: Output PNG filename.
+        dpi: Figure resolution.
+
+    Returns:
+        str | None: Path to the written PNG, or ``None`` if required columns are
+        missing or there is nothing to plot.
+    """
+    from ..preprocessing.label_deaminase_pcr_chimeras import deaminase_chimera_mask
+
+    required = {
+        "ct_event_count",
+        "ga_event_count",
+        "strand_segment_purity",
+        barcode_column,
+        reference_column,
+    }
+    missing = required.difference(obs.columns)
+    if missing:
+        logger.warning(
+            "Skipping reference x barcode chimera-rate plot; obs is missing %s.",
+            sorted(missing),
+        )
+        return None
+
+    frame = obs.loc[:, [barcode_column, reference_column]].copy()
+    frame["is_chimera"] = deaminase_chimera_mask(
+        obs["ct_event_count"],
+        obs["ga_event_count"],
+        obs["strand_segment_purity"],
+        min_events_per_span=min_events_per_span,
+        min_segment_purity=min_segment_purity,
+        max_single_strand_fraction=max_single_strand_fraction,
+    )
+    frame[barcode_column] = frame[barcode_column].astype(str)
+    frame[reference_column] = frame[reference_column].astype(str)
+
+    grouped = frame.groupby([reference_column, barcode_column], observed=True)["is_chimera"]
+    summary = grouped.agg(n_reads="size", n_chimera="sum").reset_index()
+    summary["chimera_rate"] = summary["n_chimera"] / summary["n_reads"]
+    if summary.empty:
+        logger.warning("Skipping reference x barcode chimera-rate plot; no reads to summarize.")
+        return None
+
+    os.makedirs(outdir, exist_ok=True)
+    summary.sort_values([reference_column, barcode_column]).to_csv(
+        os.path.join(outdir, os.path.splitext(filename)[0] + ".csv"), index=False
+    )
+
+    rate = summary.pivot(index=barcode_column, columns=reference_column, values="chimera_rate")
+    counts = summary.pivot(index=barcode_column, columns=reference_column, values="n_reads")
+    rate = rate.sort_index().sort_index(axis=1)
+    counts = counts.reindex(index=rate.index, columns=rate.columns)
+
+    n_barcodes, n_references = rate.shape
+    fig_width = max(4.0, 1.6 * n_references + 2.0)
+    fig_height = max(3.0, 0.32 * n_barcodes + 1.5)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    data = rate.to_numpy(dtype=float)
+    masked = np.ma.masked_invalid(data)
+    cmap = plt.get_cmap("magma").copy()
+    cmap.set_bad("#dddddd")
+    image = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=0.0, vmax=1.0)
+
+    ax.set_xticks(np.arange(n_references), rate.columns, rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(np.arange(n_barcodes), rate.index, fontsize=7)
+    ax.set_xlabel("Reference")
+    ax.set_ylabel("Barcode")
+    ax.set_title("Deaminase PCR-chimera rate per reference x barcode")
+
+    count_values = counts.to_numpy(dtype=float)
+    for row in range(n_barcodes):
+        for column in range(n_references):
+            value = data[row, column]
+            if np.isnan(value):
+                continue
+            n_reads = count_values[row, column]
+            text_color = "white" if value < 0.6 else "black"
+            ax.text(
+                column,
+                row,
+                f"{value:.0%}\n(n={int(n_reads)})",
+                ha="center",
+                va="center",
+                fontsize=6,
+                color=text_color,
+            )
+
+    colorbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+    colorbar.set_label("Chimera fraction")
+    fig.tight_layout()
+    out_png = os.path.join(outdir, filename)
+    fig.savefig(out_png, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("Saved reference x barcode chimera-rate plot to %s.", out_png)
+    return out_png
+
+
 # def plot_read_qc_histograms(
 #     adata,
 #     outdir,
