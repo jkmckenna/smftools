@@ -98,6 +98,7 @@ def project_materialize(
     start: int | None = None,
     end: int | None = None,
     read_metrics: bool = False,
+    force_recompute: bool = False,
 ) -> Path:
     """Materialize a canonical reference across matching experiments and write it.
 
@@ -105,11 +106,17 @@ def project_materialize(
     ``preprocess``, ``spatial``, ``hmm``, ...); the default falls back through
     the most-derived stage available per experiment, since a later stage's
     spine already carries forward everything earlier stages produced.
+
+    Cached by resolved composition (see ``project.set_store.materialize_set``):
+    a repeat of the same query is a cache read, and a query whose resolved
+    membership changed (new/re-registered experiment) transparently falls
+    through to a fresh materialize. ``force_recompute=True`` skips a cache hit
+    outright.
     """
-    from ..project.catalog import project_adata
+    from ..project.set_store import materialize_set
     from ..readwrite import safe_write_h5ad
 
-    adata = project_adata(
+    adata = materialize_set(
         project_dir,
         canonical_reference,
         set_name=set_name,
@@ -118,6 +125,7 @@ def project_materialize(
         start=start,
         end=end,
         read_metrics=read_metrics,
+        force_recompute=force_recompute,
     )
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,3 +137,10 @@ def project_materialize(
         output_path,
     )
     return output_path
+
+
+def project_sample_store_list(project_dir: str | Path, experiment_id: str | None = None) -> list[dict]:
+    """List cataloged per-sample-store partitions, optionally filtered to one experiment."""
+    from ..project.sample_store import list_per_sample_partitions
+
+    return list_per_sample_partitions(project_dir, experiment_id)

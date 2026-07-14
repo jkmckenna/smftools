@@ -621,8 +621,27 @@ def project_list_cmd(project_dir: Path):
     is_flag=True,
     help="Also attach spatial-stage per-read outputs (autocorrelation, Lomb-Scargle) when available.",
 )
+@click.option(
+    "--force-recompute",
+    is_flag=True,
+    help=(
+        "Skip the set-store cache even if a hit exists for the current resolved "
+        "composition (still refreshes the cache afterward). Results are cached by "
+        "default; a query whose resolved composition changed (new/re-registered "
+        "experiment) is already re-materialized automatically without this flag."
+    ),
+)
 def project_materialize_cmd(
-    project_dir, canonical_reference, output, set_name, modality, stage, start, end, read_metrics
+    project_dir,
+    canonical_reference,
+    output,
+    set_name,
+    modality,
+    stage,
+    start,
+    end,
+    read_metrics,
+    force_recompute,
 ):
     """Materialize CANONICAL_REFERENCE across matching experiments into one AnnData."""
     from .cli.project_cmd import project_materialize
@@ -637,8 +656,28 @@ def project_materialize_cmd(
         start=start,
         end=end,
         read_metrics=read_metrics,
+        force_recompute=force_recompute,
     )
     click.echo(f"Wrote {out}")
+
+
+@project_group.command("sample-store-list")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--experiment-id", default=None, help="Restrict to one experiment.")
+def project_sample_store_list_cmd(project_dir: Path, experiment_id):
+    """List per-sample-store partitions (Reference_strand x sample) cataloged by project add."""
+    from .cli.project_cmd import project_sample_store_list
+
+    partitions = project_sample_store_list(project_dir, experiment_id)
+    if not partitions:
+        click.echo("No per-sample-store partitions cataloged yet.")
+        return
+    click.echo(f"{len(partitions)} partition(s):")
+    for partition in partitions:
+        click.echo(
+            f"  {partition['experiment_id']}  {partition['reference_strand']}  "
+            f"{partition['sample']}  ({partition['kind']}, {partition['n_reads']} reads)"
+        )
 
 
 ##########################################

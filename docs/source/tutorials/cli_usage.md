@@ -228,10 +228,10 @@ a thin HMM spine rather than materializing the full experiment.
 ### `smftools project`
 
 The project command group manages a lightweight cross-experiment registry (`init`/`add`/`remove`/
-`list`/`materialize`). A project never copies or merges experiment data -- it keeps pointers to
-each experiment's run directory plus a table harmonizing reference names across experiments by
-sequence identity, so the same locus can be addressed by one canonical name even if experiments
-called it something different.
+`list`/`materialize`/`sample-store-list`). A project never copies or merges experiment data -- it
+keeps pointers to each experiment's run directory plus a table harmonizing reference names across
+experiments by sequence identity, so the same locus can be addressed by one canonical name even if
+experiments called it something different.
 
 - `project init PROJECT_DIR` creates the registry (`registry.json`) and a `sets/` directory for
   named experiment sets, plus starter working directories (`project_scripts/`, `project_outputs/`)
@@ -262,9 +262,18 @@ called it something different.
   (HMM > spatial > preprocess > raw), since a later stage's spine already carries forward
   everything earlier stages produced. `--read-metrics` additionally attaches spatial's per-read
   outputs (autocorrelation, Lomb-Scargle) where available. Supports `--set`/`--modality` filters
-  and `--start`/`--end` genomic windows.
+  and `--start`/`--end` genomic windows. Results are cached under `project_outputs/sets/` keyed by
+  the query's *resolved* composition (which experiments/stages/spines it currently resolves to) --
+  a repeat of the same query is a cache read, and registering or re-registering an experiment
+  automatically invalidates any cache whose resolved membership that changes. `--force-recompute`
+  skips a cache hit outright (still refreshes the cache afterward).
 - `project remove PROJECT_DIR EXPERIMENT_ID` marks an experiment inactive (soft delete; the
   registry is append-only).
+- `project sample-store-list PROJECT_DIR [--experiment-id ID]` lists the per-sample store's
+  cataloged `(Reference_strand, sample)` partitions -- populated automatically by `project add`.
+  Modern (partitioned-store) experiments get a `pointer` entry (no data copied, resolved through
+  the registry at read time); legacy monolithic experiments get a `cache` entry (their molecules
+  are cached once at registration, since they have no lazy read path otherwise).
 
 `smftools project export-fastq ...` builds on the same registry.
 

@@ -98,6 +98,63 @@ def test_project_cli_end_to_end(tmp_path):
     assert set(combined.obs["experiment"]) == {"expA", "expB"}
 
 
+def test_project_materialize_cli_caches_and_force_recompute_still_works(tmp_path):
+    from smftools.project.set_store import set_cache_dir
+
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    proj = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    assert runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]).exit_code == 0
+
+    out = tmp_path / "combined.h5ad"
+    r = runner.invoke(cli_entry.cli, ["project", "materialize", str(proj), uid, "-o", str(out)])
+    assert r.exit_code == 0, r.output
+
+    cache_dir = set_cache_dir(proj, uid)
+    assert (cache_dir / "base.h5ad").exists()
+
+    r2 = runner.invoke(
+        cli_entry.cli, ["project", "materialize", str(proj), uid, "-o", str(out), "--force-recompute"]
+    )
+    assert r2.exit_code == 0, r2.output
+    combined, _ = safe_read_h5ad(out)
+    assert combined.n_obs == 4
+
+
+def test_project_sample_store_list_cli(tmp_path):
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    _make_raw_experiment(tmp_path / "expB", reference_strand="geneB_top", uid=uid, n=3)
+    proj = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    assert runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]).exit_code == 0
+    assert runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expB")]).exit_code == 0
+
+    r = runner.invoke(cli_entry.cli, ["project", "sample-store-list", str(proj)])
+    assert r.exit_code == 0, r.output
+    assert "2 partition(s)" in r.output
+    assert "expA" in r.output and "geneA_top" in r.output and "bc01" in r.output
+    assert "expB" in r.output
+
+    r_filtered = runner.invoke(cli_entry.cli, ["project", "sample-store-list", str(proj), "--experiment-id", "expA"])
+    assert r_filtered.exit_code == 0, r_filtered.output
+    assert "1 partition(s)" in r_filtered.output
+    assert "expB" not in r_filtered.output
+
+
+def test_project_sample_store_list_cli_empty_project(tmp_path):
+    proj = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+
+    r = runner.invoke(cli_entry.cli, ["project", "sample-store-list", str(proj)])
+    assert r.exit_code == 0, r.output
+    assert "No per-sample-store partitions" in r.output
+
+
 def test_project_add_cli_backfills_per_sample_store_for_modern_experiment(tmp_path):
     from smftools.project.sample_store import list_per_sample_partitions
 
