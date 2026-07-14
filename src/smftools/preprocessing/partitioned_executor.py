@@ -300,6 +300,7 @@ def _core_result(
     result = ad.AnnData(
         obs=obs,
         var=var,
+        X=np.asarray(core.X),
         layers={name: np.asarray(core.layers[name]) for name in derived_layers},
     )
     result.uns.update(
@@ -344,6 +345,7 @@ def execute_preprocess_task(
         "group_path": path.relative_to(output_dir).as_posix(),
         "n_positions": result.n_vars,
         "layers": derived_layers,
+        "has_x": True,
     }
 
 

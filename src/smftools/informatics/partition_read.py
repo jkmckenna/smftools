@@ -390,6 +390,87 @@ def _load_tiled_cache_selection(
     return _load_partition(path, list(selection.index), layers, lazy, start, end)
 
 
+def _load_preprocess_x_selection(
+    spine: "ad.AnnData",
+    selection: pd.DataFrame,
+    run_root: Path | None,
+    layers: Iterable[str] | None,
+    start: int | None,
+    end: int | None,
+) -> "ad.AnnData | None":
+    """Read ``X`` directly from one preprocess task shard that fully covers
+    ``selection``, skipping raw ragged/tiled CIGAR reconstruction entirely.
+
+    Deliberately conservative: returns ``None`` (safe to fall back to the existing
+    dispatch, never a partial/wrong answer) on any partial coverage, a selection
+    spanning more than one ``Reference_strand``, or a preprocess catalog with no
+    ``has_x`` column (a run written before this fast path existed). Only a *single*
+    shard fully covering every requested read is considered -- stitching ``X``
+    across multiple shards (e.g. a whole-reference query spanning several barcode-
+    partitioned tasks) is not attempted here; that selection just falls through to
+    today's raw-store path unchanged. This still covers the common case: preprocess
+    tasks are barcode-partitioned by default (``dispatch_plan.plan_preprocess_
+    tasks``), so any single-sample-scoped ``materialize()`` call -- e.g. the
+    project layer's per-sample streaming -- hits this path.
+
+    ``layers`` must be an explicit, *empty* collection -- never ``None`` and never
+    non-empty. A preprocess shard only ever carries its own newly-computed derived
+    layers, never raw-sourced ones (``read_span_mask``, sequence/quality/mismatch
+    encodings, ...). ``layers=None`` means "give me everything, including raw
+    layers"; a non-empty ``layers`` here means the caller wants specific
+    *raw-sourced* layers (anything derived was already filtered out of this
+    argument by the caller -- see ``source_layers`` in ``materialize()``). Neither
+    case is satisfiable from this shard alone, so both fall back to the existing
+    raw-store dispatch instead of silently dropping layers.
+    """
+    if run_root is None or layers is None or len(list(layers)) > 0:
+        return None
+    catalog_path = resolve_relative_path(spine.uns.get("preprocess_catalog"), run_root)
+    if catalog_path is None or not catalog_path.exists():
+        return None
+    catalog = pd.read_parquet(catalog_path)
+    if "has_x" not in catalog.columns:
+        return None
+    catalog = catalog.loc[catalog["has_x"].astype(bool)]
+    if catalog.empty:
+        return None
+
+    references = selection["Reference_strand"].astype(str).unique()
+    if len(references) != 1:
+        return None
+    candidates = catalog.loc[catalog["reference"].astype(str) == references[0]]
+    if start is not None:
+        candidates = candidates.loc[
+            (candidates["core_start"] <= int(start)) & (candidates["core_end"] >= int(end))
+        ]
+    if candidates.empty:
+        return None
+
+    from ..readwrite import safe_read_zarr
+
+    required = set(selection.index.astype(str))
+    for record in candidates.to_dict("records"):
+        path = catalog_path.parent / str(record["group_path"])
+        if not path.exists():
+            continue
+        part, _ = safe_read_zarr(path, verbose=False)
+        if part.X is None:
+            continue
+        if not required.issubset(set(map(str, part.obs_names))):
+            continue
+        sub = part[list(selection.index)].copy()
+        if start is not None:
+            positions = np.asarray(sub.var_names, dtype="int64")
+            sub = sub[:, (positions >= start) & (positions < end)].copy()
+        if layers is not None:
+            keep = set(layers)
+            for name in list(sub.layers):
+                if name not in keep:
+                    del sub.layers[name]
+        return sub
+    return None
+
+
 def _derived_layer_names(spine: "ad.AnnData", run_root: Path | None) -> set[str]:
     """Return layer names published by partitioned derived-stage stores."""
     names: set[str] = set()
@@ -546,8 +627,12 @@ def _overlay_spatial_read_metrics(
         return
     references = result.obs["Reference_strand"].astype(str).unique()
     catalog = pd.read_parquet(catalog_path)
+    # group_path/obsm_keys: current naming, shared with preprocess/hmm's catalogs.
+    # read_metrics_path: pre-normalization naming, kept readable for catalogs
+    # written before this change -- no forced backfill.
+    path_column = "group_path" if "group_path" in catalog.columns else "read_metrics_path"
     catalog = catalog.loc[
-        catalog["reference"].astype(str).isin(references) & catalog["read_metrics_path"].notna()
+        catalog["reference"].astype(str).isin(references) & catalog[path_column].notna()
     ]
     if catalog.empty:
         return
@@ -560,7 +645,7 @@ def _overlay_spatial_read_metrics(
     want_all = requested is True
 
     for record in catalog.to_dict("records"):
-        part, _ = safe_read_zarr(catalog_dir / str(record["read_metrics_path"]), verbose=False)
+        part, _ = safe_read_zarr(catalog_dir / str(record[path_column]), verbose=False)
         shared_reads = [read_id for read_id in map(str, part.obs_names) if read_id in result_rows]
         if not shared_reads:
             continue
@@ -737,6 +822,13 @@ def materialize(
                 "materialize: genome-mode references require start/end intervals: "
                 f"{sorted(genome_references)}"
             )
+    fast = _load_preprocess_x_selection(spine_obj, sel, run_root, source_layers, start, end)
+    if fast is not None:
+        _overlay_preprocess_layers(spine_obj, fast, requested_derived, run_root)
+        _overlay_preprocess_var(spine_obj, fast, run_root)
+        _overlay_spatial_read_metrics(spine_obj, fast, requested_read_metrics, run_root)
+        logger.debug("materialized %d molecules from preprocess-owned X", fast.n_obs)
+        return fast
     if not _dense_cache_available(sel, base):
         tiled = _load_tiled_cache_selection(spine_obj, sel, base, source_layers, lazy, start, end)
         if tiled is not None:

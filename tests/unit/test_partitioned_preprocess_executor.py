@@ -573,6 +573,19 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
     )
     spatial_tasks = pd.read_parquet(spatial["task_catalog"])
     assert spatial_tasks["n_reads"].sum() == 1
+    # group_path/obsm_keys: same store-per-task addressing convention as
+    # preprocess/hmm's catalogs, replacing the old bespoke read_metrics_path
+    # column now that read_obsm was actually computed for this task. Only "C"/
+    # "CpG" sites exist in this fixture's tiny reference sequence (no GpC dinucs),
+    # so only those site types produce read-level outputs.
+    assert spatial_tasks["group_path"].notna().all()
+    obsm_keys = set(spatial_tasks["obsm_keys"].iloc[0])
+    for site_type in ("CpG", "C"):
+        assert {
+            f"{site_type}_spatial_autocorr",
+            f"{site_type}_spatial_autocorr_counts",
+            f"{site_type}_lomb_scargle_power",
+        } <= obsm_keys
     metrics = pd.read_parquet(spatial["metrics"])
     assert set(metrics["reference"]) == {"ref_top"}
     assert set(metrics["barcode"]) == {"bc1"}
@@ -833,6 +846,17 @@ def test_partitioned_spatial_writes_locus_clustermaps_and_position_matrices(tmp_
     assert list(with_metrics.uns["C_spatial_autocorr_lags"]) == list(
         range(cfg.autocorr_max_lag + 1)
     )
+
+    # Backward compat: a spatial task_catalog.parquet written before the
+    # group_path/obsm_keys rename (read_metrics_path only) must still resolve
+    # correctly -- no forced backfill for already-registered experiments.
+    legacy_catalog = pd.read_parquet(spatial["task_catalog"])
+    legacy_catalog = legacy_catalog.rename(columns={"group_path": "read_metrics_path"}).drop(
+        columns=["obsm_keys"]
+    )
+    legacy_catalog.to_parquet(spatial["task_catalog"], index=False)
+    legacy_metrics = materialize(spatial["spine"], references="ref_top", read_metrics=True)
+    assert legacy_metrics.obsm["C_spatial_autocorr"].shape == (2, cfg.autocorr_max_lag + 1)
 
     # Off by default, and filterable to a name subset.
     without_metrics = materialize(spatial["spine"], references="ref_top")

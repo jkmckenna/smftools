@@ -397,7 +397,7 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
     pd.DataFrame(metric_rows).to_parquet(metrics_path, index=False)
     pd.DataFrame(autocorr_rows).to_parquet(autocorr_path, index=False)
     pd.DataFrame(position_rows).to_parquet(positions_path, index=False)
-    read_metrics_path = None
+    group_path = None
     if read_obsm:
         import anndata as ad
 
@@ -410,16 +410,18 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
             verbose=False,
             zarr_format=3,
         )
+        group_path = read_metrics_path.relative_to(output_dir).as_posix()
     return {
         **task.to_dict(include_read_ids=False),
         "metrics_path": metrics_path.relative_to(output_dir).as_posix(),
         "autocorrelation_path": autocorr_path.relative_to(output_dir).as_posix(),
         "positions_path": positions_path.relative_to(output_dir).as_posix(),
-        "read_metrics_path": (
-            read_metrics_path.relative_to(output_dir).as_posix()
-            if read_metrics_path is not None
-            else None
-        ),
+        # group_path/obsm_keys: same store-per-task addressing convention as
+        # preprocess/hmm's catalogs (informatics.experiment_storage_schema doc's
+        # "Store organization" section) -- group_path is None and obsm_keys is
+        # empty when this task computed no read-level outputs at all.
+        "group_path": group_path,
+        "obsm_keys": sorted(read_obsm),
         "site_types": sorted({row["site_type"] for row in metric_rows}),
     }
 
@@ -651,7 +653,7 @@ def _plot_read_metric_clustermaps(records, output_dir: Path, layout, cfg) -> Non
         return
     groups = {}
     for record in records:
-        relative_path = record.get("read_metrics_path")
+        relative_path = record.get("group_path")
         if not relative_path:
             continue
         read_metrics, _ = safe_read_zarr(output_dir / relative_path, verbose=False)
@@ -790,7 +792,7 @@ def _plot_read_periodicity(records, output_dir: Path, layout, cfg) -> None:
         return
     windows = {}
     for record in records:
-        relative_path = record.get("read_metrics_path")
+        relative_path = record.get("group_path")
         if not relative_path:
             continue
         read_metrics, _ = safe_read_zarr(output_dir / relative_path, verbose=False)
