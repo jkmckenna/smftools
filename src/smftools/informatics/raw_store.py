@@ -23,6 +23,7 @@ from smftools.constants import (
 from smftools.logging_utils import get_logger
 
 from ..readwrite import safe_write_h5ad
+from .experiment_spine import write_experiment_spine
 from .partition_read import relative_uns_path
 from .ragged_store import (
     RAGGED_ARRAY_COLUMNS,
@@ -353,6 +354,7 @@ def write_raw_store(
     if barcode_index_path is not None:
         register_sidecar(manifest_path, "barcode_index", barcode_index_path)
     register_sidecar(manifest_path, "obs", obs_path)
+    write_experiment_spine(output_dir.parent)
     logger.info(
         "Wrote raw store with %d reads in %d shard(s) in %.2fs",
         len(normalized),

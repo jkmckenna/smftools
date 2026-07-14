@@ -16,6 +16,7 @@ from ..cli.stage_artifacts import (
     prepare_analysis_plot_layout,
     register_plot_artifact,
 )
+from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..preprocessing.dispatch_plan import (
@@ -1396,6 +1397,7 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     spatial_spine.uns["spatial_schema_version"] = 2
     output_spine = output_dir / SPATIAL_SPINE_FILENAME
     safe_write_h5ad(spatial_spine, output_spine, backup=False, verbose=False)
+    write_experiment_spine(run_root)
 
     manifest = sidecar_manifest_path(output_dir)
     register_sidecar(manifest, "spatial_spine", output_spine)

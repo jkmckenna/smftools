@@ -47,6 +47,12 @@ STAGE_DIRS = {
     "latent": LATENT_DIR,
     "variant": VARIANT_DIR,
     "chimeric": CHIMERIC_DIR,
+    # Not a pipeline stage: the generated, always-current superset spine (obs =
+    # every stage's obs.parquet joined, uns = every stage's catalog pointers
+    # unioned -- see informatics.experiment_spine). Included here so the existing
+    # generic discovery loop below picks it up for free; resolve_experiment_spine
+    # prefers it over the STAGE_PRIORITY chain when present.
+    "experiment": "experiment_spine_outputs",
 }
 
 # Auto-fallback order when a caller doesn't request a specific stage: the
@@ -430,11 +436,21 @@ def resolve_experiment_spine(entry: dict, stage: str | None = None) -> tuple[str
     Returns:
         ``(stage_name, path)`` for the selected spine, or ``None`` if the
         requested stage (or, in fallback mode, no stage at all) is available.
+
+    In fallback mode (``stage=None``), the consolidated ``experiment_spine.h5ad``
+    (see ``informatics.experiment_spine``) is preferred over the ``STAGE_PRIORITY``
+    chain when present -- it's a strict superset (every stage's obs joined, every
+    stage's catalog pointers unioned rather than one ``.copy()`` lineage), so this
+    is always at least as complete an answer. Falls back to ``STAGE_PRIORITY``
+    unchanged for runs that predate it or haven't been reprocessed.
     """
     spines = entry.get("spines", {})
     if stage is not None:
         path = spines.get(stage)
         return (stage, Path(path)) if path else None
+    experiment_path = spines.get("experiment")
+    if experiment_path:
+        return "experiment", Path(experiment_path)
     for candidate in STAGE_PRIORITY:
         path = spines.get(candidate)
         if path:

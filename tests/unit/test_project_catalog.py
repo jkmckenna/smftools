@@ -200,7 +200,14 @@ def test_project_adata_stage_selection(tmp_path):
     # Give expA a "preprocess" stage too: a spine.copy() with one marker obs
     # column added and source_base_dir pointing back at the raw stage (so
     # materialize() can still reach the ragged shards), matching the real shape
-    # of a preprocess-stage spine (see preprocessing.partitioned_executor).
+    # of a preprocess-stage spine (see preprocessing.partitioned_executor). Also
+    # hand-roll the stage_obs.parquet + consolidated experiment_spine.h5ad refresh
+    # the real execute_partitioned_preprocessing would have written alongside it
+    # (see informatics.stage_obs / informatics.experiment_spine), so this fixture
+    # matches what the real pipeline produces instead of only half of it.
+    from smftools.informatics.experiment_spine import write_experiment_spine
+    from smftools.informatics.stage_obs import write_stage_obs
+
     raw_spine, _ = safe_read_h5ad(run_dir / "raw_outputs" / "spine.h5ad")
     preprocess_spine: ad.AnnData = raw_spine.copy()
     preprocess_spine.obs["passes_qc"] = True
@@ -208,6 +215,10 @@ def test_project_adata_stage_selection(tmp_path):
     preprocess_dir.mkdir()
     preprocess_spine.uns["source_base_dir"] = relative_uns_path(run_dir / "raw_outputs", run_dir)
     safe_write_h5ad(preprocess_spine, preprocess_dir / "spine.h5ad", backup=False, verbose=False)
+    write_stage_obs(
+        preprocess_dir, preprocess_spine.obs, columns=["passes_qc"], filename="stage_obs.parquet"
+    )
+    write_experiment_spine(run_dir)
 
     proj = tmp_path / "project"
     reg.init_project(proj)
@@ -217,8 +228,8 @@ def test_project_adata_stage_selection(tmp_path):
     exp_b_id, entry_b = reg.add_experiment(
         proj, tmp_path / "expB_run" / "raw_outputs", experiment_id="expB"
     )
-    assert set(entry_a["spines"]) == {"raw", "preprocess"}
-    assert set(entry_b["spines"]) == {"raw"}
+    assert set(entry_a["spines"]) == {"raw", "preprocess", "experiment"}
+    assert set(entry_b["spines"]) == {"raw", "experiment"}
 
     # Auto: expA materializes from its preprocess spine (has passes_qc), expB
     # from its raw spine (no preprocess stage) -- both included, no crash.

@@ -25,6 +25,7 @@ from ..cli.stage_artifacts import (
     register_plot_artifact,
 )
 from ..hmm.HMM import mask_layers_outside_read_span, normalize_hmm_feature_sets
+from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..preprocessing.dispatch_plan import plan_preprocess_tasks
@@ -474,6 +475,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     }
     hmm_spine.uns["hmm_schema_version"] = 1
     safe_write_h5ad(hmm_spine, output_spine, backup=False, verbose=False)
+    write_experiment_spine(run_root)
     _plot_feature_clustermaps(records, output_spine, output_dir, layout, cfg)
 
     manifest = sidecar_manifest_path(output_dir)

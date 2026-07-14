@@ -185,6 +185,26 @@ def test_resolve_experiment_spine_prefers_most_derived_stage(tmp_path):
     assert reg.resolve_experiment_spine(entries["expB"], stage="hmm") is None
 
 
+def test_resolve_experiment_spine_prefers_consolidated_experiment_spine(tmp_path):
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    _make_run(
+        tmp_path / "expA",
+        stages=["raw", "preprocess", "hmm", "experiment"],
+        name="expA",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    reg.add_experiment(proj, tmp_path / "expA")
+    entry = {e["id"]: e for e in reg.list_experiments(proj)}["expA"]
+
+    # Auto (no explicit stage): the consolidated spine wins over STAGE_PRIORITY.
+    assert reg.resolve_experiment_spine(entry)[0] == "experiment"
+    # Explicit stage requests are unaffected -- still resolve to that stage's own
+    # spine, not the consolidated one.
+    assert reg.resolve_experiment_spine(entry, stage="hmm")[0] == "hmm"
+
+
 @pytest.mark.parametrize(
     "filename,expected",
     [

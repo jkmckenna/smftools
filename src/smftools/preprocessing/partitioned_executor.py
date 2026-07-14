@@ -13,6 +13,7 @@ import pandas as pd
 from smftools.constants import REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 
+from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..informatics.stage_obs import write_stage_obs
@@ -989,6 +990,7 @@ def execute_partitioned_preprocessing(
     stage_obs_path = write_stage_obs(
         output_dir, derived_spine.obs, columns=new_columns, filename=PREPROCESS_STAGE_OBS
     )
+    write_experiment_spine(run_root)
     if bool(getattr(cfg, "emit_automated_plots", True)):
         generate_preprocess_summary_plots(
             obs_sidecar,
