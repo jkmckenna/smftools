@@ -96,6 +96,39 @@ def test_select_no_match_is_empty(project_with_two_experiments):
     assert ProjectCatalog.open(proj).select(canonical_reference="nonexistent").empty
 
 
+def test_project_adata_concat_handles_mismatched_obs_index_names(tmp_path):
+    """Different experiments' spines can carry differently-named obs indices (e.g. a
+    modern spine's "read_id" vs. a legacy spine's unnamed index) -- ad.concat
+    mishandles that mismatch by emitting a literal "_index" obs column (anndata's
+    reserved index marker), which then fails to write back out at all
+    ("'_index' is a reserved name for dataframe columns"). Reproduces the exact
+    mismatch found registering a real project mixing legacy and modern experiments."""
+    from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
+
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    _make_raw_experiment(tmp_path / "expB", reference_strand="geneB_top", uid=uid, n=3)
+
+    # Give expB's spine a named obs index, simulating a modern spine's "read_id"
+    # (expA's, from write_raw_store, is left unnamed -- the legacy shape).
+    spine_path = tmp_path / "expB" / "spine.h5ad"
+    spine, _ = safe_read_h5ad(spine_path, verbose=False)
+    spine.obs.index.name = "read_id"
+    safe_write_h5ad(spine, spine_path, backup=False, verbose=False)
+
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    reg.add_experiment(proj, tmp_path / "expA")
+    reg.add_experiment(proj, tmp_path / "expB")
+
+    combined = project_adata(proj, uid)
+    assert "_index" not in combined.obs.columns
+    assert combined.n_obs == 7
+
+    # The whole point: this must actually be writable, not just constructible.
+    safe_write_h5ad(combined, tmp_path / "combined.h5ad", backup=False, verbose=False)
+
+
 def test_project_adata_stage_selection(tmp_path):
     """Experiments at different pipeline stages: auto picks the most-derived
     stage per experiment; an explicit stage skips (not crashes on) experiments

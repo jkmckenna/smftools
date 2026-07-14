@@ -261,6 +261,13 @@ def project_adata(
         )
         sub.obs["experiment"] = member["experiment"]
         sub.uns["project_stage"] = member["stage"]
+        # Different experiments' spines can carry differently-named obs indices
+        # (e.g. a modern spine's "read_id" vs. a legacy spine's unnamed index) --
+        # ad.concat mishandles that mismatch by emitting a literal "_index" obs
+        # column (anndata's reserved index marker), which later fails to write
+        # ("'_index' is a reserved name for dataframe columns"). Normalizing here
+        # means every part agrees before concat ever sees them.
+        sub.obs.index.name = None
         parts.append(sub)
 
     if not parts:
