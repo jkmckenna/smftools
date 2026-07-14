@@ -97,26 +97,26 @@ def project_materialize(
     stage: str | None = None,
     start: int | None = None,
     end: int | None = None,
+    layers: list[str] | None = None,
     read_metrics: bool = False,
-    force_recompute: bool = False,
+    allow_large: bool = False,
 ) -> Path:
-    """Materialize a canonical reference across matching experiments and write it.
+    """Pool a canonical reference across matching experiments into one AnnData and write it.
 
-    ``stage`` picks a specific pipeline stage per experiment (``raw``,
-    ``preprocess``, ``spatial``, ``hmm``, ...); the default falls back through
-    the most-derived stage available per experiment, since a later stage's
-    spine already carries forward everything earlier stages produced.
+    This is the explicit "give me one pooled object" path (``project.catalog.project_adata``).
+    ``stage`` picks a specific pipeline stage per experiment (``raw``, ``preprocess``,
+    ``spatial``, ``hmm``, ...); the default falls back through the most-derived stage
+    available per experiment.
 
-    Cached by resolved composition (see ``project.set_store.materialize_set``):
-    a repeat of the same query is a cache read, and a query whose resolved
-    membership changed (new/re-registered experiment) transparently falls
-    through to a fresh materialize. ``force_recompute=True`` skips a cache hit
-    outright.
+    Prefer a narrow ``layers`` subset and/or a ``start``/``end`` window: pooling *all*
+    layers at full locus across many experiments builds enormous objects (a real
+    project produced >200 GB). A size guardrail refuses a pool over ~8 GiB unless
+    ``allow_large=True``; for larger streamed access use ``set_store.iter_set_parts``.
     """
-    from ..project.set_store import materialize_set
+    from ..project.catalog import project_adata
     from ..readwrite import safe_write_h5ad
 
-    adata = materialize_set(
+    adata = project_adata(
         project_dir,
         canonical_reference,
         set_name=set_name,
@@ -124,8 +124,9 @@ def project_materialize(
         stage=stage,
         start=start,
         end=end,
+        layers=layers,
         read_metrics=read_metrics,
-        force_recompute=force_recompute,
+        allow_large=allow_large,
     )
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

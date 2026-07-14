@@ -197,6 +197,17 @@ def resolve_set_members(
     return members
 
 
+DEFAULT_MAX_POOL_BYTES = 8 * 1024**3  # 8 GiB
+
+
+def _part_nbytes(sub) -> int:
+    """Rough in-memory footprint of a materialized part (X + layers)."""
+    total = int(getattr(sub.X, "nbytes", 0) or 0)
+    for layer in sub.layers.values():
+        total += int(getattr(layer, "nbytes", 0) or 0)
+    return total
+
+
 def project_adata(
     project_dir: str | Path,
     canonical_reference: str,
@@ -210,79 +221,60 @@ def project_adata(
     layers=None,
     read_metrics=False,
     lazy: bool = False,
+    allow_large: bool = False,
+    max_bytes: int = DEFAULT_MAX_POOL_BYTES,
 ):
     """Materialize + concat a canonical reference across the matching experiments.
 
-    Resolves the canonical reference back to each experiment's own reference name(s),
-    ``materialize``s each experiment's slice, and concatenates along obs (shared
-    coordinate system) -- no global merge. Adds an ``experiment`` obs column.
+    This is the explicit, size-guarded "give me one pooled AnnData" opt-in over a set.
+    It consumes ``set_store.iter_set_parts`` (streamed, projected) and concatenates the
+    stream along obs (shared coordinate system) -- no global merge. Adds an
+    ``experiment`` obs column and keeps only the shared genomic-position axis for
+    ``var`` (see ``set_store.normalize_part``).
 
     Each experiment's spine is picked independently: ``stage`` picks a specific
     pipeline stage (``"raw"``, ``"preprocess"``, ``"spatial"``, ``"hmm"``, ...) and
-    skips experiments that haven't reached it; ``None`` (default) falls back
-    through the most-derived stage available per experiment (see
-    ``project.registry.STAGE_PRIORITY``), since a later stage's spine already
-    carries forward everything earlier stages produced -- see
-    ``informatics.partition_read.materialize``'s layer/read-metric overlays.
-    Experiments with no matching spine at all are skipped with a warning.
+    skips experiments that haven't reached it; ``None`` (default) falls back through the
+    most-derived stage available per experiment. Prefer a narrow ``layers`` subset
+    and/or a ``start``/``end`` window -- pooling *all* layers at full locus across many
+    experiments is what produced the >200 GB objects the redesign exists to avoid.
 
-    The pooled object keeps only the shared genomic-position axis for ``var`` --
-    per-experiment ``var`` annotations (a legacy HMM stage carries ~1200 of them:
-    per-reference peak calls, consensus sequences, FASTA base context, ...) are
-    experiment- and reference-specific, don't compose across a cross-experiment
-    pool, and outer-unioning them across experiments overflows HDF5's per-attribute
-    size limit on the ``var`` ``column-order`` attribute -- unwritable even with
-    anndata's ``track_order`` fallback. (Partitioned-store spines already carry no
-    ``var`` columns.) Query a per-experiment stage directly if you need its ``var``
-    annotations.
+    Guardrail: parts are summed as the stream is consumed and, once the running total
+    would exceed ``max_bytes`` (default 8 GiB), a ``ValueError`` is raised naming the
+    windowing/layer/``allow_large`` escape hatches -- so an accidental full-project,
+    all-layers pool can't silently build a machine-filling object. Pass
+    ``allow_large=True`` to bypass the guardrail when you know it fits (e.g. after
+    projecting to one layer + a window).
     """
     import anndata as ad
 
-    from ..informatics.partition_read import materialize
+    from .set_store import iter_set_parts
 
-    catalog = ProjectCatalog.open(project_dir)
-    selection = catalog.select(
-        canonical_reference=canonical_reference,
-        modality=modality,
-        experiments=experiments,
-        set_name=set_name,
-    )
-    if selection.empty:
-        raise ValueError(f"no experiment references match canonical_reference={canonical_reference!r}")
-
-    members = resolve_set_members(
-        catalog,
+    parts = []
+    running = 0
+    for sub in iter_set_parts(
+        project_dir,
         canonical_reference,
         set_name=set_name,
         modality=modality,
         experiments=experiments,
         stage=stage,
-    )
-    parts = []
-    for member in members:
-        sub = materialize(
-            member["spine_path"],
-            references=member["reference_strands"],
-            start=start,
-            end=end,
-            layers=layers,
-            read_metrics=read_metrics,
-            lazy=lazy,
-        )
-        sub.obs["experiment"] = member["experiment"]
-        sub.uns["project_stage"] = member["stage"]
-        # Different experiments' spines can carry differently-named obs indices
-        # (e.g. a modern spine's "read_id" vs. a legacy spine's unnamed index) --
-        # ad.concat mishandles that mismatch by emitting a literal "_index" obs
-        # column (anndata's reserved index marker), which later fails to write
-        # ("'_index' is a reserved name for dataframe columns"). Normalizing here
-        # means every part agrees before concat ever sees them.
-        sub.obs.index.name = None
-        # Drop per-experiment var annotations (see docstring): keep only the
-        # position axis so the pooled object stays writable and the outer-join
-        # doesn't union thousands of experiment-specific columns.
-        sub.var = sub.var.iloc[:, :0]
+        start=start,
+        end=end,
+        layers=layers,
+        read_metrics=read_metrics,
+        lazy=lazy,
+    ):
         parts.append(sub)
+        running += _part_nbytes(sub)
+        if not allow_large and running > max_bytes:
+            raise ValueError(
+                f"pooled object exceeds {max_bytes / 1024**3:.1f} GiB "
+                f"(already {running / 1024**3:.1f} GiB across {len(parts)} experiment(s)). "
+                "Narrow it with a layer subset (layers=[...]) and/or a genomic window "
+                "(start=/end=), stream it with set_store.iter_set_parts instead of "
+                "pooling, or pass allow_large=True if you're sure it fits."
+            )
 
     if not parts:
         raise ValueError(

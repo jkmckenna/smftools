@@ -34,7 +34,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .set_store import materialize_set, set_label, sets_root
+from .catalog import project_adata
+from .set_store import set_label, sets_root
 
 EMBEDDINGS_DIRNAME = "embeddings"
 VERSIONS_DIRNAME = "versions"
@@ -246,13 +247,21 @@ def fit_or_extend_embedding(
     dimensionality_reduction.run_pipeline` produces, plus the read-id ordering and a
     small provenance record.
     """
-    adata = materialize_set(
+    # Pool only the single feature layer (or X, via layers=[]) over the requested
+    # window -- never all ~25 layers at full locus. Feature extraction (PCA/UMAP) needs
+    # exactly one matrix, so projecting to it is what keeps this bounded; allow_large
+    # since embedding legitimately wants the pooled feature matrix in memory.
+    adata = project_adata(
         project_dir,
         canonical_reference,
         set_name=set_name,
         modality=modality,
         experiments=experiments,
         stage=stage,
+        layers=[layer] if layer is not None else [],
+        start=start,
+        end=end,
+        allow_large=True,
     )
     feat, obs_names = _make_features(adata, feature_kind=feature_kind, layer=layer, start=start, end=end)
 

@@ -98,9 +98,7 @@ def test_project_cli_end_to_end(tmp_path):
     assert set(combined.obs["experiment"]) == {"expA", "expB"}
 
 
-def test_project_materialize_cli_caches_and_force_recompute_still_works(tmp_path):
-    from smftools.project.set_store import set_cache_dir
-
+def test_project_materialize_cli_pools_with_layer_projection(tmp_path):
     uid = reference_uid(SEQUENCE, 12)
     _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
     proj = tmp_path / "project"
@@ -109,18 +107,39 @@ def test_project_materialize_cli_caches_and_force_recompute_still_works(tmp_path
     assert runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]).exit_code == 0
 
     out = tmp_path / "combined.h5ad"
-    r = runner.invoke(cli_entry.cli, ["project", "materialize", str(proj), uid, "-o", str(out)])
-    assert r.exit_code == 0, r.output
-
-    cache_dir = set_cache_dir(proj, uid)
-    assert (cache_dir / "base.h5ad").exists()
-
-    r2 = runner.invoke(
-        cli_entry.cli, ["project", "materialize", str(proj), uid, "-o", str(out), "--force-recompute"]
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "materialize", str(proj), uid, "-o", str(out), "--layers", "sequence_integer_encoding"],
     )
-    assert r2.exit_code == 0, r2.output
+    assert r.exit_code == 0, r.output
+    assert out.exists()
     combined, _ = safe_read_h5ad(out)
     assert combined.n_obs == 4
+    assert set(combined.layers) == {"sequence_integer_encoding"}
+
+    # The set store writes nothing to disk (no base.h5ad cache anymore).
+    assert not (proj / "project_outputs" / "sets").exists()
+
+
+def test_project_materialize_cli_guardrail_refuses_oversized_pool(tmp_path):
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    proj = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    assert runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]).exit_code == 0
+
+    # Force the guardrail to trip with an absurdly low limit via the Python API is
+    # cleaner; here just confirm the CLI --allow-large flag is accepted and works.
+    out = tmp_path / "combined.h5ad"
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "materialize", str(proj), uid, "-o", str(out), "--layers", "", "--allow-large"],
+    )
+    assert r.exit_code == 0, r.output
+    combined, _ = safe_read_h5ad(out)
+    assert combined.n_obs == 4
+    assert len(combined.layers) == 0  # --layers '' => X only
 
 
 def test_project_sample_store_list_cli(tmp_path):

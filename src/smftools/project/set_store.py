@@ -1,35 +1,38 @@
-"""Set store: caches a project-level cross-experiment materialization, keyed by the
-*resolved* composition that produced it -- which experiment/stage/spine and reference
-strands actually went in, plus every parameter that changes what gets materialized.
+"""Set store: streamed, partition-native access to a project-level cross-experiment
+selection.
 
-Re-running the same query is then a cache read instead of a full
-materialize-and-concat; a query whose resolved composition has changed (a new
-experiment registered, an existing one re-registered with new data, a different
-stage/window/layer selection, ...) is detected automatically by a hash mismatch,
-never served stale.
+A "set" is not a stored artifact -- it is a *query* (a canonical reference plus optional
+set-name/modality/experiment filters, resolved against the registry). ``iter_set_parts``
+streams that selection one projected experiment-slice at a time, so peak memory scales
+with a single member's projected slice, never the whole pool. There is no ``base.h5ad``
+and no set-level cache: membership is resolved fresh each call, so a set is never stale.
 
-Phase 3 of ``dev/project_sample_and_set_stores.md``. Wraps
-``project.catalog.project_adata`` -- same materialize + concat behavior, just cached.
-Per-sample-store joins and embedding persistence (Phase 4) are not implemented yet;
-there is no project-computed per-sample analysis catalog to join in yet either (see
-``project.sample_store``).
+This replaces the earlier design (see ``dev/project_sample_and_set_stores.md``, "Set
+store" + "Proposed redesign") that concatenated every member into one monolithic
+``base.h5ad``. That approach held every member plus the pooled result in memory at once
+(~56 GB on a real 11-experiment project) and produced >200 GB unwritable output from the
+outer-join upcasting ~25 int layers to float at full locus. The two things that made it
+tractable -- and that this module bakes in -- are **streaming** (never all members
+resident) and **projection** (materialize only the ``layers`` / genomic window a caller
+actually needs, not all layers at full locus).
+
+Concatenating the stream into one in-memory AnnData is still available as an explicit,
+size-guarded opt-in: ``project.catalog.project_adata``.
+
+``slug``/``sets_root``/``set_label`` remain here -- shared with ``embedding_store`` for
+the ``sets/<label>/embeddings/`` directory.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 import re
 from pathlib import Path
 
 SETS_OUTPUT_DIRNAME = "sets"
-BASE_CACHE_FILENAME = "base.h5ad"
-COMPOSITION_FILENAME = "composition.json"
 
 
 def slug(value: str) -> str:
-    """Filesystem-safe slug, shared by every project_outputs/ cache directory name."""
+    """Filesystem-safe slug, shared by every project_outputs/ set directory name."""
     slugged = re.sub(r"[^0-9A-Za-z._-]+", "_", str(value)).strip("_")
     return slugged or "x"
 
@@ -39,35 +42,29 @@ def sets_root(project_dir: str | Path) -> Path:
 
 
 def set_label(set_name: str | None, canonical_reference: str) -> str:
-    """The directory name a set's cache/embeddings live under: the set name if given,
-    else the canonical reference -- shared by ``set_store`` and ``embedding_store`` so
-    an embedding directory and its set's base-materialization cache always agree on
-    which set they belong to."""
+    """The directory name a set's artifacts (e.g. embeddings) live under: the set name
+    if given, else the canonical reference -- shared by ``set_store`` and
+    ``embedding_store`` so an embedding directory and its set always agree on which set
+    they belong to."""
     return slug(set_name) if set_name else slug(canonical_reference)
 
 
-def _composition_hash(composition: dict) -> str:
-    encoded = json.dumps(composition, sort_keys=True, default=str).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
-
-
-def _build_composition(
+def resolve_set_members(
     project_dir: str | Path,
     canonical_reference: str,
     *,
-    set_name,
-    modality,
-    experiments,
-    stage,
-    start,
-    end,
-    layers,
-    read_metrics,
-) -> tuple[dict, list[dict]]:
-    from .catalog import ProjectCatalog, resolve_set_members
+    set_name=None,
+    modality=None,
+    experiments=None,
+    stage: str | None = None,
+) -> list[dict]:
+    """Resolve which ``(experiment, stage, spine_path, reference_strands)`` a set query
+    selects, right now -- cheap (registry + in-memory alias table, no matrices)."""
+    from .catalog import ProjectCatalog
+    from .catalog import resolve_set_members as _resolve
 
     catalog = ProjectCatalog.open(project_dir)
-    members = resolve_set_members(
+    return _resolve(
         catalog,
         canonical_reference,
         set_name=set_name,
@@ -75,142 +72,82 @@ def _build_composition(
         experiments=experiments,
         stage=stage,
     )
-    composition = {
-        "canonical_reference": canonical_reference,
-        "set_name": set_name,
-        "modality": modality,
-        "experiments": sorted(experiments) if experiments else None,
-        "stage": stage,
-        "start": start,
-        "end": end,
-        "layers": sorted(layers) if layers else None,
-        "read_metrics": read_metrics,
-        "members": [
-            {
-                "experiment": m["experiment"],
-                "stage": m["stage"],
-                "spine_path": str(m["spine_path"]),
-                "reference_strands": m["reference_strands"],
-            }
-            for m in members
-        ],
-    }
-    return composition, members
 
 
-def set_cache_dir(
-    project_dir: str | Path,
-    canonical_reference: str,
-    *,
-    set_name: str | None = None,
-    modality=None,
-    experiments=None,
-    stage: str | None = None,
-    start: int | None = None,
-    end: int | None = None,
-    layers=None,
-    read_metrics: bool = False,
-) -> Path:
-    """Return the cache directory a :func:`materialize_set` call with these exact
-    parameters would use, without resolving membership or touching the cache."""
-    composition, _ = _build_composition(
-        project_dir,
-        canonical_reference,
-        set_name=set_name,
-        modality=modality,
-        experiments=experiments,
-        stage=stage,
-        start=start,
-        end=end,
-        layers=layers,
-        read_metrics=read_metrics,
-    )
-    label = set_label(set_name, canonical_reference)
-    return sets_root(project_dir) / label / _composition_hash(composition)
+def normalize_part(sub, experiment: str, stage: str):
+    """Apply the per-part normalization every cross-experiment consumer needs.
 
-
-def materialize_set(
-    project_dir: str | Path,
-    canonical_reference: str,
-    *,
-    set_name: str | None = None,
-    modality=None,
-    experiments=None,
-    stage: str | None = None,
-    start: int | None = None,
-    end: int | None = None,
-    layers=None,
-    read_metrics: bool = False,
-    force_recompute: bool = False,
-):
-    """Materialize + concat a canonical reference across a set, caching by composition.
-
-    Same parameters and result as ``project.catalog.project_adata`` -- this only adds
-    caching around it. If a cache already exists for the current *resolved* composition
-    (which experiments/stages/spines/reference-strands the query resolves to right now,
-    not just the parameters passed in), it's returned directly, no materialize. If the
-    project has changed since the cache was written (an experiment registered,
-    re-registered, or removed such that the resolved composition differs), the
-    composition hash no longer matches, so this transparently falls through to a fresh
-    materialize -- never a stale result. ``force_recompute=True`` skips the cache read
-    outright (still writes a fresh cache afterward, at the same, current composition
-    hash).
-
-    Raises the same ``ValueError`` as ``project_adata`` when nothing matches.
-
-    Cache writes are atomic: the h5ad is written to a per-process temp file first,
-    only renamed into ``cache_path`` (the file whose existence signals a cache hit)
-    once the write has fully succeeded. Without this, a process that dies mid-write
-    (disk full, OOM, ...) leaves a truncated file sitting exactly where the next
-    call checks for a hit, which gets read back as if it were valid -- and was
-    observed doing exactly that against a real project.
+    - stamps ``obs["experiment"]`` and ``uns["project_stage"]``,
+    - clears the obs index name (differently-named indices across spines make
+      ``ad.concat`` emit a reserved ``"_index"`` column),
+    - strips ``var`` to the position axis only (a legacy HMM stage carries ~1200
+      per-reference var columns whose outer-union overflows HDF5's per-attribute
+      limit -- see the design doc).
     """
-    from ..readwrite import safe_read_h5ad, safe_write_h5ad
-    from .catalog import project_adata
+    sub.obs["experiment"] = experiment
+    sub.uns["project_stage"] = stage
+    sub.obs.index.name = None
+    sub.var = sub.var.iloc[:, :0]
+    return sub
 
-    composition, members = _build_composition(
+
+def iter_set_parts(
+    project_dir: str | Path,
+    canonical_reference: str,
+    *,
+    set_name: str | None = None,
+    modality=None,
+    experiments=None,
+    stage: str | None = None,
+    layers=None,
+    start: int | None = None,
+    end: int | None = None,
+    read_metrics: bool = False,
+    lazy: bool = False,
+):
+    """Stream one projected AnnData slice per member experiment of a set.
+
+    Yields each matching experiment's reads at ``canonical_reference`` (resolved to that
+    experiment's own reference-strand name(s)), materialized with the requested
+    ``layers``/``start``/``end`` **projection** so no slice bigger than one member's
+    projected reads is ever built. Each part is normalized (see :func:`normalize_part`)
+    so parts can be concatenated or feature-extracted directly.
+
+    Pass ``layers=[]`` for X only (no layers), ``layers=[names]`` for a subset, or
+    ``layers=None`` for all layers (the memory-heavy default -- prefer a subset).
+    ``start``/``end`` restrict to a genomic window. Streaming + projection are what keep
+    this bounded; see the module docstring.
+
+    Membership is resolved eagerly (so an empty selection raises here, not on first
+    iteration); slices are materialized lazily as the generator is consumed.
+
+    Raises:
+        ValueError: if no experiment reference matches ``canonical_reference``.
+    """
+    members = resolve_set_members(
         project_dir,
         canonical_reference,
         set_name=set_name,
         modality=modality,
         experiments=experiments,
         stage=stage,
-        start=start,
-        end=end,
-        layers=layers,
-        read_metrics=read_metrics,
     )
     if not members:
         raise ValueError(f"no experiment references match canonical_reference={canonical_reference!r}")
 
-    label = set_label(set_name, canonical_reference)
-    cache_dir = sets_root(project_dir) / label / _composition_hash(composition)
-    cache_path = cache_dir / BASE_CACHE_FILENAME
+    def _gen():
+        from ..informatics.partition_read import materialize
 
-    if not force_recompute and cache_path.exists():
-        adata, _ = safe_read_h5ad(cache_path, verbose=False)
-        return adata
+        for member in members:
+            sub = materialize(
+                member["spine_path"],
+                references=member["reference_strands"],
+                start=start,
+                end=end,
+                layers=layers,
+                read_metrics=read_metrics,
+                lazy=lazy,
+            )
+            yield normalize_part(sub, member["experiment"], member["stage"])
 
-    adata = project_adata(
-        project_dir,
-        canonical_reference,
-        set_name=set_name,
-        modality=modality,
-        experiments=experiments,
-        stage=stage,
-        start=start,
-        end=end,
-        layers=layers,
-        read_metrics=read_metrics,
-    )
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = cache_dir / f"{BASE_CACHE_FILENAME}.tmp-{os.getpid()}"
-    try:
-        safe_write_h5ad(adata, tmp_path, backup=False, verbose=False)
-        (cache_dir / COMPOSITION_FILENAME).write_text(
-            json.dumps(composition, indent=2, sort_keys=True, default=str)
-        )
-        tmp_path.replace(cache_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
-    return adata
+    return _gen()

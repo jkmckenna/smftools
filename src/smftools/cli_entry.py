@@ -617,18 +617,25 @@ def project_list_cmd(project_dir: Path):
 @click.option("--start", type=int, default=None, help="Genomic window start (with --end).")
 @click.option("--end", type=int, default=None, help="Genomic window end (with --start).")
 @click.option(
+    "--layers",
+    default=None,
+    help=(
+        "Comma-separated layer subset to pool (e.g. 'C_site_binary'). Strongly "
+        "recommended for cross-experiment pools -- the default pools every layer at "
+        "full locus, which builds enormous objects. Use '' for X only (no layers)."
+    ),
+)
+@click.option(
     "--read-metrics",
     is_flag=True,
     help="Also attach spatial-stage per-read outputs (autocorrelation, Lomb-Scargle) when available.",
 )
 @click.option(
-    "--force-recompute",
+    "--allow-large",
     is_flag=True,
     help=(
-        "Skip the set-store cache even if a hit exists for the current resolved "
-        "composition (still refreshes the cache afterward). Results are cached by "
-        "default; a query whose resolved composition changed (new/re-registered "
-        "experiment) is already re-materialized automatically without this flag."
+        "Bypass the ~8 GiB pooled-object size guardrail. Without it, a pool that would "
+        "exceed the limit is refused with guidance to narrow it (--layers/--start/--end)."
     ),
 )
 def project_materialize_cmd(
@@ -640,12 +647,18 @@ def project_materialize_cmd(
     stage,
     start,
     end,
+    layers,
     read_metrics,
-    force_recompute,
+    allow_large,
 ):
-    """Materialize CANONICAL_REFERENCE across matching experiments into one AnnData."""
+    """Pool CANONICAL_REFERENCE across matching experiments into one AnnData.
+
+    Prefer --layers and/or --start/--end: pooling all layers at full locus across many
+    experiments builds very large objects. Refused over ~8 GiB unless --allow-large.
+    """
     from .cli.project_cmd import project_materialize
 
+    layer_list = None if layers is None else [s for s in layers.split(",") if s]
     out = project_materialize(
         project_dir,
         canonical_reference,
@@ -655,8 +668,9 @@ def project_materialize_cmd(
         stage=stage,
         start=start,
         end=end,
+        layers=layer_list,
         read_metrics=read_metrics,
-        force_recompute=force_recompute,
+        allow_large=allow_large,
     )
     click.echo(f"Wrote {out}")
 

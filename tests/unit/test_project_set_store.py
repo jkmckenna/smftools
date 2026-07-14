@@ -4,8 +4,7 @@ import pytest
 from smftools.informatics.raw_store import write_raw_store
 from smftools.informatics.reference_identity import reference_uid
 from smftools.project.registry import add_experiment, init_project
-from smftools.project.set_store import materialize_set, set_cache_dir
-from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
+from smftools.project.set_store import iter_set_parts
 
 SEQUENCE = "ACGTACGTACGT"
 
@@ -55,111 +54,59 @@ def _make_project(tmp_path, n_expA=4, n_expB=3):
     return proj, uid
 
 
-def test_materialize_set_writes_cache_and_matches_project_adata(tmp_path):
-    from smftools.project.catalog import project_adata
-
+def test_iter_set_parts_yields_one_projected_part_per_experiment(tmp_path):
     proj, uid = _make_project(tmp_path)
-    cached = materialize_set(proj, uid)
-    direct = project_adata(proj, uid)
+    parts = list(iter_set_parts(proj, uid))
 
-    assert cached.n_obs == direct.n_obs == 7
-    cache_dir = set_cache_dir(proj, uid)
-    assert (cache_dir / "base.h5ad").exists()
-    assert (cache_dir / "composition.json").exists()
+    assert len(parts) == 2  # one per member experiment
+    by_exp = {p.obs["experiment"].iloc[0]: p for p in parts}
+    assert set(by_exp) == {"expA", "expB"}
+    assert by_exp["expA"].n_obs == 4
+    assert by_exp["expB"].n_obs == 3
+    for part in parts:
+        # normalize_part contract: single experiment, stamped stage, stripped var,
+        # unnamed obs index (so parts concat cleanly).
+        assert part.obs["experiment"].nunique() == 1
+        assert "project_stage" in part.uns
+        assert part.var.shape[1] == 0
+        assert part.obs.index.name is None
 
 
-def test_materialize_set_second_call_hits_cache(tmp_path):
+def test_iter_set_parts_projects_layers(tmp_path):
     proj, uid = _make_project(tmp_path)
-    first = materialize_set(proj, uid)
-    assert first.n_obs == 7
-
-    # Tamper with the cached file directly -- a second call that re-materialized
-    # would overwrite this; a cache hit returns it as-is.
-    cache_dir = set_cache_dir(proj, uid)
-    cached, _ = safe_read_h5ad(cache_dir / "base.h5ad", verbose=False)
-    cached.obs["marker"] = "from_cache"
-    safe_write_h5ad(cached, cache_dir / "base.h5ad", backup=False, verbose=False)
-
-    second = materialize_set(proj, uid)
-    assert "marker" in second.obs.columns
-    assert (second.obs["marker"] == "from_cache").all()
+    # Only X, no layers.
+    x_only = list(iter_set_parts(proj, uid, layers=[]))
+    assert all(len(p.layers) == 0 for p in x_only)
+    # A named layer subset.
+    one_layer = list(iter_set_parts(proj, uid, layers=["sequence_integer_encoding"]))
+    assert all(set(p.layers) == {"sequence_integer_encoding"} for p in one_layer)
 
 
-def test_materialize_set_force_recompute_bypasses_cache(tmp_path):
+def test_iter_set_parts_is_lazy_but_resolves_membership_eagerly(tmp_path):
     proj, uid = _make_project(tmp_path)
-    materialize_set(proj, uid)
+    # Unmatched reference raises at call time (membership resolved eagerly), not on
+    # first iteration.
+    with pytest.raises(ValueError):
+        iter_set_parts(proj, "does_not_exist")
 
-    cache_dir = set_cache_dir(proj, uid)
-    cached, _ = safe_read_h5ad(cache_dir / "base.h5ad", verbose=False)
-    cached.obs["marker"] = "stale"
-    safe_write_h5ad(cached, cache_dir / "base.h5ad", backup=False, verbose=False)
+    # A valid call returns a generator that hasn't materialized anything yet.
+    import types
 
-    fresh = materialize_set(proj, uid, force_recompute=True)
-    assert "marker" not in fresh.obs.columns
+    gen = iter_set_parts(proj, uid)
+    assert isinstance(gen, types.GeneratorType)
+    assert sum(1 for _ in gen) == 2
 
 
-def test_materialize_set_cache_invalidates_when_new_experiment_registered(tmp_path):
+def test_iter_set_parts_reflects_new_registration_without_any_cache(tmp_path):
     proj, uid = _make_project(tmp_path)
-    first = materialize_set(proj, uid)
-    assert first.n_obs == 7
-    first_cache_dir = set_cache_dir(proj, uid)
+    assert len(list(iter_set_parts(proj, uid))) == 2
 
     _make_raw_experiment(tmp_path / "expC", reference_strand="geneC_top", uid=uid, n=2)
     add_experiment(proj, tmp_path / "expC")
 
-    second_cache_dir = set_cache_dir(proj, uid)
-    assert second_cache_dir != first_cache_dir
-
-    second = materialize_set(proj, uid)
-    assert second.n_obs == 9
-    assert set(second.obs["experiment"]) == {"expA", "expB", "expC"}
-    # The old cache is left behind (no GC yet), but is no longer what gets served.
-    assert first_cache_dir.exists()
-
-
-def test_materialize_set_raises_for_unmatched_reference(tmp_path):
-    proj, _ = _make_project(tmp_path)
-    with pytest.raises(ValueError):
-        materialize_set(proj, "does_not_exist")
-
-
-def test_set_cache_dir_is_cheap_and_does_not_create_anything(tmp_path):
-    proj, uid = _make_project(tmp_path)
-    cache_dir = set_cache_dir(proj, uid)
-    assert not cache_dir.exists()
-
-
-def test_materialize_set_cache_write_is_atomic_on_crash(tmp_path, monkeypatch):
-    """A process that dies partway through writing the cache (disk full, OOM, ...)
-    must not leave a truncated file sitting at the exact path a later call treats
-    as a cache hit -- reproduces exactly what happened registering a real project
-    that hit a disk-full crash mid-materialize, then silently read the leftover
-    partial file back as if it were valid on the next attempt."""
-    import smftools.readwrite as readwrite_module
-
-    proj, uid = _make_project(tmp_path)
-
-    real_safe_write_h5ad = readwrite_module.safe_write_h5ad
-
-    def _crash_after_partial_write(adata, path, **kwargs):
-        # Simulate a process dying after starting to write but before finishing --
-        # some bytes land on disk, then the write never completes.
-        from pathlib import Path
-
-        Path(path).write_text("truncated, not a real h5ad file")
-        raise RuntimeError("simulated crash mid-write")
-
-    monkeypatch.setattr(readwrite_module, "safe_write_h5ad", _crash_after_partial_write)
-    with pytest.raises(RuntimeError):
-        materialize_set(proj, uid)
-
-    cache_dir = set_cache_dir(proj, uid)
-    # No corrupt file left at the path a future call would read back as a hit ...
-    assert not (cache_dir / "base.h5ad").exists()
-    # ... and no leftover temp file either.
-    assert list(cache_dir.glob("base.h5ad.tmp-*")) == [] if cache_dir.exists() else True
-
-    monkeypatch.setattr(readwrite_module, "safe_write_h5ad", real_safe_write_h5ad)
-    result = materialize_set(proj, uid)
-    assert result.n_obs == 7
-    assert (cache_dir / "base.h5ad").exists()
+    # No cache to invalidate -- membership is resolved fresh each call.
+    parts = list(iter_set_parts(proj, uid))
+    assert len(parts) == 3
+    assert {p.obs["experiment"].iloc[0] for p in parts} == {"expA", "expB", "expC"}
+    # And the set store writes nothing to disk.
+    assert not (proj / "project_outputs" / "sets").exists()

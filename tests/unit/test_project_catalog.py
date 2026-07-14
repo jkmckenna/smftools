@@ -76,6 +76,27 @@ def test_project_adata_concats_across_experiments(project_with_two_experiments):
     assert "sequence_integer_encoding" in combined.layers
 
 
+def test_project_adata_guardrail_refuses_oversized_pool(project_with_two_experiments):
+    proj, uid = project_with_two_experiments
+    # An absurdly low limit trips the guardrail; the message names the escape hatches.
+    with pytest.raises(ValueError, match="allow_large"):
+        project_adata(proj, uid, max_bytes=1)
+
+
+def test_project_adata_guardrail_bypassed_by_allow_large(project_with_two_experiments):
+    proj, uid = project_with_two_experiments
+    combined = project_adata(proj, uid, max_bytes=1, allow_large=True)
+    assert combined.n_obs == 7
+
+
+def test_project_adata_layer_projection_limits_layers(project_with_two_experiments):
+    proj, uid = project_with_two_experiments
+    x_only = project_adata(proj, uid, layers=[])
+    assert len(x_only.layers) == 0
+    one = project_adata(proj, uid, layers=["sequence_integer_encoding"])
+    assert set(one.layers) == {"sequence_integer_encoding"}
+
+
 def test_duckdb_query_over_references(project_with_two_experiments):
     proj, _uid = project_with_two_experiments
     cat = ProjectCatalog.open(proj)

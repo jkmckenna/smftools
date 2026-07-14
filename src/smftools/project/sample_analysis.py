@@ -13,9 +13,10 @@ silently served by -- a stale one.
 ``join_periodicity`` is the read side: it attaches an already-computed analysis
 (never computes one itself) onto a materialized selection by read_id, the mechanism
 ``dev/project_sample_and_set_stores.md`` calls the set store's per-sample catalog
-join. It's a separate, explicit step after ``set_store.materialize_set()`` rather
-than automatic inside it, since which analysis/definition is relevant is caller
-knowledge ``materialize_set`` has no way to guess.
+join. It's a separate, explicit step after pooling a set (e.g. via
+``catalog.project_adata`` or streaming ``set_store.iter_set_parts``) rather than
+automatic inside it, since which analysis/definition is relevant is caller knowledge
+the set materialization has no way to guess.
 
 Phase 4 (partial -- periodicity only, no embeddings yet) of the design doc.
 """
