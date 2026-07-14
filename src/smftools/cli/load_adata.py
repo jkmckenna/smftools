@@ -1123,6 +1123,38 @@ def load_adata_core(
             bam_path=aligned_sorted_output,
             extra_uns=extra_uns,
         )
+
+        # Consolidated provenance manifest (dev/experiment_storage_schema.md, Phase 2):
+        # config-by-value, input/FASTA paths, and a readable stage-completion index --
+        # none of which spine.uns previously captured (only a hash, not the values, and
+        # nothing for input_data_path at all).
+        from ..informatics.experiment_manifest import (
+            config_hash,
+            record_stage_completion,
+            update_experiment_manifest,
+        )
+        from ..informatics.partition_read import relative_uns_path as _relative_uns_path
+
+        run_root = load_directory.parent
+        resolved_config = cfg.to_dict()
+        update_experiment_manifest(
+            run_root,
+            experiment=extra_uns.get("experiment") or cfg.experiment_name or run_root.name,
+            modality=extra_uns.get("modality"),
+            input_data_path=(
+                _relative_uns_path(cfg.input_data_path, run_root) if cfg.input_data_path else None
+            ),
+            fasta_path=_relative_uns_path(fasta, run_root) if fasta else None,
+            reference_uids=extra_uns.get("reference_uids"),
+            reference_lengths={str(k): int(v) for k, v in reference_lengths.items()},
+            config=resolved_config,
+        )
+        record_stage_completion(
+            run_root,
+            "raw",
+            config_hash=config_hash(resolved_config),
+            n_molecules=len(frame),
+        )
         if str(cfg.smf_modality) == "deaminase" and not getattr(
             cfg, "bypass_raw_chimera_rate_plot", False
         ):
