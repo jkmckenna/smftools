@@ -1,9 +1,14 @@
 import anndata as ad
 import numpy as np
 import pandas as pd
+import pytest
 
 from smftools.informatics.partition_store import write_experiment_store
-from smftools.project.sample_store import backfill_per_sample_store, list_per_sample_partitions
+from smftools.project.sample_store import (
+    backfill_per_sample_store,
+    list_per_sample_partitions,
+    load_per_sample_partition,
+)
 from smftools.readwrite import safe_write_h5ad
 
 
@@ -53,14 +58,64 @@ def test_backfill_per_sample_store_catalogs_modern_spine(tmp_path):
         assert p["kind"] == "pointer"
 
 
-def test_backfill_per_sample_store_skips_legacy_spine(tmp_path):
+def test_backfill_per_sample_store_caches_legacy_spine(tmp_path):
     project_dir = tmp_path / "project"
     spine_path = _legacy_spine(tmp_path / "run")
+    before_bytes = spine_path.read_bytes()
 
     written = backfill_per_sample_store(project_dir, "expLegacy", spine_path)
 
-    assert written == []
-    assert list_per_sample_partitions(project_dir) == []
+    assert len(written) == 1
+    partitions = list_per_sample_partitions(project_dir, "expLegacy")
+    assert partitions == [
+        {
+            "kind": "cache",
+            "experiment_id": "expLegacy",
+            "reference_strand": "ref0_top",
+            "sample": "bc00",
+            "n_reads": 3,
+            "cache_path": "cache.h5ad",
+        }
+    ]
+
+    loaded = load_per_sample_partition(project_dir, "expLegacy", "ref0_top", "bc00")
+    assert loaded.n_obs == 3
+    assert set(loaded.obs_names) == {"r0", "r1", "r2"}
+
+    # Source legacy file is only ever read, never mutated.
+    assert spine_path.read_bytes() == before_bytes
+
+
+def test_backfill_per_sample_store_legacy_cache_matches_source_data(tmp_path):
+    obs = pd.DataFrame(
+        {"Reference_strand": ["ref0_top", "ref0_top", "ref1_top"], "Sample": ["bc00", "bc00", "bc01"]},
+        index=["r0", "r1", "r2"],
+    )
+    a = ad.AnnData(X=np.arange(6, dtype=np.float32).reshape(3, 2), obs=obs)
+    path = tmp_path / "run" / "legacy.h5ad"
+    path.parent.mkdir(parents=True)
+    safe_write_h5ad(a, path, backup=False, verbose=False)
+
+    project_dir = tmp_path / "project"
+    backfill_per_sample_store(project_dir, "expLegacy", path)
+
+    loaded = load_per_sample_partition(project_dir, "expLegacy", "ref0_top", "bc00")
+    expected = a[["r0", "r1"]]
+    assert np.array_equal(np.asarray(loaded[["r0", "r1"]].X), np.asarray(expected.X))
+
+
+def test_load_per_sample_partition_rejects_pointer_kind(tmp_path):
+    project_dir = tmp_path / "project"
+    spine_path = _modern_spine(tmp_path / "run")
+    backfill_per_sample_store(project_dir, "expA", spine_path)
+
+    with pytest.raises(ValueError, match="pointer"):
+        load_per_sample_partition(project_dir, "expA", "ref0_top", "bc00")
+
+
+def test_load_per_sample_partition_missing_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_per_sample_partition(tmp_path / "project", "nope", "ref0_top", "bc00")
 
 
 def test_backfill_per_sample_store_skips_spine_missing_partition_columns(tmp_path):

@@ -121,8 +121,8 @@ def test_project_add_cli_backfills_per_sample_store_for_modern_experiment(tmp_pa
     }
 
 
-def test_project_add_cli_does_not_backfill_per_sample_store_for_legacy_file(tmp_path):
-    from smftools.project.sample_store import list_per_sample_partitions
+def test_project_add_cli_caches_per_sample_store_for_legacy_file(tmp_path):
+    from smftools.project.sample_store import list_per_sample_partitions, load_per_sample_partition
 
     sequence = "ACGTACGTACGT"
     legacy_file = _make_legacy_monolithic_file(
@@ -130,7 +130,9 @@ def test_project_add_cli_does_not_backfill_per_sample_store_for_legacy_file(tmp_
         reference_strand="geneL_top",
         sequence=sequence,
         n=3,
+        sample="bc00",
     )
+    before_bytes = legacy_file.read_bytes()
     proj = tmp_path / "project"
     runner = CliRunner()
 
@@ -141,17 +143,25 @@ def test_project_add_cli_does_not_backfill_per_sample_store_for_legacy_file(tmp_
     )
     assert r.exit_code == 0, r.output
 
-    # Phase 1 of the per-sample store only catalogs modern (partitioned-store)
-    # experiments -- legacy registration is a no-op here for now.
-    assert list_per_sample_partitions(proj) == []
+    # Legacy registration caches the partition (has no lazy read path to point at
+    # instead), unlike a modern experiment which only gets a pointer.
+    partitions = list_per_sample_partitions(proj, "legacyExp2")
+    assert len(partitions) == 1
+    assert partitions[0]["kind"] == "cache"
+    assert partitions[0]["n_reads"] == 3
+    loaded = load_per_sample_partition(proj, "legacyExp2", "geneL_top", "bc00")
+    assert loaded.n_obs == 3
+
+    # Source legacy file is only ever read, never mutated.
+    assert legacy_file.read_bytes() == before_bytes
 
 
-def _make_legacy_monolithic_file(path, *, reference_strand, sequence, n=3, npos=6):
+def _make_legacy_monolithic_file(path, *, reference_strand, sequence, n=3, npos=6, sample="bc00"):
     import numpy as np
 
     chromosome = reference_strand.rsplit("_", 1)[0]
     obs = pd.DataFrame(
-        {"Reference_strand": [reference_strand] * n},
+        {"Reference_strand": [reference_strand] * n, "Sample": [sample] * n},
         index=[f"{reference_strand}_leg{i}" for i in range(n)],
     )
     spine = ad.AnnData(X=np.zeros((n, npos), dtype=np.float32), obs=obs)
