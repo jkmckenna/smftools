@@ -65,7 +65,12 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     assert spine.n_obs == 4
     assert spine.n_vars == 0
     assert not spine.layers
-    assert list(spine.obs["ragged_row"]) == [0, 1, 0, 1]
+    # Shards are now Sample-sorted (not just reference_start-sorted), so within
+    # each reference's shard the physical write order is bc01 before bc02:
+    # ref1_top -> [read2(bc01), read1(bc02)], ref2_top -> [read4(bc01), read3(bc02)].
+    # spine.obs is still in the original frame order [read1, read2, read3, read4],
+    # so their ragged_row values (position within their own shard) are [1, 0, 1, 0].
+    assert list(spine.obs["ragged_row"]) == [1, 0, 1, 0]
     assert all(str(path).startswith("raw/reference=") for path in spine.obs["ragged_shard"])
     assert all("/start_bin=" in str(path) for path in spine.obs["ragged_shard"])
     assert set(spine.obs["Barcode"].astype(str)) == {"bc01", "bc02"}
@@ -85,6 +90,40 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     resolved = resolve_relative_path(next(iter(stored_bam_path)), run_root)
     assert resolved == bam_path.resolve()
     assert resolved.exists()
+
+    # molecules.parquet: canonical read-id catalog, one row per read, in the exact
+    # Sample-sorted physical write order (bc01 before bc02 within each reference).
+    assert paths["molecules"] == run_root / "molecules.parquet"
+    molecules = pd.read_parquet(paths["molecules"])
+    assert list(molecules["read_id"]) == ["read2", "read1", "read4", "read3"]
+    assert list(molecules["canonical_row"]) == [0, 1, 2, 3]
+    assert list(molecules["Reference_strand"]) == ["ref1_top", "ref1_top", "ref2_top", "ref2_top"]
+    assert list(molecules["Sample"]) == ["bc01", "bc02", "bc01", "bc02"]
+    assert spine.uns["molecules_catalog"] == relative_uns_path(paths["molecules"], run_root)
+
+    # barcode_index.parquet: contiguous (start_row, end_row) per sample within each
+    # reference's shard -- a direct row-slice instead of a scan + boolean mask.
+    assert paths["barcode_index"] == tmp_path / "barcode_index.parquet"
+    barcode_index = pd.read_parquet(paths["barcode_index"])
+    ref1_ranges = barcode_index.loc[barcode_index["reference"] == "ref1_top"].set_index("sample")
+    assert (ref1_ranges.loc["bc01", ["start_row", "end_row"]] == [0, 1]).all()
+    assert (ref1_ranges.loc["bc02", ["start_row", "end_row"]] == [1, 2]).all()
+    ref2_ranges = barcode_index.loc[barcode_index["reference"] == "ref2_top"].set_index("sample")
+    assert (ref2_ranges.loc["bc01", ["start_row", "end_row"]] == [0, 1]).all()
+    assert (ref2_ranges.loc["bc02", ["start_row", "end_row"]] == [1, 2]).all()
+    assert spine.uns["barcode_index"] == "barcode_index.parquet"
+
+
+def test_write_raw_store_skips_barcode_artifacts_without_sample_column(tmp_path):
+    frame = _frame().drop(columns=["sample"])
+    paths = write_raw_store(frame, tmp_path, reference_lengths={"ref1_top": 4, "ref2_top": 6})
+
+    assert paths["barcode_index"] is None
+    molecules = pd.read_parquet(paths["molecules"])
+    assert "Sample" not in molecules.columns
+    assert set(molecules["read_id"]) == {"read1", "read2", "read3", "read4"}
+    spine, _ = safe_read_h5ad(paths["spine"])
+    assert "barcode_index" not in spine.uns
 
 
 def test_dense_cache_matches_ragged_and_records_barcode_ranges(tmp_path):

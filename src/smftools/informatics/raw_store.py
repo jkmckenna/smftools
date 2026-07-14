@@ -8,6 +8,7 @@ from typing import Mapping
 from urllib.parse import quote
 
 import anndata as ad
+import numpy as np
 import pandas as pd
 
 from smftools.constants import (
@@ -37,6 +38,8 @@ logger = get_logger(__name__)
 RAW_SUBDIR = "raw"
 RAW_SHARD_TEMPLATE = "part-{index:05d}.parquet"
 INTERVAL_CATALOG_FILENAME = "interval_catalog.parquet"
+MOLECULES_FILENAME = "molecules.parquet"
+BARCODE_INDEX_FILENAME = "barcode_index.parquet"
 SPINE_FILENAME = "spine.h5ad"
 RAW_SCHEMA_VERSION = 2
 
@@ -123,6 +126,18 @@ def _reference_path_component(reference: str) -> str:
     return quote(str(reference), safe="._-")
 
 
+def _contiguous_value_ranges(values: pd.Series) -> list[tuple[str, int, int]]:
+    """Return ``(value, start_row, end_row)`` (``end_row`` exclusive) for each
+    contiguous run of identical values in an already-sorted series."""
+    array = values.astype(str).to_numpy()
+    if array.size == 0:
+        return []
+    change_points = np.flatnonzero(array[1:] != array[:-1]) + 1
+    starts = np.concatenate(([0], change_points))
+    ends = np.concatenate((change_points, [array.size]))
+    return [(str(array[s]), int(s), int(e)) for s, e in zip(starts, ends)]
+
+
 def write_raw_store(
     frame: pd.DataFrame,
     output_dir: str | Path,
@@ -176,13 +191,31 @@ def write_raw_store(
         start_bin_size,
     )
 
+    # Resolve whichever sample-column spelling is present (same candidates as the
+    # obs alias table below) -- sample demux isn't guaranteed for every modality, so
+    # this degrades gracefully to the old (start_bin, reference_start, read_id)
+    # ordering when there's no sample column to sort by at all.
+    sample_column = next(
+        (column for column in _OBS_COLUMN_ALIASES[SAMPLE] if column in normalized.columns), None
+    )
+    sort_keys = [REFERENCE_STRAND, "start_bin"]
+    if sample_column is not None:
+        sort_keys.append(sample_column)
+    else:
+        sort_keys.append("reference_start")
+    sort_keys.append(READ_ID)
+
     shard_paths: list[Path] = []
     catalog_rows: list[dict[str, object]] = []
+    barcode_index_rows: list[dict[str, object]] = []
     shard_by_read: dict[str, str] = {}
     row_by_read: dict[str, int] = {}
-    grouped = normalized.sort_values(
-        [REFERENCE_STRAND, "start_bin", "reference_start", READ_ID], kind="stable"
-    ).groupby([REFERENCE_STRAND, "start_bin"], sort=True, observed=True)
+    # Captured once so molecules.parquet (below) reflects the exact physical write
+    # order every shard is cut from -- sorting by Sample here (not just reference_start)
+    # is what makes a barcode's reads contiguous within a (reference, start_bin)
+    # partition, enabling barcode_index.parquet's direct row-slice reads.
+    sorted_frame = normalized.sort_values(sort_keys, kind="stable")
+    grouped = sorted_frame.groupby([REFERENCE_STRAND, "start_bin"], sort=True, observed=True)
     for (reference, start_bin), group in grouped:
         group_t0 = perf_counter()
         reference_dir = raw_dir / f"reference={_reference_path_component(str(reference))}"
@@ -213,6 +246,24 @@ def write_raw_store(
                     "group_path": relative_path,
                 }
             )
+            if sample_column is not None:
+                # Rows within `shard` are already Sample-sorted (see sort_keys
+                # above), so a barcode's reads are contiguous *within this shard*
+                # -- though a barcode can still straddle two shards if its reads
+                # happen to fall across a shard_size boundary.
+                for sample_value, start_row, end_row in _contiguous_value_ranges(
+                    shard[sample_column]
+                ):
+                    barcode_index_rows.append(
+                        {
+                            "reference": str(reference),
+                            "start_bin": int(start_bin),
+                            "group_path": relative_path,
+                            "sample": sample_value,
+                            "start_row": start_row,
+                            "end_row": end_row,
+                        }
+                    )
         logger.debug(
             "Finished raw shard group reference=%s start_bin=%d in %.2fs",
             reference,
@@ -222,6 +273,27 @@ def write_raw_store(
 
     catalog_path = output_dir / INTERVAL_CATALOG_FILENAME
     pd.DataFrame(catalog_rows).to_parquet(catalog_path, index=False)
+
+    # Canonical molecule-ID catalog: one row per read, in the exact physical write
+    # order every shard was cut from (sorted_frame, see above) -- a standalone,
+    # cheap-to-scan statement of "what molecules exist and in what order," separate
+    # from spine.h5ad (which is built from `normalized`'s original, pre-sort order
+    # and stays that way -- this is purely additive, no existing consumer changes).
+    molecules_frame = sorted_frame.reset_index(drop=True)
+    molecules_columns: dict[str, object] = {
+        "read_id": molecules_frame[READ_ID].astype(str),
+        "canonical_row": np.arange(len(molecules_frame), dtype=np.int64),
+        REFERENCE_STRAND: molecules_frame[REFERENCE_STRAND].astype(str),
+    }
+    if sample_column is not None:
+        molecules_columns[SAMPLE] = molecules_frame[sample_column].astype(str)
+    molecules_path = output_dir.parent / MOLECULES_FILENAME
+    pd.DataFrame(molecules_columns).to_parquet(molecules_path, index=False)
+
+    barcode_index_path: Path | None = None
+    if barcode_index_rows:
+        barcode_index_path = output_dir / BARCODE_INDEX_FILENAME
+        pd.DataFrame(barcode_index_rows).to_parquet(barcode_index_path, index=False)
 
     obs = _build_raw_spine_obs(normalized, shard_by_read, row_by_read)
     if bam_path is not None:
@@ -247,12 +319,17 @@ def write_raw_store(
             "raw_schema_version": RAW_SCHEMA_VERSION,
             "ragged_store": [path.relative_to(output_dir).as_posix() for path in shard_paths],
             "interval_catalog": catalog_path.relative_to(output_dir).as_posix(),
+            # Relative to the run root (output_dir.parent), same anchor as bam_path
+            # above, since molecules.parquet lives alongside output_dir, not inside it.
+            "molecules_catalog": relative_uns_path(molecules_path, output_dir.parent),
             "reference_plans": {plan.reference: plan.to_dict() for plan in plans},
             "reference_lengths": {
                 str(reference): int(length) for reference, length in reference_lengths.items()
             },
         }
     )
+    if barcode_index_path is not None:
+        spine.uns["barcode_index"] = barcode_index_path.relative_to(output_dir).as_posix()
     if extra_uns:
         spine.uns.update(dict(extra_uns))
 
@@ -267,6 +344,9 @@ def write_raw_store(
     )
     register_sidecar(manifest_path, "spine", spine_path)
     register_sidecar(manifest_path, "interval_catalog", catalog_path)
+    register_sidecar(manifest_path, "molecules", molecules_path)
+    if barcode_index_path is not None:
+        register_sidecar(manifest_path, "barcode_index", barcode_index_path)
     logger.info(
         "Wrote raw store with %d reads in %d shard(s) in %.2fs",
         len(normalized),
@@ -277,5 +357,7 @@ def write_raw_store(
         "spine": spine_path,
         "ragged_store": shard_paths,
         "interval_catalog": catalog_path,
+        "molecules": molecules_path,
+        "barcode_index": barcode_index_path,
         "manifest": manifest_path,
     }
