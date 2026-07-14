@@ -140,6 +140,63 @@ class ProjectCatalog:
             connection.close()
 
 
+def resolve_set_members(
+    catalog: "ProjectCatalog",
+    canonical_reference: str,
+    *,
+    set_name=None,
+    modality=None,
+    experiments=None,
+    stage: str | None = None,
+) -> list[dict]:
+    """Resolve which experiments/stages/reference-strands a query would materialize.
+
+    Cheap -- selects over the in-memory harmonized reference table and the registry's
+    already-resolved spine paths, without opening any matrix data. Shared by
+    :func:`project_adata` (which does the actual materialize) and
+    ``project.set_store`` (which uses this alone to compute a cache key without
+    paying for a materialize just to check whether one is needed).
+
+    Returns one dict per matched, spine-available experiment:
+    ``{"experiment": exp_id, "stage": resolved_stage, "spine_path": Path,
+    "reference_strands": [...]}. Experiments with no spine available for ``stage``
+    (or, in fallback mode, no stage at all) are skipped with a warning, not included.
+    """
+    from .registry import resolve_experiment_spine
+
+    selection = catalog.select(
+        canonical_reference=canonical_reference,
+        modality=modality,
+        experiments=experiments,
+        set_name=set_name,
+    )
+    if selection.empty:
+        return []
+
+    entries = {entry["id"]: entry for entry in catalog.experiments()}
+    members = []
+    for exp_id, group in selection.groupby("experiment", sort=True):
+        entry = entries.get(exp_id)
+        resolved = resolve_experiment_spine(entry, stage) if entry is not None else None
+        if resolved is None:
+            logger.warning(
+                "skipping experiment %r: no spine available for stage=%r",
+                exp_id,
+                stage or "any (auto)",
+            )
+            continue
+        resolved_stage, spine_path = resolved
+        members.append(
+            {
+                "experiment": str(exp_id),
+                "stage": resolved_stage,
+                "spine_path": spine_path,
+                "reference_strands": sorted(group["reference_strand"].unique()),
+            }
+        )
+    return members
+
+
 def project_adata(
     project_dir: str | Path,
     canonical_reference: str,
@@ -172,7 +229,6 @@ def project_adata(
     import anndata as ad
 
     from ..informatics.partition_read import materialize
-    from .registry import resolve_experiment_spine
 
     catalog = ProjectCatalog.open(project_dir)
     selection = catalog.select(
@@ -184,31 +240,27 @@ def project_adata(
     if selection.empty:
         raise ValueError(f"no experiment references match canonical_reference={canonical_reference!r}")
 
-    entries = {entry["id"]: entry for entry in catalog.experiments()}
+    members = resolve_set_members(
+        catalog,
+        canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+    )
     parts = []
-    for exp_id, group in selection.groupby("experiment", sort=True):
-        entry = entries.get(exp_id)
-        resolved = resolve_experiment_spine(entry, stage) if entry is not None else None
-        if resolved is None:
-            logger.warning(
-                "skipping experiment %r: no spine available for stage=%r",
-                exp_id,
-                stage or "any (auto)",
-            )
-            continue
-        resolved_stage, spine_path = resolved
-        reference_strands = sorted(group["reference_strand"].unique())
+    for member in members:
         sub = materialize(
-            spine_path,
-            references=reference_strands,
+            member["spine_path"],
+            references=member["reference_strands"],
             start=start,
             end=end,
             layers=layers,
             read_metrics=read_metrics,
             lazy=lazy,
         )
-        sub.obs["experiment"] = str(exp_id)
-        sub.uns["project_stage"] = resolved_stage
+        sub.obs["experiment"] = member["experiment"]
+        sub.uns["project_stage"] = member["stage"]
         parts.append(sub)
 
     if not parts:
