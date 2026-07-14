@@ -34,7 +34,7 @@ def _per_sample_root(project_dir: str | Path) -> Path:
     return Path(project_dir) / "project_outputs" / PER_SAMPLE_DIRNAME
 
 
-def _partition_dir(
+def partition_dir_for(
     project_dir: str | Path, experiment_id: str, reference_strand: str, sample: str
 ) -> Path:
     return _per_sample_root(project_dir) / experiment_id / reference_strand / sample
@@ -81,7 +81,7 @@ def backfill_per_sample_store(
             continue
         reference_strand = str(reference_strand)
         sample = str(sample)
-        partition_dir = _partition_dir(project_dir, experiment_id, reference_strand, sample)
+        partition_dir = partition_dir_for(project_dir, experiment_id, reference_strand, sample)
         partition_dir.mkdir(parents=True, exist_ok=True)
         pointer = {
             "kind": "pointer" if is_modern else "cache",
@@ -127,7 +127,7 @@ def load_per_sample_partition(
     """
     from ..readwrite import safe_read_h5ad
 
-    partition_dir = _partition_dir(project_dir, experiment_id, reference_strand, sample)
+    partition_dir = partition_dir_for(project_dir, experiment_id, reference_strand, sample)
     pointer_path = partition_dir / POINTER_FILENAME
     if not pointer_path.exists():
         raise FileNotFoundError(f"no per-sample store entry at {partition_dir}")
