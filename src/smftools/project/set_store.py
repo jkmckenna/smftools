@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -156,6 +157,13 @@ def materialize_set(
     hash).
 
     Raises the same ``ValueError`` as ``project_adata`` when nothing matches.
+
+    Cache writes are atomic: the h5ad is written to a per-process temp file first,
+    only renamed into ``cache_path`` (the file whose existence signals a cache hit)
+    once the write has fully succeeded. Without this, a process that dies mid-write
+    (disk full, OOM, ...) leaves a truncated file sitting exactly where the next
+    call checks for a hit, which gets read back as if it were valid -- and was
+    observed doing exactly that against a real project.
     """
     from ..readwrite import safe_read_h5ad, safe_write_h5ad
     from .catalog import project_adata
@@ -196,8 +204,13 @@ def materialize_set(
         read_metrics=read_metrics,
     )
     cache_dir.mkdir(parents=True, exist_ok=True)
-    safe_write_h5ad(adata, cache_path, backup=False, verbose=False)
-    (cache_dir / COMPOSITION_FILENAME).write_text(
-        json.dumps(composition, indent=2, sort_keys=True, default=str)
-    )
+    tmp_path = cache_dir / f"{BASE_CACHE_FILENAME}.tmp-{os.getpid()}"
+    try:
+        safe_write_h5ad(adata, tmp_path, backup=False, verbose=False)
+        (cache_dir / COMPOSITION_FILENAME).write_text(
+            json.dumps(composition, indent=2, sort_keys=True, default=str)
+        )
+        tmp_path.replace(cache_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return adata

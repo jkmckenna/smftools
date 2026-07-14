@@ -127,3 +127,39 @@ def test_set_cache_dir_is_cheap_and_does_not_create_anything(tmp_path):
     proj, uid = _make_project(tmp_path)
     cache_dir = set_cache_dir(proj, uid)
     assert not cache_dir.exists()
+
+
+def test_materialize_set_cache_write_is_atomic_on_crash(tmp_path, monkeypatch):
+    """A process that dies partway through writing the cache (disk full, OOM, ...)
+    must not leave a truncated file sitting at the exact path a later call treats
+    as a cache hit -- reproduces exactly what happened registering a real project
+    that hit a disk-full crash mid-materialize, then silently read the leftover
+    partial file back as if it were valid on the next attempt."""
+    import smftools.readwrite as readwrite_module
+
+    proj, uid = _make_project(tmp_path)
+
+    real_safe_write_h5ad = readwrite_module.safe_write_h5ad
+
+    def _crash_after_partial_write(adata, path, **kwargs):
+        # Simulate a process dying after starting to write but before finishing --
+        # some bytes land on disk, then the write never completes.
+        from pathlib import Path
+
+        Path(path).write_text("truncated, not a real h5ad file")
+        raise RuntimeError("simulated crash mid-write")
+
+    monkeypatch.setattr(readwrite_module, "safe_write_h5ad", _crash_after_partial_write)
+    with pytest.raises(RuntimeError):
+        materialize_set(proj, uid)
+
+    cache_dir = set_cache_dir(proj, uid)
+    # No corrupt file left at the path a future call would read back as a hit ...
+    assert not (cache_dir / "base.h5ad").exists()
+    # ... and no leftover temp file either.
+    assert list(cache_dir.glob("base.h5ad.tmp-*")) == [] if cache_dir.exists() else True
+
+    monkeypatch.setattr(readwrite_module, "safe_write_h5ad", real_safe_write_h5ad)
+    result = materialize_set(proj, uid)
+    assert result.n_obs == 7
+    assert (cache_dir / "base.h5ad").exists()
