@@ -225,6 +225,16 @@ def project_adata(
     carries forward everything earlier stages produced -- see
     ``informatics.partition_read.materialize``'s layer/read-metric overlays.
     Experiments with no matching spine at all are skipped with a warning.
+
+    The pooled object keeps only the shared genomic-position axis for ``var`` --
+    per-experiment ``var`` annotations (a legacy HMM stage carries ~1200 of them:
+    per-reference peak calls, consensus sequences, FASTA base context, ...) are
+    experiment- and reference-specific, don't compose across a cross-experiment
+    pool, and outer-unioning them across experiments overflows HDF5's per-attribute
+    size limit on the ``var`` ``column-order`` attribute -- unwritable even with
+    anndata's ``track_order`` fallback. (Partitioned-store spines already carry no
+    ``var`` columns.) Query a per-experiment stage directly if you need its ``var``
+    annotations.
     """
     import anndata as ad
 
@@ -268,6 +278,10 @@ def project_adata(
         # ("'_index' is a reserved name for dataframe columns"). Normalizing here
         # means every part agrees before concat ever sees them.
         sub.obs.index.name = None
+        # Drop per-experiment var annotations (see docstring): keep only the
+        # position axis so the pooled object stays writable and the outer-join
+        # doesn't union thousands of experiment-specific columns.
+        sub.var = sub.var.iloc[:, :0]
         parts.append(sub)
 
     if not parts:

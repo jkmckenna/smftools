@@ -129,6 +129,36 @@ def test_project_adata_concat_handles_mismatched_obs_index_names(tmp_path):
     safe_write_h5ad(combined, tmp_path / "combined.h5ad", backup=False, verbose=False)
 
 
+def test_project_adata_pooled_var_is_position_only(tmp_path):
+    """The pooled cross-experiment object keeps only the shared position axis for
+    var. Per-experiment var annotations (a legacy HMM stage carries ~1200 of them)
+    outer-unioned across experiments overflow HDF5's per-attribute size limit on
+    var's "column-order" attribute -- unwritable even with anndata's track_order
+    fallback. Reproduces the third distinct failure found materializing a real
+    project (after the derived-layer and _index-column fixes)."""
+    from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
+
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    _make_raw_experiment(tmp_path / "expB", reference_strand="geneB_top", uid=uid, n=3)
+
+    # A thin raw spine's var columns can't be injected directly (materialize
+    # rebuilds var from the ragged/partition store), so this asserts the contract
+    # the fix guarantees -- pooled var is position-only and writable -- while the
+    # >64KB-attribute overflow itself is covered by real-project validation.
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    reg.add_experiment(proj, tmp_path / "expA")
+    reg.add_experiment(proj, tmp_path / "expB")
+
+    combined = project_adata(proj, uid)
+    assert combined.var.shape[1] == 0  # stripped to the position axis only
+    assert combined.n_vars == 12  # SEQUENCE length -- the shared position axis survives
+    assert list(combined.var_names) == [str(p) for p in range(12)]
+    # Writable even after pooling (the whole point).
+    safe_write_h5ad(combined, tmp_path / "combined.h5ad", backup=False, verbose=False)
+
+
 def test_project_adata_stage_selection(tmp_path):
     """Experiments at different pipeline stages: auto picks the most-derived
     stage per experiment; an explicit stage skips (not crashes on) experiments
