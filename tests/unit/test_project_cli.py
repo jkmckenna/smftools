@@ -98,6 +98,54 @@ def test_project_cli_end_to_end(tmp_path):
     assert set(combined.obs["experiment"]) == {"expA", "expB"}
 
 
+def test_project_add_cli_backfills_per_sample_store_for_modern_experiment(tmp_path):
+    from smftools.project.sample_store import list_per_sample_partitions
+
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    proj = tmp_path / "project"
+    runner = CliRunner()
+
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    r = runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")])
+    assert r.exit_code == 0, r.output
+
+    partitions = list_per_sample_partitions(proj, "expA")
+    assert len(partitions) == 1
+    assert partitions[0] == {
+        "kind": "pointer",
+        "experiment_id": "expA",
+        "reference_strand": "geneA_top",
+        "sample": "bc01",
+        "n_reads": 4,
+    }
+
+
+def test_project_add_cli_does_not_backfill_per_sample_store_for_legacy_file(tmp_path):
+    from smftools.project.sample_store import list_per_sample_partitions
+
+    sequence = "ACGTACGTACGT"
+    legacy_file = _make_legacy_monolithic_file(
+        tmp_path / "legacyExp2_preprocessed.h5ad",
+        reference_strand="geneL_top",
+        sequence=sequence,
+        n=3,
+    )
+    proj = tmp_path / "project"
+    runner = CliRunner()
+
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "add", str(proj), str(legacy_file), "--id", "legacyExp2", "--stage", "preprocess"],
+    )
+    assert r.exit_code == 0, r.output
+
+    # Phase 1 of the per-sample store only catalogs modern (partitioned-store)
+    # experiments -- legacy registration is a no-op here for now.
+    assert list_per_sample_partitions(proj) == []
+
+
 def _make_legacy_monolithic_file(path, *, reference_strand, sequence, n=3, npos=6):
     import numpy as np
 

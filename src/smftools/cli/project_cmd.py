@@ -41,15 +41,31 @@ def project_add(
     it names which pipeline stage that file represents, overriding the
     filename-based guess. Ignored for directory-based registration, since that
     path discovers every stage automatically.
+
+    Also backfills the project's per-sample store (see
+    ``smftools.project.sample_store`` and ``dev/project_sample_and_set_stores.md``)
+    from this experiment's most-derived available stage -- Phase 1 only catalogs
+    modern (partitioned-store) experiments; legacy experiments are a no-op here
+    until the caching phase lands.
     """
     from ..project.catalog import ProjectCatalog
     from ..project.reference_registry import detect_reference_conflicts
-    from ..project.registry import add_experiment
+    from ..project.registry import add_experiment, resolve_experiment_spine
+    from ..project.sample_store import backfill_per_sample_store
 
     exp_id, entry = add_experiment(
         project_dir, experiment_dir, experiment_id=experiment_id, name=name, stage=stage
     )
-    conflicts = detect_reference_conflicts(ProjectCatalog.open(project_dir).references())
+
+    catalog = ProjectCatalog.open(project_dir)
+    resolved_entry = next((e for e in catalog.experiments() if e["id"] == exp_id), None)
+    if resolved_entry is not None:
+        resolved = resolve_experiment_spine(resolved_entry)
+        if resolved is not None:
+            _, spine_path = resolved
+            backfill_per_sample_store(project_dir, exp_id, spine_path)
+
+    conflicts = detect_reference_conflicts(catalog.references())
     for warning in conflicts:
         logger.warning("reference conflict: %s", warning)
     return exp_id, entry, conflicts
