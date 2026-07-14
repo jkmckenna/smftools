@@ -188,6 +188,81 @@ def _direct_youden_cfg():
     return cfg
 
 
+def _multi_reference_strand_frame():
+    def _read(read_id, reference_strand, signal):
+        return {
+            "read_id": read_id,
+            "reference": "ref",
+            "Reference_strand": reference_strand,
+            "barcode": "bc1",
+            "sample": "bc1",
+            "reference_start": 0,
+            "cigar": "4M",
+            "aligned_length": 4,
+            "sequence": [0, 1, 2, 3],
+            "quality": [30, 30, 30, 30],
+            "mismatch": [4, 4, 4, 4],
+            "modification_signal": signal,
+            "read_length": 4,
+            "mapped_length": 4,
+            "reference_length": 12,
+            "read_quality": 30,
+            "mapping_quality": 60,
+            "read_length_to_reference_length_ratio": 4 / 12,
+            "mapped_length_to_reference_length_ratio": 4 / 12,
+            "mapped_length_to_read_length_ratio": 1.0,
+        }
+
+    # Two Reference_strand values ("top"/"bottom") of the same underlying locus,
+    # sharing the same position axis -- the shape project.catalog.project_adata
+    # produces when a canonical reference (sequence-hash identity) pools both
+    # strands of one experiment into a single materialize() call.
+    return pd.DataFrame(
+        [
+            _read("top1", "ref_top", [1.0, np.nan, 0.0, 1.0]),
+            _read("top2", "ref_top", [0.0, 1.0, 1.0, 0.0]),
+            _read("bottom1", "ref_bottom", [1.0, 0.0, 1.0, 1.0]),
+            _read("bottom2", "ref_bottom", [0.0, 0.0, 1.0, 0.0]),
+        ]
+    )
+
+
+def test_materialize_derived_layers_across_multiple_reference_strands(tmp_path):
+    pytest.importorskip("pyarrow")
+    raw = write_raw_store(
+        _multi_reference_strand_frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12, "ref_bottom": 12},
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    output_dir = tmp_path / "preprocess_outputs"
+
+    outputs = execute_partitioned_preprocessing(raw["spine"], _cfg(), output_dir)
+
+    # A single materialize() call spanning both strands of the same locus must not
+    # raise -- _overlay_preprocess_layers previously hard-required exactly one
+    # Reference_strand in the result, which this exercises directly. "nan_half" is
+    # one of the derived (task-catalog) layers this config actually produces (see
+    # test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage).
+    derived = materialize(
+        outputs["spine"], references=["ref_top", "ref_bottom"], layers=["nan_half"]
+    )
+    assert set(derived.obs["Reference_strand"].astype(str)) == {"ref_top", "ref_bottom"}
+    assert derived.layers["nan_half"].shape == derived.shape
+
+    # Each strand's overlay values match a same-strand-only materialize -- the
+    # per-reference catalog lookup isn't cross-contaminating between strands.
+    top_only = materialize(outputs["spine"], references="ref_top", layers=["nan_half"])
+    for read_id in top_only.obs_names:
+        row_combined = derived.obs_names.get_loc(read_id)
+        row_solo = top_only.obs_names.get_loc(read_id)
+        assert np.array_equal(
+            derived.layers["nan_half"][row_combined],
+            top_only.layers["nan_half"][row_solo],
+            equal_nan=True,
+        )
+
+
 def test_partitioned_executor_fits_youden_thresholds_for_direct_modality(tmp_path):
     pytest.importorskip("pyarrow")
     raw = write_raw_store(
