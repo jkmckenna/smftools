@@ -27,13 +27,22 @@ BASE_CACHE_FILENAME = "base.h5ad"
 COMPOSITION_FILENAME = "composition.json"
 
 
-def _slug(value: str) -> str:
-    slug = re.sub(r"[^0-9A-Za-z._-]+", "_", str(value)).strip("_")
-    return slug or "x"
+def slug(value: str) -> str:
+    """Filesystem-safe slug, shared by every project_outputs/ cache directory name."""
+    slugged = re.sub(r"[^0-9A-Za-z._-]+", "_", str(value)).strip("_")
+    return slugged or "x"
 
 
-def _sets_root(project_dir: str | Path) -> Path:
+def sets_root(project_dir: str | Path) -> Path:
     return Path(project_dir) / "project_outputs" / SETS_OUTPUT_DIRNAME
+
+
+def set_label(set_name: str | None, canonical_reference: str) -> str:
+    """The directory name a set's cache/embeddings live under: the set name if given,
+    else the canonical reference -- shared by ``set_store`` and ``embedding_store`` so
+    an embedding directory and its set's base-materialization cache always agree on
+    which set they belong to."""
+    return slug(set_name) if set_name else slug(canonical_reference)
 
 
 def _composition_hash(composition: dict) -> str:
@@ -115,8 +124,8 @@ def set_cache_dir(
         layers=layers,
         read_metrics=read_metrics,
     )
-    label = _slug(set_name) if set_name else _slug(canonical_reference)
-    return _sets_root(project_dir) / label / _composition_hash(composition)
+    label = set_label(set_name, canonical_reference)
+    return sets_root(project_dir) / label / _composition_hash(composition)
 
 
 def materialize_set(
@@ -166,8 +175,8 @@ def materialize_set(
     if not members:
         raise ValueError(f"no experiment references match canonical_reference={canonical_reference!r}")
 
-    label = _slug(set_name) if set_name else _slug(canonical_reference)
-    cache_dir = _sets_root(project_dir) / label / _composition_hash(composition)
+    label = set_label(set_name, canonical_reference)
+    cache_dir = sets_root(project_dir) / label / _composition_hash(composition)
     cache_path = cache_dir / BASE_CACHE_FILENAME
 
     if not force_recompute and cache_path.exists():
