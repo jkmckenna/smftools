@@ -15,6 +15,7 @@ from smftools.logging_utils import get_logger
 
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
+from ..informatics.stage_obs import write_stage_obs
 from ..readwrite import safe_write_h5ad, safe_write_zarr
 from .dispatch_plan import PreprocessTask, plan_preprocess_tasks, write_preprocess_task_catalog
 from .partitioned_plots import generate_preprocess_summary_plots
@@ -27,6 +28,11 @@ PREPROCESS_TASK_CATALOG = "task_catalog.parquet"
 PREPROCESS_PARTITION_CATALOG = "catalog.parquet"
 PREPROCESS_VAR_CATALOG = "var.parquet"
 PREPROCESS_OBS_SIDECAR = "obs.parquet"
+# Distinct from PREPROCESS_OBS_SIDECAR above: that file is a denormalized, internal
+# working artifact (full obs copy, mutated across QC/dedup steps). This is the
+# normalized "newly-produced columns only" artifact from
+# dev/experiment_storage_schema.md (Phase 3), read via informatics.stage_obs.
+PREPROCESS_STAGE_OBS = "stage_obs.parquet"
 YOUDEN_FIT_SUBDIR = "02B_Position_wide_Youden_threshold_performance"
 
 DERIVED_LAYER_ABSENT_FILL = {
@@ -977,6 +983,12 @@ def execute_partitioned_preprocessing(
         if column not in derived_spine.obs:
             derived_spine.obs[column] = derived_obs[column].reindex(derived_spine.obs_names)
     safe_write_h5ad(derived_spine, output_spine, backup=False, verbose=False)
+    new_columns = [
+        column for column in derived_spine.obs.columns if column not in spine.obs.columns
+    ]
+    stage_obs_path = write_stage_obs(
+        output_dir, derived_spine.obs, columns=new_columns, filename=PREPROCESS_STAGE_OBS
+    )
     if bool(getattr(cfg, "emit_automated_plots", True)):
         generate_preprocess_summary_plots(
             obs_sidecar,
@@ -992,6 +1004,7 @@ def execute_partitioned_preprocessing(
     register_sidecar(manifest, "preprocess_task_catalog", task_catalog)
     register_sidecar(manifest, "preprocess_var", var_catalog)
     register_sidecar(manifest, "preprocess_obs", obs_sidecar)
+    register_sidecar(manifest, "preprocess_stage_obs", stage_obs_path)
     register_sidecar(manifest, "preprocess_spine", output_spine)
     register_sidecar(manifest, "preprocess_plots", plot_layout.root)
     register_sidecar(manifest, "preprocess_plot_catalog", plot_layout.catalog)
@@ -1003,6 +1016,7 @@ def execute_partitioned_preprocessing(
         "task_catalog": task_catalog,
         "var": var_catalog,
         "obs": obs_sidecar,
+        "stage_obs": stage_obs_path,
         "plots": plot_layout.root,
         "plot_catalog": plot_layout.catalog,
         "manifest": manifest,

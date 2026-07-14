@@ -6,6 +6,7 @@ import pytest
 
 from smftools.informatics.partition_read import materialize, relative_uns_path
 from smftools.informatics.raw_store import write_raw_store
+from smftools.informatics.stage_obs import read_joined_obs
 from smftools.preprocessing.partitioned_executor import (
     execute_partitioned_preprocessing,
     fit_direct_modality_youden_thresholds,
@@ -590,6 +591,44 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
     assert "ref_top_GpC_site" in derived.var
     assert derived.var.loc["0", "ref_top_valid_count"] == 1
     assert bool(derived.var.loc["0", "position_in_ref_top"])
+
+
+def test_partitioned_executor_writes_normalized_stage_obs(tmp_path):
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    raw_obs = pd.read_parquet(raw["obs"])
+
+    outputs = execute_partitioned_preprocessing(
+        raw["spine"], _cfg(), tmp_path / "preprocess_outputs"
+    )
+
+    assert outputs["stage_obs"] == tmp_path / "preprocess_outputs" / "stage_obs.parquet"
+    stage_obs = pd.read_parquet(outputs["stage_obs"])
+
+    # Only newly-produced columns -- nothing raw's obs.parquet already carries.
+    assert "read_id" in stage_obs.columns
+    assert not (set(stage_obs.columns) & set(raw_obs.columns) - {"read_id"})
+    assert "passes_read_qc" in stage_obs.columns
+    assert set(stage_obs["read_id"]) == {"read1", "read2"}
+    assert stage_obs.set_index("read_id")["passes_read_qc"].to_dict() == {
+        "read1": True,
+        "read2": False,
+    }
+
+    # The pre-existing denormalized QC sidecar (outputs["obs"]) is untouched by this
+    # addition -- it still carries the full obs copy, not just the new columns.
+    legacy_sidecar = pd.read_parquet(outputs["obs"])
+    assert set(raw_obs.columns) - {"read_id"} <= set(legacy_sidecar.columns)
+
+    joined = read_joined_obs([tmp_path / "raw_outputs", tmp_path / "preprocess_outputs"])
+    assert list(joined.index) == ["read1", "read2"]
+    assert joined["passes_read_qc"].to_dict() == {"read1": True, "read2": False}
+    assert set(raw_obs.columns) - {"read_id"} <= set(joined.columns)
 
 
 def test_genome_derived_layers_stitch_across_cores_with_absent_read_fill(tmp_path):

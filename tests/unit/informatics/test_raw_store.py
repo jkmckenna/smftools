@@ -11,6 +11,7 @@ from smftools.informatics.partition_read import (
 )
 from smftools.informatics.partition_store import write_dense_cache_from_spine
 from smftools.informatics.raw_store import write_raw_store
+from smftools.informatics.stage_obs import read_stage_obs
 from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
 
 
@@ -112,6 +113,14 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     assert (ref2_ranges.loc["bc01", ["start_row", "end_row"]] == [0, 1]).all()
     assert (ref2_ranges.loc["bc02", ["start_row", "end_row"]] == [1, 2]).all()
     assert spine.uns["barcode_index"] == "barcode_index.parquet"
+
+    # obs.parquet: full obs (raw has no earlier stage to normalize against),
+    # written alongside spine.h5ad -- same content, different format.
+    assert paths["obs"] == tmp_path / "obs.parquet"
+    obs_parquet = read_stage_obs(tmp_path)
+    assert list(obs_parquet.index) == list(spine.obs_names)
+    assert set(obs_parquet.columns) == set(spine.obs.columns)
+    assert list(obs_parquet["bam_path"]) == list(spine.obs["bam_path"])
 
 
 def test_write_raw_store_skips_barcode_artifacts_without_sample_column(tmp_path):
