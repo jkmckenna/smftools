@@ -9,6 +9,7 @@ from smftools.informatics.raw_store import write_raw_store
 from smftools.informatics.stage_obs import read_joined_obs
 from smftools.preprocessing.partitioned_executor import (
     execute_partitioned_preprocessing,
+    execute_preprocess_task,
     fit_direct_modality_youden_thresholds,
 )
 from smftools.readwrite import safe_read_h5ad, safe_read_zarr
@@ -289,6 +290,81 @@ def test_partitioned_executor_fits_youden_thresholds_for_direct_modality(tmp_pat
     assert list(by_read["high1"][:4]) == [1.0, 1.0, 1.0, 1.0]
     for read_id in ("neg1", "neg2"):
         assert list(by_read[read_id][:4]) == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_direct_modality_streams_binarized_layer_only_after_clean_nan(tmp_path, monkeypatch):
+    """Regression test for an ordering bug caught during planning: the
+    binarized/Youden layer is clean_NaN's read source for `direct` modality, so
+    it must be written (and freed) only *after* clean_NaN has consumed it --
+    never immediately after binarize/Youden returns.
+    """
+    pytest.importorskip("pyarrow")
+    from smftools.preprocessing import partitioned_executor
+
+    calls: list[tuple[str, str]] = []
+    real_append = partitioned_executor.append_zarr_layer
+
+    def _spy(path, name, array, **kwargs):
+        calls.append((str(path), name))
+        return real_append(path, name, array, **kwargs)
+
+    monkeypatch.setattr(partitioned_executor, "append_zarr_layer", _spy)
+
+    raw = write_raw_store(
+        _direct_youden_frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    execute_partitioned_preprocessing(raw["spine"], _direct_youden_cfg(), tmp_path / "preprocess_outputs")
+
+    assert calls  # sanity: the spy actually fired
+    by_path: dict[str, list[str]] = {}
+    for path, name in calls:
+        by_path.setdefault(path, []).append(name)
+    for path, names in by_path.items():
+        assert "binarized_methylation" in names, path
+        binarize_index = names.index("binarized_methylation")
+        clean_nan_names = [name for name in names if name != "binarized_methylation"]
+        assert clean_nan_names, path  # each task has at least one NaN-fill variant
+        # Every clean_NaN variant must precede the binarized layer's own write.
+        assert all(names.index(name) < binarize_index for name in clean_nan_names), (
+            path,
+            names,
+        )
+
+
+def test_conversion_modality_streams_layers_incrementally_with_no_binarize_step(
+    tmp_path, monkeypatch
+):
+    """conversion/deaminase skip binarize entirely -- clean_NaN reads X directly
+    and there's no extra "write after clean_NaN" step, unlike direct modality.
+    """
+    from smftools.preprocessing import partitioned_executor
+
+    calls: list[tuple[str, str]] = []
+    real_append = partitioned_executor.append_zarr_layer
+
+    def _spy(path, name, array, **kwargs):
+        calls.append((str(path), name))
+        return real_append(path, name, array, **kwargs)
+
+    monkeypatch.setattr(partitioned_executor, "append_zarr_layer", _spy)
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    execute_partitioned_preprocessing(raw["spine"], _cfg(), tmp_path / "preprocess_outputs")
+
+    assert calls  # streamed incrementally, not skipped
+    names = {name for _, name in calls}
+    assert "binarized_methylation" not in names  # never produced for this modality
+    assert names == {"nan0_0minus1", "nan_half"}  # default clean_nan_layers
 
 
 def _direct_youden_genome_frame():

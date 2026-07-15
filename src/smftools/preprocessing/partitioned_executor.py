@@ -14,6 +14,7 @@ from smftools.constants import REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 
 from ..informatics.experiment_spine import write_experiment_spine
+from ..informatics.incremental_zarr import append_zarr_layer, consolidate_zarr_store
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..informatics.stage_obs import write_stage_obs
@@ -208,17 +209,29 @@ def _apply_youden_thresholds(
     )
 
 
-def _run_local_transforms(
+def _apply_non_nan_transforms(
     adata: ad.AnnData,
     cfg,
     youden_thresholds: dict[str, pd.DataFrame] | None = None,
-) -> tuple[list[str], list[str]]:
-    """Apply transforms whose outputs are valid independently per read/window."""
+) -> str | None:
+    """Apply binarize/Youden (``direct`` only) and base-context annotation.
+
+    Runs on the full loaded window (not yet cropped to the task's core), same as
+    before this function was split out of the old ``_run_local_transforms`` --
+    ``append_base_context``'s var columns and (for ``direct``) the binarized
+    layer are both derived per-position with no cross-window dependency, so
+    operating on the full window vs. the core slice makes no numeric difference
+    for them specifically. ``clean_NaN`` is deliberately not called here -- see
+    ``execute_preprocess_task``, where its NaN-fill variants are streamed
+    directly to disk instead of returned.
+
+    Returns the binarized layer's name (``clean_NaN``'s read source) for
+    ``direct`` modality, or ``None`` for ``conversion``/``deaminase`` (which
+    read ``X`` directly).
+    """
     from .append_base_context import append_base_context
     from .binarize import binarize_adata
-    from .clean_NaN import clean_NaN
 
-    before_layers = set(adata.layers)
     modality = str(cfg.smf_modality)
     target_layer = str(getattr(cfg, "output_binary_layer_name", "binarized_methylation"))
     if modality == "direct":
@@ -243,13 +256,6 @@ def _run_local_transforms(
     else:
         nan_source = None
 
-    clean_NaN(
-        adata,
-        layer=nan_source,
-        bypass=bool(cfg.bypass_clean_nan),
-        force_redo=True,
-        layers_to_build=getattr(cfg, "clean_nan_layers", None),
-    )
     append_base_context(
         adata,
         ref_column=str(cfg.reference_column),
@@ -259,30 +265,25 @@ def _run_local_transforms(
         bypass=bool(cfg.bypass_append_base_context),
         force_redo=True,
     )
-
-    derived_layers = sorted(set(adata.layers).difference(before_layers))
-    derived_var = sorted(
-        column
-        for column in adata.var.columns
-        if column.startswith(f"{adata.obs[REFERENCE_STRAND].astype(str).iloc[0]}_")
-    )
-    return derived_layers, derived_var
+    return nan_source
 
 
-def _core_result(
+def _core_skeleton(
     adata: ad.AnnData,
     task: PreprocessTask,
-    derived_layers: Iterable[str],
+    core_mask: np.ndarray,
     derived_var: Iterable[str],
-    cfg,
+    nan_source: str | None,
 ) -> ad.AnnData:
-    positions = np.asarray(adata.var_names, dtype=np.int64)
-    core_mask = (positions >= task.core_start) & (positions < task.core_end)
+    """Build the core-cropped ``obs``/``var``/``X`` skeleton (no ``layers``).
+
+    ``layers`` are streamed separately in ``execute_preprocess_task`` -- see
+    that function for why (each is written to disk and freed as soon as it's
+    computed, rather than being collected here first).
+    """
     core = adata[:, core_mask]
     var = core.var[list(derived_var)].copy()
-    modality = str(cfg.smf_modality)
-    target_layer = str(getattr(cfg, "output_binary_layer_name", "binarized_methylation"))
-    coverage_matrix = core.layers[target_layer] if modality == "direct" else core.X
+    coverage_matrix = core.layers[nan_source] if nan_source else core.X
     var["valid_count_partial"] = np.sum(~np.isnan(coverage_matrix), axis=0).astype(np.int64)
     var["n_reads_partial"] = core.n_obs
     obs = core.obs.copy()
@@ -297,12 +298,7 @@ def _core_result(
         site_values = np.asarray(coverage_matrix)[:, site_mask]
         obs[f"Modified_{site_type}_count_partial"] = np.nansum(site_values, axis=1)
         obs[f"Total_{site_type}_in_read_partial"] = np.sum(~np.isnan(site_values), axis=1)
-    result = ad.AnnData(
-        obs=obs,
-        var=var,
-        X=np.asarray(core.X),
-        layers={name: np.asarray(core.layers[name]) for name in derived_layers},
-    )
+    result = ad.AnnData(obs=obs, var=var, X=np.asarray(core.X))
     result.uns.update(
         {
             "task_id": task.task_id,
@@ -324,7 +320,17 @@ def execute_preprocess_task(
     *,
     youden_thresholds: dict[str, pd.DataFrame] | None = None,
 ) -> dict[str, object]:
-    """Materialize, transform, core-crop, and write one preprocessing task."""
+    """Materialize, transform, core-crop, and write one preprocessing task.
+
+    Layers are streamed to disk (``incremental_zarr.append_zarr_layer``) as
+    soon as each is computed, then freed, instead of being collected in memory
+    and written together at the end -- see dev/pipeline_scaling_audit.md and
+    the plan that implemented this. Ordering is modality-aware: for ``direct``,
+    the binarized layer is both a reportable derived layer *and* ``clean_NaN``'s
+    read source, so it can't be written+freed until after ``clean_NaN`` returns.
+    """
+    from .clean_NaN import clean_NaN
+
     output_dir = Path(output_dir)
     adata = materialize(
         spine_path,
@@ -335,11 +341,46 @@ def execute_preprocess_task(
     )
     if REFERENCE_STRAND in adata.obs and hasattr(adata.obs[REFERENCE_STRAND], "cat"):
         adata.obs[REFERENCE_STRAND] = adata.obs[REFERENCE_STRAND].cat.remove_unused_categories()
-    derived_layers, derived_var = _run_local_transforms(adata, cfg, youden_thresholds)
-    result = _core_result(adata, task, derived_layers, derived_var, cfg)
+
+    positions = np.asarray(adata.var_names, dtype=np.int64)
+    core_mask = (positions >= task.core_start) & (positions < task.core_end)
+
+    nan_source = _apply_non_nan_transforms(adata, cfg, youden_thresholds)
+    reference = task.reference
+    derived_var = sorted(
+        column for column in adata.var.columns if column.startswith(f"{reference}_")
+    )
+
+    result = _core_skeleton(adata, task, core_mask, derived_var, nan_source)
     path = _task_path(output_dir, task)
     chunks = (max(1, min(result.n_obs, 10_000)), max(1, result.n_vars))
     safe_write_zarr(result, path, backup=True, verbose=False, zarr_format=3, chunks=chunks)
+
+    written_layers: list[str] = []
+
+    def _write_layer(name: str, array: np.ndarray) -> None:
+        append_zarr_layer(
+            path, name, np.asarray(array)[:, core_mask], chunks=chunks, consolidate=False
+        )
+        written_layers.append(name)
+
+    clean_NaN(
+        adata,
+        layer=nan_source,
+        bypass=bool(cfg.bypass_clean_nan),
+        force_redo=True,
+        layers_to_build=getattr(cfg, "clean_nan_layers", None),
+        on_layer=_write_layer,
+        keep_in_adata=False,
+    )
+    if nan_source is not None:
+        # The binarized/Youden layer was clean_NaN's read source -- safe to
+        # write and free only now that clean_NaN no longer needs it.
+        _write_layer(nan_source, adata.layers[nan_source])
+        del adata.layers[nan_source]
+    consolidate_zarr_store(path)
+
+    derived_layers = sorted(written_layers)
     return {
         **task.to_dict(include_read_ids=False),
         "group_path": path.relative_to(output_dir).as_posix(),

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 import numpy as np
 import scipy.sparse as sp
@@ -78,6 +78,8 @@ def clean_NaN(
     bypass: bool = False,
     force_redo: bool = True,
     layers_to_build: Optional[List[str]] = None,
+    on_layer: Callable[[str, np.ndarray], None] | None = None,
+    keep_in_adata: bool = True,
 ) -> None:
     """Append layers to ``adata`` that contain NaN-cleaning strategies.
 
@@ -94,6 +96,17 @@ def clean_NaN(
             ``fill_nans_closest``, ``nan0_0minus1``, ``nan1_12``,
             ``nan_minus_1``, ``nan_half``. Defaults to
             ``["nan0_0minus1", "nan_half"]``.
+        on_layer: Optional callback invoked as ``on_layer(name, array)``
+            immediately after each variant is computed -- lets a caller write
+            (and free) it right away instead of waiting for every variant to
+            accumulate in ``adata.layers`` first. Each variant derives
+            independently from the same source (``layer`` or ``X``), so this is
+            safe regardless of call order.
+        keep_in_adata: When ``False``, a variant is not also assigned into
+            ``adata.layers`` after ``on_layer`` fires -- avoids holding both the
+            callback's copy and an ``adata.layers`` copy at once. Ignored (a
+            variant is always assigned) when ``on_layer`` is ``None``, since
+            that's the only place the array would otherwise end up.
     """
 
     # Only run if not already performed
@@ -128,31 +141,43 @@ def clean_NaN(
 
     nan_mask = np.isnan(X)
 
+    def _emit(name: str, array: np.ndarray) -> None:
+        if on_layer is not None:
+            on_layer(name, array)
+        if keep_in_adata or on_layer is None:
+            adata.layers[name] = array
+
     if "fill_nans_closest" in layers_to_build:
         logger.info("Making layer: fill_nans_closest")
-        adata.layers["fill_nans_closest"] = _finalize_layer_dtype(_ffill_bfill_rows(X))
+        _emit("fill_nans_closest", _finalize_layer_dtype(_ffill_bfill_rows(X)))
 
     if "nan0_0minus1" in layers_to_build:
         logger.info("Making layer: nan0_0minus1")
-        adata.layers["nan0_0minus1"] = _finalize_layer_dtype(
-            np.where(nan_mask, np.float32(0.0), np.where(X == 0, np.float32(-1.0), X))
+        _emit(
+            "nan0_0minus1",
+            _finalize_layer_dtype(
+                np.where(nan_mask, np.float32(0.0), np.where(X == 0, np.float32(-1.0), X))
+            ),
         )
 
     if "nan1_12" in layers_to_build:
         logger.info("Making layer: nan1_12")
-        adata.layers["nan1_12"] = _finalize_layer_dtype(
-            np.where(nan_mask, np.float32(1.0), np.where(X == 1, np.float32(2.0), X))
+        _emit(
+            "nan1_12",
+            _finalize_layer_dtype(
+                np.where(nan_mask, np.float32(1.0), np.where(X == 1, np.float32(2.0), X))
+            ),
         )
 
     if "nan_minus_1" in layers_to_build:
         logger.info("Making layer: nan_minus_1")
-        adata.layers["nan_minus_1"] = _finalize_layer_dtype(
-            np.where(nan_mask, np.float32(-1.0), X)
+        _emit(
+            "nan_minus_1", _finalize_layer_dtype(np.where(nan_mask, np.float32(-1.0), X))
         )
 
     if "nan_half" in layers_to_build:
         logger.info("Making layer: nan_half")
-        adata.layers["nan_half"] = _finalize_layer_dtype(np.where(nan_mask, np.float32(0.5), X))
+        _emit("nan_half", _finalize_layer_dtype(np.where(nan_mask, np.float32(0.5), X)))
 
     del X, nan_mask
 
