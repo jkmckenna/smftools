@@ -299,3 +299,104 @@ def test_partitioned_hmm_forces_sequential_execution_on_gpu_device(tmp_path, mon
     execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
 
     assert captured["force_sequential"] is True
+
+
+def _hmm_cfg(**overrides):
+    defaults = dict(
+        hmm_methbases=["GpC"],
+        cpg=False,
+        hmm_feature_sets={
+            "footprint": {"state": "Non-Modified", "features": {"small_bound_stretch": [6, 40]}},
+            "accessible": {
+                "state": "Modified",
+                "features": {"small_accessible_patch": [3, 20]},
+            },
+        },
+        hmm_fit_scope="per_sample",
+        hmm_distance_aware=False,
+        hmm_n_states=2,
+        device="cpu",
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_plot_hmm_parameters_across_barcodes_compares_saved_models(tmp_path):
+    import torch
+
+    from smftools.cli.hmm_adata import HMMTrainer
+    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
+    from smftools.hmm.HMM import create_hmm
+    from smftools.tools.partitioned_hmm import _plot_hmm_parameters_across_barcodes
+
+    cfg = _hmm_cfg()
+    models_dir = tmp_path / "models"
+    trainer = HMMTrainer(cfg=cfg, models_dir=models_dir)
+
+    model_reference = "ref_top__0_100"
+    label = "GpC"
+    # Two barcodes with deliberately different emission probabilities, so the
+    # comparison plot has something real to show, not just identical bars.
+    for barcode, emission_prob in (("bc1", 0.2), ("bc2", 0.8)):
+        model = create_hmm(cfg, arch="single", device="cpu")
+        with torch.no_grad():
+            model.emission.data = torch.tensor([1.0 - emission_prob, emission_prob])
+        path = trainer._path("PER", barcode, model_reference, label)
+        trainer._save(model, path)
+
+    records = [
+        {"reference": "ref_top", "barcode": "bc1", "core_start": 0, "core_end": 100},
+        {"reference": "ref_top", "barcode": "bc2", "core_start": 0, "core_end": 100},
+    ]
+    layout = prepare_analysis_plot_layout(tmp_path / "hmm_outputs", stage="hmm")
+
+    _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
+
+    catalog = pd.read_parquet(layout.catalog)
+    matching = catalog[catalog["plot_type"] == "hmm_parameters_across_barcodes"]
+    assert len(matching) == 1
+    assert matching.iloc[0]["category"] == "emissions"
+    assert matching.iloc[0]["reference"] == "ref_top"
+    plot_path = layout.root.parent / matching.iloc[0]["path"]
+    assert plot_path.exists()
+    assert plot_path.stat().st_size > 0
+
+
+def test_plot_hmm_parameters_across_barcodes_noop_for_global_scope(tmp_path):
+    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
+    from smftools.tools.partitioned_hmm import _plot_hmm_parameters_across_barcodes
+
+    cfg = _hmm_cfg(hmm_fit_scope="global")
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    records = [
+        {"reference": "ref_top", "barcode": "bc1", "core_start": 0, "core_end": 100},
+        {"reference": "ref_top", "barcode": "bc2", "core_start": 0, "core_end": 100},
+    ]
+    layout = prepare_analysis_plot_layout(tmp_path / "hmm_outputs", stage="hmm")
+
+    _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
+
+    catalog = pd.read_parquet(layout.catalog)
+    assert catalog.empty
+
+
+def test_plot_hmm_parameters_across_barcodes_skips_single_barcode_windows(tmp_path):
+    from smftools.cli.hmm_adata import HMMTrainer
+    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
+    from smftools.hmm.HMM import create_hmm
+    from smftools.tools.partitioned_hmm import _plot_hmm_parameters_across_barcodes
+
+    cfg = _hmm_cfg()
+    models_dir = tmp_path / "models"
+    trainer = HMMTrainer(cfg=cfg, models_dir=models_dir)
+    model = create_hmm(cfg, arch="single", device="cpu")
+    trainer._save(model, trainer._path("PER", "bc1", "ref_top__0_100", "GpC"))
+
+    records = [{"reference": "ref_top", "barcode": "bc1", "core_start": 0, "core_end": 100}]
+    layout = prepare_analysis_plot_layout(tmp_path / "hmm_outputs", stage="hmm")
+
+    _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
+
+    catalog = pd.read_parquet(layout.catalog)
+    assert catalog.empty

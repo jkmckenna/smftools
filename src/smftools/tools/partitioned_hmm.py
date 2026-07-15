@@ -293,6 +293,174 @@ def _plot_feature_fractions(records, output_dir: Path, layout) -> None:
         )
 
 
+def _grouped_bar_plot(axis, group_labels, series: dict, *, ylabel: str, title: str) -> None:
+    """One bar per (group, series-key) pair, grouped by ``group_labels`` on the
+    x-axis and colored/offset by ``series`` key (here, barcode)."""
+    keys = sorted(series)
+    n_groups = len(group_labels)
+    n_series = len(keys)
+    width = 0.8 / max(1, n_series)
+    x = np.arange(n_groups)
+    for index, key in enumerate(keys):
+        offset = (index - (n_series - 1) / 2) * width
+        axis.bar(x + offset, series[key], width=width, label=str(key))
+    axis.set_xticks(x, group_labels, rotation=45, ha="right", fontsize=8)
+    axis.set(ylabel=ylabel, title=title, ylim=(0, 1.02))
+
+
+def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout) -> None:
+    """Compare fitted HMM emission/transition parameters across barcodes, for
+    each reference/window/signal-label combination that used a per-barcode
+    fit.
+
+    Diagnostic for whether ``cfg.hmm_fit_scope="per_sample"`` (the default: a
+    separate model fit per barcode) is buying anything over a shared
+    ``"global"`` fit -- if parameters converge to similar values across
+    barcodes, that's direct evidence a global fit would work just as well, at
+    a fraction of the per-task fitting cost (each per-sample fit is a fresh,
+    uncached EM run -- see dev/pipeline_scaling_audit.md's HMM cost
+    discussion). No-op when ``hmm_fit_scope="global"``: every barcode already
+    shares the exact same fitted model in that case, so there's nothing to
+    compare.
+    """
+    import matplotlib.pyplot as plt
+
+    trainer = HMMTrainer(cfg=cfg, models_dir=Path(models_dir))
+    scope = trainer._fit_scope()
+    if scope == "global":
+        return
+    kind = "ADAPT" if scope == "global_then_adapt" else "PER"
+
+    device = resolve_torch_device(getattr(cfg, "device", "auto"))
+    hmm_tasks = build_hmm_tasks(cfg)
+    if not hmm_tasks:
+        return
+    feature_sets_all = normalize_hmm_feature_sets(getattr(cfg, "hmm_feature_sets", None))
+
+    windows: dict[tuple[str, int, int], set[str]] = {}
+    for record in records:
+        key = (str(record["reference"]), int(record["core_start"]), int(record["core_end"]))
+        windows.setdefault(key, set()).add(str(record["barcode"]))
+
+    for (reference, core_start, core_end), barcodes in sorted(windows.items()):
+        model_reference = f"{reference}__{core_start}_{core_end}"
+        for hmm_task in hmm_tasks:
+            feature_sets = {
+                name: feature_sets_all[name]
+                for name in hmm_task.feature_groups
+                if name in feature_sets_all
+            }
+            if not feature_sets:
+                continue
+            multichannel = len(hmm_task.signals) != 1
+            label = str(
+                hmm_task.output_prefix
+                or ("Combined" if multichannel else hmm_task.signals[0])
+            )
+            arch = trainer.choose_arch(multichannel=multichannel)
+
+            loaded = {}
+            for barcode in sorted(barcodes):
+                path = trainer._path(kind, barcode, model_reference, label)
+                if not path.exists():
+                    continue
+                try:
+                    loaded[barcode] = trainer._load(path, arch=arch, device=device)
+                except Exception:
+                    logger.warning(
+                        "Could not load HMM model %s for parameter comparison plot",
+                        path,
+                        exc_info=True,
+                    )
+            if len(loaded) < 2:
+                # Nothing to compare -- only one barcode fit a model for this
+                # window/label, or the rest failed to load.
+                continue
+
+            n_states = int(next(iter(loaded.values())).n_states)
+            state_labels = [f"State {i}" for i in range(n_states)]
+
+            emission_by_barcode = {}
+            n_channels = 1
+            for barcode, model in loaded.items():
+                arr = np.asarray(model.emission.detach().cpu().numpy()).reshape(n_states, -1)
+                n_channels = max(n_channels, arr.shape[1])
+                emission_by_barcode[barcode] = arr
+            if n_channels == 1:
+                emission_group_labels = state_labels
+                emission_series = {
+                    barcode: arr[:, 0].tolist() for barcode, arr in emission_by_barcode.items()
+                }
+            else:
+                emission_group_labels = [
+                    f"{state}-ch{channel}"
+                    for state in state_labels
+                    for channel in range(n_channels)
+                ]
+                emission_series = {
+                    barcode: arr.reshape(-1).tolist()
+                    for barcode, arr in emission_by_barcode.items()
+                }
+
+            trans_group_labels = [f"{i}→{j}" for i in range(n_states) for j in range(n_states)]
+            trans_series = {
+                barcode: np.asarray(model.trans.detach().cpu().numpy()).reshape(-1).tolist()
+                for barcode, model in loaded.items()
+            }
+
+            figure, (emission_axis, trans_axis) = plt.subplots(
+                1,
+                2,
+                figsize=(max(10, 0.6 * len(loaded) + 6), 5),
+            )
+            _grouped_bar_plot(
+                emission_axis,
+                emission_group_labels,
+                emission_series,
+                ylabel="P(obs=1 | state)",
+                title="Emission",
+            )
+            _grouped_bar_plot(
+                trans_axis,
+                trans_group_labels,
+                trans_series,
+                ylabel="Transition probability",
+                title="Transition",
+            )
+            handles, plot_labels = emission_axis.get_legend_handles_labels()
+            figure.legend(
+                handles,
+                plot_labels,
+                title="Barcode",
+                loc="lower center",
+                bbox_to_anchor=(0.5, -0.05),
+                ncol=min(6, len(loaded)),
+                fontsize=8,
+            )
+            figure.suptitle(f"{reference}:{core_start}-{core_end} [{label}] ({kind.lower()} fit)")
+            figure.tight_layout(rect=(0, 0.1, 1, 0.96))
+            path = layout.categories["emissions"] / (
+                f"{_component(reference)}__{core_start}_{core_end}__{_component(label)}"
+                "__hmm_params_by_barcode.png"
+            )
+            # bbox_inches="tight": the figure-level legend sits below the
+            # tight_layout'd axes area, outside the rect reserved for them --
+            # without this, savefig can clip it regardless of exact anchor
+            # coordinates.
+            figure.savefig(path, dpi=160, bbox_inches="tight")
+            plt.close(figure)
+            register_plot_artifact(
+                layout,
+                path,
+                stage="hmm",
+                category="emissions",
+                plot_type="hmm_parameters_across_barcodes",
+                reference=str(reference),
+                core_start=int(core_start),
+                core_end=int(core_end),
+            )
+
+
 def _matching_hmm_layers(records, roots, *, lengths: bool = False) -> list[str]:
     """Resolve configured feature roots against layers actually written by the tasks."""
     available = {str(layer) for record in records for layer in record.get("layers", [])}
@@ -474,6 +642,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     layout = prepare_analysis_plot_layout(output_dir, stage="hmm", source_spine=spine_path)
     pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
     _plot_feature_fractions(records, output_dir, layout)
+    _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
 
     output_spine = output_dir / HMM_SPINE_FILENAME
     hmm_spine = spine.copy()
