@@ -1077,7 +1077,9 @@ def load_adata_core(
     ########################################################################################################################
 
     if raw_only:
-        if cfg.smf_modality == "direct":
+        direct_signal_backend = str(getattr(cfg, "direct_signal_backend", "pysam"))
+        direct_uses_modkit = cfg.smf_modality == "direct" and direct_signal_backend == "modkit"
+        if direct_uses_modkit:
             from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
 
             if not mod_bed_dir.is_dir():
@@ -1100,14 +1102,15 @@ def load_adata_core(
 
         logger.info("Extracting read-relative raw records from aligned BAM")
         # Streaming (never holds more than one reference's ragged data in
-        # memory at once) for conversion/deaminase, the two modalities whose
-        # modification-signal source is derivable from the FASTA alone --
-        # see dev/pipeline_scaling_audit.md's Track B. `direct` modality's
-        # signal source (a whole-file modkit-extract TSV, joined post-hoc
-        # across every reference) isn't yet streaming-compatible, so it keeps
-        # today's whole-frame path unchanged.
+        # memory at once) for conversion/deaminase (always) and for direct
+        # modality when direct_signal_backend="pysam" (the default) -- its
+        # MM/ML-tag decode needs nothing beyond the same aligned BAM already
+        # open for extraction. Only direct modality's modkit-TSV backend keeps
+        # today's whole-frame path: modkit extract produces one whole-file TSV
+        # joined post-hoc across every reference, which isn't streaming-
+        # compatible -- see dev/pipeline_scaling_audit.md's Track B notes.
         frame = None
-        if str(cfg.smf_modality) == "direct":
+        if direct_uses_modkit:
             from ..informatics.raw_store import write_raw_store
             from .raw_adata import build_ragged_records
 

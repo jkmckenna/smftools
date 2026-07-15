@@ -7,10 +7,23 @@ from click.testing import CliRunner
 
 from smftools.cli.raw_adata import (
     _attach_direct_signals,
+    _attach_direct_signals_from_bam,
+    _bucket_read_ids,
     _conversion_signal,
+    _map_references_parallel,
+    _n_buckets_for_reference,
+    _resolve_direct_call,
     _split_by_reference_strand,
 )
 from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT, PREPROCESS_DIR
+
+
+def _double_record(record, *, multiplier):
+    """Module-level (picklable) worker for exercising the process-pool path
+    of ``_map_references_parallel`` -- a spawned worker process can only
+    unpickle a top-level function, not a test-local closure.
+    """
+    return [record * multiplier], [str(record)]
 
 
 def test_conversion_signal_matches_existing_binarization_maps():
@@ -150,6 +163,161 @@ def test_attach_direct_signals_reads_gzipped_modkit_extract(tmp_path):
         result.at[0, "modification_signal"],
         [0.8, np.nan, np.nan, np.nan, np.nan],
         equal_nan=True,
+    )
+
+
+def test_map_references_parallel_sequential_matches_process_pool():
+    items = [(1,), (2,), (3,), (4,)]
+
+    sequential = list(
+        _map_references_parallel(
+            items, _double_record, max_workers=1, worker_kwargs={"multiplier": 10}
+        )
+    )
+    parallel = list(
+        _map_references_parallel(
+            items, _double_record, max_workers=2, worker_kwargs={"multiplier": 10}
+        )
+    )
+
+    # Parallel path yields as futures complete, not submission order -- compare
+    # as sets/multisets, not positionally. Each entry is (args, (result, columns)).
+    assert sorted(args for args, _result in sequential) == sorted(
+        args for args, _result in parallel
+    )
+    assert {tuple(result) for _args, (result, _columns) in sequential} == {
+        tuple(result) for _args, (result, _columns) in parallel
+    }
+
+
+def test_bucket_read_ids_splits_evenly_regardless_of_clustering():
+    # Reproduces the real-data shape that broke position-based windowing:
+    # many reads share the exact same genomic position (PCR/library
+    # duplication), so no position boundary can split them -- round-robin
+    # over read identity doesn't care, and still balances exactly.
+    read_ids = [f"read{i}" for i in range(1000)]
+
+    buckets = _bucket_read_ids(read_ids, n_buckets=8)
+
+    assert len(buckets) == 8
+    counts = [len(bucket) for bucket in buckets]
+    assert max(counts) - min(counts) <= 1
+    # Every read assigned to exactly one bucket, none lost or duplicated.
+    union = set().union(*buckets)
+    assert union == set(read_ids)
+    assert sum(counts) == len(read_ids)
+
+
+def test_bucket_read_ids_no_reads_yields_no_buckets():
+    assert _bucket_read_ids([], n_buckets=4) == []
+
+
+def test_bucket_read_ids_single_bucket_covers_all_reads():
+    read_ids = ["a", "b", "c"]
+    assert _bucket_read_ids(read_ids, n_buckets=1) == [{"a", "b", "c"}]
+
+
+def test_bucket_read_ids_more_buckets_than_reads_drops_empty_buckets():
+    read_ids = ["a", "b"]
+    buckets = _bucket_read_ids(read_ids, n_buckets=8)
+    assert len(buckets) == 2
+    assert set().union(*buckets) == {"a", "b"}
+
+
+def test_n_buckets_for_reference_caps_at_max_workers_and_min_reads():
+    # Plenty of reads, few workers: capped by max_workers.
+    assert _n_buckets_for_reference(100_000, max_workers=4, min_reads_per_bucket=500) == 4
+    # Few reads: capped by min_reads_per_bucket, not max_workers.
+    assert _n_buckets_for_reference(300, max_workers=8, min_reads_per_bucket=500) == 1
+    # Single worker: never split, regardless of read count.
+    assert _n_buckets_for_reference(100_000, max_workers=1, min_reads_per_bucket=500) == 1
+
+
+def test_resolve_direct_call_picks_highest_probability_state():
+    # Canonical wins: modified probability (50/255 ~= 0.196) is lower than
+    # canonical (1 - 0.196 ~= 0.804).
+    code, probability = _resolve_direct_call({"m": 50})
+    assert code == "-"
+    np.testing.assert_allclose(probability, 1.0 - 50 / 255.0)
+
+    # Modified wins: 200/255 ~= 0.784 beats canonical (1 - 0.784 ~= 0.216).
+    code, probability = _resolve_direct_call({"m": 200})
+    assert code == "m"
+    np.testing.assert_allclose(probability, 200 / 255.0)
+
+    # Multiple simultaneous codes at one position (e.g. 5mC and 5hmC on the
+    # same C): highest of {canonical, m, h} wins.
+    code, probability = _resolve_direct_call({"h": 2, "m": 230})
+    assert code == "m"
+    np.testing.assert_allclose(probability, 230 / 255.0)
+
+
+def _write_direct_signal_test_bam(path, *, read_id="read1", reference="chr1"):
+    """One 6bp forward-strand read ("ACGTAC") with MM/ML calls at both C's
+    (query positions 1, 5) and both A's (query positions 0, 4), chosen so
+    canonical wins at one position of each base and the modified call wins at
+    the other -- exercises both branches of ``_resolve_direct_call`` through
+    the real pysam MM/ML decode path, not just the pure function directly.
+    """
+    import pysam
+
+    header = {"HD": {"VN": "1.6"}, "SQ": [{"SN": reference, "LN": 20}]}
+    with pysam.AlignmentFile(str(path), "wb", header=header) as bam:
+        read = pysam.AlignedSegment()
+        read.query_name = read_id
+        read.query_sequence = "ACGTAC"
+        read.flag = 0
+        read.reference_id = 0
+        read.reference_start = 0
+        read.mapping_quality = 60
+        read.cigartuples = [(0, 6)]
+        read.query_qualities = pysam.qualitystring_to_array("IIIIII")
+        read.set_tag("MM", "C+m,0,0;A+a,0,0;", value_type="Z")
+        read.set_tag("ML", [50, 200, 10, 250])
+        bam.write(read)
+    pysam.sort("-o", str(path.with_suffix(".sorted.bam")), str(path))
+    pysam.index(str(path.with_suffix(".sorted.bam")))
+    return path.with_suffix(".sorted.bam")
+
+
+def test_attach_direct_signals_from_bam_matches_manual_ml_derivation(tmp_path):
+    bam_path = _write_direct_signal_test_bam(tmp_path / "direct.bam")
+    frame = pd.DataFrame(
+        [
+            {
+                "read_id": "read1",
+                "reference": "chr1",
+                "reference_start": 0,
+                "cigar": "6M",
+            }
+        ]
+    )
+
+    result, columns = _attach_direct_signals_from_bam(frame, bam_path)
+
+    assert set(columns) == {"modification_signal_A_plus", "modification_signal_C_plus"}
+    expected_combined = [
+        1.0 - 10 / 255.0,  # pos 0 (A): canonical wins
+        1.0 - 50 / 255.0,  # pos 1 (C): canonical wins
+        np.nan,  # pos 2 (G): no MM/ML entry
+        np.nan,  # pos 3 (T): no MM/ML entry
+        250 / 255.0,  # pos 4 (A): modified wins
+        200 / 255.0,  # pos 5 (C): modified wins
+    ]
+    np.testing.assert_allclose(
+        result.at[0, "modification_signal"], expected_combined, equal_nan=True, rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        result.at[0, "modification_signal_A_plus"],
+        [expected_combined[0], np.nan, np.nan, np.nan, expected_combined[4], np.nan],
+        equal_nan=True,
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(
+        result.at[0, "modification_signal_C_plus"],
+        [np.nan, expected_combined[1], np.nan, np.nan, np.nan, expected_combined[5]],
+        equal_nan=True,
+        rtol=1e-6,
     )
 
 

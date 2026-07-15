@@ -3995,6 +3995,8 @@ def extract_read_relative_base_identities(
     samtools_backend: str | None = "auto",
     primary_only: bool = True,
     read_name_filter: set | None = None,
+    start: int | None = None,
+    end: int | None = None,
 ):
     """Extract aligned reads as query-coordinate ragged records.
 
@@ -4009,23 +4011,39 @@ def extract_read_relative_base_identities(
         samtools_backend: Samtools-compatible alignment backend.
         primary_only: Skip secondary and supplementary alignments when true.
         read_name_filter: Optional set of read names to retain.
+        start: 0-based inclusive lower bound on ``reference_start``. When
+            given with ``end``, fetch is scoped to ``[start, end)`` (e.g. for
+            parallelizing extraction across sub-reference windows) and reads
+            are additionally filtered to those *starting* in this range --
+            region fetch itself returns every read *overlapping* the region,
+            which would otherwise double-count a read across two adjacent
+            windows it spans.
+        end: 0-based exclusive upper bound on ``reference_start``. See ``start``.
 
     Returns:
         list[dict[str, object]]: One validated-compatible ragged record per read.
     """
     from .ragged_store import alignment_to_ragged_record
 
+    windowed = start is not None and end is not None
+
+    def _in_window(reference_start: int) -> bool:
+        return not windowed or (start <= reference_start < end)
+
     backend_choice = _resolve_samtools_backend(samtools_backend)
     records = []
     if backend_choice == "python":
         pysam_mod = _require_pysam()
         with pysam_mod.AlignmentFile(str(bam_file), "rb") as bam:
-            for read in bam.fetch(record):
+            fetch_iter = bam.fetch(record, start, end) if windowed else bam.fetch(record)
+            for read in fetch_iter:
                 if read.is_unmapped:
                     continue
                 if primary_only and (read.is_secondary or read.is_supplementary):
                     continue
                 if read_name_filter is not None and read.query_name not in read_name_filter:
+                    continue
+                if not _in_window(read.reference_start):
                     continue
                 records.append(
                     alignment_to_ragged_record(
@@ -4041,7 +4059,10 @@ def extract_read_relative_base_identities(
     bam_path = Path(bam_file)
     _ensure_bam_index(bam_path, backend_choice)
     exclude_flag = "2308" if primary_only else "4"
-    cmd = ["samtools", "view", "-F", exclude_flag, str(bam_path), str(record)]
+    # samtools region strings are 1-based inclusive; [start, end) 0-based
+    # half-open maps to [start + 1, end] 1-based inclusive.
+    region = f"{record}:{start + 1}-{end}" if windowed else str(record)
+    cmd = ["samtools", "view", "-F", exclude_flag, str(bam_path), region]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert proc.stdout is not None
     for line in proc.stdout:
@@ -4056,6 +4077,9 @@ def extract_read_relative_base_identities(
         sequence = fields[9]
         if cigar == "*" or sequence == "*":
             continue
+        reference_start = int(fields[3]) - 1
+        if not _in_window(reference_start):
+            continue
         quality_string = fields[10]
         qualities = (
             [ord(character) - 33 for character in quality_string]
@@ -4069,7 +4093,7 @@ def extract_read_relative_base_identities(
             query_sequence=sequence,
             query_qualities=qualities,
             reference_name=str(record),
-            reference_start=int(fields[3]) - 1,
+            reference_start=reference_start,
             cigarstring=cigar,
         )
         records.append(

@@ -151,3 +151,68 @@ def test_read_relative_extraction_matches_legacy_dense_layers(monkeypatch, tmp_p
     np.testing.assert_array_equal(dense.layers["mismatch_integer_encoding"][0], legacy[4]["read1"])
     np.testing.assert_array_equal(dense.layers["base_quality_scores"][0], legacy[5]["read1"])
     np.testing.assert_array_equal(dense.layers["read_span_mask"][0], legacy[6]["read1"])
+
+
+def test_extract_read_relative_base_identities_windowed_filters_by_reference_start(
+    monkeypatch, tmp_path
+):
+    # Reads at reference_start 0, 5, 9 -- windowing to [5, 9) should keep only
+    # the read starting at 5, even though a region-overlap fetch (simulated
+    # here by the fake returning every read regardless of the requested
+    # start/stop) would return all three.
+    class FakeRead:
+        is_mapped = True
+        is_unmapped = False
+        is_secondary = False
+        is_supplementary = False
+        is_reverse = False
+        query_sequence = "AGGT"
+        query_qualities = [30, 31, 32, 33]
+        reference_name = "chr1"
+        reference_end = 4
+        cigarstring = "4M"
+
+        def __init__(self, name, reference_start):
+            self.query_name = name
+            self.reference_start = reference_start
+
+        def get_aligned_pairs(self, matches_only=True):
+            return [(0, 0), (1, 1), (2, 2), (3, 3)]
+
+    reads = [FakeRead("before", 0), FakeRead("inside", 5), FakeRead("after", 9)]
+
+    class FakeAlignmentFile:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetch(self, chromosome, start=None, stop=None):
+            # A real region-scoped fetch returns every *overlapping* read,
+            # not just reads starting in [start, stop) -- simulate that by
+            # ignoring start/stop entirely, so the test only passes if the
+            # caller's own reference_start filtering does the real work.
+            return iter(reads)
+
+    monkeypatch.setattr(
+        bam_functions,
+        "pysam",
+        type("FakePysam", (), {"AlignmentFile": FakeAlignmentFile})(),
+    )
+    bam_path = tmp_path / "sample.bam"
+    bam_path.write_text("stub")
+
+    records = bam_functions.extract_read_relative_base_identities(
+        bam_path,
+        "chr1",
+        "ACGT",
+        samtools_backend="python",
+        start=5,
+        end=9,
+    )
+
+    assert [record["read_id"] for record in records] == ["inside"]

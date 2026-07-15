@@ -94,6 +94,7 @@ annotate_secondary_supplementary: True # Whether to annotate reads with secondar
 samtools_backend: auto # auto|python|cli for samtools-compatible operations
 bedtools_backend: auto # auto|python|cli for bedtools-compatible operations
 bigwig_backend: auto # auto|python|cli for bedGraphToBigWig conversion
+direct_signal_backend: pysam # pysam|modkit for direct modality's modification-signal source. pysam decodes BAM MM/ML tags directly (no external tool, streaming-compatible); modkit runs modkit extract to a TSV first.
 
 # Nanopore specific demultiplexing
 demux_backend: dorado # smftools|dorado - smftools uses YAML-based barcode refs, dorado uses kit names

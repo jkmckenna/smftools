@@ -823,6 +823,11 @@ class ExperimentConfig:
     samtools_backend: str = "auto"
     bedtools_backend: str = "auto"
     bigwig_backend: str = "auto"
+    # direct modality's modification-signal source: "pysam" decodes BAM MM/ML tags
+    # directly (no external tool, streaming-compatible); "modkit" runs modkit
+    # extract to a TSV first (the original path). pysam is the default -- see
+    # dev/pipeline_scaling_audit.md's Track B notes for why.
+    direct_signal_backend: str = "pysam"
 
     # Anndata structure
     reference_column: Optional[str] = REF_COL
@@ -1768,6 +1773,7 @@ class ExperimentConfig:
             samtools_backend=merged.get("samtools_backend", "auto"),
             bedtools_backend=merged.get("bedtools_backend", "auto"),
             bigwig_backend=merged.get("bigwig_backend", "auto"),
+            direct_signal_backend=merged.get("direct_signal_backend", "pysam"),
             delete_intermediate_hdfs=merged.get("delete_intermediate_hdfs", True),
             mod_target_bases=merged.get("mod_target_bases", ["GpC", "CpG"]),
             enzyme_target_bases=merged.get("enzyme_target_bases", ["GpC"]),

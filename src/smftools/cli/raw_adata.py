@@ -212,6 +212,131 @@ def _attach_direct_signals(
     return frame.reset_index(drop=True), sorted(signal_columns)
 
 
+def _resolve_direct_call(code_bytes: dict[str, int]) -> tuple[str, float]:
+    """Pick the winning call at one query position from its ML byte(s).
+
+    Mirrors modkit's own per-position resolution: canonical's probability is
+    ``1 - sum(modified probabilities)`` (the SAM MM/ML spec's implicit
+    "everything else" state), and whichever of {canonical, each listed
+    modified code} has the highest probability wins. Verified empirically
+    against a real modkit-extract TSV on real direct-modality data: this
+    reproduces modkit's ``call_code``/``call_prob`` columns exactly (0
+    mismatches across every explicitly-called position in a sampled read) --
+    see dev/pipeline_scaling_audit.md's Track B notes.
+    """
+    canonical_prob = 1.0 - sum(value / 255.0 for value in code_bytes.values())
+    best_code, best_prob = "-", canonical_prob
+    for code, ml_byte in code_bytes.items():
+        modified_prob = ml_byte / 255.0
+        if modified_prob > best_prob:
+            best_code, best_prob = code, modified_prob
+    return best_code, best_prob
+
+
+def _attach_direct_signals_from_bam(
+    frame: pd.DataFrame,
+    aligned_bam: Path,
+    *,
+    window_start: int | None = None,
+    window_end: int | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Attach combined and per-base/strand query-coordinate modification signals.
+
+    ``window_start``/``window_end``, when given, scope the BAM scan to
+    ``[window_start, window_end)`` instead of the whole chromosome -- purely
+    an optimization for callers already restricted to a sub-reference window
+    (see ``_extract_direct_reference``'s parallel windowed path): reads
+    outside ``frame``'s own read-id set are skipped regardless (``wanted``
+    below), so correctness never depends on this scoping, only how much of
+    the BAM gets re-scanned per call.
+
+    Decodes the aligned BAM's own MM/ML tags via ``pysam.AlignedSegment.
+    modified_bases`` instead of joining a modkit-extract TSV (``_attach_direct_
+    signals``'s approach) -- avoids the external ``modkit extract`` subprocess
+    and its whole-file TSV entirely, and needs only the same aligned BAM
+    already open for read extraction, so it's streaming-compatible (see
+    dev/pipeline_scaling_audit.md's Track B notes). Selected via
+    ``cfg.direct_signal_backend == "pysam"`` (the default).
+
+    ``modified_bases`` (not ``modified_bases_forward``) is used deliberately:
+    its query positions are relative to the BAM-stored, CIGAR-relative query
+    sequence -- the same coordinate space ``cigar``/``modification_signal``
+    already use throughout this codebase. ``modified_bases_forward`` re-orients
+    positions to original (pre-alignment) sequencing direction instead, a
+    different, incompatible coordinate space for reverse-strand reads.
+
+    One deliberate behavior difference from ``_attach_direct_signals``:
+    positions with no explicit MM/ML tag entry are left ``NaN`` (no signal),
+    rather than modkit's own convention of filling them with a synthetic
+    "canonical, probability 1.0" row. Verified against a real modkit TSV: its
+    ``inferred=True`` rows exist exactly where no ML entry does (0 mismatches
+    either direction, sampled over a real read) -- leaving them ``NaN`` is more
+    correct (no information genuinely means no information), not a divergence
+    to reconcile.
+    """
+    import pysam
+
+    from ..informatics.ragged_store import cigar_query_length
+
+    frame = frame.set_index("read_id", drop=False)
+    frame["modification_signal"] = [
+        [float("nan")] * cigar_query_length(cigar) for cigar in frame["cigar"]
+    ]
+    signal_columns: set[str] = set()
+
+    windowed = window_start is not None and window_end is not None
+
+    bam = pysam.AlignmentFile(str(aligned_bam), "rb")
+    try:
+        for chrom, group in frame.groupby("reference", sort=False):
+            wanted = set(group.index)
+            fetch_iter = (
+                bam.fetch(reference=str(chrom), start=window_start, stop=window_end)
+                if windowed
+                else bam.fetch(reference=str(chrom))
+            )
+            for read in fetch_iter:
+                if read.is_secondary or read.is_supplementary or read.is_unmapped:
+                    continue
+                read_id = read.query_name
+                if read_id not in wanted:
+                    continue
+                record = frame.loc[read_id]
+                combined = list(record["modification_signal"])
+                channel_arrays: dict[str, list[float]] = {}
+                strand = "plus" if not read.is_reverse else "minus"
+
+                calls_by_base: dict[str, dict[int, dict[str, int]]] = {}
+                for (canonical_base, _strand_bit, code), calls in read.modified_bases.items():
+                    per_position = calls_by_base.setdefault(canonical_base, {})
+                    for query_position, ml_byte in calls:
+                        per_position.setdefault(query_position, {})[code] = ml_byte
+
+                for canonical_base, per_position in calls_by_base.items():
+                    safe_base = re.sub(r"[^A-Za-z0-9]+", "_", canonical_base)
+                    column = f"modification_signal_{safe_base}_{strand}"
+                    signal_columns.add(column)
+                    channel = channel_arrays.setdefault(column, [float("nan")] * len(combined))
+                    for query_position, code_bytes in per_position.items():
+                        if query_position >= len(combined):
+                            continue
+                        _call_code, probability = _resolve_direct_call(code_bytes)
+                        channel[query_position] = probability
+                        if np.isnan(combined[query_position]):
+                            combined[query_position] = probability
+                        else:
+                            combined[query_position] += probability
+
+                frame.at[read_id, "modification_signal"] = combined
+                for column, values in channel_arrays.items():
+                    if column not in frame:
+                        frame[column] = pd.Series(index=frame.index, dtype=object)
+                    frame.at[read_id, column] = values
+    finally:
+        bam.close()
+    return frame.reset_index(drop=True), sorted(signal_columns)
+
+
 def _attach_pod5_metadata(frame: pd.DataFrame, *, cfg) -> pd.DataFrame:
     """Link each read to its origin POD5 and attach scalar sequencing/signal metadata.
 
@@ -397,9 +522,12 @@ def build_ragged_records(
     frame = _attach_signal_features(frame, cfg=cfg, aligned_bam=aligned_bam)
     signal_columns: list[str] = []
     if modality == "direct":
-        if mod_tsv_dir is None:
-            raise ValueError("direct raw extraction requires mod_tsv_dir")
-        frame, signal_columns = _attach_direct_signals(frame, mod_tsv_dir)
+        if str(getattr(cfg, "direct_signal_backend", "pysam")) == "modkit":
+            if mod_tsv_dir is None:
+                raise ValueError("direct raw extraction requires mod_tsv_dir")
+            frame, signal_columns = _attach_direct_signals(frame, mod_tsv_dir)
+        else:
+            frame, signal_columns = _attach_direct_signals_from_bam(frame, aligned_bam)
 
     references = {
         f"{reference}_FASTA_sequence": sequence
@@ -450,7 +578,221 @@ def _split_by_reference_strand(frame: pd.DataFrame):
         yield strand_frame
 
 
-def build_ragged_records_streaming(
+def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: dict):
+    """Run ``worker(*args, **worker_kwargs)`` once per item in ``items``.
+
+    Sequential when ``max_workers <= 1``. Otherwise runs in a process pool --
+    each reference's extraction (``extract_read_relative_base_identities``,
+    ``alignment_to_ragged_record``'s per-base Python list construction) is
+    CPU-bound pure Python, so a thread pool would still serialize on the GIL;
+    only separate processes give real concurrency here. Each worker needs
+    only its own BAM file handle, opened independently (pysam handles can't
+    be shared across processes anyway).
+
+    Yields ``(args, result)`` pairs as each future completes, not in
+    submission order -- callers need ``args`` back (not just ``result``) to
+    know which reference/window a given result belongs to, since completion
+    order is scheduler-driven, not submission order. Downstream
+    (``write_raw_store_streaming``) already documents that spine.obs row
+    order need not match the original per-reference order, so this
+    reordering is not a behavior change, only something already accounted
+    for.
+    """
+    if max_workers <= 1:
+        for args in items:
+            yield args, worker(*args, **worker_kwargs)
+        return
+
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        future_to_args = {pool.submit(worker, *args, **worker_kwargs): args for args in items}
+        for future in as_completed(future_to_args):
+            yield future_to_args[future], future.result()
+
+
+def _read_ids_for_reference(aligned_bam: Path, record: str) -> list[str]:
+    """Primary-mapped read_ids for one reference, in BAM traversal order.
+
+    A cheap pre-scan (name only, no CIGAR/sequence/tag decode -- the
+    expensive part of extraction) used to build balanced read-id buckets
+    before dispatching the real per-bucket extraction work; see
+    ``_bucket_read_ids``.
+    """
+    import pysam
+
+    read_ids: list[str] = []
+    with pysam.AlignmentFile(str(aligned_bam), "rb") as bam:
+        for read in bam.fetch(record):
+            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                continue
+            read_ids.append(read.query_name)
+    return read_ids
+
+
+def _bucket_read_ids(read_ids: list[str], n_buckets: int) -> list[set[str]]:
+    """Split ``read_ids`` into ``n_buckets`` buckets by round-robin assignment.
+
+    Genomic-position windowing was tried first (split ``[0, record_length)``
+    into sub-ranges, fetch each independently) and found badly imbalanced on
+    real amplicon data: many reads share an *exact* ``reference_start`` (PCR/
+    library duplication at a fixed primer site), so no position-based
+    boundary can split them apart -- one window still absorbed the majority
+    of a reference's reads regardless of how the boundaries were chosen
+    (equal-width, even read-count quantiles -- both tried, both still
+    imbalanced by that clustering). Round-robin over read *identity* instead
+    of position sidesteps the problem entirely: buckets differ in size by at
+    most one read, regardless of how reads cluster genomically. Each worker
+    still fetches the *whole* reference (cheap iteration) but only extracts
+    reads in its own bucket, via ``extract_read_relative_base_identities``'s
+    existing ``read_name_filter`` parameter -- trading N-way redundant (but
+    cheap) iteration for exact balance, rather than N-way redundant (and
+    expensive) per-base extraction.
+    """
+    if n_buckets <= 1:
+        return [set(read_ids)] if read_ids else []
+    buckets: list[set[str]] = [set() for _ in range(n_buckets)]
+    for index, read_id in enumerate(read_ids):
+        buckets[index % n_buckets].add(read_id)
+    return [bucket for bucket in buckets if bucket]
+
+
+def _n_buckets_for_reference(n_reads: int, max_workers: int, *, min_reads_per_bucket: int = 500) -> int:
+    """How many buckets to split one reference's reads into for parallel
+    extraction.
+
+    Parallelizing per-chromosome alone caps concurrency at the reference
+    count and load-balances poorly when read depth is uneven across
+    references (an amplicon panel with one 40x-oversequenced short locus and
+    several lightly-sequenced ones, say) -- splitting each reference's reads
+    into several buckets instead lets the pool's work-stealing scheduler
+    balance uneven per-bucket cost dynamically, rather than being stuck
+    waiting on one large indivisible per-reference unit. Capped so buckets
+    don't get so small that per-bucket overhead (a fetch call, a worker
+    round-trip) would dominate the actual extraction work.
+    """
+    if max_workers <= 1:
+        return 1
+    return max(1, min(max_workers, n_reads // min_reads_per_bucket))
+
+
+def _extract_convertible_reference(
+    record: str,
+    sequence: str,
+    read_name_filter: set[str] | None,
+    metrics: dict,
+    info,
+    deaminase: bool,
+    *,
+    cfg,
+    aligned_bam: Path,
+    barcode_sidecar: str | Path | None,
+    umi_sidecar: str | Path | None,
+) -> tuple[pd.DataFrame | None, list[str]]:
+    """Extract+attach one reference bucket's frame for conversion/deaminase.
+
+    Module-level (not a closure) so it can run in a worker process via
+    ``_map_references_parallel`` -- see ``_build_ragged_records_streaming_
+    convertible``. ``read_name_filter`` may be a read-id bucket (parallelizing
+    a single large/deep reference across several workers, see
+    ``_bucket_read_ids``) or ``None`` (the whole reference, one bucket).
+    ``metrics`` must already be sliced down to just this bucket's read_ids by
+    the caller -- passing the whole-experiment metrics dict (tens of MB) to
+    every one of dozens of worker tasks was itself the dominant cost of
+    parallelizing (measured: 23.8MB x 26 tasks ~= 620MB of redundant pickled
+    IPC transfer on a real 220K-read run, dwarfing the actual per-bucket
+    extraction work each task does).
+    Returns ``(frame_or_None, signal_columns)`` for a uniform contract with
+    ``_extract_direct_reference``; conversion/deaminase never produces
+    per-base/strand channel columns, so ``signal_columns`` is always empty
+    here. The caller is responsible for combining a reference's bucket
+    results and splitting by ``Reference_strand`` before writing -- not done
+    here, since a bucket is only part of a reference's data.
+    """
+    from ..informatics.bam_functions import extract_read_relative_base_identities
+
+    extracted = extract_read_relative_base_identities(
+        aligned_bam,
+        record,
+        sequence,
+        samtools_backend=cfg.samtools_backend,
+        primary_only=True,
+        read_name_filter=read_name_filter,
+    )
+    if not extracted:
+        return None, []
+    rows: list[dict[str, object]] = []
+    for row in extracted:
+        strand = info.strand
+        if deaminase and row["Read_mismatch_trend"] == "G->A":
+            strand = "bottom"
+        row["reference"] = info.chromosome
+        row["strand"] = strand
+        row["dataset"] = info.conversion
+        row["Reference_strand"] = f"{info.chromosome}_{strand}"
+        row["modification_signal"] = _conversion_signal(row, deaminase=deaminase)
+        rows.append(row)
+    frame = _attach_obs_metadata(
+        pd.DataFrame(rows),
+        cfg=cfg,
+        bam_path=aligned_bam,
+        barcode_sidecar=barcode_sidecar,
+        umi_sidecar=umi_sidecar,
+        metrics=metrics,
+    )
+    frame = _attach_pod5_metadata(frame, cfg=cfg)
+    frame = _attach_signal_features(frame, cfg=cfg, aligned_bam=aligned_bam)
+    return frame, []
+
+
+def _extract_direct_reference(
+    record: str,
+    sequence: str,
+    read_name_filter: set[str] | None,
+    metrics: dict,
+    *,
+    cfg,
+    aligned_bam: Path,
+    barcode_sidecar: str | Path | None,
+    umi_sidecar: str | Path | None,
+) -> tuple[pd.DataFrame | None, list[str]]:
+    """Extract+attach one reference bucket's frame for direct modality (pysam
+    backend). Module-level (not a closure) so it can run in a worker process
+    via ``_map_references_parallel`` -- see ``_build_ragged_records_streaming_
+    direct``. See ``_extract_convertible_reference`` for the bucket/combine
+    contract this mirrors, including why ``metrics`` must already be sliced
+    to this bucket's read_ids by the caller.
+    """
+    from ..informatics.bam_functions import extract_read_relative_base_identities
+
+    extracted = extract_read_relative_base_identities(
+        aligned_bam,
+        record,
+        sequence,
+        samtools_backend=cfg.samtools_backend,
+        primary_only=True,
+        read_name_filter=read_name_filter,
+    )
+    if not extracted:
+        return None, []
+    frame = _attach_obs_metadata(
+        pd.DataFrame(extracted),
+        cfg=cfg,
+        bam_path=aligned_bam,
+        barcode_sidecar=barcode_sidecar,
+        umi_sidecar=umi_sidecar,
+        metrics=metrics,
+    )
+    frame = _attach_pod5_metadata(frame, cfg=cfg)
+    frame = _attach_signal_features(frame, cfg=cfg, aligned_bam=aligned_bam)
+    # frame's read_id set already equals read_name_filter (extraction above
+    # applied it), so _attach_direct_signals_from_bam's own wanted-read-id
+    # filtering is exact regardless of position -- no window scoping needed.
+    frame, found_columns = _attach_direct_signals_from_bam(frame, aligned_bam)
+    return frame, found_columns
+
+
+def _build_ragged_records_streaming_convertible(
     cfg,
     *,
     fasta: Path,
@@ -458,20 +800,13 @@ def build_ragged_records_streaming(
     barcode_sidecar: str | Path | None = None,
     umi_sidecar: str | Path | None = None,
 ) -> tuple[object, dict[str, int], dict[str, object]]:
-    """Streaming variant of ``build_ragged_records``.
+    """Streaming variant of ``build_ragged_records`` for ``conversion``/``deaminase``.
 
     Yields one reference's fully extracted+attached frame at a time (via the
     returned generator) instead of accumulating every reference's rows into
     one experiment-wide frame before returning -- pairs with
     ``informatics.raw_store.write_raw_store_streaming``, which never holds
     more than one reference's ragged array data in memory either.
-
-    Scoped to ``conversion``/``deaminase`` modality only. ``direct``
-    modality's modification-signal source (a whole-file modkit-extract TSV,
-    joined post-hoc across every reference at once in ``_attach_direct_
-    signals``) isn't yet streaming-compatible -- see
-    dev/pipeline_scaling_audit.md's Track B notes; callers processing
-    ``direct`` modality should use ``build_ragged_records`` instead.
 
     ``reference_lengths``/the ``extra_uns`` metadata dict are fully computed
     upfront from the FASTA alone (``process_conversion_sites`` needs no BAM
@@ -482,20 +817,12 @@ def build_ragged_records_streaming(
     population only completes after every read across the whole experiment
     has been seen.
     """
-    from ..informatics.bam_functions import (
-        extract_read_features_from_bam,
-        extract_read_relative_base_identities,
-    )
+    from ..informatics.bam_functions import extract_read_features_from_bam
     from ..informatics.converted_BAM_to_adata import process_conversion_sites
     from ..informatics.fasta_functions import get_native_references
     from ..informatics.reference_identity import reference_uid as _reference_uid
 
     modality = str(cfg.smf_modality)
-    if modality not in {"conversion", "deaminase"}:
-        raise ValueError(
-            f"build_ragged_records_streaming only supports conversion/deaminase "
-            f"modality, got {modality!r} -- use build_ragged_records for direct modality"
-        )
     deaminase = modality == "deaminase"
 
     reference_map = get_native_references(fasta)
@@ -540,6 +867,8 @@ def build_ragged_records_streaming(
         },
     }
 
+    max_workers = max(1, int(getattr(cfg, "threads", 1) or 1))
+
     def _reference_frames():
         # Computed once, up front -- extract_read_features_from_bam scans the
         # whole BAM regardless of which reads it's asked about, so calling it
@@ -548,45 +877,215 @@ def build_ragged_records_streaming(
         metrics = extract_read_features_from_bam(
             aligned_bam, samtools_backend=cfg.samtools_backend, primary_only=True
         )
-        any_rows = False
-        for record, (_record_length, sequence) in reference_map.items():
-            extracted = extract_read_relative_base_identities(
-                aligned_bam,
-                record,
-                sequence,
-                samtools_backend=cfg.samtools_backend,
-                primary_only=True,
-            )
-            if not extracted:
-                continue
+        # Split per reference into several read-count-balanced buckets, not
+        # just one item per reference -- parallelizing per-reference alone
+        # caps concurrency at the reference count and load-balances poorly
+        # when read depth is uneven across references (see
+        # _n_buckets_for_reference/_bucket_read_ids).
+        buckets_remaining: dict[str, int] = {}
+        items = []
+        for record, (_length, sequence) in reference_map.items():
             info = record_info[record]
-            rows: list[dict[str, object]] = []
-            for row in extracted:
-                strand = info.strand
-                if deaminase and row["Read_mismatch_trend"] == "G->A":
-                    strand = "bottom"
-                row["reference"] = info.chromosome
-                row["strand"] = strand
-                row["dataset"] = info.conversion
-                row["Reference_strand"] = f"{info.chromosome}_{strand}"
-                row["modification_signal"] = _conversion_signal(row, deaminase=deaminase)
-                rows.append(row)
-            any_rows = True
-            frame = _attach_obs_metadata(
-                pd.DataFrame(rows),
-                cfg=cfg,
-                bam_path=aligned_bam,
-                barcode_sidecar=barcode_sidecar,
-                umi_sidecar=umi_sidecar,
-                metrics=metrics,
-            )
-            frame = _attach_pod5_metadata(frame, cfg=cfg)
-            frame = _attach_signal_features(frame, cfg=cfg, aligned_bam=aligned_bam)
-            yield from _split_by_reference_strand(frame)
+            read_ids = _read_ids_for_reference(aligned_bam, record)
+            n_buckets = _n_buckets_for_reference(len(read_ids), max_workers)
+            buckets = _bucket_read_ids(read_ids, n_buckets)
+            buckets_remaining[record] = len(buckets)
+            for bucket in buckets:
+                # Sliced to this bucket's own read_ids -- passing the whole
+                # experiment's metrics dict to every bucket task is itself the
+                # dominant IPC cost at scale (see _extract_convertible_reference).
+                metrics_slice = {rid: metrics[rid] for rid in bucket if rid in metrics}
+                items.append((record, sequence, bucket, metrics_slice, info, deaminase))
+        worker_kwargs = dict(
+            cfg=cfg,
+            aligned_bam=aligned_bam,
+            barcode_sidecar=barcode_sidecar,
+            umi_sidecar=umi_sidecar,
+        )
+        pending: dict[str, list[pd.DataFrame]] = {}
+        any_rows = False
+        for args, (bucket_frame, _found_columns) in _map_references_parallel(
+            items,
+            _extract_convertible_reference,
+            max_workers=min(max_workers, len(items)),
+            worker_kwargs=worker_kwargs,
+        ):
+            record = args[0]
+            if bucket_frame is not None and not bucket_frame.empty:
+                pending.setdefault(record, []).append(bucket_frame)
+            buckets_remaining[record] -= 1
+            if buckets_remaining[record] == 0:
+                frames = pending.pop(record, [])
+                if frames:
+                    any_rows = True
+                    combined = (
+                        frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+                    )
+                    yield from _split_by_reference_strand(combined)
         if not any_rows:
             raise RuntimeError(f"no primary mapped reads were extracted from {aligned_bam}")
 
     return _reference_frames(), reference_lengths, extra_uns
+
+
+def _build_ragged_records_streaming_direct(
+    cfg,
+    *,
+    fasta: Path,
+    aligned_bam: Path,
+    barcode_sidecar: str | Path | None = None,
+    umi_sidecar: str | Path | None = None,
+) -> tuple[object, dict[str, int], dict[str, object]]:
+    """Streaming variant of ``build_ragged_records`` for ``direct`` modality.
+
+    Only usable with ``cfg.direct_signal_backend == "pysam"`` -- the modkit-TSV
+    backend needs the whole-file TSV joined post-hoc across every reference,
+    which isn't streaming-compatible (see dev/pipeline_scaling_audit.md's
+    Track B notes); callers using the modkit backend should use
+    ``build_ragged_records`` instead. The pysam backend decodes each read's own
+    MM/ML tags directly (``_attach_direct_signals_from_bam``), needing nothing
+    beyond the same aligned BAM already open for extraction, so it streams
+    per reference exactly like conversion/deaminase.
+    """
+    from ..informatics.bam_functions import extract_read_features_from_bam
+    from ..informatics.fasta_functions import get_native_references
+    from ..informatics.reference_identity import reference_uid as _reference_uid
+
+    reference_map = get_native_references(fasta)
+    chromosome_sequences = {
+        reference: (sequence, sequence) for reference, (_length, sequence) in reference_map.items()
+    }
+
+    reference_lengths: dict[str, int] = {}
+    for record, (record_length, _sequence) in reference_map.items():
+        # direct modality's strand ("top"/"bottom") is decided per-read from
+        # alignment orientation, not a per-chromosome constant, so both
+        # namings need a length entry for every chromosome (mirrors deaminase
+        # above, for the same reason).
+        reference_lengths[f"{record}_top"] = record_length
+        reference_lengths[f"{record}_bottom"] = record_length
+
+    references = {
+        f"{reference}_FASTA_sequence": sequence
+        for reference, (sequence, _complement) in chromosome_sequences.items()
+    }
+    reference_uids: dict[str, str] = {}
+    for reference_strand, length in reference_lengths.items():
+        chromosome = str(reference_strand).rsplit("_", 1)[0]
+        seq_pair = chromosome_sequences.get(chromosome)
+        if seq_pair is not None:
+            reference_uids[str(reference_strand)] = _reference_uid(seq_pair[0], length)
+
+    # Mutated in place by _reference_frames() as new channels are discovered;
+    # write_raw_store_streaming only reads extra_uns after fully consuming the
+    # generator, so the final set is complete by the time it's written to
+    # spine.uns (dict(extra_uns) copies the outer dict, not this inner list).
+    signal_columns: list[str] = []
+    extra_uns = {
+        "References": references,
+        "reference_uids": reference_uids,
+        "signal_columns": signal_columns,
+        "modality": "direct",
+        "sequence_integer_encoding_map": dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT),
+        "mismatch_integer_encoding_map": dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT),
+        "sequence_integer_decoding_map": {
+            str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
+        },
+    }
+
+    max_workers = max(1, int(getattr(cfg, "threads", 1) or 1))
+
+    def _reference_frames():
+        metrics = extract_read_features_from_bam(
+            aligned_bam, samtools_backend=cfg.samtools_backend, primary_only=True
+        )
+        buckets_remaining: dict[str, int] = {}
+        items = []
+        for record, (_record_length, sequence) in reference_map.items():
+            read_ids = _read_ids_for_reference(aligned_bam, record)
+            n_buckets = _n_buckets_for_reference(len(read_ids), max_workers)
+            buckets = _bucket_read_ids(read_ids, n_buckets)
+            buckets_remaining[record] = len(buckets)
+            for bucket in buckets:
+                metrics_slice = {rid: metrics[rid] for rid in bucket if rid in metrics}
+                items.append((record, sequence, bucket, metrics_slice))
+        worker_kwargs = dict(
+            cfg=cfg,
+            aligned_bam=aligned_bam,
+            barcode_sidecar=barcode_sidecar,
+            umi_sidecar=umi_sidecar,
+        )
+        pending: dict[str, list[pd.DataFrame]] = {}
+        any_rows = False
+        for args, (bucket_frame, found_columns) in _map_references_parallel(
+            items,
+            _extract_direct_reference,
+            max_workers=min(max_workers, len(items)),
+            worker_kwargs=worker_kwargs,
+        ):
+            record = args[0]
+            for column in found_columns:
+                if column not in signal_columns:
+                    signal_columns.append(column)
+            if bucket_frame is not None and not bucket_frame.empty:
+                pending.setdefault(record, []).append(bucket_frame)
+            buckets_remaining[record] -= 1
+            if buckets_remaining[record] == 0:
+                frames = pending.pop(record, [])
+                if frames:
+                    any_rows = True
+                    combined = (
+                        frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+                    )
+                    yield from _split_by_reference_strand(combined)
+        if not any_rows:
+            raise RuntimeError(f"no primary mapped reads were extracted from {aligned_bam}")
+
+    return _reference_frames(), reference_lengths, extra_uns
+
+
+def build_ragged_records_streaming(
+    cfg,
+    *,
+    fasta: Path,
+    aligned_bam: Path,
+    barcode_sidecar: str | Path | None = None,
+    umi_sidecar: str | Path | None = None,
+) -> tuple[object, dict[str, int], dict[str, object]]:
+    """Streaming variant of ``build_ragged_records``.
+
+    Dispatches by modality: ``conversion``/``deaminase`` always stream (their
+    modification-signal source is derivable from the FASTA alone); ``direct``
+    streams only when ``cfg.direct_signal_backend == "pysam"`` (the default)
+    -- the ``modkit`` backend's whole-file TSV join isn't streaming-compatible,
+    so callers using it must use ``build_ragged_records`` instead.
+    """
+    modality = str(cfg.smf_modality)
+    if modality == "direct":
+        if str(getattr(cfg, "direct_signal_backend", "pysam")) != "pysam":
+            raise ValueError(
+                "build_ragged_records_streaming only supports direct modality "
+                "with direct_signal_backend='pysam' -- use build_ragged_records "
+                "for the modkit backend"
+            )
+        return _build_ragged_records_streaming_direct(
+            cfg,
+            fasta=fasta,
+            aligned_bam=aligned_bam,
+            barcode_sidecar=barcode_sidecar,
+            umi_sidecar=umi_sidecar,
+        )
+    if modality in {"conversion", "deaminase"}:
+        return _build_ragged_records_streaming_convertible(
+            cfg,
+            fasta=fasta,
+            aligned_bam=aligned_bam,
+            barcode_sidecar=barcode_sidecar,
+            umi_sidecar=umi_sidecar,
+        )
+    raise ValueError(
+        f"build_ragged_records_streaming does not support modality {modality!r}"
+    )
 
 
 def raw_adata(config_path: str):
