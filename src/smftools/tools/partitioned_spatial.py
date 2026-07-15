@@ -1338,7 +1338,13 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     tasks, bed_regions = _region_tasks(spine, cfg, filter_mask)
     if not tasks:
         raise RuntimeError("partitioned spatial analysis has no non-empty tasks")
-    records = [execute_spatial_task(spine_path, task, cfg, output_dir) for task in tasks]
+    from ..memory_guard import run_tasks_parallel
+
+    records = run_tasks_parallel(
+        execute_spatial_task,
+        [(spine_path, task, cfg, output_dir) for task in tasks],
+        cfg=cfg,
+    )
     task_catalog = output_dir / SPATIAL_TASK_CATALOG
     pd.DataFrame(records).to_parquet(task_catalog, index=False)
     read_autocorrelation_axis, read_periodogram_axis = _write_read_metric_axes(output_dir, cfg)

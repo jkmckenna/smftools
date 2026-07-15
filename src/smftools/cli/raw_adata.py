@@ -605,10 +605,28 @@ def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: 
 
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    with ProcessPoolExecutor(max_workers=max_workers) as pool:
-        future_to_args = {pool.submit(worker, *args, **worker_kwargs): args for args in items}
-        for future in as_completed(future_to_args):
-            yield future_to_args[future], future.result()
+    from ..memory_guard import (
+        _limit_blas_threads_in_worker,
+        resolve_memory_budget_bytes,
+        start_worker_watchdog,
+    )
+
+    cfg = worker_kwargs.get("cfg")
+    per_worker_budget_bytes = (
+        resolve_memory_budget_bytes(cfg) // max_workers if cfg is not None else 0
+    )
+    with ProcessPoolExecutor(
+        max_workers=max_workers, initializer=_limit_blas_threads_in_worker
+    ) as pool:
+        stop_watchdog = start_worker_watchdog(pool, per_worker_budget_bytes)
+        try:
+            future_to_args = {
+                pool.submit(worker, *args, **worker_kwargs): args for args in items
+            }
+            for future in as_completed(future_to_args):
+                yield future_to_args[future], future.result()
+        finally:
+            stop_watchdog()
 
 
 def _read_ids_for_reference(aligned_bam: Path, record: str) -> list[str]:
@@ -904,10 +922,12 @@ def _build_ragged_records_streaming_convertible(
         )
         pending: dict[str, list[pd.DataFrame]] = {}
         any_rows = False
+        from ..memory_guard import resolve_max_workers
+
         for args, (bucket_frame, _found_columns) in _map_references_parallel(
             items,
             _extract_convertible_reference,
-            max_workers=min(max_workers, len(items)),
+            max_workers=resolve_max_workers(cfg, len(items)),
             worker_kwargs=worker_kwargs,
         ):
             record = args[0]
@@ -1017,10 +1037,12 @@ def _build_ragged_records_streaming_direct(
         )
         pending: dict[str, list[pd.DataFrame]] = {}
         any_rows = False
+        from ..memory_guard import resolve_max_workers
+
         for args, (bucket_frame, found_columns) in _map_references_parallel(
             items,
             _extract_direct_reference,
-            max_workers=min(max_workers, len(items)),
+            max_workers=resolve_max_workers(cfg, len(items)),
             worker_kwargs=worker_kwargs,
         ):
             record = args[0]

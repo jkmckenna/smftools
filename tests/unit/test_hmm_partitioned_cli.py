@@ -247,3 +247,55 @@ def test_partitioned_hmm_writes_task_store_and_rematerializes_layers(tmp_path, m
     assert np.all(restored.layers["GpC_test_feature"] == 1)
     plot_types = set(pd.read_parquet(outputs["plot_catalog"])["plot_type"])
     assert "barcode_hmm_feature_fraction" in plot_types
+
+
+def test_partitioned_hmm_forces_sequential_execution_on_gpu_device(tmp_path, monkeypatch):
+    # Regression test: multiple worker *processes* concurrently initializing
+    # the same GPU context (confirmed via real-data testing: MPS on Apple
+    # Silicon reliably crashed the whole pool with BrokenProcessPool) isn't
+    # safe the way CPU-bound task parallelism is. execute_partitioned_hmm
+    # must force run_tasks_parallel's force_sequential=True whenever the
+    # resolved device isn't "cpu", regardless of how many tasks/threads/
+    # memory would otherwise justify a pool.
+    from smftools.tools import partitioned_hmm
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+
+    def annotate(adata, task, cfg, models_dir):
+        adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
+        adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
+        return ["GpC_test_feature"]
+
+    monkeypatch.setattr(partitioned_hmm, "_annotate_task", annotate)
+    monkeypatch.setattr(partitioned_hmm, "resolve_torch_device", lambda device: "mps")
+
+    captured = {}
+    from smftools import memory_guard
+
+    real_run_tasks_parallel = memory_guard.run_tasks_parallel
+
+    def spying_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False):
+        captured["force_sequential"] = force_sequential
+        return real_run_tasks_parallel(
+            worker, task_args_list, cfg=cfg, force_sequential=force_sequential
+        )
+
+    # execute_partitioned_hmm does `from ..memory_guard import run_tasks_parallel`
+    # as a local import inside its own body, so it must be patched on the
+    # memory_guard module itself (where that import resolves at call time),
+    # not on partitioned_hmm's own namespace.
+    monkeypatch.setattr(memory_guard, "run_tasks_parallel", spying_run_tasks_parallel)
+
+    cfg = SimpleNamespace(target_task_memory_mb=1, threads=8, device="auto")
+    execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+    assert captured["force_sequential"] is True

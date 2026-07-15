@@ -982,12 +982,18 @@ def execute_partitioned_preprocessing(
             spine_path, cfg, fit_references, output_dir
         )
 
-    records = [
-        execute_preprocess_task(
-            spine_path, task, cfg, output_dir, youden_thresholds=youden_thresholds
-        )
-        for task in task_list
-    ]
+    import functools
+
+    from ..memory_guard import run_tasks_parallel
+
+    bound_worker = functools.partial(
+        execute_preprocess_task, youden_thresholds=youden_thresholds
+    )
+    records = run_tasks_parallel(
+        bound_worker,
+        [(spine_path, task, cfg, output_dir) for task in task_list],
+        cfg=cfg,
+    )
     catalog_path = output_dir / PREPROCESS_PARTITION_CATALOG
     pd.DataFrame(records).to_parquet(catalog_path, index=False)
     var_catalog = reduce_partial_coverage(

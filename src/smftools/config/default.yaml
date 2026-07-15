@@ -516,6 +516,8 @@ analysis_mode: auto # auto, locus, or genome; auto plans each reference independ
 load_cache_mode: auto # auto, full, tiled, or none
 max_full_matrix_gb: 8.0 # Dense-size threshold used by automatic per-reference planning
 target_task_memory_mb: 512 # Target memory for future preprocessing work units
+max_memory_percent: 60.0 # Aggregate memory budget for the whole workflow, as a percent of total system RAM (all parallel workers combined, not per-task)
+max_memory_gb: null # Optional fixed aggregate memory budget in GB; the more restrictive of this and max_memory_percent applies when both are set
 genome_tile_size: 10000 # Core genomic positions per genome-mode work unit
 genome_tile_halo: 1000 # Context positions loaded on each side of a genome tile
 parquet_start_bin_size: 1000000 # Reference-start bin used to partition ragged parquet

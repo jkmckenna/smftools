@@ -11,6 +11,11 @@ from .cli.recipes import full_flow
 from .logging_utils import get_logger, setup_logging
 from .memory_guard import enable_aggregate_memory_cap
 
+# Single-threaded BLAS/OMP/numexpr is enforced at import time by the
+# smftools package's own __init__.py (before this module -- or anything
+# else in the package -- ever imports numpy/pandas). See that file's
+# comment for why it has to happen there and not here.
+
 
 def _configure_multiprocessing() -> None:
     import multiprocessing as mp

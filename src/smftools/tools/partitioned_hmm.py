@@ -452,7 +452,22 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     if not tasks:
         raise RuntimeError("partitioned HMM has no non-empty tasks")
     models_dir = output_dir / HMM_MODEL_SUBDIR
-    records = [execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) for task in tasks]
+    from ..memory_guard import run_tasks_parallel
+
+    # A GPU device (MPS on Apple Silicon, confirmed via real-data testing;
+    # CUDA not verified here but not assumed safe either) isn't something
+    # multiple worker *processes* can safely initialize/use concurrently --
+    # several processes racing to grab the same GPU context reliably crashed
+    # the whole pool (BrokenProcessPool). Force sequential execution
+    # whenever a non-CPU device is in play; CPU-only runs still get the
+    # normal memory/thread-aware parallel dispatch.
+    device = resolve_torch_device(getattr(cfg, "device", "auto"))
+    records = run_tasks_parallel(
+        execute_hmm_task,
+        [(spine_path, task, cfg, output_dir, models_dir) for task in tasks],
+        cfg=cfg,
+        force_sequential=str(device) != "cpu",
+    )
     catalog_path = output_dir / HMM_TASK_CATALOG
     pd.DataFrame(records).to_parquet(catalog_path, index=False)
 

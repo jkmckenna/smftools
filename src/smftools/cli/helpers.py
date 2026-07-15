@@ -367,6 +367,7 @@ def load_experiment_config(config_path: str):
     from importlib import resources
 
     from ..config import ExperimentConfig, LoadExperimentConfig
+    from ..memory_guard import enable_aggregate_memory_cap, resolve_memory_budget_bytes
 
     date_str = datetime.today().strftime("%y%m%d")
     loader = LoadExperimentConfig(config_path)
@@ -374,6 +375,13 @@ def load_experiment_config(config_path: str):
     cfg, _ = ExperimentConfig.from_var_dict(
         loader.var_dict, date_str=date_str, defaults_dir=defaults_dir
     )
+    # Refine the aggregate memory cap (a no-op generic default until now, set
+    # at CLI startup before any config was available) with this experiment's
+    # actual max_memory_percent/max_memory_gb. Single hook point: every CLI
+    # entry point loads its config through this function. No-op on non-Linux
+    # platforms (see smftools.memory_guard) -- macOS enforcement instead
+    # happens per-worker-pool via resolve_max_workers/start_worker_watchdog.
+    enable_aggregate_memory_cap(budget_bytes=resolve_memory_budget_bytes(cfg))
     return cfg
 
 

@@ -1089,6 +1089,14 @@ class ExperimentConfig:
     load_cache_mode: str = "auto"
     max_full_matrix_gb: float = 8.0
     target_task_memory_mb: int = 512
+    # Aggregate memory budget for the whole workflow (raw/preprocess/spatial/hmm,
+    # including all parallel workers combined), not per-task. The more
+    # restrictive of the two applies when both are set -- see
+    # memory_guard.resolve_memory_budget_bytes. Enforced via a Linux cgroup v2
+    # cap (whole process tree) or, on macOS, a per-worker RSS watchdog plus
+    # capping how many workers run concurrently; see smftools.memory_guard.
+    max_memory_percent: float = 60.0
+    max_memory_gb: Optional[float] = None
     genome_tile_size: int = 10000
     genome_tile_halo: int = 1000
     parquet_start_bin_size: int = 1000000
@@ -2068,6 +2076,14 @@ class ExperimentConfig:
             max_full_matrix_gb=float(_parse_numeric(merged.get("max_full_matrix_gb", 8.0), 8.0)),
             target_task_memory_mb=int(
                 _parse_numeric(merged.get("target_task_memory_mb", 512), 512)
+            ),
+            max_memory_percent=float(
+                _parse_numeric(merged.get("max_memory_percent", 60.0), 60.0)
+            ),
+            max_memory_gb=(
+                None
+                if _parse_numeric(merged.get("max_memory_gb"), None) is None
+                else float(_parse_numeric(merged.get("max_memory_gb"), None))
             ),
             genome_tile_size=int(_parse_numeric(merged.get("genome_tile_size", 10000), 10000)),
             genome_tile_halo=int(_parse_numeric(merged.get("genome_tile_halo", 1000), 1000)),
