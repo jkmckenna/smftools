@@ -10,7 +10,11 @@ from smftools.informatics.partition_read import (
     resolve_relative_path,
 )
 from smftools.informatics.partition_store import write_dense_cache_from_spine
-from smftools.informatics.raw_store import write_raw_store
+from smftools.informatics.ragged_store import validate_ragged_frame
+from smftools.informatics.raw_store import (
+    write_raw_store,
+    write_raw_store_streaming,
+)
 from smftools.informatics.stage_obs import read_stage_obs
 from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
 
@@ -133,6 +137,88 @@ def test_write_raw_store_skips_barcode_artifacts_without_sample_column(tmp_path)
     assert set(molecules["read_id"]) == {"read1", "read2", "read3", "read4"}
     spine, _ = safe_read_h5ad(paths["spine"])
     assert "barcode_index" not in spine.uns
+
+
+def test_write_raw_store_streaming_matches_whole_frame_writer(tmp_path):
+    """write_raw_store_streaming, fed one reference's frame at a time, must
+    produce byte-identical shard contents/catalog/molecules/barcode_index to
+    write_raw_store fed the exact same rows all at once -- the mathematical
+    equivalence _write_raw_shards_streaming's docstring claims (grouping by
+    Reference_strand first is equivalent to one global stable sort).
+    """
+    frame = _frame()
+    reference_lengths = {"ref1_top": 4, "ref2_top": 6}
+
+    whole = tmp_path / "whole"
+    whole.mkdir()
+    whole_paths = write_raw_store(frame, whole, reference_lengths=reference_lengths, shard_size=2)
+
+    streaming = tmp_path / "streaming"
+    streaming.mkdir()
+    normalized = validate_ragged_frame(frame).reset_index(drop=True)
+    reference_groups = (
+        group for _, group in normalized.groupby("Reference_strand", sort=True, observed=True)
+    )
+    streaming_paths = write_raw_store_streaming(
+        reference_groups, streaming, reference_lengths=reference_lengths, shard_size=2
+    )
+
+    # Shard contents: same set of shard files, same rows in each (aligned by
+    # read_id -- shard *paths* are relative to each store's own root, so only
+    # their relative suffix under raw/ needs to match, not the absolute path).
+    whole_shards = {p.relative_to(whole).as_posix(): p for p in whole_paths["ragged_store"]}
+    streaming_shards = {
+        p.relative_to(streaming).as_posix(): p for p in streaming_paths["ragged_store"]
+    }
+    assert set(whole_shards) == set(streaming_shards)
+    for relative_path, whole_shard_path in whole_shards.items():
+        whole_shard = pd.read_parquet(whole_shard_path).set_index("read_id")
+        streaming_shard = pd.read_parquet(streaming_shards[relative_path]).set_index("read_id")
+        pd.testing.assert_frame_equal(
+            whole_shard.sort_index(), streaming_shard.sort_index(), check_like=True
+        )
+
+    # Catalogs: same content (order can differ trivially by float formatting,
+    # so sort before comparing).
+    whole_catalog = pd.read_parquet(whole_paths["interval_catalog"]).sort_values(
+        ["reference", "start_bin"]
+    ).reset_index(drop=True)
+    streaming_catalog = pd.read_parquet(streaming_paths["interval_catalog"]).sort_values(
+        ["reference", "start_bin"]
+    ).reset_index(drop=True)
+    pd.testing.assert_frame_equal(whole_catalog, streaming_catalog, check_like=True)
+
+    # molecules.parquet: same (read_id -> canonical_row) bijection and the
+    # same Reference_strand/Sample per read -- canonical_row *values* are
+    # guaranteed identical by the grouping-equivalence proof.
+    whole_molecules = pd.read_parquet(whole_paths["molecules"]).set_index("read_id")
+    streaming_molecules = pd.read_parquet(streaming_paths["molecules"]).set_index("read_id")
+    pd.testing.assert_frame_equal(
+        whole_molecules.sort_index(), streaming_molecules.sort_index(), check_like=True
+    )
+
+    # barcode_index.parquet: same contiguous-range rows.
+    whole_bidx = pd.read_parquet(whole_paths["barcode_index"]).sort_values(
+        ["reference", "start_bin", "sample"]
+    ).reset_index(drop=True)
+    streaming_bidx = pd.read_parquet(streaming_paths["barcode_index"]).sort_values(
+        ["reference", "start_bin", "sample"]
+    ).reset_index(drop=True)
+    pd.testing.assert_frame_equal(whole_bidx, streaming_bidx, check_like=True)
+
+    # spine.obs: same rows/columns/values, aligned by read_id -- row order is
+    # allowed to differ (reference-arrival order for streaming vs. original
+    # frame order for the whole-frame writer), documented in
+    # write_raw_store_streaming's docstring.
+    whole_spine, _ = safe_read_h5ad(whole_paths["spine"])
+    streaming_spine, _ = safe_read_h5ad(streaming_paths["spine"])
+    assert set(whole_spine.obs_names) == set(streaming_spine.obs_names)
+    common = list(whole_spine.obs_names)
+    pd.testing.assert_frame_equal(
+        whole_spine.obs.loc[common], streaming_spine.obs.loc[common], check_like=True
+    )
+    assert whole_spine.uns["reference_lengths"] == streaming_spine.uns["reference_lengths"]
+    assert set(whole_spine.uns["reference_plans"]) == set(streaming_spine.uns["reference_plans"])
 
 
 def test_dense_cache_matches_ragged_and_records_barcode_ranges(tmp_path):

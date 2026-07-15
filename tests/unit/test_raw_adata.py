@@ -5,7 +5,11 @@ import numpy as np
 import pandas as pd
 from click.testing import CliRunner
 
-from smftools.cli.raw_adata import _attach_direct_signals, _conversion_signal
+from smftools.cli.raw_adata import (
+    _attach_direct_signals,
+    _conversion_signal,
+    _split_by_reference_strand,
+)
 from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT, PREPROCESS_DIR
 
 
@@ -30,6 +34,51 @@ def test_conversion_signal_matches_existing_binarization_maps():
     record["Read_mismatch_trend"] = "G->A"
     signal = _conversion_signal(record, deaminase=True)
     np.testing.assert_array_equal(signal, [0.0, 1.0])
+
+
+def test_split_by_reference_strand_separates_mixed_deaminase_chromosome():
+    # A single chromosome's extracted frame can mix "_top" and "_bottom" rows
+    # for deaminase modality, since each read's own mismatch trend (not the
+    # chromosome's canonical strand) decides its Reference_strand -- this is
+    # the exact shape that broke streaming raw ingestion (only 4 of 8 expected
+    # Reference_strand groups were produced, with the "bottom" reads silently
+    # mislabeled under "_top") until callers were required to split before
+    # yielding to the shard writer.
+    frame = pd.DataFrame(
+        {
+            "read_id": ["r1", "r2", "r3", "r4"],
+            "Reference_strand": ["chr1_top", "chr1_bottom", "chr1_top", "chr1_bottom"],
+            "Read_mismatch_trend": ["C->T", "G->A", "C->T", "G->A"],
+        }
+    )
+
+    groups = list(_split_by_reference_strand(frame))
+
+    assert len(groups) == 2
+    strand_values = {str(group["Reference_strand"].unique()[0]) for group in groups}
+    assert strand_values == {"chr1_top", "chr1_bottom"}
+    for group in groups:
+        assert group["Reference_strand"].nunique() == 1
+    total_rows = sum(len(group) for group in groups)
+    assert total_rows == len(frame)
+    recombined_read_ids = sorted(
+        read_id for group in groups for read_id in group["read_id"].tolist()
+    )
+    assert recombined_read_ids == sorted(frame["read_id"].tolist())
+
+
+def test_split_by_reference_strand_single_strand_frame_yields_one_group():
+    frame = pd.DataFrame(
+        {
+            "read_id": ["r1", "r2"],
+            "Reference_strand": ["chr2_top", "chr2_top"],
+        }
+    )
+
+    groups = list(_split_by_reference_strand(frame))
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
 
 
 def test_attach_direct_signals_converts_reference_to_query_coordinates(tmp_path):

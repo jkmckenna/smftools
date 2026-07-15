@@ -1096,33 +1096,77 @@ def load_adata_core(
                 single_bam=aligned_sorted_output,
             )
 
-        from ..informatics.raw_store import write_raw_store
         from ..readwrite import safe_read_h5ad
-        from .raw_adata import build_ragged_records
 
         logger.info("Extracting read-relative raw records from aligned BAM")
-        frame, reference_lengths, extra_uns = build_ragged_records(
-            cfg,
-            fasta=fasta,
-            aligned_bam=aligned_sorted_output,
-            barcode_sidecar=barcode_sidecar,
-            umi_sidecar=umi_sidecar,
-            mod_tsv_dir=mod_tsv_dir,
-        )
-        raw_paths = write_raw_store(
-            frame,
-            load_directory,
-            reference_lengths=reference_lengths,
-            shard_size=int(getattr(cfg, "raw_parquet_shard_size", 100_000)),
-            start_bin_size=int(getattr(cfg, "parquet_start_bin_size", 1_000_000)),
-            analysis_mode=getattr(cfg, "analysis_mode", "auto"),
-            load_cache_mode=getattr(cfg, "load_cache_mode", "auto"),
-            max_full_matrix_gb=float(getattr(cfg, "max_full_matrix_gb", 8.0)),
-            genome_tile_size=int(getattr(cfg, "genome_tile_size", 10_000)),
-            genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
-            bam_path=aligned_sorted_output,
-            extra_uns=extra_uns,
-        )
+        # Streaming (never holds more than one reference's ragged data in
+        # memory at once) for conversion/deaminase, the two modalities whose
+        # modification-signal source is derivable from the FASTA alone --
+        # see dev/pipeline_scaling_audit.md's Track B. `direct` modality's
+        # signal source (a whole-file modkit-extract TSV, joined post-hoc
+        # across every reference) isn't yet streaming-compatible, so it keeps
+        # today's whole-frame path unchanged.
+        frame = None
+        if str(cfg.smf_modality) == "direct":
+            from ..informatics.raw_store import write_raw_store
+            from .raw_adata import build_ragged_records
+
+            frame, reference_lengths, extra_uns = build_ragged_records(
+                cfg,
+                fasta=fasta,
+                aligned_bam=aligned_sorted_output,
+                barcode_sidecar=barcode_sidecar,
+                umi_sidecar=umi_sidecar,
+                mod_tsv_dir=mod_tsv_dir,
+            )
+            raw_paths = write_raw_store(
+                frame,
+                load_directory,
+                reference_lengths=reference_lengths,
+                shard_size=int(getattr(cfg, "raw_parquet_shard_size", 100_000)),
+                start_bin_size=int(getattr(cfg, "parquet_start_bin_size", 1_000_000)),
+                analysis_mode=getattr(cfg, "analysis_mode", "auto"),
+                load_cache_mode=getattr(cfg, "load_cache_mode", "auto"),
+                max_full_matrix_gb=float(getattr(cfg, "max_full_matrix_gb", 8.0)),
+                genome_tile_size=int(getattr(cfg, "genome_tile_size", 10_000)),
+                genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
+                bam_path=aligned_sorted_output,
+                extra_uns=extra_uns,
+            )
+            n_molecules = len(frame)
+        else:
+            from ..informatics.raw_store import write_raw_store_streaming
+            from .raw_adata import build_ragged_records_streaming
+
+            reference_frames, reference_lengths, extra_uns = build_ragged_records_streaming(
+                cfg,
+                fasta=fasta,
+                aligned_bam=aligned_sorted_output,
+                barcode_sidecar=barcode_sidecar,
+                umi_sidecar=umi_sidecar,
+            )
+            raw_paths = write_raw_store_streaming(
+                reference_frames,
+                load_directory,
+                reference_lengths=reference_lengths,
+                shard_size=int(getattr(cfg, "raw_parquet_shard_size", 100_000)),
+                start_bin_size=int(getattr(cfg, "parquet_start_bin_size", 1_000_000)),
+                analysis_mode=getattr(cfg, "analysis_mode", "auto"),
+                load_cache_mode=getattr(cfg, "load_cache_mode", "auto"),
+                max_full_matrix_gb=float(getattr(cfg, "max_full_matrix_gb", 8.0)),
+                genome_tile_size=int(getattr(cfg, "genome_tile_size", 10_000)),
+                genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
+                bam_path=aligned_sorted_output,
+                extra_uns=extra_uns,
+            )
+            # The streaming path never materializes one experiment-wide frame
+            # (that's the whole point) -- downstream steps below that used to
+            # read `frame` (molecule count, the chimera-rate plot) read the
+            # just-written spine.obs instead, which is already documented as
+            # an equivalent, and cheaper since it's scalar-only, no ragged
+            # array columns (see plot_reference_barcode_chimera_rate's own
+            # docstring: "the raw spine obs or ragged frame").
+            n_molecules = safe_read_h5ad(raw_paths["spine"], verbose=False)[0].n_obs
 
         # Consolidated provenance manifest (dev/experiment_storage_schema.md, Phase 2):
         # config-by-value, input/FASTA paths, and a readable stage-completion index --
@@ -1153,17 +1197,27 @@ def load_adata_core(
             run_root,
             "raw",
             config_hash=config_hash(resolved_config),
-            n_molecules=len(frame),
+            n_molecules=n_molecules,
         )
+        spine, _ = safe_read_h5ad(raw_paths["spine"])
         if str(cfg.smf_modality) == "deaminase" and not getattr(
             cfg, "bypass_raw_chimera_rate_plot", False
         ):
             try:
                 from ..plotting import plot_reference_barcode_chimera_rate
 
+                # frame is None on the streaming path (deaminase always takes
+                # it) -- spine.obs is a documented-equivalent input (see
+                # plot_reference_barcode_chimera_rate's own docstring) and is
+                # what's actually available without re-materializing the
+                # whole experiment. Its barcode column is the canonicalized
+                # "Barcode" (constants.BARCODE), not the ragged frame's
+                # lowercase "barcode" the function defaults to -- must be
+                # passed explicitly or every read falls out of the group-by.
                 plot_reference_barcode_chimera_rate(
-                    frame,
+                    frame if frame is not None else spine.obs,
                     load_directory / "plots",
+                    barcode_column="barcode" if frame is not None else "Barcode",
                     min_events_per_span=cfg.deaminase_chimera_min_events_per_span,
                     min_segment_purity=cfg.deaminase_chimera_min_segment_purity,
                     max_single_strand_fraction=cfg.deaminase_chimera_max_single_strand_fraction,
@@ -1176,7 +1230,6 @@ def load_adata_core(
             logger.info("skip_bam_qc=True: skipping multiqc")
         elif not mqc_dir.is_dir():
             run_multiqc(bam_qc_dir, mqc_dir)
-        spine, _ = safe_read_h5ad(raw_paths["spine"])
         return spine, raw_paths["spine"], cfg
 
     ################################### 7) AnnData loading ######################################################################

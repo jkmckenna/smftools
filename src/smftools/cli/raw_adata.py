@@ -77,9 +77,17 @@ def _attach_obs_metadata(
     bam_path: Path,
     barcode_sidecar: str | Path | None,
     umi_sidecar: str | Path | None,
+    metrics: dict | None = None,
 ) -> pd.DataFrame:
-    """Attach scalar barcode, UMI, and read-QC metadata to ragged records."""
-    from ..informatics.bam_functions import extract_read_features_from_bam
+    """Attach scalar barcode, UMI, and read-QC metadata to ragged records.
+
+    ``metrics``, when given, is used as-is instead of calling
+    ``extract_read_features_from_bam`` internally -- that call scans the whole
+    BAM regardless of which reads ``frame`` actually contains, so a caller
+    processing one reference's frame at a time (see ``build_ragged_records_
+    streaming``) should compute it once, upfront, and pass the same dict to
+    every call rather than re-scanning the whole BAM once per reference.
+    """
     from ..informatics.ragged_store import cigar_max_indel_runs
 
     frame = frame.set_index("read_id", drop=False)
@@ -101,9 +109,12 @@ def _attach_obs_metadata(
         frame["Experiment_name"] + "_" + frame["barcode"].astype(str)
     )
 
-    metrics = extract_read_features_from_bam(
-        bam_path, samtools_backend=cfg.samtools_backend, primary_only=True
-    )
+    if metrics is None:
+        from ..informatics.bam_functions import extract_read_features_from_bam
+
+        metrics = extract_read_features_from_bam(
+            bam_path, samtools_backend=cfg.samtools_backend, primary_only=True
+        )
     metric_columns = (
         "read_length",
         "read_quality",
@@ -421,6 +432,161 @@ def build_ragged_records(
             },
         },
     )
+
+
+def _split_by_reference_strand(frame: pd.DataFrame):
+    """Split a frame into one sub-frame per distinct ``Reference_strand``.
+
+    A deaminase read's ``Reference_strand`` is decided per-read (a chromosome's
+    canonical strand can be overridden to "_bottom" by that read's own
+    mismatch trend), so a single chromosome's extracted frame can contain a
+    mix of "_top" and "_bottom" rows even though it came from one FASTA
+    record. Streaming shard writers (``raw_store._write_raw_shards_streaming``)
+    require each yielded group to be single-``Reference_strand`` -- they label
+    a whole group from its first row -- so callers must split here before
+    handing a frame off.
+    """
+    for _, strand_frame in frame.groupby("Reference_strand", sort=True, observed=True):
+        yield strand_frame
+
+
+def build_ragged_records_streaming(
+    cfg,
+    *,
+    fasta: Path,
+    aligned_bam: Path,
+    barcode_sidecar: str | Path | None = None,
+    umi_sidecar: str | Path | None = None,
+) -> tuple[object, dict[str, int], dict[str, object]]:
+    """Streaming variant of ``build_ragged_records``.
+
+    Yields one reference's fully extracted+attached frame at a time (via the
+    returned generator) instead of accumulating every reference's rows into
+    one experiment-wide frame before returning -- pairs with
+    ``informatics.raw_store.write_raw_store_streaming``, which never holds
+    more than one reference's ragged array data in memory either.
+
+    Scoped to ``conversion``/``deaminase`` modality only. ``direct``
+    modality's modification-signal source (a whole-file modkit-extract TSV,
+    joined post-hoc across every reference at once in ``_attach_direct_
+    signals``) isn't yet streaming-compatible -- see
+    dev/pipeline_scaling_audit.md's Track B notes; callers processing
+    ``direct`` modality should use ``build_ragged_records`` instead.
+
+    ``reference_lengths``/the ``extra_uns`` metadata dict are fully computed
+    upfront from the FASTA alone (``process_conversion_sites`` needs no BAM
+    data) rather than incrementally as rows are seen -- this resolves what
+    would otherwise be a circular dependency: ``write_raw_store_streaming``
+    needs ``reference_lengths`` before it can process even the first
+    reference, but ``build_ragged_records``'s original incremental
+    population only completes after every read across the whole experiment
+    has been seen.
+    """
+    from ..informatics.bam_functions import (
+        extract_read_features_from_bam,
+        extract_read_relative_base_identities,
+    )
+    from ..informatics.converted_BAM_to_adata import process_conversion_sites
+    from ..informatics.fasta_functions import get_native_references
+    from ..informatics.reference_identity import reference_uid as _reference_uid
+
+    modality = str(cfg.smf_modality)
+    if modality not in {"conversion", "deaminase"}:
+        raise ValueError(
+            f"build_ragged_records_streaming only supports conversion/deaminase "
+            f"modality, got {modality!r} -- use build_ragged_records for direct modality"
+        )
+    deaminase = modality == "deaminase"
+
+    reference_map = get_native_references(fasta)
+    _, record_info, chromosome_sequences = process_conversion_sites(
+        fasta, cfg.conversion_types, deaminase
+    )
+
+    reference_lengths: dict[str, int] = {}
+    for record in reference_map:
+        info = record_info[record]
+        if deaminase:
+            # A deaminase read's *own* mismatch trend (not the reference's
+            # canonical strand) decides whether it's named "_top" or
+            # "_bottom" (see the per-row override below) -- so both namings
+            # need a length entry for every chromosome, not just info.strand's
+            # single canonical value.
+            reference_lengths[f"{info.chromosome}_top"] = info.sequence_length
+            reference_lengths[f"{info.chromosome}_bottom"] = info.sequence_length
+        else:
+            reference_lengths[f"{info.chromosome}_{info.strand}"] = info.sequence_length
+
+    references = {
+        f"{reference}_FASTA_sequence": sequence
+        for reference, (sequence, _complement) in chromosome_sequences.items()
+    }
+    reference_uids: dict[str, str] = {}
+    for reference_strand, length in reference_lengths.items():
+        chromosome = str(reference_strand).rsplit("_", 1)[0]
+        seq_pair = chromosome_sequences.get(chromosome)
+        if seq_pair is not None:
+            reference_uids[str(reference_strand)] = _reference_uid(seq_pair[0], length)
+
+    extra_uns = {
+        "References": references,
+        "reference_uids": reference_uids,
+        "signal_columns": [],
+        "modality": modality,
+        "sequence_integer_encoding_map": dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT),
+        "mismatch_integer_encoding_map": dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT),
+        "sequence_integer_decoding_map": {
+            str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
+        },
+    }
+
+    def _reference_frames():
+        # Computed once, up front -- extract_read_features_from_bam scans the
+        # whole BAM regardless of which reads it's asked about, so calling it
+        # again inside the per-reference loop below would re-scan the whole
+        # BAM once per reference instead of once total.
+        metrics = extract_read_features_from_bam(
+            aligned_bam, samtools_backend=cfg.samtools_backend, primary_only=True
+        )
+        any_rows = False
+        for record, (_record_length, sequence) in reference_map.items():
+            extracted = extract_read_relative_base_identities(
+                aligned_bam,
+                record,
+                sequence,
+                samtools_backend=cfg.samtools_backend,
+                primary_only=True,
+            )
+            if not extracted:
+                continue
+            info = record_info[record]
+            rows: list[dict[str, object]] = []
+            for row in extracted:
+                strand = info.strand
+                if deaminase and row["Read_mismatch_trend"] == "G->A":
+                    strand = "bottom"
+                row["reference"] = info.chromosome
+                row["strand"] = strand
+                row["dataset"] = info.conversion
+                row["Reference_strand"] = f"{info.chromosome}_{strand}"
+                row["modification_signal"] = _conversion_signal(row, deaminase=deaminase)
+                rows.append(row)
+            any_rows = True
+            frame = _attach_obs_metadata(
+                pd.DataFrame(rows),
+                cfg=cfg,
+                bam_path=aligned_bam,
+                barcode_sidecar=barcode_sidecar,
+                umi_sidecar=umi_sidecar,
+                metrics=metrics,
+            )
+            frame = _attach_pod5_metadata(frame, cfg=cfg)
+            frame = _attach_signal_features(frame, cfg=cfg, aligned_bam=aligned_bam)
+            yield from _split_by_reference_strand(frame)
+        if not any_rows:
+            raise RuntimeError(f"no primary mapped reads were extracted from {aligned_bam}")
+
+    return _reference_frames(), reference_lengths, extra_uns
 
 
 def raw_adata(config_path: str):
