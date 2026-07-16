@@ -1522,10 +1522,6 @@ class SingleBernoulliHMM(BaseHMM):
         for it in range(1, int(max_iter) + 1):
             gamma = self._forward_backward(obs, mask)  # (N,L,K)
 
-            # log-likelihood proxy
-            ll_proxy = float(torch.sum(torch.log(torch.clamp(gamma.sum(dim=2), min=eps))).item())
-            hist.append(ll_proxy)
-
             # expected start
             start_acc = gamma[:, 0, :].sum(dim=0)  # (K,)
 
@@ -1537,6 +1533,14 @@ class SingleBernoulliHMM(BaseHMM):
             for t in range(1, L):
                 prev = alpha[:, t - 1, :].unsqueeze(2) + logA.unsqueeze(0)
                 alpha[:, t, :] = _logsumexp(prev, dim=1) + logB[:, t, :]
+
+            # True data log-likelihood: sum over reads of log P(observed sequence),
+            # the forward recursion's terminal normalizer. NOT gamma.sum(dim=2) --
+            # gamma is already row-normalized by _forward_backward, so that sum is
+            # ~1 at every iteration by construction and carries no fit-quality signal.
+            ll_proxy = float(_logsumexp(alpha[:, L - 1, :], dim=1).sum().item())
+            hist.append(ll_proxy)
+
             beta = torch.empty((N, L, K), dtype=self.dtype, device=device)
             beta[:, L - 1, :] = 0.0
             for t in range(L - 2, -1, -1):
@@ -1804,9 +1808,6 @@ class MultiBernoulliHMM(BaseHMM):
         for it in range(1, int(max_iter) + 1):
             gamma = self._forward_backward(obs, mask)  # (N,L,K)
 
-            ll_proxy = float(torch.sum(torch.log(torch.clamp(gamma.sum(dim=2), min=eps))).item())
-            hist.append(ll_proxy)
-
             # expected start
             start_acc = gamma[:, 0, :].sum(dim=0)  # (K,)
 
@@ -1818,6 +1819,12 @@ class MultiBernoulliHMM(BaseHMM):
             for t in range(1, L):
                 prev = alpha[:, t - 1, :].unsqueeze(2) + logA.unsqueeze(0)
                 alpha[:, t, :] = _logsumexp(prev, dim=1) + logB[:, t, :]
+
+            # True data log-likelihood -- see SingleBernoulliHMM.fit_em for why
+            # gamma.sum(dim=2) is not a usable proxy (it's ~1 by construction).
+            ll_proxy = float(_logsumexp(alpha[:, L - 1, :], dim=1).sum().item())
+            hist.append(ll_proxy)
+
             beta = torch.empty((N, L, K), dtype=self.dtype, device=device)
             beta[:, L - 1, :] = 0.0
             for t in range(L - 2, -1, -1):
@@ -2230,8 +2237,6 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         hist: List[float] = []
         for it in range(1, int(max_iter) + 1):
             gamma = self._forward_backward(obs, mask, coords=coords)  # (N,L,K)
-            ll_proxy = float(torch.sum(torch.log(torch.clamp(gamma.sum(dim=2), min=eps))).item())
-            hist.append(ll_proxy)
 
             # expected start
             start_acc = gamma[:, 0, :].sum(dim=0)
@@ -2249,6 +2254,11 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
                 logA = logA_by_bin[b]
                 prev = alpha[:, t - 1, :].unsqueeze(2) + logA.unsqueeze(0)
                 alpha[:, t, :] = _logsumexp(prev, dim=1) + logB[:, t, :]
+
+            # True data log-likelihood -- see SingleBernoulliHMM.fit_em for why
+            # gamma.sum(dim=2) is not a usable proxy (it's ~1 by construction).
+            ll_proxy = float(_logsumexp(alpha[:, L - 1, :], dim=1).sum().item())
+            hist.append(ll_proxy)
 
             beta = torch.empty((N, L, K), dtype=self.dtype, device=device)
             beta[:, L - 1, :] = 0.0
