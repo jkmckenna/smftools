@@ -30,6 +30,14 @@ def test_reindex_invert_true_flips_sign_for_single_ref():
     np.testing.assert_array_equal(adata.var["refA_reindexed"].to_numpy(), -(var_coords - 12))
 
 
+def test_reindex_invert_true_applies_to_every_reference_without_listing_them():
+    adata = _adata(references=("refA", "refB"))
+    reindex_references_adata(adata, offsets={"refA": -12, "refB": 3}, invert=True)
+    var_coords = adata.var_names.astype(int).to_numpy()
+    np.testing.assert_array_equal(adata.var["refA_reindexed"].to_numpy(), -(var_coords - 12))
+    np.testing.assert_array_equal(adata.var["refB_reindexed"].to_numpy(), -(var_coords + 3))
+
+
 def test_reindex_invert_mixed_dict_flips_only_selected_ref():
     adata = _adata(references=("refA", "refB"))
     reindex_references_adata(

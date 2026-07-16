@@ -887,9 +887,11 @@ class ExperimentConfig:
     # Per-reference display inversion: {ref: True} flips the sign of that
     # reference's reindexed coordinate (see reindex_references_adata) so
     # "left of anchor = negative, right of anchor = positive" still holds
-    # once the reference is rendered in reverse column order. Additive to
-    # reindexing_offsets; independent of the legacy global invert_adata flag.
-    reindexing_invert: Dict[str, bool] = field(default_factory=dict)
+    # once the reference is rendered in reverse column order. Pass a single
+    # bool (e.g. True) instead of a dict to invert every reference at once
+    # without listing them individually. Additive to reindexing_offsets;
+    # independent of the legacy global invert_adata flag.
+    reindexing_invert: Union[bool, Dict[str, bool]] = field(default_factory=dict)
 
     # Preprocessing - Direct mod detection binarization params
     fit_position_methylation_thresholds: Optional[bool] = (
