@@ -103,6 +103,13 @@ def variant_adata_core(
         append_variant_segment_layer,
         load_sample_sheet,
     )
+
+    # Imported directly from the submodule -- see cli/spatial_adata.py's
+    # identical note for why the lazy `from ..preprocessing import X` package
+    # attribute is order-dependent-fragile (empirically confirmed here too,
+    # via `pytest -k variant` collecting alongside a raw qualified-submodule
+    # import elsewhere first).
+    from ..preprocessing.reindex_references_adata import reindex_references_adata
     from ..readwrite import make_dirs
     from .helpers import write_gz_h5ad
 
@@ -145,6 +152,21 @@ def variant_adata_core(
             as_category=True,
             force_reload=cfg.force_reload_sample_sheet,
         )
+
+    # -----------------------------
+    # Optional reindexing by reference
+    # -----------------------------
+    reindex_references_adata(
+        adata,
+        reference_col=cfg.reference_column,
+        offsets=getattr(cfg, "reindexing_offsets", None),
+        new_col=getattr(cfg, "reindexed_var_suffix", None) or "reindexed",
+        invert=getattr(cfg, "reindexing_invert", None),
+    )
+    if adata.uns.get("reindex_references_adata_performed", False):
+        reindex_suffix = getattr(cfg, "reindexed_var_suffix", None) or "reindexed"
+    else:
+        reindex_suffix = None
 
     # ============================================================
     # 1) Reference variant position annotation
@@ -290,6 +312,7 @@ def variant_adata_core(
                 save_path=seq_clustermap_dir,
                 show_position_axis=True,
                 n_jobs=getattr(cfg, "threads", 1) or 1,
+                index_col_suffix=reindex_suffix,
             )
 
         if "mismatch_integer_encoding" in adata.layers:
@@ -320,6 +343,7 @@ def variant_adata_core(
                     exclude_mod_sites=True,
                     mod_site_bases=cfg.mod_target_bases,
                     n_jobs=getattr(cfg, "threads", 1) or 1,
+                    index_col_suffix=reindex_suffix,
                 )
 
     # ============================================================
@@ -350,6 +374,7 @@ def variant_adata_core(
                     marker_size=getattr(cfg, "variant_overlay_marker_size", 4.0),
                     show_position_axis=True,
                     n_jobs=getattr(cfg, "threads", 1) or 1,
+                    index_col_suffix=reindex_suffix,
                 )
 
             segment_type_dir = (
@@ -379,6 +404,7 @@ def variant_adata_core(
                     show_position_axis=True,
                     mismatch_type_obs_col="chimeric_variant_sites_type",
                     n_jobs=getattr(cfg, "threads", 1) or 1,
+                    index_col_suffix=reindex_suffix,
                 )
 
     # ============================================================
@@ -444,6 +470,7 @@ def variant_adata_core(
                     mismatch_type_colors=umi_status_colors,
                     mismatch_type_legend_prefix="RX bipartite",
                     n_jobs=getattr(cfg, "threads", 1) or 1,
+                    index_col_suffix=reindex_suffix,
                 )
 
     # ============================================================
@@ -516,6 +543,7 @@ def variant_adata_core(
                     mismatch_type_colors=umi_pass_colors,
                     mismatch_type_legend_prefix="UMI content",
                     n_jobs=getattr(cfg, "threads", 1) or 1,
+                    index_col_suffix=reindex_suffix,
                 )
 
     # ============================================================
@@ -603,6 +631,7 @@ def variant_adata_core(
                     mismatch_type_colors=umi_dup_colors,
                     mismatch_type_legend_prefix="UMI cluster duplicate",
                     n_jobs=getattr(cfg, "threads", 1) or 1,
+                    index_col_suffix=reindex_suffix,
                 )
 
     # ============================================================
@@ -667,6 +696,7 @@ def variant_adata_core(
                         },
                     ],
                     n_jobs=getattr(cfg, "threads", 1) or 1,
+                    index_col_suffix=reindex_suffix,
                 )
 
     # ============================================================

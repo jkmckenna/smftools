@@ -19,6 +19,7 @@ sns = require("seaborn", extra="plotting", purpose="plot styling")
 logger = get_logger(__name__)
 
 from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs  # noqa: E402
+from smftools.plotting.plotting_utils import _ordered_columns  # noqa: E402
 
 DNA_5COLOR_PALETTE = {
     "A": "#00A000",  # green
@@ -1215,6 +1216,7 @@ def plot_sequence_integer_encoding_clustermaps(
     show_position_axis: bool = False,
     position_axis_tick_target: int = 25,
     n_jobs: int = 1,
+    index_col_suffix: str | None = None,
 ):
     """Plot integer-encoded sequence clustermaps per sample/reference.
 
@@ -1246,6 +1248,9 @@ def plot_sequence_integer_encoding_clustermaps(
         position_axis_tick_target: Approximate number of ticks to show when auto-sizing.
         n_jobs: Number of parallel worker processes. ``-1`` uses all available CPUs.
             Parallelism is only applied when ``save_path`` is set.
+        index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]``
+            for tick labels and column order instead of ``var_names`` (e.g.
+            ``"reindexed"``), matching the HMM/spatial clustermaps.
 
     Returns:
         List of dictionaries with per-plot metadata and output paths.
@@ -1391,6 +1396,7 @@ def plot_sequence_integer_encoding_clustermaps(
                     mismatch_matrix = np.asarray(subset.layers[mismatch_layer])
 
                 var_names = np.asarray(subset.var_names)
+                sites = np.arange(subset.n_vars)
 
                 mod_site_mask = _build_mod_site_mask(subset, str(ref))
                 if mod_site_mask is not None:
@@ -1399,6 +1405,7 @@ def plot_sequence_integer_encoding_clustermaps(
                         continue
                     matrix = matrix[:, keep_columns]
                     var_names = var_names[keep_columns]
+                    sites = sites[keep_columns]
                     if mismatch_matrix is not None:
                         mismatch_matrix = mismatch_matrix[:, keep_columns]
 
@@ -1410,8 +1417,20 @@ def plot_sequence_integer_encoding_clustermaps(
                         continue
                     matrix = matrix[:, keep_columns]
                     var_names = var_names[keep_columns]
+                    sites = sites[keep_columns]
                     if mismatch_matrix is not None:
                         mismatch_matrix = mismatch_matrix[:, keep_columns]
+
+                if index_col_suffix is not None:
+                    new_sites, new_labels = _ordered_columns(
+                        subset, sites, str(ref), index_col_suffix
+                    )
+                    if new_sites.size:
+                        order = np.searchsorted(sites, new_sites)
+                        matrix = matrix[:, order]
+                        var_names = new_labels
+                        if mismatch_matrix is not None:
+                            mismatch_matrix = mismatch_matrix[:, order]
 
                 # extract obs sort values before max_reads truncation
                 obs_sort_vals = None
@@ -1505,6 +1524,7 @@ def plot_variant_segment_clustermaps(
     mismatch_type_colors: Dict[str, str] | None = None,
     mismatch_type_legend_prefix: str = "Mismatch type",
     n_jobs: int = 1,
+    index_col_suffix: str | None = None,
 ) -> List[Dict[str, Any]]:
     """Plot variant segment heatmaps with variant call and breakpoint overlays.
 
@@ -1544,6 +1564,9 @@ def plot_variant_segment_clustermaps(
         mismatch_type_legend_prefix: Prefix used in legend entries for the
             mismatch/categorical annotation (e.g., ``"Mismatch type"`` or
             ``"UMI content"``).
+        index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]``
+            for tick labels and column order instead of ``var_names`` (e.g.
+            ``"reindexed"``), matching the HMM/spatial clustermaps.
 
     Returns:
         List of dicts with metadata about each generated plot.
@@ -1612,6 +1635,18 @@ def plot_variant_segment_clustermaps(
                     call_matrix = np.asarray(subset.layers[variant_call_layer])
 
                 var_names = np.asarray(subset.var_names)
+
+                if index_col_suffix is not None:
+                    sites = np.arange(subset.n_vars)
+                    new_sites, new_labels = _ordered_columns(
+                        subset, sites, str(ref), index_col_suffix
+                    )
+                    if new_sites.size:
+                        col_order = np.searchsorted(sites, new_sites)
+                        seg_matrix = seg_matrix[:, col_order]
+                        var_names = new_labels
+                        if call_matrix is not None:
+                            call_matrix = call_matrix[:, col_order]
 
                 # extract mismatch strip values (unordered; worker applies sort order)
                 row_mismatch_raw = None
@@ -1692,6 +1727,7 @@ def plot_variant_segment_clustermaps_multi_obs(
     xtick_fontsize: int = 9,
     annotation_specs: Sequence[Dict[str, Any]] | None = None,
     n_jobs: int = 1,
+    index_col_suffix: str | None = None,
 ) -> List[Dict[str, Any]]:
     """Plot variant segment clustermaps with multiple adjacent categorical strips.
 
@@ -1701,6 +1737,10 @@ def plot_variant_segment_clustermaps_multi_obs(
     - ``legend_prefix`` (optional): prefix for legend labels.
     - ``strip_title`` (optional): title shown above strip.
     - ``n_jobs``: Number of parallel worker processes (``-1`` = all CPUs).
+
+    index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]``
+        for tick labels and column order instead of ``var_names`` (e.g.
+        ``"reindexed"``), matching the HMM/spatial clustermaps.
     """
     output_prefix = f"{seq1_column}__{seq2_column}"
     if variant_segment_layer is None:
@@ -1760,6 +1800,19 @@ def plot_variant_segment_clustermaps_multi_obs(
                     if max_reads is not None:
                         call_matrix = call_matrix[:max_reads]
 
+                var_names = np.asarray(subset.var_names)
+                if index_col_suffix is not None:
+                    sites = np.arange(subset.n_vars)
+                    new_sites, new_labels = _ordered_columns(
+                        subset, sites, str(ref), index_col_suffix
+                    )
+                    if new_sites.size:
+                        col_order = np.searchsorted(sites, new_sites)
+                        seg_matrix = seg_matrix[:, col_order]
+                        var_names = new_labels
+                        if call_matrix is not None:
+                            call_matrix = call_matrix[:, col_order]
+
                 annotation_data_raw: List[Dict[str, Any]] = []
                 for spec in specs:
                     obs_col = str(spec.get("obs_col", ""))
@@ -1790,7 +1843,7 @@ def plot_variant_segment_clustermaps_multi_obs(
                 yield {
                     "seg_matrix": seg_matrix,
                     "call_matrix": call_matrix,
-                    "var_names": np.asarray(subset.var_names),
+                    "var_names": var_names,
                     "ref": str(ref),
                     "sample": str(sample),
                     "n_reads": n_reads,
