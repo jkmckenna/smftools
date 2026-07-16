@@ -661,6 +661,17 @@ def _plot_feature_clustermaps(
     from ..cli.hmm_adata import _resolve_feature_colormap, _resolve_length_feature_ranges
     from ..plotting import combined_hmm_length_clustermap, combined_hmm_raw_clustermap
 
+    # Imported directly from the submodule, not via `from ..preprocessing
+    # import reindex_references_adata`: that lazy package-level attribute
+    # collides with its own submodule's name, so it's order-dependent-fragile
+    # -- anything elsewhere that imports smftools.preprocessing.
+    # reindex_references_adata by qualified path (e.g. a smoke test) first
+    # silently shadows the function with the submodule for the rest of the
+    # process, since __getattr__ is never consulted once normal attribute
+    # lookup already succeeds. Importing directly from the fully-qualified
+    # submodule sidesteps the package-attribute ambiguity entirely.
+    from ..preprocessing.reindex_references_adata import reindex_references_adata
+
     output_spine = Path(output_spine)
     output_dir = Path(output_dir)
 
@@ -702,7 +713,21 @@ def _plot_feature_clustermaps(
                 adata.obs[column] = adata.obs[column].astype("category")
             adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
 
-        index_suffix = getattr(cfg, "reindexed_var_suffix", None)
+        # Ported from the legacy (non-partitioned) pipeline, where this ran
+        # once on the whole-experiment adata (cli/hmm_adata.py). Purely
+        # additive (writes a new var column, never touches X/layers), so it's
+        # safe to run per task-window materialization here -- var_names are
+        # still absolute genomic coordinates within a window, same as for a
+        # full reference.
+        index_suffix = str(getattr(cfg, "reindexed_var_suffix", None) or "") or None
+        reindexing_offsets = getattr(cfg, "reindexing_offsets", None)
+        if index_suffix and reindexing_offsets:
+            reindex_references_adata(
+                adata,
+                reference_col=REFERENCE_STRAND,
+                offsets=reindexing_offsets,
+                new_col=index_suffix,
+            )
         if index_suffix and f"{reference}_{index_suffix}" not in adata.var:
             index_suffix = None
 

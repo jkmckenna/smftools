@@ -951,6 +951,46 @@ def test_partitioned_spatial_writes_locus_clustermaps_and_position_matrices(tmp_
     assert "C_ls_status" not in filtered.obs
 
 
+def test_partitioned_spatial_clustermaps_apply_reindexing_offsets(tmp_path, monkeypatch):
+    # reindex_references_adata (previously only wired into the legacy,
+    # non-partitioned pipeline -- see preprocessing/reindex_references_adata.py)
+    # should now run before spatial clustermap plotting: it's purely additive
+    # (writes a new var display column, never touches X/layers), so it's safe
+    # to run per region materialization.
+    import smftools.plotting as plotting_pkg
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    cfg = _cfg()
+    cfg.read_len_filter_thresholds = [None, None]
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], cfg, tmp_path / "preprocess_outputs"
+    )
+    cfg.spatial_generate_clustermaps = True
+    cfg.reindexing_offsets = {"ref_top": 1000}
+    cfg.reindexed_var_suffix = "reindexed"
+
+    captured = {}
+
+    def fake_raw_clustermap(adata, *args, index_col_suffix=None, **kwargs):
+        captured["var"] = adata.var.copy()
+        captured["index_col_suffix"] = index_col_suffix
+
+    monkeypatch.setattr(plotting_pkg, "combined_raw_clustermap", fake_raw_clustermap)
+
+    execute_partitioned_spatial(preprocess["spine"], cfg, tmp_path / "spatial_outputs")
+
+    assert captured["index_col_suffix"] == "reindexed"
+    reindexed_col = captured["var"]["ref_top_reindexed"]
+    var_coords = captured["var"].index.astype(int)
+    assert (reindexed_col.astype(int) == var_coords + 1000).all()
+
+
 def test_read_spatial_statistics_saves_known_direct_periodicity():
     rng = np.random.default_rng(42)
     positions = np.sort(rng.choice(4000, size=300, replace=False)).astype(float)

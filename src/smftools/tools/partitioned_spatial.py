@@ -1201,6 +1201,12 @@ def _generate_dense_region_products(
 ) -> list[Path]:
     """Generate full-locus or BED-bounded clustermaps and position matrices."""
     from ..plotting import combined_raw_clustermap
+
+    # Imported directly from the submodule -- see the identical note in
+    # tools/partitioned_hmm.py's _plot_feature_clustermaps for why the lazy
+    # `from ..preprocessing import reindex_references_adata` package
+    # attribute is order-dependent-fragile.
+    from ..preprocessing.reindex_references_adata import reindex_references_adata
     from .position_stats import compute_positionwise_statistics
 
     if regions.empty:
@@ -1245,6 +1251,21 @@ def _generate_dense_region_products(
 
         if bool(getattr(cfg, "spatial_generate_clustermaps", True)):
             clustermap_dir = layout.categories["clustermaps"] / region_label
+            # Ported from the legacy (non-partitioned) pipeline, where this
+            # ran once on the whole-experiment adata (cli/spatial_adata.py).
+            # Purely additive (writes a new var column, never touches
+            # X/layers), so it's safe to run per region materialization here.
+            index_suffix = str(getattr(cfg, "reindexed_var_suffix", None) or "") or None
+            reindexing_offsets = getattr(cfg, "reindexing_offsets", None)
+            if index_suffix and reindexing_offsets:
+                reindex_references_adata(
+                    adata,
+                    reference_col=REFERENCE_STRAND,
+                    offsets=reindexing_offsets,
+                    new_col=index_suffix,
+                )
+            if index_suffix and f"{reference}_{index_suffix}" not in adata.var:
+                index_suffix = None
             combined_raw_clustermap(
                 adata,
                 sample_col=sample_column,
@@ -1270,6 +1291,7 @@ def _generate_dense_region_products(
                 restrict_to_read_span=bool(
                     getattr(cfg, "spatial_clustermap_restrict_to_read_span", False)
                 ),
+                index_col_suffix=index_suffix,
             )
             for path in sorted(clustermap_dir.glob("*.png")):
                 register_plot_artifact(

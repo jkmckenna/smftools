@@ -378,6 +378,56 @@ def test_partitioned_hmm_clustermaps_parallelize_using_cfg_threads(tmp_path, mon
     assert captured_n_jobs == [4]
 
 
+def test_partitioned_hmm_clustermaps_apply_reindexing_offsets(tmp_path, monkeypatch):
+    # reindex_references_adata (previously only wired into the legacy,
+    # non-partitioned pipeline -- see preprocessing/reindex_references_adata.py)
+    # should now run before HMM clustermap plotting: it's purely additive
+    # (writes a new var display column, never touches X/layers), so it's safe
+    # to run per task-window materialization.
+    import smftools.plotting as plotting_pkg
+    from smftools.tools import partitioned_hmm
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+
+    def annotate(adata, task, cfg, models_dir):
+        adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
+        adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
+        return ["GpC_test_feature"]
+
+    monkeypatch.setattr(partitioned_hmm, "_annotate_task", annotate)
+
+    captured = {}
+
+    def fake_raw_clustermap(adata, *args, index_col_suffix=None, **kwargs):
+        captured["var"] = adata.var.copy()
+        captured["index_col_suffix"] = index_col_suffix
+
+    monkeypatch.setattr(plotting_pkg, "combined_hmm_raw_clustermap", fake_raw_clustermap)
+
+    cfg = SimpleNamespace(
+        target_task_memory_mb=1,
+        hmm_clustermap_feature_layers=["test_feature"],
+        hmm_clustermap_length_layers=[],
+        reindexing_offsets={"ref_top": 1000},
+        reindexed_var_suffix="reindexed",
+    )
+    execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+    assert captured["index_col_suffix"] == "reindexed"
+    reindexed_col = captured["var"]["ref_top_reindexed"]
+    var_coords = captured["var"].index.astype(int)
+    assert (reindexed_col.astype(int) == var_coords + 1000).all()
+
+
 def test_partitioned_hmm_prefers_hmm_device_over_device(tmp_path, monkeypatch):
     # hmm_device (config default "cpu", see experiment_config.py) overrides the
     # general `device` setting for HMM specifically -- GPU is measurably worse
