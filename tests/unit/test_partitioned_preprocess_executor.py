@@ -991,6 +991,49 @@ def test_partitioned_spatial_clustermaps_apply_reindexing_offsets(tmp_path, monk
     assert (reindexed_col.astype(int) == var_coords + 1000).all()
 
 
+def test_partitioned_spatial_position_matrices_apply_reindexing_offsets(tmp_path, monkeypatch):
+    # index_suffix used to only be computed inside the spatial_generate_clustermaps
+    # block, so compute_positionwise_statistics never received it when clustermaps
+    # were disabled -- confirm it's now wired regardless of that flag.
+    import smftools.tools.position_stats as position_stats_module
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    cfg = _cfg()
+    cfg.read_len_filter_thresholds = [None, None]
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], cfg, tmp_path / "preprocess_outputs"
+    )
+    cfg.spatial_generate_clustermaps = False
+    cfg.spatial_generate_position_matrices = True
+    cfg.reindexing_offsets = {"ref_top": 1000}
+    cfg.reindexed_var_suffix = "reindexed"
+
+    captured = {}
+
+    def fake_compute_positionwise_statistics(adata, *args, index_col_suffix=None, **kwargs):
+        captured["var"] = adata.var.copy()
+        captured["index_col_suffix"] = index_col_suffix
+
+    monkeypatch.setattr(
+        position_stats_module,
+        "compute_positionwise_statistics",
+        fake_compute_positionwise_statistics,
+    )
+
+    execute_partitioned_spatial(preprocess["spine"], cfg, tmp_path / "spatial_outputs")
+
+    assert captured["index_col_suffix"] == "reindexed"
+    reindexed_col = captured["var"]["ref_top_reindexed"]
+    var_coords = captured["var"].index.astype(int)
+    assert (reindexed_col.astype(int) == var_coords + 1000).all()
+
+
 def test_read_spatial_statistics_saves_known_direct_periodicity():
     rng = np.random.default_rng(42)
     positions = np.sort(rng.choice(4000, size=300, replace=False)).astype(float)

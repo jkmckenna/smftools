@@ -45,6 +45,7 @@ def calculate_relative_risk_on_activity(
     sites: Sequence[str],
     alpha: float = 0.05,
     groupby: str | Sequence[str] | None = None,
+    index_col_suffix: str | None = None,
 ) -> dict:
     """Perform methylation vs. activity analysis within each group.
 
@@ -53,6 +54,10 @@ def calculate_relative_risk_on_activity(
         sites: Site keys (e.g., ``["GpC_site", "CpG_site"]``).
         alpha: FDR threshold for significance.
         groupby: Obs column(s) to group by.
+        index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]``
+            for ``Genomic_Position`` instead of ``var_names`` (e.g.
+            ``"reindexed"``), so reindexing_offsets/reindexing_invert are
+            reflected in the reported position.
 
     Returns:
         dict: Mapping of reference -> group label -> ``(results_df, sig_df)``.
@@ -77,7 +82,11 @@ def calculate_relative_risk_on_activity(
         """
         p_adj = multipletests(p_values, method="fdr_bh")[1] if p_values else []
 
-        genomic_positions = np.array(site_subset.var_names)[positions_list]
+        position_col = f"{ref}_{index_col_suffix}" if index_col_suffix else None
+        if position_col is not None and position_col in site_subset.var.columns:
+            genomic_positions = np.array(site_subset.var[position_col].values)[positions_list]
+        else:
+            genomic_positions = np.array(site_subset.var_names)[positions_list]
         is_gpc_site = site_subset.var[f"{ref}_GpC_site"].values[positions_list]
         is_cpg_site = site_subset.var[f"{ref}_CpG_site"].values[positions_list]
 

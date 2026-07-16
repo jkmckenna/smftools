@@ -2,7 +2,10 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 
-from smftools.preprocessing.reindex_references_adata import reindex_references_adata
+from smftools.preprocessing.reindex_references_adata import (
+    reindex_coordinates,
+    reindex_references_adata,
+)
 
 
 def _adata(references=("refA", "refB")):
@@ -68,6 +71,33 @@ def test_reindex_invert_bad_type_raises():
     adata = _adata(references=("refA",))
     try:
         reindex_references_adata(adata, offsets={"refA": 5}, invert="yes")
+    except TypeError as exc:
+        assert "invert" in str(exc)
+    else:
+        raise AssertionError("expected TypeError for invalid invert type")
+
+
+def test_reindex_coordinates_matches_reindex_references_adata():
+    values = np.array([10, 11, 12, 13, 14, 15])
+    result = reindex_coordinates(values, "refA", offsets={"refA": -12}, invert=True)
+    np.testing.assert_array_equal(result, -(values - 12))
+
+
+def test_reindex_coordinates_returns_unchanged_when_ref_unconfigured():
+    values = np.array([10, 11, 12])
+    result = reindex_coordinates(values, "refB", offsets={"refA": -12}, invert=None)
+    np.testing.assert_array_equal(result, values)
+
+
+def test_reindex_coordinates_global_bool_applies_to_any_ref():
+    values = np.array([10, 11, 12])
+    result = reindex_coordinates(values, "refZ", offsets=None, invert=True)
+    np.testing.assert_array_equal(result, -values)
+
+
+def test_reindex_coordinates_bad_invert_type_raises():
+    try:
+        reindex_coordinates(np.array([1, 2]), "refA", invert="yes")
     except TypeError as exc:
         assert "invert" in str(exc)
     else:

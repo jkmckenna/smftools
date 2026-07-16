@@ -165,6 +165,7 @@ def spatial_adata_core(
     from ..preprocessing import (
         invert_adata,
         load_sample_sheet,
+        reindex_coordinates,
         reindex_references_adata,
     )
     from ..readwrite import make_dirs, safe_read_h5ad
@@ -388,6 +389,25 @@ def spatial_adata_core(
             _keep = ~adata.obs["chimeric_variant_sites"].astype(bool).values
         else:
             _keep = np.ones(adata.n_obs, dtype=bool)
+
+        # rolling_autocorr_metrics itself must keep using raw (unsigned,
+        # ascending) `positions` -- its window/lag binning assumes monotonic
+        # spacing, and lag is a relative distance invariant to reindexing
+        # anyway. Only the window "center" it reports is an absolute
+        # coordinate, so reindexing_offsets/reindexing_invert are applied to
+        # that value after the fact via reindex_coordinates. Undefined for
+        # the "all" group, which mixes reads across references with
+        # potentially different offsets/signs, so centers are left in raw
+        # coordinate space there.
+        _reindexing_offsets_cfg = getattr(cfg, "reindexing_offsets", None)
+        _reindexing_invert_cfg = getattr(cfg, "reindexing_invert", None)
+
+        def _reindexed_center(values: np.ndarray, ref_label: str) -> np.ndarray:
+            if ref_label == "all":
+                return values
+            return reindex_coordinates(
+                values, ref_label, offsets=_reindexing_offsets_cfg, invert=_reindexing_invert_cfg
+            )
 
         for site_type in cfg.autocorr_site_types:
             layer_key = f"{site_type}_site_binary"
@@ -634,6 +654,9 @@ def spatial_adata_core(
                     compact_df = df_roll[
                         ["center", "n_molecules", "nrl_bp", "snr", "xi", "fwhm_bp"]
                     ].copy()
+                    compact_df["center"] = _reindexed_center(
+                        compact_df["center"].to_numpy(dtype=float), ref_label
+                    )
                     compact_df["site"] = site_type
                     compact_df["sample"] = sample_name
                     compact_df["reference"] = ref_label if ref_label != "all" else "all"

@@ -1249,25 +1249,28 @@ def _generate_dense_region_products(
         adata.obs[REFERENCE_STRAND] = adata.obs[REFERENCE_STRAND].astype(str).astype("category")
         region_label = f"{_component(reference)}__{start}_{end}"
 
+        # Ported from the legacy (non-partitioned) pipeline, where this ran
+        # once on the whole-experiment adata (cli/spatial_adata.py). Purely
+        # additive (writes a new var column, never touches X/layers), so it's
+        # safe to run per region materialization here. Computed once,
+        # unconditionally, since both the clustermap and position-matrix
+        # blocks below consume index_suffix independently of one another.
+        index_suffix = str(getattr(cfg, "reindexed_var_suffix", None) or "") or None
+        reindexing_offsets = getattr(cfg, "reindexing_offsets", None)
+        reindexing_invert = getattr(cfg, "reindexing_invert", None)
+        if index_suffix and (reindexing_offsets or reindexing_invert):
+            reindex_references_adata(
+                adata,
+                reference_col=REFERENCE_STRAND,
+                offsets=reindexing_offsets,
+                new_col=index_suffix,
+                invert=reindexing_invert,
+            )
+        if index_suffix and f"{reference}_{index_suffix}" not in adata.var:
+            index_suffix = None
+
         if bool(getattr(cfg, "spatial_generate_clustermaps", True)):
             clustermap_dir = layout.categories["clustermaps"] / region_label
-            # Ported from the legacy (non-partitioned) pipeline, where this
-            # ran once on the whole-experiment adata (cli/spatial_adata.py).
-            # Purely additive (writes a new var column, never touches
-            # X/layers), so it's safe to run per region materialization here.
-            index_suffix = str(getattr(cfg, "reindexed_var_suffix", None) or "") or None
-            reindexing_offsets = getattr(cfg, "reindexing_offsets", None)
-            reindexing_invert = getattr(cfg, "reindexing_invert", None)
-            if index_suffix and (reindexing_offsets or reindexing_invert):
-                reindex_references_adata(
-                    adata,
-                    reference_col=REFERENCE_STRAND,
-                    offsets=reindexing_offsets,
-                    new_col=index_suffix,
-                    invert=reindexing_invert,
-                )
-            if index_suffix and f"{reference}_{index_suffix}" not in adata.var:
-                index_suffix = None
             combined_raw_clustermap(
                 adata,
                 sample_col=sample_column,
@@ -1322,6 +1325,7 @@ def _generate_dense_region_products(
                 max_threads=max(1, int(getattr(cfg, "threads", 1) or 1)),
                 min_count_for_pairwise=10,
                 min_position_valid_fraction=None,
+                index_col_suffix=index_suffix,
             )
             matrix_paths.extend(
                 _write_position_matrix_sidecars(adata, output_dir, region, output_key)

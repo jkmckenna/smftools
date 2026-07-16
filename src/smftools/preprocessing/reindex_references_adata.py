@@ -6,8 +6,56 @@ from smftools.logging_utils import get_logger
 
 if TYPE_CHECKING:
     import anndata as ad
+    import numpy as np
 
 logger = get_logger(__name__)
+
+
+def reindex_coordinates(
+    values: "np.ndarray",
+    ref: str,
+    offsets: dict | None = None,
+    invert: dict | bool | None = None,
+) -> "np.ndarray":
+    """Apply the reindex_references_adata affine transform to a raw coordinate array.
+
+    Computes ``sign * (values + offset)`` for a single reference, using the
+    same ``offsets``/``invert`` semantics as ``reindex_references_adata``
+    (dict, bool, or None). Intended for absolute-coordinate outputs computed
+    outside ``adata.var`` -- e.g. rolling-window centers, relative-risk
+    positions -- that still need to respect ``reindexing_offsets``/
+    ``reindexing_invert`` but aren't backed by a var column lookup.
+
+    Args:
+        values: Raw coordinate value(s) in the same space as ``var_names``.
+        ref: Reference identifier to look up in ``offsets``/``invert``.
+        offsets: Mapping of reference to integer offset, or ``None``.
+        invert: A single bool (applied to every reference), a ``{ref: bool}``
+            mapping, or ``None`` (no inversion).
+
+    Returns:
+        ``values`` unchanged if neither an offset nor an invert flag applies
+        to ``ref``; otherwise the transformed array.
+    """
+    import numpy as np
+
+    offsets = offsets or {}
+    offset_value = offsets.get(ref)
+
+    if invert is None:
+        inverted = False
+    elif isinstance(invert, bool):
+        inverted = invert
+    elif isinstance(invert, dict):
+        inverted = bool(invert.get(ref, False))
+    else:
+        raise TypeError("invert must be a dict {ref: bool}, a bool, or None.")
+
+    if offset_value is None and not inverted:
+        return np.asarray(values)
+
+    sign = -1 if inverted else 1
+    return sign * (np.asarray(values) + (offset_value or 0))
 
 
 def reindex_references_adata(

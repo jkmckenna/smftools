@@ -214,6 +214,7 @@ def plot_hmm_size_contours(
     smoothing_sigma: Optional[Union[float, Tuple[float, float]]] = None,
     normalize_after_smoothing: bool = True,
     use_scipy_if_available: bool = True,
+    index_col_suffix: Optional[str] = None,
 ):
     """
     Create contour/pcolormesh plots of P(length | position) using a length-encoded HMM layer.
@@ -226,6 +227,14 @@ def plot_hmm_size_contours(
         float -> same sigma applied to (length_axis, position_axis)
         (sigma_len, sigma_pos) -> separate sigmas.
     normalize_after_smoothing: if True, renormalize each position-column to sum to 1 after smoothing.
+
+    index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]`` for
+        the x-axis position coordinate instead of ``var_names`` (per reference,
+        since each reference's reindexed column can carry a different offset/
+        sign), falling back to ``var_names`` when the column is absent.
+        pcolormesh doesn't require monotonic x, so no column reordering is
+        needed here -- an inverted reference's signed coordinates render at
+        their correct position automatically.
 
     Other args are the same as prior function.
     """
@@ -358,6 +367,17 @@ def plot_hmm_size_contours(
         coords = np.arange(adata.shape[1], dtype=int)
         x_ticks_is_positions = False
 
+    def _coords_for_ref(ref: str) -> np.ndarray:
+        if index_col_suffix is None:
+            return coords
+        colname = f"{ref}_{index_col_suffix}"
+        if colname not in adata.var.columns:
+            return coords
+        try:
+            return np.asarray(adata.var[colname].values, dtype=int)
+        except Exception:
+            return coords
+
     # helper to get dense layer array for subset
     def _get_layer_array(layer):
         """Convert a layer to a dense NumPy array."""
@@ -480,7 +500,7 @@ def plot_hmm_size_contours(
                     Z_plot = Z
 
                 # Build x and y grids for pcolormesh: x = coords (positions)
-                x = coords[:n_positions]
+                x = _coords_for_ref(ref)[:n_positions]
                 if n_positions >= 2:
                     dx = np.diff(x).mean()
                     x_edges = np.concatenate([x - dx / 2.0, [x[-1] + dx / 2.0]])

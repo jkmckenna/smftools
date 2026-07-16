@@ -32,6 +32,7 @@ _LAZY_ATTRS = {
     "preprocess_umi_annotations": "smftools.preprocessing.preprocess_umi_annotations",
     "umi_sequence_entropy": "smftools.preprocessing.preprocess_umi_annotations",
     "analyze_umi_bipartite_graph": "smftools.preprocessing.umi_bipartite_analysis",
+    "reindex_coordinates": "smftools.preprocessing.reindex_references_adata",
     "reindex_references_adata": "smftools.preprocessing.reindex_references_adata",
     "subsample_adata": "smftools.preprocessing.subsample_adata",
 }
