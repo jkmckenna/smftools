@@ -300,6 +300,128 @@ def _plot_feature_fractions(records, output_dir: Path, layout) -> None:
         )
 
 
+def _feature_run_lengths(row: np.ndarray) -> np.ndarray:
+    """Column-count lengths of each contiguous positive run in one row.
+
+    NaN (masked outside a read's own alignment span -- see
+    HMM.mask_layers_outside_read_span) and 0 both count as "not a feature".
+    """
+    valid = np.nan_to_num(row, nan=0.0) > 0.5
+    idx = np.flatnonzero(valid)
+    if idx.size == 0:
+        return np.array([], dtype=int)
+    breaks = np.where(np.diff(idx) > 1)[0]
+    starts = np.r_[idx[0], idx[breaks + 1]]
+    ends = np.r_[idx[breaks] + 1, idx[-1] + 1]
+    return ends - starts
+
+
+def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> None:
+    """Per-barcode histograms of feature count-per-read and feature size-per-
+    read, for every footprint/accessible feature layer -- both the
+    HMM-decoded (unmerged) and post-merge (``_apply_merges``) variants.
+
+    "Feature count" is the number of discrete feature runs (e.g. accessible
+    patches, bound stretches) found on one read; "feature size" is each
+    individual run's length in grid positions, pooled across reads. Distinct
+    from ``_plot_feature_fractions``, which reports the fraction of
+    *positions* flagged, not counts/sizes of discrete feature instances.
+    """
+    import matplotlib.pyplot as plt
+
+    def _is_group_feature_layer(name: str) -> bool:
+        if name.endswith(("_lengths", "_states")) or "_posterior_" in name:
+            return False
+        return "_all_footprint_features" in name or "_all_accessible_features" in name
+
+    rows = []
+    for record in records:
+        layer_names = [
+            name for name in record.get("layers", []) if _is_group_feature_layer(name)
+        ]
+        if not layer_names:
+            continue
+        result, _ = safe_read_zarr(output_dir / record["group_path"], verbose=False)
+        for layer in layer_names:
+            arr = np.asarray(result.layers[layer], dtype=float)
+            for read_row in arr:
+                sizes = _feature_run_lengths(read_row)
+                rows.append(
+                    {
+                        "reference": record["reference"],
+                        "core_start": record["core_start"],
+                        "core_end": record["core_end"],
+                        "barcode": str(record["barcode"]),
+                        "layer": str(layer),
+                        "n_features": int(sizes.size),
+                        "sizes": sizes,
+                    }
+                )
+    if not rows:
+        return
+
+    frame = pd.DataFrame(rows)
+    keys = ["reference", "core_start", "core_end", "layer"]
+    metrics = (
+        (
+            "count",
+            lambda sub: sub["n_features"].to_numpy(),
+            "Features per read",
+            "hmm_feature_count_histogram",
+        ),
+        (
+            "size",
+            lambda sub: (
+                np.concatenate(sub["sizes"].to_numpy()) if len(sub) else np.array([])
+            ),
+            "Feature size (positions)",
+            "hmm_feature_size_histogram",
+        ),
+    )
+    for (reference, core_start, core_end, layer), window in frame.groupby(keys, sort=True):
+        barcodes = sorted(window["barcode"].unique())
+        n_cols = min(4, len(barcodes))
+        n_rows = -(-len(barcodes) // n_cols)  # ceil division
+
+        for metric, values_fn, xlabel, plot_type in metrics:
+            figure, axes = plt.subplots(
+                n_rows, n_cols, figsize=(3.0 * n_cols, 2.4 * n_rows), squeeze=False
+            )
+            for i, barcode in enumerate(barcodes):
+                axis = axes[i // n_cols][i % n_cols]
+                values = values_fn(window.loc[window["barcode"] == barcode])
+                if values.size:
+                    if metric == "count":
+                        lo, hi = int(values.min()), int(values.max())
+                        bins = np.arange(lo, hi + 2) - 0.5
+                    else:
+                        bins = 20
+                    axis.hist(values, bins=bins, color="tab:blue")
+                axis.set_title(str(barcode), fontsize=8)
+                axis.tick_params(labelsize=6)
+            for i in range(len(barcodes), n_rows * n_cols):
+                axes[i // n_cols][i % n_cols].set_visible(False)
+            figure.suptitle(f"{reference}:{core_start}-{core_end} [{layer}]", fontsize=10)
+            figure.supxlabel(xlabel, fontsize=8)
+            figure.tight_layout(rect=(0, 0, 1, 0.95))
+            path = layout.categories["features"] / (
+                f"{_component(reference)}__{core_start}_{core_end}__{_component(layer)}"
+                f"__feature_{metric}_hist.png"
+            )
+            figure.savefig(path, dpi=160)
+            plt.close(figure)
+            register_plot_artifact(
+                layout,
+                path,
+                stage="hmm",
+                category="features",
+                plot_type=plot_type,
+                reference=str(reference),
+                core_start=int(core_start),
+                core_end=int(core_end),
+            )
+
+
 def _grouped_bar_plot(axis, group_labels, series: dict, *, ylabel: str, title: str) -> None:
     """One bar per (group, series-key) pair, grouped by ``group_labels`` on the
     x-axis and colored/offset by ``series`` key (here, barcode)."""
@@ -706,6 +828,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     layout = prepare_analysis_plot_layout(output_dir, stage="hmm", source_spine=spine_path)
     pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
     _plot_feature_fractions(records, output_dir, layout)
+    _plot_feature_count_size_histograms(records, output_dir, layout)
     _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
     _plot_hmm_fit_history(models_dir, layout)
 

@@ -489,6 +489,88 @@ def _hmm_cfg(**overrides):
     return SimpleNamespace(**defaults)
 
 
+def test_feature_run_lengths_extracts_contiguous_run_sizes():
+    from smftools.tools.partitioned_hmm import _feature_run_lengths
+
+    row = np.array([0, 1, 1, 0, 1, 0, 0, 0], dtype=float)
+    assert list(_feature_run_lengths(row)) == [2, 1]
+
+    # No features at all.
+    assert list(_feature_run_lengths(np.zeros(5))) == []
+
+    # NaN (masked outside a read's own span) breaks a run just like a 0 does,
+    # and is never itself counted as part of a run.
+    row_with_mask = np.array([1, 1, np.nan, np.nan, 1, 0], dtype=float)
+    assert list(_feature_run_lengths(row_with_mask)) == [2, 1]
+
+
+def test_plot_feature_count_size_histograms_writes_per_barcode_grids(tmp_path):
+    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
+    from smftools.readwrite import safe_write_zarr
+    from smftools.tools.partitioned_hmm import _plot_feature_count_size_histograms
+
+    output_dir = tmp_path / "hmm_outputs"
+    output_dir.mkdir()
+
+    def _write_task(name: str, rows: list[list[float]]) -> str:
+        arr = np.asarray(rows, dtype=float)
+        adata = ad.AnnData(
+            X=np.zeros(arr.shape),
+            obs=pd.DataFrame(index=[f"read{i}" for i in range(arr.shape[0])]),
+            var=pd.DataFrame(index=[str(i) for i in range(arr.shape[1])]),
+            layers={"C_all_accessible_features": arr},
+        )
+        path = output_dir / name
+        safe_write_zarr(adata, path, backup=False, verbose=False, zarr_format=3)
+        return name
+
+    group_bc1 = _write_task(
+        "task_bc1",
+        [
+            [1, 1, 0, 0, 1, 0, 0, 0, 0, 0],  # 2 features: sizes 2, 1
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # 0 features
+        ],
+    )
+    group_bc2 = _write_task(
+        "task_bc2",
+        [
+            [1, 1, 1, 1, 0, 0, 0, 0, 0, 0],  # 1 feature: size 4
+        ],
+    )
+    records = [
+        {
+            "reference": "ref_top",
+            "barcode": "bc1",
+            "core_start": 0,
+            "core_end": 10,
+            "group_path": group_bc1,
+            "layers": ["C_all_accessible_features"],
+        },
+        {
+            "reference": "ref_top",
+            "barcode": "bc2",
+            "core_start": 0,
+            "core_end": 10,
+            "group_path": group_bc2,
+            "layers": ["C_all_accessible_features"],
+        },
+    ]
+    layout = prepare_analysis_plot_layout(output_dir, stage="hmm")
+
+    _plot_feature_count_size_histograms(records, output_dir, layout)
+
+    catalog = pd.read_parquet(layout.catalog)
+    count_rows = catalog[catalog["plot_type"] == "hmm_feature_count_histogram"]
+    size_rows = catalog[catalog["plot_type"] == "hmm_feature_size_histogram"]
+    assert len(count_rows) == 1
+    assert len(size_rows) == 1
+    assert count_rows.iloc[0]["category"] == "features"
+    count_path = layout.root.parent / count_rows.iloc[0]["path"]
+    size_path = layout.root.parent / size_rows.iloc[0]["path"]
+    assert count_path.exists() and count_path.stat().st_size > 0
+    assert size_path.exists() and size_path.stat().st_size > 0
+
+
 def test_plot_hmm_parameters_across_barcodes_compares_saved_models(tmp_path):
     import torch
 
