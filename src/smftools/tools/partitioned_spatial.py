@@ -832,6 +832,8 @@ def _plot_read_periodicity(records, output_dir: Path, layout, cfg) -> None:
             )
 
     peak_min, peak_max = _config_range(cfg, "spatial_lomb_scargle_peak_range_bp", (150.0, 250.0))
+    swarm_rng = np.random.default_rng(0)
+    swarm_max_points = 4000
     for (reference, core_start, core_end, site_type), bucket in sorted(windows.items()):
         metrics = pd.concat(bucket["metrics"], ignore_index=True)
         metrics["scored"] = metrics["ls_status"].astype(str).eq("ok")
@@ -848,9 +850,28 @@ def _plot_read_periodicity(records, output_dir: Path, layout, cfg) -> None:
                 for barcode in barcodes
             ]
             if any(len(values) for values in distributions):
-                axis.boxplot(distributions, showfliers=False, patch_artist=True)
+                axis.boxplot(distributions, showfliers=False, patch_artist=True, zorder=2)
                 for patch in axis.patches:
                     patch.set(facecolor="#9ec5ab", edgecolor="#264653", linewidth=0.7)
+                # Jittered per-read points on top of each box -- see
+                # preprocessing/partitioned_plots.py::_barcode_distribution_plots
+                # for why this uses jitter+alpha instead of a true swarmplot.
+                for position, values in enumerate(distributions, start=1):
+                    if len(values) == 0:
+                        continue
+                    if len(values) > swarm_max_points:
+                        values = swarm_rng.choice(values, swarm_max_points, replace=False)
+                    jitter = swarm_rng.uniform(-0.2, 0.2, size=len(values))
+                    axis.scatter(
+                        np.full(len(values), position) + jitter,
+                        values,
+                        s=3,
+                        alpha=0.3,
+                        color="#264653",
+                        edgecolors="none",
+                        rasterized=True,
+                        zorder=3,
+                    )
             axis.set_xticks(range(1, len(barcodes) + 1), barcodes, rotation=90, fontsize=6)
             axis.set_ylabel(ylabel)
             axis.grid(axis="y", color="#dddddd", linewidth=0.5)

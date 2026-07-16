@@ -240,12 +240,15 @@ def _barcode_reference_overviews(summary, layout):
         )
 
 
-def _barcode_distribution_plots(obs, barcode_column, metrics, layout, *, category, plot_type):
+def _barcode_distribution_plots(
+    obs, barcode_column, metrics, layout, *, category, plot_type, swarm_max_points=4000
+):
     import matplotlib.pyplot as plt
 
     metrics = [column for column in metrics if column in obs]
     if not metrics:
         return
+    rng = np.random.default_rng(0)
     for reference, reference_obs in obs.groupby(REFERENCE_STRAND, sort=True, observed=True):
         barcodes = sorted(reference_obs[barcode_column].dropna().astype(str).unique())
         n_columns = min(2, len(metrics))
@@ -272,7 +275,30 @@ def _barcode_distribution_plots(obs, barcode_column, metrics, layout, *, categor
                 patch_artist=True,
                 boxprops={"facecolor": "#a8dadc", "edgecolor": "#457b9d"},
                 medianprops={"color": "#c1121f", "linewidth": 1.2},
+                zorder=2,
             )
+            # Jittered per-read points on top of each box -- a true swarmplot
+            # (non-overlapping points) doesn't scale to the read counts seen
+            # here, so this uses random x-jitter with low alpha instead,
+            # rasterized so the saved PNG stays a reasonable size at high
+            # point counts. Subsampled per box past swarm_max_points so a
+            # single deeply-sequenced barcode can't blow up render time.
+            for position, values in enumerate(distributions, start=1):
+                if len(values) == 0:
+                    continue
+                if len(values) > swarm_max_points:
+                    values = values.sample(swarm_max_points, random_state=0)
+                jitter = rng.uniform(-0.2, 0.2, size=len(values))
+                axis.scatter(
+                    np.full(len(values), position) + jitter,
+                    values,
+                    s=3,
+                    alpha=0.3,
+                    color="#1d3557",
+                    edgecolors="none",
+                    rasterized=True,
+                    zorder=3,
+                )
             axis.tick_params(axis="x", labelrotation=90, labelsize=6)
             axis.set(title=metric, ylabel=metric)
             if metric.startswith("Fraction_") or metric.endswith("_ratio"):
