@@ -721,12 +721,14 @@ def _plot_feature_clustermaps(
         # full reference.
         index_suffix = str(getattr(cfg, "reindexed_var_suffix", None) or "") or None
         reindexing_offsets = getattr(cfg, "reindexing_offsets", None)
-        if index_suffix and reindexing_offsets:
+        reindexing_invert = getattr(cfg, "reindexing_invert", None)
+        if index_suffix and (reindexing_offsets or reindexing_invert):
             reindex_references_adata(
                 adata,
                 reference_col=REFERENCE_STRAND,
                 offsets=reindexing_offsets,
                 new_col=index_suffix,
+                invert=reindexing_invert,
             )
         if index_suffix and f"{reference}_{index_suffix}" not in adata.var:
             index_suffix = None

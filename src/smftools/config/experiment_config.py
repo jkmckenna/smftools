@@ -884,6 +884,12 @@ class ExperimentConfig:
     # Preprocessing - Optional reindexing params
     reindexing_offsets: Dict[str, int] = field(default_factory=dict)
     reindexed_var_suffix: Optional[str] = "reindexed"
+    # Per-reference display inversion: {ref: True} flips the sign of that
+    # reference's reindexed coordinate (see reindex_references_adata) so
+    # "left of anchor = negative, right of anchor = positive" still holds
+    # once the reference is rendered in reverse column order. Additive to
+    # reindexing_offsets; independent of the legacy global invert_adata flag.
+    reindexing_invert: Dict[str, bool] = field(default_factory=dict)
 
     # Preprocessing - Direct mod detection binarization params
     fit_position_methylation_thresholds: Optional[bool] = (
@@ -1842,6 +1848,7 @@ class ExperimentConfig:
             ),
             reindexing_offsets=merged.get("reindexing_offsets", {None: None}),
             reindexed_var_suffix=merged.get("reindexed_var_suffix", "reindexed"),
+            reindexing_invert=merged.get("reindexing_invert", {}),
             clustermap_demux_types_to_plot=merged.get(
                 "clustermap_demux_types_to_plot", ["single", "double", "already"]
             ),

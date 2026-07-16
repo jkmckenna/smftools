@@ -222,6 +222,7 @@ def spatial_adata_core(
         reference_col=cfg.reference_column,
         offsets=cfg.reindexing_offsets,
         new_col=cfg.reindexed_var_suffix,
+        invert=getattr(cfg, "reindexing_invert", None),
     )
 
     if adata.uns.get("reindex_references_adata_performed", False):
@@ -277,6 +278,7 @@ def spatial_adata_core(
                     reference_col=cfg.reference_column,
                     offsets=cfg.reindexing_offsets,
                     new_col=cfg.reindexed_var_suffix,
+                    invert=getattr(cfg, "reindexing_invert", None),
                 )
 
                 combined_raw_clustermap(

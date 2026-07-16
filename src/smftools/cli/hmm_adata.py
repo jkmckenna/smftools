@@ -739,6 +739,7 @@ def hmm_adata_core(
         reference_col=cfg.reference_column,
         offsets=cfg.reindexing_offsets,
         new_col=cfg.reindexed_var_suffix,
+        invert=getattr(cfg, "reindexing_invert", None),
     )
 
     # ---------------------------- HMM annotate stage ----------------------------

@@ -14,7 +14,7 @@ from smftools.optional_imports import require
 from smftools.plotting.plotting_utils import (
     _layer_to_numpy,
     _methylation_fraction_for_layer,
-    _select_labels,
+    _ordered_columns,
     clean_barplot,
     normalized_mean,
 )
@@ -1190,11 +1190,15 @@ def combined_hmm_raw_clustermap(
                     any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
                     hmm_sites = np.arange(subset.n_vars, dtype=int)
 
-                    hmm_labels = _select_labels(subset, hmm_sites, ref, index_col_suffix)
-                    gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
-                    cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
-                    any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
-                    any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
+                    hmm_sites, hmm_labels = _ordered_columns(subset, hmm_sites, ref, index_col_suffix)
+                    gpc_sites, gpc_labels = _ordered_columns(subset, gpc_sites, ref, index_col_suffix)
+                    cpg_sites, cpg_labels = _ordered_columns(subset, cpg_sites, ref, index_col_suffix)
+                    any_c_sites, any_c_labels = _ordered_columns(
+                        subset, any_c_sites, ref, index_col_suffix
+                    )
+                    any_a_sites, any_a_labels = _ordered_columns(
+                        subset, any_a_sites, ref, index_col_suffix
+                    )
 
                     # Extract unique layer arrays
                     layer_data = {}
@@ -1848,11 +1852,17 @@ def combined_hmm_length_clustermap(
                     any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
                     length_sites = np.arange(subset.n_vars, dtype=int)
 
-                    length_labels = _select_labels(subset, length_sites, ref, index_col_suffix)
-                    gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
-                    cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
-                    any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
-                    any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
+                    length_sites, length_labels = _ordered_columns(
+                        subset, length_sites, ref, index_col_suffix
+                    )
+                    gpc_sites, gpc_labels = _ordered_columns(subset, gpc_sites, ref, index_col_suffix)
+                    cpg_sites, cpg_labels = _ordered_columns(subset, cpg_sites, ref, index_col_suffix)
+                    any_c_sites, any_c_labels = _ordered_columns(
+                        subset, any_c_sites, ref, index_col_suffix
+                    )
+                    any_a_sites, any_a_labels = _ordered_columns(
+                        subset, any_a_sites, ref, index_col_suffix
+                    )
 
                     layer_data = {}
                     for lname in {length_layer, layer_gpc, layer_cpg, layer_c, layer_a}:

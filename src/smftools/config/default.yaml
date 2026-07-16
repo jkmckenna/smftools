@@ -261,6 +261,11 @@ invert_adata: False # Whether to invert the AnnData along the positions axis.
 reindexing_offsets:
   null : null
 reindexed_var_suffix: "reindexed"
+# Per-reference display inversion: {ref: True} flips the sign of that
+# reference's reindexed coordinate so "left of anchor = negative, right of
+# anchor = positive" still holds once the reference is rendered in reverse
+# column order. Additive to reindexing_offsets; independent of invert_adata.
+reindexing_invert: {}
 
 # Spatial Analysis - QC Plotting params
 rows_per_qc_histogram_grid: 12
