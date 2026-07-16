@@ -465,6 +465,34 @@ def test_hmm_trainer_fit_or_load_records_fit_history_for_new_fits(tmp_path):
     assert all(isinstance(v, float) for v in payload["fit_history"])
 
 
+def test_hmm_trainer_fit_or_load_default_tol_stops_before_max_iter(tmp_path):
+    # Regression test for the default hmm_tol (1e-5, relative -- see
+    # BaseHMM.fit's docstring) actually being used when cfg doesn't set
+    # hmm_tol at all, and for it meaningfully early-stopping a real fit_or_load
+    # call rather than always running to hmm_max_iter (the old absolute
+    # default of 1e-4 fired at iteration 2 on real-scale log-likelihoods,
+    # i.e. essentially never let EM run, while being irrelevantly loose here).
+    import torch
+
+    from smftools.cli.hmm_adata import HMMTrainer
+
+    cfg = _hmm_cfg(hmm_max_iter=200)  # no hmm_tol override -- exercise the default
+    trainer = HMMTrainer(cfg=cfg, models_dir=tmp_path / "models")
+    rng = np.random.default_rng(4)
+    X = np.zeros((30, 12))
+    half = 15
+    X[:half, :6] = 1
+    X[half:, 6:] = 1
+    X = np.logical_xor(X.astype(bool), rng.random(X.shape) < 0.05).astype(float)
+
+    trainer.fit_or_load(
+        sample="bc1", ref="ref_top__0_12", label="GpC", arch="single", X=X, coords=None, device="cpu"
+    )
+
+    payload = torch.load(trainer._path("PER", "bc1", "ref_top__0_12", "GpC"), map_location="cpu")
+    assert len(payload["fit_history"]) < 200
+
+
 def test_plot_hmm_fit_history_reads_checkpoints_and_registers_plot(tmp_path):
     import torch
 

@@ -69,6 +69,27 @@ def test_fit_em_log_likelihood_is_nondecreasing_across_iterations():
 
 
 @pytest.mark.unit
+def test_fit_em_relative_tolerance_stops_before_max_iter_once_converged():
+    # Regression test for the tol early-stop mechanism actually working: the
+    # break condition compares the iteration-over-iteration change against
+    # tol * max(abs(current_ll), 1.0), not a fixed absolute epsilon -- a real
+    # log-likelihood's magnitude scales with dataset size (N*L), so a fixed
+    # absolute tol (the pre-fix default) either fires immediately (irrelevant
+    # scale) or never fires before max_iter (too-large scale). With the
+    # default relative tol=1e-5 (BaseHMM.fit), a small, easily-learnable
+    # synthetic dataset should converge and stop well short of a generous
+    # max_iter budget.
+    rng = np.random.default_rng(3)
+    X = _synthetic_binary_data(rng)
+    coords = np.arange(X.shape[1])
+    model = create_hmm(_cfg(), arch="single", device="cpu")
+
+    hist = model.fit(X, coords, device="cpu", max_iter=200, tol=1e-5, verbose=False)
+
+    assert len(hist) < 200
+
+
+@pytest.mark.unit
 def test_multi_bernoulli_fit_em_log_likelihood_is_not_a_near_zero_constant():
     rng = np.random.default_rng(2)
     x_single = _synthetic_binary_data(rng, n_reads=30, n_positions=16)

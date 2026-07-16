@@ -695,7 +695,7 @@ class BaseHMM(nn.Module):
         coords: Optional[np.ndarray] = None,
         *,
         max_iter: int = 50,
-        tol: float = 1e-4,
+        tol: float = 1e-5,
         device: Optional[Union[str, torch.device]] = None,
         update_start: bool = True,
         update_trans: bool = True,
@@ -709,7 +709,12 @@ class BaseHMM(nn.Module):
             X: Observations array.
             coords: Optional coordinate array.
             max_iter: Maximum EM iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance -- EM stops early once the
+                log-likelihood's iteration-over-iteration change drops below
+                ``tol * max(abs(current_log_likelihood), 1.0)``. Relative
+                because the log-likelihood's magnitude scales with dataset
+                size (N*L), so a fixed absolute threshold isn't portable
+                across differently-sized fits.
             device: Device specifier.
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transition probabilities.
@@ -804,7 +809,7 @@ class BaseHMM(nn.Module):
             coords: Coordinate array aligned to X.
             device: Torch device.
             max_iter: Maximum iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance (see BaseHMM.fit's docstring).
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transitions.
             update_emission: Whether to update emission parameters.
@@ -1498,7 +1503,7 @@ class SingleBernoulliHMM(BaseHMM):
             coords: Coordinate array aligned to X.
             device: Torch device.
             max_iter: Maximum iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance (see BaseHMM.fit's docstring).
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transitions.
             update_emission: Whether to update emission parameters.
@@ -1589,7 +1594,11 @@ class SingleBernoulliHMM(BaseHMM):
                     hist[-1],
                 )
 
-            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol):
+            # Relative tolerance: the true log-likelihood's magnitude scales with
+            # N*L, so a fixed absolute epsilon isn't portable across dataset
+            # sizes (confirmed on real data: the same tol that stops one task at
+            # iteration ~20 doesn't fire on a larger task until iteration ~100+).
+            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol) * max(abs(hist[-1]), 1.0):
                 break
 
         return hist
@@ -1781,7 +1790,7 @@ class MultiBernoulliHMM(BaseHMM):
             coords: Coordinate array aligned to X.
             device: Torch device.
             max_iter: Maximum iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance (see BaseHMM.fit's docstring).
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transitions.
             update_emission: Whether to update emission parameters.
@@ -1878,7 +1887,11 @@ class MultiBernoulliHMM(BaseHMM):
                     hist[-1],
                 )
 
-            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol):
+            # Relative tolerance: the true log-likelihood's magnitude scales with
+            # N*L, so a fixed absolute epsilon isn't portable across dataset
+            # sizes (confirmed on real data: the same tol that stops one task at
+            # iteration ~20 doesn't fire on a larger task until iteration ~100+).
+            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol) * max(abs(hist[-1]), 1.0):
                 break
 
         return hist
@@ -2209,7 +2222,7 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
             coords: Coordinate array aligned to X.
             device: Torch device.
             max_iter: Maximum iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance (see BaseHMM.fit's docstring).
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transitions.
             update_emission: Whether to update emission parameters.
@@ -2312,7 +2325,11 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
                     hist[-1],
                 )
 
-            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol):
+            # Relative tolerance: the true log-likelihood's magnitude scales with
+            # N*L, so a fixed absolute epsilon isn't portable across dataset
+            # sizes (confirmed on real data: the same tol that stops one task at
+            # iteration ~20 doesn't fire on a larger task until iteration ~100+).
+            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol) * max(abs(hist[-1]), 1.0):
                 break
 
         return hist
