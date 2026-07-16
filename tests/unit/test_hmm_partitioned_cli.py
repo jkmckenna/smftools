@@ -249,6 +249,46 @@ def test_partitioned_hmm_writes_task_store_and_rematerializes_layers(tmp_path, m
     assert "barcode_hmm_feature_fraction" in plot_types
 
 
+def test_partitioned_hmm_excludes_reads_failing_qc(tmp_path, monkeypatch):
+    # End-to-end regression test for the passes_dedup/passes_qc gate: a read
+    # that fails read QC (here, read2's length is below read_len_filter_thresholds)
+    # must never reach the HMM task catalog, mirroring the equivalent check
+    # already covered for the spatial stage
+    # (test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage).
+    from smftools.tools import partitioned_hmm
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess_cfg = _preprocess_cfg()
+    preprocess_cfg.read_mapping_quality_filter_thresholds = [55, None]
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], preprocess_cfg, tmp_path / "preprocess_outputs"
+    )
+    preprocess_obs = pd.read_parquet(preprocess["obs"]).set_index("read_id")
+    assert preprocess_obs["passes_dedup"].to_dict() == {"read1": True, "read2": False}
+
+    def annotate(adata, task, cfg, models_dir):
+        adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
+        adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
+        return ["GpC_test_feature"]
+
+    monkeypatch.setattr(partitioned_hmm, "_annotate_task", annotate)
+    cfg = SimpleNamespace(target_task_memory_mb=1)
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+    catalog = pd.read_parquet(outputs["task_catalog"])
+    assert catalog["n_reads"].sum() == 1
+    task, _ = safe_read_zarr(outputs["task_catalog"].parent / catalog.iloc[0]["group_path"])
+    assert list(task.obs_names) == ["read1"]
+    spine, _ = safe_read_h5ad(outputs["spine"])
+    assert spine.uns["hmm_filter_mask"] == "passes_dedup"
+
+
 def test_partitioned_hmm_forces_sequential_execution_on_gpu_device(tmp_path, monkeypatch):
     # Regression test: multiple worker *processes* concurrently initializing
     # the same GPU context (confirmed via real-data testing: MPS on Apple

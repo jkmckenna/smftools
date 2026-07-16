@@ -556,10 +556,14 @@ def test_partitioned_executor_labels_deaminase_pcr_chimeras(tmp_path):
     # Label lands on the obs sidecar parquet ...
     obs = pd.read_parquet(outputs["obs"]).set_index("read_id")
     assert obs["deaminase_PCR_chimera"].to_dict() == {"read1": True, "read2": False}
+    # ... and chimeric reads are excluded from read QC, even though read1 would
+    # otherwise pass length/quality/mapping filters (see _frame()/_deaminase_frame()).
+    assert obs["passes_read_qc"].to_dict() == {"read1": False, "read2": False}
 
     # ... and propagates onto the derived spine obs.
     spine, _ = safe_read_h5ad(outputs["spine"])
     assert spine.obs["deaminase_PCR_chimera"].to_dict() == {"read1": True, "read2": False}
+    assert spine.obs["passes_read_qc"].to_dict() == {"read1": False, "read2": False}
 
 
 def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage(tmp_path):

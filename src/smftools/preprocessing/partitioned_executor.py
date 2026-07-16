@@ -461,7 +461,40 @@ def reduce_partial_coverage(
 
 
 def write_read_qc_sidecar(spine, cfg, output_path: str | Path) -> Path:
-    """Compute read-level QC as an aligned mask without deleting spine rows."""
+    """Compute read-level QC as an aligned mask without deleting spine rows.
+
+    Entry point of the preprocess-stage QC/dedup chain. The full chain, in
+    execution order, is:
+
+    1. ``write_read_qc_sidecar`` (this function) -> ``obs["passes_read_qc"]``:
+       length/quality/mapping thresholds (``filter_reads_on_length_quality_mapping``:
+       ``read_len_filter_thresholds``, ``mapped_len_filter_thresholds``, ratio
+       thresholds, ``read_quality_filter_thresholds``,
+       ``read_mapping_quality_filter_thresholds``) AND CIGAR indel size limits
+       (``filter_reads_on_cigar_indels``: ``max_internal_insertion_length``,
+       ``max_internal_deletion_length``). For deaminase modality, reads labeled
+       as PCR chimeras (``deaminase_chimera_mask``: ``ct_event_count``,
+       ``ga_event_count``, ``strand_segment_purity`` thresholded by
+       ``deaminase_chimera_min_events_per_span``,
+       ``deaminase_chimera_min_segment_purity``,
+       ``deaminase_chimera_max_single_strand_fraction``) are ANDed out of
+       ``passes_read_qc`` too, and recorded separately on
+       ``obs["deaminase_PCR_chimera"]`` for inspection.
+    2. ``append_modification_qc_mask`` -> ``obs["passes_modification_qc"]``
+       (``filter_reads_on_modification_thresholds``: per-site-type modification
+       fraction thresholds plus ``min_valid_fraction_positions_in_read_vs_ref``)
+       and ``obs["passes_qc"] = passes_read_qc & passes_modification_qc``.
+    3. ``reduce_duplicate_reads`` -> ``obs["passes_dedup"] = passes_qc & ~is_duplicate``
+       (windowed Hamming-distance duplicate detection over
+       ``duplicate_detection_site_types``, gated by ``bypass_flag_duplicate_reads``).
+
+    Downstream, ``execute_partitioned_spatial``/``execute_partitioned_hmm`` both
+    select ``next(col for col in ("passes_dedup", "passes_qc") if col in spine.obs)``
+    as ``plan_preprocess_tasks``'s ``filter_mask``, so only reads passing the full
+    chain (or ``passes_qc`` alone, if dedup hasn't run) are ever included in a
+    task's ``read_ids`` -- reads failing any step never reach spatial/HMM
+    materialization, not merely get flagged.
+    """
     from .filter_reads_on_cigar_indels import filter_reads_on_cigar_indels
     from .filter_reads_on_length_quality_mapping import (
         filter_reads_on_length_quality_mapping,
@@ -503,6 +536,33 @@ def write_read_qc_sidecar(spine, cfg, output_path: str | Path) -> Path:
         )
     output.insert(0, "read_id", output.index.astype(str))
     output["passes_read_qc"] = output["read_id"].isin(filtered.obs_names)
+
+    if str(getattr(cfg, "smf_modality", "conversion")) == "deaminase" and not bool(
+        getattr(cfg, "bypass_label_deaminase_pcr_chimeras", False)
+    ):
+        from .label_deaminase_pcr_chimeras import _REQUIRED_COLUMNS, deaminase_chimera_mask
+
+        missing = [column for column in _REQUIRED_COLUMNS if column not in output.columns]
+        if missing:
+            logger.warning(
+                "Deaminase chimera labeling skipped: obs is missing %s. "
+                "Re-run raw extraction to populate strand-switch metrics.",
+                missing,
+            )
+            output["deaminase_PCR_chimera"] = False
+        else:
+            output["deaminase_PCR_chimera"] = deaminase_chimera_mask(
+                output["ct_event_count"],
+                output["ga_event_count"],
+                output["strand_segment_purity"],
+                min_events_per_span=cfg.deaminase_chimera_min_events_per_span,
+                min_segment_purity=cfg.deaminase_chimera_min_segment_purity,
+                max_single_strand_fraction=cfg.deaminase_chimera_max_single_strand_fraction,
+            )
+            output["passes_read_qc"] = (
+                output["passes_read_qc"] & ~output["deaminase_PCR_chimera"]
+            )
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output.to_parquet(output_path, index=False)
@@ -621,30 +681,6 @@ def append_modification_qc_mask(obs_path: str | Path, cfg) -> Path:
     )
     obs["passes_modification_qc"] = obs.index.isin(filtered.obs_names)
     obs["passes_qc"] = obs["passes_read_qc"] & obs["passes_modification_qc"]
-    obs.reset_index(drop=True).to_parquet(obs_path, index=False)
-    return obs_path
-
-
-def append_deaminase_chimera_label(obs_path: str | Path, cfg) -> Path:
-    """Label deaminase PCR chimeras on the obs sidecar from strand-switch metrics."""
-    if str(getattr(cfg, "smf_modality", "conversion")) != "deaminase":
-        return Path(obs_path)
-
-    from .label_deaminase_pcr_chimeras import label_deaminase_pcr_chimeras
-
-    obs_path = Path(obs_path)
-    obs = pd.read_parquet(obs_path).set_index("read_id", drop=False)
-    input_adata = ad.AnnData(obs=obs.drop(columns="read_id"))
-    labeled = label_deaminase_pcr_chimeras(
-        input_adata,
-        min_events_per_span=cfg.deaminase_chimera_min_events_per_span,
-        min_segment_purity=cfg.deaminase_chimera_min_segment_purity,
-        max_single_strand_fraction=cfg.deaminase_chimera_max_single_strand_fraction,
-        bypass=bool(getattr(cfg, "bypass_label_deaminase_pcr_chimeras", False)),
-    )
-    if "deaminase_PCR_chimera" not in labeled.obs:  # bypassed
-        return obs_path
-    obs["deaminase_PCR_chimera"] = labeled.obs["deaminase_PCR_chimera"].to_numpy()
     obs.reset_index(drop=True).to_parquet(obs_path, index=False)
     return obs_path
 
@@ -1004,7 +1040,6 @@ def execute_partitioned_preprocessing(
     )
     obs_sidecar = reduce_read_modification_stats(catalog_path, var_catalog, obs_sidecar)
     obs_sidecar = append_modification_qc_mask(obs_sidecar, cfg)
-    obs_sidecar = append_deaminase_chimera_label(obs_sidecar, cfg)
 
     derived_spine = spine.copy()
     # Stored relative to the run's output_directory (not output_dir itself), so
