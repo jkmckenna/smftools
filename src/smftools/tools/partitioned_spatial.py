@@ -850,10 +850,35 @@ def _plot_read_periodicity(records, output_dir: Path, layout, cfg) -> None:
                 for barcode in barcodes
             ]
             if any(len(values) for values in distributions):
-                axis.boxplot(distributions, showfliers=False, patch_artist=True, zorder=2)
-                for patch in axis.patches:
-                    patch.set(facecolor="#9ec5ab", edgecolor="#264653", linewidth=0.7)
-                # Jittered per-read points on top of each box -- see
+                # A KDE (what violinplot draws) is undefined for <2 points or
+                # zero-variance data, so those positions are dropped from the
+                # violin call and rely on the swarm overlay alone.
+                violin_positions = [
+                    position
+                    for position, values in enumerate(distributions, start=1)
+                    if len(values) >= 2 and np.std(values) > 0
+                ]
+                violin_distributions = [
+                    distributions[position - 1] for position in violin_positions
+                ]
+                if violin_distributions:
+                    parts = axis.violinplot(
+                        violin_distributions,
+                        positions=violin_positions,
+                        showmeans=False,
+                        showmedians=True,
+                        showextrema=False,
+                        widths=0.7,
+                    )
+                    for body in parts["bodies"]:
+                        body.set_facecolor("#9ec5ab")
+                        body.set_edgecolor("#264653")
+                        body.set_alpha(0.7)
+                        body.set_zorder(2)
+                    parts["cmedians"].set_color("#264653")
+                    parts["cmedians"].set_linewidth(1.0)
+                    parts["cmedians"].set_zorder(2.5)
+                # Jittered per-read points on top of each violin -- see
                 # preprocessing/partitioned_plots.py::_barcode_distribution_plots
                 # for why this uses jitter+alpha instead of a true swarmplot.
                 for position, values in enumerate(distributions, start=1):

@@ -268,16 +268,36 @@ def _barcode_distribution_plots(
                 ).dropna()
                 for barcode in barcodes
             ]
-            axis.boxplot(
-                distributions,
-                tick_labels=barcodes,
-                showfliers=False,
-                patch_artist=True,
-                boxprops={"facecolor": "#a8dadc", "edgecolor": "#457b9d"},
-                medianprops={"color": "#c1121f", "linewidth": 1.2},
-                zorder=2,
-            )
-            # Jittered per-read points on top of each box -- a true swarmplot
+            # A KDE (what violinplot draws) is undefined for <2 points or
+            # zero-variance data, so those positions are dropped from the
+            # violin call and rely on the swarm overlay alone -- xticks are
+            # still set for every barcode below so positions stay aligned.
+            violin_positions = [
+                position
+                for position, values in enumerate(distributions, start=1)
+                if len(values) >= 2 and values.std() > 0
+            ]
+            violin_distributions = [
+                distributions[position - 1] for position in violin_positions
+            ]
+            if violin_distributions:
+                parts = axis.violinplot(
+                    violin_distributions,
+                    positions=violin_positions,
+                    showmeans=False,
+                    showmedians=True,
+                    showextrema=False,
+                    widths=0.7,
+                )
+                for body in parts["bodies"]:
+                    body.set_facecolor("#a8dadc")
+                    body.set_edgecolor("#457b9d")
+                    body.set_alpha(0.7)
+                    body.set_zorder(2)
+                parts["cmedians"].set_color("#c1121f")
+                parts["cmedians"].set_linewidth(1.2)
+                parts["cmedians"].set_zorder(2.5)
+            # Jittered per-read points on top of each violin -- a true swarmplot
             # (non-overlapping points) doesn't scale to the read counts seen
             # here, so this uses random x-jitter with low alpha instead,
             # rasterized so the saved PNG stays a reasonable size at high
@@ -299,6 +319,8 @@ def _barcode_distribution_plots(
                     rasterized=True,
                     zorder=3,
                 )
+            axis.set_xticks(range(1, len(barcodes) + 1))
+            axis.set_xticklabels(barcodes)
             axis.tick_params(axis="x", labelrotation=90, labelsize=6)
             axis.set(title=metric, ylabel=metric)
             if metric.startswith("Fraction_") or metric.endswith("_ratio"):
