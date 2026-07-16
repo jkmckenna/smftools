@@ -236,6 +236,7 @@ def chimeric_adata_core(
     )
     from ..preprocessing import (
         load_sample_sheet,
+        reindex_references_adata,
     )
     from ..readwrite import make_dirs
     from ..tools import (
@@ -294,6 +295,36 @@ def chimeric_adata_core(
         )
 
     references = adata.obs[cfg.reference_column].cat.categories
+
+    # -----------------------------
+    # Optional reindexing by reference
+    # -----------------------------
+    reindex_references_adata(
+        adata,
+        reference_col=cfg.reference_column,
+        offsets=cfg.reindexing_offsets,
+        new_col=cfg.reindexed_var_suffix,
+        invert=getattr(cfg, "reindexing_invert", None),
+    )
+    if adata.uns.get("reindex_references_adata_performed", False):
+        reindex_suffix = cfg.reindexed_var_suffix
+    else:
+        reindex_suffix = None
+
+    def _labels_for_ref(subset: ad.AnnData, ref: str) -> np.ndarray:
+        """Return per-position labels for CSV/uns coordinate output.
+
+        Uses the reindexed var column when configured (so reindexing_offsets/
+        reindexing_invert are reflected), else falls back to var_names. This
+        is index-aligned with var_names (no reordering) -- it's a label
+        substitution for physical-index lookups (segment start/end, window
+        centers), not a heatmap column order.
+        """
+        if reindex_suffix:
+            colname = f"{ref}_{reindex_suffix}"
+            if colname in subset.var.columns:
+                return subset.var[colname].to_numpy()
+        return subset.var_names.to_numpy()
 
     # Auto-detect variant call layer from a prior variant_adata run
     variant_call_layer_name = None
@@ -357,6 +388,8 @@ def chimeric_adata_core(
                         return_fraction=cfg.rolling_nn_return_fraction,
                         store_obsm=cfg.rolling_nn_obsm_key,
                         collect_zero_pairs=True,
+                        index_col_suffix=reindex_suffix,
+                        reference_col=cfg.reference_column,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -383,6 +416,8 @@ def chimeric_adata_core(
                         min_overlap=cfg.rolling_nn_min_overlap,
                         return_fraction=cfg.rolling_nn_return_fraction,
                         layer=rolling_nn_layer,
+                        index_col_suffix=reindex_suffix,
+                        reference_col=cfg.reference_column,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -441,7 +476,7 @@ def chimeric_adata_core(
                         try:
                             make_dirs([rolling_zero_pairs_out_dir])
                             segments_df = zero_hamming_segments_to_dataframe(
-                                segment_records, subset.var_names.to_numpy()
+                                segment_records, _labels_for_ref(subset, reference)
                             )
                             segments_df.to_csv(
                                 rolling_zero_pairs_out_dir
@@ -461,7 +496,7 @@ def chimeric_adata_core(
                     if top_segments_per_read is not None:
                         raw_df, filtered_df = select_top_segments_per_read(
                             segment_records,
-                            subset.var_names.to_numpy(),
+                            _labels_for_ref(subset, reference),
                             max_segments_per_read=top_segments_per_read,
                             max_segment_overlap=getattr(
                                 cfg, "rolling_nn_zero_pairs_top_segments_max_overlap", None
@@ -895,6 +930,8 @@ def chimeric_adata_core(
                             store_obsm=cross_obsm_key,
                             collect_zero_pairs=True,
                             sample_labels=cross_labels,
+                            index_col_suffix=reindex_suffix,
+                            reference_col=cfg.reference_column,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -923,6 +960,8 @@ def chimeric_adata_core(
                             min_overlap=cfg.rolling_nn_min_overlap,
                             return_fraction=cfg.rolling_nn_return_fraction,
                             layer=rolling_nn_layer,
+                            index_col_suffix=reindex_suffix,
+                            reference_col=cfg.reference_column,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -961,7 +1000,7 @@ def chimeric_adata_core(
                             if top_segments_per_read is not None:
                                 raw_df, filtered_df = select_top_segments_per_read(
                                     segment_records,
-                                    cross_subset.var_names.to_numpy(),
+                                    _labels_for_ref(cross_subset, reference),
                                     max_segments_per_read=top_segments_per_read,
                                     max_segment_overlap=getattr(
                                         cfg, "rolling_nn_zero_pairs_top_segments_max_overlap", None

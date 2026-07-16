@@ -134,14 +134,24 @@ def zero_hamming_segments_to_dataframe(
     )
 
 
-def _window_center_coordinates(adata, starts: np.ndarray, window: int) -> np.ndarray:
+def _window_center_coordinates(
+    adata, starts: np.ndarray, window: int, coord_source: Optional[np.ndarray] = None
+) -> np.ndarray:
     """
     Compute window center coordinates using AnnData var positions.
 
     If coordinates are numeric, return the mean coordinate per window.
     If not numeric, return the midpoint label for each window.
+
+    Args:
+        coord_source: Optional per-position coordinate array (index-aligned
+            with ``adata.var_names``) to use instead of ``var_names`` itself
+            -- e.g. a reindexed column, so the mean/midpoint reflects
+            reindexing_offsets/reindexing_invert. Falls back to ``var_names``
+            when not provided.
     """
-    coord_source = adata.var_names
+    if coord_source is None:
+        coord_source = adata.var_names
 
     coords = np.asarray(coord_source)
     if coords.size == 0:
@@ -203,6 +213,8 @@ def rolling_window_nn_distance(
     collect_zero_pairs: bool = False,
     zero_pairs_uns_key: Optional[str] = None,
     sample_labels: Optional[np.ndarray] = None,
+    index_col_suffix: Optional[str] = None,
+    reference_col: str = "Reference_strand",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Rolling-window nearest-neighbor distance per read, overlap-aware.
@@ -212,6 +224,14 @@ def rolling_window_nn_distance(
       - require overlap >= min_overlap
       - mismatch = count(x_i != x_j) over overlapped positions
       - distance = mismatch/overlap (if return_fraction) else mismatch
+
+    index_col_suffix: If set and ``adata`` contains exactly one reference
+        value in ``reference_col``, use ``adata.var[f"{ref}_{index_col_suffix}"]``
+        for the stored window centers instead of ``var_names`` (e.g.
+        ``"reindexed"``), so reindexing_offsets/reindexing_invert are
+        reflected. Falls back to ``var_names`` when ``adata`` spans multiple
+        references (no single offset/sign would apply) or the column is
+        absent.
 
     Returns
     -------
@@ -331,9 +351,19 @@ def rolling_window_nn_distance(
                 zero_pairs_by_window.append(np.empty((0, 2), dtype=int))
 
     if store_obsm is not None:
+        coord_source = None
+        if index_col_suffix and reference_col in adata.obs.columns:
+            refs_present = adata.obs[reference_col].unique()
+            if len(refs_present) == 1:
+                colname = f"{refs_present[0]}_{index_col_suffix}"
+                if colname in adata.var.columns:
+                    coord_source = adata.var[colname].to_numpy()
+
         adata.obsm[store_obsm] = out
         adata.uns[f"{store_obsm}_starts"] = starts
-        adata.uns[f"{store_obsm}_centers"] = _window_center_coordinates(adata, starts, window)
+        adata.uns[f"{store_obsm}_centers"] = _window_center_coordinates(
+            adata, starts, window, coord_source=coord_source
+        )
         adata.uns[f"{store_obsm}_window"] = int(window)
         adata.uns[f"{store_obsm}_step"] = int(step)
         adata.uns[f"{store_obsm}_min_overlap"] = int(min_overlap)
@@ -804,6 +834,8 @@ def assign_rolling_nn_results(
     min_overlap: int,
     return_fraction: bool,
     layer: Optional[str],
+    index_col_suffix: Optional[str] = None,
+    reference_col: str = "Reference_strand",
 ) -> None:
     """
     Assign rolling NN results computed on a subset back onto a parent AnnData.
@@ -830,15 +862,33 @@ def assign_rolling_nn_results(
         Whether distances are fractional (stored in parent_adata.uns).
     layer : str | None
         Layer used for calculations (stored in parent_adata.uns).
+    index_col_suffix : str | None
+        Passed through to `_window_center_coordinates` via the same
+        single-reference resolution used in `rolling_window_nn_distance`, so
+        reindexing_offsets/reindexing_invert are reflected in the stored
+        window centers.
+    reference_col : str
+        Obs column used to resolve the single reference for `index_col_suffix`.
     """
     n_obs = parent_adata.n_obs
     n_windows = values.shape[1]
+
+    def _coord_source(adata) -> Optional[np.ndarray]:
+        if not index_col_suffix or reference_col not in adata.obs.columns:
+            return None
+        refs_present = adata.obs[reference_col].unique()
+        if len(refs_present) != 1:
+            return None
+        colname = f"{refs_present[0]}_{index_col_suffix}"
+        if colname not in adata.var.columns:
+            return None
+        return adata.var[colname].to_numpy()
 
     if obsm_key not in parent_adata.obsm:
         parent_adata.obsm[obsm_key] = np.full((n_obs, n_windows), np.nan, dtype=float)
         parent_adata.uns[f"{obsm_key}_starts"] = starts
         parent_adata.uns[f"{obsm_key}_centers"] = _window_center_coordinates(
-            subset_adata, starts, window
+            subset_adata, starts, window, coord_source=_coord_source(subset_adata)
         )
         parent_adata.uns[f"{obsm_key}_window"] = int(window)
         parent_adata.uns[f"{obsm_key}_step"] = int(step)
@@ -859,7 +909,9 @@ def assign_rolling_nn_results(
             )
         existing_centers = parent_adata.uns.get(f"{obsm_key}_centers")
         if existing_centers is not None:
-            expected_centers = _window_center_coordinates(subset_adata, starts, window)
+            expected_centers = _window_center_coordinates(
+                subset_adata, starts, window, coord_source=_coord_source(subset_adata)
+            )
             if not np.array_equal(existing_centers, expected_centers):
                 raise ValueError(
                     f"Existing obsm[{obsm_key!r}] has different window centers than new values."
