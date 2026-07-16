@@ -9,6 +9,7 @@ from smftools.cli.raw_adata import (
     _attach_direct_signals,
     _attach_direct_signals_from_bam,
     _bucket_read_ids,
+    _ChromosomeGroupAccumulator,
     _conversion_signal,
     _map_references_parallel,
     _n_buckets_for_reference,
@@ -92,6 +93,97 @@ def test_split_by_reference_strand_single_strand_frame_yields_one_group():
 
     assert len(groups) == 1
     assert len(groups[0]) == 2
+
+
+def _rows(*read_ids, reference_strand="chr1_top"):
+    return pd.DataFrame({"read_id": list(read_ids), "Reference_strand": reference_strand})
+
+
+def test_chromosome_group_accumulator_conversion_waits_for_all_conversion_state_records():
+    # Regression test for a real data-loss bug: conversion modality aligns
+    # each chromosome against multiple conversion-state variants (here,
+    # "chr1_unconverted_top" and "chr1_5mC_top", matching a real
+    # conversion_types=["5mC"] config), both belonging to chromosome "chr1".
+    # Before this fix, completion was tracked per raw record, so each variant
+    # independently yielded a "complete" group for the same Reference_strand
+    # -- the streaming shard writer always starts a fresh write at
+    # shard_index=0, so the second write silently overwrote the first's
+    # shard file on disk while obs.parquet kept pointers for both (confirmed
+    # on a real dataset: 3 of 4 references affected, up to 23% read loss).
+    record_chromosome = {
+        "chr1_unconverted_top": "chr1",
+        "chr1_5mC_top": "chr1",
+    }
+    accumulator = _ChromosomeGroupAccumulator(record_chromosome)
+
+    # First record completes -- must NOT yield yet, its chromosome sibling
+    # ("chr1_5mC_top") hasn't completed.
+    result = accumulator.complete("chr1_unconverted_top", [_rows("r1", "r2")])
+    assert result is None
+
+    # Second (and last) record for "chr1" completes -- now the combined group
+    # for the whole chromosome is returned, with reads from BOTH records.
+    result = accumulator.complete("chr1_5mC_top", [_rows("r3", "r4", "r5")])
+    assert result is not None
+    combined = pd.concat(result, ignore_index=True)
+    assert sorted(combined["read_id"]) == ["r1", "r2", "r3", "r4", "r5"]
+
+
+def test_chromosome_group_accumulator_deaminase_yields_immediately_single_record():
+    # Deaminase modality has exactly one reference_map record per chromosome
+    # (its top/bottom split happens per-read from mismatch trend, not via
+    # separate alignment targets) -- confirm this one-record-per-chromosome
+    # shape still yields as soon as that record completes, unchanged from
+    # before this fix (not blocked waiting on phantom siblings).
+    record_chromosome = {"chr1": "chr1"}
+    accumulator = _ChromosomeGroupAccumulator(record_chromosome)
+
+    result = accumulator.complete("chr1", [_rows("r1", "r2", reference_strand="chr1_top")])
+
+    assert result is not None
+    combined = pd.concat(result, ignore_index=True)
+    assert sorted(combined["read_id"]) == ["r1", "r2"]
+
+
+def test_chromosome_group_accumulator_handles_zero_bucket_records():
+    # A record with zero read_ids (e.g. "chr1_5mC_bottom" with no reads in a
+    # real conversion dataset, per the debug trace that found this bug)
+    # dispatches no work and must be marked complete with an empty frame list
+    # up front, or its chromosome siblings would wait on it forever.
+    record_chromosome = {
+        "chr1_unconverted_top": "chr1",
+        "chr1_5mC_top": "chr1",
+        "chr1_5mC_bottom": "chr1",
+    }
+    accumulator = _ChromosomeGroupAccumulator(record_chromosome)
+
+    assert accumulator.complete("chr1_5mC_bottom", []) is None
+    assert accumulator.complete("chr1_unconverted_top", [_rows("r1")]) is None
+    result = accumulator.complete("chr1_5mC_top", [_rows("r2")])
+
+    assert result is not None
+    combined = pd.concat(result, ignore_index=True)
+    assert sorted(combined["read_id"]) == ["r1", "r2"]
+
+
+def test_chromosome_group_accumulator_independent_chromosomes_dont_block_each_other():
+    record_chromosome = {
+        "chr1_unconverted_top": "chr1",
+        "chr1_5mC_top": "chr1",
+        "chr2_unconverted_top": "chr2",
+    }
+    accumulator = _ChromosomeGroupAccumulator(record_chromosome)
+
+    # chr2 has only one contributing record -- completes independently of
+    # chr1's still-outstanding second record.
+    result = accumulator.complete("chr2_unconverted_top", [_rows("r9", reference_strand="chr2_top")])
+    assert result is not None
+    assert sorted(pd.concat(result, ignore_index=True)["read_id"]) == ["r9"]
+
+    assert accumulator.complete("chr1_unconverted_top", [_rows("r1")]) is None
+    result = accumulator.complete("chr1_5mC_top", [_rows("r2")])
+    assert result is not None
+    assert sorted(pd.concat(result, ignore_index=True)["read_id"]) == ["r1", "r2"]
 
 
 def test_attach_direct_signals_converts_reference_to_query_coordinates(tmp_path):

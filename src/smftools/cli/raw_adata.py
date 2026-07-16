@@ -578,6 +578,58 @@ def _split_by_reference_strand(frame: pd.DataFrame):
         yield strand_frame
 
 
+class _ChromosomeGroupAccumulator:
+    """Accumulate per-record completions into per-chromosome combined frames.
+
+    A single physical chromosome+strand can be split across multiple
+    ``reference_map`` records -- conversion modality aligns each chromosome
+    against several conversion-state variants (e.g. ``conversion_types=
+    ["5mC"]`` produces ``"{chrom}_unconverted_top"``, ``"{chrom}_5mC_top"``,
+    and ``"{chrom}_5mC_bottom"`` as three separate alignment targets/records
+    for one chromosome), all of which normalize to the same final
+    ``Reference_strand`` once extracted. Deaminase modality, by contrast, has
+    exactly one record per chromosome (its top/bottom split happens per-read
+    from mismatch trend, not via separate alignment targets), so every
+    chromosome here has exactly one contributing record.
+
+    A group must not be finalized (yielded to the streaming shard writer)
+    until every record sharing its chromosome has completed -- finalizing as
+    soon as one record's own buckets finish would hand the writer multiple
+    separate "complete" groups for the same ``Reference_strand``, and it
+    always starts a fresh group at ``shard_index=0``, so a later record's
+    group silently overwrites an earlier one's shard file on disk even
+    though ``obs.parquet`` ends up with pointers for both (real data loss,
+    confirmed on a real conversion-modality dataset before this fix: 3 of 4
+    references affected, up to 23% of reads for one).
+    """
+
+    def __init__(self, record_chromosome: dict[str, str]):
+        self._record_chromosome = dict(record_chromosome)
+        self._remaining: dict[str, set[str]] = {}
+        for record, chromosome in self._record_chromosome.items():
+            self._remaining.setdefault(chromosome, set()).add(record)
+        self._pending: dict[str, list[pd.DataFrame]] = {}
+
+    def complete(self, record: str, frames: list[pd.DataFrame]) -> list[pd.DataFrame] | None:
+        """Mark one record's fully-accumulated frames as done.
+
+        ``frames`` may be empty (a record that dispatched no work, e.g. zero
+        read_ids, or whose buckets all returned no rows) -- it must still be
+        marked complete so its chromosome siblings aren't blocked forever.
+
+        Returns the chromosome's combined frame list once every record
+        sharing its chromosome has completed, else ``None``.
+        """
+        chromosome = self._record_chromosome[record]
+        if frames:
+            self._pending.setdefault(chromosome, []).extend(frames)
+        remaining = self._remaining[chromosome]
+        remaining.discard(record)
+        if remaining:
+            return None
+        return self._pending.pop(chromosome, [])
+
+
 def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: dict):
     """Run ``worker(*args, **worker_kwargs)`` once per item in ``items``.
 
@@ -900,10 +952,21 @@ def _build_ragged_records_streaming_convertible(
         # caps concurrency at the reference count and load-balances poorly
         # when read depth is uneven across references (see
         # _n_buckets_for_reference/_bucket_read_ids).
+        #
+        # IMPORTANT: reference_map has one entry per alignment target, not one
+        # per chromosome -- conversion modality aligns against multiple
+        # conversion-state variants of each chromosome+strand (e.g.
+        # "6B6_unconverted_top" and "6B6_5mC_top" both belong to chromosome
+        # "6B6"). _ChromosomeGroupAccumulator waits for every record sharing a
+        # chromosome to complete before combining+splitting by
+        # Reference_strand -- see its docstring for why yielding per-record
+        # instead silently loses data.
         buckets_remaining: dict[str, int] = {}
+        record_chromosome: dict[str, str] = {}
         items = []
         for record, (_length, sequence) in reference_map.items():
             info = record_info[record]
+            record_chromosome[record] = info.chromosome
             read_ids = _read_ids_for_reference(aligned_bam, record)
             n_buckets = _n_buckets_for_reference(len(read_ids), max_workers)
             buckets = _bucket_read_ids(read_ids, n_buckets)
@@ -920,9 +983,17 @@ def _build_ragged_records_streaming_convertible(
             barcode_sidecar=barcode_sidecar,
             umi_sidecar=umi_sidecar,
         )
-        pending: dict[str, list[pd.DataFrame]] = {}
+        accumulator = _ChromosomeGroupAccumulator(record_chromosome)
+        record_pending: dict[str, list[pd.DataFrame]] = {}
         any_rows = False
         from ..memory_guard import resolve_max_workers
+
+        # Records with zero buckets never dispatch a task, so they'd never
+        # reach the completion loop below -- mark them done up front so their
+        # chromosome siblings aren't blocked waiting on them forever.
+        for record, remaining in buckets_remaining.items():
+            if remaining == 0:
+                accumulator.complete(record, [])
 
         for args, (bucket_frame, _found_columns) in _map_references_parallel(
             items,
@@ -932,16 +1003,19 @@ def _build_ragged_records_streaming_convertible(
         ):
             record = args[0]
             if bucket_frame is not None and not bucket_frame.empty:
-                pending.setdefault(record, []).append(bucket_frame)
+                record_pending.setdefault(record, []).append(bucket_frame)
             buckets_remaining[record] -= 1
-            if buckets_remaining[record] == 0:
-                frames = pending.pop(record, [])
-                if frames:
-                    any_rows = True
-                    combined = (
-                        frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
-                    )
-                    yield from _split_by_reference_strand(combined)
+            if buckets_remaining[record] != 0:
+                continue
+            frames = accumulator.complete(record, record_pending.pop(record, []))
+            if frames is None:
+                continue
+            if frames:
+                any_rows = True
+                combined = (
+                    frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+                )
+                yield from _split_by_reference_strand(combined)
         if not any_rows:
             raise RuntimeError(f"no primary mapped reads were extracted from {aligned_bam}")
 
