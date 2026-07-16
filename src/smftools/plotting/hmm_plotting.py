@@ -1474,8 +1474,10 @@ def _hmm_length_one_group(args: dict) -> dict:
         ordered_obs_names.extend([subset_obs_names[i] for i in ordered_rows])
 
         if arr_length is not None:
-            stacked_lengths.append(_layer_to_numpy_np(arr_length[ordered_rows], None, **kw))
-            stacked_lengths_raw.append(_layer_to_numpy_np(arr_length[ordered_rows], None, **kw_raw))
+            stacked_lengths.append(_layer_to_numpy_np(arr_length[ordered_rows], length_sites, **kw))
+            stacked_lengths_raw.append(
+                _layer_to_numpy_np(arr_length[ordered_rows], length_sites, **kw_raw)
+            )
         if any_c_sites.size and arr_c is not None:
             stacked_any_c.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw))
             stacked_any_c_raw.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw_raw))
