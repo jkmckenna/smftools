@@ -289,6 +289,52 @@ def test_partitioned_hmm_excludes_reads_failing_qc(tmp_path, monkeypatch):
     assert spine.uns["hmm_filter_mask"] == "passes_dedup"
 
 
+def test_partitioned_hmm_clustermaps_parallelize_using_cfg_threads(tmp_path, monkeypatch):
+    # Regression test: combined_hmm_raw_clustermap/combined_hmm_length_clustermap
+    # already parallelize across (reference, sample) groups internally via
+    # n_jobs (see plotting/hmm_plotting.py, same pattern partitioned_spatial.py
+    # already uses), but _plot_feature_clustermaps hardcoded n_jobs=1, leaving
+    # that dispatch unused and making clustermap generation the slow, purely
+    # sequential tail of an otherwise-parallel HMM run.
+    import smftools.plotting as plotting_pkg
+    from smftools.tools import partitioned_hmm
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+
+    def annotate(adata, task, cfg, models_dir):
+        adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
+        adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
+        return ["GpC_test_feature"]
+
+    monkeypatch.setattr(partitioned_hmm, "_annotate_task", annotate)
+
+    captured_n_jobs = []
+
+    def fake_raw_clustermap(*args, n_jobs=1, **kwargs):
+        captured_n_jobs.append(n_jobs)
+
+    monkeypatch.setattr(plotting_pkg, "combined_hmm_raw_clustermap", fake_raw_clustermap)
+
+    cfg = SimpleNamespace(
+        target_task_memory_mb=1,
+        threads=4,
+        hmm_clustermap_feature_layers=["test_feature"],
+        hmm_clustermap_length_layers=[],
+    )
+    execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+    assert captured_n_jobs == [4]
+
+
 def test_partitioned_hmm_forces_sequential_execution_on_gpu_device(tmp_path, monkeypatch):
     # Regression test: multiple worker *processes* concurrently initializing
     # the same GPU context (confirmed via real-data testing: MPS on Apple

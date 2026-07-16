@@ -600,7 +600,11 @@ def _plot_feature_clustermaps(
             deaminase=str(getattr(cfg, "smf_modality", "conversion")) == "deaminase",
             index_col_suffix=index_suffix,
             omit_chimeric_reads=bool(getattr(cfg, "omit_chimeric_reads", True)),
-            n_jobs=1,
+            # Matches partitioned_spatial.py's established pattern: combined_hmm_raw_
+            # clustermap/combined_hmm_length_clustermap already parallelize across
+            # (reference, sample) groups internally via ProcessPoolExecutor -- this was
+            # previously hardcoded to 1, leaving that dispatch unused.
+            n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
         )
         for layer in feature_layers:
             plot_dir = base_dir / "features" / _component(layer)
