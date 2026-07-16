@@ -421,6 +421,99 @@ def test_plot_hmm_parameters_across_barcodes_noop_for_global_scope(tmp_path):
     assert catalog.empty
 
 
+def test_hmm_trainer_save_persists_fit_history(tmp_path):
+    import torch
+
+    from smftools.cli.hmm_adata import HMMTrainer
+    from smftools.hmm.HMM import create_hmm
+
+    cfg = _hmm_cfg()
+    trainer = HMMTrainer(cfg=cfg, models_dir=tmp_path / "models")
+    model = create_hmm(cfg, arch="single", device="cpu")
+    path = trainer._path("PER", "bc1", "ref_top__0_100", "GpC")
+
+    trainer._save(model, path, hist=[1.0, 0.5, 0.5000001])
+
+    payload = torch.load(path, map_location="cpu")
+    assert payload["fit_history"] == [1.0, 0.5, 0.5000001]
+
+    # hist=None (the default) must not add the key at all -- distinguishes
+    # "no history recorded" from "history was an empty list".
+    other_path = trainer._path("PER", "bc2", "ref_top__0_100", "GpC")
+    trainer._save(model, other_path)
+    assert "fit_history" not in torch.load(other_path, map_location="cpu")
+
+
+def test_hmm_trainer_fit_or_load_records_fit_history_for_new_fits(tmp_path):
+    import torch
+
+    from smftools.cli.hmm_adata import HMMTrainer
+
+    cfg = _hmm_cfg(hmm_max_iter=3, hmm_tol=0.0)
+    trainer = HMMTrainer(cfg=cfg, models_dir=tmp_path / "models")
+    rng = np.random.default_rng(0)
+    X = rng.integers(0, 2, size=(20, 10)).astype(float)
+
+    trainer.fit_or_load(
+        sample="bc1", ref="ref_top__0_10", label="GpC", arch="single", X=X, coords=None, device="cpu"
+    )
+
+    path = trainer._path("PER", "bc1", "ref_top__0_10", "GpC")
+    payload = torch.load(path, map_location="cpu")
+    assert "fit_history" in payload
+    assert len(payload["fit_history"]) >= 1
+    assert all(isinstance(v, float) for v in payload["fit_history"])
+
+
+def test_plot_hmm_fit_history_reads_checkpoints_and_registers_plot(tmp_path):
+    import torch
+
+    from smftools.cli.hmm_adata import HMMTrainer
+    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
+    from smftools.hmm.HMM import create_hmm
+    from smftools.tools.partitioned_hmm import _plot_hmm_fit_history
+
+    cfg = _hmm_cfg()
+    models_dir = tmp_path / "models"
+    trainer = HMMTrainer(cfg=cfg, models_dir=models_dir)
+    model = create_hmm(cfg, arch="single", device="cpu")
+    trainer._save(
+        model, trainer._path("PER", "bc1", "ref_top__0_100", "GpC"), hist=[1.0, 0.6, 0.55]
+    )
+    trainer._save(
+        model, trainer._path("PER", "bc2", "ref_top__0_100", "GpC"), hist=[1.2, 0.9]
+    )
+    layout = prepare_analysis_plot_layout(tmp_path / "hmm_outputs", stage="hmm")
+
+    _plot_hmm_fit_history(models_dir, layout)
+
+    catalog = pd.read_parquet(layout.catalog)
+    matching = catalog[catalog["plot_type"] == "hmm_fit_history"]
+    assert len(matching) == 1
+    assert matching.iloc[0]["category"] == "training"
+    plot_path = layout.root.parent / matching.iloc[0]["path"]
+    assert plot_path.exists()
+    assert plot_path.stat().st_size > 0
+
+
+def test_plot_hmm_fit_history_noop_when_no_checkpoints_have_history(tmp_path):
+    from smftools.cli.hmm_adata import HMMTrainer
+    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
+    from smftools.hmm.HMM import create_hmm
+    from smftools.tools.partitioned_hmm import _plot_hmm_fit_history
+
+    cfg = _hmm_cfg()
+    models_dir = tmp_path / "models"
+    trainer = HMMTrainer(cfg=cfg, models_dir=models_dir)
+    model = create_hmm(cfg, arch="single", device="cpu")
+    trainer._save(model, trainer._path("PER", "bc1", "ref_top__0_100", "GpC"))  # no hist
+    layout = prepare_analysis_plot_layout(tmp_path / "hmm_outputs", stage="hmm")
+
+    _plot_hmm_fit_history(models_dir, layout)
+
+    assert pd.read_parquet(layout.catalog).empty
+
+
 def test_plot_hmm_parameters_across_barcodes_skips_single_barcode_windows(tmp_path):
     from smftools.cli.hmm_adata import HMMTrainer
     from smftools.cli.stage_artifacts import prepare_analysis_plot_layout

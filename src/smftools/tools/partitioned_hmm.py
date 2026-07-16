@@ -461,6 +461,55 @@ def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout)
             )
 
 
+def _plot_hmm_fit_history(models_dir: Path, layout) -> None:
+    """Plot per-iteration EM log-likelihood proxy for every fitted HMM checkpoint.
+
+    ``HMMTrainer._save`` now stores each ``fit_em`` run's ``hist`` (see
+    cli.hmm_adata) on the checkpoint payload as ``fit_history``. This reads it
+    straight from the saved ``.pt`` files (no model reconstruction needed) so
+    convergence can be inspected without refitting -- diagnostic for whether
+    ``hmm_max_iter`` (default 50) is set higher than real data needs (see
+    dev/pipeline_scaling_audit.md's HMM cost discussion).
+    """
+    import matplotlib.pyplot as plt
+    import torch
+
+    models_dir = Path(models_dir)
+    curves: dict[str, list[float]] = {}
+    for path in sorted(models_dir.glob("*.pt")):
+        try:
+            payload = torch.load(path, map_location="cpu")
+        except Exception:
+            logger.warning("Could not load HMM checkpoint %s for fit-history plot", path)
+            continue
+        hist = payload.get("fit_history")
+        if hist:
+            curves[path.stem] = [float(v) for v in hist]
+    if not curves:
+        return
+
+    max_len = max(len(hist) for hist in curves.values())
+    figure, axis = plt.subplots(figsize=(max(8.0, 0.12 * max_len + 4), 5))
+    for name, hist in sorted(curves.items()):
+        axis.plot(range(1, len(hist) + 1), hist, marker="o", markersize=3, linewidth=1, label=name)
+    axis.set_xlabel("EM iteration")
+    axis.set_ylabel("Log-likelihood proxy")
+    axis.set_title("HMM fit convergence")
+    if len(curves) <= 20:
+        axis.legend(fontsize=6, ncol=2, loc="lower right")
+    figure.tight_layout()
+    path = layout.categories["training"] / "hmm_fit_history.png"
+    figure.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(figure)
+    register_plot_artifact(
+        layout,
+        path,
+        stage="hmm",
+        category="training",
+        plot_type="hmm_fit_history",
+    )
+
+
 def _matching_hmm_layers(records, roots, *, lengths: bool = False) -> list[str]:
     """Resolve configured feature roots against layers actually written by the tasks."""
     available = {str(layer) for record in records for layer in record.get("layers", [])}
@@ -643,6 +692,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
     _plot_feature_fractions(records, output_dir, layout)
     _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
+    _plot_hmm_fit_history(models_dir, layout)
 
     output_spine = output_dir / HMM_SPINE_FILENAME
     hmm_spine = spine.copy()

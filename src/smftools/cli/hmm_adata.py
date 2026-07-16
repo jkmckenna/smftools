@@ -434,7 +434,7 @@ class HMMTrainer:
 
         return self.models_dir / f"{kind}_{safe(sample)}_{safe(ref)}_{safe(label)}.pt"
 
-    def _save(self, model, path: Path):
+    def _save(self, model, path: Path, hist: Optional[List[float]] = None):
         override = {}
         if getattr(model, "hmm_name", None) == "multi":
             override["hmm_n_channels"] = int(getattr(model, "n_channels", 2))
@@ -448,6 +448,11 @@ class HMMTrainer:
             "hmm_arch": getattr(model, "hmm_name", None) or getattr(self.cfg, "hmm_arch", None),
             "override": override,
         }
+        if hist is not None:
+            # Per-iteration EM log-likelihood proxy from fit_em, kept alongside the
+            # checkpoint so convergence can be inspected/plotted without refitting
+            # (see tools.partitioned_hmm._plot_hmm_fit_history).
+            payload["fit_history"] = [float(v) for v in hist]
         torch.save(payload, path)
 
     def _load(self, path: Path, arch: str, device):
@@ -492,12 +497,12 @@ class HMMTrainer:
             else:
                 base = create_hmm(self.cfg, arch=arch).to(device)
                 if arch == "single_distance_binned":
-                    base.fit(
+                    hist = base.fit(
                         X, device=device, coords=coords, max_iter=max_iter, tol=tol, verbose=verbose
                     )
                 else:
-                    base.fit(X, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
-                self._save(base, p_global)
+                    hist = base.fit(X, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
+                self._save(base, p_global, hist=hist)
 
             p_adapt = self._path("ADAPT", sample, ref, label)
             if p_adapt.exists() and not force_fit:
@@ -506,7 +511,7 @@ class HMMTrainer:
             # IMPORTANT: this assumes you added model.adapt_emissions(...)
             adapted = copy.deepcopy(base).to(device)
             if arch == "single_distance_binned":
-                adapted.adapt_emissions(
+                adapt_hist = adapted.adapt_emissions(
                     X,
                     coords,
                     device=device,
@@ -515,7 +520,7 @@ class HMMTrainer:
                 )
 
             else:
-                adapted.adapt_emissions(
+                adapt_hist = adapted.adapt_emissions(
                     X,
                     coords,
                     device=device,
@@ -523,7 +528,7 @@ class HMMTrainer:
                     verbose=verbose,
                 )
 
-            self._save(adapted, p_adapt)
+            self._save(adapted, p_adapt, hist=adapt_hist)
             return adapted
 
         # ---- global only ----
@@ -540,10 +545,10 @@ class HMMTrainer:
 
         m = create_hmm(self.cfg, arch=arch, device=device)
         if arch == "single_distance_binned":
-            m.fit(X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
+            hist = m.fit(X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
         else:
-            m.fit(X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
-        self._save(m, p)
+            hist = m.fit(X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
+        self._save(m, p, hist=hist)
         return m
 
 
