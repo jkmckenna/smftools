@@ -179,8 +179,13 @@ def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
             uns_key=uns_key,
             uns_flag=f"hmm_annotated_{prefix}",
             force_redo=force_apply,
-            mask_to_read_span=len(signals) > 1,
-            mask_use_original_var_names=len(signals) > 1,
+            # Read-span masking (NaN outside each read's own alignment span,
+            # so clustermaps grey those positions out via cmap.set_bad and
+            # _plot_feature_fractions' isfinite-based counts exclude them) is
+            # a per-read positional concern, independent of channel count --
+            # always needed, not just for multi-channel signals.
+            mask_to_read_span=True,
+            mask_use_original_var_names=True,
         )
         _apply_merges(adata, model, prefix, feature_sets, cfg)
     return [name for name in adata.uns.get(uns_key, []) if name in adata.layers]

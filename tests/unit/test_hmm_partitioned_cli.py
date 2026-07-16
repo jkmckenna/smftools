@@ -249,6 +249,49 @@ def test_partitioned_hmm_writes_task_store_and_rematerializes_layers(tmp_path, m
     assert "barcode_hmm_feature_fraction" in plot_types
 
 
+def test_partitioned_hmm_masks_read_span_for_single_channel_signals(tmp_path, monkeypatch):
+    # Regression test: annotate_adata's read-span masking (NaN outside each
+    # read's own reference_start/reference_end, so clustermaps grey those
+    # positions out and _plot_feature_fractions' isfinite-based counts
+    # exclude them) used to only run for multi-channel signals
+    # (mask_to_read_span=len(signals) > 1 in _annotate_task) -- single-channel
+    # signals (e.g. deaminase modality's single "C" channel) never got masked
+    # at all, even though _apply_merges always masks its own merged layers
+    # unconditionally. Read-span masking is a per-read positional concern,
+    # unrelated to channel count, so it must run either way.
+    import smftools.hmm.HMM as hmm_module
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+
+    real_mask = hmm_module.mask_layers_outside_read_span
+    captured_calls = []
+
+    def spy_mask(adata, layers, **kwargs):
+        captured_calls.append(list(layers))
+        return real_mask(adata, layers, **kwargs)
+
+    monkeypatch.setattr(hmm_module, "mask_layers_outside_read_span", spy_mask)
+
+    cfg = _hmm_cfg(hmm_methbases=["C"], hmm_max_iter=2, target_task_memory_mb=1)
+    execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+    # A single-channel ("C") signal was used -- with the bug, this call never
+    # happened at all for the raw (non-merged) layers.
+    assert captured_calls, "mask_layers_outside_read_span was never called for a single-channel signal"
+    masked_layers = {layer for call in captured_calls for layer in call}
+    assert any(layer.endswith("_all_accessible_features") for layer in masked_layers)
+    assert any(layer.endswith("_all_accessible_features_lengths") for layer in masked_layers)
+
+
 def test_partitioned_hmm_excludes_reads_failing_qc(tmp_path, monkeypatch):
     # End-to-end regression test for the passes_dedup/passes_qc gate: a read
     # that fails read QC (here, read2's length is below read_len_filter_thresholds)
