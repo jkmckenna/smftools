@@ -272,6 +272,7 @@ clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
+spatial_clustermap_restrict_to_read_span: False # Crop spatial clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
 omit_chimeric_reads: True
 
 # Clustermap variant params
@@ -428,6 +429,7 @@ hmm_clustermap_length_layers:
   - all_footprint_features
   - all_footprint_features_merged
 hmm_clustermap_sortby: "hmm"
+hmm_clustermap_restrict_to_read_span: False # Crop HMM clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
 hmm_peak_feature_configs:
   all_accessible_features:
     min_distance: 200 # The minimum distance in between called peaks

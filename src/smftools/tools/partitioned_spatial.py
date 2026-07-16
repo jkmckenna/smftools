@@ -1267,6 +1267,9 @@ def _generate_dense_region_products(
                 sort_by=str(getattr(cfg, "spatial_clustermap_sortby", "gpc")),
                 deaminase=str(getattr(cfg, "smf_modality", "conversion")) != "conversion",
                 n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
+                restrict_to_read_span=bool(
+                    getattr(cfg, "spatial_clustermap_restrict_to_read_span", False)
+                ),
             )
             for path in sorted(clustermap_dir.glob("*.png")):
                 register_plot_artifact(

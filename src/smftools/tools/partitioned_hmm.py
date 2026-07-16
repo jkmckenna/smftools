@@ -736,6 +736,9 @@ def _plot_feature_clustermaps(
             # (reference, sample) groups internally via ProcessPoolExecutor -- this was
             # previously hardcoded to 1, leaving that dispatch unused.
             n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
+            restrict_to_read_span=bool(
+                getattr(cfg, "hmm_clustermap_restrict_to_read_span", False)
+            ),
         )
         for layer in feature_layers:
             plot_dir = base_dir / "features" / _component(layer)

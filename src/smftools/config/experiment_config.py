@@ -964,6 +964,7 @@ class ExperimentConfig:
     clustermap_cmap_cpg: Optional[str] = "coolwarm"
     clustermap_cmap_a: Optional[str] = "coolwarm"
     spatial_clustermap_sortby: Optional[str] = "gpc"
+    spatial_clustermap_restrict_to_read_span: bool = False
     omit_chimeric_reads: bool = True
     overlay_variant_calls: bool = False
     variant_overlay_seq1_color: str = "white"
@@ -1087,6 +1088,7 @@ class ExperimentConfig:
         ]
     )
     hmm_clustermap_sortby: Optional[str] = "hmm"
+    hmm_clustermap_restrict_to_read_span: bool = False
     hmm_peak_feature_configs: Dict[str, Any] = field(default_factory=dict)
 
     # Pipeline control flow - load adata
@@ -1860,6 +1862,9 @@ class ExperimentConfig:
             clustermap_cmap_cpg=merged.get("clustermap_cmap_cpg", "coolwarm"),
             clustermap_cmap_a=merged.get("clustermap_cmap_a", "coolwarm"),
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
+            spatial_clustermap_restrict_to_read_span=_parse_bool(
+                merged.get("spatial_clustermap_restrict_to_read_span", False)
+            ),
             omit_chimeric_reads=_parse_bool(merged.get("omit_chimeric_reads", True)),
             overlay_variant_calls=_parse_bool(merged.get("overlay_variant_calls", False)),
             variant_overlay_seq1_color=merged.get("variant_overlay_seq1_color", "white"),
@@ -1957,6 +1962,9 @@ class ExperimentConfig:
             hmm_clustermap_feature_layers=hmm_clustermap_feature_layers,
             hmm_clustermap_length_layers=hmm_clustermap_length_layers,
             hmm_clustermap_sortby=merged.get("hmm_clustermap_sortby", "hmm"),
+            hmm_clustermap_restrict_to_read_span=_parse_bool(
+                merged.get("hmm_clustermap_restrict_to_read_span", False)
+            ),
             hmm_peak_feature_configs=hmm_peak_feature_configs,
             footprints=merged.get("footprints", None),
             accessible_patches=merged.get("accessible_patches", None),

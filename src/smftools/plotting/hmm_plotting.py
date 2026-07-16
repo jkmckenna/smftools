@@ -1017,10 +1017,18 @@ def combined_hmm_raw_clustermap(
     variant_overlay_marker_size: float = 4.0,
     omit_chimeric_reads: bool = False,
     n_jobs: int = 1,
+    restrict_to_read_span: bool = False,
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
       HMM panel (always) + optional raw panels for C, GpC, CpG, and A sites.
+
+    restrict_to_read_span: if True, crop each reference's plotted x-axis to
+    [min(reference_start), max(reference_end)] across all QC-passing reads for
+    that reference (union across every sample/barcode, computed once per
+    reference so panels stay on a common x-axis for comparison), instead of
+    the full reference length. No-op when reference_start/reference_end
+    aren't present in adata.obs.
 
     Panels are added only if the corresponding site mask exists AND has >0 sites.
 
@@ -1092,6 +1100,31 @@ def combined_hmm_raw_clustermap(
     # ------------------------------------------------------------------
     def _iter_group_args():
         for ref in adata.obs[reference_col].cat.categories:
+            # Computed once per reference, shared by every sample's plot for
+            # that reference -- see combined_raw_clustermap for why (keeps
+            # panels on a common x-axis for comparison instead of each
+            # cropping to its own subset of reads).
+            span_start = span_end = None
+            if restrict_to_read_span:
+                ref_mask = (
+                    (adata.obs[reference_col] == ref)
+                    & qmask
+                    & lm_mask
+                    & lrr_mask
+                    & demux_mask
+                    & chimeric_mask
+                )
+                if bool(ref_mask.any()) and {"reference_start", "reference_end"}.issubset(
+                    adata.obs.columns
+                ):
+                    starts = pd.to_numeric(
+                        adata.obs.loc[ref_mask, "reference_start"], errors="coerce"
+                    )
+                    ends = pd.to_numeric(adata.obs.loc[ref_mask, "reference_end"], errors="coerce")
+                    if starts.notna().any() and ends.notna().any():
+                        span_start = int(starts.min())
+                        span_end = int(ends.max())
+
             for sample in adata.obs[sample_col].cat.categories:
                 display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
                 row_mask = (
@@ -1108,6 +1141,22 @@ def combined_hmm_raw_clustermap(
                     continue
                 try:
                     subset = adata[row_mask, :].copy()
+                    if span_start is not None and span_end is not None:
+                        var_coords = pd.to_numeric(
+                            pd.Series(subset.var_names), errors="coerce"
+                        ).to_numpy()
+                        span_mask = np.asarray(
+                            (var_coords >= span_start) & (var_coords < span_end), dtype=bool
+                        )
+                        if span_mask.any():
+                            subset = subset[:, span_mask].copy()
+                        else:
+                            logger.warning(
+                                "No positions left after read-span restriction for %s - %s.",
+                                display_sample,
+                                ref,
+                            )
+                            continue
                     if min_position_valid_fraction is not None:
                         valid_key = f"{ref}_valid_fraction"
                         if valid_key in subset.var:
@@ -1632,6 +1681,7 @@ def combined_hmm_length_clustermap(
     variant_overlay_marker_size: float = 4.0,
     omit_chimeric_reads: bool = False,
     n_jobs: int = 1,
+    restrict_to_read_span: bool = False,
 ):
     """
     Plot clustermaps for length-encoded HMM feature layers with optional subclass colors.
@@ -1640,6 +1690,11 @@ def combined_hmm_length_clustermap(
     and footprint layers. Raw methylation panels are included when available.
     omit_chimeric_reads: if True, exclude reads where chimeric_variant_sites==True.
     n_jobs: number of parallel worker processes (-1 = all CPUs).
+    restrict_to_read_span: if True, crop each reference's plotted x-axis to
+    [min(reference_start), max(reference_end)] across all QC-passing reads for
+    that reference (union across every sample/barcode), instead of the full
+    reference length. No-op when reference_start/reference_end aren't present
+    in adata.obs.
     """
     if fill_nan_strategy not in {"none", "value", "col_mean"}:
         raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
@@ -1703,6 +1758,31 @@ def combined_hmm_length_clustermap(
     # ------------------------------------------------------------------
     def _iter_group_args():
         for ref in adata.obs[reference_col].cat.categories:
+            # Computed once per reference, shared by every sample's plot for
+            # that reference -- see combined_raw_clustermap for why (keeps
+            # panels on a common x-axis for comparison instead of each
+            # cropping to its own subset of reads).
+            span_start = span_end = None
+            if restrict_to_read_span:
+                ref_mask = (
+                    (adata.obs[reference_col] == ref)
+                    & qmask
+                    & lm_mask
+                    & lrr_mask
+                    & demux_mask
+                    & chimeric_mask
+                )
+                if bool(ref_mask.any()) and {"reference_start", "reference_end"}.issubset(
+                    adata.obs.columns
+                ):
+                    starts = pd.to_numeric(
+                        adata.obs.loc[ref_mask, "reference_start"], errors="coerce"
+                    )
+                    ends = pd.to_numeric(adata.obs.loc[ref_mask, "reference_end"], errors="coerce")
+                    if starts.notna().any() and ends.notna().any():
+                        span_start = int(starts.min())
+                        span_end = int(ends.max())
+
             for sample in adata.obs[sample_col].cat.categories:
                 display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
                 row_mask = (
@@ -1719,6 +1799,22 @@ def combined_hmm_length_clustermap(
                     continue
                 try:
                     subset = adata[row_mask, :].copy()
+                    if span_start is not None and span_end is not None:
+                        var_coords = pd.to_numeric(
+                            pd.Series(subset.var_names), errors="coerce"
+                        ).to_numpy()
+                        span_mask = np.asarray(
+                            (var_coords >= span_start) & (var_coords < span_end), dtype=bool
+                        )
+                        if span_mask.any():
+                            subset = subset[:, span_mask].copy()
+                        else:
+                            logger.warning(
+                                "No positions left after read-span restriction for %s - %s.",
+                                display_sample,
+                                ref,
+                            )
+                            continue
                     if min_position_valid_fraction is not None:
                         valid_key = f"{ref}_valid_fraction"
                         if valid_key in subset.var:
