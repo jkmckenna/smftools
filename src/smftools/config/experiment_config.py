@@ -1040,7 +1040,14 @@ class ExperimentConfig:
     hmm_annotation_threshold: float = 0.5
     hmm_batch_size: int = 1024
     hmm_use_viterbi: bool = False
-    hmm_device: Optional[str] = None
+    # Defaults to "cpu", not "auto" -- unlike GPU-friendly stages, HMM fitting
+    # runs a small-state (K=2-3) sequential position loop where GPU dispatch
+    # overhead dominates: measured ~1.5x *slower* per iteration on MPS than
+    # CPU on real data, on top of GPU fits being forced fully sequential
+    # across tasks (concurrent processes sharing one GPU context crashes --
+    # see execute_partitioned_hmm's force_sequential). Set explicitly (e.g.
+    # "mps"/"cuda"/"auto") to opt back into GPU for HMM specifically.
+    hmm_device: Optional[str] = "cpu"
     hmm_methbases: Optional[List[str]] = (
         None  # if None, HMM.annotate_adata will fall back to mod_target_bases
     )
@@ -1661,7 +1668,7 @@ class ExperimentConfig:
         hmm_annotation_threshold = merged.get("hmm_annotation_threshold", 0.5)
         hmm_batch_size = int(merged.get("hmm_batch_size", 1024))
         hmm_use_viterbi = bool(merged.get("hmm_use_viterbi", False))
-        hmm_device = merged.get("hmm_device", None)
+        hmm_device = merged.get("hmm_device", "cpu")
         hmm_methbases = _parse_list(merged.get("hmm_methbases", None))
         if not hmm_methbases:  # None or []
             hmm_methbases = _parse_list(merged.get("mod_target_bases", None))

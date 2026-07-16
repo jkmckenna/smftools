@@ -92,7 +92,9 @@ def _apply_merges(adata, model, prefix: str, feature_sets: dict, cfg) -> None:
 def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
     """Apply configured HMM task definitions to one bounded materialization."""
     trainer = HMMTrainer(cfg=cfg, models_dir=models_dir)
-    device = resolve_torch_device(getattr(cfg, "device", "auto"))
+    # hmm_device (default "cpu") overrides the general device setting for HMM
+    # specifically -- see its definition in config/experiment_config.py for why.
+    device = resolve_torch_device(getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto"))
     feature_sets_all = normalize_hmm_feature_sets(getattr(cfg, "hmm_feature_sets", None))
     probability_threshold = float(getattr(cfg, "hmm_feature_prob_threshold", 0.5))
     decode = str(getattr(cfg, "hmm_decode", "marginal"))
@@ -331,7 +333,9 @@ def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout)
         return
     kind = "ADAPT" if scope == "global_then_adapt" else "PER"
 
-    device = resolve_torch_device(getattr(cfg, "device", "auto"))
+    # hmm_device (default "cpu") overrides the general device setting for HMM
+    # specifically -- see its definition in config/experiment_config.py for why.
+    device = resolve_torch_device(getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto"))
     hmm_tasks = build_hmm_tasks(cfg)
     if not hmm_tasks:
         return
@@ -682,7 +686,9 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     # the whole pool (BrokenProcessPool). Force sequential execution
     # whenever a non-CPU device is in play; CPU-only runs still get the
     # normal memory/thread-aware parallel dispatch.
-    device = resolve_torch_device(getattr(cfg, "device", "auto"))
+    # hmm_device (default "cpu") overrides the general device setting for HMM
+    # specifically -- see its definition in config/experiment_config.py for why.
+    device = resolve_torch_device(getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto"))
     records = run_tasks_parallel(
         execute_hmm_task,
         [(spine_path, task, cfg, output_dir, models_dir) for task in tasks],

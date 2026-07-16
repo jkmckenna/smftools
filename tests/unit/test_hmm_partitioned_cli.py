@@ -335,6 +335,45 @@ def test_partitioned_hmm_clustermaps_parallelize_using_cfg_threads(tmp_path, mon
     assert captured_n_jobs == [4]
 
 
+def test_partitioned_hmm_prefers_hmm_device_over_device(tmp_path, monkeypatch):
+    # hmm_device (config default "cpu", see experiment_config.py) overrides the
+    # general `device` setting for HMM specifically -- GPU is measurably worse
+    # for this workload (small-state sequential loop). Confirm the precedence:
+    # hmm_device wins when set, cfg.device is only a fallback when it's unset.
+    from smftools.tools import partitioned_hmm
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+
+    captured_devices = []
+    real_resolve = partitioned_hmm.resolve_torch_device
+
+    def spy_resolve(device_str):
+        captured_devices.append(device_str)
+        return real_resolve(device_str)
+
+    monkeypatch.setattr(partitioned_hmm, "resolve_torch_device", spy_resolve)
+
+    def annotate(adata, task, cfg, models_dir):
+        adata.uns["hmm_appended_layers"] = []
+        return []
+
+    monkeypatch.setattr(partitioned_hmm, "_annotate_task", annotate)
+
+    cfg = SimpleNamespace(target_task_memory_mb=1, hmm_device="cpu", device="mps")
+    execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+    assert captured_devices and all(d == "cpu" for d in captured_devices)
+
+
 def test_partitioned_hmm_forces_sequential_execution_on_gpu_device(tmp_path, monkeypatch):
     # Regression test: multiple worker *processes* concurrently initializing
     # the same GPU context (confirmed via real-data testing: MPS on Apple

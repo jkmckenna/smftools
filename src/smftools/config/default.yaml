@@ -375,6 +375,7 @@ hmm_dtype: "float64"
 hmm_annotation_threshold: 0.5 # The minimum probability threshold of a feature interval to accept it for layer annotation.
 hmm_batch_size: 1024 # hmm batch size
 hmm_use_viterbi: False # Whether to use viterbi decoding. If False, uses forward-backward gammas. Viterbi is smoother, but less sensitive.
+hmm_device: "cpu" # Torch device for HMM fitting/decoding specifically (overrides `device` for HMM only). Defaults to cpu, not auto/GPU: the small-state sequential position loop is measurably slower on MPS and is forced to run tasks fully sequentially on any non-cpu device. Set to "mps"/"cuda"/"auto" to opt back into GPU.
 footprints: True # whether to use the default HMM footprint params
 accessible_patches: True # whether to use the default HMM accessible patch params
 cpg: False # whether to use the default HMM endogenous CpG patch params

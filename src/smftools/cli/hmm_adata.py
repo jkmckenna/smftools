@@ -794,7 +794,10 @@ def hmm_adata_core(
                     methbases = list(getattr(cfg, "hmm_methbases", [])) or []
                     run_multi = bool(getattr(cfg, "hmm_run_multichannel", True))
                     run_cpg = bool(getattr(cfg, "cpg", False))
-                    device = resolve_torch_device(cfg.device)
+                    # hmm_device (default "cpu") overrides the general device
+                    # setting for HMM specifically -- see its definition in
+                    # config/experiment_config.py for why.
+                    device = resolve_torch_device(getattr(cfg, "hmm_device", None) or cfg.device)
 
                     logger.info("HMM processing sample=%s ref=%s", sample, ref)
 
