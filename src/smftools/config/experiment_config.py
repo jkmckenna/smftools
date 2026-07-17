@@ -730,7 +730,7 @@ class ExperimentConfig:
     # Direct SMF specific params for initial AnnData loading
     batch_size: int = 4
     skip_unclassified: bool = True
-    skip_bam_split: bool = False
+    skip_bam_split: bool = True
     skip_bam_qc: bool = False
     delete_batch_hdfs: bool = True
     # None (default) processes batches serially in-process, unchanged from prior
@@ -820,14 +820,15 @@ class ExperimentConfig:
     make_bigwigs: bool = False
     make_beds: bool = False
     annotate_secondary_supplementary: bool = True
-    # Opt-in post-alignment rescue pass: when the alignment FASTA has nested/
+    # Post-alignment rescue pass: when the alignment FASTA has nested/
     # overlapping reference variants for one locus (e.g. a WT contig and a
     # shorter deletion-allele contig), minimap2's primary-alignment pick can
     # be objectively worse (less read coverage) than one of its own secondary
-    # alignments. When enabled, re-flags primary/secondary BAM bits by read
-    # coverage before anything downstream commits a read's Reference_strand.
-    # Modality-agnostic; a no-op for reads with no secondary alignments.
-    rescue_secondary_alignments: bool = False
+    # alignments. Re-flags primary/secondary BAM bits by read coverage before
+    # anything downstream commits a read's Reference_strand. Modality-
+    # agnostic; a no-op for reads with no secondary alignments, so on by
+    # default.
+    rescue_secondary_alignments: bool = True
     rescue_min_margin_bp: int = 20
     rescue_min_margin_fraction: float = 0.01
     samtools_backend: str = "auto"
@@ -1810,7 +1811,7 @@ class ExperimentConfig:
             bigwig_backend=merged.get("bigwig_backend", "auto"),
             direct_signal_backend=merged.get("direct_signal_backend", "pysam"),
             rescue_secondary_alignments=_parse_bool(
-                merged.get("rescue_secondary_alignments", False)
+                merged.get("rescue_secondary_alignments", True)
             ),
             rescue_min_margin_bp=int(merged.get("rescue_min_margin_bp", 20)),
             rescue_min_margin_fraction=float(
@@ -1830,7 +1831,7 @@ class ExperimentConfig:
             mod_map=merged.get("mod_map", list(MOD_MAP)),
             batch_size=merged.get("batch_size", 4),
             skip_unclassified=merged.get("skip_unclassified", True),
-            skip_bam_split=merged.get("skip_bam_split", False),
+            skip_bam_split=merged.get("skip_bam_split", True),
             skip_bam_qc=merged.get("skip_bam_qc", False),
             delete_batch_hdfs=merged.get("delete_batch_hdfs", True),
             direct_max_workers=_parse_max_workers(merged.get("direct_max_workers", None)),
