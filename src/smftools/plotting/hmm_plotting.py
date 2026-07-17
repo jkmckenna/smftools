@@ -734,6 +734,7 @@ def _hmm_raw_one_group(args: dict) -> dict:
     from smftools.optional_imports import require
 
     _gridspec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plotting")
+    _patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
     _plt = require("matplotlib.pyplot", extra="plotting", purpose="HMM plots")
     _sns = require("seaborn", extra="plotting", purpose="plot styling")
     import smftools.plotting.hmm_plotting as _hmm_mod
@@ -746,6 +747,9 @@ def _hmm_raw_one_group(args: dict) -> dict:
 
     ref: str = args["ref"]
     sample: str = args["sample"]
+    display_sample: str = args.get("display_sample", sample)
+    hmm_legend_labels = args.get("hmm_legend_labels")
+    raw_legend_labels = args.get("raw_legend_labels")
     signal_type: str = args["signal_type"]
     hmm_feature_layer: str = args["hmm_feature_layer"]
     gpc_sites: np.ndarray = args["gpc_sites"]
@@ -945,7 +949,12 @@ def _hmm_raw_one_group(args: dict) -> dict:
     n_panels = len(panels)
     fig = _plt.figure(figsize=(4.5 * n_panels, 10))
     gs = _gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
-    fig.suptitle(f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98)
+    fig.suptitle(
+        f"{display_sample} — {ref} — {total_reads} reads ({signal_type})",
+        fontsize=14,
+        y=0.98,
+        wrap=True,
+    )
     axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
     axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
 
@@ -958,6 +967,21 @@ def _hmm_raw_one_group(args: dict) -> dict:
         xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
         axes_heat[i].set_xticks(xtick_pos)
         axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
+        legend_labels = hmm_legend_labels if name.startswith("HMM -") else raw_legend_labels
+        if legend_labels is not None:
+            low_label, high_label = legend_labels
+            handles = [
+                _patches.Patch(facecolor=cmap(0.0), edgecolor="black", label=low_label),
+                _patches.Patch(facecolor=cmap(1.0), edgecolor="black", label=high_label),
+            ]
+            axes_heat[i].legend(
+                handles=handles,
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.06),
+                ncol=2,
+                fontsize=8,
+                frameon=False,
+            )
         for boundary in bin_boundaries[:-1]:
             axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
 
@@ -1038,6 +1062,10 @@ def combined_hmm_raw_clustermap(
     omit_chimeric_reads: bool = False,
     n_jobs: int = 1,
     restrict_to_read_span: bool = False,
+    # ---- optional small legends explaining what the two heatmap colors mean.
+    # None (default) adds no legend -- existing callers/plots are unaffected.
+    hmm_legend_labels: Optional[Tuple[str, str]] = None,
+    raw_legend_labels: Optional[Tuple[str, str]] = None,
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
@@ -1316,6 +1344,8 @@ def combined_hmm_raw_clustermap(
                         "variant_overlay_seq2_color": variant_overlay_seq2_color,
                         "variant_overlay_marker_size": variant_overlay_marker_size,
                         "save_path": str(save_path) if save_path is not None else None,
+                        "hmm_legend_labels": hmm_legend_labels,
+                        "raw_legend_labels": raw_legend_labels,
                     }
                 except Exception:
                     import traceback
@@ -1368,6 +1398,7 @@ def _hmm_length_one_group(args: dict) -> dict:
 
     ref: str = args["ref"]
     sample: str = args["sample"]
+    display_sample: str = args.get("display_sample", sample)
     signal_type: str = args["signal_type"]
     length_layer: str = args["length_layer"]
     gpc_sites: np.ndarray = args["gpc_sites"]
@@ -1601,7 +1632,12 @@ def _hmm_length_one_group(args: dict) -> dict:
     n_panels = len(panels)
     fig = _plt.figure(figsize=(4.5 * n_panels, 10))
     gs = _gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
-    fig.suptitle(f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98)
+    fig.suptitle(
+        f"{display_sample} — {ref} — {total_reads} reads ({signal_type})",
+        fontsize=14,
+        y=0.98,
+        wrap=True,
+    )
     axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
     axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
 

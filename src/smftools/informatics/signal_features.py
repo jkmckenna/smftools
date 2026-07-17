@@ -87,6 +87,87 @@ def base_signal_features(signal, start: np.ndarray, end: np.ndarray) -> dict[str
     }
 
 
+def base_signal_trace(signal, start: np.ndarray, end: np.ndarray, k: int) -> np.ndarray:
+    """Per-base linearly-resampled current trace, ``k`` points per base.
+
+    Unlike ``base_signal_features`` (which reduces each base's sample range
+    to a single mean), this preserves within-base current dynamics by
+    resampling to a fixed width so bases with different dwell times still
+    produce comparable, stackable rows.
+
+    Args:
+        signal: 1-D current samples (raw or picoamps) for the whole read.
+        start: Per-base inclusive start sample indices.
+        end: Per-base exclusive end sample indices.
+        k: Number of resampled points per base.
+
+    Returns:
+        ``(n_bases, k)`` float32 array; a base with zero samples is all-NaN.
+    """
+    signal = np.asarray(signal, dtype=np.float64)
+    size = signal.size
+    starts = np.clip(start, 0, size).astype(np.int64)
+    ends = np.clip(end, 0, size).astype(np.int64)
+    n_bases = starts.size
+    trace = np.full((n_bases, k), np.nan, dtype=np.float32)
+    query = np.linspace(0.0, 1.0, k)
+    for i in range(n_bases):
+        count = int(ends[i] - starts[i])
+        if count <= 0:
+            continue
+        if count == 1:
+            trace[i, :] = signal[starts[i]]
+            continue
+        base_samples = signal[starts[i] : ends[i]]
+        sample_positions = np.linspace(0.0, 1.0, count)
+        trace[i, :] = np.interp(query, sample_positions, base_samples).astype(np.float32)
+    return trace
+
+
+def read_signal_trace(
+    mv,
+    ts: int,
+    reverse: bool,
+    signal,
+    k: int,
+    *,
+    expected_bases: int | None = None,
+) -> np.ndarray | None:
+    """Per-base resampled current trace for one read, oriented to BAM query order.
+
+    Mirrors ``read_signal_features``: move tables index bases in basecall
+    order; for reverse-mapped reads the BAM query is reverse-complemented,
+    so the per-base trace rows are flipped (base order only -- each row's
+    ``k`` samples are already in forward-time order and are not reversed)
+    to match the query coordinate arrays produced by
+    ``alignment_to_ragged_record``.
+
+    Args:
+        mv: Move table tag.
+        ts: Trim offset (``ts`` tag).
+        reverse: Whether the read is reverse-mapped.
+        signal: Full current sample array for the read.
+        k: Number of resampled points per base.
+        expected_bases: If given, return ``None`` when the basecalled base
+            count does not match (e.g. hard-clipped/supplementary reads).
+
+    Returns:
+        ``(n_bases, k)`` float32 array in BAM query order, or ``None`` if
+        the move table is unusable or the base count mismatches
+        ``expected_bases``.
+    """
+    start, end = move_table_to_base_ranges(mv, ts)
+    n_bases = int(start.size)
+    if n_bases == 0:
+        return None
+    if expected_bases is not None and n_bases != int(expected_bases):
+        return None
+    trace = base_signal_trace(signal, start, end, k)
+    if reverse:
+        trace = trace[::-1, :].copy()
+    return trace
+
+
 def read_signal_features(
     mv,
     ts: int,
