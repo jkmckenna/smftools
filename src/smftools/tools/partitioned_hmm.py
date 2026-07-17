@@ -192,8 +192,19 @@ def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
 
 
 def execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) -> dict[str, object]:
-    """Materialize, annotate, core-crop, and persist one HMM task."""
-    import anndata as ad
+    """Materialize, annotate, core-crop, and persist one HMM task.
+
+    Layers are streamed to disk (``incremental_zarr.append_zarr_layer``) one
+    at a time and freed from ``adata.layers`` immediately after, instead of
+    being collected into a second, core-cropped copy (``result``'s ``layers=``
+    dict) that used to sit in memory alongside the still-live original --
+    same rationale, and same pattern, as ``preprocessing.partitioned_
+    executor.execute_preprocess_task``. ``model.annotate_adata`` itself still
+    writes every layer for one HMM task (accessibility/cpg) onto ``adata``
+    before returning, so this doesn't lower the peak during annotation, but
+    it removes the double-materialization that followed it.
+    """
+    from ..informatics.incremental_zarr import append_zarr_layer, consolidate_zarr_store
 
     adata = materialize(
         spine_path,
@@ -208,13 +219,14 @@ def execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) -> dict[str,
     appended_layers = _annotate_task(adata, task, cfg, Path(models_dir))
     positions = np.asarray(adata.var_names, dtype=np.int64)
     core_mask = (positions >= task.core_start) & (positions < task.core_end)
-    core = adata[:, core_mask]
-    result = ad.AnnData(
-        obs=core.obs.copy(),
-        var=core.var.copy(),
-        layers={name: np.asarray(core.layers[name]) for name in appended_layers},
-    )
-    result.uns.update(
+    core_obs = adata.obs.copy()
+    core_var = adata.var.loc[core_mask].copy()
+    n_positions = int(core_mask.sum())
+
+    import anndata as ad
+
+    skeleton = ad.AnnData(obs=core_obs, var=core_var)
+    skeleton.uns.update(
         {
             "task_id": task.task_id,
             "reference": task.reference,
@@ -228,11 +240,20 @@ def execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) -> dict[str,
     )
     path = _task_path(Path(output_dir), task)
     path.parent.mkdir(parents=True, exist_ok=True)
-    safe_write_zarr(result, path, backup=False, verbose=False, zarr_format=3)
+    safe_write_zarr(skeleton, path, backup=False, verbose=False, zarr_format=3)
+
+    for index, name in enumerate(appended_layers):
+        cropped = np.asarray(adata.layers[name])[:, core_mask]
+        del adata.layers[name]
+        append_zarr_layer(path, name, cropped, consolidate=(index == len(appended_layers) - 1))
+        del cropped
+    if not appended_layers:
+        consolidate_zarr_store(path)
+
     return {
         **task.to_dict(include_read_ids=False),
         "group_path": path.relative_to(output_dir).as_posix(),
-        "n_positions": result.n_vars,
+        "n_positions": n_positions,
         "layers": appended_layers,
     }
 

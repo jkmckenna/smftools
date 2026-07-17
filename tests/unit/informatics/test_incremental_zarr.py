@@ -3,7 +3,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from smftools.informatics.incremental_zarr import append_zarr_layer, consolidate_zarr_store
+from smftools.informatics.incremental_zarr import (
+    append_zarr_layer,
+    append_zarr_obsm,
+    consolidate_zarr_store,
+)
 from smftools.readwrite import safe_read_zarr, safe_write_zarr
 
 
@@ -70,6 +74,35 @@ def test_append_zarr_layer_with_explicit_chunks(tmp_path):
 
     result, _ = safe_read_zarr(path, verbose=False)
     np.testing.assert_array_equal(np.asarray(result.layers["chunked"]), layer)
+
+
+def test_append_zarr_obsm_round_trips(tmp_path):
+    path, adata = _skeleton(tmp_path)
+    n_lags = 5
+    obsm = np.arange(adata.n_obs * n_lags, dtype=np.float32).reshape(adata.n_obs, n_lags)
+
+    append_zarr_obsm(path, "GpC_spatial_autocorr", obsm)
+
+    result, _ = safe_read_zarr(path, verbose=False)
+    assert set(result.obsm) == {"GpC_spatial_autocorr"}
+    np.testing.assert_array_equal(np.asarray(result.obsm["GpC_spatial_autocorr"]), obsm)
+
+
+def test_append_zarr_obsm_multiple_keys_accumulate(tmp_path):
+    path, adata = _skeleton(tmp_path)
+    names = ["GpC_spatial_autocorr", "GpC_spatial_autocorr_counts", "GpC_lomb_scargle_power"]
+    arrays = {
+        name: np.full((adata.n_obs, 4), float(index), dtype=np.float32)
+        for index, name in enumerate(names)
+    }
+
+    for index, name in enumerate(names):
+        append_zarr_obsm(path, name, arrays[name], consolidate=(index == len(names) - 1))
+
+    result, _ = safe_read_zarr(path, verbose=False)
+    assert set(result.obsm) == set(names)
+    for name in names:
+        np.testing.assert_array_equal(np.asarray(result.obsm[name]), arrays[name])
 
 
 def test_consolidate_zarr_store_after_deferred_writes(tmp_path):

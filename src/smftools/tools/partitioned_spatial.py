@@ -397,19 +397,28 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
     pd.DataFrame(metric_rows).to_parquet(metrics_path, index=False)
     pd.DataFrame(autocorr_rows).to_parquet(autocorr_path, index=False)
     pd.DataFrame(position_rows).to_parquet(positions_path, index=False)
+    obsm_keys = sorted(read_obsm)
     group_path = None
     if read_obsm:
+        # Obsm entries (autocorrelation/pair-count/Lomb-Scargle matrices, one
+        # set per site type) are streamed to disk one at a time and freed
+        # immediately, instead of being handed to one ``ad.AnnData(obsm=...)``
+        # + ``safe_write_zarr`` call that holds all of them (plus whatever
+        # copies zarr serialization makes) in memory together -- same
+        # rationale as ``tools.partitioned_hmm.execute_hmm_task``.
         import anndata as ad
 
+        from ..informatics.incremental_zarr import append_zarr_obsm, consolidate_zarr_store
+
         read_metrics_path = task_dir / "read_metrics.zarr"
-        read_metrics = ad.AnnData(obs=read_obs, obsm=read_obsm, uns=read_uns)
-        safe_write_zarr(
-            read_metrics,
-            read_metrics_path,
-            backup=False,
-            verbose=False,
-            zarr_format=3,
-        )
+        skeleton = ad.AnnData(obs=read_obs, uns=read_uns)
+        safe_write_zarr(skeleton, read_metrics_path, backup=False, verbose=False, zarr_format=3)
+        for index, name in enumerate(obsm_keys):
+            array = read_obsm.pop(name)
+            append_zarr_obsm(
+                read_metrics_path, name, array, consolidate=(index == len(obsm_keys) - 1)
+            )
+            del array
         group_path = read_metrics_path.relative_to(output_dir).as_posix()
     return {
         **task.to_dict(include_read_ids=False),
@@ -421,7 +430,7 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
         # "Store organization" section) -- group_path is None and obsm_keys is
         # empty when this task computed no read-level outputs at all.
         "group_path": group_path,
-        "obsm_keys": sorted(read_obsm),
+        "obsm_keys": obsm_keys,
         "site_types": sorted({row["site_type"] for row in metric_rows}),
     }
 
