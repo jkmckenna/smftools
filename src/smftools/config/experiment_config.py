@@ -820,6 +820,16 @@ class ExperimentConfig:
     make_bigwigs: bool = False
     make_beds: bool = False
     annotate_secondary_supplementary: bool = True
+    # Opt-in post-alignment rescue pass: when the alignment FASTA has nested/
+    # overlapping reference variants for one locus (e.g. a WT contig and a
+    # shorter deletion-allele contig), minimap2's primary-alignment pick can
+    # be objectively worse (less read coverage) than one of its own secondary
+    # alignments. When enabled, re-flags primary/secondary BAM bits by read
+    # coverage before anything downstream commits a read's Reference_strand.
+    # Modality-agnostic; a no-op for reads with no secondary alignments.
+    rescue_secondary_alignments: bool = False
+    rescue_min_margin_bp: int = 20
+    rescue_min_margin_fraction: float = 0.01
     samtools_backend: str = "auto"
     bedtools_backend: str = "auto"
     bigwig_backend: str = "auto"
@@ -1799,6 +1809,13 @@ class ExperimentConfig:
             bedtools_backend=merged.get("bedtools_backend", "auto"),
             bigwig_backend=merged.get("bigwig_backend", "auto"),
             direct_signal_backend=merged.get("direct_signal_backend", "pysam"),
+            rescue_secondary_alignments=_parse_bool(
+                merged.get("rescue_secondary_alignments", False)
+            ),
+            rescue_min_margin_bp=int(merged.get("rescue_min_margin_bp", 20)),
+            rescue_min_margin_fraction=float(
+                merged.get("rescue_min_margin_fraction", 0.01)
+            ),
             delete_intermediate_hdfs=merged.get("delete_intermediate_hdfs", True),
             mod_target_bases=merged.get("mod_target_bases", ["GpC", "CpG"]),
             enzyme_target_bases=merged.get("enzyme_target_bases", ["GpC"]),

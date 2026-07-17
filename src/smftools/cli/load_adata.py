@@ -549,6 +549,51 @@ def load_adata_core(
         # Deleted the unsorted aligned output
         aligned_output.unlink()
 
+    # Optional: rescue reads whose primary alignment lost to a worse-covering
+    # secondary alignment (e.g. minimap2 preferring a truncated match against
+    # a wild-type contig over a full-length match against a shorter deletion-
+    # allele contig). Runs before anything downstream reads aligned_sorted_
+    # output, so a corrected Reference_strand is the only thing raw ingestion
+    # ever sees. See src/smftools/informatics/alignment_rescue.py.
+    if getattr(cfg, "rescue_secondary_alignments", False):
+        rescue_summary_path = aligned_sorted_BAM.with_name(
+            aligned_sorted_BAM.stem + "_rescue_summary.csv"
+        )
+        if rescue_summary_path.exists():
+            logger.debug(
+                f"{rescue_summary_path} already exists. Skipping secondary-alignment rescue."
+            )
+        else:
+            logger.info("Rescuing reads misassigned by minimap2's primary-alignment pick")
+            from ..informatics.alignment_rescue import (
+                build_record_chromosome_map,
+                rescue_secondary_alignments,
+            )
+
+            record_chromosome = build_record_chromosome_map(
+                fasta, cfg.smf_modality, cfg.conversion_types
+            )
+            rescued_tmp = aligned_sorted_BAM.with_name(
+                aligned_sorted_BAM.stem + "_rescue_tmp"
+            ).with_suffix(cfg.bam_suffix)
+            summary = rescue_secondary_alignments(
+                aligned_sorted_output,
+                rescued_tmp,
+                record_chromosome,
+                min_margin_bp=cfg.rescue_min_margin_bp,
+                min_margin_fraction=cfg.rescue_min_margin_fraction,
+                threads=cfg.threads,
+            )
+            # Swap the corrected BAM (+ its freshly-built index) into place so
+            # every downstream consumer sees it at the original path with no
+            # further plumbing.
+            rescued_tmp_bai = Path(str(rescued_tmp) + ".bai")
+            final_bai = Path(str(aligned_sorted_output) + ".bai")
+            rescued_tmp.replace(aligned_sorted_output)
+            if rescued_tmp_bai.exists():
+                rescued_tmp_bai.replace(final_bai)
+            summary.to_dataframe().to_csv(rescue_summary_path, index=False)
+
     if cfg.make_beds:
         # Make beds and provide basic histograms
         aligned_bed_output_root = bed_outputs_directory / "aligned"

@@ -96,6 +96,17 @@ bedtools_backend: auto # auto|python|cli for bedtools-compatible operations
 bigwig_backend: auto # auto|python|cli for bedGraphToBigWig conversion
 direct_signal_backend: pysam # pysam|modkit for direct modality's modification-signal source. pysam decodes BAM MM/ML tags directly (no external tool, streaming-compatible); modkit runs modkit extract to a TSV first.
 
+# Opt-in post-alignment rescue pass: when the alignment FASTA has nested/
+# overlapping reference variants for one locus (e.g. a WT contig and a
+# shorter deletion-allele contig), minimap2's primary-alignment pick can be
+# objectively worse (less read coverage) than one of its own secondary
+# alignments. When enabled, re-flags primary/secondary BAM bits by read
+# coverage before anything downstream commits a read's Reference_strand.
+# Modality-agnostic; a no-op for reads with no secondary alignments.
+rescue_secondary_alignments: False
+rescue_min_margin_bp: 20
+rescue_min_margin_fraction: 0.01
+
 # Nanopore specific demultiplexing
 demux_backend: dorado # smftools|dorado - smftools uses YAML-based barcode refs, dorado uses kit names
 barcode_both_ends: False # Require barcode match at both ends
