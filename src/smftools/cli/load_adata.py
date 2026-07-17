@@ -1122,7 +1122,7 @@ def load_adata_core(
     ########################################################################################################################
 
     if raw_only:
-        direct_signal_backend = str(getattr(cfg, "direct_signal_backend", "pysam"))
+        direct_signal_backend = str(getattr(cfg, "direct_signal_backend", "modkit"))
         direct_uses_modkit = cfg.smf_modality == "direct" and direct_signal_backend == "modkit"
         mod_tsv_paths: list[Path] | None = None
         if direct_uses_modkit:

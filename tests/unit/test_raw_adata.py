@@ -442,12 +442,12 @@ def test_attach_direct_signals_from_bam_matches_manual_ml_derivation(tmp_path):
 
     assert set(columns) == {"modification_signal_A_plus", "modification_signal_C_plus"}
     expected_combined = [
-        1.0 - 10 / 255.0,  # pos 0 (A): canonical wins
-        1.0 - 50 / 255.0,  # pos 1 (C): canonical wins
+        10 / 255.0,  # pos 0 (A): canonical wins (96% conf.) -> P(modified) = 1 - 0.96
+        50 / 255.0,  # pos 1 (C): canonical wins (80% conf.) -> P(modified) = 1 - 0.80
         np.nan,  # pos 2 (G): no MM/ML entry
         np.nan,  # pos 3 (T): no MM/ML entry
-        250 / 255.0,  # pos 4 (A): modified wins
-        200 / 255.0,  # pos 5 (C): modified wins
+        250 / 255.0,  # pos 4 (A): modified wins -> P(modified) = winning confidence
+        200 / 255.0,  # pos 5 (C): modified wins -> P(modified) = winning confidence
     ]
     np.testing.assert_allclose(
         result.at[0, "modification_signal"], expected_combined, equal_nan=True, rtol=1e-6
@@ -518,8 +518,8 @@ def test_attach_direct_signals_from_bam_imputes_uncalled_canonical_when_enabled(
 
     signal = result.at[0, "modification_signal"]
     assert signal[1] == 0.0  # second A, no explicit call, imputed as canonical
-    np.testing.assert_allclose(signal[0], 200 / 255.0, rtol=1e-6)  # explicit call untouched
-    np.testing.assert_allclose(signal[4], 1.0 - 10 / 255.0, rtol=1e-6)  # explicit call untouched
+    np.testing.assert_allclose(signal[0], 200 / 255.0, rtol=1e-6)  # explicit call, modified wins
+    np.testing.assert_allclose(signal[4], 10 / 255.0, rtol=1e-6)  # explicit call, canonical wins
     assert np.isnan(signal[2])  # non-A, untouched
     assert np.isnan(signal[3])  # non-A, untouched
     assert np.isnan(signal[5])  # C with zero calls in this read: no imputation

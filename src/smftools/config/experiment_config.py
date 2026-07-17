@@ -835,10 +835,16 @@ class ExperimentConfig:
     bedtools_backend: str = "auto"
     bigwig_backend: str = "auto"
     # direct modality's modification-signal source: "pysam" decodes BAM MM/ML tags
-    # directly (no external tool, streaming-compatible); "modkit" runs modkit
-    # extract to a TSV first (the original path). pysam is the default -- see
-    # dev/pipeline_scaling_audit.md's Track B notes for why.
-    direct_signal_backend: str = "pysam"
+    # directly (no external tool, streaming-compatible; see dev/pipeline_
+    # scaling_audit.md's Track B notes for why it was added); "modkit" runs
+    # modkit extract to a TSV first (the original path). modkit is the
+    # default for now -- on real data, pysam's decode (even with
+    # direct_signal_impute_uncalled_canonical enabled) produces a
+    # substantially lower downstream QC-pass rate than modkit's own output
+    # on the same reads, and the root cause of that gap (a real per-position
+    # probability-value divergence, not just a coverage/count difference)
+    # isn't understood yet. Revisit once that's root-caused.
+    direct_signal_backend: str = "modkit"
     # pysam backend only: positions of the canonical base with no explicit MM/ML
     # tag entry are left NaN (no information) by default -- the honest reading
     # of the SAM spec. modkit's own convention instead fills these with a
@@ -1817,7 +1823,7 @@ class ExperimentConfig:
             samtools_backend=merged.get("samtools_backend", "auto"),
             bedtools_backend=merged.get("bedtools_backend", "auto"),
             bigwig_backend=merged.get("bigwig_backend", "auto"),
-            direct_signal_backend=merged.get("direct_signal_backend", "pysam"),
+            direct_signal_backend=merged.get("direct_signal_backend", "modkit"),
             direct_signal_impute_uncalled_canonical=_parse_bool(
                 merged.get("direct_signal_impute_uncalled_canonical", False)
             ),

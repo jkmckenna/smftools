@@ -272,7 +272,10 @@ def _attach_direct_signals_from_bam(
     and its whole-file TSV entirely, and needs only the same aligned BAM
     already open for read extraction, so it's streaming-compatible (see
     dev/pipeline_scaling_audit.md's Track B notes). Selected via
-    ``cfg.direct_signal_backend == "pysam"`` (the default).
+    ``cfg.direct_signal_backend == "pysam"`` -- not the default for now (see
+    that field's docstring in ``experiment_config.py``): its decode produces
+    a lower downstream QC-pass rate than modkit's own output on real data,
+    root cause not yet understood.
 
     ``modified_bases`` (not ``modified_bases_forward``) is used deliberately:
     its query positions are relative to the BAM-stored, CIGAR-relative query
@@ -346,7 +349,20 @@ def _attach_direct_signals_from_bam(
                     for query_position, code_bytes in per_position.items():
                         if query_position >= len(combined):
                             continue
-                        _call_code, probability = _resolve_direct_call(code_bytes)
+                        call_code, winning_probability = _resolve_direct_call(code_bytes)
+                        # _resolve_direct_call returns the winning STATE's own
+                        # confidence -- e.g. 0.96 when canonical wins with 96%
+                        # confidence, not "4% modified". _direct_probability
+                        # (already used by the modkit-TSV join path,
+                        # _attach_direct_signals) converts that into a
+                        # consistent P(modified) by inverting canonical-wins
+                        # calls; skipping this step here previously stored the
+                        # raw canonical confidence directly, so a read that
+                        # was e.g. 96% confidently UNMODIFIED at a position
+                        # showed up as a 0.96 (strong-looking) modification
+                        # signal -- systematically inflating and decorrelating
+                        # Raw_modification_signal from true methylation level.
+                        probability = _direct_probability(call_code, winning_probability)
                         channel[query_position] = probability
                         if np.isnan(combined[query_position]):
                             combined[query_position] = probability
@@ -1091,7 +1107,7 @@ def _build_ragged_records_streaming_direct(
     from ..informatics.fasta_functions import get_native_references
     from ..informatics.reference_identity import reference_uid as _reference_uid
 
-    backend = str(getattr(cfg, "direct_signal_backend", "pysam"))
+    backend = str(getattr(cfg, "direct_signal_backend", "modkit"))
     if backend == "modkit" and not mod_tsv_paths:
         raise ValueError("direct_signal_backend='modkit' requires mod_tsv_paths")
 
@@ -1238,7 +1254,7 @@ def build_ragged_records_streaming(
     """
     modality = str(cfg.smf_modality)
     if modality == "direct":
-        backend = str(getattr(cfg, "direct_signal_backend", "pysam"))
+        backend = str(getattr(cfg, "direct_signal_backend", "modkit"))
         if backend == "modkit" and not mod_tsv_paths:
             raise ValueError(
                 "build_ragged_records_streaming with direct_signal_backend='modkit' "
