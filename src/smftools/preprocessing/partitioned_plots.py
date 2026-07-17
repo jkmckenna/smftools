@@ -361,6 +361,8 @@ def _duplicate_diagnostics(obs, sample_column, layout, threshold):
         "hierarchical neighbor": "#e76f51",
     }
     references = sorted(obs[REFERENCE_STRAND].astype(str).unique())
+    if not references:
+        return False
     if hamming in obs:
         n_columns = min(3, len(references))
         n_rows = math.ceil(len(references) / n_columns)

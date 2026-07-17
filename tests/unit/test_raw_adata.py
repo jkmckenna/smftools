@@ -15,6 +15,7 @@ from smftools.cli.raw_adata import (
     _n_buckets_for_reference,
     _resolve_direct_call,
     _split_by_reference_strand,
+    _split_modkit_tsv_by_bucket,
 )
 from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT, PREPROCESS_DIR
 
@@ -258,6 +259,58 @@ def test_attach_direct_signals_reads_gzipped_modkit_extract(tmp_path):
     )
 
 
+def test_split_modkit_tsv_by_bucket_routes_rows_by_read_id(tmp_path):
+    calls = pd.DataFrame(
+        {
+            "chrom": ["chr1", "chr1", "chr1", "chr1"],
+            "ref_position": [5, 6, 5, 6],
+            "modified_primary_base": ["A", "A", "A", "A"],
+            "ref_strand": ["+", "+", "+", "+"],
+            "read_id": ["read1", "read1", "read2", "read2"],
+            "call_code": ["a", "-", "-", "a"],
+            "call_prob": [0.8, 0.7, 0.6, 0.9],
+        }
+    )
+    tsv_path = tmp_path / "calls.tsv"
+    calls.to_csv(tsv_path, sep="\t", index=False)
+    output_dir = tmp_path / "split"
+
+    paths = _split_modkit_tsv_by_bucket(
+        [tsv_path], {"read1": 0, "read2": 1}, output_dir, chunksize=1
+    )
+
+    assert set(paths) == {0, 1}
+    bucket0 = pd.read_csv(paths[0], sep="\t")
+    bucket1 = pd.read_csv(paths[1], sep="\t")
+    assert set(bucket0["read_id"]) == {"read1"}
+    assert set(bucket1["read_id"]) == {"read2"}
+    assert len(bucket0) == 2
+    assert len(bucket1) == 2
+
+
+def test_split_modkit_tsv_by_bucket_drops_unassigned_read_ids(tmp_path):
+    calls = pd.DataFrame(
+        {
+            "chrom": ["chr1", "chr1"],
+            "ref_position": [5, 5],
+            "modified_primary_base": ["A", "A"],
+            "ref_strand": ["+", "+"],
+            "read_id": ["wanted", "not_wanted"],
+            "call_code": ["a", "a"],
+            "call_prob": [0.8, 0.8],
+        }
+    )
+    tsv_path = tmp_path / "calls.tsv"
+    calls.to_csv(tsv_path, sep="\t", index=False)
+    output_dir = tmp_path / "split"
+
+    paths = _split_modkit_tsv_by_bucket([tsv_path], {"wanted": 0}, output_dir)
+
+    assert set(paths) == {0}
+    bucket0 = pd.read_csv(paths[0], sep="\t")
+    assert set(bucket0["read_id"]) == {"wanted"}
+
+
 def test_map_references_parallel_sequential_matches_process_pool():
     items = [(1,), (2,), (3,), (4,)]
 
@@ -411,6 +464,65 @@ def test_attach_direct_signals_from_bam_matches_manual_ml_derivation(tmp_path):
         equal_nan=True,
         rtol=1e-6,
     )
+
+
+def _write_direct_signal_partial_calls_bam(path, *, read_id="read1", reference="chr1"):
+    """One 6bp forward-strand read ("AAGTAC") with an explicit MM/ML call at
+    the first and third A (query positions 0, 4) but none at the second
+    (query position 1) -- exercises ``impute_uncalled_canonical``'s
+    fill-missing behavior for a base that has some, but not all, of its
+    occurrences explicitly called. Position 5 (C) has no MM/ML entries at
+    all, exercising that imputation never invents a channel for a base with
+    zero calls in the read.
+    """
+    import pysam
+
+    header = {"HD": {"VN": "1.6"}, "SQ": [{"SN": reference, "LN": 20}]}
+    with pysam.AlignmentFile(str(path), "wb", header=header) as bam:
+        read = pysam.AlignedSegment()
+        read.query_name = read_id
+        read.query_sequence = "AAGTAC"
+        read.flag = 0
+        read.reference_id = 0
+        read.reference_start = 0
+        read.mapping_quality = 60
+        read.cigartuples = [(0, 6)]
+        read.query_qualities = pysam.qualitystring_to_array("IIIIII")
+        read.set_tag("MM", "A+a,0,1;", value_type="Z")
+        read.set_tag("ML", [200, 10])
+        bam.write(read)
+    pysam.sort("-o", str(path.with_suffix(".sorted.bam")), str(path))
+    pysam.index(str(path.with_suffix(".sorted.bam")))
+    return path.with_suffix(".sorted.bam")
+
+
+def test_attach_direct_signals_from_bam_default_leaves_uncalled_bases_nan(tmp_path):
+    bam_path = _write_direct_signal_partial_calls_bam(tmp_path / "partial.bam")
+    frame = pd.DataFrame(
+        [{"read_id": "read1", "reference": "chr1", "reference_start": 0, "cigar": "6M"}]
+    )
+
+    result, _ = _attach_direct_signals_from_bam(frame, bam_path)
+
+    signal = result.at[0, "modification_signal"]
+    assert np.isnan(signal[1])  # second A, no explicit call, default: NaN
+
+
+def test_attach_direct_signals_from_bam_imputes_uncalled_canonical_when_enabled(tmp_path):
+    bam_path = _write_direct_signal_partial_calls_bam(tmp_path / "partial.bam")
+    frame = pd.DataFrame(
+        [{"read_id": "read1", "reference": "chr1", "reference_start": 0, "cigar": "6M"}]
+    )
+
+    result, _ = _attach_direct_signals_from_bam(frame, bam_path, impute_uncalled_canonical=True)
+
+    signal = result.at[0, "modification_signal"]
+    assert signal[1] == 0.0  # second A, no explicit call, imputed as canonical
+    np.testing.assert_allclose(signal[0], 200 / 255.0, rtol=1e-6)  # explicit call untouched
+    np.testing.assert_allclose(signal[4], 1.0 - 10 / 255.0, rtol=1e-6)  # explicit call untouched
+    assert np.isnan(signal[2])  # non-A, untouched
+    assert np.isnan(signal[3])  # non-A, untouched
+    assert np.isnan(signal[5])  # C with zero calls in this read: no imputation
 
 
 def test_artifact_paths_include_raw_and_dense_outputs(tmp_path):

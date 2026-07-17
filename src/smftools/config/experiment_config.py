@@ -839,6 +839,14 @@ class ExperimentConfig:
     # extract to a TSV first (the original path). pysam is the default -- see
     # dev/pipeline_scaling_audit.md's Track B notes for why.
     direct_signal_backend: str = "pysam"
+    # pysam backend only: positions of the canonical base with no explicit MM/ML
+    # tag entry are left NaN (no information) by default -- the honest reading
+    # of the SAM spec. modkit's own convention instead fills these with a
+    # synthetic "canonical, probability 1.0" call (its TSV's inferred=True
+    # rows). Set True to mirror modkit's imputation exactly, for A/B comparison
+    # against modkit-extract-era results on the same data; leave False for the
+    # statistically correct default. No effect when direct_signal_backend="modkit".
+    direct_signal_impute_uncalled_canonical: bool = False
 
     # Anndata structure
     reference_column: Optional[str] = REF_COL
@@ -1810,6 +1818,9 @@ class ExperimentConfig:
             bedtools_backend=merged.get("bedtools_backend", "auto"),
             bigwig_backend=merged.get("bigwig_backend", "auto"),
             direct_signal_backend=merged.get("direct_signal_backend", "pysam"),
+            direct_signal_impute_uncalled_canonical=_parse_bool(
+                merged.get("direct_signal_impute_uncalled_canonical", False)
+            ),
             rescue_secondary_alignments=_parse_bool(
                 merged.get("rescue_secondary_alignments", True)
             ),

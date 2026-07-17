@@ -1124,6 +1124,7 @@ def load_adata_core(
     if raw_only:
         direct_signal_backend = str(getattr(cfg, "direct_signal_backend", "pysam"))
         direct_uses_modkit = cfg.smf_modality == "direct" and direct_signal_backend == "modkit"
+        mod_tsv_paths: list[Path] | None = None
         if direct_uses_modkit:
             from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
 
@@ -1142,79 +1143,54 @@ def load_adata_core(
                 threads=cfg.threads,
                 single_bam=aligned_sorted_output,
             )
+            mod_tsv_paths = sorted(mod_tsv_dir.glob("*.tsv")) + sorted(
+                mod_tsv_dir.glob("*.tsv.gz")
+            )
 
         from ..readwrite import safe_read_h5ad
 
         logger.info("Extracting read-relative raw records from aligned BAM")
-        # Streaming (never holds more than one reference's ragged data in
-        # memory at once) for conversion/deaminase (always) and for direct
-        # modality when direct_signal_backend="pysam" (the default) -- its
-        # MM/ML-tag decode needs nothing beyond the same aligned BAM already
-        # open for extraction. Only direct modality's modkit-TSV backend keeps
-        # today's whole-frame path: modkit extract produces one whole-file TSV
-        # joined post-hoc across every reference, which isn't streaming-
-        # compatible -- see dev/pipeline_scaling_audit.md's Track B notes.
+        # Streaming for every modality/backend combination: never holds more
+        # than one reference's ragged data in memory at once (conversion/
+        # deaminase, and direct modality's pysam backend), and for direct
+        # modality's modkit backend, never holds more than one read-id
+        # bucket's slice of the whole-experiment modkit-extract TSV either
+        # (build_ragged_records_streaming splits+buckets it up front -- see
+        # _split_modkit_tsv_by_bucket).
         frame = None
-        if direct_uses_modkit:
-            from ..informatics.raw_store import write_raw_store
-            from .raw_adata import build_ragged_records
+        from ..informatics.raw_store import write_raw_store_streaming
+        from .raw_adata import build_ragged_records_streaming
 
-            frame, reference_lengths, extra_uns = build_ragged_records(
-                cfg,
-                fasta=fasta,
-                aligned_bam=aligned_sorted_output,
-                barcode_sidecar=barcode_sidecar,
-                umi_sidecar=umi_sidecar,
-                mod_tsv_dir=mod_tsv_dir,
-            )
-            raw_paths = write_raw_store(
-                frame,
-                load_directory,
-                reference_lengths=reference_lengths,
-                shard_size=int(getattr(cfg, "raw_parquet_shard_size", 100_000)),
-                start_bin_size=int(getattr(cfg, "parquet_start_bin_size", 1_000_000)),
-                analysis_mode=getattr(cfg, "analysis_mode", "auto"),
-                load_cache_mode=getattr(cfg, "load_cache_mode", "auto"),
-                max_full_matrix_gb=float(getattr(cfg, "max_full_matrix_gb", 8.0)),
-                genome_tile_size=int(getattr(cfg, "genome_tile_size", 10_000)),
-                genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
-                bam_path=aligned_sorted_output,
-                extra_uns=extra_uns,
-            )
-            n_molecules = len(frame)
-        else:
-            from ..informatics.raw_store import write_raw_store_streaming
-            from .raw_adata import build_ragged_records_streaming
-
-            reference_frames, reference_lengths, extra_uns = build_ragged_records_streaming(
-                cfg,
-                fasta=fasta,
-                aligned_bam=aligned_sorted_output,
-                barcode_sidecar=barcode_sidecar,
-                umi_sidecar=umi_sidecar,
-            )
-            raw_paths = write_raw_store_streaming(
-                reference_frames,
-                load_directory,
-                reference_lengths=reference_lengths,
-                shard_size=int(getattr(cfg, "raw_parquet_shard_size", 100_000)),
-                start_bin_size=int(getattr(cfg, "parquet_start_bin_size", 1_000_000)),
-                analysis_mode=getattr(cfg, "analysis_mode", "auto"),
-                load_cache_mode=getattr(cfg, "load_cache_mode", "auto"),
-                max_full_matrix_gb=float(getattr(cfg, "max_full_matrix_gb", 8.0)),
-                genome_tile_size=int(getattr(cfg, "genome_tile_size", 10_000)),
-                genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
-                bam_path=aligned_sorted_output,
-                extra_uns=extra_uns,
-            )
-            # The streaming path never materializes one experiment-wide frame
-            # (that's the whole point) -- downstream steps below that used to
-            # read `frame` (molecule count, the chimera-rate plot) read the
-            # just-written spine.obs instead, which is already documented as
-            # an equivalent, and cheaper since it's scalar-only, no ragged
-            # array columns (see plot_reference_barcode_chimera_rate's own
-            # docstring: "the raw spine obs or ragged frame").
-            n_molecules = safe_read_h5ad(raw_paths["spine"], verbose=False)[0].n_obs
+        reference_frames, reference_lengths, extra_uns = build_ragged_records_streaming(
+            cfg,
+            fasta=fasta,
+            aligned_bam=aligned_sorted_output,
+            barcode_sidecar=barcode_sidecar,
+            umi_sidecar=umi_sidecar,
+            mod_tsv_paths=mod_tsv_paths,
+        )
+        raw_paths = write_raw_store_streaming(
+            reference_frames,
+            load_directory,
+            reference_lengths=reference_lengths,
+            shard_size=int(getattr(cfg, "raw_parquet_shard_size", 100_000)),
+            start_bin_size=int(getattr(cfg, "parquet_start_bin_size", 1_000_000)),
+            analysis_mode=getattr(cfg, "analysis_mode", "auto"),
+            load_cache_mode=getattr(cfg, "load_cache_mode", "auto"),
+            max_full_matrix_gb=float(getattr(cfg, "max_full_matrix_gb", 8.0)),
+            genome_tile_size=int(getattr(cfg, "genome_tile_size", 10_000)),
+            genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
+            bam_path=aligned_sorted_output,
+            extra_uns=extra_uns,
+        )
+        # The streaming path never materializes one experiment-wide frame
+        # (that's the whole point) -- downstream steps below that used to
+        # read `frame` (molecule count, the chimera-rate plot) read the
+        # just-written spine.obs instead, which is already documented as
+        # an equivalent, and cheaper since it's scalar-only, no ragged
+        # array columns (see plot_reference_barcode_chimera_rate's own
+        # docstring: "the raw spine obs or ragged frame").
+        n_molecules = safe_read_h5ad(raw_paths["spine"], verbose=False)[0].n_obs
 
         # Consolidated provenance manifest (dev/experiment_storage_schema.md, Phase 2):
         # config-by-value, input/FASTA paths, and a readable stage-completion index --

@@ -155,9 +155,21 @@ def _direct_probability(call_code: object, probability: object) -> float:
 
 
 def _attach_direct_signals(
-    frame: pd.DataFrame, mod_tsv_dir: Path
+    frame: pd.DataFrame,
+    mod_tsv_dir: Path | None = None,
+    *,
+    tsv_paths: list[Path] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Attach combined and per-base/strand query-coordinate modkit signals."""
+    """Attach combined and per-base/strand query-coordinate modkit signals.
+
+    Reads either every TSV under ``mod_tsv_dir`` (a whole directory) or,
+    when the caller already narrowed things down to a small pre-split chunk
+    (see ``_split_modkit_tsv_by_bucket``), exactly the file(s) in
+    ``tsv_paths`` -- the same join logic serves both without duplicating it.
+    Production code always uses ``tsv_paths`` now (``_extract_direct_
+    reference_modkit``, one bucket's own small chunk); ``mod_tsv_dir`` is
+    kept for joining an arbitrary whole directory of TSVs directly.
+    """
     from ..informatics.ragged_store import cigar_query_length, iter_cigar_aligned_pairs
 
     frame = frame.set_index("read_id", drop=False)
@@ -165,7 +177,10 @@ def _attach_direct_signals(
         [float("nan")] * cigar_query_length(cigar) for cigar in frame["cigar"]
     ]
     signal_columns: set[str] = set()
-    tsv_paths = sorted(mod_tsv_dir.glob("*.tsv")) + sorted(mod_tsv_dir.glob("*.tsv.gz"))
+    if tsv_paths is None:
+        if mod_tsv_dir is None:
+            raise ValueError("either mod_tsv_dir or tsv_paths must be given")
+        tsv_paths = sorted(mod_tsv_dir.glob("*.tsv")) + sorted(mod_tsv_dir.glob("*.tsv.gz"))
     if not tsv_paths:
         raise FileNotFoundError(f"no modkit extract TSVs found under {mod_tsv_dir}")
     calls = pd.concat((pd.read_csv(path, sep="\t") for path in tsv_paths), ignore_index=True)
@@ -239,6 +254,7 @@ def _attach_direct_signals_from_bam(
     *,
     window_start: int | None = None,
     window_end: int | None = None,
+    impute_uncalled_canonical: bool = False,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Attach combined and per-base/strand query-coordinate modification signals.
 
@@ -273,6 +289,14 @@ def _attach_direct_signals_from_bam(
     either direction, sampled over a real read) -- leaving them ``NaN`` is more
     correct (no information genuinely means no information), not a divergence
     to reconcile.
+
+    ``impute_uncalled_canonical`` (default ``False``) opts back into modkit's
+    convention for A/B comparison: for every canonical-base position in the
+    read's own query sequence with no explicit MM/ML entry, fill probability
+    ``0.0`` (canonical) instead of leaving ``NaN``. Only affects positions of
+    a canonical base that has at least one explicit call elsewhere in the
+    read (``calls_by_base``); a read with zero calls for a base is left
+    exactly as before, matching modkit's own per-read gating.
     """
     import pysam
 
@@ -312,6 +336,8 @@ def _attach_direct_signals_from_bam(
                     for query_position, ml_byte in calls:
                         per_position.setdefault(query_position, {})[code] = ml_byte
 
+                query_sequence = read.query_sequence if impute_uncalled_canonical else None
+
                 for canonical_base, per_position in calls_by_base.items():
                     safe_base = re.sub(r"[^A-Za-z0-9]+", "_", canonical_base)
                     column = f"modification_signal_{safe_base}_{strand}"
@@ -326,6 +352,17 @@ def _attach_direct_signals_from_bam(
                             combined[query_position] = probability
                         else:
                             combined[query_position] += probability
+
+                    if query_sequence:
+                        base_upper = canonical_base.upper()
+                        for query_position, base in enumerate(query_sequence):
+                            if query_position >= len(combined) or query_position in per_position:
+                                continue
+                            if base.upper() != base_upper:
+                                continue
+                            channel[query_position] = 0.0
+                            if np.isnan(combined[query_position]):
+                                combined[query_position] = 0.0
 
                 frame.at[read_id, "modification_signal"] = combined
                 for column, values in channel_arrays.items():
@@ -451,115 +488,6 @@ def _attach_signal_features(frame: pd.DataFrame, *, cfg, aligned_bam: Path) -> p
 
     logger.info("Attached current signal features for %d/%d read(s)", attached, len(frame))
     return frame.reset_index(drop=True)
-
-
-def build_ragged_records(
-    cfg,
-    *,
-    fasta: Path,
-    aligned_bam: Path,
-    barcode_sidecar: str | Path | None = None,
-    umi_sidecar: str | Path | None = None,
-    mod_tsv_dir: Path | None = None,
-) -> tuple[pd.DataFrame, dict[str, int], dict[str, object]]:
-    """Extract the aligned BAM into the canonical one-row-per-read raw schema."""
-    from ..informatics.bam_functions import extract_read_relative_base_identities
-    from ..informatics.fasta_functions import get_native_references
-
-    reference_map = get_native_references(fasta)
-    rows: list[dict[str, object]] = []
-    reference_lengths: dict[str, int] = {}
-    modality = str(cfg.smf_modality)
-    deaminase = modality == "deaminase"
-
-    if modality in {"conversion", "deaminase"}:
-        from ..informatics.converted_BAM_to_adata import process_conversion_sites
-
-        _, record_info, chromosome_sequences = process_conversion_sites(
-            fasta, cfg.conversion_types, deaminase
-        )
-    else:
-        record_info = {}
-        chromosome_sequences = {
-            reference: (sequence, sequence)
-            for reference, (_length, sequence) in reference_map.items()
-        }
-
-    for record, (record_length, sequence) in reference_map.items():
-        extracted = extract_read_relative_base_identities(
-            aligned_bam,
-            record,
-            sequence,
-            samtools_backend=cfg.samtools_backend,
-            primary_only=True,
-        )
-        for row in extracted:
-            if modality in {"conversion", "deaminase"}:
-                info = record_info[record]
-                strand = info.strand
-                if deaminase and row["Read_mismatch_trend"] == "G->A":
-                    strand = "bottom"
-                row["reference"] = info.chromosome
-                row["strand"] = strand
-                row["dataset"] = info.conversion
-                row["Reference_strand"] = f"{info.chromosome}_{strand}"
-                row["modification_signal"] = _conversion_signal(row, deaminase=deaminase)
-                reference_lengths[row["Reference_strand"]] = info.sequence_length
-            else:
-                reference_lengths[row["Reference_strand"]] = record_length
-            rows.append(row)
-    if not rows:
-        raise RuntimeError(f"no primary mapped reads were extracted from {aligned_bam}")
-
-    frame = _attach_obs_metadata(
-        pd.DataFrame(rows),
-        cfg=cfg,
-        bam_path=aligned_bam,
-        barcode_sidecar=barcode_sidecar,
-        umi_sidecar=umi_sidecar,
-    )
-    frame = _attach_pod5_metadata(frame, cfg=cfg)
-    frame = _attach_signal_features(frame, cfg=cfg, aligned_bam=aligned_bam)
-    signal_columns: list[str] = []
-    if modality == "direct":
-        if str(getattr(cfg, "direct_signal_backend", "pysam")) == "modkit":
-            if mod_tsv_dir is None:
-                raise ValueError("direct raw extraction requires mod_tsv_dir")
-            frame, signal_columns = _attach_direct_signals(frame, mod_tsv_dir)
-        else:
-            frame, signal_columns = _attach_direct_signals_from_bam(frame, aligned_bam)
-
-    references = {
-        f"{reference}_FASTA_sequence": sequence
-        for reference, (sequence, _complement) in chromosome_sequences.items()
-    }
-
-    # Canonical, name-independent reference identity (sequence hash) per Reference_strand.
-    # Same underlying locus sequence across experiments -> same uid, regardless of name.
-    from ..informatics.reference_identity import reference_uid as _reference_uid
-
-    reference_uids: dict[str, str] = {}
-    for reference_strand, length in reference_lengths.items():
-        chromosome = str(reference_strand).rsplit("_", 1)[0]
-        seq_pair = chromosome_sequences.get(chromosome)
-        if seq_pair is not None:
-            reference_uids[str(reference_strand)] = _reference_uid(seq_pair[0], length)
-
-    return (
-        frame,
-        reference_lengths,
-        {
-            "References": references,
-            "reference_uids": reference_uids,
-            "signal_columns": signal_columns,
-            "modality": modality,
-            "sequence_integer_encoding_map": dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT),
-            "mismatch_integer_encoding_map": dict(MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT),
-            "sequence_integer_decoding_map": {
-                str(key): value for key, value in MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE.items()
-            },
-        },
-    )
 
 
 def _split_by_reference_strand(frame: pd.DataFrame):
@@ -746,6 +674,61 @@ def _n_buckets_for_reference(n_reads: int, max_workers: int, *, min_reads_per_bu
     return max(1, min(max_workers, n_reads // min_reads_per_bucket))
 
 
+def _split_modkit_tsv_by_bucket(
+    tsv_paths: list[Path],
+    read_id_to_bucket_id: dict[str, int],
+    output_dir: Path,
+    *,
+    chunksize: int = 2_000_000,
+) -> dict[int, Path]:
+    """Stream-split a (possibly huge) modkit-extract TSV into one small file
+    per read-id bucket, so parallel workers each hold only their own bucket's
+    rows instead of one process joining the whole file serially.
+
+    Reads ``tsv_paths`` via ``pandas.read_csv``'s ``chunksize`` (bounded
+    memory regardless of total TSV size -- the same 75M-row TSV that needs
+    ~40GB loaded whole streams through in fixed-size pieces here), routing
+    each chunk's rows to their bucket's output file by ``read_id`` using the
+    same read-id -> bucket assignment already computed for the pysam
+    backend's per-reference parallel dispatch (``_bucket_read_ids``), so
+    both backends parallelize identically from the caller's point of view.
+    Rows whose read_id has no bucket assignment (not a wanted primary read)
+    are dropped -- the same effective filter as ``_attach_direct_signals``'s
+    ``calls.loc[...isin(frame.index)]``, just applied before the split
+    instead of after a whole-file load.
+
+    Bucket ids (not reference names) name the output files -- reference
+    names can contain characters unsafe for filenames (this codebase's own
+    FASTA records use bare colons, e.g. ``"chr1:1000-3000"``) and the caller
+    already has a bucket id for every item it dispatches, so there is no
+    reason to round-trip through a sanitized name.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    handles: dict[int, object] = {}
+    output_paths: dict[int, Path] = {}
+    try:
+        for tsv_path in tsv_paths:
+            for chunk in pd.read_csv(tsv_path, sep="\t", chunksize=chunksize):
+                bucket_ids = chunk[MODKIT_EXTRACT_TSV_COLUMN_READ_ID].map(read_id_to_bucket_id)
+                wanted = chunk.loc[bucket_ids.notna()].copy()
+                if wanted.empty:
+                    continue
+                wanted["_bucket_id"] = bucket_ids.loc[wanted.index].astype(int)
+                for bucket_id, sub in wanted.groupby("_bucket_id", sort=False):
+                    sub = sub.drop(columns="_bucket_id")
+                    handle = handles.get(bucket_id)
+                    if handle is None:
+                        path = output_dir / f"bucket_{bucket_id:06d}.tsv"
+                        output_paths[bucket_id] = path
+                        handle = open(path, "w")
+                        handles[bucket_id] = handle
+                    sub.to_csv(handle, sep="\t", index=False, header=handle.tell() == 0)
+    finally:
+        for handle in handles.values():
+            handle.close()
+    return output_paths
+
+
 def _extract_convertible_reference(
     record: str,
     sequence: str,
@@ -858,7 +841,61 @@ def _extract_direct_reference(
     # frame's read_id set already equals read_name_filter (extraction above
     # applied it), so _attach_direct_signals_from_bam's own wanted-read-id
     # filtering is exact regardless of position -- no window scoping needed.
-    frame, found_columns = _attach_direct_signals_from_bam(frame, aligned_bam)
+    frame, found_columns = _attach_direct_signals_from_bam(
+        frame,
+        aligned_bam,
+        impute_uncalled_canonical=bool(
+            getattr(cfg, "direct_signal_impute_uncalled_canonical", False)
+        ),
+    )
+    return frame, found_columns
+
+
+def _extract_direct_reference_modkit(
+    record: str,
+    sequence: str,
+    read_name_filter: set[str] | None,
+    metrics: dict,
+    split_tsv_path: Path | None,
+    *,
+    cfg,
+    aligned_bam: Path,
+    barcode_sidecar: str | Path | None,
+    umi_sidecar: str | Path | None,
+) -> tuple[pd.DataFrame | None, list[str]]:
+    """Extract+attach one reference bucket's frame for direct modality (modkit
+    backend). Mirrors ``_extract_direct_reference`` exactly except for the
+    modification-signal step: joins against this bucket's own small
+    pre-split modkit-extract TSV chunk (``_split_modkit_tsv_by_bucket``)
+    instead of decoding MM/ML tags from the BAM directly, so the join logic
+    itself (``_attach_direct_signals``) is unchanged -- only how much of the
+    whole-experiment TSV any one worker has to hold in memory.
+    """
+    from ..informatics.bam_functions import extract_read_relative_base_identities
+
+    extracted = extract_read_relative_base_identities(
+        aligned_bam,
+        record,
+        sequence,
+        samtools_backend=cfg.samtools_backend,
+        primary_only=True,
+        read_name_filter=read_name_filter,
+    )
+    if not extracted:
+        return None, []
+    frame = _attach_obs_metadata(
+        pd.DataFrame(extracted),
+        cfg=cfg,
+        bam_path=aligned_bam,
+        barcode_sidecar=barcode_sidecar,
+        umi_sidecar=umi_sidecar,
+        metrics=metrics,
+    )
+    frame = _attach_pod5_metadata(frame, cfg=cfg)
+    frame = _attach_signal_features(frame, cfg=cfg, aligned_bam=aligned_bam)
+    if split_tsv_path is None or not split_tsv_path.exists():
+        return frame, []
+    frame, found_columns = _attach_direct_signals(frame, tsv_paths=[split_tsv_path])
     return frame, found_columns
 
 
@@ -1029,21 +1066,34 @@ def _build_ragged_records_streaming_direct(
     aligned_bam: Path,
     barcode_sidecar: str | Path | None = None,
     umi_sidecar: str | Path | None = None,
+    mod_tsv_paths: list[Path] | None = None,
 ) -> tuple[object, dict[str, int], dict[str, object]]:
     """Streaming variant of ``build_ragged_records`` for ``direct`` modality.
 
-    Only usable with ``cfg.direct_signal_backend == "pysam"`` -- the modkit-TSV
-    backend needs the whole-file TSV joined post-hoc across every reference,
-    which isn't streaming-compatible (see dev/pipeline_scaling_audit.md's
-    Track B notes); callers using the modkit backend should use
-    ``build_ragged_records`` instead. The pysam backend decodes each read's own
-    MM/ML tags directly (``_attach_direct_signals_from_bam``), needing nothing
-    beyond the same aligned BAM already open for extraction, so it streams
-    per reference exactly like conversion/deaminase.
+    Supports both ``direct_signal_backend`` values. ``pysam`` (the default)
+    decodes each read's own MM/ML tags directly (``_attach_direct_signals_
+    from_bam``), needing nothing beyond the same aligned BAM already open for
+    extraction, so it streams per reference exactly like conversion/deaminase.
+
+    ``modkit`` needs ``mod_tsv_paths`` -- the modkit-extract TSV(s), already
+    produced by the caller before this function runs. One flat TSV covers the
+    whole experiment (modkit has no per-reference/per-chunk output mode), so
+    it can't be streamed per reference the way the BAM itself can; instead
+    it's streamed once via ``pandas.read_csv(chunksize=...)`` and split into
+    the same per-reference read-id buckets used for pysam-backend
+    parallelism (``_split_modkit_tsv_by_bucket``), bounding both per-worker
+    memory and giving the modkit backend the same real multi-core
+    parallelism the pysam backend already has, instead of one process
+    joining the whole file serially (see dev/pipeline_scaling_audit.md's
+    Track B notes for why the old whole-frame-only path existed).
     """
     from ..informatics.bam_functions import extract_read_features_from_bam
     from ..informatics.fasta_functions import get_native_references
     from ..informatics.reference_identity import reference_uid as _reference_uid
+
+    backend = str(getattr(cfg, "direct_signal_backend", "pysam"))
+    if backend == "modkit" and not mod_tsv_paths:
+        raise ValueError("direct_signal_backend='modkit' requires mod_tsv_paths")
 
     reference_map = get_native_references(fasta)
     chromosome_sequences = {
@@ -1095,6 +1145,8 @@ def _build_ragged_records_streaming_direct(
         )
         buckets_remaining: dict[str, int] = {}
         items = []
+        read_id_to_bucket_id: dict[str, int] = {}
+        bucket_id_counter = 0
         for record, (_record_length, sequence) in reference_map.items():
             read_ids = _read_ids_for_reference(aligned_bam, record)
             n_buckets = _n_buckets_for_reference(len(read_ids), max_workers)
@@ -1102,7 +1154,26 @@ def _build_ragged_records_streaming_direct(
             buckets_remaining[record] = len(buckets)
             for bucket in buckets:
                 metrics_slice = {rid: metrics[rid] for rid in bucket if rid in metrics}
-                items.append((record, sequence, bucket, metrics_slice))
+                if backend == "modkit":
+                    for read_id in bucket:
+                        read_id_to_bucket_id[read_id] = bucket_id_counter
+                    items.append((record, sequence, bucket, metrics_slice, bucket_id_counter))
+                    bucket_id_counter += 1
+                else:
+                    items.append((record, sequence, bucket, metrics_slice))
+
+        split_dir: Path | None = None
+        if backend == "modkit":
+            split_dir = Path(cfg.modkit_outputs_path) / "tsv_split_buckets"
+            split_paths = _split_modkit_tsv_by_bucket(
+                list(mod_tsv_paths), read_id_to_bucket_id, split_dir
+            )
+            items = [
+                (record, sequence, bucket, metrics_slice, split_paths.get(bucket_id))
+                for record, sequence, bucket, metrics_slice, bucket_id in items
+            ]
+
+        worker = _extract_direct_reference_modkit if backend == "modkit" else _extract_direct_reference
         worker_kwargs = dict(
             cfg=cfg,
             aligned_bam=aligned_bam,
@@ -1113,27 +1184,33 @@ def _build_ragged_records_streaming_direct(
         any_rows = False
         from ..memory_guard import resolve_max_workers
 
-        for args, (bucket_frame, found_columns) in _map_references_parallel(
-            items,
-            _extract_direct_reference,
-            max_workers=resolve_max_workers(cfg, len(items)),
-            worker_kwargs=worker_kwargs,
-        ):
-            record = args[0]
-            for column in found_columns:
-                if column not in signal_columns:
-                    signal_columns.append(column)
-            if bucket_frame is not None and not bucket_frame.empty:
-                pending.setdefault(record, []).append(bucket_frame)
-            buckets_remaining[record] -= 1
-            if buckets_remaining[record] == 0:
-                frames = pending.pop(record, [])
-                if frames:
-                    any_rows = True
-                    combined = (
-                        frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
-                    )
-                    yield from _split_by_reference_strand(combined)
+        try:
+            for args, (bucket_frame, found_columns) in _map_references_parallel(
+                items,
+                worker,
+                max_workers=resolve_max_workers(cfg, len(items)),
+                worker_kwargs=worker_kwargs,
+            ):
+                record = args[0]
+                for column in found_columns:
+                    if column not in signal_columns:
+                        signal_columns.append(column)
+                if bucket_frame is not None and not bucket_frame.empty:
+                    pending.setdefault(record, []).append(bucket_frame)
+                buckets_remaining[record] -= 1
+                if buckets_remaining[record] == 0:
+                    frames = pending.pop(record, [])
+                    if frames:
+                        any_rows = True
+                        combined = (
+                            frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+                        )
+                        yield from _split_by_reference_strand(combined)
+        finally:
+            if split_dir is not None:
+                import shutil
+
+                shutil.rmtree(split_dir, ignore_errors=True)
         if not any_rows:
             raise RuntimeError(f"no primary mapped reads were extracted from {aligned_bam}")
 
@@ -1147,22 +1224,25 @@ def build_ragged_records_streaming(
     aligned_bam: Path,
     barcode_sidecar: str | Path | None = None,
     umi_sidecar: str | Path | None = None,
+    mod_tsv_paths: list[Path] | None = None,
 ) -> tuple[object, dict[str, int], dict[str, object]]:
     """Streaming variant of ``build_ragged_records``.
 
     Dispatches by modality: ``conversion``/``deaminase`` always stream (their
     modification-signal source is derivable from the FASTA alone); ``direct``
-    streams only when ``cfg.direct_signal_backend == "pysam"`` (the default)
-    -- the ``modkit`` backend's whole-file TSV join isn't streaming-compatible,
-    so callers using it must use ``build_ragged_records`` instead.
+    streams for either ``direct_signal_backend`` value -- ``modkit`` needs
+    ``mod_tsv_paths`` (the caller must already have run ``modkit extract``),
+    which ``_build_ragged_records_streaming_direct`` streams and splits into
+    per-bucket chunks itself rather than joining the whole file in one
+    process (see that function's docstring).
     """
     modality = str(cfg.smf_modality)
     if modality == "direct":
-        if str(getattr(cfg, "direct_signal_backend", "pysam")) != "pysam":
+        backend = str(getattr(cfg, "direct_signal_backend", "pysam"))
+        if backend == "modkit" and not mod_tsv_paths:
             raise ValueError(
-                "build_ragged_records_streaming only supports direct modality "
-                "with direct_signal_backend='pysam' -- use build_ragged_records "
-                "for the modkit backend"
+                "build_ragged_records_streaming with direct_signal_backend='modkit' "
+                "requires mod_tsv_paths (run modkit extract first)"
             )
         return _build_ragged_records_streaming_direct(
             cfg,
@@ -1170,6 +1250,7 @@ def build_ragged_records_streaming(
             aligned_bam=aligned_bam,
             barcode_sidecar=barcode_sidecar,
             umi_sidecar=umi_sidecar,
+            mod_tsv_paths=mod_tsv_paths,
         )
     if modality in {"conversion", "deaminase"}:
         return _build_ragged_records_streaming_convertible(
