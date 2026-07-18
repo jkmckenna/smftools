@@ -577,7 +577,7 @@ def assign_per_read_segments_layer(
     Args:
         parent_adata: AnnData that should receive the span layer.
         subset_adata: AnnData used to compute per-read segments.
-    per_read_segments: DataFrame with ``read_id``, ``segment_start``, and
+        per_read_segments: DataFrame with ``read_id``, ``segment_start``, and
             ``segment_end_exclusive`` columns. If ``segment_start_label`` and
             ``segment_end_label`` are present and numeric, they are used to
             map segments using label coordinates.

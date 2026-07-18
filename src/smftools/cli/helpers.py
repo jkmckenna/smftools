@@ -415,7 +415,9 @@ def resolve_adata_stage(
     Parameters
     ----------
     cfg : ExperimentConfig
+
     paths : AdataPaths
+
     min_stage : str, default "raw"
         The lowest stage to consider in the fallback chain.  Stages below this
         in the priority list are skipped.  For example, ``min_stage="pp"``

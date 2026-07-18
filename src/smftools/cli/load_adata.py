@@ -170,12 +170,14 @@ def load_adata_core(
     Core load pipeline.
 
     Assumes:
+
     - cfg is a fully initialized ExperimentConfig
     - paths is an AdataPaths object describing canonical h5ad stage paths
     - No stage-skipping or early returns based on existing AnnDatas are done here
       (that happens in the wrapper).
 
     Does:
+
     - handle input format (fast5/pod5/fastq/bam/h5ad)
     - basecalling / alignment / demux / BAM QC
     - optional bed + bigwig generation

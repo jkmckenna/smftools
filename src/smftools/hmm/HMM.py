@@ -303,12 +303,14 @@ def _ensure_2d_np(x):
 
 def normalize_hmm_feature_sets(raw: Any) -> Dict[str, Dict[str, Any]]:
     """
-    Canonical format:
+    Canonical format::
+
       {
         "footprints": {"state": "Non-Modified", "features": {"small_bound_stretch": [0,50], ...}},
         "accessible": {"state": "Modified", "features": {"all_accessible_features": [0, inf], ...}},
         ...
       }
+
     Each feature range is [lo, hi) in genomic bp (or index units if coords aren't ints).
     """
     parsed = _try_json_or_literal(raw)
@@ -1003,8 +1005,9 @@ class BaseHMM(nn.Module):
         """
         Merge adjacent 1-intervals in a binary layer if gaps <= distance_threshold (in coords space),
         writing:
-          - {base_layer}{suffix}
-          - {base_layer}{suffix}_lengths   (run-length in index units)
+
+        - {base_layer}{suffix}
+        - {base_layer}{suffix}_lengths   (run-length in index units)
         """
         if base_layer not in adata.layers:
             raise KeyError(f"Layer '{base_layer}' not found.")
@@ -1661,7 +1664,9 @@ class SingleBernoulliHMM(BaseHMM):
 class MultiBernoulliHMM(BaseHMM):
     """
     Multi-channel independent Bernoulli:
+
       emission[k,c] = P(obs_c==1 | state=k)
+
     X must be (N,L,C) on a union coordinate grid; NaN per-channel allowed.
     """
 

@@ -236,6 +236,7 @@ def preprocess_adata_core(
     Core preprocessing pipeline.
 
     Assumes:
+
     - `adata` is an AnnData object at some stage (raw/pp/etc.) to start preprocessing from.
     - `cfg` is the ExperimentConfig containing all thresholds & options.
     - `pp_adata_path` and `pp_dup_rem_adata_path` are the target output paths for

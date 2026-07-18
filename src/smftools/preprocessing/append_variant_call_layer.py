@@ -44,10 +44,11 @@ def append_variant_call_layer(
     counts as a match for that reference.
 
     Values in the output layer:
+
       1 = matches seq1 base(s)
       2 = matches seq2 base(s)
       0 = unknown (N, PAD, no coverage, or matches neither)
-     -1 = not a mismatch position (or not informative after conversion)
+      -1 = not a mismatch position (or not informative after conversion)
 
     Args:
         adata: AnnData object.

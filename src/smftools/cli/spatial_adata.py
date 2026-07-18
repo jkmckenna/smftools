@@ -126,12 +126,14 @@ def spatial_adata_core(
     Core spatial analysis pipeline.
 
     Assumes:
+
     - `adata` is (typically) the preprocessed, duplicate-removed AnnData.
     - `cfg` is the ExperimentConfig.
     - `spatial_adata_path`, `pp_adata_path`, `pp_dup_rem_adata_path` are canonical paths
       from `get_adata_paths`.
 
     Does:
+
     - Optional sample sheet load.
     - Optional inversion & reindexing.
     - Clustermaps on:

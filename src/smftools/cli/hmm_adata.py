@@ -157,8 +157,10 @@ def _get_training_matrix(
 ) -> Tuple[np.ndarray, Optional[str]]:
     """
     Matches your existing behavior:
-      - direct -> uses cfg.output_binary_layer_name in .layers
-      - else   -> uses .X
+
+    - direct -> uses cfg.output_binary_layer_name in .layers
+    - else   -> uses .X
+
     Returns (X, layer_name_or_None) where X is dense float array.
     """
     sub = subset[:, cols_mask]

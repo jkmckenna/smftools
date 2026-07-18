@@ -497,6 +497,7 @@ def _extract_barcode_with_flanking(
     """Extract a target sequence (barcode or UMI) using flanking sequence detection.
 
     Behavior:
+
     - If both adapter_side and amplicon_side are provided, use composite alignment
       of ``adapter + N*target_length + amplicon`` within the end window.
     - If only one flank is provided, fall back to single-flank anchored extraction.

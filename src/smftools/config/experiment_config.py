@@ -257,7 +257,9 @@ def resolve_aligner_args(
 def normalize_hmm_feature_sets(raw: Any) -> Dict[str, dict]:
     """
     Normalize user-provided `hmm_feature_sets` into canonical structure:
+
       { group_name: {"features": {label: (lo, hi), ...}, "state": "<Modified|Non-Modified>"} }
+
     Accepts dict, JSON/string, None. Returns {} for empty input.
     """
     if raw is None:
@@ -317,7 +319,8 @@ def normalize_hmm_feature_sets(raw: Any) -> Dict[str, dict]:
 
 def normalize_peak_feature_configs(raw: Any) -> Dict[str, dict]:
     """
-    Normalize user-provided `hmm_peak_feature_configs` into:
+    Normalize user-provided `hmm_peak_feature_configs` into::
+
       {
         layer_name: {
           "min_distance": int,

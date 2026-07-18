@@ -37,8 +37,11 @@ def plot_read_qc_histograms(
     Parameters
     ----------
     adata : AnnData
+        AnnData object with the columns in `obs_keys`/`sample_key` in `.obs`.
     outdir : str
+        Directory to write output figures into.
     obs_keys : list[str]
+        Columns in adata.obs to plot, one column of panels per key.
     sample_key : str
         Column in adata.obs defining rows (samples/barcodes).
     bins : int

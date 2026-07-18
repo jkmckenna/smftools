@@ -32,10 +32,12 @@ def plot_spatial_autocorr_grid(
     """
     Plot a grid of mean spatial autocorrelations per sample × (site_type × reference).
     Expects preprocessing to have created:
+
       - adata.obsm[f"{site}_spatial_autocorr"]   -> (n_molecules, n_lags) float32
       - adata.obsm[f"{site}_spatial_autocorr_counts"] -> (n_molecules, n_lags) int32  (optional)
       - adata.uns[f"{site}_spatial_autocorr_lags"] -> 1D lags array
       - adata.uns[f"{site}_spatial_periodicity_metrics_by_group"] -> dict keyed by (sample, ref)
+
     If per-group metrics are missing and `analyze_autocorr_matrix` is importable, the function will
     fall back to running the analyzer for that group (slow) and cache the result into adata.uns.
     """
@@ -593,19 +595,24 @@ def plot_rolling_grid(
         mapping (sample, ref) -> DataFrame (must contain 'center' and metric columns).
         Keys may use `None` for combined/"all" reference.
     out_dir : str
+        Directory to write output figures into.
     site : str
+        Site type label, used in output filenames/titles.
     metrics : sequence[str]
         list of metric column names to plot. One page-set per metric will be written.
-    sample_order, reference_order : optional lists for ordering (values as in keys)
+    sample_order, reference_order : list or None
+        optional lists for ordering (values as in keys).
     rows_per_page : int
         number of sample rows per page.
     cols_per_page : int | None
         number of columns per page (defaults to number of unique refs).
-    figsize_per_panel : (w,h) for each subplot panel.
+    figsize_per_panel : tuple
+        (w,h) for each subplot panel.
     per_metric_ylim : dict or None
         optional mapping metric -> (ymin,ymax) to force consistent y-limits for that metric.
         If absent, y-limits are autoscaled per page.
     filename_prefix : str
+        Prefix for output figure filenames.
     metric_display_names : dict or None
         optional mapping metric -> friendly label for y-axis/title.
 

@@ -132,6 +132,7 @@ def _bed_to_bigwig(
     """
     BED → bedGraph → bigWig
     Requires:
+
       - FASTA must have .fai index present
     """
 
@@ -224,9 +225,11 @@ def _plot_bed_histograms(
     Plot per-chromosome QC grids from a BED-like file.
 
     Expects columns:
+
       chrom, start, end, read_len, qname, mapq, avg_base_qual
 
     For each chromosome:
+
       - Column 1: Read length histogram
       - Column 2: Coverage across the chromosome (binned)
       - (optional) Column 3: MAPQ histogram
@@ -238,7 +241,9 @@ def _plot_bed_histograms(
     Parameters
     ----------
     bed_file : str
+        Path to the BED-like file to summarize.
     plotting_directory : str
+        Directory to write output figures into.
     fasta : str
         Reference FASTA (used to get chromosome lengths).
     bins : int
@@ -588,8 +593,9 @@ def extract_read_lengths_from_bed(file_path):
     """
     Load a dict of read names that points to the read length
 
-    Params:
+    Args:
         file_path (str): file path to a bed file
+
     Returns:
         read_dict (dict)
     """

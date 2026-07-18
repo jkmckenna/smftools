@@ -226,8 +226,8 @@ def plot_hmm_size_contours(
     smoothing_sigma: None or 0 -> no smoothing.
         float -> same sigma applied to (length_axis, position_axis)
         (sigma_len, sigma_pos) -> separate sigmas.
-    normalize_after_smoothing: if True, renormalize each position-column to sum to 1 after smoothing.
-
+    normalize_after_smoothing:
+        if True, renormalize each position-column to sum to 1 after smoothing.
     index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]`` for
         the x-axis position coordinate instead of ``var_names`` (per reference,
         since each reference's reindexed column can carry a different offset/
