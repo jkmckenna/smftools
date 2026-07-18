@@ -8,9 +8,7 @@ make_features_raw     NaN → 0.5 imputation for direct use of modification matr
 make_features_acf     Per-read ACF features with optional rolling smoothing.
 umap_from_pca         UMAP embedding from a cached PCA-space matrix; returns (X_umap, fitted model).
 cluster_from_pca      KNN graph + Leiden clustering from a cached PCA-space matrix.
-run_pipeline          PCA → UMAP → KNN graph → Leiden clustering (composes the above);
-                      returns (X_pca, X_umap, clusters, explained_variance_ratio,
-                      fitted PCA model, fitted UMAP model).
+run_pipeline          PCA → UMAP → KNN graph → Leiden clustering (composes the above); returns (X_pca, X_umap, clusters, explained_variance_ratio, fitted PCA model, fitted UMAP model).
 """
 
 from __future__ import annotations

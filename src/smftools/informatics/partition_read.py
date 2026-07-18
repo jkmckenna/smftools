@@ -6,6 +6,7 @@ mask) is resolved against the spine's pointer columns, the referenced partitions
 are loaded (only those), subset to the selected reads, and concatenated.
 
 Two backends:
+
 - **eager** (default, no extra deps): ``safe_read_zarr`` each needed partition.
 - **lazy** (``lazy=True``, needs ``xarray`` for ``anndata.experimental.read_lazy``):
   dask-backed row selection then ``to_memory``; falls back to eager if unavailable.
