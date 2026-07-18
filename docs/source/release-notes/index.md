@@ -2,6 +2,96 @@
 
 # Release notes
 
+### Version 2.14.0
+
+```{include} /release-notes/2.14.0.md
+```
+
+### Version 2.13.0
+
+```{include} /release-notes/2.13.0.md
+```
+
+### Version 2.12.0
+
+```{include} /release-notes/2.12.0.md
+```
+
+### Version 2.11.0
+
+```{include} /release-notes/2.11.0.md
+```
+
+### Version 2.10.0
+
+```{include} /release-notes/2.10.0.md
+```
+
+### Version 2.9.0
+
+```{include} /release-notes/2.9.0.md
+```
+
+### Version 2.8.0
+
+```{include} /release-notes/2.8.0.md
+```
+
+### Version 2.7.0
+
+```{include} /release-notes/2.7.0.md
+```
+
+### Version 2.6.0
+
+```{include} /release-notes/2.6.0.md
+```
+
+### Version 2.5.0
+
+```{include} /release-notes/2.5.0.md
+```
+
+### Version 2.4.0
+
+```{include} /release-notes/2.4.0.md
+```
+
+### Version 2.3.0
+
+```{include} /release-notes/2.3.0.md
+```
+
+### Version 2.2.0
+
+```{include} /release-notes/2.2.0.md
+```
+
+### Version 2.1.0
+
+```{include} /release-notes/2.1.0.md
+```
+
+### Version 2.0.0
+
+```{include} /release-notes/2.0.0.md
+```
+
+### Version 1.1.0
+
+```{include} /release-notes/1.1.0.md
+```
+
+### Version 1.0.0
+
+```{include} /release-notes/1.0.0.md
+```
+
+### Version 0.4.5
+
+```{include} /release-notes/0.4.5.md
+```
+
 ### Version 0.4.4
 
 ```{include} /release-notes/0.4.4.md
