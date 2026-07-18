@@ -9,6 +9,7 @@ from smftools.logging_utils import get_logger
 
 if TYPE_CHECKING:
     import anndata as ad
+    import pandas as pd
 
 logger = get_logger(__name__)
 

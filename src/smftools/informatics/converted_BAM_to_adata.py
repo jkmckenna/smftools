@@ -59,7 +59,7 @@ torch = require("torch", extra="torch", purpose="converted BAM processing")
 class RecordFastaInfo:
     """Structured FASTA metadata for a single converted record.
 
-    Attributes:
+    Fields:
         sequence: Padded top-strand sequence for the record.
         complement: Padded bottom-strand sequence for the record.
         chromosome: Canonical chromosome name for the record.
@@ -86,7 +86,7 @@ class RecordFastaInfo:
 class SequenceEncodingConfig:
     """Configuration for integer sequence encoding.
 
-    Attributes:
+    Fields:
         base_to_int: Mapping of base characters to integer encodings.
         bases: Valid base characters used for encoding.
         padding_base: Base token used for padding.

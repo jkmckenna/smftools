@@ -597,9 +597,12 @@ def plot_explained_variance(
 
     Parameters
     ----------
-    explained_variance_ratio : 1D array from sklearn PCA.explained_variance_ratio_.
-    output_path              : PNG output path.
-    n_pcs_show               : number of leading PCs to plot.
+    explained_variance_ratio : np.ndarray
+        1D array from sklearn ``PCA.explained_variance_ratio_``.
+    output_path : Path
+        PNG output path.
+    n_pcs_show : int
+        number of leading PCs to plot.
     """
     evr = np.asarray(explained_variance_ratio)
     n_show = min(n_pcs_show, len(evr))

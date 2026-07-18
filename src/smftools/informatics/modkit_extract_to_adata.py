@@ -68,7 +68,7 @@ _BATCH_RESULT_TIMEOUT_SECONDS = 30 * 60
 class ModkitBatchDictionaries:
     """Container for per-batch modification dictionaries.
 
-    Attributes:
+    Fields:
         dict_total: Raw TSV DataFrames keyed by record and sample index.
         dict_a: Adenine modification DataFrames.
         dict_a_bottom: Adenine minus-strand DataFrames.

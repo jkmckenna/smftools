@@ -75,7 +75,7 @@ CATALOG_FILENAME = "catalog.parquet"
 class PartitionInfo:
     """Metadata for one written ``(reference, sample)`` partition.
 
-    Attributes:
+    Fields:
         partition_id: Stable identifier (``"<slug_ref>/<slug_sample>"``).
         reference: Exact ``Reference_strand`` value for this partition.
         sample: Exact ``Sample`` value for this partition.
