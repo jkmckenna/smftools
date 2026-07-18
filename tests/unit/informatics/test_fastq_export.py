@@ -55,7 +55,9 @@ def _read(read_id, barcode, seq_ints, qual_ints, reference_start=0):
 def _write_store(tmp_path, rows):
     frame = pd.DataFrame(rows)
     out = write_raw_store(
-        frame, tmp_path / "raw_outputs", reference_lengths={"ref_top": 3_000_000},
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 3_000_000},
         analysis_mode="locus",
     )
     return load_spine(out["spine"]), out["spine"].parent

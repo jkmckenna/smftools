@@ -362,8 +362,7 @@ def write_raw_store(
     )
 
     reference_groups = (
-        group
-        for _, group in normalized.groupby(REFERENCE_STRAND, sort=True, observed=True)
+        group for _, group in normalized.groupby(REFERENCE_STRAND, sort=True, observed=True)
     )
     streamed = _write_raw_shards_streaming(
         reference_groups,

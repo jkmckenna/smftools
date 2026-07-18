@@ -180,12 +180,16 @@ def test_write_raw_store_streaming_matches_whole_frame_writer(tmp_path):
 
     # Catalogs: same content (order can differ trivially by float formatting,
     # so sort before comparing).
-    whole_catalog = pd.read_parquet(whole_paths["interval_catalog"]).sort_values(
-        ["reference", "start_bin"]
-    ).reset_index(drop=True)
-    streaming_catalog = pd.read_parquet(streaming_paths["interval_catalog"]).sort_values(
-        ["reference", "start_bin"]
-    ).reset_index(drop=True)
+    whole_catalog = (
+        pd.read_parquet(whole_paths["interval_catalog"])
+        .sort_values(["reference", "start_bin"])
+        .reset_index(drop=True)
+    )
+    streaming_catalog = (
+        pd.read_parquet(streaming_paths["interval_catalog"])
+        .sort_values(["reference", "start_bin"])
+        .reset_index(drop=True)
+    )
     pd.testing.assert_frame_equal(whole_catalog, streaming_catalog, check_like=True)
 
     # molecules.parquet: same (read_id -> canonical_row) bijection and the
@@ -198,12 +202,16 @@ def test_write_raw_store_streaming_matches_whole_frame_writer(tmp_path):
     )
 
     # barcode_index.parquet: same contiguous-range rows.
-    whole_bidx = pd.read_parquet(whole_paths["barcode_index"]).sort_values(
-        ["reference", "start_bin", "sample"]
-    ).reset_index(drop=True)
-    streaming_bidx = pd.read_parquet(streaming_paths["barcode_index"]).sort_values(
-        ["reference", "start_bin", "sample"]
-    ).reset_index(drop=True)
+    whole_bidx = (
+        pd.read_parquet(whole_paths["barcode_index"])
+        .sort_values(["reference", "start_bin", "sample"])
+        .reset_index(drop=True)
+    )
+    streaming_bidx = (
+        pd.read_parquet(streaming_paths["barcode_index"])
+        .sort_values(["reference", "start_bin", "sample"])
+        .reset_index(drop=True)
+    )
     pd.testing.assert_frame_equal(whole_bidx, streaming_bidx, check_like=True)
 
     # spine.obs: same rows/columns/values, aligned by read_id -- row order is

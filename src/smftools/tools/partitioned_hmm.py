@@ -94,7 +94,9 @@ def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
     trainer = HMMTrainer(cfg=cfg, models_dir=models_dir)
     # hmm_device (default "cpu") overrides the general device setting for HMM
     # specifically -- see its definition in config/experiment_config.py for why.
-    device = resolve_torch_device(getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto"))
+    device = resolve_torch_device(
+        getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
+    )
     feature_sets_all = normalize_hmm_feature_sets(getattr(cfg, "hmm_feature_sets", None))
     probability_threshold = float(getattr(cfg, "hmm_feature_prob_threshold", 0.5))
     decode = str(getattr(cfg, "hmm_decode", "marginal"))
@@ -357,9 +359,7 @@ def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> No
 
     rows = []
     for record in records:
-        layer_names = [
-            name for name in record.get("layers", []) if _is_group_feature_layer(name)
-        ]
+        layer_names = [name for name in record.get("layers", []) if _is_group_feature_layer(name)]
         if not layer_names:
             continue
         result, _ = safe_read_zarr(output_dir / record["group_path"], verbose=False)
@@ -392,9 +392,7 @@ def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> No
         ),
         (
             "size",
-            lambda sub: (
-                np.concatenate(sub["sizes"].to_numpy()) if len(sub) else np.array([])
-            ),
+            lambda sub: np.concatenate(sub["sizes"].to_numpy()) if len(sub) else np.array([]),
             "Feature size (positions)",
             "hmm_feature_size_histogram",
         ),
@@ -483,7 +481,9 @@ def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout)
 
     # hmm_device (default "cpu") overrides the general device setting for HMM
     # specifically -- see its definition in config/experiment_config.py for why.
-    device = resolve_torch_device(getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto"))
+    device = resolve_torch_device(
+        getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
+    )
     hmm_tasks = build_hmm_tasks(cfg)
     if not hmm_tasks:
         return
@@ -506,8 +506,7 @@ def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout)
                 continue
             multichannel = len(hmm_task.signals) != 1
             label = str(
-                hmm_task.output_prefix
-                or ("Combined" if multichannel else hmm_task.signals[0])
+                hmm_task.output_prefix or ("Combined" if multichannel else hmm_task.signals[0])
             )
             arch = trainer.choose_arch(multichannel=multichannel)
 
@@ -784,9 +783,7 @@ def _plot_feature_clustermaps(
             # (reference, sample) groups internally via ProcessPoolExecutor -- this was
             # previously hardcoded to 1, leaving that dispatch unused.
             n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
-            restrict_to_read_span=bool(
-                getattr(cfg, "hmm_clustermap_restrict_to_read_span", False)
-            ),
+            restrict_to_read_span=bool(getattr(cfg, "hmm_clustermap_restrict_to_read_span", False)),
         )
         for layer in feature_layers:
             plot_dir = base_dir / "features" / _component(layer)
@@ -866,7 +863,9 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     # normal memory/thread-aware parallel dispatch.
     # hmm_device (default "cpu") overrides the general device setting for HMM
     # specifically -- see its definition in config/experiment_config.py for why.
-    device = resolve_torch_device(getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto"))
+    device = resolve_torch_device(
+        getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
+    )
     records = run_tasks_parallel(
         execute_hmm_task,
         [(spine_path, task, cfg, output_dir, models_dir) for task in tasks],

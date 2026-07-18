@@ -76,9 +76,7 @@ def _summarize(adata) -> dict:
         "shape": adata.shape,
         "layers": sorted(adata.layers.keys()),
         "layer_sha256": {
-            name: hashlib.sha256(
-                np.nan_to_num(np.asarray(mat), nan=-99999.0).tobytes()
-            ).hexdigest()
+            name: hashlib.sha256(np.nan_to_num(np.asarray(mat), nan=-99999.0).tobytes()).hexdigest()
             for name, mat in adata.layers.items()
         },
         "obs_names_sorted_sha256": hashlib.sha256(

@@ -929,9 +929,7 @@ def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None
 
     os.makedirs(backup_dir, exist_ok=True)
 
-    _san = _sanitize_adata_for_write(
-        adata, backup=backup, backup_dir=backup_dir, verbose=verbose
-    )
+    _san = _sanitize_adata_for_write(adata, backup=backup, backup_dir=backup_dir, verbose=verbose)
     report = _san["report"]
     obs_clean, var_clean, uns_clean = _san["obs"], _san["var"], _san["uns"]
     layers_clean, obsm_clean, varm_clean = _san["layers"], _san["obsm"], _san["varm"]
@@ -1274,9 +1272,7 @@ def safe_write_zarr(
         backup_dir = path.parent / str(path.name).split(".")[0]
     backup_dir = Path(backup_dir)
 
-    _san = _sanitize_adata_for_write(
-        adata, backup=backup, backup_dir=backup_dir, verbose=verbose
-    )
+    _san = _sanitize_adata_for_write(adata, backup=backup, backup_dir=backup_dir, verbose=verbose)
     report = _san["report"]
     array_changes = bool(
         report["layers_converted"]
@@ -1744,7 +1740,6 @@ def _restore_after_read(
                 logger.error(" - %s", e)
         logger.info("=== end summary ===\n")
 
-
     return report
 
 
@@ -1796,7 +1791,6 @@ def safe_read_h5ad(
 
     if not backup_dir:
         backup_dir = path.parent / str(path.name).split(".")[0]
-
 
     if verbose:
         logger.info(f"[safe_read_h5ad] loading {path}")

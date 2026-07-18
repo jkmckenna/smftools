@@ -85,9 +85,7 @@ def test_estimate_uses_largest_key_not_sum_across_keys(tmp_path) -> None:
     # With the default keys_per_batch=1, only the single largest key should be
     # used -- should not crash, and should be bounded by CPU count when memory
     # is ample.
-    estimate = _estimate_max_workers(
-        sequence_batch_files, empty, empty, empty, threads=8
-    )
+    estimate = _estimate_max_workers(sequence_batch_files, empty, empty, empty, threads=8)
     assert 1 <= estimate <= 8
 
 
@@ -102,9 +100,7 @@ def test_estimate_sums_across_dict_types_for_same_key(tmp_path) -> None:
         f.write_bytes(b"0" * (50 * 1024 * 1024))
         files.append(f)
 
-    one_dict_only = _estimate_max_workers(
-        {"0_record": [str(files[0])]}, {}, {}, {}, threads=32
-    )
+    one_dict_only = _estimate_max_workers({"0_record": [str(files[0])]}, {}, {}, {}, threads=32)
     all_four_dicts = _estimate_max_workers(
         {"0_record": [str(files[0])]},
         {"0_record": [str(files[1])]},

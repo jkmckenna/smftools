@@ -289,6 +289,7 @@ def batch(task, config_table: Path, column: str, sep: str | None):
     # Map task to function
     # ----------------------------
     task = task.lower()
+
     def _raw(cfg_path: str):
         from .cli.raw_adata import raw_adata
 
@@ -522,7 +523,9 @@ def project_group():
 
 @project_group.command("init")
 @click.argument("project_dir", type=click.Path(path_type=Path))
-@click.option("--name", default=None, help="Project name used in scaffolded docs (default: directory name).")
+@click.option(
+    "--name", default=None, help="Project name used in scaffolded docs (default: directory name)."
+)
 def project_init_cmd(project_dir: Path, name):
     """Initialize a project directory + registry, plus starter docs/dirs.
 
@@ -607,7 +610,9 @@ def project_list_cmd(project_dir: Path):
 @project_group.command("materialize")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("canonical_reference")
-@click.option("--output", "-o", type=click.Path(path_type=Path), required=True, help="Output .h5ad(.gz).")
+@click.option(
+    "--output", "-o", type=click.Path(path_type=Path), required=True, help="Output .h5ad(.gz)."
+)
 @click.option("--set", "set_name", default=None, help="Restrict to a named experiment set.")
 @click.option("--modality", default=None, help="Restrict to a modality.")
 @click.option(
@@ -795,9 +800,7 @@ def export_fastq_project_cmd(
     from .cli.export_fastq import export_fastq_for_project
 
     experiment_list = (
-        [item.strip() for item in experiments.split(",") if item.strip()]
-        if experiments
-        else None
+        [item.strip() for item in experiments.split(",") if item.strip()] if experiments else None
     )
     out = export_fastq_for_project(
         project_dir,

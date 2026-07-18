@@ -78,7 +78,11 @@ def _load_partition_adata(project_dir, experiment_id: str, reference_strand: str
     """Load one per-sample-store partition's molecules, cache or pointer alike."""
     partitions = list_per_sample_partitions(project_dir, experiment_id)
     match = next(
-        (p for p in partitions if p["reference_strand"] == reference_strand and p["sample"] == sample),
+        (
+            p
+            for p in partitions
+            if p["reference_strand"] == reference_strand and p["sample"] == sample
+        ),
         None,
     )
     if match is None:
@@ -139,10 +143,17 @@ def compute_periodicity(
     """
     from ..analysis.compute import autocorrelation
 
-    definition = _periodicity_definition(layer=layer, start=start, end=end, method=method, kwargs=kwargs)
+    definition = _periodicity_definition(
+        layer=layer, start=start, end=end, method=method, kwargs=kwargs
+    )
     definition_hash = _definition_hash(definition)
     analysis_dir = _analysis_dir(
-        project_dir, experiment_id, reference_strand, sample, PERIODICITY_ANALYSIS_NAME, definition_hash
+        project_dir,
+        experiment_id,
+        reference_strand,
+        sample,
+        PERIODICITY_ANALYSIS_NAME,
+        definition_hash,
     )
     result_path = analysis_dir / RESULT_FILENAME
     if not force_recompute and result_path.exists():
@@ -211,7 +222,9 @@ def join_periodicity(
     ):
         return adata
 
-    definition = _periodicity_definition(layer=layer, start=start, end=end, method=method, kwargs=kwargs)
+    definition = _periodicity_definition(
+        layer=layer, start=start, end=end, method=method, kwargs=kwargs
+    )
     definition_hash = _definition_hash(definition)
 
     frames = []

@@ -148,7 +148,9 @@ def _cgroup_v2_self_path() -> Path | None:
     return None
 
 
-def _try_enable_linux_cgroup_cap(safety_fraction: float, *, budget_bytes: int | None = None) -> bool:
+def _try_enable_linux_cgroup_cap(
+    safety_fraction: float, *, budget_bytes: int | None = None
+) -> bool:
     self_cgroup = _cgroup_v2_self_path()
     if self_cgroup is None or not self_cgroup.is_dir():
         logger.info("cgroup v2 not available; skipping aggregate memory cap")

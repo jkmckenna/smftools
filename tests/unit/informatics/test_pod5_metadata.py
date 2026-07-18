@@ -49,13 +49,17 @@ def _fake_read(read_id, channel, num_samples, current):
 
 
 def _install_fake_pod5(monkeypatch, reads):
-    monkeypatch.setattr(pod5_functions, "p5", types.SimpleNamespace(Reader=lambda _p: _FakeReader(reads)))
+    monkeypatch.setattr(
+        pod5_functions, "p5", types.SimpleNamespace(Reader=lambda _p: _FakeReader(reads))
+    )
 
 
 def test_extract_pod5_metadata_scalar_columns(tmp_path, monkeypatch):
     pod5_file = tmp_path / "reads.pod5"
     pod5_file.touch()
-    _install_fake_pod5(monkeypatch, [_fake_read("readA", 5, 4000, [1.0, 2.0]), _fake_read("readB", 9, 5000, [3.0])])
+    _install_fake_pod5(
+        monkeypatch, [_fake_read("readA", 5, 4000, [1.0, 2.0]), _fake_read("readB", 9, 5000, [3.0])]
+    )
 
     frame = pod5_functions.extract_pod5_read_metadata(pod5_file, verbose=False)
 
@@ -73,7 +77,9 @@ def test_extract_pod5_metadata_scalar_columns(tmp_path, monkeypatch):
 def test_extract_pod5_metadata_target_filter_and_current(tmp_path, monkeypatch):
     pod5_file = tmp_path / "reads.pod5"
     pod5_file.touch()
-    _install_fake_pod5(monkeypatch, [_fake_read("readA", 5, 4000, [1.0, 2.0]), _fake_read("readB", 9, 5000, [3.0])])
+    _install_fake_pod5(
+        monkeypatch, [_fake_read("readA", 5, 4000, [1.0, 2.0]), _fake_read("readB", 9, 5000, [3.0])]
+    )
 
     frame = pod5_functions.extract_pod5_read_metadata(
         pod5_file, target_ids=["readB"], include_current=True, verbose=False
@@ -85,9 +91,7 @@ def test_extract_pod5_metadata_target_filter_and_current(tmp_path, monkeypatch):
 
 def _ragged_frame_with_pod5() -> pd.DataFrame:
     rows = []
-    for offset, (read_id, ref, length) in enumerate(
-        [("r1", "ref1", 4), ("r2", "ref1", 4)]
-    ):
+    for offset, (read_id, ref, length) in enumerate([("r1", "ref1", 4), ("r2", "ref1", 4)]):
         rows.append(
             {
                 "read_id": read_id,

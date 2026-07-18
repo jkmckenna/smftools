@@ -48,7 +48,9 @@ def test_init_add_list_remove(tmp_path):
 def test_add_is_idempotent_same_path(tmp_path):
     proj = tmp_path / "p"
     reg.init_project(proj)
-    exp = _make_experiment(tmp_path / "e", name="e", modality="conversion", reference_uids={"r_top": "u"})
+    exp = _make_experiment(
+        tmp_path / "e", name="e", modality="conversion", reference_uids={"r_top": "u"}
+    )
     reg.add_experiment(proj, exp)
     reg.add_experiment(proj, exp)  # re-add same path -> refresh, not duplicate
     assert len(reg.list_experiments(proj)) == 1
@@ -152,7 +154,9 @@ def test_add_experiment_records_every_available_stage(tmp_path):
 
     [listed] = reg.list_experiments(proj)
     assert set(listed["spines"]) == {"raw", "preprocess", "hmm"}
-    assert listed["spines"]["hmm"] == str((run_dir / reg.STAGE_DIRS["hmm"] / "spine.h5ad").resolve())
+    assert listed["spines"]["hmm"] == str(
+        (run_dir / reg.STAGE_DIRS["hmm"] / "spine.h5ad").resolve()
+    )
 
 
 def test_resolve_experiment_spine_prefers_most_derived_stage(tmp_path):
@@ -288,7 +292,9 @@ def test_add_experiment_legacy_file_explicit_stage_overrides_inference(tmp_path)
     proj = tmp_path / "project"
     reg.init_project(proj)
     # Filename looks like "raw" (no suffix match) but caller says it's hmm.
-    legacy_file = _write_legacy_h5ad(tmp_path / "weird_name.h5ad", reference_uids={"chr1_top": "uid1"})
+    legacy_file = _write_legacy_h5ad(
+        tmp_path / "weird_name.h5ad", reference_uids={"chr1_top": "uid1"}
+    )
     exp_id, entry = reg.add_experiment(proj, legacy_file, experiment_id="legacyExp", stage="hmm")
     assert set(entry["spines"]) == {"hmm"}
 
@@ -296,9 +302,7 @@ def test_add_experiment_legacy_file_explicit_stage_overrides_inference(tmp_path)
 def test_add_experiment_legacy_files_accumulate_across_calls(tmp_path):
     proj = tmp_path / "project"
     reg.init_project(proj)
-    raw_file = _write_legacy_h5ad(
-        tmp_path / "legacyExp.h5ad", reference_uids={"chr1_top": "uid1"}
-    )
+    raw_file = _write_legacy_h5ad(tmp_path / "legacyExp.h5ad", reference_uids={"chr1_top": "uid1"})
     preprocess_file = _write_legacy_h5ad(
         tmp_path / "legacyExp_preprocessed.h5ad", reference_uids={"chr1_top": "uid1"}
     )
@@ -355,7 +359,9 @@ def test_reference_harmonization_same_sequence_different_names():
     table = build_reference_alias_table(experiments, ReferenceRegistry())
     assert set(table["canonical_reference"]) == {"uidX"}  # auto-harmonized
 
-    table2 = build_reference_alias_table(experiments, ReferenceRegistry(canonical_names={"uidX": "NKG2A"}))
+    table2 = build_reference_alias_table(
+        experiments, ReferenceRegistry(canonical_names={"uidX": "NKG2A"})
+    )
     assert set(table2["canonical_reference"]) == {"NKG2A"}  # friendly name via YAML
 
 
@@ -364,7 +370,9 @@ def test_reference_alias_group_merges_near_identical():
         {"id": "A", "references": {"gene_top": "uid1"}},
         {"id": "B", "references": {"gene_top": "uid2"}},  # near-identical, different hash
     ]
-    table = build_reference_alias_table(experiments, ReferenceRegistry(aliases={"gene": ["uid1", "uid2"]}))
+    table = build_reference_alias_table(
+        experiments, ReferenceRegistry(aliases={"gene": ["uid1", "uid2"]})
+    )
     assert set(table["canonical_reference"]) == {"gene"}
 
 

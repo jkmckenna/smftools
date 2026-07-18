@@ -286,7 +286,9 @@ def test_partitioned_hmm_masks_read_span_for_single_channel_signals(tmp_path, mo
 
     # A single-channel ("C") signal was used -- with the bug, this call never
     # happened at all for the raw (non-merged) layers.
-    assert captured_calls, "mask_layers_outside_read_span was never called for a single-channel signal"
+    assert captured_calls, (
+        "mask_layers_outside_read_span was never called for a single-channel signal"
+    )
     masked_layers = {layer for call in captured_calls for layer in call}
     assert any(layer.endswith("_all_accessible_features") for layer in masked_layers)
     assert any(layer.endswith("_all_accessible_features_lengths") for layer in masked_layers)
@@ -715,7 +717,13 @@ def test_hmm_trainer_fit_or_load_records_fit_history_for_new_fits(tmp_path):
     X = rng.integers(0, 2, size=(20, 10)).astype(float)
 
     trainer.fit_or_load(
-        sample="bc1", ref="ref_top__0_10", label="GpC", arch="single", X=X, coords=None, device="cpu"
+        sample="bc1",
+        ref="ref_top__0_10",
+        label="GpC",
+        arch="single",
+        X=X,
+        coords=None,
+        device="cpu",
     )
 
     path = trainer._path("PER", "bc1", "ref_top__0_10", "GpC")
@@ -746,7 +754,13 @@ def test_hmm_trainer_fit_or_load_default_tol_stops_before_max_iter(tmp_path):
     X = np.logical_xor(X.astype(bool), rng.random(X.shape) < 0.05).astype(float)
 
     trainer.fit_or_load(
-        sample="bc1", ref="ref_top__0_12", label="GpC", arch="single", X=X, coords=None, device="cpu"
+        sample="bc1",
+        ref="ref_top__0_12",
+        label="GpC",
+        arch="single",
+        X=X,
+        coords=None,
+        device="cpu",
     )
 
     payload = torch.load(trainer._path("PER", "bc1", "ref_top__0_12", "GpC"), map_location="cpu")
@@ -768,9 +782,7 @@ def test_plot_hmm_fit_history_reads_checkpoints_and_registers_plot(tmp_path):
     trainer._save(
         model, trainer._path("PER", "bc1", "ref_top__0_100", "GpC"), hist=[1.0, 0.6, 0.55]
     )
-    trainer._save(
-        model, trainer._path("PER", "bc2", "ref_top__0_100", "GpC"), hist=[1.2, 0.9]
-    )
+    trainer._save(model, trainer._path("PER", "bc2", "ref_top__0_100", "GpC"), hist=[1.2, 0.9])
     layout = prepare_analysis_plot_layout(tmp_path / "hmm_outputs", stage="hmm")
 
     _plot_hmm_fit_history(models_dir, layout)

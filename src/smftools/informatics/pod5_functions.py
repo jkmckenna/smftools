@@ -535,7 +535,9 @@ def extract_pod5_read_metadata(
     else:
         with ProcessPoolExecutor(max_workers=n_jobs) as executor:
             futures = {
-                executor.submit(_collect_pod5_metadata_from_file, path, target, include_current): path
+                executor.submit(
+                    _collect_pod5_metadata_from_file, path, target, include_current
+                ): path
                 for path in pod5_files
             }
             for future in as_completed(futures):

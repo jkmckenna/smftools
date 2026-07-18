@@ -196,7 +196,9 @@ def test_materialize_legacy_spine_in_memory_needs_no_base_dir(legacy_spine_path)
     though the pre-existing in-memory-spine error path normally requires it."""
     a, _path = legacy_spine_path
     got = materialize(a, references="ref1_top")
-    assert set(got.obs_names) == set(a.obs_names[a.obs["Reference_strand"].astype(str) == "ref1_top"])
+    assert set(got.obs_names) == set(
+        a.obs_names[a.obs["Reference_strand"].astype(str) == "ref1_top"]
+    )
 
 
 def test_materialize_legacy_spine_empty_selection_raises(legacy_spine_path):

@@ -1831,9 +1831,7 @@ class ExperimentConfig:
                 merged.get("rescue_secondary_alignments", True)
             ),
             rescue_min_margin_bp=int(merged.get("rescue_min_margin_bp", 20)),
-            rescue_min_margin_fraction=float(
-                merged.get("rescue_min_margin_fraction", 0.01)
-            ),
+            rescue_min_margin_fraction=float(merged.get("rescue_min_margin_fraction", 0.01)),
             delete_intermediate_hdfs=merged.get("delete_intermediate_hdfs", True),
             mod_target_bases=merged.get("mod_target_bases", ["GpC", "CpG"]),
             enzyme_target_bases=merged.get("enzyme_target_bases", ["GpC"]),
@@ -2051,9 +2049,7 @@ class ExperimentConfig:
                 _parse_numeric(merged.get("deaminase_chimera_min_segment_purity", 0.9), 0.9)
             ),
             deaminase_chimera_max_single_strand_fraction=float(
-                _parse_numeric(
-                    merged.get("deaminase_chimera_max_single_strand_fraction", 0.8), 0.8
-                )
+                _parse_numeric(merged.get("deaminase_chimera_max_single_strand_fraction", 0.8), 0.8)
             ),
             bypass_raw_chimera_rate_plot=merged.get("bypass_raw_chimera_rate_plot", False),
             read_mod_filtering_gpc_thresholds=merged.get(
@@ -2136,9 +2132,7 @@ class ExperimentConfig:
             target_task_memory_mb=int(
                 _parse_numeric(merged.get("target_task_memory_mb", 512), 512)
             ),
-            max_memory_percent=float(
-                _parse_numeric(merged.get("max_memory_percent", 60.0), 60.0)
-            ),
+            max_memory_percent=float(_parse_numeric(merged.get("max_memory_percent", 60.0), 60.0)),
             max_memory_gb=(
                 None
                 if _parse_numeric(merged.get("max_memory_gb"), None) is None

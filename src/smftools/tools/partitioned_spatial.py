@@ -1466,9 +1466,7 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     spatial_spine.uns["spatial_source_spine"] = relative_uns_path(spine_path, run_root)
     spatial_spine.uns["spatial_task_catalog"] = relative_uns_path(task_catalog, run_root)
     spatial_spine.uns["spatial_metrics"] = relative_uns_path(metrics_path, run_root)
-    spatial_spine.uns["spatial_autocorrelation"] = relative_uns_path(
-        autocorrelation_path, run_root
-    )
+    spatial_spine.uns["spatial_autocorrelation"] = relative_uns_path(autocorrelation_path, run_root)
     spatial_spine.uns["spatial_position_store"] = relative_uns_path(
         output_dir / SPATIAL_PARTIAL_SUBDIR, run_root
     )

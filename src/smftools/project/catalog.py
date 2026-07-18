@@ -99,7 +99,11 @@ class ProjectCatalog:
             return table
         mask = pd.Series(True, index=table.index)
         if canonical_reference is not None:
-            wanted = {canonical_reference} if isinstance(canonical_reference, str) else set(canonical_reference)
+            wanted = (
+                {canonical_reference}
+                if isinstance(canonical_reference, str)
+                else set(canonical_reference)
+            )
             mask &= table["canonical_reference"].isin(wanted)
         if modality is not None:
             wanted = {modality} if isinstance(modality, str) else set(modality)

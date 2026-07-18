@@ -195,7 +195,9 @@ def test_project_adata_stage_selection(tmp_path):
     # uses, since this test needs sibling stage dirs under one run root.
     run_dir = tmp_path / "expA_run"
     _make_raw_experiment(run_dir / "raw_outputs", reference_strand="geneA_top", uid=uid, n=4)
-    _make_raw_experiment(tmp_path / "expB_run" / "raw_outputs", reference_strand="geneB_top", uid=uid, n=3)
+    _make_raw_experiment(
+        tmp_path / "expB_run" / "raw_outputs", reference_strand="geneB_top", uid=uid, n=3
+    )
 
     # Give expA a "preprocess" stage too: a spine.copy() with one marker obs
     # column added and source_base_dir pointing back at the raw stage (so

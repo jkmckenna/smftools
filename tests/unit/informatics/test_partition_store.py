@@ -86,10 +86,9 @@ def test_partition_roundtrip_matches_source(tmp_path):
     p = partitions[0]
     part, _ = safe_read_zarr(tmp_path / p.group_path)
 
-    mask = (
-        (a.obs["Reference_strand"].astype(str) == p.reference).values
-        & (a.obs["Sample"].astype(str) == p.sample).values
-    )
+    mask = (a.obs["Reference_strand"].astype(str) == p.reference).values & (
+        a.obs["Sample"].astype(str) == p.sample
+    ).values
     expect = a[mask]
     assert list(part.obs_names) == list(expect.obs_names) == p.read_ids
     assert np.array_equal(np.asarray(part.X), np.asarray(expect.X), equal_nan=True)
@@ -114,7 +113,15 @@ def test_write_catalog_columns(tmp_path):
     cat_path = write_catalog(tmp_path / "catalog.parquet", partitions, experiment="e", modality="m")
     df = pd.read_parquet(cat_path)
     assert list(df.columns) == [
-        "experiment", "partition_id", "reference", "sample", "n_reads",
-        "n_positions", "group_path", "modality", "config_hash", "created_at",
+        "experiment",
+        "partition_id",
+        "reference",
+        "sample",
+        "n_reads",
+        "n_positions",
+        "group_path",
+        "modality",
+        "config_hash",
+        "created_at",
     ]
     assert len(df) == len(partitions)

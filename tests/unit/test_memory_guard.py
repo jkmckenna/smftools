@@ -160,9 +160,7 @@ def test_run_tasks_parallel_force_sequential_skips_pool_regardless_of_resources(
     monkeypatch.setattr(
         "concurrent.futures.ProcessPoolExecutor", _fail_if_pool_created, raising=True
     )
-    results = run_tasks_parallel(
-        _square, [(1,), (2,), (3,), (4,)], cfg=cfg, force_sequential=True
-    )
+    results = run_tasks_parallel(_square, [(1,), (2,), (3,), (4,)], cfg=cfg, force_sequential=True)
     assert results == [1, 4, 9, 16]
 
 

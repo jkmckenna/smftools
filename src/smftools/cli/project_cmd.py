@@ -140,7 +140,9 @@ def project_materialize(
     return output_path
 
 
-def project_sample_store_list(project_dir: str | Path, experiment_id: str | None = None) -> list[dict]:
+def project_sample_store_list(
+    project_dir: str | Path, experiment_id: str | None = None
+) -> list[dict]:
     """List cataloged per-sample-store partitions, optionally filtered to one experiment."""
     from ..project.sample_store import list_per_sample_partitions
 

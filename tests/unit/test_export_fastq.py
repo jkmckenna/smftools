@@ -122,13 +122,20 @@ def test_export_fastq_for_experiment_uses_partitioned_qc(tmp_path, patch_config)
 
 
 def test_export_fastq_for_experiment_falls_back_to_legacy_pp_dedup(tmp_path, patch_config):
-    rows = [_read("read1", "bc01", [0, 1, 2, 3], [30] * 4), _read("read2", "bc01", [3, 2, 1, 0], [20] * 4)]
+    rows = [
+        _read("read1", "bc01", [0, 1, 2, 3], [30] * 4),
+        _read("read2", "bc01", [3, 2, 1, 0], [20] * 4),
+    ]
     raw_out = write_raw_store(
-        pd.DataFrame(rows), tmp_path / "raw_outputs", reference_lengths={"ref_top": 12},
+        pd.DataFrame(rows),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
         analysis_mode="locus",
     )
     # Legacy dedup adata: only read1 survived filtering/dedup.
-    pp_dedup = ad.AnnData(X=np.zeros((1, 1)), obs=pd.DataFrame({"Sample": ["bc01"]}, index=["read1"]))
+    pp_dedup = ad.AnnData(
+        X=np.zeros((1, 1)), obs=pd.DataFrame({"Sample": ["bc01"]}, index=["read1"])
+    )
     pp_dedup_path = tmp_path / "pp_dedup.h5ad.gz"
     safe_write_h5ad(pp_dedup, pp_dedup_path, backup=False, verbose=False)
 
@@ -149,10 +156,14 @@ def test_export_fastq_for_experiment_falls_back_to_legacy_pp_dedup(tmp_path, pat
 def test_export_fastq_for_experiment_raises_without_qc_source(tmp_path, patch_config):
     rows = [_read("read1", "bc01", [0, 1, 2, 3], [30] * 4)]
     raw_out = write_raw_store(
-        pd.DataFrame(rows), tmp_path / "raw_outputs", reference_lengths={"ref_top": 12},
+        pd.DataFrame(rows),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
         analysis_mode="locus",
     )
-    paths = SimpleNamespace(raw_spine=raw_out["spine"], preprocess_spine=None, pp_dedup=None, pp=None)
+    paths = SimpleNamespace(
+        raw_spine=raw_out["spine"], preprocess_spine=None, pp_dedup=None, pp=None
+    )
     patch_config(SimpleNamespace(sample_name_col_for_plotting="Sample"), paths)
 
     with pytest.raises(ValueError, match="no QC-passed read set found"):
@@ -160,12 +171,19 @@ def test_export_fastq_for_experiment_raises_without_qc_source(tmp_path, patch_co
 
 
 def test_export_fastq_for_experiment_allow_unfiltered_writes_all_reads(tmp_path, patch_config):
-    rows = [_read("read1", "bc01", [0, 1, 2, 3], [30] * 4), _read("read2", "bc01", [3, 2, 1, 0], [20] * 4)]
+    rows = [
+        _read("read1", "bc01", [0, 1, 2, 3], [30] * 4),
+        _read("read2", "bc01", [3, 2, 1, 0], [20] * 4),
+    ]
     raw_out = write_raw_store(
-        pd.DataFrame(rows), tmp_path / "raw_outputs", reference_lengths={"ref_top": 12},
+        pd.DataFrame(rows),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
         analysis_mode="locus",
     )
-    paths = SimpleNamespace(raw_spine=raw_out["spine"], preprocess_spine=None, pp_dedup=None, pp=None)
+    paths = SimpleNamespace(
+        raw_spine=raw_out["spine"], preprocess_spine=None, pp_dedup=None, pp=None
+    )
     patch_config(SimpleNamespace(sample_name_col_for_plotting="Sample"), paths)
 
     outdir = tmp_path / "fastq_out"
@@ -178,7 +196,10 @@ def test_export_fastq_for_experiment_allow_unfiltered_writes_all_reads(tmp_path,
 
 def test_export_fastq_for_experiment_missing_raw_spine_raises(tmp_path, patch_config):
     paths = SimpleNamespace(
-        raw_spine=tmp_path / "raw_outputs" / "spine.h5ad", preprocess_spine=None, pp_dedup=None, pp=None
+        raw_spine=tmp_path / "raw_outputs" / "spine.h5ad",
+        preprocess_spine=None,
+        pp_dedup=None,
+        pp=None,
     )
     patch_config(SimpleNamespace(sample_name_col_for_plotting="Sample"), paths)
 
@@ -200,7 +221,9 @@ def test_export_fastq_for_project_namespaces_by_experiment(tmp_path):
             analysis_mode="locus",
             extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
         )
-        execute_partitioned_preprocessing(raw_out["spine"], pp_cfg, exp_root / "preprocess_adata_outputs")
+        execute_partitioned_preprocessing(
+            raw_out["spine"], pp_cfg, exp_root / "preprocess_adata_outputs"
+        )
         add_experiment(project_dir, raw_out["spine"].parent, experiment_id=exp_id)
 
     outdir = tmp_path / "fastq_out"
@@ -248,7 +271,9 @@ def test_export_fastq_for_project_filters_by_experiments_list(tmp_path):
             analysis_mode="locus",
             extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
         )
-        execute_partitioned_preprocessing(raw_out["spine"], pp_cfg, exp_root / "preprocess_adata_outputs")
+        execute_partitioned_preprocessing(
+            raw_out["spine"], pp_cfg, exp_root / "preprocess_adata_outputs"
+        )
         add_experiment(project_dir, raw_out["spine"].parent, experiment_id=exp_id)
 
     outdir = tmp_path / "fastq_out"

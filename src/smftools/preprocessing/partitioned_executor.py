@@ -137,7 +137,9 @@ def fit_direct_modality_youden_thresholds(
             )
             if ref_column in ref_adata.obs and hasattr(ref_adata.obs[ref_column], "cat"):
                 ref_adata.obs[ref_column] = ref_adata.obs[ref_column].cat.remove_unused_categories()
-            window_roc_dir = roc_dir if len(windows) == 1 else roc_dir / f"window_{window_index:05d}"
+            window_roc_dir = (
+                roc_dir if len(windows) == 1 else roc_dir / f"window_{window_index:05d}"
+            )
             if len(windows) != 1:
                 window_roc_dir.mkdir(parents=True, exist_ok=True)
             calculate_position_Youden(
@@ -157,9 +159,7 @@ def fit_direct_modality_youden_thresholds(
             stats = ref_adata.var[stats_col].to_numpy()
             table = pd.DataFrame(
                 {
-                    "threshold": [
-                        t[0] if isinstance(t, (tuple, list)) else np.nan for t in stats
-                    ],
+                    "threshold": [t[0] if isinstance(t, (tuple, list)) else np.nan for t in stats],
                     "j_statistic": [
                         t[1] if isinstance(t, (tuple, list)) else np.nan for t in stats
                     ],
@@ -559,9 +559,7 @@ def write_read_qc_sidecar(spine, cfg, output_path: str | Path) -> Path:
                 min_segment_purity=cfg.deaminase_chimera_min_segment_purity,
                 max_single_strand_fraction=cfg.deaminase_chimera_max_single_strand_fraction,
             )
-            output["passes_read_qc"] = (
-                output["passes_read_qc"] & ~output["deaminase_PCR_chimera"]
-            )
+            output["passes_read_qc"] = output["passes_read_qc"] & ~output["deaminase_PCR_chimera"]
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1022,9 +1020,7 @@ def execute_partitioned_preprocessing(
 
     from ..memory_guard import run_tasks_parallel
 
-    bound_worker = functools.partial(
-        execute_preprocess_task, youden_thresholds=youden_thresholds
-    )
+    bound_worker = functools.partial(execute_preprocess_task, youden_thresholds=youden_thresholds)
     records = run_tasks_parallel(
         bound_worker,
         [(spine_path, task, cfg, output_dir) for task in task_list],

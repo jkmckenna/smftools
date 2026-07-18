@@ -15,7 +15,9 @@ SEQUENCE = "ACGTACGTACGT"
 NPOS = 12
 
 
-def _make_clustered_raw_experiment(out_dir, *, reference_strand, uid, n_blob_a=15, n_blob_b=15, seed=0):
+def _make_clustered_raw_experiment(
+    out_dir, *, reference_strand, uid, n_blob_a=15, n_blob_b=15, seed=0
+):
     """Two well-separated per-position signal populations -- reliably PCA/Leiden
     separable, matching the pattern in tests/unit/analysis/test_dimensionality_reduction.py."""
     rng = np.random.default_rng(seed)
@@ -84,7 +86,14 @@ def test_fit_or_extend_embedding_full_fit(tmp_path):
     assert result["meta"]["fit_kind"] == "full"
 
     directory = embedding_dir(proj, uid, min_reads=5, n_neighbors=5)
-    for filename in ("pca_model.pkl", "umap_model.pkl", "pca_space.npy", "coords.npy", "clusters.npy", "meta.json"):
+    for filename in (
+        "pca_model.pkl",
+        "umap_model.pkl",
+        "pca_space.npy",
+        "coords.npy",
+        "clusters.npy",
+        "meta.json",
+    ):
         assert (directory / filename).exists()
 
 
@@ -120,12 +129,8 @@ def test_fit_or_extend_embedding_extends_on_growth_without_moving_existing_point
     old_index = {name: i for i, name in enumerate(first["obs_names"])}
     new_index = {name: i for i, name in enumerate(extended["obs_names"])}
     for name in first["obs_names"]:
-        assert np.allclose(
-            extended["X_pca"][new_index[name]], first["X_pca"][old_index[name]]
-        )
-        assert np.allclose(
-            extended["X_umap"][new_index[name]], first["X_umap"][old_index[name]]
-        )
+        assert np.allclose(extended["X_pca"][new_index[name]], first["X_pca"][old_index[name]])
+        assert np.allclose(extended["X_umap"][new_index[name]], first["X_umap"][old_index[name]])
 
     # Same fitted models are reused, not refit.
     assert extended["pca_model"] is not None

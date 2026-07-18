@@ -80,7 +80,9 @@ def test_project_cli_end_to_end(tmp_path):
     assert "Registered 'expA'" in r.output
 
     assert (
-        runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expB")]).exit_code
+        runner.invoke(
+            cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expB")]
+        ).exit_code
         == 0
     )
 
@@ -104,12 +106,26 @@ def test_project_materialize_cli_pools_with_layer_projection(tmp_path):
     proj = tmp_path / "project"
     runner = CliRunner()
     assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
-    assert runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]
+        ).exit_code
+        == 0
+    )
 
     out = tmp_path / "combined.h5ad"
     r = runner.invoke(
         cli_entry.cli,
-        ["project", "materialize", str(proj), uid, "-o", str(out), "--layers", "sequence_integer_encoding"],
+        [
+            "project",
+            "materialize",
+            str(proj),
+            uid,
+            "-o",
+            str(out),
+            "--layers",
+            "sequence_integer_encoding",
+        ],
     )
     assert r.exit_code == 0, r.output
     assert out.exists()
@@ -127,7 +143,12 @@ def test_project_materialize_cli_guardrail_refuses_oversized_pool(tmp_path):
     proj = tmp_path / "project"
     runner = CliRunner()
     assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
-    assert runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]
+        ).exit_code
+        == 0
+    )
 
     # Force the guardrail to trip with an absurdly low limit via the Python API is
     # cleaner; here just confirm the CLI --allow-large flag is accepted and works.
@@ -149,8 +170,18 @@ def test_project_sample_store_list_cli(tmp_path):
     proj = tmp_path / "project"
     runner = CliRunner()
     assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
-    assert runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]).exit_code == 0
-    assert runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expB")]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expB")]
+        ).exit_code
+        == 0
+    )
 
     r = runner.invoke(cli_entry.cli, ["project", "sample-store-list", str(proj)])
     assert r.exit_code == 0, r.output
@@ -158,7 +189,9 @@ def test_project_sample_store_list_cli(tmp_path):
     assert "expA" in r.output and "geneA_top" in r.output and "bc01" in r.output
     assert "expB" in r.output
 
-    r_filtered = runner.invoke(cli_entry.cli, ["project", "sample-store-list", str(proj), "--experiment-id", "expA"])
+    r_filtered = runner.invoke(
+        cli_entry.cli, ["project", "sample-store-list", str(proj), "--experiment-id", "expA"]
+    )
     assert r_filtered.exit_code == 0, r_filtered.output
     assert "1 partition(s)" in r_filtered.output
     assert "expB" not in r_filtered.output
@@ -215,7 +248,16 @@ def test_project_add_cli_caches_per_sample_store_for_legacy_file(tmp_path):
     assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
     r = runner.invoke(
         cli_entry.cli,
-        ["project", "add", str(proj), str(legacy_file), "--id", "legacyExp2", "--stage", "preprocess"],
+        [
+            "project",
+            "add",
+            str(proj),
+            str(legacy_file),
+            "--id",
+            "legacyExp2",
+            "--stage",
+            "preprocess",
+        ],
     )
     assert r.exit_code == 0, r.output
 
@@ -269,7 +311,16 @@ def test_project_cli_registers_and_materializes_legacy_monolithic_file(tmp_path)
 
     r = runner.invoke(
         cli_entry.cli,
-        ["project", "add", str(proj), str(legacy_file), "--id", "legacyExp", "--stage", "preprocess"],
+        [
+            "project",
+            "add",
+            str(proj),
+            str(legacy_file),
+            "--id",
+            "legacyExp",
+            "--stage",
+            "preprocess",
+        ],
     )
     assert r.exit_code == 0, r.output
     assert "Registered 'legacyExp'" in r.output

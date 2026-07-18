@@ -25,7 +25,9 @@ class ReferenceRegistry:
         canonical_names: dict | None = None,
         aliases: dict | None = None,
     ) -> None:
-        self.canonical_names: dict[str, str] = {str(k): str(v) for k, v in (canonical_names or {}).items()}
+        self.canonical_names: dict[str, str] = {
+            str(k): str(v) for k, v in (canonical_names or {}).items()
+        }
         self.aliases: dict[str, list[str]] = {
             str(name): [str(u) for u in uids] for name, uids in (aliases or {}).items()
         }

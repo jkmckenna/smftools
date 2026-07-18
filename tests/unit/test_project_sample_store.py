@@ -88,7 +88,10 @@ def test_backfill_per_sample_store_caches_legacy_spine(tmp_path):
 
 def test_backfill_per_sample_store_legacy_cache_matches_source_data(tmp_path):
     obs = pd.DataFrame(
-        {"Reference_strand": ["ref0_top", "ref0_top", "ref1_top"], "Sample": ["bc00", "bc00", "bc01"]},
+        {
+            "Reference_strand": ["ref0_top", "ref0_top", "ref1_top"],
+            "Sample": ["bc00", "bc00", "bc01"],
+        },
         index=["r0", "r1", "r2"],
     )
     a = ad.AnnData(X=np.arange(6, dtype=np.float32).reshape(3, 2), obs=obs)

@@ -177,7 +177,9 @@ def test_chromosome_group_accumulator_independent_chromosomes_dont_block_each_ot
 
     # chr2 has only one contributing record -- completes independently of
     # chr1's still-outstanding second record.
-    result = accumulator.complete("chr2_unconverted_top", [_rows("r9", reference_strand="chr2_top")])
+    result = accumulator.complete(
+        "chr2_unconverted_top", [_rows("r9", reference_strand="chr2_top")]
+    )
     assert result is not None
     assert sorted(pd.concat(result, ignore_index=True)["read_id"]) == ["r9"]
 

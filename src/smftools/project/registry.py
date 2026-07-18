@@ -326,7 +326,9 @@ def add_experiment(
         run_root, spines = discover_stage_spines(experiment_path)
 
     metadata_stage = (
-        "raw" if "raw" in spines else next((s for s in STAGE_PRIORITY if s in spines), next(iter(spines)))
+        "raw"
+        if "raw" in spines
+        else next((s for s in STAGE_PRIORITY if s in spines), next(iter(spines)))
     )
     meta = _read_spine_metadata(spines[metadata_stage])
     exp_id = str(experiment_id or meta.get("experiment") or run_root.name)

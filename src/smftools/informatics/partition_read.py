@@ -549,7 +549,9 @@ def _overlay_preprocess_layers(
                     read_id for read_id in map(str, part.obs_names) if read_id in result_rows
                 ]
                 shared_positions = [
-                    position for position in map(int, part.var_names) if position in result_positions
+                    position
+                    for position in map(int, part.var_names)
+                    if position in result_positions
                 ]
                 if not shared_reads or not shared_positions:
                     continue
@@ -662,7 +664,9 @@ def _overlay_spatial_read_metrics(
                 # can't hold NaN, and silently produces garbage via unsafe casting.
                 numeric = np.issubdtype(values.dtype, np.number)
                 assembled_obs[column] = np.full(
-                    result.n_obs, np.nan if numeric else None, dtype=np.float64 if numeric else object
+                    result.n_obs,
+                    np.nan if numeric else None,
+                    dtype=np.float64 if numeric else object,
                 )
             assembled_obs[column][target_rows] = values[source_rows]
 

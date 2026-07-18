@@ -2167,9 +2167,7 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         Returns:
             Posterior probabilities (gamma).
         """
-        alpha, beta, _logB, _logA_by_bin, _bins = self._alpha_beta_by_bin(
-            obs, mask, coords=coords
-        )
+        alpha, beta, _logB, _logA_by_bin, _bins = self._alpha_beta_by_bin(obs, mask, coords=coords)
         log_gamma = alpha + beta
         logZ = _logsumexp(log_gamma, dim=2).unsqueeze(2)
         return (log_gamma - logZ).exp()

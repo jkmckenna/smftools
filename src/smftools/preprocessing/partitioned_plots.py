@@ -277,9 +277,7 @@ def _barcode_distribution_plots(
                 for position, values in enumerate(distributions, start=1)
                 if len(values) >= 2 and values.std() > 0
             ]
-            violin_distributions = [
-                distributions[position - 1] for position in violin_positions
-            ]
+            violin_distributions = [distributions[position - 1] for position in violin_positions]
             if violin_distributions:
                 parts = axis.violinplot(
                     violin_distributions,

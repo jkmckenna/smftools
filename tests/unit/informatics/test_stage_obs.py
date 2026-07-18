@@ -62,9 +62,7 @@ def test_read_joined_obs_combines_stages_by_read_id(tmp_path):
 
     # preprocess only kept r0, r1 (r2 filtered out -- a later stage's row set is a
     # subset), and only newly adds passes_read_qc.
-    preprocess_obs = _obs(
-        {"read_id": ["r0", "r1"], "passes_read_qc": [True, True]}
-    )
+    preprocess_obs = _obs({"read_id": ["r0", "r1"], "passes_read_qc": [True, True]})
     write_stage_obs(preprocess_dir, preprocess_obs, columns=["passes_read_qc"])
 
     joined = read_joined_obs([raw_dir, preprocess_dir])

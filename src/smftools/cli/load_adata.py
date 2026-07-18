@@ -1143,9 +1143,7 @@ def load_adata_core(
                 threads=cfg.threads,
                 single_bam=aligned_sorted_output,
             )
-            mod_tsv_paths = sorted(mod_tsv_dir.glob("*.tsv")) + sorted(
-                mod_tsv_dir.glob("*.tsv.gz")
-            )
+            mod_tsv_paths = sorted(mod_tsv_dir.glob("*.tsv")) + sorted(mod_tsv_dir.glob("*.tsv.gz"))
 
         from ..readwrite import safe_read_h5ad
 

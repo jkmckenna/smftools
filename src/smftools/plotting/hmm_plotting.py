@@ -1238,9 +1238,15 @@ def combined_hmm_raw_clustermap(
                     any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
                     hmm_sites = np.arange(subset.n_vars, dtype=int)
 
-                    hmm_sites, hmm_labels = _ordered_columns(subset, hmm_sites, ref, index_col_suffix)
-                    gpc_sites, gpc_labels = _ordered_columns(subset, gpc_sites, ref, index_col_suffix)
-                    cpg_sites, cpg_labels = _ordered_columns(subset, cpg_sites, ref, index_col_suffix)
+                    hmm_sites, hmm_labels = _ordered_columns(
+                        subset, hmm_sites, ref, index_col_suffix
+                    )
+                    gpc_sites, gpc_labels = _ordered_columns(
+                        subset, gpc_sites, ref, index_col_suffix
+                    )
+                    cpg_sites, cpg_labels = _ordered_columns(
+                        subset, cpg_sites, ref, index_col_suffix
+                    )
                     any_c_sites, any_c_labels = _ordered_columns(
                         subset, any_c_sites, ref, index_col_suffix
                     )
@@ -1913,8 +1919,12 @@ def combined_hmm_length_clustermap(
                     length_sites, length_labels = _ordered_columns(
                         subset, length_sites, ref, index_col_suffix
                     )
-                    gpc_sites, gpc_labels = _ordered_columns(subset, gpc_sites, ref, index_col_suffix)
-                    cpg_sites, cpg_labels = _ordered_columns(subset, cpg_sites, ref, index_col_suffix)
+                    gpc_sites, gpc_labels = _ordered_columns(
+                        subset, gpc_sites, ref, index_col_suffix
+                    )
+                    cpg_sites, cpg_labels = _ordered_columns(
+                        subset, cpg_sites, ref, index_col_suffix
+                    )
                     any_c_sites, any_c_labels = _ordered_columns(
                         subset, any_c_sites, ref, index_col_suffix
                     )

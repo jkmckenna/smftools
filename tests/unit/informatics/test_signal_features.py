@@ -122,7 +122,9 @@ def test_materialize_ragged_without_signal_columns_has_only_base_layers():
             }
         ]
     )
-    result = materialize_ragged(frame, obs=pd.DataFrame(index=["r1"]), reference_lengths={"ref_top": 3})
+    result = materialize_ragged(
+        frame, obs=pd.DataFrame(index=["r1"]), reference_lengths={"ref_top": 3}
+    )
     assert set(result.layers) == {
         "sequence_integer_encoding",
         "mismatch_integer_encoding",

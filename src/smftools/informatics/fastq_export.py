@@ -136,9 +136,7 @@ def write_fastq_per_barcode(
         sum(counts.values()),
         outdir,
     )
-    return {
-        barcode: {"path": paths[barcode], "n_reads": counts[barcode]} for barcode in handles
-    }
+    return {barcode: {"path": paths[barcode], "n_reads": counts[barcode]} for barcode in handles}
 
 
 def write_fastq_manifest(outdir: str | Path, manifest: Mapping[str, Mapping[str, object]]) -> Path:

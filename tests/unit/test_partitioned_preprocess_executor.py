@@ -317,7 +317,9 @@ def test_direct_modality_streams_binarized_layer_only_after_clean_nan(tmp_path, 
         analysis_mode="locus",
         extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
     )
-    execute_partitioned_preprocessing(raw["spine"], _direct_youden_cfg(), tmp_path / "preprocess_outputs")
+    execute_partitioned_preprocessing(
+        raw["spine"], _direct_youden_cfg(), tmp_path / "preprocess_outputs"
+    )
 
     assert calls  # sanity: the spy actually fired
     by_path: dict[str, list[str]] = {}
@@ -470,11 +472,7 @@ def test_youden_fit_loads_spine_once_and_reuses_it(tmp_path, monkeypatch):
         ),
         var=pd.DataFrame(index=pd.Index([0, 1], name="position")),
         var_names=pd.Index([0, 1]),
-        uns={
-            "reference_plans": {
-                "ref_top": {"analysis_mode": "locus", "reference_length": 2}
-            }
-        },
+        uns={"reference_plans": {"ref_top": {"analysis_mode": "locus", "reference_length": 2}}},
     )
     cfg = SimpleNamespace(
         reference_column="Reference_strand",
@@ -516,12 +514,8 @@ def test_youden_fit_loads_spine_once_and_reuses_it(tmp_path, monkeypatch):
     import importlib
 
     youden_module = importlib.import_module("smftools.preprocessing.calculate_position_Youden")
-    monkeypatch.setattr(
-        "smftools.preprocessing.partitioned_executor.load_spine", fake_load_spine
-    )
-    monkeypatch.setattr(
-        "smftools.preprocessing.partitioned_executor.materialize", fake_materialize
-    )
+    monkeypatch.setattr("smftools.preprocessing.partitioned_executor.load_spine", fake_load_spine)
+    monkeypatch.setattr("smftools.preprocessing.partitioned_executor.materialize", fake_materialize)
     monkeypatch.setattr(youden_module, "calculate_position_Youden", fake_calculate_position_Youden)
 
     fit_direct_modality_youden_thresholds(

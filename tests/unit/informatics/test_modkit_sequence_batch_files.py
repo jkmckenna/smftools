@@ -58,12 +58,8 @@ def test_load_sample_record_batches_cached_reuses_dicts_across_calls(tmp_path) -
     )
 
     cache: dict[str, tuple] = {}
-    result_a = _load_sample_record_batches_cached(
-        cache, "0_chr1", sequence_files, [], [], []
-    )
-    result_b = _load_sample_record_batches_cached(
-        cache, "0_chr1", sequence_files, [], [], []
-    )
+    result_a = _load_sample_record_batches_cached(cache, "0_chr1", sequence_files, [], [], [])
+    result_b = _load_sample_record_batches_cached(cache, "0_chr1", sequence_files, [], [], [])
 
     # Same object identity, not just equal content -- proves the second call
     # was served entirely from cache without touching disk again.
@@ -73,8 +69,6 @@ def test_load_sample_record_batches_cached_reuses_dicts_across_calls(tmp_path) -
     assert result_a[0]["read1"].tolist() == [1, 2, 3]
 
     # A different cache_key must not reuse the first entry.
-    result_c = _load_sample_record_batches_cached(
-        cache, "1_chr1", sequence_files, [], [], []
-    )
+    result_c = _load_sample_record_batches_cached(cache, "1_chr1", sequence_files, [], [], [])
     assert result_c[0] is not result_a[0]
     assert result_c[0]["read1"].tolist() == [1, 2, 3]

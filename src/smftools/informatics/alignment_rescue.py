@@ -183,9 +183,11 @@ def rescue_secondary_alignments(
 
     # Group best-per-chromosome candidates by read, decide reassignments.
     by_read: Dict[str, list[Tuple[str, int, str, int]]] = {}
-    for (query_name, chromosome), (query_alignment_length, reference_name, reference_start) in (
-        best_per_read_chromosome.items()
-    ):
+    for (query_name, chromosome), (
+        query_alignment_length,
+        reference_name,
+        reference_start,
+    ) in best_per_read_chromosome.items():
         by_read.setdefault(query_name, []).append(
             (chromosome, query_alignment_length, reference_name, reference_start)
         )
@@ -225,8 +227,7 @@ def rescue_secondary_alignments(
         reassignment_counts[(primary_chromosome, best_chromosome)] += 1
 
     logger.info(
-        "rescue_secondary_alignments: examined %d reads, rescuing %d "
-        "(reassignment breakdown: %s).",
+        "rescue_secondary_alignments: examined %d reads, rescuing %d (reassignment breakdown: %s).",
         n_reads_examined,
         len(promotions),
         dict(reassignment_counts),

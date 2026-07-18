@@ -616,9 +616,7 @@ def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: 
     ) as pool:
         stop_watchdog = start_worker_watchdog(pool, per_worker_budget_bytes)
         try:
-            future_to_args = {
-                pool.submit(worker, *args, **worker_kwargs): args for args in items
-            }
+            future_to_args = {pool.submit(worker, *args, **worker_kwargs): args for args in items}
             for future in as_completed(future_to_args):
                 yield future_to_args[future], future.result()
         finally:
@@ -671,7 +669,9 @@ def _bucket_read_ids(read_ids: list[str], n_buckets: int) -> list[set[str]]:
     return [bucket for bucket in buckets if bucket]
 
 
-def _n_buckets_for_reference(n_reads: int, max_workers: int, *, min_reads_per_bucket: int = 500) -> int:
+def _n_buckets_for_reference(
+    n_reads: int, max_workers: int, *, min_reads_per_bucket: int = 500
+) -> int:
     """How many buckets to split one reference's reads into for parallel
     extraction.
 
@@ -1065,9 +1065,7 @@ def _build_ragged_records_streaming_convertible(
                 continue
             if frames:
                 any_rows = True
-                combined = (
-                    frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
-                )
+                combined = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
                 yield from _split_by_reference_strand(combined)
         if not any_rows:
             raise RuntimeError(f"no primary mapped reads were extracted from {aligned_bam}")
@@ -1189,7 +1187,9 @@ def _build_ragged_records_streaming_direct(
                 for record, sequence, bucket, metrics_slice, bucket_id in items
             ]
 
-        worker = _extract_direct_reference_modkit if backend == "modkit" else _extract_direct_reference
+        worker = (
+            _extract_direct_reference_modkit if backend == "modkit" else _extract_direct_reference
+        )
         worker_kwargs = dict(
             cfg=cfg,
             aligned_bam=aligned_bam,
@@ -1276,9 +1276,7 @@ def build_ragged_records_streaming(
             barcode_sidecar=barcode_sidecar,
             umi_sidecar=umi_sidecar,
         )
-    raise ValueError(
-        f"build_ragged_records_streaming does not support modality {modality!r}"
-    )
+    raise ValueError(f"build_ragged_records_streaming does not support modality {modality!r}")
 
 
 def raw_adata(config_path: str):

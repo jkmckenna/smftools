@@ -48,9 +48,7 @@ def filter_reads_on_cigar_indels(
         return adata
 
     if max_insertion_length is None and max_deletion_length is None:
-        logger.info(
-            "CIGAR indel filter: both thresholds are None — skipping (no reads removed)."
-        )
+        logger.info("CIGAR indel filter: both thresholds are None — skipping (no reads removed).")
         adata.uns[uns_flag] = True
         return adata
 

@@ -133,7 +133,9 @@ def iter_set_parts(
         stage=stage,
     )
     if not members:
-        raise ValueError(f"no experiment references match canonical_reference={canonical_reference!r}")
+        raise ValueError(
+            f"no experiment references match canonical_reference={canonical_reference!r}"
+        )
 
     def _gen():
         from ..informatics.partition_read import materialize

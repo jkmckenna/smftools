@@ -37,9 +37,7 @@ def test_cigar_max_indel_runs_tolerates_absent_cigar():
 
 def test_default_thresholds_remove_large_indels():
     adata = _make_adata()
-    out = filter_reads_on_cigar_indels(
-        adata, max_insertion_length=10, max_deletion_length=10
-    )
+    out = filter_reads_on_cigar_indels(adata, max_insertion_length=10, max_deletion_length=10)
     # r1 deletion=12>10, r2 insertion=15>10 -> removed
     assert set(out.obs_names) == {"r0", "r3"}
 
@@ -47,9 +45,7 @@ def test_default_thresholds_remove_large_indels():
 def test_none_thresholds_disable_each_check():
     adata = _make_adata()
     # only enforce deletion; r1 (del=12) drops, r2 (ins=15) survives
-    out = filter_reads_on_cigar_indels(
-        adata, max_insertion_length=None, max_deletion_length=10
-    )
+    out = filter_reads_on_cigar_indels(adata, max_insertion_length=None, max_deletion_length=10)
     assert set(out.obs_names) == {"r0", "r2", "r3"}
 
     # both disabled -> keep all
@@ -68,9 +64,7 @@ def test_bypass_returns_input_unchanged():
 
 def test_missing_columns_skips_filter_gracefully():
     adata = ad.AnnData(X=np.zeros((2, 1), dtype=float), obs=pd.DataFrame(index=["a", "b"]))
-    out = filter_reads_on_cigar_indels(
-        adata, max_insertion_length=10, max_deletion_length=10
-    )
+    out = filter_reads_on_cigar_indels(adata, max_insertion_length=10, max_deletion_length=10)
     assert set(out.obs_names) == {"a", "b"}
 
 

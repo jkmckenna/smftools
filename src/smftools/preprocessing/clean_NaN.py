@@ -171,9 +171,7 @@ def clean_NaN(
 
     if "nan_minus_1" in layers_to_build:
         logger.info("Making layer: nan_minus_1")
-        _emit(
-            "nan_minus_1", _finalize_layer_dtype(np.where(nan_mask, np.float32(-1.0), X))
-        )
+        _emit("nan_minus_1", _finalize_layer_dtype(np.where(nan_mask, np.float32(-1.0), X)))
 
     if "nan_half" in layers_to_build:
         logger.info("Making layer: nan_half")

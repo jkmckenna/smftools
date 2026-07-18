@@ -66,7 +66,9 @@ def test_compute_periodicity_modern_experiment_returns_and_caches_result(tmp_pat
 
     assert not result.empty
     assert result.index.name == "read_id"
-    assert {"ls_nrl_bp", "ls_snr", "ls_peak_power", "ls_fwhm_bp", "n_sites"}.issubset(result.columns)
+    assert {"ls_nrl_bp", "ls_snr", "ls_peak_power", "ls_fwhm_bp", "n_sites"}.issubset(
+        result.columns
+    )
     assert "ls_freqs" not in result.columns and "ls_power" not in result.columns
     assert set(result.index).issubset({f"read{i:04d}" for i in range(30)})
 
@@ -88,7 +90,9 @@ def test_compute_periodicity_second_call_hits_cache(tmp_path):
         _periodicity_definition,
     )
 
-    definition = _periodicity_definition(layer=None, start=None, end=None, method="direct", kwargs={})
+    definition = _periodicity_definition(
+        layer=None, start=None, end=None, method="direct", kwargs={}
+    )
     analysis_dir = _analysis_dir(
         project_dir, "expA", "ref0_top", "bc00", "periodicity", _definition_hash(definition)
     )
@@ -113,7 +117,9 @@ def test_compute_periodicity_force_recompute_bypasses_cache(tmp_path):
         _periodicity_definition,
     )
 
-    definition = _periodicity_definition(layer=None, start=None, end=None, method="direct", kwargs={})
+    definition = _periodicity_definition(
+        layer=None, start=None, end=None, method="direct", kwargs={}
+    )
     analysis_dir = _analysis_dir(
         project_dir, "expA", "ref0_top", "bc00", "periodicity", _definition_hash(definition)
     )
@@ -135,7 +141,16 @@ def test_compute_periodicity_different_definitions_do_not_collide(tmp_path):
     windowed = compute_periodicity(project_dir, "expA", "ref0_top", "bc00", start=0, end=2000)
 
     assert not whole.equals(windowed)
-    partition = project_dir / "project_outputs" / "per_sample" / "expA" / "ref0_top" / "bc00" / "analyses" / "periodicity"
+    partition = (
+        project_dir
+        / "project_outputs"
+        / "per_sample"
+        / "expA"
+        / "ref0_top"
+        / "bc00"
+        / "analyses"
+        / "periodicity"
+    )
     assert len(list(partition.iterdir())) == 2
 
 

@@ -308,9 +308,7 @@ def test_build_record_chromosome_map_conversion_merges_conversion_states(tmp_pat
 @requires_pysam
 def test_build_record_chromosome_map_deaminase_and_direct_use_identity(tmp_path):
     fasta_path = tmp_path / "refs.fasta"
-    fasta_path.write_text(
-        ">6B6_top\nACGCGTACGTACGCGTACGT\n>6B6_enh_del_top\nACGCGTACGTAC\n"
-    )
+    fasta_path.write_text(">6B6_top\nACGCGTACGTACGCGTACGT\n>6B6_enh_del_top\nACGCGTACGTAC\n")
 
     for modality in ("deaminase", "direct"):
         record_chromosome = build_record_chromosome_map(fasta_path, modality)

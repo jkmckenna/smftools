@@ -155,7 +155,9 @@ def _read_artifacts(directory: Path) -> dict:
     }
 
 
-def _write_artifacts(directory: Path, *, X_pca, X_umap, clusters, obs_names, pca_model, umap_model, meta):
+def _write_artifacts(
+    directory: Path, *, X_pca, X_umap, clusters, obs_names, pca_model, umap_model, meta
+):
     directory.mkdir(parents=True, exist_ok=True)
     np.save(directory / PCA_SPACE_FILENAME, X_pca)
     np.save(directory / COORDS_FILENAME, X_umap)
@@ -192,7 +194,9 @@ def _archive_existing(directory: Path) -> None:
             shutil.move(str(path), str(archive_dir / name))
 
 
-def _assign_nearest_cluster(new_points: np.ndarray, reference_points: np.ndarray, reference_clusters: np.ndarray) -> np.ndarray:
+def _assign_nearest_cluster(
+    new_points: np.ndarray, reference_points: np.ndarray, reference_clusters: np.ndarray
+) -> np.ndarray:
     """Nearest-neighbor cluster assignment for points added to a fixed embedding.
 
     Not a Leiden recompute -- Leiden has no clean incremental equivalent (a bigger
@@ -263,7 +267,9 @@ def fit_or_extend_embedding(
         end=end,
         allow_large=True,
     )
-    feat, obs_names = _make_features(adata, feature_kind=feature_kind, layer=layer, start=start, end=end)
+    feat, obs_names = _make_features(
+        adata, feature_kind=feature_kind, layer=layer, start=start, end=end
+    )
 
     directory = embedding_dir(
         project_dir,
@@ -324,7 +330,12 @@ def fit_or_extend_embedding(
         if force_recompute:
             _archive_existing(directory)
         _write_artifacts(directory, obs_names=obs_names, meta=meta, **result)
-        return {**result, "obs_names": obs_names, "meta": meta, "explained_variance_ratio": explained_variance_ratio}
+        return {
+            **result,
+            "obs_names": obs_names,
+            "meta": meta,
+            "explained_variance_ratio": explained_variance_ratio,
+        }
 
     # Pure growth: transform the new reads only.
     obs_index = {name: i for i, name in enumerate(obs_names)}
@@ -369,7 +380,9 @@ def fit_or_extend_embedding(
     }
 
 
-def _fit_from_scratch(feat, obs_names, *, leiden_resolution, min_reads, n_neighbors, random_state) -> dict:
+def _fit_from_scratch(
+    feat, obs_names, *, leiden_resolution, min_reads, n_neighbors, random_state
+) -> dict:
     from ..analysis.compute.dimensionality_reduction import run_pipeline
 
     result = run_pipeline(
