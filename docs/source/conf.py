@@ -103,6 +103,7 @@ autodoc_mock_imports = [
     "shap",
     "torch",
     "tqdm",
+    "umap",
     "upsetplot",
     "wandb",
 ]

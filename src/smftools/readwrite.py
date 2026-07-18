@@ -530,26 +530,23 @@ def concatenate_h5ads(
     return output_path
 
 
-def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=None, verbose=True):
-    """
-    Save an AnnData safely by sanitizing .obs, .var, .uns, .layers, and .obsm.
+def _sanitize_adata_for_write(adata, *, backup, backup_dir, verbose):
+    """Sanitize obs/var/uns/layers/obsm/varm/X for on-disk writing.
 
-    Returns a report dict and prints a summary of what was converted/backed up/skipped.
+    Shared by :func:`safe_write_h5ad` and :func:`safe_write_zarr` so the
+    object-column coercion and pickle-backup behavior stays identical across
+    the HDF5 and zarr backends. Returns a dict with the cleaned structures
+    (``obs``/``var``/``uns``/``layers``/``obsm``/``varm``/``X``) plus the
+    diagnostic ``report``.
     """
     import json
     import os
     import pickle
-    from pathlib import Path
 
-    import anndata as _ad
     import numpy as np
     import pandas as pd
 
-    path = Path(path)
-
-    if not backup_dir:
-        backup_dir = path.parent / str(path.name).split(".")[0]
-
+    backup_dir = Path(backup_dir)
     os.makedirs(backup_dir, exist_ok=True)
 
     # report structure
@@ -592,7 +589,13 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
           - object columns converted to strings (with backup)
           - categorical columns' categories coerced to str (with backup)
         """
-        df = df.copy()
+        # Shallow copy: only columns actually reassigned below get new memory;
+        # every untouched column keeps sharing the original DataFrame's
+        # underlying array. At production scale (hundreds of thousands of
+        # rows), a blanket deep .copy() of the whole frame just to convert a
+        # handful of object/categorical columns was real, avoidable overhead
+        # held for the entire safe_write_h5ad call.
+        df = df.copy(deep=False)
         for col in list(df.columns):
             ser = df[col]
             # categorical handling
@@ -636,66 +639,56 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
                 is_obj = False
 
             if is_obj:
-                # test whether converting to string succeeds for all elements
-                try:
-                    _ = np.array(ser.values.astype(str))
-                    if backup:
-                        _backup(ser.values, f"{which}.{col}_backup")
-                        if which == "obs":
-                            report["obs_backed_up_columns"].append(col)
-                        else:
-                            report["var_backed_up_columns"].append(col)
-                    df[col] = ser.values.astype(str)
-                    if verbose:
-                        logger.debug(
-                            f"  converted object column '{which}.{col}' -> strings (backup={backup})"
-                        )
-                    if which == "obs":
-                        report["obs_converted_columns"].append(col)
-                    else:
-                        report["var_converted_columns"].append(col)
-                except Exception:
-                    # fallback: attempt per-element json.dumps; if fails mark as backed-up and coerce via str()
-                    convertible = True
-                    for val in ser.values:
+                # Coerce object columns to a *variable-length* object array of
+                # Python str, element by element. This is the memory-critical
+                # path: the previous code used numpy's `ser.values.astype(str)`,
+                # which allocates a FIXED-WIDTH unicode array sized to the single
+                # longest string in the column -- n_rows * 4 bytes * max_len --
+                # and did it twice (a throwaway `np.array(...astype(str))`
+                # convertibility probe plus the real assignment). For the long
+                # MM/ML methylation-tag strings in direct-modality data that was
+                # ~5 GiB *per column* at 150k reads (measured), and MM+ML+others
+                # together drove the load-stage write to a ~94 GiB peak and a
+                # SIGKILL. A per-element object array instead stores each string
+                # once at its own length (already-str elements are reused, not
+                # copied), so the footprint is ~the strings' real bytes, once,
+                # with no padding and no doubling. anndata then writes it as an
+                # HDF5 variable-length string dataset (confirmed: writing this is
+                # ~1x memory). Nulls become the literal "nan"/"None"/"NA" text via
+                # str(), matching the previous astype(str) behavior; lists/dicts
+                # (e.g. alignment-span columns) prefer round-trippable json.
+                def _stringify(v):
+                    if isinstance(v, str):
+                        return v
+                    if v is None:
+                        return "None"
+                    try:
+                        if np.isscalar(v) and pd.isna(v):
+                            return "nan"
+                    except (TypeError, ValueError):
+                        pass
+                    if isinstance(v, (list, tuple, dict)):
                         try:
-                            json.dumps(val, default=str)
+                            return json.dumps(v, default=str)
                         except Exception:
-                            convertible = False
-                            break
-                    if convertible:
-                        if backup:
-                            _backup(ser.values, f"{which}.{col}_backup")
-                            if which == "obs":
-                                report["obs_backed_up_columns"].append(col)
-                            else:
-                                report["var_backed_up_columns"].append(col)
-                        df[col] = [json.dumps(v, default=str) for v in ser.values]
-                        if verbose:
-                            logger.debug(
-                                f"  json-stringified object column '{which}.{col}' (backup={backup})"
-                            )
-                        if which == "obs":
-                            report["obs_converted_columns"].append(col)
-                        else:
-                            report["var_converted_columns"].append(col)
+                            return str(v)
+                    return str(v)
+
+                if backup:
+                    _backup(ser.values, f"{which}.{col}_backup")
+                    if which == "obs":
+                        report["obs_backed_up_columns"].append(col)
                     else:
-                        # fallback to string repr and backup
-                        if backup:
-                            _backup(ser.values, f"{which}.{col}_backup")
-                            if which == "obs":
-                                report["obs_backed_up_columns"].append(col)
-                            else:
-                                report["var_backed_up_columns"].append(col)
-                        df[col] = ser.astype(str)
-                        if verbose:
-                            logger.debug(
-                                f"  WARNING: column '{which}.{col}' was complex; coerced via str() (backed up)."
-                            )
-                        if which == "obs":
-                            report["obs_converted_columns"].append(col)
-                        else:
-                            report["var_converted_columns"].append(col)
+                        report["var_backed_up_columns"].append(col)
+                df[col] = np.array([_stringify(v) for v in ser.values], dtype=object)
+                if verbose:
+                    logger.debug(
+                        f"  coerced object column '{which}.{col}' -> vlen strings (backup={backup})"
+                    )
+                if which == "obs":
+                    report["obs_converted_columns"].append(col)
+                else:
+                    report["var_converted_columns"].append(col)
         return df
 
     def _sanitize_uns(uns: dict):
@@ -858,54 +851,135 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
         varm_clean = {}
 
     # ---------- handle X ----------
+    # X may legitimately be None (e.g. an obs-only "spine" AnnData). Leave it as
+    # None: np.asarray(None) yields a 0-d object array that would be coerced to a
+    # 0-d float and break AnnData's 2-D check downstream.
     X_to_use = adata.X
-    try:
-        X_arr = np.asarray(adata.X)
-        if X_arr.dtype == object:
-            try:
-                X_to_use = X_arr.astype(float)
-                report["X_replaced_or_converted"] = "converted_to_float"
-                if verbose:
-                    logger.debug("Converted adata.X object-dtype -> float")
-            except Exception:
-                if backup:
-                    _backup(adata.X, "X_backup")
-                X_to_use = np.zeros_like(X_arr, dtype=float)
-                report["X_replaced_or_converted"] = "replaced_with_zeros_backup"
-                if verbose:
-                    logger.debug(
-                        "adata.X had object dtype and couldn't be converted; replaced with zeros (backup set)."
-                    )
-    except Exception as e:
-        msg = f"Error handling adata.X: {e}"
-        report["errors"].append(msg)
-        if verbose:
-            logger.debug(msg)
-        X_to_use = adata.X
-
-    # ---------- build lightweight AnnData copy ----------
-    try:
-        adata_copy = _ad.AnnData(
-            X=X_to_use,
-            obs=obs_clean,
-            var=var_clean,
-            layers=layers_clean,
-            uns=uns_clean,
-            obsm=obsm_clean,
-            varm=varm_clean,
-        )
-
-        # preserve names (as strings)
+    if adata.X is not None:
         try:
-            adata_copy.obs_names = adata.obs_names.astype(str)
-            adata_copy.var_names = adata.var_names.astype(str)
-        except Exception:
-            adata_copy.obs_names = adata.obs_names
-            adata_copy.var_names = adata.var_names
+            X_arr = np.asarray(adata.X)
+            if X_arr.dtype == object:
+                try:
+                    X_to_use = X_arr.astype(float)
+                    report["X_replaced_or_converted"] = "converted_to_float"
+                    if verbose:
+                        logger.debug("Converted adata.X object-dtype -> float")
+                except Exception:
+                    if backup:
+                        _backup(adata.X, "X_backup")
+                    X_to_use = np.zeros_like(X_arr, dtype=float)
+                    report["X_replaced_or_converted"] = "replaced_with_zeros_backup"
+                    if verbose:
+                        logger.debug(
+                            "adata.X had object dtype and couldn't be converted; replaced with zeros (backup set)."
+                        )
+        except Exception as e:
+            msg = f"Error handling adata.X: {e}"
+            report["errors"].append(msg)
+            if verbose:
+                logger.debug(msg)
+            X_to_use = adata.X
 
-        # --- write
+    return {
+        "obs": obs_clean,
+        "var": var_clean,
+        "uns": uns_clean,
+        "layers": layers_clean,
+        "obsm": obsm_clean,
+        "varm": varm_clean,
+        "X": X_to_use,
+        "report": report,
+    }
+
+
+def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None, verbose=True):
+    """
+    Save an AnnData safely by sanitizing .obs, .var, .uns, .layers, and .obsm.
+
+    Returns a report dict and prints a summary of what was converted/backed up/skipped.
+
+    `compression` defaults to None (uncompressed HDF5 chunks), not "gzip". These
+    files are almost always read back by the *next* pipeline stage (or opened
+    backed/lazily), and HDF5's gzip filter forces full-chunk decompression on
+    every touched chunk -- fine for a single sequential full-file read, but
+    catastrophic for scattered/boolean-masked row access (measured: a ~2%
+    scattered row read took 32s under gzip vs. a fraction of a second
+    uncompressed, on a real ~9GB load-stage output). Pass compression="gzip"
+    explicitly only for a deliberate, final archival copy that won't be read
+    back by this pipeline -- and prefer compressing the finished uncompressed
+    file with a real outer `gzip` afterward instead, so the archived copy
+    isn't confusingly opened directly by anndata/h5py as if it were live data.
+    """
+    import json
+    import os
+    import pickle
+    from pathlib import Path
+
+    import anndata as _ad
+    import numpy as np
+    import pandas as pd
+
+    path = Path(path)
+
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
+    # Coerce to Path: _backup() below builds paths with `backup_dir / name`, which
+    # raises "unsupported operand /: str and str" if a caller passed a plain string.
+    backup_dir = Path(backup_dir)
+
+    os.makedirs(backup_dir, exist_ok=True)
+
+    _san = _sanitize_adata_for_write(adata, backup=backup, backup_dir=backup_dir, verbose=verbose)
+    report = _san["report"]
+    obs_clean, var_clean, uns_clean = _san["obs"], _san["var"], _san["uns"]
+    layers_clean, obsm_clean, varm_clean = _san["layers"], _san["obsm"], _san["varm"]
+    X_to_use = _san["X"]
+
+    # ---------- decide whether a sanitized copy is actually needed ----------
+    # If nothing above needed converting/backing up/skipping, obs_clean,
+    # var_clean, uns_clean, layers_clean, obsm_clean, varm_clean, and X_to_use
+    # are all just the original data (obs/var already share memory with
+    # adata.obs/adata.var per _make_obs_var_safe's shallow copy; layers/obsm/
+    # varm/X are unchanged np.asarray views). Building a second AnnData and
+    # writing that instead of `adata` directly is then pure overhead: a
+    # redundant object holding references to every layer/X array alongside
+    # the original, for no behavioral difference in what gets written. Skip
+    # it and write `adata` in place whenever the report confirms there's
+    # nothing to sanitize.
+    # Only .obs/.var/.uns were sanitized -- X, layers, obsm, varm are untouched.
+    # This is by far the common case (obs string/object columns like MM/ML/CIGAR
+    # need coercion, but the big numeric layers do not). Reconstructing a whole
+    # second AnnData for this case is not just wasteful, it is the direct cause
+    # of the load-stage write OOM: `_ad.AnnData(X=..., layers=layers_clean, ...)`
+    # forces a second full set of references to every layer/X array, and at
+    # production scale (~300k reads x ~6.6k positions x 5 layers ~= 22 GiB
+    # resident) that second object -- plus whatever transient copies anndata's
+    # constructor/writer make of it -- pushed peak RSS past 80 GiB and got the
+    # process SIGKILLed mid-write. Instead, temporarily swap the sanitized
+    # .obs/.var/.uns onto the *original* adata, write it (its layers/X are
+    # written straight from their existing buffers, no duplication), then restore.
+    metadata_only_changes = bool(
+        report["obs_converted_columns"]
+        or report["obs_backed_up_columns"]
+        or report["var_converted_columns"]
+        or report["var_backed_up_columns"]
+        or report["uns_json_keys"]
+        or report["uns_backed_up_keys"]
+    )
+    array_changes = bool(
+        report["layers_converted"]
+        or report["layers_skipped"]
+        or report["obsm_converted"]
+        or report["obsm_skipped"]
+        or report["varm_converted"]
+        or report["varm_skipped"]
+        or report["X_replaced_or_converted"]
+    )
+
+    def _write_with_track_order_fallback(obj):
+        """Write obj to path, retrying with HDF5 dense attribute storage on overflow."""
         try:
-            adata_copy.write_h5ad(path, compression=compression)
+            obj.write_h5ad(path, compression=compression)
         except OSError as _write_err:
             if "object header message is too large" not in str(_write_err):
                 raise
@@ -924,16 +998,69 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
             try:
                 if path.exists():
                     path.unlink()
-                adata_copy.write_h5ad(path, compression=compression)
+                obj.write_h5ad(path, compression=compression)
                 logger.warning(
                     "Wrote %s with track_order=True due to HDF5 object header size limit "
                     "(%d obs cols, %d var cols).",
                     path,
-                    adata_copy.obs.shape[1],
-                    adata_copy.var.shape[1],
+                    obj.obs.shape[1],
+                    obj.var.shape[1],
                 )
             finally:
                 _h5py.File = _orig_file_cls
+
+    # Default target for the post-write diagnostic report / keys-manifest / CSV
+    # dump below. The metadata-only and no-op branches write the original `adata`
+    # (restored afterward), so they report against it; the array-conversion
+    # branch overrides this with its reconstructed copy.
+    adata_copy = adata
+
+    try:
+        if array_changes:
+            # A layer/obsm/varm/X genuinely needed conversion (e.g. object dtype
+            # -> float). Those converted arrays are new allocations regardless, so
+            # fall back to constructing a sanitized copy (unchanged historical
+            # behavior). obs_clean/var_clean share memory with the originals.
+            adata_copy = _ad.AnnData(
+                X=X_to_use,
+                obs=obs_clean,
+                var=var_clean,
+                layers=layers_clean,
+                uns=uns_clean,
+                obsm=obsm_clean,
+                varm=varm_clean,
+            )
+            try:
+                adata_copy.obs_names = adata.obs_names.astype(str)
+                adata_copy.var_names = adata.var_names.astype(str)
+            except Exception:
+                adata_copy.obs_names = adata.obs_names
+                adata_copy.var_names = adata.var_names
+            _write_with_track_order_fallback(adata_copy)
+        elif metadata_only_changes:
+            # Only metadata needed sanitizing: swap the cleaned frames onto the
+            # ORIGINAL adata (O(1) reference swaps, no array duplication), write,
+            # then restore so the caller's object is left exactly as it was.
+            if verbose:
+                logger.debug(
+                    "Only obs/var/uns needed sanitizing; writing original adata "
+                    "in place (no layer/X copy)."
+                )
+            saved_obs, saved_var, saved_uns = adata.obs, adata.var, adata.uns
+            try:
+                adata.obs = obs_clean
+                adata.var = var_clean
+                adata.uns = uns_clean
+                _write_with_track_order_fallback(adata)
+            finally:
+                adata.obs = saved_obs
+                adata.var = saved_var
+                adata.uns = saved_uns
+        else:
+            # Nothing needed sanitizing at all: write the original directly.
+            if verbose:
+                logger.debug("Nothing needed sanitizing; writing adata directly (no copy).")
+            _write_with_track_order_fallback(adata)
         if verbose:
             logger.debug(f"Saved safely to {path}")
     except Exception as e:
@@ -1115,7 +1242,86 @@ def safe_write_h5ad(adata, path, compression="gzip", backup=False, backup_dir=No
     return report
 
 
-def safe_read_h5ad(
+def safe_write_zarr(
+    adata,
+    path,
+    *,
+    backup=False,
+    backup_dir=None,
+    verbose=True,
+    zarr_format=3,
+    chunks=None,
+):
+    """Sanitize (shared with :func:`safe_write_h5ad`) then write to a zarr store.
+
+    Applies the same obs/var/uns object-column coercion and pickle-backup behavior
+    as :func:`safe_write_h5ad` via :func:`_sanitize_adata_for_write`, then writes
+    zarr. The zarr on-disk format is pinned explicitly (default v3) so the output
+    is deterministic regardless of the installed anndata's default (anndata 0.12
+    defaults to v2; 0.13+ to v3 -- both honor ``settings.zarr_write_format``).
+
+    Intended for partition/spine-scale objects (per-(reference, sample) partitions
+    or the thin molecule-index spine), not the full monolithic AnnData.
+
+    Returns the sanitization report dict.
+    """
+    import anndata as _ad
+
+    path = Path(path)
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
+    backup_dir = Path(backup_dir)
+
+    _san = _sanitize_adata_for_write(adata, backup=backup, backup_dir=backup_dir, verbose=verbose)
+    report = _san["report"]
+    array_changes = bool(
+        report["layers_converted"]
+        or report["layers_skipped"]
+        or report["obsm_converted"]
+        or report["obsm_skipped"]
+        or report["varm_converted"]
+        or report["varm_skipped"]
+        or report["X_replaced_or_converted"]
+    )
+
+    write_kwargs = {} if chunks is None else {"chunks": chunks}
+    # Older anndata may lack the format setting; guard so we never hard-fail on it.
+    has_format_setting = hasattr(_ad.settings, "zarr_write_format")
+    prev_format = _ad.settings.zarr_write_format if has_format_setting else None
+    try:
+        if has_format_setting:
+            _ad.settings.zarr_write_format = zarr_format
+        if array_changes:
+            # A layer/obsm/varm/X genuinely needed conversion: write the sanitized copy.
+            obj = _ad.AnnData(
+                X=_san["X"],
+                obs=_san["obs"],
+                var=_san["var"],
+                layers=_san["layers"],
+                uns=_san["uns"],
+                obsm=_san["obsm"],
+                varm=_san["varm"],
+            )
+            obj.write_zarr(path, **write_kwargs)
+        else:
+            # Metadata-only (the common case): temporarily swap sanitized
+            # obs/var/uns onto the original object and write it in place (X/layers
+            # stream straight from their existing buffers, no duplication), then
+            # restore -- mirrors safe_write_h5ad's peak-memory optimization.
+            _obs, _var, _uns = adata.obs, adata.var, adata.uns
+            try:
+                adata.obs, adata.var, adata.uns = _san["obs"], _san["var"], _san["uns"]
+                adata.write_zarr(path, **write_kwargs)
+            finally:
+                adata.obs, adata.var, adata.uns = _obs, _var, _uns
+    finally:
+        if has_format_setting:
+            _ad.settings.zarr_write_format = prev_format
+
+    return report
+
+
+def safe_read_zarr(
     path,
     backup_dir=None,
     restore_backups=True,
@@ -1123,46 +1329,57 @@ def safe_read_h5ad(
     categorical_threshold=100,
     verbose=True,
 ):
+    """Load an AnnData from a zarr store written by :func:`safe_write_zarr`.
+
+    Mirrors :func:`safe_read_h5ad`, sharing :func:`_restore_after_read` for pickled
+    backup restoration and column re-categorization. Returns ``(adata, report)``.
     """
-    Safely load an AnnData saved by safe_write_h5ad and attempt to restore complex objects
-    from the backup_dir produced during save.
+    import anndata as _ad
 
-    Parameters
-    ----------
-    path : str
-        Path to the cleaned .h5ad produced by safe_write_h5ad.
-    backup_dir : str
-        Directory where safe_write_h5ad stored pickled backups (default "./uns_backups").
-    restore_backups : bool
-        If True, attempt to load pickled backups and restore original objects into adata.
-    re_categorize : bool
-        If True, try to coerce small unique-count string columns back into pandas.Categorical.
-    categorical_threshold : int
-        Max unique values for a column to be considered categorical for automatic recasting.
-    verbose : bool
-        Print progress/summary.
+    path = Path(path)
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
 
-    Returns
-    -------
-    (adata, report) :
-        adata : AnnData
-            The reloaded (and possibly restored) AnnData instance.
-        report : dict
-            A report describing restored items, parsed JSON keys, and any failures.
+    if verbose:
+        logger.info(f"[safe_read_zarr] loading {path}")
+    try:
+        adata = _ad.read_zarr(path)
+    except Exception as e:
+        raise RuntimeError(f"Failed to read zarr at {path}: {e}")
+
+    report = _restore_after_read(
+        adata,
+        backup_dir=backup_dir,
+        restore_backups=restore_backups,
+        re_categorize=re_categorize,
+        categorical_threshold=categorical_threshold,
+        verbose=verbose,
+    )
+    return adata, report
+
+
+def _restore_after_read(
+    adata,
+    *,
+    backup_dir,
+    restore_backups=True,
+    re_categorize=True,
+    categorical_threshold=100,
+    verbose=True,
+):
+    """Restore pickled backups and re-categorize columns on a freshly-read AnnData.
+
+    Format-agnostic tail shared by :func:`safe_read_h5ad` and
+    :func:`safe_read_zarr`. Mutates ``adata`` in place and returns the report.
     """
     import json
     import os
     import pickle
-    from pathlib import Path
 
-    import anndata as _ad
     import numpy as np
     import pandas as pd
 
-    path = Path(path)
-
-    if not backup_dir:
-        backup_dir = path.parent / str(path.name).split(".")[0]
+    backup_dir = Path(backup_dir)
 
     report = {
         "restored_obs_columns": [],
@@ -1177,15 +1394,6 @@ def safe_read_h5ad(
         "missing_backups": [],
         "errors": [],
     }
-
-    if verbose:
-        logger.info(f"[safe_read_h5ad] loading {path}")
-
-    # 1) load the cleaned h5ad
-    try:
-        adata = _ad.read_h5ad(path)
-    except Exception as e:
-        raise RuntimeError(f"Failed to read h5ad at {path}: {e}")
 
     # Ensure backup_dir exists (may be relative to cwd)
     if verbose:
@@ -1532,6 +1740,75 @@ def safe_read_h5ad(
                 logger.error(" - %s", e)
         logger.info("=== end summary ===\n")
 
+    return report
+
+
+def safe_read_h5ad(
+    path,
+    backup_dir=None,
+    restore_backups=True,
+    re_categorize=True,
+    categorical_threshold=100,
+    verbose=True,
+):
+    """
+    Safely load an AnnData saved by safe_write_h5ad and attempt to restore complex objects
+    from the backup_dir produced during save.
+
+    Parameters
+    ----------
+    path : str
+        Path to the cleaned .h5ad produced by safe_write_h5ad.
+    backup_dir : str
+        Directory where safe_write_h5ad stored pickled backups (default "./uns_backups").
+    restore_backups : bool
+        If True, attempt to load pickled backups and restore original objects into adata.
+    re_categorize : bool
+        If True, try to coerce small unique-count string columns back into pandas.Categorical.
+    categorical_threshold : int
+        Max unique values for a column to be considered categorical for automatic recasting.
+    verbose : bool
+        Print progress/summary.
+
+    Returns
+    -------
+    (adata, report) :
+        adata : AnnData
+            The reloaded (and possibly restored) AnnData instance.
+        report : dict
+            A report describing restored items, parsed JSON keys, and any failures.
+    """
+    import json
+    import os
+    import pickle
+    from pathlib import Path
+
+    import anndata as _ad
+    import numpy as np
+    import pandas as pd
+
+    path = Path(path)
+
+    if not backup_dir:
+        backup_dir = path.parent / str(path.name).split(".")[0]
+
+    if verbose:
+        logger.info(f"[safe_read_h5ad] loading {path}")
+
+    # 1) load the cleaned h5ad
+    try:
+        adata = _ad.read_h5ad(path)
+    except Exception as e:
+        raise RuntimeError(f"Failed to read h5ad at {path}: {e}")
+
+    report = _restore_after_read(
+        adata,
+        backup_dir=backup_dir,
+        restore_backups=restore_backups,
+        re_categorize=re_categorize,
+        categorical_threshold=categorical_threshold,
+        verbose=verbose,
+    )
     return adata, report
 
 

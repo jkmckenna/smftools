@@ -303,12 +303,14 @@ def _ensure_2d_np(x):
 
 def normalize_hmm_feature_sets(raw: Any) -> Dict[str, Dict[str, Any]]:
     """
-    Canonical format:
+    Canonical format::
+
       {
         "footprints": {"state": "Non-Modified", "features": {"small_bound_stretch": [0,50], ...}},
         "accessible": {"state": "Modified", "features": {"all_accessible_features": [0, inf], ...}},
         ...
       }
+
     Each feature range is [lo, hi) in genomic bp (or index units if coords aren't ints).
     """
     parsed = _try_json_or_literal(raw)
@@ -557,16 +559,22 @@ class BaseHMM(nn.Module):
 
     # ------------------------- decoding core -------------------------
 
-    def _forward_backward(
+    def _alpha_beta(
         self,
         obs: torch.Tensor,
         mask: torch.Tensor,
         *,
         coords: Optional[np.ndarray] = None,
-    ) -> torch.Tensor:
-        """
-        Returns gamma (N,L,K) in probability space.
-        Subclasses can override for distance-aware transitions.
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward (alpha) and backward (beta) log-space passes.
+
+        Factored out of ``_forward_backward`` so ``fit_em`` (which needs
+        alpha/beta directly for expected-transition counts and the true
+        log-likelihood, not just gamma) can share this one O(L) sequential
+        pass instead of paying for it twice per EM iteration.
+
+        Returns:
+            Tuple of (alpha, beta, logB, logA), each (N,L,K) except logA (K,K).
         """
         device = obs.device
         eps = float(self.eps)
@@ -591,6 +599,20 @@ class BaseHMM(nn.Module):
             temp = logA.unsqueeze(0) + (logB[:, t + 1, :] + beta[:, t + 1, :]).unsqueeze(1)
             beta[:, t, :] = _logsumexp(temp, dim=2)
 
+        return alpha, beta, logB, logA
+
+    def _forward_backward(
+        self,
+        obs: torch.Tensor,
+        mask: torch.Tensor,
+        *,
+        coords: Optional[np.ndarray] = None,
+    ) -> torch.Tensor:
+        """
+        Returns gamma (N,L,K) in probability space.
+        Subclasses can override for distance-aware transitions.
+        """
+        alpha, beta, _logB, _logA = self._alpha_beta(obs, mask, coords=coords)
         log_gamma = alpha + beta
         logZ = _logsumexp(log_gamma, dim=2).unsqueeze(2)
         gamma = (log_gamma - logZ).exp()
@@ -695,7 +717,7 @@ class BaseHMM(nn.Module):
         coords: Optional[np.ndarray] = None,
         *,
         max_iter: int = 50,
-        tol: float = 1e-4,
+        tol: float = 1e-5,
         device: Optional[Union[str, torch.device]] = None,
         update_start: bool = True,
         update_trans: bool = True,
@@ -709,7 +731,12 @@ class BaseHMM(nn.Module):
             X: Observations array.
             coords: Optional coordinate array.
             max_iter: Maximum EM iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance -- EM stops early once the
+                log-likelihood's iteration-over-iteration change drops below
+                ``tol * max(abs(current_log_likelihood), 1.0)``. Relative
+                because the log-likelihood's magnitude scales with dataset
+                size (N*L), so a fixed absolute threshold isn't portable
+                across differently-sized fits.
             device: Device specifier.
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transition probabilities.
@@ -804,7 +831,7 @@ class BaseHMM(nn.Module):
             coords: Coordinate array aligned to X.
             device: Torch device.
             max_iter: Maximum iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance (see BaseHMM.fit's docstring).
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transitions.
             update_emission: Whether to update emission parameters.
@@ -948,6 +975,22 @@ class BaseHMM(nn.Module):
                 s = e
         return out
 
+    @staticmethod
+    def _register_appended_layers(adata, names: Sequence[str]) -> None:
+        """Record derived layers while tolerating array-backed ``uns`` reloads."""
+        key = "hmm_appended_layers"
+        existing = adata.uns.get(key)
+        if existing is None:
+            registered = []
+        elif isinstance(existing, str):
+            registered = [existing]
+        else:
+            registered = list(existing)
+        for name in names:
+            if name not in registered:
+                registered.append(name)
+        adata.uns[key] = registered
+
     # ------------------------- merging -------------------------
 
     def merge_intervals_to_new_layer(
@@ -962,8 +1005,9 @@ class BaseHMM(nn.Module):
         """
         Merge adjacent 1-intervals in a binary layer if gaps <= distance_threshold (in coords space),
         writing:
-          - {base_layer}{suffix}
-          - {base_layer}{suffix}_lengths   (run-length in index units)
+
+        - {base_layer}{suffix}
+        - {base_layer}{suffix}_lengths   (run-length in index units)
         """
         if base_layer not in adata.layers:
             raise KeyError(f"Layer '{base_layer}' not found.")
@@ -1008,13 +1052,7 @@ class BaseHMM(nn.Module):
         adata.layers[merged_name] = out
         adata.layers[merged_len_name] = self._write_lengths_for_binary_layer(out)
 
-        # bookkeeping
-        key = "hmm_appended_layers"
-        if adata.uns.get(key) is None:
-            adata.uns[key] = []
-        for nm in (merged_name, merged_len_name):
-            if nm not in adata.uns[key]:
-                adata.uns[key].append(nm)
+        self._register_appended_layers(adata, (merged_name, merged_len_name))
 
         return merged_name
 
@@ -1070,12 +1108,7 @@ class BaseHMM(nn.Module):
                 np.asarray(adata.layers[nm])
             )
 
-        key = "hmm_appended_layers"
-        if adata.uns.get(key) is None:
-            adata.uns[key] = []
-        for nm in created:
-            if nm not in adata.uns[key]:
-                adata.uns[key].append(nm)
+        self._register_appended_layers(adata, created)
 
         return created
 
@@ -1493,7 +1526,7 @@ class SingleBernoulliHMM(BaseHMM):
             coords: Coordinate array aligned to X.
             device: Torch device.
             max_iter: Maximum iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance (see BaseHMM.fit's docstring).
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transitions.
             update_emission: Whether to update emission parameters.
@@ -1515,28 +1548,25 @@ class SingleBernoulliHMM(BaseHMM):
 
         hist: List[float] = []
         for it in range(1, int(max_iter) + 1):
-            gamma = self._forward_backward(obs, mask)  # (N,L,K)
-
-            # log-likelihood proxy
-            ll_proxy = float(torch.sum(torch.log(torch.clamp(gamma.sum(dim=2), min=eps))).item())
-            hist.append(ll_proxy)
+            # One shared alpha/beta pass drives gamma, xi, and the true
+            # log-likelihood below -- previously this recomputed alpha/beta a
+            # second time from scratch (via a separate _forward_backward call
+            # for gamma, then a manual redo for xi), doubling the O(L)
+            # sequential recursion's cost every EM iteration for no benefit.
+            alpha, beta, logB, logA = self._alpha_beta(obs, mask)
+            log_gamma = alpha + beta
+            logZ = _logsumexp(log_gamma, dim=2).unsqueeze(2)
+            gamma = (log_gamma - logZ).exp()
 
             # expected start
             start_acc = gamma[:, 0, :].sum(dim=0)  # (K,)
 
-            # expected transitions xi
-            logB = self._log_emission(obs, mask)
-            logA = torch.log(self.trans + eps)
-            alpha = torch.empty((N, L, K), dtype=self.dtype, device=device)
-            alpha[:, 0, :] = torch.log(self.start + eps).unsqueeze(0) + logB[:, 0, :]
-            for t in range(1, L):
-                prev = alpha[:, t - 1, :].unsqueeze(2) + logA.unsqueeze(0)
-                alpha[:, t, :] = _logsumexp(prev, dim=1) + logB[:, t, :]
-            beta = torch.empty((N, L, K), dtype=self.dtype, device=device)
-            beta[:, L - 1, :] = 0.0
-            for t in range(L - 2, -1, -1):
-                temp = logA.unsqueeze(0) + (logB[:, t + 1, :] + beta[:, t + 1, :]).unsqueeze(1)
-                beta[:, t, :] = _logsumexp(temp, dim=2)
+            # True data log-likelihood: sum over reads of log P(observed sequence),
+            # the forward recursion's terminal normalizer. NOT gamma.sum(dim=2) --
+            # gamma is already row-normalized above, so that sum is ~1 at every
+            # iteration by construction and carries no fit-quality signal.
+            ll_proxy = float(_logsumexp(alpha[:, L - 1, :], dim=1).sum().item())
+            hist.append(ll_proxy)
 
             trans_acc = torch.zeros((K, K), dtype=self.dtype, device=device)
             for t in range(L - 1):
@@ -1580,7 +1610,11 @@ class SingleBernoulliHMM(BaseHMM):
                     hist[-1],
                 )
 
-            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol):
+            # Relative tolerance: the true log-likelihood's magnitude scales with
+            # N*L, so a fixed absolute epsilon isn't portable across dataset
+            # sizes (confirmed on real data: the same tol that stops one task at
+            # iteration ~20 doesn't fire on a larger task until iteration ~100+).
+            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol) * max(abs(hist[-1]), 1.0):
                 break
 
         return hist
@@ -1630,7 +1664,9 @@ class SingleBernoulliHMM(BaseHMM):
 class MultiBernoulliHMM(BaseHMM):
     """
     Multi-channel independent Bernoulli:
+
       emission[k,c] = P(obs_c==1 | state=k)
+
     X must be (N,L,C) on a union coordinate grid; NaN per-channel allowed.
     """
 
@@ -1772,7 +1808,7 @@ class MultiBernoulliHMM(BaseHMM):
             coords: Coordinate array aligned to X.
             device: Torch device.
             max_iter: Maximum iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance (see BaseHMM.fit's docstring).
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transitions.
             update_emission: Whether to update emission parameters.
@@ -1797,27 +1833,21 @@ class MultiBernoulliHMM(BaseHMM):
 
         hist: List[float] = []
         for it in range(1, int(max_iter) + 1):
-            gamma = self._forward_backward(obs, mask)  # (N,L,K)
-
-            ll_proxy = float(torch.sum(torch.log(torch.clamp(gamma.sum(dim=2), min=eps))).item())
-            hist.append(ll_proxy)
+            # One shared alpha/beta pass drives gamma, xi, and the true
+            # log-likelihood below -- see SingleBernoulliHMM.fit_em for why
+            # this replaced two independent alpha/beta recursions per iteration.
+            alpha, beta, logB, logA = self._alpha_beta(obs, mask)
+            log_gamma = alpha + beta
+            logZ = _logsumexp(log_gamma, dim=2).unsqueeze(2)
+            gamma = (log_gamma - logZ).exp()
 
             # expected start
             start_acc = gamma[:, 0, :].sum(dim=0)  # (K,)
 
-            # transitions xi
-            logB = self._log_emission(obs, mask)
-            logA = torch.log(self.trans + eps)
-            alpha = torch.empty((N, L, K), dtype=self.dtype, device=device)
-            alpha[:, 0, :] = torch.log(self.start + eps).unsqueeze(0) + logB[:, 0, :]
-            for t in range(1, L):
-                prev = alpha[:, t - 1, :].unsqueeze(2) + logA.unsqueeze(0)
-                alpha[:, t, :] = _logsumexp(prev, dim=1) + logB[:, t, :]
-            beta = torch.empty((N, L, K), dtype=self.dtype, device=device)
-            beta[:, L - 1, :] = 0.0
-            for t in range(L - 2, -1, -1):
-                temp = logA.unsqueeze(0) + (logB[:, t + 1, :] + beta[:, t + 1, :]).unsqueeze(1)
-                beta[:, t, :] = _logsumexp(temp, dim=2)
+            # True data log-likelihood -- see SingleBernoulliHMM.fit_em for why
+            # gamma.sum(dim=2) is not a usable proxy (it's ~1 by construction).
+            ll_proxy = float(_logsumexp(alpha[:, L - 1, :], dim=1).sum().item())
+            hist.append(ll_proxy)
 
             trans_acc = torch.zeros((K, K), dtype=self.dtype, device=device)
             # valid timestep if at least one channel observed at both positions
@@ -1866,7 +1896,11 @@ class MultiBernoulliHMM(BaseHMM):
                     hist[-1],
                 )
 
-            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol):
+            # Relative tolerance: the true log-likelihood's magnitude scales with
+            # N*L, so a fixed absolute epsilon isn't portable across dataset
+            # sizes (confirmed on real data: the same tol that stops one task at
+            # iteration ~20 doesn't fire on a larger task until iteration ~100+).
+            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol) * max(abs(hist[-1]), 1.0):
                 break
 
         return hist
@@ -2080,18 +2114,17 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
         d = np.diff(np.asarray(coords, dtype=int))
         return np.digitize(d, self.distance_bins, right=True)  # length L-1
 
-    def _forward_backward(
+    def _alpha_beta_by_bin(
         self, obs: torch.Tensor, mask: torch.Tensor, *, coords: Optional[np.ndarray] = None
-    ) -> torch.Tensor:
-        """Run forward-backward using distance-binned transitions.
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward/backward log-space passes using distance-binned transitions.
 
-        Args:
-            obs: Observation tensor.
-            mask: Observation mask.
-            coords: Coordinate array.
+        Factored out of ``_forward_backward`` so ``fit_em`` can share this one
+        O(L) sequential pass instead of recomputing it a second time (see
+        ``BaseHMM._alpha_beta``).
 
         Returns:
-            Posterior probabilities (gamma).
+            Tuple of (alpha, beta, logB, logA_by_bin, bins).
         """
         if coords is None:
             raise ValueError("Distance-binned HMM requires coords.")
@@ -2124,6 +2157,22 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
             temp = logA.unsqueeze(0) + (logB[:, t + 1, :] + beta[:, t + 1, :]).unsqueeze(1)
             beta[:, t, :] = _logsumexp(temp, dim=2)
 
+        return alpha, beta, logB, logA_by_bin, bins
+
+    def _forward_backward(
+        self, obs: torch.Tensor, mask: torch.Tensor, *, coords: Optional[np.ndarray] = None
+    ) -> torch.Tensor:
+        """Run forward-backward using distance-binned transitions.
+
+        Args:
+            obs: Observation tensor.
+            mask: Observation mask.
+            coords: Coordinate array.
+
+        Returns:
+            Posterior probabilities (gamma).
+        """
+        alpha, beta, _logB, _logA_by_bin, _bins = self._alpha_beta_by_bin(obs, mask, coords=coords)
         log_gamma = alpha + beta
         logZ = _logsumexp(log_gamma, dim=2).unsqueeze(2)
         return (log_gamma - logZ).exp()
@@ -2197,7 +2246,7 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
             coords: Coordinate array aligned to X.
             device: Torch device.
             max_iter: Maximum iterations.
-            tol: Convergence tolerance.
+            tol: Relative convergence tolerance (see BaseHMM.fit's docstring).
             update_start: Whether to update start probabilities.
             update_trans: Whether to update transitions.
             update_emission: Whether to update emission parameters.
@@ -2224,34 +2273,23 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
 
         hist: List[float] = []
         for it in range(1, int(max_iter) + 1):
-            gamma = self._forward_backward(obs, mask, coords=coords)  # (N,L,K)
-            ll_proxy = float(torch.sum(torch.log(torch.clamp(gamma.sum(dim=2), min=eps))).item())
-            hist.append(ll_proxy)
+            # One shared alpha/beta pass drives gamma, xi, and the true
+            # log-likelihood below -- see SingleBernoulliHMM.fit_em for why
+            # this replaced two independent alpha/beta recursions per iteration.
+            alpha, beta, logB, logA_by_bin, _bins = self._alpha_beta_by_bin(
+                obs, mask, coords=coords
+            )
+            log_gamma = alpha + beta
+            logZ = _logsumexp(log_gamma, dim=2).unsqueeze(2)
+            gamma = (log_gamma - logZ).exp()
 
             # expected start
             start_acc = gamma[:, 0, :].sum(dim=0)
 
-            # compute alpha/beta for xi
-            logB = self._log_emission(obs, mask)
-            logstart = torch.log(self.start + eps)
-            logA_by_bin = torch.log(self.trans_by_bin + eps)
-
-            alpha = torch.empty((N, L, K), dtype=self.dtype, device=device)
-            alpha[:, 0, :] = logstart.unsqueeze(0) + logB[:, 0, :]
-
-            for t in range(1, L):
-                b = int(bins_np[t - 1])
-                logA = logA_by_bin[b]
-                prev = alpha[:, t - 1, :].unsqueeze(2) + logA.unsqueeze(0)
-                alpha[:, t, :] = _logsumexp(prev, dim=1) + logB[:, t, :]
-
-            beta = torch.empty((N, L, K), dtype=self.dtype, device=device)
-            beta[:, L - 1, :] = 0.0
-            for t in range(L - 2, -1, -1):
-                b = int(bins_np[t])
-                logA = logA_by_bin[b]
-                temp = logA.unsqueeze(0) + (logB[:, t + 1, :] + beta[:, t + 1, :]).unsqueeze(1)
-                beta[:, t, :] = _logsumexp(temp, dim=2)
+            # True data log-likelihood -- see SingleBernoulliHMM.fit_em for why
+            # gamma.sum(dim=2) is not a usable proxy (it's ~1 by construction).
+            ll_proxy = float(_logsumexp(alpha[:, L - 1, :], dim=1).sum().item())
+            hist.append(ll_proxy)
 
             trans_acc_by_bin = torch.zeros((self.n_bins, K, K), dtype=self.dtype, device=device)
             for t in range(L - 1):
@@ -2297,7 +2335,11 @@ class DistanceBinnedSingleBernoulliHMM(SingleBernoulliHMM):
                     hist[-1],
                 )
 
-            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol):
+            # Relative tolerance: the true log-likelihood's magnitude scales with
+            # N*L, so a fixed absolute epsilon isn't portable across dataset
+            # sizes (confirmed on real data: the same tol that stops one task at
+            # iteration ~20 doesn't fire on a larger task until iteration ~100+).
+            if len(hist) > 1 and abs(hist[-1] - hist[-2]) < float(tol) * max(abs(hist[-1]), 1.0):
                 break
 
         return hist

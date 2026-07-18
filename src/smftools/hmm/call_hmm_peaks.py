@@ -25,6 +25,7 @@ def call_hmm_peaks(
     """
     Peak calling over HMM (or other) layers, per reference group and per layer.
     Writes:
+
       - adata.uns["{layer}_{ref}_peak_centers"] = list of centers
       - adata.var["{layer}_{ref}_peak_{center}"] boolean window masks
       - adata.var["is_in_any_{layer}_peak_{ref}"]

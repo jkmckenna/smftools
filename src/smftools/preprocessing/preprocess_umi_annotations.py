@@ -644,6 +644,7 @@ def preprocess_umi_annotations(
     -------
     AnnData
         Modified AnnData with new columns:
+
         - {umi_col}_entropy: float - Shannon entropy (bits)
         - {umi_col}_valid: bool - whether UMI passed validation
         - {umi_col}_invalid_reason: str - reason for invalidity

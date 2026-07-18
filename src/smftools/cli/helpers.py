@@ -15,11 +15,11 @@ from smftools.constants import (
     FASTA_OUTPUTS_DIR,
     H5_DIR,
     HMM_DIR,
-    INFORMATICS_OUTPUTS_DIR,
     LATENT_DIR,
     LOAD_DIR,
     MODKIT_OUTPUTS_DIR,
     PREPROCESS_DIR,
+    RAW_DIR,
     SPATIAL_DIR,
     SPLIT_DIR,
     VARIANT_DIR,
@@ -57,14 +57,25 @@ class AdataPaths:
     latent: Path
     variant: Path
     chimeric: Path
+    # Optional dense zarr cache for the load stage, built on demand by
+    # `smftools load` / cli.load_adata.load_dense_cache (see
+    # informatics/partition_store.write_dense_cache_from_spine). Not written by
+    # the default raw_adata()/full_flow path.
+    store: Path | None = None
+    spine: Path | None = None
+    catalog: Path | None = None
+    raw_spine: Path | None = None
+    preprocess_spine: Path | None = None
+    spatial_spine: Path | None = None
+    hmm_spine: Path | None = None
 
 
 @dataclass
 class ArtifactPaths:
     """Canonical path bundle for split `smftools load` sub-steps.
 
-    This draft path resolver centralizes commonly shared files so future CLI
-    commands (`basecall`, `align`, `barcode`, `umi`, `modbase`, etc.) can use a
+    This path resolver centralizes commonly shared files so CLI
+    raw sub-steps (`basecall`, `align`, `barcode`, `umi`, `modbase`) use a
     single source of truth for input/output locations.
     """
 
@@ -79,6 +90,10 @@ class ArtifactPaths:
     mod_tsv_directory: Path
     mod_bed_directory: Path
     sidecar_manifest: Path
+    raw_directory: Path
+    spine: Path
+    dense_store: Path
+    dense_catalog: Path
 
     unaligned_bam: Path
     aligned_bam: Path
@@ -125,6 +140,17 @@ def get_adata_paths(cfg) -> AdataPaths:
     variant = output_directory / VARIANT_DIR / H5_DIR / f"{pp_dedup_base}_variant.h5ad.gz"
     chimeric = output_directory / CHIMERIC_DIR / H5_DIR / f"{pp_dedup_base}_chimeric.h5ad.gz"
 
+    # Dense-cache artifacts live in the load directory (output/LOAD_DIR), matching
+    # write_dense_cache_from_spine(output_dir=load_directory) in load_dense_cache.
+    load_dir = output_directory / LOAD_DIR
+    store = load_dir / "store"
+    spine = load_dir / "spine.h5ad"
+    catalog = load_dir / "catalog.parquet"
+    raw_spine = output_directory / RAW_DIR / "spine.h5ad"
+    preprocess_spine = output_directory / PREPROCESS_DIR / "spine.h5ad"
+    spatial_spine = output_directory / SPATIAL_DIR / "spine.h5ad"
+    hmm_spine = output_directory / HMM_DIR / "spine.h5ad"
+
     return AdataPaths(
         raw=raw,
         pp=pp,
@@ -134,6 +160,13 @@ def get_adata_paths(cfg) -> AdataPaths:
         latent=latent,
         variant=variant,
         chimeric=chimeric,
+        store=store,
+        spine=spine,
+        catalog=catalog,
+        raw_spine=raw_spine,
+        preprocess_spine=preprocess_spine,
+        spatial_spine=spatial_spine,
+        hmm_spine=hmm_spine,
     )
 
 
@@ -175,7 +208,7 @@ def get_artifact_paths(cfg, bam_stem: str | None = None) -> ArtifactPaths:
     output_directory = Path(cfg.output_directory)
     load_directory = output_directory / LOAD_DIR
     informatics_outputs_directory = Path(
-        getattr(cfg, "informatics_outputs_path", output_directory / INFORMATICS_OUTPUTS_DIR)
+        getattr(cfg, "informatics_outputs_path", output_directory / RAW_DIR)
     )
     bam_outputs_directory = Path(
         getattr(cfg, "bam_outputs_path", informatics_outputs_directory / BAM_OUTPUTS_DIR)
@@ -193,7 +226,7 @@ def get_artifact_paths(cfg, bam_stem: str | None = None) -> ArtifactPaths:
     bam_qc_directory = bam_outputs_directory / "bam_qc"
     mod_tsv_directory = modkit_outputs_directory / "mod_tsvs"
     mod_bed_directory = modkit_outputs_directory / "mod_beds"
-    sidecar_manifest = bam_outputs_directory / "sidecar_manifest.json"
+    sidecar_manifest = output_directory / RAW_DIR / "sidecar_manifest.json"
 
     bam_suffix = str(getattr(cfg, "bam_suffix", ".bam") or ".bam")
     if not bam_suffix.startswith("."):
@@ -217,6 +250,10 @@ def get_artifact_paths(cfg, bam_stem: str | None = None) -> ArtifactPaths:
         mod_tsv_directory=mod_tsv_directory,
         mod_bed_directory=mod_bed_directory,
         sidecar_manifest=sidecar_manifest,
+        raw_directory=output_directory / RAW_DIR,
+        spine=load_directory / "spine.h5ad",
+        dense_store=load_directory / "store",
+        dense_catalog=load_directory / "catalog.parquet",
         unaligned_bam=unaligned_bam,
         aligned_bam=aligned_bam,
         aligned_sorted_bam=aligned_sorted_bam,
@@ -330,6 +367,7 @@ def load_experiment_config(config_path: str):
     from importlib import resources
 
     from ..config import ExperimentConfig, LoadExperimentConfig
+    from ..memory_guard import enable_aggregate_memory_cap, resolve_memory_budget_bytes
 
     date_str = datetime.today().strftime("%y%m%d")
     loader = LoadExperimentConfig(config_path)
@@ -337,13 +375,25 @@ def load_experiment_config(config_path: str):
     cfg, _ = ExperimentConfig.from_var_dict(
         loader.var_dict, date_str=date_str, defaults_dir=defaults_dir
     )
+    # Refine the aggregate memory cap (a no-op generic default until now, set
+    # at CLI startup before any config was available) with this experiment's
+    # actual max_memory_percent/max_memory_gb. Single hook point: every CLI
+    # entry point loads its config through this function. No-op on non-Linux
+    # platforms (see smftools.memory_guard) -- macOS enforcement instead
+    # happens per-worker-pool via resolve_max_workers/start_worker_watchdog.
+    enable_aggregate_memory_cap(budget_bytes=resolve_memory_budget_bytes(cfg))
     return cfg
 
 
 def write_gz_h5ad(adata: ad.AnnData, path: Path) -> Path:
     if path.suffix != ".gz":
         path = path.with_name(path.name + ".gz")
-    safe_write_h5ad(adata, path, compression="gzip", backup=True)
+    # Despite the ".gz" name (kept for compatibility with AdataPaths/stage-
+    # resolution and existing on-disk files), this writes an uncompressed
+    # HDF5 container, not a gzip archive. Every file this function produces
+    # is read back by the next pipeline stage -- see safe_write_h5ad's
+    # docstring for why HDF5-internal gzip is the wrong default for that.
+    safe_write_h5ad(adata, path, compression=None, backup=True)
     write_runtime_schema_yaml(adata, path, step_name="runtime")
     return path
 
@@ -365,7 +415,9 @@ def resolve_adata_stage(
     Parameters
     ----------
     cfg : ExperimentConfig
+
     paths : AdataPaths
+
     min_stage : str, default "raw"
         The lowest stage to consider in the fallback chain.  Stages below this
         in the priority list are skipped.  For example, ``min_stage="pp"``

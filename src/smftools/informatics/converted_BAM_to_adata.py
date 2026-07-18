@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import re
@@ -58,7 +59,7 @@ torch = require("torch", extra="torch", purpose="converted BAM processing")
 class RecordFastaInfo:
     """Structured FASTA metadata for a single converted record.
 
-    Attributes:
+    Fields:
         sequence: Padded top-strand sequence for the record.
         complement: Padded bottom-strand sequence for the record.
         chromosome: Canonical chromosome name for the record.
@@ -85,7 +86,7 @@ class RecordFastaInfo:
 class SequenceEncodingConfig:
     """Configuration for integer sequence encoding.
 
-    Attributes:
+    Fields:
         base_to_int: Mapping of base characters to integer encodings.
         bases: Valid base characters used for encoding.
         padding_base: Base token used for padding.
@@ -280,7 +281,14 @@ def converted_BAM_to_adata(
             converted_FASTA_record_seq_map[record] = [record_length, seq]
 
     ## Process BAMs in Parallel
-    final_adata = process_bams_parallel(
+    # final_adata is returned backed (file-backed by concat_tmp_path) rather than
+    # fully materialized: the metadata-only mutations below (uns/var/obs writes,
+    # obs_names_make_unique, category casting) don't need X/layers in memory, and
+    # deferring the full read means we never hold a spurious extra full copy
+    # during this window. concat_tmp_path must stay alive -- and final_adata must
+    # be converted with .to_memory() -- before it's deleted; see the cleanup right
+    # before this function's `return` for where that happens.
+    final_adata, concat_tmp_path = process_bams_parallel(
         bam_path_list,
         records_to_analyze,
         record_FASTA_dict,
@@ -383,6 +391,16 @@ def converted_BAM_to_adata(
     if delete_intermediates:
         logger.info("Deleting intermediate h5ad files")
         delete_intermediate_h5ads_and_tmpdir(h5_dir, tmp_dir)
+
+    # Materialize now: everything above operated backed (metadata writes, plus
+    # on-demand small reads for the per-group consensus/QC loops), so this is
+    # the first point anything needed the whole dataset resident at once.
+    # load_adata_core's own downstream steps (e.g. the Raw_modification_signal
+    # = np.nansum(X, axis=1) reduction in cli/load_adata.py) force this same
+    # materialization anyway if we didn't do it here, so nothing is lost by
+    # making the boundary explicit. Only now is it safe to drop concat_tmp_path.
+    final_adata = final_adata.to_memory()
+    concat_tmp_path.unlink(missing_ok=True)
 
     return final_adata, final_adata_path
 
@@ -566,84 +584,29 @@ def _encode_sequence_array(
     return encoded
 
 
-def _write_sequence_batches(
+def _encode_sequence_reads(
     base_identities: Mapping[str, np.ndarray],
-    tmp_dir: Path,
-    record: str,
-    prefix: str,
     valid_length: int,
     config: SequenceEncodingConfig,
-) -> list[str]:
-    """Encode base identities into integer arrays and write batched H5AD files.
+) -> dict[str, np.ndarray]:
+    """Integer-encode a mapping of read base identities in memory.
 
     Args:
-        base_identities: Mapping of read name to base identity arrays.
-        tmp_dir: Directory for temporary H5AD files.
-        record: Reference record identifier.
-        prefix: Prefix used to name batch files.
-        valid_length: Valid reference length for padding determination.
+        base_identities: Mapping of read name to base identity arrays. Entries
+            whose value is ``None`` are skipped.
+        valid_length: Number of valid reference positions for this record, used
+            to place padding beyond the reference span.
         config: Integer encoding configuration.
 
     Returns:
-        list[str]: Paths to written H5AD batch files.
-
-    Processing Steps:
-        1. Encode each read sequence into integers.
-        2. Accumulate encoded reads into batches.
-        3. Persist each batch to an H5AD file with `.uns` storage.
+        dict[str, np.ndarray]: Read name to integer-encoded sequence.
     """
-    batch_files: list[str] = []
-    batch: dict[str, np.ndarray] = {}
-    batch_number = 0
-
+    encoded: dict[str, np.ndarray] = {}
     for read_name, sequence in base_identities.items():
         if sequence is None:
             continue
-        batch[read_name] = _encode_sequence_array(sequence, valid_length, config)
-        if len(batch) >= config.batch_size:
-            save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
-            ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
-            batch_files.append(str(save_name))
-            batch = {}
-            batch_number += 1
-
-    if batch:
-        save_name = tmp_dir / f"tmp_{prefix}_{record}_{batch_number}.h5ad"
-        ad.AnnData(X=np.zeros((1, 1)), uns=batch).write_h5ad(save_name)
-        batch_files.append(str(save_name))
-
-    return batch_files
-
-
-def _load_sequence_batches(
-    batch_files: list[Path | str],
-) -> tuple[dict[str, np.ndarray], set[str], set[str]]:
-    """Load integer-encoded sequence batches from H5AD files.
-
-    Args:
-        batch_files: H5AD paths containing encoded sequences in `.uns`.
-
-    Returns:
-        tuple[dict[str, np.ndarray], set[str], set[str]]:
-            Read-to-sequence mapping and sets of forward/reverse mapped reads.
-
-    Processing Steps:
-        1. Read each H5AD file.
-        2. Merge `.uns` dictionaries into a single mapping.
-        3. Track forward/reverse read IDs based on filename markers.
-    """
-    sequences: dict[str, np.ndarray] = {}
-    fwd_reads: set[str] = set()
-    rev_reads: set[str] = set()
-    for batch_file in batch_files:
-        batch_path = Path(batch_file)
-        batch_sequences = ad.read_h5ad(batch_path).uns
-        sequences.update(batch_sequences)
-        if "_fwd_" in batch_path.name:
-            fwd_reads.update(batch_sequences.keys())
-        elif "_rev_" in batch_path.name:
-            rev_reads.update(batch_sequences.keys())
-    return sequences, fwd_reads, rev_reads
+        encoded[read_name] = _encode_sequence_array(sequence, valid_length, config)
+    return encoded
 
 
 def process_single_bam(
@@ -773,35 +736,34 @@ def process_single_bam(
         sorted_index = sorted(bin_df.index)
         bin_df = bin_df.reindex(sorted_index)
 
-        # Integer-encode reads if there is valid data
-        batch_files: list[str] = []
+        # Integer-encode reads in memory. Previously each read's encoded sequence
+        # was round-tripped through a throwaway .h5ad batch file (an AnnData whose
+        # `.uns` was used as a key-value store) and immediately read back within
+        # this same worker -- pure serialization + small-file I/O overhead with no
+        # memory benefit, since everything was reloaded into a single dict here
+        # anyway. Encode straight into that dict instead; fwd/rev membership
+        # (previously recovered from the `_fwd_`/`_rev_` batch filenames) comes
+        # directly from the source dict keys.
+        encoded_reads: dict[str, np.ndarray] = {}
+        fwd_reads: set[str] = set()
+        rev_reads: set[str] = set()
         if fwd_bases:
-            batch_files.extend(
-                _write_sequence_batches(
-                    fwd_bases,
-                    tmp_dir,
-                    record,
-                    f"{bam_index}_fwd",
-                    current_length,
-                    SEQUENCE_ENCODING_CONFIG,
-                )
+            fwd_encoded = _encode_sequence_reads(
+                fwd_bases, current_length, SEQUENCE_ENCODING_CONFIG
             )
+            encoded_reads.update(fwd_encoded)
+            fwd_reads.update(fwd_encoded)
 
         if rev_bases:
-            batch_files.extend(
-                _write_sequence_batches(
-                    rev_bases,
-                    tmp_dir,
-                    record,
-                    f"{bam_index}_rev",
-                    current_length,
-                    SEQUENCE_ENCODING_CONFIG,
-                )
+            rev_encoded = _encode_sequence_reads(
+                rev_bases, current_length, SEQUENCE_ENCODING_CONFIG
             )
+            encoded_reads.update(rev_encoded)
+            rev_reads.update(rev_encoded)
 
         del fwd_bases, rev_bases
 
-        if not batch_files:
+        if not encoded_reads:
             logger.debug(
                 f"[Worker {current_process().pid}] Skipping {sample} - No valid encoded data for {record}."
             )
@@ -809,26 +771,25 @@ def process_single_bam(
 
         gc.collect()
 
-        encoded_reads, fwd_reads, rev_reads = _load_sequence_batches(batch_files)
-        if not encoded_reads:
-            logger.debug(
-                f"[Worker {current_process().pid}] Skipping {sample} - No reads found in encoded data for {record}."
-            )
-            continue
-
+        # int8 (not int16) for every per-base layer -- see the matching note in
+        # modkit_extract_to_adata: encodings 0-5, read-span 0/1, Phred quality
+        # -1..93 all fit int8 (-128..127), halving each layer's footprint in the
+        # final materialized AnnData and its transient copies. The vstack results
+        # are cast down explicitly so this holds regardless of the source arrays'
+        # dtype.
         sequence_length = max_reference_length
         default_sequence = np.full(
-            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int16
+            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int8
         )
         if current_length < sequence_length:
             default_sequence[current_length:] = SEQUENCE_ENCODING_CONFIG.padding_value
 
         encoded_matrix = np.vstack(
             [encoded_reads.get(read_name, default_sequence) for read_name in sorted_index]
-        )
+        ).astype(np.int8, copy=False)
         del encoded_reads
         default_mismatch_sequence = np.full(
-            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int16
+            sequence_length, SEQUENCE_ENCODING_CONFIG.unknown_value, dtype=np.int8
         )
         if current_length < sequence_length:
             default_mismatch_sequence[current_length:] = SEQUENCE_ENCODING_CONFIG.padding_value
@@ -837,20 +798,20 @@ def process_single_bam(
                 mismatch_base_identities.get(read_name, default_mismatch_sequence)
                 for read_name in sorted_index
             ]
-        )
+        ).astype(np.int8, copy=False)
         del mismatch_base_identities
-        default_quality_sequence = np.full(sequence_length, -1, dtype=np.int16)
+        default_quality_sequence = np.full(sequence_length, -1, dtype=np.int8)
         quality_matrix = np.vstack(
             [
                 base_quality_scores.get(read_name, default_quality_sequence)
                 for read_name in sorted_index
             ]
-        )
+        ).astype(np.int8, copy=False)
         del base_quality_scores
-        default_read_span = np.zeros(sequence_length, dtype=np.int16)
+        default_read_span = np.zeros(sequence_length, dtype=np.int8)
         read_span_matrix = np.vstack(
             [read_span_masks.get(read_name, default_read_span) for read_name in sorted_index]
-        )
+        ).astype(np.int8, copy=False)
         del read_span_masks
         gc.collect()
 
@@ -1066,7 +1027,7 @@ def process_bams_parallel(
     primary_only: bool = False,
     read_name_filter: set | None = None,
     read_to_barcode: dict[str, str] | None = None,
-) -> ad.AnnData | None:
+) -> tuple[ad.AnnData | None, Path | None]:
     """Process BAM files in parallel and concatenate the resulting AnnData.
 
     Args:
@@ -1087,12 +1048,16 @@ def process_bams_parallel(
         read_to_barcode: If provided, maps read names to barcode labels (non-split mode).
 
     Returns:
-        anndata.AnnData | None: Concatenated AnnData or None if no H5ADs produced.
+        tuple[anndata.AnnData | None, Path | None]: The concatenated AnnData,
+            returned backed="r" (or (None, None) if no H5ADs were produced),
+            and the path it's backed by. The caller owns that path's lifetime:
+            it must not be deleted until the returned AnnData has been fully
+            materialized (`.to_memory()`) or is no longer needed.
 
     Processing Steps:
         1. Spawn worker processes to handle each BAM.
         2. Track completion via a multiprocessing queue.
-        3. Concatenate per-BAM H5AD files into a final AnnData.
+        3. Concatenate per-BAM H5AD files into a final AnnData, returned backed.
     """
     make_dirs(h5_dir)  # Ensure h5_dir exists
 
@@ -1213,13 +1178,41 @@ def process_bams_parallel(
 
     if not h5ad_files:
         logger.warning(f"No valid H5AD files generated. Exiting.")
-        return None
+        return None, None
 
-    logger.info(f"Concatenating {len(h5ad_files)} H5AD files into final output...")
-    final_adata = ad.concat([ad.read_h5ad(f) for f in h5ad_files], join="outer")
+    # Concatenate on disk (anndata.experimental.concat_on_disk) instead of
+    # eagerly loading every batch h5ad into memory before concatenating: the
+    # previous `[ad.read_h5ad(f) for f in h5ad_files]` held all N batch files
+    # resident at once on top of whatever the worker pool above was still
+    # holding. concat_on_disk streams each input's arrays through in chunks
+    # and never holds more than one input's worth in memory.
+    #
+    # Open real h5py.File handles ourselves rather than passing paths: anndata
+    # dispatches zarr vs h5py by literal `Path.suffix == ".h5ad"`, which is
+    # fragile against any non-standard naming, so this avoids relying on it.
+    import h5py
+    from anndata.experimental import concat_on_disk
 
-    logger.info(f"Successfully generated final AnnData object.")
-    return final_adata
+    concat_tmp_path = h5_dir / "_final_concat.tmp"
+    if concat_tmp_path.exists():
+        concat_tmp_path.unlink()
+    logger.info(f"Concatenating {len(h5ad_files)} H5AD files on disk into final output...")
+    with contextlib.ExitStack() as stack:
+        input_groups = [stack.enter_context(h5py.File(p, mode="r")) for p in h5ad_files]
+        output_group = stack.enter_context(h5py.File(concat_tmp_path, mode="w"))
+        concat_on_disk(input_groups, output_group, join="outer")
+    # backed="r" instead of an eager read: the caller does several more
+    # metadata-only mutations and (after the streaming-reduction changes
+    # described in process_single_bam) no full-layer reductions before it's
+    # actually ready to materialize, so there is no reason to force the whole
+    # dataset into memory here just to immediately do lightweight obs/var/uns
+    # writes on it. The caller owns concat_tmp_path's lifetime from here:
+    # it must call `.to_memory()` and then delete this path itself once it's
+    # done reading from it (see converted_BAM_to_adata's cleanup section).
+    final_adata = ad.read_h5ad(concat_tmp_path, backed="r")
+
+    logger.info(f"Successfully generated final AnnData object (backed).")
+    return final_adata, concat_tmp_path
 
 
 def _log_async_result_errors(results, bam_path_list):

@@ -24,6 +24,7 @@ enzyme_target_bases:
 batch_size: 4 # How many mod TSVs to load into memory at a time when making anndata batches
 skip_unclassified: True # Whether to skip unclassified barcodes
 delete_batch_hdfs: True # Whether to delete intermediate barcode level hdfs after making final anndata
+direct_max_workers: null # null = process batches serially (default); an int processes that many batches concurrently via multiprocessing.Pool; "auto" picks a worker count from CPU count and estimated per-batch memory footprint
 
 ######## smftools preprocess params ########
 fit_position_methylation_thresholds: False # Whether to use Youden J-stat to determine position by positions thresholds for modification binarization.
@@ -46,4 +47,13 @@ hmm_methbases:
   - "A"
 
 hmm_merge_layer_features:
-  - ["A_all_accessible_features", 60]
+  - ["all_accessible_features", 60]
+  - ["all_footprint_features", 10]
+hmm_clustermap_feature_layers:
+  - all_accessible_features
+  - all_accessible_features_merged
+  - all_footprint_features_merged
+hmm_clustermap_length_layers:
+  - all_accessible_features_merged
+  - all_footprint_features
+  - all_footprint_features_merged

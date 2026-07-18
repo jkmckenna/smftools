@@ -85,6 +85,62 @@ def test_rolling_window_nn_distance_sample_labels_excludes_same_sample():
     assert "rolling_nn_group" in adata.obsm
 
 
+def test_rolling_window_nn_distance_reindexes_centers_for_single_reference():
+    X = np.array(
+        [
+            [1.0, 1.0, 0.0, np.nan],
+            [1.0, 0.0, 0.0, 1.0],
+            [np.nan, 1.0, 1.0, 1.0],
+        ]
+    )
+    adata = ad.AnnData(X)
+    adata.obs["Reference_strand"] = pd.Categorical(["R1", "R1", "R1"])
+    var_coords = np.array([10, 11, 12, 13])
+    adata.var_names = [str(c) for c in var_coords]
+    adata.var["R1_reindexed"] = -var_coords  # inverted, anchored at 0
+
+    rolling_window_nn_distance(
+        adata,
+        window=4,
+        step=4,
+        min_overlap=2,
+        return_fraction=True,
+        store_obsm="rolling_nn_dist",
+        index_col_suffix="reindexed",
+    )
+
+    # Raw var_names mean is 11.5 (floor -> 11); reindexed mean is -11.5 (floor -> -12).
+    assert adata.uns["rolling_nn_dist_centers"].tolist() == [-12.0]
+
+
+def test_rolling_window_nn_distance_falls_back_when_multiple_references():
+    X = np.array(
+        [
+            [1.0, 1.0, 0.0, np.nan],
+            [1.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    adata = ad.AnnData(X)
+    adata.obs["Reference_strand"] = pd.Categorical(["R1", "R2"])
+    var_coords = np.array([10, 11, 12, 13])
+    adata.var_names = [str(c) for c in var_coords]
+    adata.var["R1_reindexed"] = -var_coords
+    adata.var["R2_reindexed"] = var_coords + 100
+
+    rolling_window_nn_distance(
+        adata,
+        window=4,
+        step=4,
+        min_overlap=2,
+        return_fraction=True,
+        store_obsm="rolling_nn_dist",
+        index_col_suffix="reindexed",
+    )
+
+    # No single reference -> falls back to raw var_names mean (11.5 -> floor 11).
+    assert adata.uns["rolling_nn_dist_centers"].tolist() == [11.0]
+
+
 def test_assign_rolling_nn_results_to_parent():
     X = np.array(
         [
@@ -125,6 +181,49 @@ def test_assign_rolling_nn_results_to_parent():
     assert parent.uns["rolling_nn_parent_starts"].tolist() == [0]
     assert parent.uns["rolling_nn_parent_centers"].tolist() == [1.0]
     assert parent.uns["rolling_nn_parent_window"] == 4
+
+
+def test_assign_rolling_nn_results_reindexes_centers_for_single_reference():
+    X = np.array(
+        [
+            [1.0, 1.0, 0.0, np.nan],
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0],
+            [np.nan, 1.0, 1.0, 0.0],
+        ]
+    )
+    parent = ad.AnnData(X)
+    parent.obs["Reference_strand"] = pd.Categorical(["R1", "R1", "R1", "R1"])
+    var_coords = np.array([10, 11, 12, 13])
+    parent.var_names = [str(c) for c in var_coords]
+    parent.var["R1_reindexed"] = -var_coords
+    subset = parent[[0, 2]].copy()
+
+    values, starts = rolling_window_nn_distance(
+        subset,
+        window=4,
+        step=4,
+        min_overlap=2,
+        return_fraction=True,
+        store_obsm=None,
+    )
+
+    assign_rolling_nn_results(
+        parent,
+        subset,
+        values,
+        starts,
+        obsm_key="rolling_nn_parent",
+        window=4,
+        step=4,
+        min_overlap=2,
+        return_fraction=True,
+        layer=None,
+        index_col_suffix="reindexed",
+        reference_col="Reference_strand",
+    )
+
+    assert parent.uns["rolling_nn_parent_centers"].tolist() == [-12.0]
 
 
 def test_zero_pairs_and_segments_to_dataframe():

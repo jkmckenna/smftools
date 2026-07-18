@@ -9,6 +9,7 @@ import scipy.cluster.hierarchy as sch
 
 from smftools.logging_utils import get_logger
 from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
+from smftools.plotting.plotting_utils import _ordered_columns
 
 logger = get_logger(__name__)
 
@@ -218,6 +219,7 @@ def plot_read_span_quality_clustermaps(
     position_axis_tick_target: int = 25,
     save_path: str | Path | None = None,
     n_jobs: int = 1,
+    index_col_suffix: str | None = None,
 ) -> List[Dict[str, Any]]:
     """Plot read-span mask and base quality clustermaps side by side.
 
@@ -252,6 +254,9 @@ def plot_read_span_quality_clustermaps(
         n_jobs: Number of parallel worker processes. ``-1`` uses all available CPUs.
             Parallelism is only applied when ``save_path`` is set (interactive display
             is always serial).
+        index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]``
+            for tick labels and column order instead of ``var_names`` (e.g.
+            ``"reindexed"``), matching the HMM/spatial clustermaps.
 
     Returns:
         List of dictionaries with per-plot metadata and output paths.
@@ -352,6 +357,7 @@ def plot_read_span_quality_clustermaps(
                 quality_matrix[quality_matrix < 0] = np.nan
                 read_span_matrix = np.asarray(subset.layers[read_span_layer]).astype(float)
                 var_names = np.asarray(subset.var_names)
+                sites = np.arange(subset.n_vars)
 
                 if max_nan_fraction is not None:
                     nan_mask = np.isnan(quality_matrix) | np.isnan(read_span_matrix)
@@ -362,6 +368,21 @@ def plot_read_span_quality_clustermaps(
                     quality_matrix = quality_matrix[:, keep_columns]
                     read_span_matrix = read_span_matrix[:, keep_columns]
                     var_names = var_names[keep_columns]
+                    sites = sites[keep_columns]
+
+                if index_col_suffix is not None:
+                    # sites is always strictly ascending here (arange, or a
+                    # boolean-mask subsequence of it), so searchsorted maps
+                    # each reordered site back to its position within the
+                    # already-sliced matrices above.
+                    new_sites, new_labels = _ordered_columns(
+                        subset, sites, str(ref), index_col_suffix
+                    )
+                    if new_sites.size:
+                        order = np.searchsorted(sites, new_sites)
+                        quality_matrix = quality_matrix[:, order]
+                        read_span_matrix = read_span_matrix[:, order]
+                        var_names = new_labels
 
                 if max_reads is not None and quality_matrix.shape[0] > max_reads:
                     quality_matrix = quality_matrix[:max_reads]

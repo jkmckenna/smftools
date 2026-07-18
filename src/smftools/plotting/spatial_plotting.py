@@ -17,7 +17,7 @@ from smftools.plotting.plotting_utils import (
     _layer_to_numpy,
     _layer_to_numpy_np,
     _methylation_fraction_for_layer,
-    _select_labels,
+    _ordered_columns,
     clean_barplot,
     make_row_colors,
 )
@@ -974,6 +974,7 @@ def combined_raw_clustermap(
     fill_nan_value: float = -1,
     n_jobs: int = 1,
     omit_chimeric_reads: bool = False,
+    restrict_to_read_span: bool = False,
 ):
     """
     Plot stacked heatmaps + per-position mean barplots for C, GpC, CpG, and optional A.
@@ -986,6 +987,14 @@ def combined_raw_clustermap(
       - fixed count of x tick labels per block (controllable)
       - optional NaN fill strategy for clustering/plotting (in-memory only)
       - adata.uns updated once at end
+
+    restrict_to_read_span: if True, crop each reference's plotted x-axis to
+    [min(reference_start), max(reference_end)] across all QC-passing reads
+    for that reference (union across every sample/barcode, computed once per
+    reference -- not per-sample -- so every sample's plot for a given
+    reference stays on the same x-axis for visual comparison), instead of
+    the full reference length. No-op when reference_start/reference_end
+    aren't present in adata.obs.
 
     Returns
     -------
@@ -1024,39 +1033,65 @@ def combined_raw_clustermap(
     # ------------------------------------------------------------------
     def _iter_group_args():
         for ref in adata.obs[reference_col].cat.categories:
+            # Computed once per reference (none of these depend on sample) --
+            # also lets restrict_to_read_span compute one span shared by every
+            # sample's plot for this reference, so panels stay on a common
+            # x-axis for visual comparison instead of each cropping to its own
+            # (possibly very different) subset of reads.
+            qmask = _mask_or_true(
+                "read_quality",
+                (lambda s: s >= float(min_quality))
+                if min_quality is not None
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lm_mask = _mask_or_true(
+                "mapped_length",
+                (lambda s: s >= float(min_length))
+                if min_length is not None
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            lrr_mask = _mask_or_true(
+                "mapped_length_to_reference_length_ratio",
+                (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
+                if min_mapped_length_to_reference_length_ratio is not None
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            demux_mask = _mask_or_true(
+                "demux_type",
+                (lambda s: s.astype("string").isin(list(demux_types)))
+                if demux_types is not None
+                else (lambda s: pd.Series(True, index=s.index)),
+            )
+            chimeric_mask = (
+                _mask_or_true("chimeric_variant_sites", lambda s: ~s.astype(bool))
+                if omit_chimeric_reads
+                else pd.Series(True, index=adata.obs.index)
+            )
+
+            span_start = span_end = None
+            if restrict_to_read_span:
+                ref_mask = (
+                    (adata.obs[reference_col] == ref)
+                    & qmask
+                    & lm_mask
+                    & lrr_mask
+                    & demux_mask
+                    & chimeric_mask
+                )
+                if bool(ref_mask.any()) and {"reference_start", "reference_end"}.issubset(
+                    adata.obs.columns
+                ):
+                    starts = pd.to_numeric(
+                        adata.obs.loc[ref_mask, "reference_start"], errors="coerce"
+                    )
+                    ends = pd.to_numeric(adata.obs.loc[ref_mask, "reference_end"], errors="coerce")
+                    if starts.notna().any() and ends.notna().any():
+                        span_start = int(starts.min())
+                        span_end = int(ends.max())
+
             for sample in adata.obs[sample_col].cat.categories:
                 display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
 
-                qmask = _mask_or_true(
-                    "read_quality",
-                    (lambda s: s >= float(min_quality))
-                    if min_quality is not None
-                    else (lambda s: pd.Series(True, index=s.index)),
-                )
-                lm_mask = _mask_or_true(
-                    "mapped_length",
-                    (lambda s: s >= float(min_length))
-                    if min_length is not None
-                    else (lambda s: pd.Series(True, index=s.index)),
-                )
-                lrr_mask = _mask_or_true(
-                    "mapped_length_to_reference_length_ratio",
-                    (lambda s: s >= float(min_mapped_length_to_reference_length_ratio))
-                    if min_mapped_length_to_reference_length_ratio is not None
-                    else (lambda s: pd.Series(True, index=s.index)),
-                )
-                demux_mask = _mask_or_true(
-                    "demux_type",
-                    (lambda s: s.astype("string").isin(list(demux_types)))
-                    if demux_types is not None
-                    else (lambda s: pd.Series(True, index=s.index)),
-                )
-
-                chimeric_mask = (
-                    _mask_or_true("chimeric_variant_sites", lambda s: ~s.astype(bool))
-                    if omit_chimeric_reads
-                    else pd.Series(True, index=adata.obs.index)
-                )
                 row_mask = (
                     (adata.obs[reference_col] == ref)
                     & (adata.obs[sample_col] == sample)
@@ -1077,6 +1112,26 @@ def combined_raw_clustermap(
 
                 try:
                     subset = adata[row_mask, :].copy()
+
+                    if span_start is not None and span_end is not None:
+                        var_coords = pd.to_numeric(
+                            pd.Series(subset.var_names), errors="coerce"
+                        ).to_numpy()
+                        # NaN coords compare False against both bounds, so a
+                        # var_name that isn't a genomic coordinate is safely
+                        # excluded rather than raising.
+                        span_mask = np.asarray(
+                            (var_coords >= span_start) & (var_coords < span_end), dtype=bool
+                        )
+                        if span_mask.any():
+                            subset = subset[:, span_mask].copy()
+                        else:
+                            logger.warning(
+                                "No positions left after read-span restriction for %s - %s.",
+                                display_sample,
+                                ref,
+                            )
+                            continue
 
                     if min_position_valid_fraction is not None:
                         valid_key = f"{ref}_valid_fraction"
@@ -1110,12 +1165,20 @@ def combined_raw_clustermap(
                         any_c_sites = np.where(subset.var.get(f"{ref}_C_site", False).values)[0]
                         gpc_sites = np.where(subset.var.get(f"{ref}_GpC_site", False).values)[0]
                         cpg_sites = np.where(subset.var.get(f"{ref}_CpG_site", False).values)[0]
-                        any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
-                        gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
-                        cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
+                        any_c_sites, any_c_labels = _ordered_columns(
+                            subset, any_c_sites, ref, index_col_suffix
+                        )
+                        gpc_sites, gpc_labels = _ordered_columns(
+                            subset, gpc_sites, ref, index_col_suffix
+                        )
+                        cpg_sites, cpg_labels = _ordered_columns(
+                            subset, cpg_sites, ref, index_col_suffix
+                        )
                     if include_any_a:
                         any_a_sites = np.where(subset.var.get(f"{ref}_A_site", False).values)[0]
-                        any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
+                        any_a_sites, any_a_labels = _ordered_columns(
+                            subset, any_a_sites, ref, index_col_suffix
+                        )
 
                     # Extract layer arrays (unique layers only to avoid duplicate copies)
                     unique_layer_names = {layer_c, layer_gpc, layer_cpg, layer_a}

@@ -94,6 +94,19 @@ annotate_secondary_supplementary: True # Whether to annotate reads with secondar
 samtools_backend: auto # auto|python|cli for samtools-compatible operations
 bedtools_backend: auto # auto|python|cli for bedtools-compatible operations
 bigwig_backend: auto # auto|python|cli for bedGraphToBigWig conversion
+direct_signal_backend: modkit # pysam|modkit for direct modality's modification-signal source. pysam decodes BAM MM/ML tags directly (no external tool, streaming-compatible); modkit runs modkit extract to a TSV first. modkit is the default for now -- pysam's decode gives a substantially lower downstream QC-pass rate on real data and the root cause isn't understood yet.
+direct_signal_impute_uncalled_canonical: False # pysam backend only: if True, mirror modkit's convention of filling uncalled canonical-base positions with a synthetic probability-0 (canonical) call instead of leaving them NaN. For A/B comparison against modkit-extract-era results; leave False for the statistically correct default.
+
+# Post-alignment rescue pass: when the alignment FASTA has nested/overlapping
+# reference variants for one locus (e.g. a WT contig and a shorter
+# deletion-allele contig), minimap2's primary-alignment pick can be
+# objectively worse (less read coverage) than one of its own secondary
+# alignments. Re-flags primary/secondary BAM bits by read coverage before
+# anything downstream commits a read's Reference_strand. Modality-agnostic;
+# a no-op for reads with no secondary alignments, so on by default.
+rescue_secondary_alignments: True
+rescue_min_margin_bp: 20
+rescue_min_margin_fraction: 0.01
 
 # Nanopore specific demultiplexing
 demux_backend: dorado # smftools|dorado - smftools uses YAML-based barcode refs, dorado uses kit names
@@ -129,7 +142,7 @@ umi_amplicon_max_edits: null
 umi_kit: null  # UMI kit alias (e.g. "dual-nextera-12") or "custom" with umi_yaml
 umi_yaml: null  # Path to UMI YAML config file (when umi_kit: custom)
 
-skip_bam_split: False # Skip BAM splitting/demux step and load AnnData directly from the aligned/sorted BAM.
+skip_bam_split: True # Skip BAM splitting/demux step and load AnnData directly from the aligned/sorted BAM.
 skip_bam_qc: True # Skip samtools/pysam BAM QC generation and MultiQC report generation.
 
 # Anndata structure
@@ -178,6 +191,27 @@ read_mapping_quality_filter_thresholds:
   - null
   - null
 
+# CIGAR-based internal indel filtering. Reads whose longest internal insertion or
+# deletion run (from the alignment CIGAR) exceeds these lengths (bp) are removed.
+# Set a value to null to disable that check.
+max_internal_insertion_length: 10
+max_internal_deletion_length: 10
+bypass_filter_reads_on_cigar_indels: False
+force_redo_filter_reads_on_cigar_indels: True
+
+# Deaminase PCR-chimera labeling (deaminase modality only). Reads showing a span of
+# C->T (top) events and a span of G->A (bottom) events are labeled in
+# obs['deaminase_PCR_chimera'] (reads are kept, not removed). A read is flagged when
+# both strand signatures have >= min_events_per_span events, the best single-switch
+# two-segment model has purity >= min_segment_purity, and the read is not more than
+# max_single_strand_fraction one-sided.
+bypass_label_deaminase_pcr_chimeras: False
+deaminase_chimera_min_events_per_span: 3
+deaminase_chimera_min_segment_purity: 0.9
+deaminase_chimera_max_single_strand_fraction: 0.8
+# Emit a per reference x barcode chimera-rate QC heatmap in the raw stage.
+bypass_raw_chimera_rate_plot: False
+
 # Read modification filtering params
 read_mod_filtering_gpc_thresholds:
   - 0.025
@@ -222,6 +256,7 @@ duplicate_detection_min_overlapping_positions: 20 # The minimum amount of valid 
 duplicate_detection_do_hierarchical: True # Whether to follow up fwd/rev lexicographic duplicate detection with hieratchical clustering based method
 duplicate_detection_hierarchical_linkage: "average" # Method for hierarchical clustering distance calculation
 duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkage based duplicate detection.
+duplicate_detection_max_reads_per_window: 50000 # Fail rather than silently approximate above this per-sample/core read count
 
 # Position QC params
 position_max_nan_threshold: 0.8 # The maximum amount of nans to tolerate in a column
@@ -238,6 +273,13 @@ invert_adata: False # Whether to invert the AnnData along the positions axis.
 reindexing_offsets:
   null : null
 reindexed_var_suffix: "reindexed"
+# Per-reference display inversion: {ref: True} flips the sign of that
+# reference's reindexed coordinate so "left of anchor = negative, right of
+# anchor = positive" still holds once the reference is rendered in reverse
+# column order. Set to `True` (instead of a per-reference mapping) to invert
+# every reference at once. Additive to reindexing_offsets; independent of
+# invert_adata.
+reindexing_invert: {}
 
 # Spatial Analysis - QC Plotting params
 rows_per_qc_histogram_grid: 12
@@ -249,6 +291,7 @@ clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
+spatial_clustermap_restrict_to_read_span: False # Crop spatial clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
 omit_chimeric_reads: True
 
 # Clustermap variant params
@@ -352,6 +395,7 @@ hmm_dtype: "float64"
 hmm_annotation_threshold: 0.5 # The minimum probability threshold of a feature interval to accept it for layer annotation.
 hmm_batch_size: 1024 # hmm batch size
 hmm_use_viterbi: False # Whether to use viterbi decoding. If False, uses forward-backward gammas. Viterbi is smoother, but less sensitive.
+hmm_device: "cpu" # Torch device for HMM fitting/decoding specifically (overrides `device` for HMM only). Defaults to cpu, not auto/GPU: the small-state sequential position loop is measurably slower on MPS and is forced to run tasks fully sequentially on any non-cpu device. Set to "mps"/"cuda"/"auto" to opt back into GPU.
 footprints: True # whether to use the default HMM footprint params
 accessible_patches: True # whether to use the default HMM accessible patch params
 cpg: False # whether to use the default HMM endogenous CpG patch params
@@ -389,8 +433,12 @@ hmm_feature_colormaps:
   cpg_patch: "#6D4C41"
 hmm_merge_layer_features:
   - ["all_accessible_features", 60]
+  - ["all_footprint_features", 10]
 clustermap_cmap_hmm: "coolwarm"
 hmm_clustermap_feature_layers:
+  - all_accessible_features
+  - all_accessible_features_merged
+  - all_footprint_features_merged
   - nucleosome_depleted_region_merged
   - small_bound_stretch
   - medium_bound_stretch
@@ -398,7 +446,9 @@ hmm_clustermap_feature_layers:
 hmm_clustermap_length_layers:
   - all_accessible_features_merged
   - all_footprint_features
+  - all_footprint_features_merged
 hmm_clustermap_sortby: "hmm"
+hmm_clustermap_restrict_to_read_span: False # Crop HMM clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
 hmm_peak_feature_configs:
   all_accessible_features:
     min_distance: 200 # The minimum distance in between called peaks
@@ -483,6 +533,31 @@ concatenate_recompute_pp_vars: True  # Recompute calculate_coverage and append_b
 
 # Pipeline control flow - load adata
 force_redo_load_adata: False # Whether to perform load adata command from start
+raw_parquet_shard_size: 100000 # Maximum reads per raw parquet shard
+analysis_mode: auto # auto, locus, or genome; auto plans each reference independently
+load_cache_mode: auto # auto, full, tiled, or none
+max_full_matrix_gb: 8.0 # Dense-size threshold used by automatic per-reference planning
+target_task_memory_mb: 512 # Target memory for future preprocessing work units
+max_memory_percent: 60.0 # Aggregate memory budget for the whole workflow, as a percent of total system RAM (all parallel workers combined, not per-task)
+max_memory_gb: null # Optional fixed aggregate memory budget in GB; the more restrictive of this and max_memory_percent applies when both are set
+genome_tile_size: 10000 # Core genomic positions per genome-mode work unit
+genome_tile_halo: 1000 # Context positions loaded on each side of a genome tile
+parquet_start_bin_size: 1000000 # Reference-start bin used to partition ragged parquet
+preprocess_execution_mode: auto # auto, legacy, or partitioned; auto partitions any raw/load spine
+spatial_execution_mode: auto # auto, legacy, or partitioned; auto partitions a preprocess spine
+hmm_execution_mode: auto # auto, legacy, or partitioned; auto partitions a spatial/preprocess spine
+spatial_regions_bed: null # Optional 0-based half-open BED regions for genome matrix/clustermap analyses
+spatial_generate_clustermaps: True # Generate bounded barcode clustermaps per locus/BED region
+spatial_generate_position_matrices: True # Generate bounded position matrices per locus/BED region
+spatial_matrix_min_reads: 2 # Minimum barcode reads required for dense region products
+spatial_save_read_autocorrelation: True # Save per-read ACF and lag-pair counts in partitioned sidecars
+spatial_compute_read_lomb_scargle: True # Save direct-signal per-read Lomb-Scargle periodograms
+spatial_plot_read_lomb_scargle: True # Plot barcode summaries and mean periodogram heatmaps
+spatial_plot_read_metric_clustermaps: True # Plot per-read ACF and periodogram clustermaps by barcode
+spatial_lomb_scargle_period_range_bp: [80, 400] # Periodogram range in base pairs
+spatial_lomb_scargle_peak_range_bp: [150, 250] # Peak-search range in base pairs
+spatial_lomb_scargle_poly_degree: 2 # Polynomial degree used to detrend each read
+spatial_lomb_scargle_min_sites: 40 # Minimum finite sites required to score a read
 
 # Pipeline control flow - Preprocessing and QC
 force_redo_preprocessing: False # Whether to force redo the entire preprocessing workflow from the initial raw anndata.

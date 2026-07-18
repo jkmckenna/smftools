@@ -294,10 +294,12 @@ def build_cnn_input(
     Channels
     --------
     Always included:
+
     - signal: methylation values with NaNs filled to 0
     - observed-mask: 1 where the original matrix was observed, 0 where missing
 
     Optional:
+
     - design-mask: 1 where the position was intentionally masked from learning
     - positional: normalized coordinate channel in [-1, 1]
     - spacing-prev / spacing-next: normalized distances to previous/next

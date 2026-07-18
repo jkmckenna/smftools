@@ -72,14 +72,19 @@ def append_base_context(
                 sequence = adata.uns[f"{basename}_consensus_sequence"]
             else:
                 # This sequence is the unconverted FASTA sequence of the original input FASTA for the locus
-                sequence = adata.uns[f"{basename}_FASTA_sequence"]
+                key = f"{basename}_FASTA_sequence"
+                sequence = adata.uns.get(key, adata.uns.get("References", {}).get(key))
         else:
             basename = ref.split(f"_{strand}")[0]
             if use_consensus:
                 sequence = adata.uns[f"{basename}_consensus_sequence"]
             else:
                 # This sequence is the unconverted FASTA sequence of the original input FASTA for the locus
-                sequence = adata.uns[f"{basename}_FASTA_sequence"]
+                key = f"{basename}_FASTA_sequence"
+                sequence = adata.uns.get(key, adata.uns.get("References", {}).get(key))
+
+        if sequence is None:
+            raise KeyError(f"missing FASTA sequence for reference {basename!r}")
 
         # Init a dict keyed by reference site type that points to a bool of whether the position is that site type.
         boolean_dict = {}
@@ -139,6 +144,22 @@ def append_base_context(
             arr = boolean_dict[f"{ref}_{site_type}"].astype(bool)
             if is_inverted:
                 arr = arr[::-1]
+            # Windowed materializations retain genomic coordinates in var_names.
+            # Select those coordinates instead of assigning the full reference.
+            if len(arr) != adata.n_vars or list(adata.var_names) != [
+                str(position) for position in range(len(arr))
+            ]:
+                try:
+                    coordinates = np.asarray(adata.var_names, dtype=np.int64)
+                except ValueError as exc:
+                    raise ValueError(
+                        "append_base_context requires numeric genomic var_names for "
+                        "windowed materialization"
+                    ) from exc
+                in_bounds = (coordinates >= 0) & (coordinates < len(arr))
+                selected = np.zeros(adata.n_vars, dtype=bool)
+                selected[in_bounds] = arr[coordinates[in_bounds]]
+                arr = selected
             adata.var[f"{ref}_{site_type}"] = arr
             # Restrict the site type labels to only be in positions that occur at a high enough frequency in the dataset
             if adata.uns.get("calculate_coverage_performed", False):

@@ -7,18 +7,14 @@ import click
 import pandas as pd
 
 from ._version import __version__
-from .cli.chimeric_adata import chimeric_adata
-from .cli.hmm_adata import hmm_adata
-from .cli.latent_adata import latent_adata
-from .cli.load_adata import load_adata
-from .cli.plot_current import plot_current as plot_current_fn
-from .cli.preprocess_adata import preprocess_adata
 from .cli.recipes import full_flow
-from .cli.spatial_adata import spatial_adata
-from .cli.variant_adata import variant_adata
-from .informatics.pod5_functions import subsample_pod5
 from .logging_utils import get_logger, setup_logging
-from .readwrite import concatenate_h5ads
+from .memory_guard import enable_aggregate_memory_cap
+
+# Single-threaded BLAS/OMP/numexpr is enforced at import time by the
+# smftools package's own __init__.py (before this module -- or anything
+# else in the package -- ever imports numpy/pandas). See that file's
+# comment for why it has to happen there and not here.
 
 
 def _configure_multiprocessing() -> None:
@@ -62,25 +58,49 @@ def cli(log_file: Path | None, log_level: str):
     """Command-line interface for smftools."""
     level = getattr(logging, log_level.upper(), logging.INFO)
     setup_logging(level=level, log_file=log_file)
+    # Before any worker pool exists, so every process this command later forks
+    # (multiprocessing children inherit their parent's cgroup) is covered.
+    # No-op on non-Linux platforms; see smftools.memory_guard for why macOS
+    # protection instead happens per-worker, inside the pipelines that spawn pools.
+    enable_aggregate_memory_cap()
     _configure_multiprocessing()
 
 
+####### Experiment-scoped pipeline stages ###########
+@cli.group("experiment")
+def experiment_group():
+    """Run pipeline stages for a single experiment (one config path in)."""
+
+
 ####### Load anndata from raw data ###########
-@cli.command()
+@experiment_group.command()
+@click.argument("config_path", type=click.Path(exists=True))
+def raw(config_path):
+    """Prepare BAM artifacts and write the ragged raw store."""
+    from .cli.raw_adata import raw_adata
+
+    raw_adata(config_path)
+
+
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def load(config_path):
-    """Load raw data into AnnData."""
-    load_adata(config_path)
+    """Optionally pre-build the dense zarr cache from raw artifacts."""
+    from .cli.load_adata import load_dense_cache
+
+    load_dense_cache(config_path)
 
 
 ##########################################
 
 
 ####### Preprocessing ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def preprocess(config_path):
     """Preprocessing."""
+    from .cli.preprocess_adata import preprocess_adata
+
     preprocess_adata(config_path)
 
 
@@ -88,10 +108,12 @@ def preprocess(config_path):
 
 
 ####### Spatial ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def spatial(config_path):
     """Spatial signal analysis"""
+    from .cli.spatial_adata import spatial_adata
+
     spatial_adata(config_path)
 
 
@@ -99,10 +121,12 @@ def spatial(config_path):
 
 
 ####### HMM ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def hmm(config_path):
     """HMM feature annotations and plotting"""
+    from .cli.hmm_adata import hmm_adata
+
     hmm_adata(config_path)
 
 
@@ -110,10 +134,12 @@ def hmm(config_path):
 
 
 ####### Latent ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def latent(config_path):
     """Latent representations of signal"""
+    from .cli.latent_adata import latent_adata
+
     latent_adata(config_path)
 
 
@@ -121,10 +147,12 @@ def latent(config_path):
 
 
 ####### Variant ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def variant(config_path):
     """Sequence variation analyses"""
+    from .cli.variant_adata import variant_adata
+
     variant_adata(config_path)
 
 
@@ -132,10 +160,12 @@ def variant(config_path):
 
 
 ####### Chimeric ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def chimeric(config_path):
     """Finding putative PCR chimeras"""
+    from .cli.chimeric_adata import chimeric_adata
+
     chimeric_adata(config_path)
 
 
@@ -143,10 +173,10 @@ def chimeric(config_path):
 
 
 ####### Recipes ###########
-@cli.command()
+@experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def full(config_path):
-    """Workflow: load preprocess spatial variant chimeric hmm latent"""
+    """Workflow: raw preprocess spatial hmm."""
     full_flow(config_path)
 
 
@@ -154,10 +184,13 @@ def full(config_path):
 
 
 ####### batch command ###########
-@cli.command()
+@experiment_group.command()
 @click.argument(
     "task",
-    type=click.Choice(["load", "preprocess", "spatial", "variant", "hmm"], case_sensitive=False),
+    type=click.Choice(
+        ["raw", "load", "preprocess", "spatial", "variant", "hmm"],
+        case_sensitive=False,
+    ),
 )
 @click.argument(
     "config_table",
@@ -177,7 +210,7 @@ def full(config_path):
 )
 def batch(task, config_table: Path, column: str, sep: str | None):
     """
-    Run a TASK (load, preprocess, spatial, variant, hmm) on multiple CONFIG_PATHs
+    Run a TASK (raw, load, preprocess, spatial, variant, hmm) on multiple CONFIG_PATHs
     listed in a CSV/TSV or plain TXT file.
 
     Plain text format: one config path per line, no header.
@@ -256,12 +289,44 @@ def batch(task, config_table: Path, column: str, sep: str | None):
     # Map task to function
     # ----------------------------
     task = task.lower()
+
+    def _raw(cfg_path: str):
+        from .cli.raw_adata import raw_adata
+
+        return raw_adata(cfg_path)
+
+    def _load(cfg_path: str):
+        from .cli.load_adata import load_dense_cache
+
+        return load_dense_cache(cfg_path)
+
+    def _preprocess(cfg_path: str):
+        from .cli.preprocess_adata import preprocess_adata
+
+        return preprocess_adata(cfg_path)
+
+    def _spatial(cfg_path: str):
+        from .cli.spatial_adata import spatial_adata
+
+        return spatial_adata(cfg_path)
+
+    def _variant(cfg_path: str):
+        from .cli.variant_adata import variant_adata
+
+        return variant_adata(cfg_path)
+
+    def _hmm(cfg_path: str):
+        from .cli.hmm_adata import hmm_adata
+
+        return hmm_adata(cfg_path)
+
     task_funcs = {
-        "load": load_adata,
-        "preprocess": preprocess_adata,
-        "spatial": spatial_adata,
-        "variant": variant_adata,
-        "hmm": hmm_adata,
+        "raw": _raw,
+        "load": _load,
+        "preprocess": _preprocess,
+        "spatial": _spatial,
+        "variant": _variant,
+        "hmm": _hmm,
     }
 
     func = task_funcs[task]
@@ -290,7 +355,7 @@ def batch(task, config_table: Path, column: str, sep: str | None):
 
 
 ####### concatenate command ###########
-@cli.command("concatenate")
+@experiment_group.command("concatenate")
 @click.argument("config_path", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--recompute-pp-vars",
@@ -339,13 +404,14 @@ def concatenate_cmd(
 
     Example:
 
-        smftools concatenate experiment_config.csv
+        smftools experiment concatenate experiment_config.csv
 
-        smftools concatenate experiment_config.csv --recompute-pp-vars
+        smftools experiment concatenate experiment_config.csv --recompute-pp-vars
 
-        smftools concatenate experiment_config.csv --input-dir ./variant_h5ads/
+        smftools experiment concatenate experiment_config.csv --input-dir ./variant_h5ads/
     """
     from .cli.helpers import load_experiment_config
+    from .readwrite import concatenate_h5ads
 
     try:
         cfg = load_experiment_config(str(config_path))
@@ -429,6 +495,7 @@ def subsample_pod5_cmd(pod5_path, read_names, n_reads, outdir):
     """
     Subsample POD5 file(s) by read ID list or random sampling.
     """
+    from .informatics.pod5_functions import subsample_pod5
 
     # --- Validate mutually exclusive options ---
     if (read_names is None and n_reads is None) or (read_names and n_reads):
@@ -448,11 +515,313 @@ def subsample_pod5_cmd(pod5_path, read_names, n_reads, outdir):
 ##########################################
 
 
+####### Project-level cross-experiment catalog ###########
+@cli.group("project")
+def project_group():
+    """Register experiments into a project and query/analyze across them."""
+
+
+@project_group.command("init")
+@click.argument("project_dir", type=click.Path(path_type=Path))
+@click.option(
+    "--name", default=None, help="Project name used in scaffolded docs (default: directory name)."
+)
+def project_init_cmd(project_dir: Path, name):
+    """Initialize a project directory + registry, plus starter docs/dirs.
+
+    Creates registry.json, sets/, project_scripts/, project_outputs/, and starter
+    README.md/AGENTS.md/CLAUDE.md/PLAN.md/project.yaml files. Safe to re-run --
+    only ever fills in what's missing, never overwrites existing files.
+    """
+    from .cli.project_cmd import project_init
+
+    registry_path, scaffolded = project_init(project_dir, name=name)
+    click.echo(f"Initialized project registry: {registry_path}")
+    for path in scaffolded:
+        click.echo(f"  created {path}")
+
+
+@project_group.command("add")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=True, path_type=Path))
+@click.option("--id", "experiment_id", default=None, help="Explicit experiment id.")
+@click.option("--name", default=None, help="Friendly experiment name.")
+@click.option(
+    "--stage",
+    default=None,
+    help=(
+        "Pipeline stage this registration represents (raw, preprocess, spatial, hmm, "
+        "latent, variant, chimeric). Only meaningful when EXPERIMENT_DIR is a legacy "
+        "monolithic .h5ad/.h5ad.gz file; otherwise every stage is auto-discovered and "
+        "this is ignored. Omit to infer from the legacy file's name."
+    ),
+)
+def project_add_cmd(project_dir: Path, experiment_dir: Path, experiment_id, name, stage):
+    """Register EXPERIMENT_DIR into PROJECT_DIR (by pointer; append-only).
+
+    EXPERIMENT_DIR may be a run directory (auto-discovers every pipeline stage
+    found under it) or a single legacy monolithic .h5ad/.h5ad.gz file from
+    before the partitioned-store pipeline (use --stage to name which stage it
+    represents; the source file is only ever read, never modified).
+    """
+    from .cli.project_cmd import project_add
+
+    exp_id, entry, conflicts = project_add(
+        project_dir, experiment_dir, experiment_id=experiment_id, name=name, stage=stage
+    )
+    click.echo(
+        f"Registered '{exp_id}' ({entry['modality']}, {entry['n_reads']} reads, "
+        f"{len(entry['references'])} references)"
+    )
+    for warning in conflicts:
+        click.echo(f"  WARNING: {warning}")
+
+
+@project_group.command("remove")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("experiment_id")
+def project_remove_cmd(project_dir: Path, experiment_id: str):
+    """Mark an experiment inactive in the project."""
+    from .cli.project_cmd import project_remove
+
+    project_remove(project_dir, experiment_id)
+    click.echo(f"Removed '{experiment_id}' (marked inactive)")
+
+
+@project_group.command("list")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def project_list_cmd(project_dir: Path):
+    """List registered experiments and harmonized references."""
+    from .cli.project_cmd import project_list
+
+    experiments, references = project_list(project_dir)
+    click.echo(f"{len(experiments)} experiment(s):")
+    for entry in experiments:
+        stages = ",".join(sorted(entry.get("spines", {})))
+        click.echo(
+            f"  {entry['id']}  ({entry['modality']}, {entry['n_reads']} reads, "
+            f"stages: {stages})  {entry['path']}"
+        )
+    if not references.empty:
+        n_canon = references["canonical_reference"].nunique()
+        click.echo(f"{n_canon} canonical reference(s) across the project.")
+
+
+@project_group.command("materialize")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("canonical_reference")
+@click.option(
+    "--output", "-o", type=click.Path(path_type=Path), required=True, help="Output .h5ad(.gz)."
+)
+@click.option("--set", "set_name", default=None, help="Restrict to a named experiment set.")
+@click.option("--modality", default=None, help="Restrict to a modality.")
+@click.option(
+    "--stage",
+    default=None,
+    help=(
+        "Pipeline stage to materialize per experiment (raw/preprocess/spatial/hmm/"
+        "latent/variant/chimeric). Default: most-derived stage available per "
+        "experiment, since a later stage already carries forward earlier stages' data."
+    ),
+)
+@click.option("--start", type=int, default=None, help="Genomic window start (with --end).")
+@click.option("--end", type=int, default=None, help="Genomic window end (with --start).")
+@click.option(
+    "--layers",
+    default=None,
+    help=(
+        "Comma-separated layer subset to pool (e.g. 'C_site_binary'). Strongly "
+        "recommended for cross-experiment pools -- the default pools every layer at "
+        "full locus, which builds enormous objects. Use '' for X only (no layers)."
+    ),
+)
+@click.option(
+    "--read-metrics",
+    is_flag=True,
+    help="Also attach spatial-stage per-read outputs (autocorrelation, Lomb-Scargle) when available.",
+)
+@click.option(
+    "--allow-large",
+    is_flag=True,
+    help=(
+        "Bypass the ~8 GiB pooled-object size guardrail. Without it, a pool that would "
+        "exceed the limit is refused with guidance to narrow it (--layers/--start/--end)."
+    ),
+)
+def project_materialize_cmd(
+    project_dir,
+    canonical_reference,
+    output,
+    set_name,
+    modality,
+    stage,
+    start,
+    end,
+    layers,
+    read_metrics,
+    allow_large,
+):
+    """Pool CANONICAL_REFERENCE across matching experiments into one AnnData.
+
+    Prefer --layers and/or --start/--end: pooling all layers at full locus across many
+    experiments builds very large objects. Refused over ~8 GiB unless --allow-large.
+    """
+    from .cli.project_cmd import project_materialize
+
+    layer_list = None if layers is None else [s for s in layers.split(",") if s]
+    out = project_materialize(
+        project_dir,
+        canonical_reference,
+        output,
+        set_name=set_name,
+        modality=modality,
+        stage=stage,
+        start=start,
+        end=end,
+        layers=layer_list,
+        read_metrics=read_metrics,
+        allow_large=allow_large,
+    )
+    click.echo(f"Wrote {out}")
+
+
+@project_group.command("sample-store-list")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--experiment-id", default=None, help="Restrict to one experiment.")
+def project_sample_store_list_cmd(project_dir: Path, experiment_id):
+    """List per-sample-store partitions (Reference_strand x sample) cataloged by project add."""
+    from .cli.project_cmd import project_sample_store_list
+
+    partitions = project_sample_store_list(project_dir, experiment_id)
+    if not partitions:
+        click.echo("No per-sample-store partitions cataloged yet.")
+        return
+    click.echo(f"{len(partitions)} partition(s):")
+    for partition in partitions:
+        click.echo(
+            f"  {partition['experiment_id']}  {partition['reference_strand']}  "
+            f"{partition['sample']}  ({partition['kind']}, {partition['n_reads']} reads)"
+        )
+
+
+##########################################
+
+
+####### FASTQ export ###########
+@experiment_group.command("export-fastq")
+@click.argument("config_path", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--outdir",
+    "-o",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Output directory for FASTQ files + manifest CSV.",
+)
+@click.option(
+    "--group-by",
+    default=None,
+    help="obs column to group reads by (default: Sample/Barcode).",
+)
+@click.option(
+    "--allow-unfiltered",
+    is_flag=True,
+    help="Write all reads when no QC-passed read set is available, instead of raising/skipping.",
+)
+@click.option(
+    "--no-gzip",
+    is_flag=True,
+    help="Write plain .fastq instead of .fastq.gz.",
+)
+def export_fastq_experiment_cmd(
+    config_path: Path,
+    outdir: Path,
+    group_by: str | None,
+    allow_unfiltered: bool,
+    no_gzip: bool,
+):
+    """Write one FASTQ per barcode of QC-passed reads, for one experiment.
+
+    Reads sequence/quality directly from the raw ragged store; the QC-passed read
+    set is resolved from the most complete preprocessing artifact available.
+
+    Example:
+
+        smftools experiment export-fastq experiment_config.csv --outdir ./fastqs
+    """
+    from .cli.export_fastq import export_fastq_for_experiment
+
+    out = export_fastq_for_experiment(
+        str(config_path),
+        outdir,
+        group_by=group_by,
+        allow_unfiltered=allow_unfiltered,
+        gzip_output=not no_gzip,
+    )
+    click.echo(f"Wrote FASTQ export to: {out}")
+
+
+@project_group.command("export-fastq")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--outdir",
+    "-o",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Output directory for FASTQ files + manifest CSV.",
+)
+@click.option(
+    "--experiments",
+    default=None,
+    help="Comma-separated experiment ids to include (default: all active).",
+)
+@click.option(
+    "--allow-unfiltered",
+    is_flag=True,
+    help="Write all reads when no QC-passed read set is available, instead of raising/skipping.",
+)
+@click.option(
+    "--no-gzip",
+    is_flag=True,
+    help="Write plain .fastq instead of .fastq.gz.",
+)
+def export_fastq_project_cmd(
+    project_dir: Path,
+    outdir: Path,
+    experiments: str | None,
+    allow_unfiltered: bool,
+    no_gzip: bool,
+):
+    """Write one FASTQ per barcode of QC-passed reads, across every registered experiment.
+
+    Example:
+
+        smftools project export-fastq ./my_project --outdir ./fastqs
+    """
+    from .cli.export_fastq import export_fastq_for_project
+
+    experiment_list = (
+        [item.strip() for item in experiments.split(",") if item.strip()] if experiments else None
+    )
+    out = export_fastq_for_project(
+        project_dir,
+        outdir,
+        experiments=experiment_list,
+        allow_unfiltered=allow_unfiltered,
+        gzip_output=not no_gzip,
+    )
+    click.echo(f"Wrote FASTQ export to: {out}")
+
+
+##########################################
+
+
 ####### Plot current traces ###########
-@cli.command("plot-current")
+@experiment_group.command("plot-current")
 @click.argument("config_path", type=click.Path(exists=True))
 def plot_current(config_path):
     """Plot nanopore current traces for specified reads."""
+    from .cli.plot_current import plot_current as plot_current_fn
+
     plot_current_fn(config_path)
 
 

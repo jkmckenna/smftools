@@ -88,6 +88,7 @@ BASE_QUALITY_SCORES: Final[str] = "base_quality_scores"
 READ_SPAN_MASK: Final[str] = "read_span_mask"
 
 LOAD_DIR: Final[str] = "load_adata_outputs"
+RAW_DIR: Final[str] = "raw_outputs"
 PREPROCESS_DIR: Final[str] = "preprocess_adata_outputs"
 SPATIAL_DIR: Final[str] = "spatial_adata_outputs"
 HMM_DIR: Final[str] = "hmm_adata_outputs"

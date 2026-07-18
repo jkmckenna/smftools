@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import LOGGING_DIR, SPATIAL_DIR
-from smftools.logging_utils import get_logger, setup_logging
+from smftools.constants import SPATIAL_DIR
+from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -18,7 +17,7 @@ def spatial_adata(
     """
     CLI-facing wrapper for spatial analyses.
 
-    Called by: `smftools spatial <config_path>`
+    Called by: `smftools experiment spatial <config_path>`
 
     Responsibilities:
     - Ensure a usable AnnData exists via `load_adata` + `preprocess_adata`.
@@ -35,22 +34,62 @@ def spatial_adata(
     spatial_adata_path : Path | None
         Path to the “current” spatial AnnData (or hmm AnnData if we skip to that).
     """
+    from ..logging_utils import setup_stage_logging
     from ..readwrite import safe_read_h5ad
     from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
 
     # 1) Ensure config + basic paths via load_adata
     cfg = load_experiment_config(config_path)
 
+    # Configure logging once, before any branch below (skip / partitioned / legacy)
+    # might return without ever reaching spatial_adata_core.
+    if getattr(cfg, "output_directory", None) is not None:
+        setup_stage_logging(cfg, Path(cfg.output_directory) / SPATIAL_DIR)
+
     paths = get_adata_paths(cfg)
 
     spatial_path = paths.spatial
+    partitioned_spatial_path = paths.spatial_spine
+    partitioned_source_path = paths.preprocess_spine
+    execution_mode = str(getattr(cfg, "spatial_execution_mode", "auto")).lower()
+    if execution_mode not in {"auto", "legacy", "partitioned"}:
+        raise ValueError("spatial_execution_mode must be auto, legacy, or partitioned")
 
     # Stage-skipping logic for spatial
     if not getattr(cfg, "force_redo_spatial_analyses", False):
+        if (
+            execution_mode != "legacy"
+            and partitioned_spatial_path is not None
+            and partitioned_spatial_path.exists()
+        ):
+            logger.info(
+                "Partitioned spatial spine found: %s\nSkipping smftools spatial",
+                partitioned_spatial_path,
+            )
+            return None, partitioned_spatial_path
         # If spatial exists, we consider spatial analyses already done.
-        if spatial_path.exists():
+        if execution_mode != "partitioned" and spatial_path.exists():
             logger.info(f"Spatial AnnData found: {spatial_path}\nSkipping smftools spatial")
             return None, spatial_path
+
+    use_partitioned = execution_mode == "partitioned" or (
+        execution_mode == "auto"
+        and partitioned_source_path is not None
+        and partitioned_source_path.exists()
+    )
+    if use_partitioned:
+        if partitioned_source_path is None or not partitioned_source_path.exists():
+            raise FileNotFoundError(
+                "partitioned spatial analysis requires preprocess_adata_outputs/spine.h5ad"
+            )
+        from ..tools.partitioned_spatial import execute_partitioned_spatial
+
+        outputs = execute_partitioned_spatial(
+            partitioned_source_path,
+            cfg,
+            Path(cfg.output_directory) / SPATIAL_DIR,
+        )
+        return None, outputs["spine"]
 
     # Decide which AnnData to use as the *starting point* for spatial analyses
     source_path, stage = resolve_adata_stage(cfg, paths, min_stage="pp")
@@ -87,12 +126,14 @@ def spatial_adata_core(
     Core spatial analysis pipeline.
 
     Assumes:
+
     - `adata` is (typically) the preprocessed, duplicate-removed AnnData.
     - `cfg` is the ExperimentConfig.
     - `spatial_adata_path`, `pp_adata_path`, `pp_dup_rem_adata_path` are canonical paths
       from `get_adata_paths`.
 
     Does:
+
     - Optional sample sheet load.
     - Optional inversion & reindexing.
     - Clustermaps on:
@@ -112,7 +153,6 @@ def spatial_adata_core(
     """
     import os
     import warnings
-    from datetime import datetime
     from pathlib import Path
 
     import numpy as np
@@ -127,6 +167,7 @@ def spatial_adata_core(
     from ..preprocessing import (
         invert_adata,
         load_sample_sheet,
+        reindex_coordinates,
         reindex_references_adata,
     )
     from ..readwrite import make_dirs, safe_read_h5ad
@@ -145,24 +186,12 @@ def spatial_adata_core(
     # -----------------------------
     # General setup
     # -----------------------------
-    date_str = datetime.today().strftime("%y%m%d")
-    now = datetime.now()
-    time_str = now.strftime("%H%M%S")
-    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
-
+    # Logging is configured once by the spatial_adata() wrapper before dispatch,
+    # covering both this (legacy) path and the partitioned executor path.
     output_directory = Path(cfg.output_directory)
     spatial_directory = output_directory / SPATIAL_DIR
-    logging_directory = spatial_directory / LOGGING_DIR
 
     make_dirs([output_directory, spatial_directory])
-
-    if cfg.emit_log_file:
-        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
-        make_dirs([logging_directory])
-    else:
-        log_file = None
-
-    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     smf_modality = cfg.smf_modality
     if smf_modality == "conversion":
@@ -196,6 +225,7 @@ def spatial_adata_core(
         reference_col=cfg.reference_column,
         offsets=cfg.reindexing_offsets,
         new_col=cfg.reindexed_var_suffix,
+        invert=getattr(cfg, "reindexing_invert", None),
     )
 
     if adata.uns.get("reindex_references_adata_performed", False):
@@ -251,6 +281,7 @@ def spatial_adata_core(
                     reference_col=cfg.reference_column,
                     offsets=cfg.reindexing_offsets,
                     new_col=cfg.reindexed_var_suffix,
+                    invert=getattr(cfg, "reindexing_invert", None),
                 )
 
                 combined_raw_clustermap(
@@ -360,6 +391,25 @@ def spatial_adata_core(
             _keep = ~adata.obs["chimeric_variant_sites"].astype(bool).values
         else:
             _keep = np.ones(adata.n_obs, dtype=bool)
+
+        # rolling_autocorr_metrics itself must keep using raw (unsigned,
+        # ascending) `positions` -- its window/lag binning assumes monotonic
+        # spacing, and lag is a relative distance invariant to reindexing
+        # anyway. Only the window "center" it reports is an absolute
+        # coordinate, so reindexing_offsets/reindexing_invert are applied to
+        # that value after the fact via reindex_coordinates. Undefined for
+        # the "all" group, which mixes reads across references with
+        # potentially different offsets/signs, so centers are left in raw
+        # coordinate space there.
+        _reindexing_offsets_cfg = getattr(cfg, "reindexing_offsets", None)
+        _reindexing_invert_cfg = getattr(cfg, "reindexing_invert", None)
+
+        def _reindexed_center(values: np.ndarray, ref_label: str) -> np.ndarray:
+            if ref_label == "all":
+                return values
+            return reindex_coordinates(
+                values, ref_label, offsets=_reindexing_offsets_cfg, invert=_reindexing_invert_cfg
+            )
 
         for site_type in cfg.autocorr_site_types:
             layer_key = f"{site_type}_site_binary"
@@ -606,6 +656,9 @@ def spatial_adata_core(
                     compact_df = df_roll[
                         ["center", "n_molecules", "nrl_bp", "snr", "xi", "fwhm_bp"]
                     ].copy()
+                    compact_df["center"] = _reindexed_center(
+                        compact_df["center"].to_numpy(dtype=float), ref_label
+                    )
                     compact_df["site"] = site_type
                     compact_df["sample"] = sample_name
                     compact_df["reference"] = ref_label if ref_label != "all" else "all"

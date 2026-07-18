@@ -34,7 +34,14 @@ def binarize_on_Youden(
         X = X.toarray()
 
     n_obs, n_var = X.shape
-    binarized = np.full((n_obs, n_var), np.nan, dtype=float)
+    # Kept float32 (via the default float dtype) deliberately: this layer is
+    # {0, 1, NaN}, so it can't be int8 (no NaN) and must NOT be float16 -- numpy
+    # keeps a float16 accumulator, so downstream sum/nansum/nanmean over the read
+    # axis overflows to inf past ~2048 reads. Making this a bool methylation layer
+    # paired with a separate bool "observed" mask (dropping the NaN sentinel) is
+    # the memory win, but that is a cross-repo change tracked on the layer-audit
+    # branch, not a contained dtype swap.
+    binarized = np.full((n_obs, n_var), np.nan, dtype=np.float32)
 
     references = adata.obs[ref_column].cat.categories
     ref_labels = adata.obs[ref_column].to_numpy()
@@ -46,7 +53,7 @@ def binarize_on_Youden(
         if not np.any(ref_mask):
             continue
 
-        X_block = X[ref_mask, :].astype(float, copy=True)
+        X_block = X[ref_mask, :].astype(np.float32, copy=True)
 
         # thresholds: list of (threshold, J)
         youden_stats = adata.var[f"{ref}_position_methylation_thresholding_Youden_stats"].to_numpy()
@@ -66,8 +73,9 @@ def binarize_on_Youden(
             # Binarize all positions
             cols_to_binarize = np.arange(n_var)
 
-        # Prepare result block
-        block_out = np.full_like(X_block, np.nan, dtype=float)
+        # Prepare result block (float32: holds 0/1/NaN exactly; float32 reductions
+        # are safe -- unlike float16, which overflows in numpy's float16 accumulator)
+        block_out = np.full_like(X_block, np.nan, dtype=np.float32)
 
         if len(cols_to_binarize) > 0:
             sub_X = X_block[:, cols_to_binarize]
@@ -75,7 +83,7 @@ def binarize_on_Youden(
 
             nan_mask = np.isnan(sub_X)
 
-            bin_sub = (sub_X > sub_thresh[None, :]).astype(float)
+            bin_sub = (sub_X > sub_thresh[None, :]).astype(np.float32)
             bin_sub[nan_mask] = np.nan
 
             block_out[:, cols_to_binarize] = bin_sub

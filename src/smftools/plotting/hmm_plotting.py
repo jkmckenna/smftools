@@ -14,7 +14,7 @@ from smftools.optional_imports import require
 from smftools.plotting.plotting_utils import (
     _layer_to_numpy,
     _methylation_fraction_for_layer,
-    _select_labels,
+    _ordered_columns,
     clean_barplot,
     normalized_mean,
 )
@@ -214,6 +214,7 @@ def plot_hmm_size_contours(
     smoothing_sigma: Optional[Union[float, Tuple[float, float]]] = None,
     normalize_after_smoothing: bool = True,
     use_scipy_if_available: bool = True,
+    index_col_suffix: Optional[str] = None,
 ):
     """
     Create contour/pcolormesh plots of P(length | position) using a length-encoded HMM layer.
@@ -225,7 +226,15 @@ def plot_hmm_size_contours(
     smoothing_sigma: None or 0 -> no smoothing.
         float -> same sigma applied to (length_axis, position_axis)
         (sigma_len, sigma_pos) -> separate sigmas.
-    normalize_after_smoothing: if True, renormalize each position-column to sum to 1 after smoothing.
+    normalize_after_smoothing:
+        if True, renormalize each position-column to sum to 1 after smoothing.
+    index_col_suffix: If set, use ``adata.var[f"{ref}_{index_col_suffix}"]`` for
+        the x-axis position coordinate instead of ``var_names`` (per reference,
+        since each reference's reindexed column can carry a different offset/
+        sign), falling back to ``var_names`` when the column is absent.
+        pcolormesh doesn't require monotonic x, so no column reordering is
+        needed here -- an inverted reference's signed coordinates render at
+        their correct position automatically.
 
     Other args are the same as prior function.
     """
@@ -358,6 +367,17 @@ def plot_hmm_size_contours(
         coords = np.arange(adata.shape[1], dtype=int)
         x_ticks_is_positions = False
 
+    def _coords_for_ref(ref: str) -> np.ndarray:
+        if index_col_suffix is None:
+            return coords
+        colname = f"{ref}_{index_col_suffix}"
+        if colname not in adata.var.columns:
+            return coords
+        try:
+            return np.asarray(adata.var[colname].values, dtype=int)
+        except Exception:
+            return coords
+
     # helper to get dense layer array for subset
     def _get_layer_array(layer):
         """Convert a layer to a dense NumPy array."""
@@ -480,7 +500,7 @@ def plot_hmm_size_contours(
                     Z_plot = Z
 
                 # Build x and y grids for pcolormesh: x = coords (positions)
-                x = coords[:n_positions]
+                x = _coords_for_ref(ref)[:n_positions]
                 if n_positions >= 2:
                     dx = np.diff(x).mean()
                     x_edges = np.concatenate([x - dx / 2.0, [x[-1] + dx / 2.0]])
@@ -584,6 +604,23 @@ def _build_hmm_feature_cmap(
     hmm_cmap.set_bad(nan_color)
     hmm_cmap.set_under(nan_color)
     return hmm_cmap
+
+
+def _build_nan_aware_cmap(
+    cmap: Any,
+    *,
+    nan_color: str = "#D0D0D0",
+) -> mpl_colors.Colormap:
+    """Return a copy of ``cmap`` with NaNs rendered in ``nan_color``."""
+    if isinstance(cmap, mpl_colors.Colormap):
+        cmap_obj = cmap.copy() if hasattr(cmap, "copy") else cmap
+    else:
+        cmap_obj = plt.get_cmap(cmap)
+        cmap_obj = cmap_obj.copy() if hasattr(cmap_obj, "copy") else cmap_obj
+    cmap_obj.set_bad(nan_color)
+    if hasattr(cmap_obj, "set_under"):
+        cmap_obj.set_under(nan_color)
+    return cmap_obj
 
 
 def _map_length_matrix_to_subclasses(
@@ -697,6 +734,7 @@ def _hmm_raw_one_group(args: dict) -> dict:
     from smftools.optional_imports import require
 
     _gridspec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plotting")
+    _patches = require("matplotlib.patches", extra="plotting", purpose="plot rendering")
     _plt = require("matplotlib.pyplot", extra="plotting", purpose="HMM plots")
     _sns = require("seaborn", extra="plotting", purpose="plot styling")
     import smftools.plotting.hmm_plotting as _hmm_mod
@@ -709,6 +747,9 @@ def _hmm_raw_one_group(args: dict) -> dict:
 
     ref: str = args["ref"]
     sample: str = args["sample"]
+    display_sample: str = args.get("display_sample", sample)
+    hmm_legend_labels = args.get("hmm_legend_labels")
+    raw_legend_labels = args.get("raw_legend_labels")
     signal_type: str = args["signal_type"]
     hmm_feature_layer: str = args["hmm_feature_layer"]
     gpc_sites: np.ndarray = args["gpc_sites"]
@@ -841,6 +882,10 @@ def _hmm_raw_one_group(args: dict) -> dict:
         normalized_mean(hmm_matrix_raw) if normalize_hmm else np.nanmean(hmm_matrix_raw, axis=0)
     )
     hmm_plot_cmap = _build_hmm_feature_cmap(cmap_hmm)
+    cmap_c = _build_nan_aware_cmap(cmap_c)
+    cmap_gpc = _build_nan_aware_cmap(cmap_gpc)
+    cmap_cpg = _build_nan_aware_cmap(cmap_cpg)
+    cmap_a = _build_nan_aware_cmap(cmap_a)
     panels = [
         (
             f"HMM - {hmm_feature_layer}",
@@ -853,11 +898,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
     ]
 
     if stacked_any_c:
-        m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
+        _m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
         panels.append(
             (
                 "C",
-                m,
+                m_raw,
                 any_c_labels,
                 cmap_c,
                 _methylation_fraction_for_layer(m_raw, layer_c),
@@ -865,11 +910,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
             )
         )
     if stacked_gpc:
-        m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
+        _m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
         panels.append(
             (
                 "GpC",
-                m,
+                m_raw,
                 gpc_labels,
                 cmap_gpc,
                 _methylation_fraction_for_layer(m_raw, layer_gpc),
@@ -877,11 +922,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
             )
         )
     if stacked_cpg:
-        m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
+        _m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
         panels.append(
             (
                 "CpG",
-                m,
+                m_raw,
                 cpg_labels,
                 cmap_cpg,
                 _methylation_fraction_for_layer(m_raw, layer_cpg),
@@ -889,11 +934,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
             )
         )
     if stacked_any_a:
-        m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
+        _m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
         panels.append(
             (
                 "A",
-                m,
+                m_raw,
                 any_a_labels,
                 cmap_a,
                 _methylation_fraction_for_layer(m_raw, layer_a),
@@ -904,7 +949,12 @@ def _hmm_raw_one_group(args: dict) -> dict:
     n_panels = len(panels)
     fig = _plt.figure(figsize=(4.5 * n_panels, 10))
     gs = _gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
-    fig.suptitle(f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98)
+    fig.suptitle(
+        f"{display_sample} — {ref} — {total_reads} reads ({signal_type})",
+        fontsize=14,
+        y=0.98,
+        wrap=True,
+    )
     axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
     axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
 
@@ -917,6 +967,21 @@ def _hmm_raw_one_group(args: dict) -> dict:
         xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
         axes_heat[i].set_xticks(xtick_pos)
         axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
+        legend_labels = hmm_legend_labels if name.startswith("HMM -") else raw_legend_labels
+        if legend_labels is not None:
+            low_label, high_label = legend_labels
+            handles = [
+                _patches.Patch(facecolor=cmap(0.0), edgecolor="black", label=low_label),
+                _patches.Patch(facecolor=cmap(1.0), edgecolor="black", label=high_label),
+            ]
+            axes_heat[i].legend(
+                handles=handles,
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.06),
+                ncol=2,
+                fontsize=8,
+                frameon=False,
+            )
         for boundary in bin_boundaries[:-1]:
             axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
 
@@ -996,10 +1061,22 @@ def combined_hmm_raw_clustermap(
     variant_overlay_marker_size: float = 4.0,
     omit_chimeric_reads: bool = False,
     n_jobs: int = 1,
+    restrict_to_read_span: bool = False,
+    # ---- optional small legends explaining what the two heatmap colors mean.
+    # None (default) adds no legend -- existing callers/plots are unaffected.
+    hmm_legend_labels: Optional[Tuple[str, str]] = None,
+    raw_legend_labels: Optional[Tuple[str, str]] = None,
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
       HMM panel (always) + optional raw panels for C, GpC, CpG, and A sites.
+
+    restrict_to_read_span: if True, crop each reference's plotted x-axis to
+    [min(reference_start), max(reference_end)] across all QC-passing reads for
+    that reference (union across every sample/barcode, computed once per
+    reference so panels stay on a common x-axis for comparison), instead of
+    the full reference length. No-op when reference_start/reference_end
+    aren't present in adata.obs.
 
     Panels are added only if the corresponding site mask exists AND has >0 sites.
 
@@ -1071,6 +1148,31 @@ def combined_hmm_raw_clustermap(
     # ------------------------------------------------------------------
     def _iter_group_args():
         for ref in adata.obs[reference_col].cat.categories:
+            # Computed once per reference, shared by every sample's plot for
+            # that reference -- see combined_raw_clustermap for why (keeps
+            # panels on a common x-axis for comparison instead of each
+            # cropping to its own subset of reads).
+            span_start = span_end = None
+            if restrict_to_read_span:
+                ref_mask = (
+                    (adata.obs[reference_col] == ref)
+                    & qmask
+                    & lm_mask
+                    & lrr_mask
+                    & demux_mask
+                    & chimeric_mask
+                )
+                if bool(ref_mask.any()) and {"reference_start", "reference_end"}.issubset(
+                    adata.obs.columns
+                ):
+                    starts = pd.to_numeric(
+                        adata.obs.loc[ref_mask, "reference_start"], errors="coerce"
+                    )
+                    ends = pd.to_numeric(adata.obs.loc[ref_mask, "reference_end"], errors="coerce")
+                    if starts.notna().any() and ends.notna().any():
+                        span_start = int(starts.min())
+                        span_end = int(ends.max())
+
             for sample in adata.obs[sample_col].cat.categories:
                 display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
                 row_mask = (
@@ -1087,6 +1189,22 @@ def combined_hmm_raw_clustermap(
                     continue
                 try:
                     subset = adata[row_mask, :].copy()
+                    if span_start is not None and span_end is not None:
+                        var_coords = pd.to_numeric(
+                            pd.Series(subset.var_names), errors="coerce"
+                        ).to_numpy()
+                        span_mask = np.asarray(
+                            (var_coords >= span_start) & (var_coords < span_end), dtype=bool
+                        )
+                        if span_mask.any():
+                            subset = subset[:, span_mask].copy()
+                        else:
+                            logger.warning(
+                                "No positions left after read-span restriction for %s - %s.",
+                                display_sample,
+                                ref,
+                            )
+                            continue
                     if min_position_valid_fraction is not None:
                         valid_key = f"{ref}_valid_fraction"
                         if valid_key in subset.var:
@@ -1120,11 +1238,21 @@ def combined_hmm_raw_clustermap(
                     any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
                     hmm_sites = np.arange(subset.n_vars, dtype=int)
 
-                    hmm_labels = _select_labels(subset, hmm_sites, ref, index_col_suffix)
-                    gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
-                    cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
-                    any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
-                    any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
+                    hmm_sites, hmm_labels = _ordered_columns(
+                        subset, hmm_sites, ref, index_col_suffix
+                    )
+                    gpc_sites, gpc_labels = _ordered_columns(
+                        subset, gpc_sites, ref, index_col_suffix
+                    )
+                    cpg_sites, cpg_labels = _ordered_columns(
+                        subset, cpg_sites, ref, index_col_suffix
+                    )
+                    any_c_sites, any_c_labels = _ordered_columns(
+                        subset, any_c_sites, ref, index_col_suffix
+                    )
+                    any_a_sites, any_a_labels = _ordered_columns(
+                        subset, any_a_sites, ref, index_col_suffix
+                    )
 
                     # Extract unique layer arrays
                     layer_data = {}
@@ -1222,6 +1350,8 @@ def combined_hmm_raw_clustermap(
                         "variant_overlay_seq2_color": variant_overlay_seq2_color,
                         "variant_overlay_marker_size": variant_overlay_marker_size,
                         "save_path": str(save_path) if save_path is not None else None,
+                        "hmm_legend_labels": hmm_legend_labels,
+                        "raw_legend_labels": raw_legend_labels,
                     }
                 except Exception:
                     import traceback
@@ -1274,6 +1404,7 @@ def _hmm_length_one_group(args: dict) -> dict:
 
     ref: str = args["ref"]
     sample: str = args["sample"]
+    display_sample: str = args.get("display_sample", sample)
     signal_type: str = args["signal_type"]
     length_layer: str = args["length_layer"]
     gpc_sites: np.ndarray = args["gpc_sites"]
@@ -1380,8 +1511,10 @@ def _hmm_length_one_group(args: dict) -> dict:
         ordered_obs_names.extend([subset_obs_names[i] for i in ordered_rows])
 
         if arr_length is not None:
-            stacked_lengths.append(_layer_to_numpy_np(arr_length[ordered_rows], None, **kw))
-            stacked_lengths_raw.append(_layer_to_numpy_np(arr_length[ordered_rows], None, **kw_raw))
+            stacked_lengths.append(_layer_to_numpy_np(arr_length[ordered_rows], length_sites, **kw))
+            stacked_lengths_raw.append(
+                _layer_to_numpy_np(arr_length[ordered_rows], length_sites, **kw_raw)
+            )
         if any_c_sites.size and arr_c is not None:
             stacked_any_c.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw))
             stacked_any_c_raw.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw_raw))
@@ -1403,12 +1536,12 @@ def _hmm_length_one_group(args: dict) -> dict:
     if not stacked_lengths:
         return {"reference": ref, "sample": sample, "output_path": None}
 
-    length_matrix = np.vstack(stacked_lengths)
+    _length_matrix = np.vstack(stacked_lengths)
     length_matrix_raw = np.vstack(stacked_lengths_raw)
     capped_lengths = np.where(length_matrix_raw > 1, 1.0, length_matrix_raw)
     mean_lengths = np.nanmean(capped_lengths, axis=0)
     length_plot_matrix = length_matrix_raw
-    length_plot_cmap = cmap_lengths
+    length_plot_cmap = _build_nan_aware_cmap(cmap_lengths)
     length_plot_norm = None
 
     feature_class_label = None
@@ -1445,12 +1578,16 @@ def _hmm_length_one_group(args: dict) -> dict:
             length_plot_norm,
         ),
     ]
+    cmap_c = _build_nan_aware_cmap(cmap_c)
+    cmap_gpc = _build_nan_aware_cmap(cmap_gpc)
+    cmap_cpg = _build_nan_aware_cmap(cmap_cpg)
+    cmap_a = _build_nan_aware_cmap(cmap_a)
     if stacked_any_c:
-        m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
+        _m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
         panels.append(
             (
                 "C",
-                m,
+                m_raw,
                 any_c_labels,
                 cmap_c,
                 _methylation_fraction_for_layer(m_raw, layer_c),
@@ -1459,11 +1596,11 @@ def _hmm_length_one_group(args: dict) -> dict:
             )
         )
     if stacked_gpc:
-        m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
+        _m, m_raw = np.vstack(stacked_gpc), np.vstack(stacked_gpc_raw)
         panels.append(
             (
                 "GpC",
-                m,
+                m_raw,
                 gpc_labels,
                 cmap_gpc,
                 _methylation_fraction_for_layer(m_raw, layer_gpc),
@@ -1472,11 +1609,11 @@ def _hmm_length_one_group(args: dict) -> dict:
             )
         )
     if stacked_cpg:
-        m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
+        _m, m_raw = np.vstack(stacked_cpg), np.vstack(stacked_cpg_raw)
         panels.append(
             (
                 "CpG",
-                m,
+                m_raw,
                 cpg_labels,
                 cmap_cpg,
                 _methylation_fraction_for_layer(m_raw, layer_cpg),
@@ -1485,11 +1622,11 @@ def _hmm_length_one_group(args: dict) -> dict:
             )
         )
     if stacked_any_a:
-        m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
+        _m, m_raw = np.vstack(stacked_any_a), np.vstack(stacked_any_a_raw)
         panels.append(
             (
                 "A",
-                m,
+                m_raw,
                 any_a_labels,
                 cmap_a,
                 _methylation_fraction_for_layer(m_raw, layer_a),
@@ -1501,7 +1638,12 @@ def _hmm_length_one_group(args: dict) -> dict:
     n_panels = len(panels)
     fig = _plt.figure(figsize=(4.5 * n_panels, 10))
     gs = _gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
-    fig.suptitle(f"{sample} — {ref} — {total_reads} reads ({signal_type})", fontsize=18, y=0.98)
+    fig.suptitle(
+        f"{display_sample} — {ref} — {total_reads} reads ({signal_type})",
+        fontsize=14,
+        y=0.98,
+        wrap=True,
+    )
     axes_heat = [fig.add_subplot(gs[1, i]) for i in range(n_panels)]
     axes_bar = [fig.add_subplot(gs[0, i], sharex=axes_heat[i]) for i in range(n_panels)]
 
@@ -1607,6 +1749,7 @@ def combined_hmm_length_clustermap(
     variant_overlay_marker_size: float = 4.0,
     omit_chimeric_reads: bool = False,
     n_jobs: int = 1,
+    restrict_to_read_span: bool = False,
 ):
     """
     Plot clustermaps for length-encoded HMM feature layers with optional subclass colors.
@@ -1615,6 +1758,11 @@ def combined_hmm_length_clustermap(
     and footprint layers. Raw methylation panels are included when available.
     omit_chimeric_reads: if True, exclude reads where chimeric_variant_sites==True.
     n_jobs: number of parallel worker processes (-1 = all CPUs).
+    restrict_to_read_span: if True, crop each reference's plotted x-axis to
+    [min(reference_start), max(reference_end)] across all QC-passing reads for
+    that reference (union across every sample/barcode), instead of the full
+    reference length. No-op when reference_start/reference_end aren't present
+    in adata.obs.
     """
     if fill_nan_strategy not in {"none", "value", "col_mean"}:
         raise ValueError("fill_nan_strategy must be 'none', 'value', or 'col_mean'.")
@@ -1678,6 +1826,31 @@ def combined_hmm_length_clustermap(
     # ------------------------------------------------------------------
     def _iter_group_args():
         for ref in adata.obs[reference_col].cat.categories:
+            # Computed once per reference, shared by every sample's plot for
+            # that reference -- see combined_raw_clustermap for why (keeps
+            # panels on a common x-axis for comparison instead of each
+            # cropping to its own subset of reads).
+            span_start = span_end = None
+            if restrict_to_read_span:
+                ref_mask = (
+                    (adata.obs[reference_col] == ref)
+                    & qmask
+                    & lm_mask
+                    & lrr_mask
+                    & demux_mask
+                    & chimeric_mask
+                )
+                if bool(ref_mask.any()) and {"reference_start", "reference_end"}.issubset(
+                    adata.obs.columns
+                ):
+                    starts = pd.to_numeric(
+                        adata.obs.loc[ref_mask, "reference_start"], errors="coerce"
+                    )
+                    ends = pd.to_numeric(adata.obs.loc[ref_mask, "reference_end"], errors="coerce")
+                    if starts.notna().any() and ends.notna().any():
+                        span_start = int(starts.min())
+                        span_end = int(ends.max())
+
             for sample in adata.obs[sample_col].cat.categories:
                 display_sample = sample_mapping.get(sample, sample) if sample_mapping else sample
                 row_mask = (
@@ -1694,6 +1867,22 @@ def combined_hmm_length_clustermap(
                     continue
                 try:
                     subset = adata[row_mask, :].copy()
+                    if span_start is not None and span_end is not None:
+                        var_coords = pd.to_numeric(
+                            pd.Series(subset.var_names), errors="coerce"
+                        ).to_numpy()
+                        span_mask = np.asarray(
+                            (var_coords >= span_start) & (var_coords < span_end), dtype=bool
+                        )
+                        if span_mask.any():
+                            subset = subset[:, span_mask].copy()
+                        else:
+                            logger.warning(
+                                "No positions left after read-span restriction for %s - %s.",
+                                display_sample,
+                                ref,
+                            )
+                            continue
                     if min_position_valid_fraction is not None:
                         valid_key = f"{ref}_valid_fraction"
                         if valid_key in subset.var:
@@ -1727,11 +1916,21 @@ def combined_hmm_length_clustermap(
                     any_a_sites = _sites(f"{ref}_A_site", f"{ref}_any_A_site")
                     length_sites = np.arange(subset.n_vars, dtype=int)
 
-                    length_labels = _select_labels(subset, length_sites, ref, index_col_suffix)
-                    gpc_labels = _select_labels(subset, gpc_sites, ref, index_col_suffix)
-                    cpg_labels = _select_labels(subset, cpg_sites, ref, index_col_suffix)
-                    any_c_labels = _select_labels(subset, any_c_sites, ref, index_col_suffix)
-                    any_a_labels = _select_labels(subset, any_a_sites, ref, index_col_suffix)
+                    length_sites, length_labels = _ordered_columns(
+                        subset, length_sites, ref, index_col_suffix
+                    )
+                    gpc_sites, gpc_labels = _ordered_columns(
+                        subset, gpc_sites, ref, index_col_suffix
+                    )
+                    cpg_sites, cpg_labels = _ordered_columns(
+                        subset, cpg_sites, ref, index_col_suffix
+                    )
+                    any_c_sites, any_c_labels = _ordered_columns(
+                        subset, any_c_sites, ref, index_col_suffix
+                    )
+                    any_a_sites, any_a_labels = _ordered_columns(
+                        subset, any_a_sites, ref, index_col_suffix
+                    )
 
                     layer_data = {}
                     for lname in {length_layer, layer_gpc, layer_cpg, layer_c, layer_a}:

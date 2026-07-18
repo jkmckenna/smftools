@@ -103,6 +103,23 @@ def _parse_numeric(v: Any, fallback: Any = None) -> Any:
             return fallback
 
 
+def _parse_max_workers(v: Any) -> Optional[Union[int, str]]:
+    """Parse the `direct_max_workers` config value: None, "auto", or a positive int."""
+    if v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    s = str(v).strip()
+    if s == "" or s.lower() == "none":
+        return None
+    if s.lower() == "auto":
+        return "auto"
+    try:
+        return int(s)
+    except Exception:
+        return None
+
+
 def _try_json_or_literal(s: Any) -> Any:
     """Try parse JSON or python literal; otherwise return original string."""
     if s is None:
@@ -240,7 +257,9 @@ def resolve_aligner_args(
 def normalize_hmm_feature_sets(raw: Any) -> Dict[str, dict]:
     """
     Normalize user-provided `hmm_feature_sets` into canonical structure:
+
       { group_name: {"features": {label: (lo, hi), ...}, "state": "<Modified|Non-Modified>"} }
+
     Accepts dict, JSON/string, None. Returns {} for empty input.
     """
     if raw is None:
@@ -300,7 +319,8 @@ def normalize_hmm_feature_sets(raw: Any) -> Dict[str, dict]:
 
 def normalize_peak_feature_configs(raw: Any) -> Dict[str, dict]:
     """
-    Normalize user-provided `hmm_peak_feature_configs` into:
+    Normalize user-provided `hmm_peak_feature_configs` into::
+
       {
         layer_name: {
           "min_distance": int,
@@ -713,9 +733,15 @@ class ExperimentConfig:
     # Direct SMF specific params for initial AnnData loading
     batch_size: int = 4
     skip_unclassified: bool = True
-    skip_bam_split: bool = False
+    skip_bam_split: bool = True
     skip_bam_qc: bool = False
     delete_batch_hdfs: bool = True
+    # None (default) processes batches serially in-process, unchanged from prior
+    # releases. A positive int processes up to that many batches concurrently via
+    # multiprocessing.Pool (set batch_size=1 for one worker task per sample, the
+    # finest granularity); "auto" picks a worker count from CPU count and estimated
+    # per-batch memory footprint. See modkit_extract_to_adata's max_workers docstring.
+    direct_max_workers: Optional[Union[int, str]] = None
 
     # Read subsampling
     max_basecall_reads: Optional[int] = None
@@ -797,9 +823,39 @@ class ExperimentConfig:
     make_bigwigs: bool = False
     make_beds: bool = False
     annotate_secondary_supplementary: bool = True
+    # Post-alignment rescue pass: when the alignment FASTA has nested/
+    # overlapping reference variants for one locus (e.g. a WT contig and a
+    # shorter deletion-allele contig), minimap2's primary-alignment pick can
+    # be objectively worse (less read coverage) than one of its own secondary
+    # alignments. Re-flags primary/secondary BAM bits by read coverage before
+    # anything downstream commits a read's Reference_strand. Modality-
+    # agnostic; a no-op for reads with no secondary alignments, so on by
+    # default.
+    rescue_secondary_alignments: bool = True
+    rescue_min_margin_bp: int = 20
+    rescue_min_margin_fraction: float = 0.01
     samtools_backend: str = "auto"
     bedtools_backend: str = "auto"
     bigwig_backend: str = "auto"
+    # direct modality's modification-signal source: "pysam" decodes BAM MM/ML tags
+    # directly (no external tool, streaming-compatible; see dev/pipeline_
+    # scaling_audit.md's Track B notes for why it was added); "modkit" runs
+    # modkit extract to a TSV first (the original path). modkit is the
+    # default for now -- on real data, pysam's decode (even with
+    # direct_signal_impute_uncalled_canonical enabled) produces a
+    # substantially lower downstream QC-pass rate than modkit's own output
+    # on the same reads, and the root cause of that gap (a real per-position
+    # probability-value divergence, not just a coverage/count difference)
+    # isn't understood yet. Revisit once that's root-caused.
+    direct_signal_backend: str = "modkit"
+    # pysam backend only: positions of the canonical base with no explicit MM/ML
+    # tag entry are left NaN (no information) by default -- the honest reading
+    # of the SAM spec. modkit's own convention instead fills these with a
+    # synthetic "canonical, probability 1.0" call (its TSV's inferred=True
+    # rows). Set True to mirror modkit's imputation exactly, for A/B comparison
+    # against modkit-extract-era results on the same data; leave False for the
+    # statistically correct default. No effect when direct_signal_backend="modkit".
+    direct_signal_impute_uncalled_canonical: bool = False
 
     # Anndata structure
     reference_column: Optional[str] = REF_COL
@@ -839,9 +895,31 @@ class ExperimentConfig:
         default_factory=lambda: [None, None]
     )
 
+    # Preprocessing - CIGAR-based internal indel filter params
+    max_internal_insertion_length: Optional[float] = 10
+    max_internal_deletion_length: Optional[float] = 10
+    bypass_filter_reads_on_cigar_indels: bool = False
+    force_redo_filter_reads_on_cigar_indels: bool = True
+
+    # Preprocessing - Deaminase PCR-chimera labeling params (deaminase modality only)
+    bypass_label_deaminase_pcr_chimeras: bool = False
+    deaminase_chimera_min_events_per_span: int = 3
+    deaminase_chimera_min_segment_purity: float = 0.9
+    deaminase_chimera_max_single_strand_fraction: float = 0.8
+    # Raw - emit per reference x barcode chimera-rate QC plot (deaminase modality only)
+    bypass_raw_chimera_rate_plot: bool = False
+
     # Preprocessing - Optional reindexing params
     reindexing_offsets: Dict[str, int] = field(default_factory=dict)
     reindexed_var_suffix: Optional[str] = "reindexed"
+    # Per-reference display inversion: {ref: True} flips the sign of that
+    # reference's reindexed coordinate (see reindex_references_adata) so
+    # "left of anchor = negative, right of anchor = positive" still holds
+    # once the reference is rendered in reverse column order. Pass a single
+    # bool (e.g. True) instead of a dict to invert every reference at once
+    # without listing them individually. Additive to reindexing_offsets;
+    # independent of the legacy global invert_adata flag.
+    reindexing_invert: Union[bool, Dict[str, bool]] = field(default_factory=dict)
 
     # Preprocessing - Direct mod detection binarization params
     fit_position_methylation_thresholds: Optional[bool] = (
@@ -903,6 +981,7 @@ class ExperimentConfig:
     duplicate_detection_do_hierarchical: bool = True
     duplicate_detection_hierarchical_linkage: str = "average"
     duplicate_detection_do_pca: bool = False
+    duplicate_detection_max_reads_per_window: int = 50000
 
     # Preprocessing - Position QC
     position_max_nan_threshold: float = 0.1
@@ -921,6 +1000,7 @@ class ExperimentConfig:
     clustermap_cmap_cpg: Optional[str] = "coolwarm"
     clustermap_cmap_a: Optional[str] = "coolwarm"
     spatial_clustermap_sortby: Optional[str] = "gpc"
+    spatial_clustermap_restrict_to_read_span: bool = False
     omit_chimeric_reads: bool = True
     overlay_variant_calls: bool = False
     variant_overlay_seq1_color: str = "white"
@@ -997,7 +1077,14 @@ class ExperimentConfig:
     hmm_annotation_threshold: float = 0.5
     hmm_batch_size: int = 1024
     hmm_use_viterbi: bool = False
-    hmm_device: Optional[str] = None
+    # Defaults to "cpu", not "auto" -- unlike GPU-friendly stages, HMM fitting
+    # runs a small-state (K=2-3) sequential position loop where GPU dispatch
+    # overhead dominates: measured ~1.5x *slower* per iteration on MPS than
+    # CPU on real data, on top of GPU fits being forced fully sequential
+    # across tasks (concurrent processes sharing one GPU context crashes --
+    # see execute_partitioned_hmm's force_sequential). Set explicitly (e.g.
+    # "mps"/"cuda"/"auto") to opt back into GPU for HMM specifically.
+    hmm_device: Optional[str] = "cpu"
     hmm_methbases: Optional[List[str]] = (
         None  # if None, HMM.annotate_adata will fall back to mod_target_bases
     )
@@ -1015,19 +1102,64 @@ class ExperimentConfig:
     cpg: Optional[bool] = False
     hmm_feature_sets: Dict[str, Any] = field(default_factory=dict)
     hmm_feature_colormaps: Dict[str, Any] = field(default_factory=dict)
-    hmm_merge_layer_features: Optional[List[Tuple]] = field(default_factory=lambda: [(None, 60)])
+    hmm_merge_layer_features: Optional[List[Tuple]] = field(
+        default_factory=lambda: [
+            ("all_accessible_features", 60),
+            ("all_footprint_features", 10),
+        ]
+    )
     clustermap_cmap_hmm: Optional[str] = "coolwarm"
     hmm_clustermap_feature_layers: List[str] = field(
-        default_factory=lambda: ["all_accessible_features"]
+        default_factory=lambda: [
+            "all_accessible_features",
+            "all_accessible_features_merged",
+            "all_footprint_features_merged",
+        ]
     )
     hmm_clustermap_length_layers: List[str] = field(
-        default_factory=lambda: ["all_accessible_features"]
+        default_factory=lambda: [
+            "all_accessible_features_merged",
+            "all_footprint_features",
+            "all_footprint_features_merged",
+        ]
     )
     hmm_clustermap_sortby: Optional[str] = "hmm"
+    hmm_clustermap_restrict_to_read_span: bool = False
     hmm_peak_feature_configs: Dict[str, Any] = field(default_factory=dict)
 
     # Pipeline control flow - load adata
     force_redo_load_adata: bool = False
+    raw_parquet_shard_size: int = 100000
+    analysis_mode: str = "auto"
+    load_cache_mode: str = "auto"
+    max_full_matrix_gb: float = 8.0
+    target_task_memory_mb: int = 512
+    # Aggregate memory budget for the whole workflow (raw/preprocess/spatial/hmm,
+    # including all parallel workers combined), not per-task. The more
+    # restrictive of the two applies when both are set -- see
+    # memory_guard.resolve_memory_budget_bytes. Enforced via a Linux cgroup v2
+    # cap (whole process tree) or, on macOS, a per-worker RSS watchdog plus
+    # capping how many workers run concurrently; see smftools.memory_guard.
+    max_memory_percent: float = 60.0
+    max_memory_gb: Optional[float] = None
+    genome_tile_size: int = 10000
+    genome_tile_halo: int = 1000
+    parquet_start_bin_size: int = 1000000
+    preprocess_execution_mode: str = "auto"
+    spatial_execution_mode: str = "auto"
+    hmm_execution_mode: str = "auto"
+    spatial_regions_bed: Optional[str] = None
+    spatial_generate_clustermaps: bool = True
+    spatial_generate_position_matrices: bool = True
+    spatial_matrix_min_reads: int = 2
+    spatial_save_read_autocorrelation: bool = True
+    spatial_compute_read_lomb_scargle: bool = True
+    spatial_plot_read_lomb_scargle: bool = True
+    spatial_plot_read_metric_clustermaps: bool = True
+    spatial_lomb_scargle_period_range_bp: List[float] = field(default_factory=lambda: [80.0, 400.0])
+    spatial_lomb_scargle_peak_range_bp: List[float] = field(default_factory=lambda: [150.0, 250.0])
+    spatial_lomb_scargle_poly_degree: int = 2
+    spatial_lomb_scargle_min_sites: int = 40
 
     # Pipeline control flow - preprocessing and QC
     force_redo_preprocessing: bool = False
@@ -1574,7 +1706,7 @@ class ExperimentConfig:
         hmm_annotation_threshold = merged.get("hmm_annotation_threshold", 0.5)
         hmm_batch_size = int(merged.get("hmm_batch_size", 1024))
         hmm_use_viterbi = bool(merged.get("hmm_use_viterbi", False))
-        hmm_device = merged.get("hmm_device", None)
+        hmm_device = merged.get("hmm_device", "cpu")
         hmm_methbases = _parse_list(merged.get("hmm_methbases", None))
         if not hmm_methbases:  # None or []
             hmm_methbases = _parse_list(merged.get("mod_target_bases", None))
@@ -1583,10 +1715,16 @@ class ExperimentConfig:
         hmm_methbases = list(hmm_methbases)
         hmm_merge_layer_features = _parse_list(merged.get("hmm_merge_layer_features", None))
         hmm_clustermap_feature_layers = _parse_list(
-            merged.get("hmm_clustermap_feature_layers", "all_accessible_features")
+            merged.get(
+                "hmm_clustermap_feature_layers",
+                "all_accessible_features,all_accessible_features_merged,all_footprint_features_merged",
+            )
         )
         hmm_clustermap_length_layers = _parse_list(
-            merged.get("hmm_clustermap_length_layers", hmm_clustermap_feature_layers)
+            merged.get(
+                "hmm_clustermap_length_layers",
+                "all_accessible_features_merged,all_footprint_features,all_footprint_features_merged",
+            )
         )
 
         hmm_fit_strategy = str(merged.get("hmm_fit_strategy", "per_group")).strip()
@@ -1688,6 +1826,15 @@ class ExperimentConfig:
             samtools_backend=merged.get("samtools_backend", "auto"),
             bedtools_backend=merged.get("bedtools_backend", "auto"),
             bigwig_backend=merged.get("bigwig_backend", "auto"),
+            direct_signal_backend=merged.get("direct_signal_backend", "modkit"),
+            direct_signal_impute_uncalled_canonical=_parse_bool(
+                merged.get("direct_signal_impute_uncalled_canonical", False)
+            ),
+            rescue_secondary_alignments=_parse_bool(
+                merged.get("rescue_secondary_alignments", True)
+            ),
+            rescue_min_margin_bp=int(merged.get("rescue_min_margin_bp", 20)),
+            rescue_min_margin_fraction=float(merged.get("rescue_min_margin_fraction", 0.01)),
             delete_intermediate_hdfs=merged.get("delete_intermediate_hdfs", True),
             mod_target_bases=merged.get("mod_target_bases", ["GpC", "CpG"]),
             enzyme_target_bases=merged.get("enzyme_target_bases", ["GpC"]),
@@ -1702,9 +1849,10 @@ class ExperimentConfig:
             mod_map=merged.get("mod_map", list(MOD_MAP)),
             batch_size=merged.get("batch_size", 4),
             skip_unclassified=merged.get("skip_unclassified", True),
-            skip_bam_split=merged.get("skip_bam_split", False),
+            skip_bam_split=merged.get("skip_bam_split", True),
             skip_bam_qc=merged.get("skip_bam_qc", False),
             delete_batch_hdfs=merged.get("delete_batch_hdfs", True),
+            direct_max_workers=_parse_max_workers(merged.get("direct_max_workers", None)),
             max_basecall_reads=_parse_numeric(merged.get("max_basecall_reads", None), None),
             max_reads_per_barcode=_parse_numeric(merged.get("max_reads_per_barcode", None), None),
             clean_nan_layers=_parse_list(
@@ -1738,6 +1886,7 @@ class ExperimentConfig:
             ),
             reindexing_offsets=merged.get("reindexing_offsets", {None: None}),
             reindexed_var_suffix=merged.get("reindexed_var_suffix", "reindexed"),
+            reindexing_invert=merged.get("reindexing_invert", {}),
             clustermap_demux_types_to_plot=merged.get(
                 "clustermap_demux_types_to_plot", ["single", "double", "already"]
             ),
@@ -1758,6 +1907,9 @@ class ExperimentConfig:
             clustermap_cmap_cpg=merged.get("clustermap_cmap_cpg", "coolwarm"),
             clustermap_cmap_a=merged.get("clustermap_cmap_a", "coolwarm"),
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
+            spatial_clustermap_restrict_to_read_span=_parse_bool(
+                merged.get("spatial_clustermap_restrict_to_read_span", False)
+            ),
             omit_chimeric_reads=_parse_bool(merged.get("omit_chimeric_reads", True)),
             overlay_variant_calls=_parse_bool(merged.get("overlay_variant_calls", False)),
             variant_overlay_seq1_color=merged.get("variant_overlay_seq1_color", "white"),
@@ -1855,6 +2007,9 @@ class ExperimentConfig:
             hmm_clustermap_feature_layers=hmm_clustermap_feature_layers,
             hmm_clustermap_length_layers=hmm_clustermap_length_layers,
             hmm_clustermap_sortby=merged.get("hmm_clustermap_sortby", "hmm"),
+            hmm_clustermap_restrict_to_read_span=_parse_bool(
+                merged.get("hmm_clustermap_restrict_to_read_span", False)
+            ),
             hmm_peak_feature_configs=hmm_peak_feature_configs,
             footprints=merged.get("footprints", None),
             accessible_patches=merged.get("accessible_patches", None),
@@ -1875,6 +2030,31 @@ class ExperimentConfig:
             read_mapping_quality_filter_thresholds=merged.get(
                 "read_mapping_quality_filter_thresholds", [None, None]
             ),
+            max_internal_insertion_length=_parse_numeric(
+                merged.get("max_internal_insertion_length", 10), None
+            ),
+            max_internal_deletion_length=_parse_numeric(
+                merged.get("max_internal_deletion_length", 10), None
+            ),
+            bypass_filter_reads_on_cigar_indels=merged.get(
+                "bypass_filter_reads_on_cigar_indels", False
+            ),
+            force_redo_filter_reads_on_cigar_indels=merged.get(
+                "force_redo_filter_reads_on_cigar_indels", True
+            ),
+            bypass_label_deaminase_pcr_chimeras=merged.get(
+                "bypass_label_deaminase_pcr_chimeras", False
+            ),
+            deaminase_chimera_min_events_per_span=int(
+                _parse_numeric(merged.get("deaminase_chimera_min_events_per_span", 3), 3)
+            ),
+            deaminase_chimera_min_segment_purity=float(
+                _parse_numeric(merged.get("deaminase_chimera_min_segment_purity", 0.9), 0.9)
+            ),
+            deaminase_chimera_max_single_strand_fraction=float(
+                _parse_numeric(merged.get("deaminase_chimera_max_single_strand_fraction", 0.8), 0.8)
+            ),
+            bypass_raw_chimera_rate_plot=merged.get("bypass_raw_chimera_rate_plot", False),
             read_mod_filtering_gpc_thresholds=merged.get(
                 "read_mod_filtering_gpc_thresholds", [0.025, 0.975]
             ),
@@ -1918,6 +2098,9 @@ class ExperimentConfig:
                 "duplicate_detection_hierarchical_linkage", "average"
             ),
             duplicate_detection_do_pca=merged.get("duplicate_detection_do_pca", False),
+            duplicate_detection_max_reads_per_window=int(
+                _parse_numeric(merged.get("duplicate_detection_max_reads_per_window", 50000), 50000)
+            ),
             position_max_nan_threshold=merged.get("position_max_nan_threshold", 0.1),
             correlation_matrix_types=merged.get(
                 "correlation_matrix_types", ["pearson", "binary_covariance"]
@@ -1943,6 +2126,69 @@ class ExperimentConfig:
                 "hamming_vs_metric_keys", ["Fraction_C_site_modified"]
             ),
             force_redo_load_adata=merged.get("force_redo_load_adata", False),
+            raw_parquet_shard_size=int(
+                _parse_numeric(merged.get("raw_parquet_shard_size", 100000), 100000)
+            ),
+            analysis_mode=str(merged.get("analysis_mode", "auto")),
+            load_cache_mode=str(merged.get("load_cache_mode", "auto")),
+            max_full_matrix_gb=float(_parse_numeric(merged.get("max_full_matrix_gb", 8.0), 8.0)),
+            target_task_memory_mb=int(
+                _parse_numeric(merged.get("target_task_memory_mb", 512), 512)
+            ),
+            max_memory_percent=float(_parse_numeric(merged.get("max_memory_percent", 60.0), 60.0)),
+            max_memory_gb=(
+                None
+                if _parse_numeric(merged.get("max_memory_gb"), None) is None
+                else float(_parse_numeric(merged.get("max_memory_gb"), None))
+            ),
+            genome_tile_size=int(_parse_numeric(merged.get("genome_tile_size", 10000), 10000)),
+            genome_tile_halo=int(_parse_numeric(merged.get("genome_tile_halo", 1000), 1000)),
+            parquet_start_bin_size=int(
+                _parse_numeric(merged.get("parquet_start_bin_size", 1000000), 1000000)
+            ),
+            preprocess_execution_mode=str(merged.get("preprocess_execution_mode", "auto")),
+            spatial_execution_mode=str(merged.get("spatial_execution_mode", "auto")),
+            hmm_execution_mode=str(merged.get("hmm_execution_mode", "auto")),
+            spatial_regions_bed=merged.get("spatial_regions_bed"),
+            spatial_generate_clustermaps=_parse_bool(
+                merged.get("spatial_generate_clustermaps", True)
+            ),
+            spatial_generate_position_matrices=_parse_bool(
+                merged.get("spatial_generate_position_matrices", True)
+            ),
+            spatial_matrix_min_reads=int(
+                _parse_numeric(merged.get("spatial_matrix_min_reads", 2), 2)
+            ),
+            spatial_save_read_autocorrelation=_parse_bool(
+                merged.get("spatial_save_read_autocorrelation", True)
+            ),
+            spatial_compute_read_lomb_scargle=_parse_bool(
+                merged.get("spatial_compute_read_lomb_scargle", True)
+            ),
+            spatial_plot_read_lomb_scargle=_parse_bool(
+                merged.get("spatial_plot_read_lomb_scargle", True)
+            ),
+            spatial_plot_read_metric_clustermaps=_parse_bool(
+                merged.get("spatial_plot_read_metric_clustermaps", True)
+            ),
+            spatial_lomb_scargle_period_range_bp=[
+                float(value)
+                for value in _parse_list(
+                    merged.get("spatial_lomb_scargle_period_range_bp", [80, 400])
+                )
+            ],
+            spatial_lomb_scargle_peak_range_bp=[
+                float(value)
+                for value in _parse_list(
+                    merged.get("spatial_lomb_scargle_peak_range_bp", [150, 250])
+                )
+            ],
+            spatial_lomb_scargle_poly_degree=int(
+                _parse_numeric(merged.get("spatial_lomb_scargle_poly_degree", 2), 2)
+            ),
+            spatial_lomb_scargle_min_sites=int(
+                _parse_numeric(merged.get("spatial_lomb_scargle_min_sites", 40), 40)
+            ),
             force_redo_preprocessing=merged.get("force_redo_preprocessing", False),
             force_reload_sample_sheet=merged.get("force_reload_sample_sheet", True),
             bypass_add_read_length_and_mapping_qc=merged.get(

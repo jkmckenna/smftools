@@ -8,7 +8,13 @@ from typing import Iterable, Union
 import numpy as np
 import pandas as pd
 
-from smftools.constants import BARCODE_KIT_ALIASES, LOAD_DIR, LOGGING_DIR, UMI_KIT_ALIASES
+from smftools.constants import (
+    BARCODE_KIT_ALIASES,
+    LOAD_DIR,
+    LOGGING_DIR,
+    RAW_DIR,
+    UMI_KIT_ALIASES,
+)
 from smftools.logging_utils import get_logger, setup_logging
 
 from .helpers import AdataPaths
@@ -139,17 +145,39 @@ def load_adata(config_path: str):
     return adata, adata_path, cfg
 
 
-def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
+def load_dense_cache(config_path: str):
+    """Ensure raw artifacts exist, then build the optional dense zarr cache."""
+    from ..informatics.partition_store import write_dense_cache_from_spine
+    from ..readwrite import safe_read_h5ad
+    from .raw_adata import raw_adata
+
+    _spine, spine_path, cfg = raw_adata(config_path)
+    cache_paths = write_dense_cache_from_spine(
+        spine_path, output_dir=Path(cfg.output_directory) / LOAD_DIR
+    )
+    spine, _ = safe_read_h5ad(cache_paths["spine"])
+    return spine, cache_paths["spine"], cfg
+
+
+def load_adata_core(
+    cfg,
+    paths: AdataPaths,
+    config_path: str | None = None,
+    *,
+    raw_only: bool = False,
+):
     """
     Core load pipeline.
 
     Assumes:
+
     - cfg is a fully initialized ExperimentConfig
     - paths is an AdataPaths object describing canonical h5ad stage paths
     - No stage-skipping or early returns based on existing AnnDatas are done here
       (that happens in the wrapper).
 
     Does:
+
     - handle input format (fast5/pod5/fastq/bam/h5ad)
     - basecalling / alignment / demux / BAM QC
     - optional bed + bigwig generation
@@ -230,7 +258,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
     log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
 
     output_directory = Path(cfg.output_directory)
-    load_directory = output_directory / LOAD_DIR
+    load_directory = output_directory / (RAW_DIR if raw_only else LOAD_DIR)
     bam_outputs_directory = Path(cfg.bam_outputs_path)
     fasta_outputs_directory = Path(cfg.fasta_outputs_path)
     bed_outputs_directory = Path(cfg.bed_outputs_path)
@@ -365,13 +393,15 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             bam = bam_outputs_directory / f"{model_basename}_{mod_string}_calls"
         else:
             bam = bam_outputs_directory / f"{model_basename}_canonical_basecalls"
+        unaligned_output = bam.with_suffix(cfg.bam_suffix)
     else:
-        bam_base = cfg.input_data_path.stem
-        bam = cfg.input_data_path.parent / bam_base
+        # Preserve the exact BAM input path. Path.with_suffix() would incorrectly
+        # turn names such as ``sample.repaired.bam`` into ``sample.bam`` after the
+        # terminal .bam suffix has already been removed.
+        unaligned_output = Path(cfg.input_data_path)
+        bam = unaligned_output.with_suffix("")
 
     # Generate path names for the unaligned, aligned, as well as the aligned/sorted bam.
-    unaligned_output = bam.with_suffix(cfg.bam_suffix)
-
     aligned_BAM = (
         bam_outputs_directory / (bam.stem + "_aligned")
     )  # doing this allows specifying an input bam in a seperate directory as the aligned output bams
@@ -520,6 +550,51 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         align_and_sort_BAM(fasta, unaligned_output, aligned_output, cfg)
         # Deleted the unsorted aligned output
         aligned_output.unlink()
+
+    # Optional: rescue reads whose primary alignment lost to a worse-covering
+    # secondary alignment (e.g. minimap2 preferring a truncated match against
+    # a wild-type contig over a full-length match against a shorter deletion-
+    # allele contig). Runs before anything downstream reads aligned_sorted_
+    # output, so a corrected Reference_strand is the only thing raw ingestion
+    # ever sees. See src/smftools/informatics/alignment_rescue.py.
+    if getattr(cfg, "rescue_secondary_alignments", False):
+        rescue_summary_path = aligned_sorted_BAM.with_name(
+            aligned_sorted_BAM.stem + "_rescue_summary.csv"
+        )
+        if rescue_summary_path.exists():
+            logger.debug(
+                f"{rescue_summary_path} already exists. Skipping secondary-alignment rescue."
+            )
+        else:
+            logger.info("Rescuing reads misassigned by minimap2's primary-alignment pick")
+            from ..informatics.alignment_rescue import (
+                build_record_chromosome_map,
+                rescue_secondary_alignments,
+            )
+
+            record_chromosome = build_record_chromosome_map(
+                fasta, cfg.smf_modality, cfg.conversion_types
+            )
+            rescued_tmp = aligned_sorted_BAM.with_name(
+                aligned_sorted_BAM.stem + "_rescue_tmp"
+            ).with_suffix(cfg.bam_suffix)
+            summary = rescue_secondary_alignments(
+                aligned_sorted_output,
+                rescued_tmp,
+                record_chromosome,
+                min_margin_bp=cfg.rescue_min_margin_bp,
+                min_margin_fraction=cfg.rescue_min_margin_fraction,
+                threads=cfg.threads,
+            )
+            # Swap the corrected BAM (+ its freshly-built index) into place so
+            # every downstream consumer sees it at the original path with no
+            # further plumbing.
+            rescued_tmp_bai = Path(str(rescued_tmp) + ".bai")
+            final_bai = Path(str(aligned_sorted_output) + ".bai")
+            rescued_tmp.replace(aligned_sorted_output)
+            if rescued_tmp_bai.exists():
+                rescued_tmp_bai.replace(final_bai)
+            summary.to_dataframe().to_csv(rescue_summary_path, index=False)
 
     if cfg.make_beds:
         # Make beds and provide basic histograms
@@ -1048,6 +1123,139 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
         )
     ########################################################################################################################
 
+    if raw_only:
+        direct_signal_backend = str(getattr(cfg, "direct_signal_backend", "modkit"))
+        direct_uses_modkit = cfg.smf_modality == "direct" and direct_signal_backend == "modkit"
+        mod_tsv_paths: list[Path] | None = None
+        if direct_uses_modkit:
+            from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
+
+            if not mod_bed_dir.is_dir():
+                make_dirs([mod_bed_dir])
+                modQC(aligned_sorted_output, cfg.thresholds)
+                make_modbed(aligned_sorted_output, cfg.thresholds, mod_bed_dir)
+            make_dirs([mod_tsv_dir])
+            extract_mods(
+                cfg.thresholds,
+                mod_tsv_dir,
+                bam_dir if bam_dir is not None else cfg.split_path,
+                cfg.bam_suffix,
+                skip_unclassified=cfg.skip_unclassified,
+                modkit_summary=False,
+                threads=cfg.threads,
+                single_bam=aligned_sorted_output,
+            )
+            mod_tsv_paths = sorted(mod_tsv_dir.glob("*.tsv")) + sorted(mod_tsv_dir.glob("*.tsv.gz"))
+
+        from ..readwrite import safe_read_h5ad
+
+        logger.info("Extracting read-relative raw records from aligned BAM")
+        # Streaming for every modality/backend combination: never holds more
+        # than one reference's ragged data in memory at once (conversion/
+        # deaminase, and direct modality's pysam backend), and for direct
+        # modality's modkit backend, never holds more than one read-id
+        # bucket's slice of the whole-experiment modkit-extract TSV either
+        # (build_ragged_records_streaming splits+buckets it up front -- see
+        # _split_modkit_tsv_by_bucket).
+        frame = None
+        from ..informatics.raw_store import write_raw_store_streaming
+        from .raw_adata import build_ragged_records_streaming
+
+        reference_frames, reference_lengths, extra_uns = build_ragged_records_streaming(
+            cfg,
+            fasta=fasta,
+            aligned_bam=aligned_sorted_output,
+            barcode_sidecar=barcode_sidecar,
+            umi_sidecar=umi_sidecar,
+            mod_tsv_paths=mod_tsv_paths,
+        )
+        raw_paths = write_raw_store_streaming(
+            reference_frames,
+            load_directory,
+            reference_lengths=reference_lengths,
+            shard_size=int(getattr(cfg, "raw_parquet_shard_size", 100_000)),
+            start_bin_size=int(getattr(cfg, "parquet_start_bin_size", 1_000_000)),
+            analysis_mode=getattr(cfg, "analysis_mode", "auto"),
+            load_cache_mode=getattr(cfg, "load_cache_mode", "auto"),
+            max_full_matrix_gb=float(getattr(cfg, "max_full_matrix_gb", 8.0)),
+            genome_tile_size=int(getattr(cfg, "genome_tile_size", 10_000)),
+            genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
+            bam_path=aligned_sorted_output,
+            extra_uns=extra_uns,
+        )
+        # The streaming path never materializes one experiment-wide frame
+        # (that's the whole point) -- downstream steps below that used to
+        # read `frame` (molecule count, the chimera-rate plot) read the
+        # just-written spine.obs instead, which is already documented as
+        # an equivalent, and cheaper since it's scalar-only, no ragged
+        # array columns (see plot_reference_barcode_chimera_rate's own
+        # docstring: "the raw spine obs or ragged frame").
+        n_molecules = safe_read_h5ad(raw_paths["spine"], verbose=False)[0].n_obs
+
+        # Consolidated provenance manifest (dev/experiment_storage_schema.md, Phase 2):
+        # config-by-value, input/FASTA paths, and a readable stage-completion index --
+        # none of which spine.uns previously captured (only a hash, not the values, and
+        # nothing for input_data_path at all).
+        from ..informatics.experiment_manifest import (
+            config_hash,
+            record_stage_completion,
+            update_experiment_manifest,
+        )
+        from ..informatics.partition_read import relative_uns_path as _relative_uns_path
+
+        run_root = load_directory.parent
+        resolved_config = cfg.to_dict()
+        update_experiment_manifest(
+            run_root,
+            experiment=extra_uns.get("experiment") or cfg.experiment_name or run_root.name,
+            modality=extra_uns.get("modality"),
+            input_data_path=(
+                _relative_uns_path(cfg.input_data_path, run_root) if cfg.input_data_path else None
+            ),
+            fasta_path=_relative_uns_path(fasta, run_root) if fasta else None,
+            reference_uids=extra_uns.get("reference_uids"),
+            reference_lengths={str(k): int(v) for k, v in reference_lengths.items()},
+            config=resolved_config,
+        )
+        record_stage_completion(
+            run_root,
+            "raw",
+            config_hash=config_hash(resolved_config),
+            n_molecules=n_molecules,
+        )
+        spine, _ = safe_read_h5ad(raw_paths["spine"])
+        if str(cfg.smf_modality) == "deaminase" and not getattr(
+            cfg, "bypass_raw_chimera_rate_plot", False
+        ):
+            try:
+                from ..plotting import plot_reference_barcode_chimera_rate
+
+                # frame is None on the streaming path (deaminase always takes
+                # it) -- spine.obs is a documented-equivalent input (see
+                # plot_reference_barcode_chimera_rate's own docstring) and is
+                # what's actually available without re-materializing the
+                # whole experiment. Its barcode column is the canonicalized
+                # "Barcode" (constants.BARCODE), not the ragged frame's
+                # lowercase "barcode" the function defaults to -- must be
+                # passed explicitly or every read falls out of the group-by.
+                plot_reference_barcode_chimera_rate(
+                    frame if frame is not None else spine.obs,
+                    load_directory / "plots",
+                    barcode_column="barcode" if frame is not None else "Barcode",
+                    min_events_per_span=cfg.deaminase_chimera_min_events_per_span,
+                    min_segment_purity=cfg.deaminase_chimera_min_segment_purity,
+                    max_single_strand_fraction=cfg.deaminase_chimera_max_single_strand_fraction,
+                )
+            except Exception:
+                logger.warning("Failed to plot reference x barcode chimera rate.", exc_info=True)
+
+        mqc_dir = bam_outputs_directory / "multiqc"
+        if skip_bam_qc:
+            logger.info("skip_bam_qc=True: skipping multiqc")
+        elif not mqc_dir.is_dir():
+            run_multiqc(bam_qc_dir, mqc_dir)
+        return spine, raw_paths["spine"], cfg
+
     ################################### 7) AnnData loading ######################################################################
     if cfg.smf_modality != "direct":
         from ..informatics.converted_BAM_to_adata import converted_BAM_to_adata
@@ -1137,6 +1345,7 @@ def load_adata_core(cfg, paths: AdataPaths, config_path: str | None = None):
             demux_backend=getattr(cfg, "demux_backend", None),
             single_bam=aligned_sorted_output,
             barcode_sidecar=barcode_sidecar,
+            max_workers=getattr(cfg, "direct_max_workers", None),
         )
         if cfg.delete_intermediate_tsvs:
             delete_tsvs(mod_tsv_dir)

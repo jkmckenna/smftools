@@ -13,6 +13,7 @@ informatics
 preprocessing
 tools
 analysis
+plotting
 datasets
 ```
 

@@ -11,6 +11,9 @@
    
    smftools.preprocessing.append_base_context
    smftools.preprocessing.append_binary_layer_by_base_context
+   smftools.preprocessing.append_mismatch_frequency_sites
+   smftools.preprocessing.append_sequence_mismatch_annotations
+   smftools.preprocessing.append_variant_call_layer
    smftools.preprocessing.binarize
    smftools.preprocessing.binarize_on_Youden
    smftools.preprocessing.binary_layers_to_ohe
@@ -24,17 +27,27 @@
    smftools.preprocessing.calculate_read_modification_stats
    smftools.preprocessing.clean_NaN
    smftools.preprocessing.filter_adata_by_nan_proportion
+   smftools.preprocessing.filter_reads_on_cigar_indels
    smftools.preprocessing.filter_reads_on_length_quality_mapping
    smftools.preprocessing.filter_reads_on_modification_thresholds
    smftools.preprocessing.flag_duplicate_reads
    smftools.preprocessing.invert_adata
+   smftools.preprocessing.label_deaminase_pcr_chimeras
    smftools.preprocessing.load_sample_sheet
    smftools.preprocessing.make_dirs
    smftools.preprocessing.min_non_diagonal
+   smftools.preprocessing.partitioned_executor
+   smftools.preprocessing.preprocess_umi_annotations
    smftools.preprocessing.recipes
    smftools.preprocessing.reindex_references_adata
    smftools.preprocessing.subsample_adata
+   smftools.preprocessing.umi_bipartite_analysis
 ```
+
+`partitioned_executor` implements the bounded-task partitioned preprocessing pipeline used when a
+partitioned raw/spatial spine is available (see the `smftools preprocess` CLI tutorial); the other
+newly listed modules back the CIGAR-indel filter, deaminase PCR-chimera labeling, variant/mismatch
+annotation, and UMI preprocessing features described there.
 
 ```{eval-rst}
 .. automodule:: smftools.preprocessing

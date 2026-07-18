@@ -43,8 +43,10 @@ dependencies = [
     "anndata>=0.10.0",
     "biopython>=1.79",
     "click",
+    "dask[array]",
     "numpy>=1.22.0,<2",
     "pandas>=1.4.2",
+    "psutil>=5.9.0",
     "scipy>=1.7.3",
     "tqdm",
 ]
@@ -152,7 +154,25 @@ torch = [
     "torch>=1.9.0",
 ]
 
+lazy = [
+    # Lazy partitioned-store reads (anndata.experimental.read_lazy).
+    # Optional: materialize() falls back to eager reads without it.
+    "xarray",
+]
+
+catalog = [
+    # Project-level cross-experiment catalog engine.
+    # Optional: the project catalog falls back to a pandas/pyarrow union without it.
+    "duckdb",
+]
+
 all = [
+    # lazy
+    "xarray",
+
+    # catalog
+    "duckdb",
+
     # cluster
     "igraph",
     "leidenalg",
@@ -195,6 +215,12 @@ all = [
 ]
 
 all_2 = [
+    # lazy
+    "xarray",
+
+    # catalog
+    "duckdb",
+
     # cluster
     "igraph",
     "leidenalg",

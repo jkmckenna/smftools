@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gc
-import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -10,13 +9,12 @@ import anndata as ad
 from smftools.constants import (
     BASE_QUALITY_SCORES,
     DEMUX_TYPE,
-    LOGGING_DIR,
     MISMATCH_INTEGER_ENCODING,
     PREPROCESS_DIR,
     READ_SPAN_MASK,
     SEQUENCE_INTEGER_ENCODING,
 )
-from smftools.logging_utils import get_logger, setup_logging
+from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -27,9 +25,9 @@ def preprocess_adata(
     """
     CLI-facing wrapper for preprocessing.
 
-    Called by: `smftools preprocess <config_path>`
+    Called by: `smftools experiment preprocess <config_path>`
 
-    - Ensure a raw AnnData exists (or some later-stage AnnData) via `load_adata`.
+    - Resolve a raw spine/AnnData or a later-stage AnnData.
     - Determine which AnnData stages exist (raw, pp, pp_dedup, spatial, hmm).
     - Respect cfg flags (force_redo_preprocessing, force_redo_flag_duplicate_reads).
     - Decide what starting AnnData to load (or whether to early-return).
@@ -42,11 +40,17 @@ def preprocess_adata(
     pp_dedup_adata_path : Path | None
         Path to preprocessed, duplicate-removed AnnData.
     """
+    from ..logging_utils import setup_stage_logging
     from ..readwrite import safe_read_h5ad
     from .helpers import get_adata_paths, load_experiment_config
 
     # 1) Ensure config is loaded and at least *some* AnnData stage exists
     cfg = load_experiment_config(config_path)
+
+    # Configure logging once, before any branch below (skip / partitioned / legacy)
+    # might return without ever reaching preprocess_adata_core.
+    if getattr(cfg, "output_directory", None) is not None:
+        setup_stage_logging(cfg, Path(cfg.output_directory) / PREPROCESS_DIR)
 
     # 2) Compute canonical paths
     paths = get_adata_paths(cfg)
@@ -55,13 +59,61 @@ def preprocess_adata(
     pp_dedup_path = paths.pp_dedup
 
     raw_exists = raw_path.exists()
+    dense_spine_exists = bool(paths.spine and paths.spine.exists())
+    raw_spine_exists = bool(paths.raw_spine and paths.raw_spine.exists())
     pp_exists = pp_path.exists()
     pp_dedup_exists = pp_dedup_path.exists()
+    partitioned_pp_path = (
+        Path(cfg.output_directory) / PREPROCESS_DIR / "spine.h5ad"
+        if getattr(cfg, "output_directory", None) is not None
+        else None
+    )
+
+    def _use_partitioned(source_path: Path) -> bool:
+        mode = str(getattr(cfg, "preprocess_execution_mode", "auto")).lower()
+        if mode not in {"auto", "legacy", "partitioned"}:
+            raise ValueError("preprocess_execution_mode must be auto, legacy, or partitioned")
+        if mode == "legacy":
+            return False
+        if mode == "partitioned":
+            return True
+        if source_path not in {paths.spine, paths.raw_spine}:
+            return False
+        try:
+            from ..informatics.partition_read import load_spine
+
+            spine = load_spine(source_path)
+        except Exception:
+            return False
+        plans = spine.uns.get("reference_plans", {})
+        return bool(dict(plans))
+
+    def _run_partitioned(source_path: Path):
+        from ..preprocessing.partitioned_executor import (
+            execute_partitioned_preprocessing,
+        )
+
+        output_dir = Path(cfg.output_directory) / PREPROCESS_DIR
+        outputs = execute_partitioned_preprocessing(source_path, cfg, output_dir)
+        return outputs["spine"], None
 
     # Helper: read from disk
     def _load(path: Path):
+        if path in {paths.spine, paths.raw_spine}:
+            from ..informatics.partition_read import materialize
+
+            return materialize(path)
         adata, _ = safe_read_h5ad(path)
         return adata
+
+    def _raw_source() -> Path | None:
+        if dense_spine_exists:
+            return paths.spine
+        if raw_spine_exists:
+            return paths.raw_spine
+        if raw_exists:
+            return raw_path
+        return None
 
     # -----------------------------
     # Case A: full redo of preprocessing
@@ -71,9 +123,10 @@ def preprocess_adata(
         if pp_exists:
             adata = _load(pp_path)
             source_path = pp_path
-        elif raw_exists:
-            adata = _load(raw_path)
-            source_path = raw_path
+        elif (source_path := _raw_source()) is not None:
+            if _use_partitioned(source_path):
+                return _run_partitioned(source_path)
+            adata = _load(source_path)
         else:
             logger.error("Cannot redo preprocessing: no AnnData available at any stage.")
             return (None, None)
@@ -98,9 +151,13 @@ def preprocess_adata(
         if pp_exists:
             adata = _load(pp_path)
             source_path = pp_path
-        elif raw_exists:
-            adata = _load(raw_path)
-            source_path = raw_path
+        elif (source_path := _raw_source()) is not None:
+            if _use_partitioned(source_path):
+                raise ValueError(
+                    "partitioned duplicate detection is not implemented yet; "
+                    "run partitioned preprocessing without force_redo_flag_duplicate_reads"
+                )
+            adata = _load(source_path)
         else:
             logger.error(
                 "Cannot redo duplicate detection: no compatible AnnData available "
@@ -120,6 +177,13 @@ def preprocess_adata(
     # -----------------------------
     # Case C: normal behavior (no explicit redo flags)
     # -----------------------------
+
+    if partitioned_pp_path is not None and partitioned_pp_path.exists():
+        logger.info(
+            "Skipping preprocessing. Partitioned preprocessing spine found: %s",
+            partitioned_pp_path,
+        )
+        return partitioned_pp_path, None
 
     # If pp_dedup exists, just return paths (no recomputation)
     if pp_dedup_exists:
@@ -143,9 +207,10 @@ def preprocess_adata(
         )
 
     # Otherwise, fall back to raw (if available)
-    if raw_exists:
-        adata = _load(raw_path)
-        source_path = raw_path
+    if (source_path := _raw_source()) is not None:
+        if _use_partitioned(source_path):
+            return _run_partitioned(source_path)
+        adata = _load(source_path)
         return preprocess_adata_core(
             adata=adata,
             cfg=cfg,
@@ -171,6 +236,7 @@ def preprocess_adata_core(
     Core preprocessing pipeline.
 
     Assumes:
+
     - `adata` is an AnnData object at some stage (raw/pp/etc.) to start preprocessing from.
     - `cfg` is the ExperimentConfig containing all thresholds & options.
     - `pp_adata_path` and `pp_dup_rem_adata_path` are the target output paths for
@@ -183,7 +249,6 @@ def preprocess_adata_core(
     pp_dup_rem_adata_path : Path
         Path where the deduplicated AnnData was written.
     """
-    from datetime import datetime
     from pathlib import Path
 
     from ..metadata import record_smftools_metadata
@@ -201,10 +266,12 @@ def preprocess_adata_core(
         calculate_position_Youden,
         calculate_read_modification_stats,
         clean_NaN,
+        filter_reads_on_cigar_indels,
         filter_reads_on_length_quality_mapping,
         filter_reads_on_modification_thresholds,
         flag_duplicate_reads,
         invert_adata,
+        label_deaminase_pcr_chimeras,
         load_sample_sheet,
         preprocess_umi_annotations,
         reindex_references_adata,
@@ -213,11 +280,8 @@ def preprocess_adata_core(
     from .helpers import write_gz_h5ad
 
     ################################### 1) Load existing  ###################################
-    date_str = datetime.today().strftime("%y%m%d")
-    now = datetime.now()
-    time_str = now.strftime("%H%M%S")
-
-    log_level = getattr(logging, cfg.log_level.upper(), logging.INFO)
+    # Logging is configured once by the preprocess_adata() wrapper before dispatch,
+    # covering both this (legacy) path and the partitioned executor path.
 
     # General config variable init - Necessary user passed inputs
     smf_modality = cfg.smf_modality  # needed for specifying if the data is conversion SMF or direct methylation detection SMF. Or deaminase smf Necessary.
@@ -225,17 +289,8 @@ def preprocess_adata_core(
         cfg.output_directory
     )  # Path to the output directory to make for the analysis. Necessary.
     preprocess_directory = output_directory / PREPROCESS_DIR
-    logging_directory = preprocess_directory / LOGGING_DIR
 
     make_dirs([output_directory, preprocess_directory])
-
-    if cfg.emit_log_file:
-        log_file = logging_directory / f"{date_str}_{time_str}_log.log"
-        make_dirs([logging_directory])
-    else:
-        log_file = None
-
-    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
 
     ######### Begin Preprocessing #########
 
@@ -351,6 +406,16 @@ def preprocess_adata_core(
         mapping_quality=cfg.read_mapping_quality_filter_thresholds,
         bypass=None,
         force_redo=None,
+    )
+    print(adata.shape)
+
+    # Filter reads with large internal insertions/deletions (from the alignment CIGAR).
+    adata = filter_reads_on_cigar_indels(
+        adata,
+        max_insertion_length=cfg.max_internal_insertion_length,
+        max_deletion_length=cfg.max_internal_deletion_length,
+        bypass=cfg.bypass_filter_reads_on_cigar_indels,
+        force_redo=cfg.force_redo_filter_reads_on_cigar_indels,
     )
     print(adata.shape)
 
@@ -550,6 +615,16 @@ def preprocess_adata_core(
 
     gc.collect()
 
+    ############### Label deaminase PCR chimeras (C->T <-> G->A strand switch) ###############
+    if smf_modality == "deaminase":
+        adata = label_deaminase_pcr_chimeras(
+            adata,
+            min_events_per_span=cfg.deaminase_chimera_min_events_per_span,
+            min_segment_purity=cfg.deaminase_chimera_min_segment_purity,
+            max_single_strand_fraction=cfg.deaminase_chimera_max_single_strand_fraction,
+            bypass=cfg.bypass_label_deaminase_pcr_chimeras,
+        )
+
     ############### Duplicate detection for conversion/deamination SMF ###############
     if smf_modality != "direct":
         references = adata.obs[cfg.reference_column].cat.categories
@@ -646,6 +721,21 @@ def preprocess_adata_core(
         )
         write_gz_h5ad(adata, pp_adata_path)
 
+    # Free the full `adata` before the deduplicated transforms/write below, so the
+    # full object and the (separate) deduplicated copy are not both resident at
+    # full layer weight -- that double-materialization is a large part of the
+    # preprocess memory peak on conversion/deaminase runs. Only safe when
+    # `adata_unique` is a genuinely distinct object (for `direct` modality it IS
+    # `adata`, so we must not free it) and when the optional full-`adata`
+    # clustermap below is not going to run (it is the only remaining consumer of
+    # the full object). The clustermap section further down sources its layer-key
+    # checks from whichever object survives.
+    _plot_full_clustermap = getattr(cfg, "preprocessed_plot_read_span_quality_clustermaps", False)
+    if adata_unique is not None and adata_unique is not adata and not _plot_full_clustermap:
+        del adata
+        gc.collect()
+        adata = None
+
     # Apply inversion and reindexing only to adata_unique (the deduplicated
     # copy used by downstream analysis).  The full adata is saved without
     # these transforms to avoid the peak memory of inverting all layers.
@@ -676,18 +766,24 @@ def preprocess_adata_core(
     gc.collect()
 
     ############################################### Plot read span mask + base quality clustermaps ###############################################
+    # `adata` may have been freed above to relieve the double-copy peak; source the
+    # layer-key checks from whichever object survives (adata_unique has the same
+    # layer set).
+    _layer_source = adata if adata is not None else adata_unique
     quality_layer = None
-    if BASE_QUALITY_SCORES in adata.layers:
+    if BASE_QUALITY_SCORES in _layer_source.layers:
         quality_layer = BASE_QUALITY_SCORES
-    elif "base_qualities" in adata.layers:
+    elif "base_qualities" in _layer_source.layers:
         quality_layer = "base_qualities"
 
-    if READ_SPAN_MASK not in adata.layers or quality_layer is None:
+    if READ_SPAN_MASK not in _layer_source.layers or quality_layer is None:
         logger.debug(
             "read_span_mask and base quality layers not found; skipping read span/base quality clustermaps."
         )
     else:
-        if getattr(cfg, "preprocessed_plot_read_span_quality_clustermaps", False):
+        if adata is not None and getattr(
+            cfg, "preprocessed_plot_read_span_quality_clustermaps", False
+        ):
             pp_span_quality_dir = preprocess_directory / "06_read_span_and_quality_clustermaps"
             if pp_span_quality_dir.is_dir() and not cfg.force_redo_preprocessing:
                 logger.debug(

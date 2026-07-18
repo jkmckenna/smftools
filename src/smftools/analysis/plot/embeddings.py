@@ -6,12 +6,8 @@ Functions
 plot_embedding_scatter             Scatter plot of an embedding, coloured by a categorical column.
 plot_embedding_density_grid        Grid of per-category 2D KDE density panels over a shared extent.
 plot_cluster_composition_barplot   Stacked barplot of per-sample cluster proportions.
-plot_cluster_proportion_grouped_barplot
-                                    Grouped barplot (cluster on x-axis, one bar per sample
-                                    per cluster) with cell-type fill colours, WT/enh-del
-                                    hatching, and per-biorep points overlaid.
-plot_explained_variance           Scree plot of per-PC explained variance ratio with
-                                    cumulative explained variance overlaid.
+plot_cluster_proportion_grouped_barplot   Grouped barplot (cluster on x-axis, one bar per sample per cluster) with cell-type fill colours, WT/enh-del hatching, and per-biorep points overlaid.
+plot_explained_variance           Scree plot of per-PC explained variance ratio with cumulative explained variance overlaid.
 """
 
 from __future__ import annotations
@@ -601,9 +597,12 @@ def plot_explained_variance(
 
     Parameters
     ----------
-    explained_variance_ratio : 1D array from sklearn PCA.explained_variance_ratio_.
-    output_path              : PNG output path.
-    n_pcs_show               : number of leading PCs to plot.
+    explained_variance_ratio : np.ndarray
+        1D array from sklearn ``PCA.explained_variance_ratio_``.
+    output_path : Path
+        PNG output path.
+    n_pcs_show : int
+        number of leading PCs to plot.
     """
     evr = np.asarray(explained_variance_ratio)
     n_show = min(n_pcs_show, len(evr))

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
 DEFAULT_LOG_FORMAT = "[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s"
 DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+STAGE_LOGGING_SUBDIR = "logs"
 
 
 def setup_logging(
@@ -68,3 +70,32 @@ def setup_logging(
 
 def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
+
+
+def setup_stage_logging(cfg, stage_directory: Union[str, Path]) -> Optional[Path]:
+    """Configure smftools logging once for a CLI stage invocation.
+
+    Must be called at the top of a stage's wrapper function (e.g.
+    ``preprocess_adata``), before any branch that might skip the stage's
+    ``*_core`` function (early-return-if-done, or dispatch to a partitioned
+    executor). Those branches never called ``setup_logging`` themselves, so
+    their output silently fell through to whatever log file a previous stage
+    in the same process had left attached (or nowhere, if this is the first
+    stage) instead of getting their own ``<stage>/logs/`` file.
+
+    Returns the log file path, or ``None`` if ``cfg.emit_log_file`` is falsy.
+    """
+    stage_directory = Path(stage_directory)
+    log_level = getattr(logging, str(getattr(cfg, "log_level", "INFO")).upper(), logging.INFO)
+
+    log_file: Optional[Path] = None
+    if getattr(cfg, "emit_log_file", True):
+        logging_directory = stage_directory / STAGE_LOGGING_SUBDIR
+        logging_directory.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        log_file = logging_directory / f"{now.strftime('%y%m%d')}_{now.strftime('%H%M%S')}_log.log"
+    else:
+        stage_directory.mkdir(parents=True, exist_ok=True)
+
+    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
+    return log_file

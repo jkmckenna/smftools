@@ -82,6 +82,39 @@ def _select_labels(
     return _values_to_str_labels(subset.var[colname].values[sites])
 
 
+def _ordered_columns(
+    subset: "ad.AnnData", sites: np.ndarray, reference: str, index_col_suffix: str | None
+) -> "tuple[np.ndarray, np.ndarray]":
+    """Return (sites, labels) with sites reordered so the reindexed coordinate is ascending.
+
+    Superset of ``_select_labels``: same parameters and label computation, plus
+    an ordering step. When ``index_col_suffix`` is ``None``, ``sites``/labels
+    are returned unchanged (identical to calling ``_select_labels`` alone --
+    the existing, physical column order). When a per-reference-signed
+    reindexed column is present (see ``reindex_references_adata``'s ``invert``
+    parameter), sorting ``sites`` ascending by that column's value naturally
+    reverses the rendered column order for inverted references, without ever
+    touching the underlying AnnData array order -- an inverted reference's
+    reindexed values are already negated, so ascending-value order is
+    descending-``var_names`` order.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        ``(sites, labels)`` -- use the returned ``sites`` (not the original
+        argument) to index the data matrix so plotted columns match the
+        returned ``labels``.
+    """
+    labels = _select_labels(subset, sites, reference, index_col_suffix)
+    if sites.size == 0 or index_col_suffix is None:
+        return sites, labels
+
+    colname = f"{reference}_{index_col_suffix}"
+    values = np.asarray(subset.var[colname].values, dtype=float)[sites]
+    order = np.argsort(values, kind="stable")
+    return sites[order], labels[order]
+
+
 def normalized_mean(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarray:
     """Compute normalized column means for a matrix.
 
