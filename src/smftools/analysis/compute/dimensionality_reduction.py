@@ -15,8 +15,14 @@ run_pipeline          PCA → UMAP → KNN graph → Leiden clustering (composes
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:
+    import umap
+    from sklearn.decomposition import PCA
 
 _DEFAULT_MIN_COL_COVERAGE = 0.05
 _DEFAULT_MIN_ROW_COVERAGE = 0.80
