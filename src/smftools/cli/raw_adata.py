@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 from pathlib import Path
 
@@ -674,13 +675,28 @@ def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: 
     order need not match the original per-reference order, so this
     reordering is not a behavior change, only something already accounted
     for.
+
+    At most ``max_workers`` tasks are ever in flight at once -- the next
+    item is only submitted once a completed result has actually been
+    retrieved (via ``yield``) by the caller. Submitting every item upfront
+    (the previous behavior) decouples submission from consumption: with
+    ``max_workers`` processes computing large per-bucket ragged DataFrames
+    continuously and a single-threaded caller draining them (bookkeeping +
+    parquet writes), completed-but-unretrieved results piled up in the
+    executor's internal queue without bound -- this is what actually caused
+    a ~90GB parent-process blowup on real data even after bounding the
+    downstream chromosome accumulator (see dev/pipeline_scaling_audit.md);
+    that fix only bounded what happens *after* retrieval, not how far ahead
+    of the consumer the pool was allowed to compute. This backpressure
+    caps peak parent-side memory at O(max_workers * per_bucket_result_size)
+    regardless of total experiment size.
     """
     if max_workers <= 1:
         for args in items:
             yield args, worker(*args, **worker_kwargs)
         return
 
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
     from ..memory_guard import (
         _limit_blas_threads_in_worker,
@@ -692,14 +708,23 @@ def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: 
     per_worker_budget_bytes = (
         resolve_memory_budget_bytes(cfg) // max_workers if cfg is not None else 0
     )
+    items_iter = iter(items)
     with ProcessPoolExecutor(
         max_workers=max_workers, initializer=_limit_blas_threads_in_worker
     ) as pool:
         stop_watchdog = start_worker_watchdog(pool, per_worker_budget_bytes)
         try:
-            future_to_args = {pool.submit(worker, *args, **worker_kwargs): args for args in items}
-            for future in as_completed(future_to_args):
-                yield future_to_args[future], future.result()
+            future_to_args = {}
+            for args in itertools.islice(items_iter, max_workers):
+                future_to_args[pool.submit(worker, *args, **worker_kwargs)] = args
+            while future_to_args:
+                done, _pending = wait(future_to_args, return_when=FIRST_COMPLETED)
+                for future in done:
+                    args = future_to_args.pop(future)
+                    yield args, future.result()
+                    next_args = next(items_iter, None)
+                    if next_args is not None:
+                        future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
         finally:
             stop_watchdog()
 

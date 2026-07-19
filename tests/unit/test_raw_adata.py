@@ -440,6 +440,67 @@ def test_map_references_parallel_sequential_matches_process_pool():
     }
 
 
+def test_map_references_parallel_bounds_in_flight_submissions(monkeypatch):
+    # Regression test for a real ~90GB parent-process memory blowup: the old
+    # code submitted every item to the process pool upfront
+    # (`{pool.submit(...): args for args in items}`), decoupling submission
+    # from consumption -- with fast workers producing large per-bucket
+    # results and a single-threaded consumer draining them, completed
+    # results piled up in the executor's queue unbounded by max_workers (see
+    # dev/pipeline_scaling_audit.md). Confirms at most max_workers items are
+    # ever submitted before the first result is retrieved from the
+    # generator, regardless of total item count.
+    import concurrent.futures as cf
+
+    import smftools.memory_guard as memory_guard_module
+
+    submit_calls = []
+
+    class _FakeExecutor:
+        def __init__(self, max_workers=None, initializer=None):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            submit_calls.append(args)
+            future = cf.Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", _FakeExecutor)
+    monkeypatch.setattr(
+        memory_guard_module, "start_worker_watchdog", lambda pool, budget: lambda: None
+    )
+
+    items = [(1,), (2,), (3,), (4,), (5,), (6,)]
+    gen = _map_references_parallel(
+        items, _double_record, max_workers=2, worker_kwargs={"multiplier": 10}
+    )
+
+    next(gen)
+    assert len(submit_calls) == 2, (
+        "only the initial max_workers window should be submitted before the "
+        "first result is consumed"
+    )
+
+    next(gen)
+    next(gen)
+    assert len(submit_calls) == 4, (
+        "each consumed result should trigger exactly one new submission, not "
+        "a fresh burst of everything remaining"
+    )
+
+    # Draining the rest still yields every item exactly once.
+    remaining = list(gen)
+    assert len(remaining) == 3
+    assert len(submit_calls) == 6
+
+
 def test_bucket_read_ids_splits_evenly_regardless_of_clustering():
     # Reproduces the real-data shape that broke position-based windowing:
     # many reads share the exact same genomic position (PCR/library
