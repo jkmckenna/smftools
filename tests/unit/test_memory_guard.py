@@ -197,6 +197,79 @@ def test_start_worker_watchdog_noop_with_nonpositive_budget(monkeypatch) -> None
     stop()  # must not raise
 
 
+def test_watchdog_tolerance_and_grace_period(monkeypatch) -> None:
+    # Regression test for a real batch failure: the watchdog used to kill on
+    # the very first sample over the *bare* per-worker budget, with no
+    # tolerance or grace period -- since that budget is an even split of the
+    # aggregate (resolve_memory_budget_bytes // max_workers), not a measured
+    # per-task estimate, ordinary run-to-run variance regularly puts several
+    # workers a few percent over it at once, aborting the whole pool.
+    # Confirmed on real data: 8 of 11 batch experiments were aborted this
+    # way, each killed worker only 0-4% over budget.
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    # pid 101: sustained ~10% over budget, forever -- within the 20% default
+    # tolerance, must never be killed.
+    # pid 102: alternates over/under threshold every poll -- never *sustains*
+    # over-threshold for grace_polls consecutive polls, must never be killed.
+    # pid 103: sustained ~30% over budget, forever -- beyond tolerance, must
+    # be killed once it has been over-threshold for grace_polls consecutive
+    # polls.
+    rss_sequences_mb = {101: [110], 102: [130, 90], 103: [130]}
+    call_counts = {pid: 0 for pid in rss_sequences_mb}
+    killed: list[int] = []
+
+    class _FakeMemInfo:
+        def __init__(self, rss: int) -> None:
+            self.rss = rss
+
+    class _FakeNoSuchProcess(Exception):
+        pass
+
+    class _FakePsutilProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def memory_info(self) -> _FakeMemInfo:
+            seq = rss_sequences_mb[self.pid]
+            idx = call_counts[self.pid] % len(seq)
+            call_counts[self.pid] += 1
+            return _FakeMemInfo(seq[idx] * 1024 * 1024)
+
+        def kill(self) -> None:
+            killed.append(self.pid)
+
+    class _FakeProc:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def is_alive(self) -> bool:
+            return True
+
+    fake_pool = SimpleNamespace(_processes={pid: _FakeProc(pid) for pid in rss_sequences_mb})
+    fake_psutil = SimpleNamespace(Process=_FakePsutilProcess, NoSuchProcess=_FakeNoSuchProcess)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    budget_bytes = 100 * 1024 * 1024
+    stop = start_worker_watchdog(
+        fake_pool,
+        budget_bytes,
+        poll_interval=0.02,
+        tolerance_fraction=0.2,
+        grace_polls=3,
+    )
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and 103 not in killed:
+            time.sleep(0.02)
+    finally:
+        stop()
+
+    assert 101 not in killed, "sustained-but-within-tolerance worker must not be killed"
+    assert 102 not in killed, "worker with only transient spikes must not be killed"
+    assert 103 in killed, "worker sustained beyond tolerance for grace_polls must be killed"
+
+
 def _hog_memory(mb: int, hold_seconds: float) -> None:
     block = bytearray(mb * 1024 * 1024)
     # Touch every page so RSS actually reflects the allocation immediately,

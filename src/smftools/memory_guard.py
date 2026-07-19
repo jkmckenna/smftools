@@ -220,13 +220,21 @@ def _live_worker_pids(pool) -> list[int]:
     return pids
 
 
+DEFAULT_WATCHDOG_TOLERANCE_FRACTION = 0.2
+DEFAULT_WATCHDOG_GRACE_POLLS = 3
+
+
 def start_worker_watchdog(
     pool,
     per_worker_budget_bytes: int,
     poll_interval: float = DEFAULT_WORKER_POLL_INTERVAL_SECONDS,
+    *,
+    tolerance_fraction: float = DEFAULT_WATCHDOG_TOLERANCE_FRACTION,
+    grace_polls: int = DEFAULT_WATCHDOG_GRACE_POLLS,
 ) -> Callable[[], None]:
     """Best-effort: poll `pool`'s worker processes' RSS and kill any worker that
-    exceeds `per_worker_budget_bytes`.
+    *sustains* usage over `per_worker_budget_bytes` (plus `tolerance_fraction`
+    headroom) for `grace_polls` consecutive polls.
 
     `pool` may be a `multiprocessing.pool.Pool` or a
     `concurrent.futures.ProcessPoolExecutor` -- see `_live_worker_pids`.
@@ -236,6 +244,24 @@ def start_worker_watchdog(
     and running both mechanisms at once would just mean two different things can
     kill a worker for the same reason. This is the fallback for platforms (macOS)
     where no process-tree memory cap is available.
+
+    `per_worker_budget_bytes` is `resolve_memory_budget_bytes(cfg) // max_workers`
+    -- an even split of the aggregate budget, not a measured per-task estimate
+    (`resolve_max_workers` sizes the pool from `cfg.target_task_memory_mb`,
+    which can be off by an order of magnitude from a task's real footprint).
+    When real per-worker usage naturally clusters right at that even-split
+    boundary, multiple workers can each land a few percent over it from
+    ordinary run-to-run variance -- a bare "kill on the first sample over
+    budget" check (the previous behavior) then aborts the whole pool over a
+    handful of MB, even though the pool's *aggregate* usage may still be safe.
+    Confirmed on real batch data: 8 of 11 experiments were aborted this way in
+    a single run, each killed worker only 0-4% over budget (see
+    dev/pipeline_scaling_audit.md). `tolerance_fraction` absorbs that
+    variance, and `grace_polls` absorbs single-sample spikes (a worker must be
+    over budget on `grace_polls` *consecutive* polls, not just once) --
+    together these still catch genuine runaway growth (which keeps climbing
+    across polls) while not aborting a pool for a worker that's merely
+    hovering near its fair share.
 
     Returns a `stop()` callable that must be called (typically in a `finally`)
     once the pool's work is done, to stop the polling thread.
@@ -253,34 +279,63 @@ def start_worker_watchdog(
         logger.debug("No positive per-worker memory budget provided; watchdog disabled")
         return lambda: None
 
+    kill_threshold_bytes = per_worker_budget_bytes * (1.0 + max(0.0, tolerance_fraction))
+    grace_polls = max(1, grace_polls)
     stop_event = threading.Event()
 
     def _poll_loop() -> None:
+        consecutive_over: dict[int, int] = {}
         while not stop_event.is_set():
-            for pid in _live_worker_pids(pool):
+            live_pids = set(_live_worker_pids(pool))
+            for pid in list(consecutive_over):
+                if pid not in live_pids:
+                    consecutive_over.pop(pid, None)
+            for pid in live_pids:
                 try:
                     rss = psutil.Process(pid).memory_info().rss
                 except psutil.NoSuchProcess:
+                    consecutive_over.pop(pid, None)
                     continue
-                if rss > per_worker_budget_bytes:
-                    logger.error(
-                        "MemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB budget; "
-                        "terminating to protect the machine",
+                if rss <= kill_threshold_bytes:
+                    consecutive_over.pop(pid, None)
+                    continue
+                consecutive_over[pid] = consecutive_over.get(pid, 0) + 1
+                if consecutive_over[pid] < grace_polls:
+                    logger.warning(
+                        "MemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB threshold "
+                        "(budget %.2f GiB + %.0f%% tolerance) for %d/%d consecutive poll(s)",
                         pid,
                         rss / (1024**3),
+                        kill_threshold_bytes / (1024**3),
                         per_worker_budget_bytes / (1024**3),
+                        tolerance_fraction * 100,
+                        consecutive_over[pid],
+                        grace_polls,
                     )
-                    try:
-                        psutil.Process(pid).kill()
-                    except psutil.NoSuchProcess:
-                        pass
+                    continue
+                logger.error(
+                    "MemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB threshold "
+                    "for %d consecutive polls; terminating to protect the machine",
+                    pid,
+                    rss / (1024**3),
+                    kill_threshold_bytes / (1024**3),
+                    grace_polls,
+                )
+                try:
+                    psutil.Process(pid).kill()
+                except psutil.NoSuchProcess:
+                    pass
+                consecutive_over.pop(pid, None)
             stop_event.wait(poll_interval)
 
     thread = threading.Thread(target=_poll_loop, name="smftools-memory-watchdog", daemon=True)
     thread.start()
     logger.info(
-        "Per-worker memory watchdog enabled: %.2f GiB budget/worker, polling every %.1fs",
+        "Per-worker memory watchdog enabled: %.2f GiB budget/worker (+%.0f%% tolerance, "
+        "%d-poll grace period), polling every %.1fs",
         per_worker_budget_bytes / (1024**3),
+        tolerance_fraction * 100,
+        grace_polls,
         poll_interval,
     )
 
