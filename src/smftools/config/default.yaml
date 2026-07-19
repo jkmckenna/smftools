@@ -533,6 +533,7 @@ concatenate_recompute_pp_vars: True  # Recompute calculate_coverage and append_b
 # Pipeline control flow - load adata
 force_redo_load_adata: False # Whether to perform load adata command from start
 raw_parquet_shard_size: 100000 # Maximum reads per raw parquet shard
+raw_bucket_max_reads: 4000 # Maximum reads per raw-ingestion extraction bucket (bounds per-worker memory independent of experiment size)
 analysis_mode: auto # auto, locus, or genome; auto plans each reference independently
 load_cache_mode: auto # auto, full, tiled, or none
 max_full_matrix_gb: 8.0 # Dense-size threshold used by automatic per-reference planning

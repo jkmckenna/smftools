@@ -670,24 +670,48 @@ def _bucket_read_ids(read_ids: list[str], n_buckets: int) -> list[set[str]]:
 
 
 def _n_buckets_for_reference(
-    n_reads: int, max_workers: int, *, min_reads_per_bucket: int = 500
+    n_reads: int,
+    max_workers: int,
+    *,
+    min_reads_per_bucket: int = 500,
+    max_reads_per_bucket: int = 4000,
 ) -> int:
     """How many buckets to split one reference's reads into for parallel
     extraction.
 
-    Parallelizing per-chromosome alone caps concurrency at the reference
-    count and load-balances poorly when read depth is uneven across
-    references (an amplicon panel with one 40x-oversequenced short locus and
-    several lightly-sequenced ones, say) -- splitting each reference's reads
-    into several buckets instead lets the pool's work-stealing scheduler
-    balance uneven per-bucket cost dynamically, rather than being stuck
-    waiting on one large indivisible per-reference unit. Capped so buckets
-    don't get so small that per-bucket overhead (a fetch call, a worker
-    round-trip) would dominate the actual extraction work.
+    Two, separate constraints combine here, and conflating them previously
+    caused large experiments to blow their per-worker memory budget:
+
+    - Parallelism: parallelizing per-chromosome alone caps concurrency at the
+      reference count and load-balances poorly when read depth is uneven
+      across references (an amplicon panel with one 40x-oversequenced short
+      locus and several lightly-sequenced ones, say) -- splitting each
+      reference's reads into several buckets instead lets the pool's
+      work-stealing scheduler balance uneven per-bucket cost dynamically.
+      Bucket count is floored so buckets don't get so small that per-bucket
+      overhead (a fetch call, a worker round-trip) would dominate the actual
+      extraction work -- this alone would cap bucket count at ``max_workers``.
+    - Memory: each bucket's ragged per-read data is held in memory by
+      whichever worker processes it (see ``_map_references_parallel``, whose
+      own concurrency is bounded separately by
+      ``memory_guard.resolve_max_workers``). Capping bucket *count* at
+      ``max_workers`` regardless of ``n_reads`` left bucket *size* --
+      and so per-worker memory -- scaling linearly with reference read
+      count: fine for a small experiment, but a large one could put tens of
+      thousands of reads in a single bucket and exceed the per-worker
+      memory budget entirely (see dev/pipeline_scaling_audit.md). Bucket
+      count must grow with ``n_reads`` past ``max_workers`` once
+      ``n_reads / max_workers`` would exceed ``max_reads_per_bucket``, so
+      bucket size -- and therefore memory -- stays experiment-size-independent.
     """
-    if max_workers <= 1:
+    if n_reads <= 0:
         return 1
-    return max(1, min(max_workers, n_reads // min_reads_per_bucket))
+    if max_workers <= 1:
+        by_memory = -(-n_reads // max_reads_per_bucket)  # ceil division
+        return max(1, by_memory)
+    by_parallelism = min(max_workers, max(1, n_reads // min_reads_per_bucket))
+    by_memory = -(-n_reads // max_reads_per_bucket)  # ceil division
+    return max(1, by_parallelism, by_memory)
 
 
 def _split_modkit_tsv_by_bucket(
@@ -1021,7 +1045,11 @@ def _build_ragged_records_streaming_convertible(
             info = record_info[record]
             record_chromosome[record] = info.chromosome
             read_ids = _read_ids_for_reference(aligned_bam, record)
-            n_buckets = _n_buckets_for_reference(len(read_ids), max_workers)
+            n_buckets = _n_buckets_for_reference(
+                len(read_ids),
+                max_workers,
+                max_reads_per_bucket=int(getattr(cfg, "raw_bucket_max_reads", 4000)),
+            )
             buckets = _bucket_read_ids(read_ids, n_buckets)
             buckets_remaining[record] = len(buckets)
             for bucket in buckets:
@@ -1163,7 +1191,11 @@ def _build_ragged_records_streaming_direct(
         bucket_id_counter = 0
         for record, (_record_length, sequence) in reference_map.items():
             read_ids = _read_ids_for_reference(aligned_bam, record)
-            n_buckets = _n_buckets_for_reference(len(read_ids), max_workers)
+            n_buckets = _n_buckets_for_reference(
+                len(read_ids),
+                max_workers,
+                max_reads_per_bucket=int(getattr(cfg, "raw_bucket_max_reads", 4000)),
+            )
             buckets = _bucket_read_ids(read_ids, n_buckets)
             buckets_remaining[record] = len(buckets)
             for bucket in buckets:

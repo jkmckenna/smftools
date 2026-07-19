@@ -371,13 +371,44 @@ def test_bucket_read_ids_more_buckets_than_reads_drops_empty_buckets():
     assert set().union(*buckets) == {"a", "b"}
 
 
-def test_n_buckets_for_reference_caps_at_max_workers_and_min_reads():
-    # Plenty of reads, few workers: capped by max_workers.
-    assert _n_buckets_for_reference(100_000, max_workers=4, min_reads_per_bucket=500) == 4
+def test_n_buckets_for_reference_caps_at_max_workers_when_memory_allows():
+    # Plenty of reads, few workers, but still under the memory ceiling
+    # (100_000 / 4 = 25_000 <= a generous max_reads_per_bucket): capped by
+    # max_workers, same as before the memory-safety fix.
+    assert (
+        _n_buckets_for_reference(
+            100_000, max_workers=4, min_reads_per_bucket=500, max_reads_per_bucket=50_000
+        )
+        == 4
+    )
     # Few reads: capped by min_reads_per_bucket, not max_workers.
     assert _n_buckets_for_reference(300, max_workers=8, min_reads_per_bucket=500) == 1
-    # Single worker: never split, regardless of read count.
-    assert _n_buckets_for_reference(100_000, max_workers=1, min_reads_per_bucket=500) == 1
+
+
+def test_n_buckets_for_reference_scales_past_max_workers_for_memory_safety():
+    # Regression test: bucket count used to be capped at max_workers no
+    # matter how large n_reads was, so bucket (and per-worker memory) size
+    # scaled linearly with reference read count -- fine for a small
+    # experiment, but large experiments blew past the per-worker memory
+    # budget entirely (see dev/pipeline_scaling_audit.md). Bucket count must
+    # now grow past max_workers once n_reads/max_workers would exceed
+    # max_reads_per_bucket, keeping bucket size experiment-size-independent.
+    n_buckets = _n_buckets_for_reference(
+        700_000, max_workers=12, min_reads_per_bucket=500, max_reads_per_bucket=4_000
+    )
+    assert n_buckets == 175
+    assert n_buckets > 12
+    assert 700_000 // n_buckets <= 4_000
+
+
+def test_n_buckets_for_reference_single_worker_still_respects_memory_ceiling():
+    # A single-worker config used to always return 1 bucket regardless of
+    # read count, putting an entire large reference's data in one process --
+    # the memory ceiling must still apply even with no parallelism to gain.
+    n_buckets = _n_buckets_for_reference(
+        700_000, max_workers=1, min_reads_per_bucket=500, max_reads_per_bucket=4_000
+    )
+    assert n_buckets == 175
 
 
 def test_resolve_direct_call_picks_highest_probability_state():

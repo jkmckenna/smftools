@@ -1130,6 +1130,7 @@ class ExperimentConfig:
     # Pipeline control flow - load adata
     force_redo_load_adata: bool = False
     raw_parquet_shard_size: int = 100000
+    raw_bucket_max_reads: int = 4000
     analysis_mode: str = "auto"
     load_cache_mode: str = "auto"
     max_full_matrix_gb: float = 8.0
@@ -2128,6 +2129,9 @@ class ExperimentConfig:
             force_redo_load_adata=merged.get("force_redo_load_adata", False),
             raw_parquet_shard_size=int(
                 _parse_numeric(merged.get("raw_parquet_shard_size", 100000), 100000)
+            ),
+            raw_bucket_max_reads=int(
+                _parse_numeric(merged.get("raw_bucket_max_reads", 4000), 4000)
             ),
             analysis_mode=str(merged.get("analysis_mode", "auto")),
             load_cache_mode=str(merged.get("load_cache_mode", "auto")),
