@@ -145,3 +145,66 @@ def test_materialize_ragged_pads_shorter_references():
     np.testing.assert_array_equal(
         result.layers[SEQUENCE_INTEGER_ENCODING][0, 4:], [padding, padding]
     )
+
+
+def _multi_read_frame() -> pd.DataFrame:
+    """Three reads on one reference, distinct read_ids, for streaming tests."""
+    base = _ragged_frame().iloc[0].to_dict()
+    rows = []
+    for i, read_id in enumerate(("read1", "read2", "read3")):
+        row = dict(base)
+        row[READ_ID] = read_id
+        row["Reference_strand"] = "chr1_top"
+        row[MODIFICATION_SIGNAL] = [float(i * 10 + value) for value in range(9)]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def test_materialize_ragged_streaming_matches_whole_frame():
+    # The memory fix: streaming shard-by-shard must produce byte-identical
+    # output to reading the whole selection at once. Chunks are split so a
+    # read's output row (obs order) differs from its chunk order, and one
+    # chunk carries a read not in the selection (shards hold many barcodes'
+    # reads) -- both must be handled: scatter to the right row, ignore the
+    # extra read.
+    from smftools.informatics.ragged_store import materialize_ragged_streaming
+
+    frame = _multi_read_frame()
+    obs = pd.DataFrame(
+        {"Reference_strand": ["chr1_top", "chr1_top", "chr1_top"]},
+        index=["read3", "read1", "read2"],  # deliberately not chunk order
+    )
+    reference_lengths = {"chr1_top": 12}
+
+    whole = materialize_ragged(frame, obs=obs, reference_lengths=reference_lengths)
+
+    # A stray read ("read9") in a chunk must be ignored, not scattered.
+    stray = frame.iloc[[0]].copy()
+    stray[READ_ID] = ["read9"]
+    chunk_a = pd.concat([frame.iloc[[1]], stray], ignore_index=True)  # read2 + read9
+    chunk_b = frame.iloc[[0, 2]].reset_index(drop=True)  # read1, read3
+    stream = materialize_ragged_streaming(
+        [chunk_a, chunk_b], obs=obs, reference_lengths=reference_lengths
+    )
+
+    assert list(map(str, stream.obs_names)) == ["read3", "read1", "read2"]
+    assert list(stream.var_names) == list(whole.var_names)
+    np.testing.assert_array_equal(stream.X, whole.X)
+    assert set(stream.layers) == set(whole.layers)
+    for layer in whole.layers:
+        np.testing.assert_array_equal(stream.layers[layer], whole.layers[layer])
+
+
+def test_materialize_ragged_streaming_raises_on_missing_read():
+    from smftools.informatics.ragged_store import materialize_ragged_streaming
+
+    frame = _multi_read_frame()
+    obs = pd.DataFrame(
+        {"Reference_strand": ["chr1_top", "chr1_top", "chr1_top"]},
+        index=["read1", "read2", "read3"],
+    )
+    # Chunks omit read3 entirely -- must raise, not silently drop a selected read.
+    with pytest.raises(KeyError, match="lacks 1 selected read"):
+        materialize_ragged_streaming(
+            [frame.iloc[[0, 1]]], obs=obs, reference_lengths={"chr1_top": 12}
+        )

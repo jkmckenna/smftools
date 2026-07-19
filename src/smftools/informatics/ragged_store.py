@@ -356,26 +356,28 @@ def _reference_lengths_for_rows(
     return lengths, max(lengths.values())
 
 
-def materialize_ragged(
-    frame: pd.DataFrame,
-    *,
-    obs: pd.DataFrame,
-    reference_lengths: Mapping[str, int],
-    layers: Iterable[str] | None = None,
-    uns: Mapping[str, object] | None = None,
-    start: int | None = None,
-    end: int | None = None,
-) -> "ad.AnnData":
-    """Scatter selected read-relative records onto a dense reference grid."""
-    import anndata as ad
+class _DenseGrids:
+    """Preallocated dense output arrays a ragged scatter fills in place."""
 
-    frame = validate_ragged_frame(frame).set_index(READ_ID, drop=False)
-    read_ids = list(map(str, obs.index))
-    missing = [read_id for read_id in read_ids if read_id not in frame.index]
-    if missing:
-        raise KeyError(f"ragged store lacks {len(missing)} selected read(s), e.g. {missing[0]!r}")
-    frame = frame.loc[read_ids]
-    lengths, full_n_positions = _reference_lengths_for_rows(frame, reference_lengths)
+    __slots__ = ("signal", "sequence", "mismatch", "quality", "span", "feature_layers")
+
+    def __init__(self, n_reads: int, n_positions: int, feature_layer_names: Iterable[str]):
+        unknown = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"]
+        self.signal = np.full((n_reads, n_positions), np.nan, dtype=np.float32)
+        self.sequence = np.full((n_reads, n_positions), unknown, dtype=np.int8)
+        self.mismatch = np.full((n_reads, n_positions), unknown, dtype=np.int8)
+        self.quality = np.full((n_reads, n_positions), -1, dtype=np.int8)
+        self.span = np.zeros((n_reads, n_positions), dtype=np.int8)
+        self.feature_layers: dict[str, np.ndarray] = {
+            name: np.full((n_reads, n_positions), np.nan, dtype=np.float32)
+            for name in feature_layer_names
+        }
+
+
+def _resolve_materialize_window(
+    lengths: Mapping[str, int], full_n_positions: int, start: int | None, end: int | None
+) -> tuple[int, int, int]:
+    """Validate ``start``/``end`` and return ``(window_start, window_end, n_positions)``."""
     if (start is None) != (end is None):
         raise ValueError("start and end must be provided together")
     window_start = 0 if start is None else int(start)
@@ -391,91 +393,91 @@ def materialize_ragged(
                 f"materialization interval ends at {window_end}, beyond reference length "
                 f"{reference_length}"
             )
-    n_positions = window_end - window_start
-    n_reads = len(read_ids)
-    unknown = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"]
-    padding = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["PAD"]
+    return window_start, window_end, window_end - window_start
 
-    signal = np.full((n_reads, n_positions), np.nan, dtype=np.float32)
-    sequence = np.full((n_reads, n_positions), unknown, dtype=np.int8)
-    mismatch = np.full((n_reads, n_positions), unknown, dtype=np.int8)
-    quality = np.full((n_reads, n_positions), -1, dtype=np.int8)
-    span = np.zeros((n_reads, n_positions), dtype=np.int8)
 
-    # Optional current signal-feature layers (only when raw captured move tables).
-    requested = None if layers is None else set(layers)
-    signal_feature_layers: dict[str, np.ndarray] = {}
-    for column, layer_name in SIGNAL_FEATURE_LAYERS.items():
-        if column not in frame.columns:
-            continue
-        if requested is not None and layer_name not in requested:
-            continue
-        if not frame[column].notna().any():
-            continue
-        signal_feature_layers[layer_name] = np.full(
-            (n_reads, n_positions), np.nan, dtype=np.float32
-        )
+def _scatter_read_row(
+    row,
+    out_row: int,
+    *,
+    grids: _DenseGrids,
+    lengths: Mapping[str, int],
+    full_n_positions: int,
+    window_start: int,
+    window_end: int,
+    end: int | None,
+    padding: int,
+) -> None:
+    """Scatter one read's ragged arrays into ``grids`` at output row ``out_row``.
 
-    for row_number, (_read_id, row) in enumerate(frame.iterrows()):
-        ref_length = lengths[str(row[REFERENCE_STRAND])]
-        if end is None and ref_length < full_n_positions:
-            sequence[row_number, ref_length:] = padding
-            mismatch[row_number, ref_length:] = padding
-        read_start = int(row[REFERENCE_START])
-        read_end = min(read_start + int(row[ALIGNED_LENGTH]), ref_length)
-        span_start = max(read_start, window_start)
-        span_end = min(read_end, window_end)
-        if span_start < span_end:
-            span[row_number, span_start - window_start : span_end - window_start] = 1
+    The single source of truth for the ragged->dense CIGAR scatter, shared by the
+    whole-frame (``materialize_ragged``) and streaming (``materialize_ragged_
+    streaming``) paths so the two can never diverge numerically.
+    """
+    ref_length = lengths[str(row[REFERENCE_STRAND])]
+    if end is None and ref_length < full_n_positions:
+        grids.sequence[out_row, ref_length:] = padding
+        grids.mismatch[out_row, ref_length:] = padding
+    read_start = int(row[REFERENCE_START])
+    read_end = min(read_start + int(row[ALIGNED_LENGTH]), ref_length)
+    span_start = max(read_start, window_start)
+    span_end = min(read_end, window_end)
+    if span_start < span_end:
+        grids.span[out_row, span_start - window_start : span_end - window_start] = 1
 
-        arrays = {
-            MODIFICATION_SIGNAL: _as_list(row.get(MODIFICATION_SIGNAL)),
-            SEQUENCE: _as_list(row.get(SEQUENCE)),
-            MISMATCH: _as_list(row.get(MISMATCH)),
-            QUALITY: _as_list(row.get(QUALITY)),
-        }
-        feature_lists = {
-            layer_name: _as_list(row.get(column))
-            for column, layer_name in SIGNAL_FEATURE_LAYERS.items()
-            if layer_name in signal_feature_layers
-        }
-        for query_position, reference_position in iter_cigar_aligned_pairs(
-            str(row[CIGAR]), read_start
+    signal_values = _as_list(row.get(MODIFICATION_SIGNAL))
+    sequence_values = _as_list(row.get(SEQUENCE))
+    mismatch_values = _as_list(row.get(MISMATCH))
+    quality_values = _as_list(row.get(QUALITY))
+    feature_lists = {
+        layer_name: _as_list(row.get(column))
+        for column, layer_name in SIGNAL_FEATURE_LAYERS.items()
+        if layer_name in grids.feature_layers
+    }
+    for query_position, reference_position in iter_cigar_aligned_pairs(str(row[CIGAR]), read_start):
+        if (
+            reference_position < window_start
+            or reference_position >= window_end
+            or reference_position >= ref_length
         ):
-            if (
-                reference_position < window_start
-                or reference_position >= window_end
-                or reference_position >= ref_length
-            ):
-                continue
-            target_position = reference_position - window_start
-            if arrays[MODIFICATION_SIGNAL]:
-                signal[row_number, target_position] = arrays[MODIFICATION_SIGNAL][query_position]
-            if arrays[SEQUENCE]:
-                sequence[row_number, target_position] = arrays[SEQUENCE][query_position]
-            if arrays[MISMATCH]:
-                mismatch[row_number, target_position] = arrays[MISMATCH][query_position]
-            if arrays[QUALITY]:
-                quality[row_number, target_position] = arrays[QUALITY][query_position]
-            for layer_name, values in feature_lists.items():
-                if values:
-                    signal_feature_layers[layer_name][row_number, target_position] = values[
-                        query_position
-                    ]
+            continue
+        target_position = reference_position - window_start
+        if signal_values:
+            grids.signal[out_row, target_position] = signal_values[query_position]
+        if sequence_values:
+            grids.sequence[out_row, target_position] = sequence_values[query_position]
+        if mismatch_values:
+            grids.mismatch[out_row, target_position] = mismatch_values[query_position]
+        if quality_values:
+            grids.quality[out_row, target_position] = quality_values[query_position]
+        for layer_name, values in feature_lists.items():
+            if values:
+                grids.feature_layers[layer_name][out_row, target_position] = values[query_position]
+
+
+def _assemble_ragged_adata(
+    grids: _DenseGrids,
+    obs: pd.DataFrame,
+    layers: Iterable[str] | None,
+    uns: Mapping[str, object] | None,
+    window_start: int,
+    window_end: int,
+) -> "ad.AnnData":
+    import anndata as ad
 
     available_layers = {
-        SEQUENCE_INTEGER_ENCODING: sequence,
-        MISMATCH_INTEGER_ENCODING: mismatch,
-        BASE_QUALITY_SCORES: quality,
-        READ_SPAN_MASK: span,
-        **signal_feature_layers,
+        SEQUENCE_INTEGER_ENCODING: grids.sequence,
+        MISMATCH_INTEGER_ENCODING: grids.mismatch,
+        BASE_QUALITY_SCORES: grids.quality,
+        READ_SPAN_MASK: grids.span,
+        **grids.feature_layers,
     }
     keep = set(available_layers) if layers is None else set(layers)
     unknown_layers = keep.difference(available_layers)
     if unknown_layers:
         raise KeyError(f"ragged store cannot materialize layers: {sorted(unknown_layers)}")
     result = ad.AnnData(
-        X=signal,
+        X=grids.signal,
         obs=obs.copy(),
         layers={key: value for key, value in available_layers.items() if key in keep},
     )
@@ -483,3 +485,132 @@ def materialize_ragged(
     if uns:
         result.uns.update(dict(uns))
     return result
+
+
+def materialize_ragged(
+    frame: pd.DataFrame,
+    *,
+    obs: pd.DataFrame,
+    reference_lengths: Mapping[str, int],
+    layers: Iterable[str] | None = None,
+    uns: Mapping[str, object] | None = None,
+    start: int | None = None,
+    end: int | None = None,
+) -> "ad.AnnData":
+    """Scatter selected read-relative records onto a dense reference grid.
+
+    Whole-frame entry point: the caller already holds every selected read's
+    ragged arrays in ``frame``. ``materialize_ragged_streaming`` is the
+    memory-bounded variant for large selections (it never holds more than one
+    shard's ragged frame plus the dense output at once); both share
+    ``_scatter_read_row`` so they cannot diverge.
+    """
+    frame = validate_ragged_frame(frame).set_index(READ_ID, drop=False)
+    read_ids = list(map(str, obs.index))
+    missing = [read_id for read_id in read_ids if read_id not in frame.index]
+    if missing:
+        raise KeyError(f"ragged store lacks {len(missing)} selected read(s), e.g. {missing[0]!r}")
+    frame = frame.loc[read_ids]
+    lengths, full_n_positions = _reference_lengths_for_rows(frame, reference_lengths)
+    window_start, window_end, n_positions = _resolve_materialize_window(
+        lengths, full_n_positions, start, end
+    )
+    requested = None if layers is None else set(layers)
+    feature_names = [
+        layer_name
+        for column, layer_name in SIGNAL_FEATURE_LAYERS.items()
+        if column in frame.columns
+        and (requested is None or layer_name in requested)
+        and frame[column].notna().any()
+    ]
+    grids = _DenseGrids(len(read_ids), n_positions, feature_names)
+    padding = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["PAD"]
+    for out_row, (_read_id, row) in enumerate(frame.iterrows()):
+        _scatter_read_row(
+            row,
+            out_row,
+            grids=grids,
+            lengths=lengths,
+            full_n_positions=full_n_positions,
+            window_start=window_start,
+            window_end=window_end,
+            end=end,
+            padding=padding,
+        )
+    return _assemble_ragged_adata(grids, obs, layers, uns, window_start, window_end)
+
+
+def materialize_ragged_streaming(
+    chunks: Iterable[pd.DataFrame],
+    *,
+    obs: pd.DataFrame,
+    reference_lengths: Mapping[str, int],
+    layers: Iterable[str] | None = None,
+    uns: Mapping[str, object] | None = None,
+    start: int | None = None,
+    end: int | None = None,
+) -> "ad.AnnData":
+    """Memory-bounded ``materialize_ragged`` that consumes ragged frames in chunks.
+
+    ``obs`` (one row per selected read, in output order) fixes the dense output
+    shape/order and, via its ``Reference_strand`` column, the reference lengths --
+    so the dense grids are preallocated once, up front, from ``obs`` alone. Each
+    chunk (e.g. one parquet shard filtered to the selection) is then scattered
+    into those grids and freed before the next arrives; peak memory is therefore
+    ~one chunk's ragged frame + the dense output, independent of the total
+    selection size. This is the fix for a real ~27x memory balloon: reading a
+    whole selection's ragged arrays into one pandas frame before compacting to
+    dense (int64/float64 list-columns are ~25-50x their dense footprint) drove
+    a nominally-0.5GB preprocess task to 16-44GB peak (see
+    dev/pipeline_scaling_audit.md). Reads in a chunk that are not in ``obs`` are
+    ignored (a shard holds many barcodes' reads); a chunk with no matching reads
+    contributes nothing.
+    """
+    read_ids = list(map(str, obs.index))
+    row_of = {read_id: index for index, read_id in enumerate(read_ids)}
+    lengths, full_n_positions = _reference_lengths_for_rows(obs, reference_lengths)
+    window_start, window_end, n_positions = _resolve_materialize_window(
+        lengths, full_n_positions, start, end
+    )
+    requested = None if layers is None else set(layers)
+    padding = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["PAD"]
+    grids: _DenseGrids | None = None
+    seen: set[str] = set()
+    for chunk in chunks:
+        chunk = validate_ragged_frame(chunk)
+        if grids is None:
+            # Shards share one schema, so the first chunk's columns decide which
+            # signal-feature layers can exist; all-NaN ones are dropped at the end
+            # to match materialize_ragged's per-column ``notna().any()`` skip.
+            feature_names = [
+                layer_name
+                for column, layer_name in SIGNAL_FEATURE_LAYERS.items()
+                if column in chunk.columns and (requested is None or layer_name in requested)
+            ]
+            grids = _DenseGrids(len(read_ids), n_positions, feature_names)
+        for _index, row in chunk.iterrows():
+            read_id = str(row[READ_ID])
+            out_row = row_of.get(read_id)
+            if out_row is None:
+                continue
+            _scatter_read_row(
+                row,
+                out_row,
+                grids=grids,
+                lengths=lengths,
+                full_n_positions=full_n_positions,
+                window_start=window_start,
+                window_end=window_end,
+                end=end,
+                padding=padding,
+            )
+            seen.add(read_id)
+    if grids is None:
+        grids = _DenseGrids(len(read_ids), n_positions, [])
+    missing = [read_id for read_id in read_ids if read_id not in seen]
+    if missing:
+        raise KeyError(f"ragged store lacks {len(missing)} selected read(s), e.g. {missing[0]!r}")
+    for name in list(grids.feature_layers):
+        if np.isnan(grids.feature_layers[name]).all():
+            del grids.feature_layers[name]
+    return _assemble_ragged_adata(grids, obs, layers, uns, window_start, window_end)
