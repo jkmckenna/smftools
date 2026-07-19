@@ -132,30 +132,30 @@ which interpreter you're actually running and whether it has the extras the fail
 - Never hardcode credentials.
 - If sample keys are needed, use obvious placeholders like `YOUR_API_KEY_HERE`.
 
-  ## Git / PR hygiene
-  - Keep commits focused.
-  - Update docs/changelog if behavior or user-facing CLI changes.
-  - If you change a CLI flag or config schema, add a migration note.
-  - Feature/fix identity is decoupled from release versions. Branch names describe the work, not a
-    planned version slot: `feature/<description>` or `fix/<description>`, cut from `main`. Do not
-    bump `src/smftools/_version.py` on these branches — that happens only on a release branch (see
-    below), which avoids merge conflicts when multiple feature branches are in flight and lets them
-    merge into `main` in whatever order they're ready, not a predetermined sequence.
-  - `main`'s `_version.py` carries a `.devN` suffix between releases (e.g. `2.16.0.dev0`) so its
-    version string is always distinguishable from an actual release. Hatch reads this directly, so
-    `.devN` is a valid build version, not just a convention.
-  - To cut a release: create `release/<version>` from `main`, set `_version.py` to the plain
-    `MAJOR.MINOR.PATCH` (no `.devN`), add `docs/source/release-notes/<version>.md` (summarize
-    `git log <prev-tag>..HEAD` — one to a few sentences, matching the terse style of existing
-    entries in that directory) and add its `{include}` block to `docs/source/release-notes/index.md`,
-    then run `python -m build && twine check dist/*` as a local sanity check. After that branch
-    merges to `main`, tag the resulting merge commit locally (`git tag -a vMAJOR.MINOR.PATCH -m
-    "..."`), then bump `main`'s `_version.py` to the next `MAJOR.MINOR.PATCH.dev0`.
-  - A minor release does not need to correspond to exactly one feature — bundle whatever's ready
-    when the release branch is cut. Patch releases (`MAJOR.MINOR.PATCH+1`) are for bugfix-only
-    follow-ups to an already-tagged release; breaking changes bump `MAJOR`.
-  - Do not push tags, delete branches, merge PRs, or publish build artifacts without explicit
-    confirmation each time — these are shared-state/irreversible actions on a public repo.
+## Git / PR hygiene
+- Keep commits focused.
+- Update docs/changelog if behavior or user-facing CLI changes.
+- If you change a CLI flag or config schema, add a migration note.
+- Feature/fix identity is decoupled from release versions. Branch names describe the work, not a
+  planned version slot: `feature/<description>` or `fix/<description>`, cut from `main`. Do not
+  bump `src/smftools/_version.py` on these branches — that happens only on a release branch (see
+  below), which avoids merge conflicts when multiple feature branches are in flight and lets them
+  merge into `main` in whatever order they're ready, not a predetermined sequence.
+- `main`'s `_version.py` carries a `.devN` suffix between releases (e.g. `2.16.0.dev0`) so its
+  version string is always distinguishable from an actual release. Hatch reads this directly, so
+  `.devN` is a valid build version, not just a convention.
+- To cut a release: create `release/<version>` from `main`, set `_version.py` to the plain
+  `MAJOR.MINOR.PATCH` (no `.devN`), add `docs/source/release-notes/<version>.md` (summarize
+  `git log <prev-tag>..HEAD` — one to a few sentences, matching the terse style of existing
+  entries in that directory) and add its `{include}` block to `docs/source/release-notes/index.md`,
+  then run `python -m build && twine check dist/*` as a local sanity check. After that branch
+  merges to `main`, tag the resulting merge commit locally (`git tag -a vMAJOR.MINOR.PATCH -m
+  "..."`), then bump `main`'s `_version.py` to the next `MAJOR.MINOR.PATCH.dev0`.
+- A minor release does not need to correspond to exactly one feature — bundle whatever's ready
+  when the release branch is cut. Patch releases (`MAJOR.MINOR.PATCH+1`) are for bugfix-only
+  follow-ups to an already-tagged release; breaking changes bump `MAJOR`.
+- Do not push tags, delete branches, merge PRs, or publish build artifacts without explicit
+  confirmation each time — these are shared-state/irreversible actions on a public repo.
 
 ## If something fails
 - If a command fails, paste the full error and summarize likely causes.
