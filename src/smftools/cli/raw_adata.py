@@ -522,6 +522,41 @@ def _split_by_reference_strand(frame: pd.DataFrame):
         yield strand_frame
 
 
+def _yield_flush_result(
+    flush_result: tuple[list[pd.DataFrame], bool] | None,
+    chromosome: str,
+    strands_seen: dict[str, set[str]],
+):
+    """Split one ``_ChromosomeGroupAccumulator`` flush into per-strand yields.
+
+    Yields ``(reference_strand, frame_or_None, is_final)``. ``is_final`` here
+    is per-``Reference_strand``, not per-chromosome: on a chromosome's actual
+    final flush, every ``Reference_strand`` ever seen for it -- not just the
+    ones present in this last batch -- must be marked final, since no more
+    data for any of them is ever coming (a chromosome can yield "_top" and
+    "_bottom" unevenly across flushes; see ``_ChromosomeGroupAccumulator``).
+    Strands with no new rows in a chromosome's final flush still get a
+    ``frame=None`` marker so callers can finalize their own bookkeeping
+    (e.g. ``plan_references``) for them.
+    """
+    if flush_result is None:
+        return
+    frames, is_final = flush_result
+    seen = strands_seen.setdefault(chromosome, set())
+    yielded_now: set[str] = set()
+    if frames:
+        combined = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+        for sub_frame in _split_by_reference_strand(combined):
+            strand = str(sub_frame["Reference_strand"].iloc[0])
+            seen.add(strand)
+            yielded_now.add(strand)
+            yield strand, sub_frame, is_final
+    if is_final:
+        for strand in seen - yielded_now:
+            yield strand, None, True
+        strands_seen.pop(chromosome, None)
+
+
 class _ChromosomeGroupAccumulator:
     """Accumulate per-record completions into per-chromosome combined frames.
 
@@ -536,42 +571,88 @@ class _ChromosomeGroupAccumulator:
     from mismatch trend, not via separate alignment targets), so every
     chromosome here has exactly one contributing record.
 
-    A group must not be finalized (yielded to the streaming shard writer)
-    until every record sharing its chromosome has completed -- finalizing as
-    soon as one record's own buckets finish would hand the writer multiple
-    separate "complete" groups for the same ``Reference_strand``, and it
-    always starts a fresh group at ``shard_index=0``, so a later record's
-    group silently overwrites an earlier one's shard file on disk even
-    though ``obs.parquet`` ends up with pointers for both (real data loss,
+    A chromosome's data must not be handed to the streaming shard writer
+    piecemeal per-record -- if one record's buckets finished and were written
+    while a chromosome sibling record was still outstanding, the writer would
+    see multiple separate groups for the same ``Reference_strand``, and it
+    always started a fresh shard-index count per group, so a later record's
+    group silently overwrote an earlier one's shard file on disk even though
+    ``obs.parquet`` ended up with pointers for both (real data loss,
     confirmed on a real conversion-modality dataset before this fix: 3 of 4
     references affected, up to 23% of reads for one).
+
+    That correctness requirement is about *records*, not about how much of a
+    chromosome's data can be flushed at once -- holding one entire
+    chromosome's ragged data in memory before writing anything doesn't scale
+    with experiment size (a single deaminase chromosome with 700k+ reads put
+    ~87GB in the parent process; see dev/pipeline_scaling_audit.md). So this
+    accumulator supports two independent operations: ``add_partial`` feeds
+    newly-available frames for a record (call it any number of times, e.g.
+    once per completed bucket) and returns a bounded-size flush the moment
+    the chromosome's accumulated row count crosses ``flush_threshold`` --
+    safe to do mid-chromosome, since ``write_raw_store_streaming``'s shard
+    writer now tracks a persistent shard-index per (reference, start_bin)
+    across repeated groups instead of restarting at 0. ``complete`` marks a
+    record as having no more data coming, and only that call can resolve a
+    chromosome's sibling-completion tracking (its own docstring concern is
+    unchanged -- a chromosome isn't *finished* until every record sharing it
+    has called ``complete``, this just no longer requires buffering
+    everything in between).
     """
 
-    def __init__(self, record_chromosome: dict[str, str]):
+    def __init__(self, record_chromosome: dict[str, str], *, flush_threshold: int | None = None):
         self._record_chromosome = dict(record_chromosome)
         self._remaining: dict[str, set[str]] = {}
         for record, chromosome in self._record_chromosome.items():
             self._remaining.setdefault(chromosome, set()).add(record)
         self._pending: dict[str, list[pd.DataFrame]] = {}
+        self._pending_rows: dict[str, int] = {}
+        self._flush_threshold = flush_threshold
 
-    def complete(self, record: str, frames: list[pd.DataFrame]) -> list[pd.DataFrame] | None:
-        """Mark one record's fully-accumulated frames as done.
+    def add_partial(
+        self, record: str, frames: list[pd.DataFrame]
+    ) -> tuple[list[pd.DataFrame], bool] | None:
+        """Feed newly-available frames for ``record`` (e.g. one bucket's rows).
 
-        ``frames`` may be empty (a record that dispatched no work, e.g. zero
-        read_ids, or whose buckets all returned no rows) -- it must still be
-        marked complete so its chromosome siblings aren't blocked forever.
+        Call any number of times per record, including zero times for a
+        record that dispatched no work. Never resolves sibling-completion
+        tracking -- call ``complete`` separately once ``record`` has no more
+        data coming.
 
-        Returns the chromosome's combined frame list once every record
-        sharing its chromosome has completed, else ``None``.
+        Returns ``(frames_to_write, False)`` if the chromosome's accumulated
+        row count just crossed ``flush_threshold`` (a bounded-size, non-final
+        flush), else ``None``.
         """
         chromosome = self._record_chromosome[record]
         if frames:
             self._pending.setdefault(chromosome, []).extend(frames)
+            self._pending_rows[chromosome] = self._pending_rows.get(chromosome, 0) + sum(
+                len(f) for f in frames
+            )
+        if (
+            self._flush_threshold is not None
+            and self._pending_rows.get(chromosome, 0) >= self._flush_threshold
+        ):
+            flushed = self._pending.pop(chromosome, [])
+            self._pending_rows[chromosome] = 0
+            return (flushed, False)
+        return None
+
+    def complete(self, record: str) -> tuple[list[pd.DataFrame], bool] | None:
+        """Mark ``record`` as having no more data coming.
+
+        Returns ``(frames_to_write, True)`` -- whatever is left pending for
+        the chromosome, possibly empty -- once every record sharing
+        ``record``'s chromosome has completed, else ``None``.
+        """
+        chromosome = self._record_chromosome[record]
         remaining = self._remaining[chromosome]
         remaining.discard(record)
         if remaining:
             return None
-        return self._pending.pop(chromosome, [])
+        flushed = self._pending.pop(chromosome, [])
+        self._pending_rows.pop(chromosome, None)
+        return (flushed, True)
 
 
 def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: dict):
@@ -1064,8 +1145,11 @@ def _build_ragged_records_streaming_convertible(
             barcode_sidecar=barcode_sidecar,
             umi_sidecar=umi_sidecar,
         )
-        accumulator = _ChromosomeGroupAccumulator(record_chromosome)
-        record_pending: dict[str, list[pd.DataFrame]] = {}
+        flush_threshold = int(getattr(cfg, "raw_shard_flush_max_reads", 20_000))
+        accumulator = _ChromosomeGroupAccumulator(
+            record_chromosome, flush_threshold=flush_threshold
+        )
+        strands_seen: dict[str, set[str]] = {}
         any_rows = False
         from ..memory_guard import resolve_max_workers
 
@@ -1074,7 +1158,9 @@ def _build_ragged_records_streaming_convertible(
         # chromosome siblings aren't blocked waiting on them forever.
         for record, remaining in buckets_remaining.items():
             if remaining == 0:
-                accumulator.complete(record, [])
+                yield from _yield_flush_result(
+                    accumulator.complete(record), record_chromosome[record], strands_seen
+                )
 
         for args, (bucket_frame, _found_columns) in _map_references_parallel(
             items,
@@ -1083,18 +1169,23 @@ def _build_ragged_records_streaming_convertible(
             worker_kwargs=worker_kwargs,
         ):
             record = args[0]
-            if bucket_frame is not None and not bucket_frame.empty:
-                record_pending.setdefault(record, []).append(bucket_frame)
+            chromosome = record_chromosome[record]
+            frames_for_bucket = (
+                [bucket_frame] if bucket_frame is not None and not bucket_frame.empty else []
+            )
+            for strand, frame, is_final in _yield_flush_result(
+                accumulator.add_partial(record, frames_for_bucket), chromosome, strands_seen
+            ):
+                any_rows = any_rows or frame is not None
+                yield strand, frame, is_final
             buckets_remaining[record] -= 1
             if buckets_remaining[record] != 0:
                 continue
-            frames = accumulator.complete(record, record_pending.pop(record, []))
-            if frames is None:
-                continue
-            if frames:
-                any_rows = True
-                combined = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
-                yield from _split_by_reference_strand(combined)
+            for strand, frame, is_final in _yield_flush_result(
+                accumulator.complete(record), chromosome, strands_seen
+            ):
+                any_rows = any_rows or frame is not None
+                yield strand, frame, is_final
         if not any_rows:
             raise RuntimeError(f"no primary mapped reads were extracted from {aligned_bam}")
 
@@ -1229,7 +1320,10 @@ def _build_ragged_records_streaming_direct(
             umi_sidecar=umi_sidecar,
         )
         pending: dict[str, list[pd.DataFrame]] = {}
+        pending_rows: dict[str, int] = {}
+        strands_seen: dict[str, set[str]] = {}
         any_rows = False
+        flush_threshold = int(getattr(cfg, "raw_shard_flush_max_reads", 20_000))
         from ..memory_guard import resolve_max_workers
 
         try:
@@ -1245,15 +1339,17 @@ def _build_ragged_records_streaming_direct(
                         signal_columns.append(column)
                 if bucket_frame is not None and not bucket_frame.empty:
                     pending.setdefault(record, []).append(bucket_frame)
+                    pending_rows[record] = pending_rows.get(record, 0) + len(bucket_frame)
                 buckets_remaining[record] -= 1
-                if buckets_remaining[record] == 0:
+                is_final = buckets_remaining[record] == 0
+                if is_final or pending_rows.get(record, 0) >= flush_threshold:
                     frames = pending.pop(record, [])
-                    if frames:
-                        any_rows = True
-                        combined = (
-                            frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
-                        )
-                        yield from _split_by_reference_strand(combined)
+                    pending_rows[record] = 0
+                    for strand, frame, strand_is_final in _yield_flush_result(
+                        (frames, is_final), record, strands_seen
+                    ):
+                        any_rows = any_rows or frame is not None
+                        yield strand, frame, strand_is_final
         finally:
             if split_dir is not None:
                 import shutil
@@ -1283,6 +1379,15 @@ def build_ragged_records_streaming(
     which ``_build_ragged_records_streaming_direct`` streams and splits into
     per-bucket chunks itself rather than joining the whole file in one
     process (see that function's docstring).
+
+    The returned generator yields ``(reference_strand, frame_or_None,
+    is_final)`` -- a low-read-depth reference may still appear as a single
+    item, but a high-read-depth one is flushed across several bounded-size
+    items (each capped around ``cfg.raw_shard_flush_max_reads``) instead of
+    accumulating that reference's whole ragged frame in memory first, which
+    otherwise scales with experiment size rather than staying bounded (see
+    dev/pipeline_scaling_audit.md). ``write_raw_store_streaming`` is the
+    intended consumer of this exact shape.
     """
     modality = str(cfg.smf_modality)
     if modality == "direct":

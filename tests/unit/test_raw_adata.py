@@ -16,6 +16,7 @@ from smftools.cli.raw_adata import (
     _resolve_direct_call,
     _split_by_reference_strand,
     _split_modkit_tsv_by_bucket,
+    _yield_flush_result,
 )
 from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT, PREPROCESS_DIR
 
@@ -119,14 +120,18 @@ def test_chromosome_group_accumulator_conversion_waits_for_all_conversion_state_
 
     # First record completes -- must NOT yield yet, its chromosome sibling
     # ("chr1_5mC_top") hasn't completed.
-    result = accumulator.complete("chr1_unconverted_top", [_rows("r1", "r2")])
+    accumulator.add_partial("chr1_unconverted_top", [_rows("r1", "r2")])
+    result = accumulator.complete("chr1_unconverted_top")
     assert result is None
 
     # Second (and last) record for "chr1" completes -- now the combined group
     # for the whole chromosome is returned, with reads from BOTH records.
-    result = accumulator.complete("chr1_5mC_top", [_rows("r3", "r4", "r5")])
+    accumulator.add_partial("chr1_5mC_top", [_rows("r3", "r4", "r5")])
+    result = accumulator.complete("chr1_5mC_top")
     assert result is not None
-    combined = pd.concat(result, ignore_index=True)
+    frames, is_final = result
+    assert is_final is True
+    combined = pd.concat(frames, ignore_index=True)
     assert sorted(combined["read_id"]) == ["r1", "r2", "r3", "r4", "r5"]
 
 
@@ -139,10 +144,13 @@ def test_chromosome_group_accumulator_deaminase_yields_immediately_single_record
     record_chromosome = {"chr1": "chr1"}
     accumulator = _ChromosomeGroupAccumulator(record_chromosome)
 
-    result = accumulator.complete("chr1", [_rows("r1", "r2", reference_strand="chr1_top")])
+    accumulator.add_partial("chr1", [_rows("r1", "r2", reference_strand="chr1_top")])
+    result = accumulator.complete("chr1")
 
     assert result is not None
-    combined = pd.concat(result, ignore_index=True)
+    frames, is_final = result
+    assert is_final is True
+    combined = pd.concat(frames, ignore_index=True)
     assert sorted(combined["read_id"]) == ["r1", "r2"]
 
 
@@ -158,12 +166,16 @@ def test_chromosome_group_accumulator_handles_zero_bucket_records():
     }
     accumulator = _ChromosomeGroupAccumulator(record_chromosome)
 
-    assert accumulator.complete("chr1_5mC_bottom", []) is None
-    assert accumulator.complete("chr1_unconverted_top", [_rows("r1")]) is None
-    result = accumulator.complete("chr1_5mC_top", [_rows("r2")])
+    assert accumulator.complete("chr1_5mC_bottom") is None
+    accumulator.add_partial("chr1_unconverted_top", [_rows("r1")])
+    assert accumulator.complete("chr1_unconverted_top") is None
+    accumulator.add_partial("chr1_5mC_top", [_rows("r2")])
+    result = accumulator.complete("chr1_5mC_top")
 
     assert result is not None
-    combined = pd.concat(result, ignore_index=True)
+    frames, is_final = result
+    assert is_final is True
+    combined = pd.concat(frames, ignore_index=True)
     assert sorted(combined["read_id"]) == ["r1", "r2"]
 
 
@@ -177,16 +189,107 @@ def test_chromosome_group_accumulator_independent_chromosomes_dont_block_each_ot
 
     # chr2 has only one contributing record -- completes independently of
     # chr1's still-outstanding second record.
-    result = accumulator.complete(
-        "chr2_unconverted_top", [_rows("r9", reference_strand="chr2_top")]
-    )
+    accumulator.add_partial("chr2_unconverted_top", [_rows("r9", reference_strand="chr2_top")])
+    result = accumulator.complete("chr2_unconverted_top")
     assert result is not None
-    assert sorted(pd.concat(result, ignore_index=True)["read_id"]) == ["r9"]
+    frames, is_final = result
+    assert is_final is True
+    assert sorted(pd.concat(frames, ignore_index=True)["read_id"]) == ["r9"]
 
-    assert accumulator.complete("chr1_unconverted_top", [_rows("r1")]) is None
-    result = accumulator.complete("chr1_5mC_top", [_rows("r2")])
+    accumulator.add_partial("chr1_unconverted_top", [_rows("r1")])
+    assert accumulator.complete("chr1_unconverted_top") is None
+    accumulator.add_partial("chr1_5mC_top", [_rows("r2")])
+    result = accumulator.complete("chr1_5mC_top")
     assert result is not None
-    assert sorted(pd.concat(result, ignore_index=True)["read_id"]) == ["r1", "r2"]
+    frames, is_final = result
+    assert is_final is True
+    assert sorted(pd.concat(frames, ignore_index=True)["read_id"]) == ["r1", "r2"]
+
+
+def test_chromosome_group_accumulator_flushes_early_past_threshold():
+    # The actual memory fix: a single-record chromosome (the deaminase
+    # shape) with enough accumulated rows must flush a bounded, non-final
+    # batch before the record completes -- not wait and hand the whole
+    # chromosome to the writer in one piece (a real 700k-read chromosome put
+    # ~87GB in the parent process before this fix; see
+    # dev/pipeline_scaling_audit.md).
+    record_chromosome = {"chr1": "chr1"}
+    accumulator = _ChromosomeGroupAccumulator(record_chromosome, flush_threshold=3)
+
+    # Below threshold: nothing flushed yet.
+    result = accumulator.add_partial("chr1", [_rows("r1", "r2", reference_strand="chr1_top")])
+    assert result is None
+
+    # Crosses threshold (2 + 2 = 4 >= 3): flushed now, marked NOT final --
+    # the record (and its chromosome) isn't done yet.
+    result = accumulator.add_partial("chr1", [_rows("r3", "r4", reference_strand="chr1_top")])
+    assert result is not None
+    frames, is_final = result
+    assert is_final is False
+    assert sorted(pd.concat(frames, ignore_index=True)["read_id"]) == ["r1", "r2", "r3", "r4"]
+
+    # More data after a flush accumulates fresh, doesn't include what was
+    # already flushed.
+    result = accumulator.add_partial("chr1", [_rows("r5", reference_strand="chr1_top")])
+    assert result is None
+
+    # Record completes: whatever's left pending (just r5) is flushed final.
+    result = accumulator.complete("chr1")
+    assert result is not None
+    frames, is_final = result
+    assert is_final is True
+    assert sorted(pd.concat(frames, ignore_index=True)["read_id"]) == ["r5"]
+
+
+def test_yield_flush_result_marks_all_seen_strands_final_even_if_absent_from_last_batch():
+    # A chromosome's rows can split unevenly across "_top"/"_bottom" flushes
+    # -- e.g. all "_bottom" rows appear in an early partial flush, and the
+    # chromosome's actual final flush only contains "_top" rows. Every
+    # Reference_strand ever seen for that chromosome must still be signaled
+    # final (frame=None marker for the ones absent from the last batch), or
+    # a consumer waiting on that signal (e.g. plan_references) would never
+    # finalize it.
+    strands_seen: dict[str, set[str]] = {}
+
+    # Partial (non-final) flush containing both strands.
+    events = list(
+        _yield_flush_result(
+            (
+                [
+                    _rows("r1", reference_strand="chr1_top"),
+                    _rows("r2", reference_strand="chr1_bottom"),
+                ],
+                False,
+            ),
+            "chr1",
+            strands_seen,
+        )
+    )
+    assert {(strand, is_final) for strand, _frame, is_final in events} == {
+        ("chr1_bottom", False),
+        ("chr1_top", False),
+    }
+    assert strands_seen["chr1"] == {"chr1_top", "chr1_bottom"}
+
+    # Final flush containing only "_top" rows -- "_bottom" must still get a
+    # frame=None, is_final=True marker.
+    events = list(
+        _yield_flush_result(
+            ([_rows("r3", reference_strand="chr1_top")], True),
+            "chr1",
+            strands_seen,
+        )
+    )
+    by_strand = {strand: (frame, is_final) for strand, frame, is_final in events}
+    assert set(by_strand) == {"chr1_top", "chr1_bottom"}
+    top_frame, top_final = by_strand["chr1_top"]
+    assert top_frame is not None and list(top_frame["read_id"]) == ["r3"]
+    assert top_final is True
+    bottom_frame, bottom_final = by_strand["chr1_bottom"]
+    assert bottom_frame is None
+    assert bottom_final is True
+    # Bookkeeping cleared once a chromosome is fully finalized.
+    assert "chr1" not in strands_seen
 
 
 def test_attach_direct_signals_converts_reference_to_query_coordinates(tmp_path):

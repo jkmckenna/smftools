@@ -157,7 +157,8 @@ def test_write_raw_store_streaming_matches_whole_frame_writer(tmp_path):
     streaming.mkdir()
     normalized = validate_ragged_frame(frame).reset_index(drop=True)
     reference_groups = (
-        group for _, group in normalized.groupby("Reference_strand", sort=True, observed=True)
+        (str(name), group, True)
+        for name, group in normalized.groupby("Reference_strand", sort=True, observed=True)
     )
     streaming_paths = write_raw_store_streaming(
         reference_groups, streaming, reference_lengths=reference_lengths, shard_size=2
@@ -227,6 +228,67 @@ def test_write_raw_store_streaming_matches_whole_frame_writer(tmp_path):
     )
     assert whole_spine.uns["reference_lengths"] == streaming_spine.uns["reference_lengths"]
     assert set(whole_spine.uns["reference_plans"]) == set(streaming_spine.uns["reference_plans"])
+
+
+def test_write_raw_store_streaming_handles_reference_split_across_multiple_groups(tmp_path):
+    # Regression test for the persistent shard-index fix: a bounded-memory
+    # producer (cli/raw_adata.py's _ChromosomeGroupAccumulator flush
+    # threshold) can now flush a single reference's rows across more than
+    # one group instead of handing the whole reference over at once. Before
+    # persistent per-(reference, start_bin) shard-index tracking, each new
+    # group for the same reference restarted numbering at shard_index=0 and
+    # silently overwrote the previous group's shard file on disk -- this
+    # confirms all rows from every flush survive and plan_references still
+    # sees the reference's true total read count (not just the last group's).
+    frame = _frame()
+    normalized = validate_ragged_frame(frame).reset_index(drop=True)
+    ref1_rows = normalized[normalized["Reference_strand"] == "ref1_top"]
+    ref2_rows = normalized[normalized["Reference_strand"] == "ref2_top"]
+    assert len(ref1_rows) == 2
+
+    # ref1_top arrives in two separate, bounded groups (mimicking a flush
+    # crossing raw_shard_flush_max_reads mid-reference); ref2_top arrives
+    # whole. Both groups' shard writes land in the same start_bin (shard_size
+    # is large enough here that each group is its own single shard).
+    reference_groups = [
+        ("ref1_top", ref1_rows.iloc[[0]], False),
+        ("ref1_top", ref1_rows.iloc[[1]], True),
+        ("ref2_top", ref2_rows, True),
+    ]
+
+    streaming = tmp_path / "streaming"
+    streaming.mkdir()
+    paths = write_raw_store_streaming(
+        reference_groups,
+        streaming,
+        reference_lengths={"ref1_top": 4, "ref2_top": 6},
+        shard_size=100,
+    )
+
+    # Both of ref1_top's shard files exist (no overwrite) and together
+    # contain both of its reads.
+    ref1_shards = [p for p in paths["ragged_store"] if "reference=ref1_top" in p.as_posix()]
+    assert len(ref1_shards) == 2
+    ref1_read_ids = set()
+    for shard_path in ref1_shards:
+        ref1_read_ids.update(pd.read_parquet(shard_path)["read_id"])
+    assert ref1_read_ids == {"read1", "read2"}
+
+    catalog = pd.read_parquet(paths["interval_catalog"])
+    ref1_catalog = catalog[catalog["reference"] == "ref1_top"]
+    assert ref1_catalog["n_reads"].sum() == 2
+
+    molecules = pd.read_parquet(paths["molecules"])
+    assert set(molecules.loc[molecules["Reference_strand"] == "ref1_top", "read_id"]) == {
+        "read1",
+        "read2",
+    }
+
+    spine, _ = safe_read_h5ad(paths["spine"])
+    assert spine.n_obs == 4
+    # plan_references saw ref1_top's true total (2 reads across both
+    # groups), not just the last group's (1 read).
+    assert set(spine.uns["reference_plans"]) == {"ref1_top", "ref2_top"}
 
 
 def test_dense_cache_matches_ragged_and_records_barcode_ranges(tmp_path):
