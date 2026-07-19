@@ -413,20 +413,71 @@ def run_tasks_parallel(
     only the order results are *collected* in is preserved), so callers don't
     need to handle reordering the way completion-order APIs (e.g.
     ``as_completed``) would require.
+
+    If the watchdog kills a worker, every other future still pending in that
+    same pool also raises ``BrokenProcessPool`` (the whole executor is
+    unusable once one worker dies unexpectedly) -- the previous behavior let
+    that propagate straight out of this function, aborting the entire task
+    list (and, for batch callers, the whole experiment) over a single killed
+    worker. This is common when the per-item memory estimate genuinely
+    underestimates a task type's real footprint (not just watchdog noise --
+    ``resolve_max_workers`` then packs more concurrent workers than the
+    machine can actually hold): confirmed on real data, this aborted 8 of 11
+    batch experiments in a single run (see dev/pipeline_scaling_audit.md).
+    Tasks that hadn't produced a result yet when the pool broke are now
+    retried in a fresh pool sized to half as many workers (floor 1), halving
+    again on each repeated break, down to a final sequential (single-worker)
+    attempt that always succeeds short of one task alone exceeding the
+    *aggregate* budget. Already-completed results are kept, not redone.
     """
     max_workers = 1 if force_sequential else resolve_max_workers(cfg, len(task_args_list))
     if max_workers <= 1:
         return [worker(*args) for args in task_args_list]
 
     from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
 
-    per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // max_workers
-    with ProcessPoolExecutor(
-        max_workers=max_workers, initializer=_limit_blas_threads_in_worker
-    ) as pool:
-        stop_watchdog = start_worker_watchdog(pool, per_worker_budget_bytes)
-        try:
-            futures = [pool.submit(worker, *args) for args in task_args_list]
-            return [future.result() for future in futures]
-        finally:
-            stop_watchdog()
+    results: list = [None] * len(task_args_list)
+    pending_indices = list(range(len(task_args_list)))
+    workers_for_attempt = max_workers
+    while pending_indices:
+        per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // workers_for_attempt
+        with ProcessPoolExecutor(
+            max_workers=workers_for_attempt, initializer=_limit_blas_threads_in_worker
+        ) as pool:
+            stop_watchdog = start_worker_watchdog(pool, per_worker_budget_bytes)
+            try:
+                future_to_index = {
+                    pool.submit(worker, *task_args_list[i]): i for i in pending_indices
+                }
+                broke = False
+                still_pending: list[int] = []
+                for future, index in future_to_index.items():
+                    try:
+                        results[index] = future.result()
+                    except BrokenProcessPool:
+                        broke = True
+                        still_pending.append(index)
+                if broke:
+                    for future, index in future_to_index.items():
+                        if index not in still_pending and not future.done():
+                            still_pending.append(index)
+                pending_indices = sorted(still_pending)
+            finally:
+                stop_watchdog()
+        if pending_indices:
+            if workers_for_attempt <= 1:
+                raise RuntimeError(
+                    f"{len(pending_indices)} task(s) still failing after retrying down to a "
+                    "single worker -- at least one task alone exceeds the aggregate memory "
+                    "budget; increase cfg.max_memory_gb/max_memory_percent or "
+                    "cfg.target_task_memory_mb to shrink task size"
+                )
+            workers_for_attempt = max(1, workers_for_attempt // 2)
+            logger.warning(
+                "run_tasks_parallel: pool broke (a worker was likely killed by the memory "
+                "watchdog); retrying %d task(s) with reduced worker count %d",
+                len(pending_indices),
+                workers_for_attempt,
+            )
+    return results
