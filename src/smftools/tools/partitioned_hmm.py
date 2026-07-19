@@ -784,6 +784,7 @@ def _plot_feature_clustermaps(
             # previously hardcoded to 1, leaving that dispatch unused.
             n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
             restrict_to_read_span=bool(getattr(cfg, "hmm_clustermap_restrict_to_read_span", False)),
+            max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
         )
         for layer in feature_layers:
             plot_dir = base_dir / "features" / _component(layer)

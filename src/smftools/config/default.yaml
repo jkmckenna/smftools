@@ -291,6 +291,7 @@ clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
 spatial_clustermap_restrict_to_read_span: False # Crop spatial clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
+clustermap_max_reads_per_plot: 5000 # Max reads drawn per (reference, sample) clustermap; larger groups are randomly subsampled to this (reproducible). Raise it to effectively disable.
 omit_chimeric_reads: True
 
 # Clustermap variant params

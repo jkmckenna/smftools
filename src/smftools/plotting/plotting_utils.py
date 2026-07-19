@@ -115,6 +115,26 @@ def _ordered_columns(
     return sites[order], labels[order]
 
 
+def subsample_reads_for_plot(subset, max_reads: int | None, *, seed: int = 0):
+    """Randomly subsample an AnnData's reads to at most ``max_reads`` rows.
+
+    A clustermap of a (reference, sample) group with hundreds of thousands of
+    reads is both illegible (rows sub-pixel) and memory-heavy to render -- and
+    the per-reference materialize + per-worker pickle that feeds it scales with
+    the read count. Capping reads per plot bounds all three. Returns ``subset``
+    unchanged when ``max_reads`` is falsy/non-positive or the group already fits;
+    otherwise returns a copy of a random subset. The draw is reproducible (fixed
+    ``seed``) and the kept rows are returned in their original order, so the plot
+    is stable across re-runs and downstream row ordering/clustering is unaffected
+    by selection order.
+    """
+    if max_reads is None or max_reads <= 0 or subset.n_obs <= int(max_reads):
+        return subset
+    rng = np.random.default_rng(seed)
+    chosen = np.sort(rng.choice(subset.n_obs, size=int(max_reads), replace=False))
+    return subset[chosen, :].copy()
+
+
 def normalized_mean(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarray:
     """Compute normalized column means for a matrix.
 

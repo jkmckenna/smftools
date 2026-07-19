@@ -20,6 +20,7 @@ from smftools.plotting.plotting_utils import (
     _ordered_columns,
     clean_barplot,
     make_row_colors,
+    subsample_reads_for_plot,
 )
 
 logger = get_logger(__name__)
@@ -975,9 +976,15 @@ def combined_raw_clustermap(
     n_jobs: int = 1,
     omit_chimeric_reads: bool = False,
     restrict_to_read_span: bool = False,
+    max_reads_per_plot: int | None = None,
 ):
     """
     Plot stacked heatmaps + per-position mean barplots for C, GpC, CpG, and optional A.
+
+    max_reads_per_plot: when set, each (reference, sample) group is randomly
+    subsampled to at most this many reads before rendering (reproducible, order-
+    preserving) -- a group with hundreds of thousands of reads is both illegible
+    and memory-heavy to plot. ``None`` (default) keeps every read.
 
     Key fixes vs old version:
       - order computed ONCE per bin, applied to all matrices
@@ -1112,6 +1119,7 @@ def combined_raw_clustermap(
 
                 try:
                     subset = adata[row_mask, :].copy()
+                    subset = subsample_reads_for_plot(subset, max_reads_per_plot)
 
                     if span_start is not None and span_end is not None:
                         var_coords = pd.to_numeric(

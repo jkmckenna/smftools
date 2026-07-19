@@ -1003,6 +1003,7 @@ class ExperimentConfig:
     clustermap_cmap_a: Optional[str] = "coolwarm"
     spatial_clustermap_sortby: Optional[str] = "gpc"
     spatial_clustermap_restrict_to_read_span: bool = False
+    clustermap_max_reads_per_plot: Optional[int] = 5000
     omit_chimeric_reads: bool = True
     overlay_variant_calls: bool = False
     variant_overlay_seq1_color: str = "white"
@@ -1917,6 +1918,9 @@ class ExperimentConfig:
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
             spatial_clustermap_restrict_to_read_span=_parse_bool(
                 merged.get("spatial_clustermap_restrict_to_read_span", False)
+            ),
+            clustermap_max_reads_per_plot=_parse_numeric(
+                merged.get("clustermap_max_reads_per_plot", 5000), None
             ),
             omit_chimeric_reads=_parse_bool(merged.get("omit_chimeric_reads", True)),
             overlay_variant_calls=_parse_bool(merged.get("overlay_variant_calls", False)),

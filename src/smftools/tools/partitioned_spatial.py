@@ -1330,6 +1330,7 @@ def _generate_dense_region_products(
                 restrict_to_read_span=bool(
                     getattr(cfg, "spatial_clustermap_restrict_to_read_span", False)
                 ),
+                max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
                 index_col_suffix=index_suffix,
             )
             for path in sorted(clustermap_dir.glob("*.png")):
