@@ -474,7 +474,7 @@ def test_map_references_parallel_bounds_in_flight_submissions(monkeypatch):
 
     monkeypatch.setattr(cf, "ProcessPoolExecutor", _FakeExecutor)
     monkeypatch.setattr(
-        memory_guard_module, "start_worker_watchdog", lambda pool, budget: lambda: None
+        memory_guard_module, "start_worker_watchdog", lambda pool, budget, *a, **k: lambda: None
     )
 
     items = [(1,), (2,), (3,), (4,), (5,), (6,)]

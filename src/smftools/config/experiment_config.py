@@ -692,6 +692,8 @@ class ExperimentConfig:
     input_data_path: Optional[str] = None
     output_directory: Optional[str] = None
     emit_log_file: Optional[bool] = True
+    emit_perf_log: Optional[bool] = True
+    perf_log_sample_interval_seconds: float = 2.0
     log_level: Optional[str] = "INFO"
     fasta: Optional[str] = None
     bam_suffix: str = BAM_SUFFIX
@@ -1814,6 +1816,10 @@ class ExperimentConfig:
             threads=merged.get("threads"),
             plot_threads_fraction=float(merged.get("plot_threads_fraction", 0.5)),
             emit_log_file=merged.get("emit_log_file", True),
+            emit_perf_log=_parse_bool(merged.get("emit_perf_log", True)),
+            perf_log_sample_interval_seconds=_parse_numeric(
+                merged.get("perf_log_sample_interval_seconds", 2.0), 2.0
+            ),
             log_level=merged.get("log_level", "INFO"),
             sample_sheet_path=merged.get("sample_sheet_path"),
             sample_sheet_mapping_column=merged.get("sample_sheet_mapping_column"),

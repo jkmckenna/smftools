@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import time
 from types import SimpleNamespace
@@ -140,6 +141,37 @@ def test_run_tasks_parallel_process_pool_path_preserves_order(monkeypatch) -> No
 
 def test_run_tasks_parallel_empty_task_list() -> None:
     assert run_tasks_parallel(_square, [], cfg=_cfg()) == []
+
+
+def test_run_tasks_parallel_emits_perf_pool_events(tmp_path, monkeypatch) -> None:
+    # Observability: when a perf logger is active, run_tasks_parallel records a
+    # pool_start (with the worker-count decision inputs), a pool_end, and the
+    # stage_summary -- so a reader can see how many workers ran and why.
+    from smftools.perf_log import PerfLogger, set_perf_logger, summarize_perf_logs
+
+    monkeypatch.setattr("smftools.memory_guard.total_system_memory_bytes", lambda: 1024 * 1024**3)
+    perf_path = tmp_path / "preprocess" / "logs" / "260719_120000_perf.jsonl"
+    logger = PerfLogger(perf_path, "preprocess", sample_interval_seconds=0.05)
+    set_perf_logger(logger)
+    try:
+        cfg = _cfg(threads=4, target_task_memory_mb=1)
+        results = run_tasks_parallel(_square, [(1,), (2,), (3,), (4,)], cfg=cfg)
+        assert results == [1, 4, 9, 16]
+    finally:
+        logger.close()
+        set_perf_logger(None)
+
+    records = [json.loads(line) for line in perf_path.read_text().splitlines() if line.strip()]
+    events = [r["event"] for r in records]
+    assert "pool_start" in events and "pool_end" in events and "stage_summary" in events
+    start = next(r for r in records if r["event"] == "pool_start")
+    assert start["n_tasks"] == 4
+    assert start["max_workers"] >= 1
+    # The inputs that decided the worker count are recorded.
+    for key in ("threads", "aggregate_budget_gb", "target_task_memory_mb", "by_memory_workers"):
+        assert key in start
+    summary = summarize_perf_logs(tmp_path)
+    assert len(summary) == 1 and summary[0]["stage"] == "preprocess"
 
 
 def test_run_tasks_parallel_force_sequential_skips_pool_regardless_of_resources(
@@ -397,7 +429,7 @@ def test_run_tasks_parallel_retries_with_fewer_workers_after_pool_breaks(monkeyp
     monkeypatch.setattr(
         memory_guard_module,
         "start_worker_watchdog",
-        lambda pool, budget: real_start_watchdog(pool, budget, poll_interval=0.1),
+        lambda pool, budget, *a, **k: real_start_watchdog(pool, budget, poll_interval=0.1),
     )
     monkeypatch.setattr("smftools.memory_guard.total_system_memory_bytes", lambda: 10 * 1024**3)
 

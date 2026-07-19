@@ -703,16 +703,29 @@ def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: 
         resolve_memory_budget_bytes,
         start_worker_watchdog,
     )
+    from ..perf_log import get_perf_logger
 
     cfg = worker_kwargs.get("cfg")
     per_worker_budget_bytes = (
         resolve_memory_budget_bytes(cfg) // max_workers if cfg is not None else 0
     )
+    perf = get_perf_logger()
+    pool_id = perf.next_pool_id() if perf is not None else None
+    poll_interval = float(getattr(cfg, "perf_log_sample_interval_seconds", 2.0) or 2.0)
+    if perf is not None:
+        perf.pool_start(
+            pool_id,
+            n_tasks=len(items) if hasattr(items, "__len__") else None,
+            max_workers=max_workers,
+            stage_component="raw_extraction",
+        )
     items_iter = iter(items)
     with ProcessPoolExecutor(
         max_workers=max_workers, initializer=_limit_blas_threads_in_worker
     ) as pool:
-        stop_watchdog = start_worker_watchdog(pool, per_worker_budget_bytes)
+        stop_watchdog = start_worker_watchdog(
+            pool, per_worker_budget_bytes, poll_interval, perf_logger=perf, pool_id=pool_id
+        )
         try:
             future_to_args = {}
             for args in itertools.islice(items_iter, max_workers):
@@ -727,6 +740,8 @@ def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: 
                         future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
         finally:
             stop_watchdog()
+            if perf is not None:
+                perf.pool_end(pool_id, final_max_workers=max_workers, n_retries=0)
 
 
 def _read_ids_for_reference(aligned_bam: Path, record: str) -> list[str]:
