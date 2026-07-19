@@ -182,6 +182,24 @@ def _as_list(value: object) -> list:
     raise TypeError(f"ragged array values must be list-like, got {type(value).__name__}")
 
 
+# Ragged array columns narrowed to their smallest sufficient numpy dtype during
+# validation -- both on write (shrinks the on-disk parquet, cutting shard-read
+# I/O and time) and on read (shrinks the in-memory frame immediately, including
+# for older stores still on disk as int64/float64). Values are small integer
+# codes (SEQUENCE/MISMATCH: MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT, 0-5) or Phred
+# quality scores (QUALITY: 0-93 plus a -1 missing sentinel, see
+# phred_to_fastq_quality_string) -- int8 covers -128..127, comfortably wider
+# than either. MODIFICATION_SIGNAL and the per-base current-signal features are
+# probabilities/current statistics already treated as float32 everywhere
+# downstream (the dense scatter target, SIGNAL_FEATURE_LAYERS); storing them
+# narrower here is lossless relative to that existing precision, just earlier.
+# This -- not chunking alone -- is what was driving materialize()'s ~27x
+# memory balloon (int64/float64 Python-object list-columns are ~25-50x their
+# dense footprint); see dev/pipeline_scaling_audit.md.
+_RAGGED_INT8_COLUMNS = frozenset({SEQUENCE, MISMATCH, QUALITY})
+_RAGGED_FLOAT32_COLUMNS = frozenset({MODIFICATION_SIGNAL, *SIGNAL_FEATURE_COLUMNS})
+
+
 def validate_ragged_frame(frame: pd.DataFrame) -> pd.DataFrame:
     """Validate and normalize a ragged molecule DataFrame.
 
@@ -202,7 +220,7 @@ def validate_ragged_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if (result[REFERENCE_START] < 0).any() or (result[ALIGNED_LENGTH] < 0).any():
         raise ValueError("reference_start and aligned_length must be non-negative")
 
-    normalized_arrays: dict[str, list[list]] = {
+    normalized_arrays: dict[str, list] = {
         column: [] for column in RAGGED_ARRAY_COLUMNS if column in result.columns
     }
     for row_index, row in result.iterrows():
@@ -222,10 +240,27 @@ def validate_ragged_frame(frame: pd.DataFrame) -> pd.DataFrame:
                     f"row {row_index!r} column {column!r} has {len(values)} values; "
                     f"expected {expected_query_length} from CIGAR"
                 )
-            normalized_arrays[column].append(values)
+            normalized_arrays[column].append(_narrow_ragged_values(column, values, row_index))
     for column, values in normalized_arrays.items():
         result[column] = pd.Series(values, index=result.index, dtype=object)
     return result
+
+
+def _narrow_ragged_values(column: str, values: list, row_index) -> list | np.ndarray:
+    """Cast one row's ragged array to its target dtype; ``[]`` passes through unchanged."""
+    if not values:
+        return values
+    if column in _RAGGED_INT8_COLUMNS:
+        array = np.asarray(values, dtype=np.int64)
+        if array.min() < -128 or array.max() > 127:
+            raise ValueError(
+                f"row {row_index!r} column {column!r} has values outside int8 range "
+                "(-128..127); ragged storage assumes small integer codes/quality scores"
+            )
+        return array.astype(np.int8)
+    if column in _RAGGED_FLOAT32_COLUMNS:
+        return np.asarray(values, dtype=np.float32)
+    return values
 
 
 def write_ragged_parquet(frame: pd.DataFrame, path: str | Path) -> Path:
@@ -241,16 +276,26 @@ def read_ragged_parquet(
     *,
     read_ids: Iterable[str] | None = None,
 ) -> pd.DataFrame:
-    """Read ragged parquet shard(s), optionally retaining selected read IDs."""
+    """Read ragged parquet shard(s), optionally retaining selected read IDs.
+
+    ``read_ids``, when given, is pushed down as a pyarrow filter
+    (``pd.read_parquet(..., filters=[(read_id, "in", ...)])``) rather than
+    reading the whole shard into pandas and filtering afterward -- only the
+    selected rows' ragged arrays are ever materialized, which is most of the
+    remaining memory floor after streaming materialization (see
+    dev/pipeline_scaling_audit.md, and ``_narrow_ragged_values`` above for the
+    other half).
+    """
     path_list = [paths] if isinstance(paths, (str, Path)) else list(paths)
     if not path_list:
         raise ValueError("at least one ragged parquet path is required")
-    selected = None if read_ids is None else {str(read_id) for read_id in read_ids}
+    selected = None if read_ids is None else sorted({str(read_id) for read_id in read_ids})
     frames: list[pd.DataFrame] = []
     for path in path_list:
-        frame = pd.read_parquet(path)
         if selected is not None:
-            frame = frame.loc[frame[READ_ID].astype(str).isin(selected)]
+            frame = pd.read_parquet(path, filters=[(READ_ID, "in", selected)])
+        else:
+            frame = pd.read_parquet(path)
         frames.append(frame)
     result = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
     return validate_ragged_frame(result)

@@ -70,8 +70,12 @@ def test_ragged_parquet_round_trip(tmp_path):
     assert list(result[READ_ID]) == ["read1"]
     assert result.at[0, CIGAR] == FakeRead.cigarstring
     assert result.at[0, ALIGNED_LENGTH] == 8
-    assert result.at[0, SEQUENCE] == _ragged_frame().at[0, SEQUENCE]
-    assert result.at[0, QUALITY] == list(range(20, 29))
+    # Ragged array columns round-trip as narrow numpy dtypes (int8/float32), not
+    # the original Python lists -- see _narrow_ragged_values.
+    np.testing.assert_array_equal(result.at[0, SEQUENCE], _ragged_frame().at[0, SEQUENCE])
+    assert result.at[0, SEQUENCE].dtype == np.int8
+    np.testing.assert_array_equal(result.at[0, QUALITY], list(range(20, 29)))
+    assert result.at[0, QUALITY].dtype == np.int8
 
 
 def test_ragged_validation_rejects_array_length_mismatch(tmp_path):
@@ -79,6 +83,49 @@ def test_ragged_validation_rejects_array_length_mismatch(tmp_path):
     frame.at[0, QUALITY] = [1, 2]
     with pytest.raises(ValueError, match="expected 9 from CIGAR"):
         write_ragged_parquet(frame, tmp_path / "invalid.parquet")
+
+
+def test_ragged_parquet_round_trip_narrows_modification_signal_to_float32(tmp_path):
+    # Regression test for a real ~27x memory balloon: ragged arrays were
+    # stored/read as int64/float64 (pandas' default for plain Python
+    # lists), ~8x wider than the int8/float32 the values actually need
+    # (small integer codes, Phred scores, probabilities) -- see
+    # dev/pipeline_scaling_audit.md.
+    path = write_ragged_parquet(_ragged_frame(), tmp_path / "reads.parquet")
+    result = read_ragged_parquet(path)
+    np.testing.assert_array_equal(result.at[0, MODIFICATION_SIGNAL], [float(v) for v in range(9)])
+    assert result.at[0, MODIFICATION_SIGNAL].dtype == np.float32
+    assert result.at[0, MISMATCH].dtype == np.int8
+
+
+def test_validate_ragged_frame_rejects_quality_outside_int8_range(tmp_path):
+    frame = _ragged_frame()
+    frame.at[0, QUALITY] = [200] + [20] * 8  # 200 > int8 max (127)
+    with pytest.raises(ValueError, match="outside int8 range"):
+        write_ragged_parquet(frame, tmp_path / "overflow.parquet")
+
+
+def test_read_ragged_parquet_pyarrow_filter_matches_pandas_filter(tmp_path):
+    # The read_ids filter is pushed down to pyarrow instead of reading the
+    # whole shard and filtering in pandas afterward -- functional result
+    # must be identical either way (only the memory/IO cost differs).
+    rows = []
+    for i in range(5):
+        record = alignment_to_ragged_record(FakeRead(), "AACCGGTTAACC")
+        record[READ_ID] = f"read{i}"
+        record[MODIFICATION_SIGNAL] = [float(i)] * 9
+        rows.append(record)
+    frame = pd.DataFrame(rows)
+    path = write_ragged_parquet(frame, tmp_path / "multi.parquet")
+
+    selected = read_ragged_parquet(path, read_ids=["read1", "read3"])
+    assert sorted(selected[READ_ID]) == ["read1", "read3"]
+
+    whole = read_ragged_parquet(path)
+    assert sorted(whole[READ_ID]) == [f"read{i}" for i in range(5)]
+
+    none_selected = read_ragged_parquet(path, read_ids=["read_missing"])
+    assert len(none_selected) == 0
 
 
 def test_materialize_ragged_places_indels_and_soft_clips():
