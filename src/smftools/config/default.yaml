@@ -270,8 +270,7 @@ mismatch_base_frequency_exclude_mod_sites: True
 ######## smftools spatial params #########
 invert_adata: False # Whether to invert the AnnData along the positions axis.
 # Reindexing params
-reindexing_offsets:
-  null : null
+reindexing_offsets: {}
 reindexed_var_suffix: "reindexed"
 # Per-reference display inversion: {ref: True} flips the sign of that
 # reference's reindexed coordinate so "left of anchor = negative, right of
@@ -292,6 +291,7 @@ clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
 spatial_clustermap_restrict_to_read_span: False # Crop spatial clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
+clustermap_max_reads_per_plot: 5000 # Max reads drawn per (reference, sample) clustermap; larger groups are randomly subsampled to this (reproducible). Raise it to effectively disable.
 omit_chimeric_reads: True
 
 # Clustermap variant params
@@ -534,12 +534,16 @@ concatenate_recompute_pp_vars: True  # Recompute calculate_coverage and append_b
 # Pipeline control flow - load adata
 force_redo_load_adata: False # Whether to perform load adata command from start
 raw_parquet_shard_size: 100000 # Maximum reads per raw parquet shard
+raw_bucket_max_reads: 4000 # Maximum reads per raw-ingestion extraction bucket (bounds per-worker memory independent of experiment size)
+raw_shard_flush_max_reads: 20000 # Maximum reads accumulated in the parent process per reference before a shard write is flushed (bounds parent-process memory independent of experiment size)
 analysis_mode: auto # auto, locus, or genome; auto plans each reference independently
 load_cache_mode: auto # auto, full, tiled, or none
 max_full_matrix_gb: 8.0 # Dense-size threshold used by automatic per-reference planning
 target_task_memory_mb: 512 # Target memory for future preprocessing work units
 max_memory_percent: 60.0 # Aggregate memory budget for the whole workflow, as a percent of total system RAM (all parallel workers combined, not per-task)
 max_memory_gb: null # Optional fixed aggregate memory budget in GB; the more restrictive of this and max_memory_percent applies when both are set
+emit_perf_log: true # Write a per-command performance log (worker counts + memory, JSONL) next to each stage's log
+perf_log_sample_interval_seconds: 2.0 # How often the perf log samples process/worker memory while a parallel pool runs
 genome_tile_size: 10000 # Core genomic positions per genome-mode work unit
 genome_tile_halo: 1000 # Context positions loaded on each side of a genome tile
 parquet_start_bin_size: 1000000 # Reference-start bin used to partition ragged parquet

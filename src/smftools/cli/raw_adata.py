@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 from pathlib import Path
 
@@ -522,6 +523,41 @@ def _split_by_reference_strand(frame: pd.DataFrame):
         yield strand_frame
 
 
+def _yield_flush_result(
+    flush_result: tuple[list[pd.DataFrame], bool] | None,
+    chromosome: str,
+    strands_seen: dict[str, set[str]],
+):
+    """Split one ``_ChromosomeGroupAccumulator`` flush into per-strand yields.
+
+    Yields ``(reference_strand, frame_or_None, is_final)``. ``is_final`` here
+    is per-``Reference_strand``, not per-chromosome: on a chromosome's actual
+    final flush, every ``Reference_strand`` ever seen for it -- not just the
+    ones present in this last batch -- must be marked final, since no more
+    data for any of them is ever coming (a chromosome can yield "_top" and
+    "_bottom" unevenly across flushes; see ``_ChromosomeGroupAccumulator``).
+    Strands with no new rows in a chromosome's final flush still get a
+    ``frame=None`` marker so callers can finalize their own bookkeeping
+    (e.g. ``plan_references``) for them.
+    """
+    if flush_result is None:
+        return
+    frames, is_final = flush_result
+    seen = strands_seen.setdefault(chromosome, set())
+    yielded_now: set[str] = set()
+    if frames:
+        combined = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+        for sub_frame in _split_by_reference_strand(combined):
+            strand = str(sub_frame["Reference_strand"].iloc[0])
+            seen.add(strand)
+            yielded_now.add(strand)
+            yield strand, sub_frame, is_final
+    if is_final:
+        for strand in seen - yielded_now:
+            yield strand, None, True
+        strands_seen.pop(chromosome, None)
+
+
 class _ChromosomeGroupAccumulator:
     """Accumulate per-record completions into per-chromosome combined frames.
 
@@ -536,42 +572,88 @@ class _ChromosomeGroupAccumulator:
     from mismatch trend, not via separate alignment targets), so every
     chromosome here has exactly one contributing record.
 
-    A group must not be finalized (yielded to the streaming shard writer)
-    until every record sharing its chromosome has completed -- finalizing as
-    soon as one record's own buckets finish would hand the writer multiple
-    separate "complete" groups for the same ``Reference_strand``, and it
-    always starts a fresh group at ``shard_index=0``, so a later record's
-    group silently overwrites an earlier one's shard file on disk even
-    though ``obs.parquet`` ends up with pointers for both (real data loss,
+    A chromosome's data must not be handed to the streaming shard writer
+    piecemeal per-record -- if one record's buckets finished and were written
+    while a chromosome sibling record was still outstanding, the writer would
+    see multiple separate groups for the same ``Reference_strand``, and it
+    always started a fresh shard-index count per group, so a later record's
+    group silently overwrote an earlier one's shard file on disk even though
+    ``obs.parquet`` ended up with pointers for both (real data loss,
     confirmed on a real conversion-modality dataset before this fix: 3 of 4
     references affected, up to 23% of reads for one).
+
+    That correctness requirement is about *records*, not about how much of a
+    chromosome's data can be flushed at once -- holding one entire
+    chromosome's ragged data in memory before writing anything doesn't scale
+    with experiment size (a single deaminase chromosome with 700k+ reads put
+    ~87GB in the parent process; see dev/pipeline_scaling_audit.md). So this
+    accumulator supports two independent operations: ``add_partial`` feeds
+    newly-available frames for a record (call it any number of times, e.g.
+    once per completed bucket) and returns a bounded-size flush the moment
+    the chromosome's accumulated row count crosses ``flush_threshold`` --
+    safe to do mid-chromosome, since ``write_raw_store_streaming``'s shard
+    writer now tracks a persistent shard-index per (reference, start_bin)
+    across repeated groups instead of restarting at 0. ``complete`` marks a
+    record as having no more data coming, and only that call can resolve a
+    chromosome's sibling-completion tracking (its own docstring concern is
+    unchanged -- a chromosome isn't *finished* until every record sharing it
+    has called ``complete``, this just no longer requires buffering
+    everything in between).
     """
 
-    def __init__(self, record_chromosome: dict[str, str]):
+    def __init__(self, record_chromosome: dict[str, str], *, flush_threshold: int | None = None):
         self._record_chromosome = dict(record_chromosome)
         self._remaining: dict[str, set[str]] = {}
         for record, chromosome in self._record_chromosome.items():
             self._remaining.setdefault(chromosome, set()).add(record)
         self._pending: dict[str, list[pd.DataFrame]] = {}
+        self._pending_rows: dict[str, int] = {}
+        self._flush_threshold = flush_threshold
 
-    def complete(self, record: str, frames: list[pd.DataFrame]) -> list[pd.DataFrame] | None:
-        """Mark one record's fully-accumulated frames as done.
+    def add_partial(
+        self, record: str, frames: list[pd.DataFrame]
+    ) -> tuple[list[pd.DataFrame], bool] | None:
+        """Feed newly-available frames for ``record`` (e.g. one bucket's rows).
 
-        ``frames`` may be empty (a record that dispatched no work, e.g. zero
-        read_ids, or whose buckets all returned no rows) -- it must still be
-        marked complete so its chromosome siblings aren't blocked forever.
+        Call any number of times per record, including zero times for a
+        record that dispatched no work. Never resolves sibling-completion
+        tracking -- call ``complete`` separately once ``record`` has no more
+        data coming.
 
-        Returns the chromosome's combined frame list once every record
-        sharing its chromosome has completed, else ``None``.
+        Returns ``(frames_to_write, False)`` if the chromosome's accumulated
+        row count just crossed ``flush_threshold`` (a bounded-size, non-final
+        flush), else ``None``.
         """
         chromosome = self._record_chromosome[record]
         if frames:
             self._pending.setdefault(chromosome, []).extend(frames)
+            self._pending_rows[chromosome] = self._pending_rows.get(chromosome, 0) + sum(
+                len(f) for f in frames
+            )
+        if (
+            self._flush_threshold is not None
+            and self._pending_rows.get(chromosome, 0) >= self._flush_threshold
+        ):
+            flushed = self._pending.pop(chromosome, [])
+            self._pending_rows[chromosome] = 0
+            return (flushed, False)
+        return None
+
+    def complete(self, record: str) -> tuple[list[pd.DataFrame], bool] | None:
+        """Mark ``record`` as having no more data coming.
+
+        Returns ``(frames_to_write, True)`` -- whatever is left pending for
+        the chromosome, possibly empty -- once every record sharing
+        ``record``'s chromosome has completed, else ``None``.
+        """
+        chromosome = self._record_chromosome[record]
         remaining = self._remaining[chromosome]
         remaining.discard(record)
         if remaining:
             return None
-        return self._pending.pop(chromosome, [])
+        flushed = self._pending.pop(chromosome, [])
+        self._pending_rows.pop(chromosome, None)
+        return (flushed, True)
 
 
 def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: dict):
@@ -593,34 +675,73 @@ def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: 
     order need not match the original per-reference order, so this
     reordering is not a behavior change, only something already accounted
     for.
+
+    At most ``max_workers`` tasks are ever in flight at once -- the next
+    item is only submitted once a completed result has actually been
+    retrieved (via ``yield``) by the caller. Submitting every item upfront
+    (the previous behavior) decouples submission from consumption: with
+    ``max_workers`` processes computing large per-bucket ragged DataFrames
+    continuously and a single-threaded caller draining them (bookkeeping +
+    parquet writes), completed-but-unretrieved results piled up in the
+    executor's internal queue without bound -- this is what actually caused
+    a ~90GB parent-process blowup on real data even after bounding the
+    downstream chromosome accumulator (see dev/pipeline_scaling_audit.md);
+    that fix only bounded what happens *after* retrieval, not how far ahead
+    of the consumer the pool was allowed to compute. This backpressure
+    caps peak parent-side memory at O(max_workers * per_bucket_result_size)
+    regardless of total experiment size.
     """
     if max_workers <= 1:
         for args in items:
             yield args, worker(*args, **worker_kwargs)
         return
 
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
     from ..memory_guard import (
         _limit_blas_threads_in_worker,
         resolve_memory_budget_bytes,
         start_worker_watchdog,
     )
+    from ..perf_log import get_perf_logger
 
     cfg = worker_kwargs.get("cfg")
     per_worker_budget_bytes = (
         resolve_memory_budget_bytes(cfg) // max_workers if cfg is not None else 0
     )
+    perf = get_perf_logger()
+    pool_id = perf.next_pool_id() if perf is not None else None
+    poll_interval = float(getattr(cfg, "perf_log_sample_interval_seconds", 2.0) or 2.0)
+    if perf is not None:
+        perf.pool_start(
+            pool_id,
+            n_tasks=len(items) if hasattr(items, "__len__") else None,
+            max_workers=max_workers,
+            stage_component="raw_extraction",
+        )
+    items_iter = iter(items)
     with ProcessPoolExecutor(
         max_workers=max_workers, initializer=_limit_blas_threads_in_worker
     ) as pool:
-        stop_watchdog = start_worker_watchdog(pool, per_worker_budget_bytes)
+        stop_watchdog = start_worker_watchdog(
+            pool, per_worker_budget_bytes, poll_interval, perf_logger=perf, pool_id=pool_id
+        )
         try:
-            future_to_args = {pool.submit(worker, *args, **worker_kwargs): args for args in items}
-            for future in as_completed(future_to_args):
-                yield future_to_args[future], future.result()
+            future_to_args = {}
+            for args in itertools.islice(items_iter, max_workers):
+                future_to_args[pool.submit(worker, *args, **worker_kwargs)] = args
+            while future_to_args:
+                done, _pending = wait(future_to_args, return_when=FIRST_COMPLETED)
+                for future in done:
+                    args = future_to_args.pop(future)
+                    yield args, future.result()
+                    next_args = next(items_iter, None)
+                    if next_args is not None:
+                        future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
         finally:
             stop_watchdog()
+            if perf is not None:
+                perf.pool_end(pool_id, final_max_workers=max_workers, n_retries=0)
 
 
 def _read_ids_for_reference(aligned_bam: Path, record: str) -> list[str]:
@@ -670,24 +791,48 @@ def _bucket_read_ids(read_ids: list[str], n_buckets: int) -> list[set[str]]:
 
 
 def _n_buckets_for_reference(
-    n_reads: int, max_workers: int, *, min_reads_per_bucket: int = 500
+    n_reads: int,
+    max_workers: int,
+    *,
+    min_reads_per_bucket: int = 500,
+    max_reads_per_bucket: int = 4000,
 ) -> int:
     """How many buckets to split one reference's reads into for parallel
     extraction.
 
-    Parallelizing per-chromosome alone caps concurrency at the reference
-    count and load-balances poorly when read depth is uneven across
-    references (an amplicon panel with one 40x-oversequenced short locus and
-    several lightly-sequenced ones, say) -- splitting each reference's reads
-    into several buckets instead lets the pool's work-stealing scheduler
-    balance uneven per-bucket cost dynamically, rather than being stuck
-    waiting on one large indivisible per-reference unit. Capped so buckets
-    don't get so small that per-bucket overhead (a fetch call, a worker
-    round-trip) would dominate the actual extraction work.
+    Two, separate constraints combine here, and conflating them previously
+    caused large experiments to blow their per-worker memory budget:
+
+    - Parallelism: parallelizing per-chromosome alone caps concurrency at the
+      reference count and load-balances poorly when read depth is uneven
+      across references (an amplicon panel with one 40x-oversequenced short
+      locus and several lightly-sequenced ones, say) -- splitting each
+      reference's reads into several buckets instead lets the pool's
+      work-stealing scheduler balance uneven per-bucket cost dynamically.
+      Bucket count is floored so buckets don't get so small that per-bucket
+      overhead (a fetch call, a worker round-trip) would dominate the actual
+      extraction work -- this alone would cap bucket count at ``max_workers``.
+    - Memory: each bucket's ragged per-read data is held in memory by
+      whichever worker processes it (see ``_map_references_parallel``, whose
+      own concurrency is bounded separately by
+      ``memory_guard.resolve_max_workers``). Capping bucket *count* at
+      ``max_workers`` regardless of ``n_reads`` left bucket *size* --
+      and so per-worker memory -- scaling linearly with reference read
+      count: fine for a small experiment, but a large one could put tens of
+      thousands of reads in a single bucket and exceed the per-worker
+      memory budget entirely (see dev/pipeline_scaling_audit.md). Bucket
+      count must grow with ``n_reads`` past ``max_workers`` once
+      ``n_reads / max_workers`` would exceed ``max_reads_per_bucket``, so
+      bucket size -- and therefore memory -- stays experiment-size-independent.
     """
-    if max_workers <= 1:
+    if n_reads <= 0:
         return 1
-    return max(1, min(max_workers, n_reads // min_reads_per_bucket))
+    if max_workers <= 1:
+        by_memory = -(-n_reads // max_reads_per_bucket)  # ceil division
+        return max(1, by_memory)
+    by_parallelism = min(max_workers, max(1, n_reads // min_reads_per_bucket))
+    by_memory = -(-n_reads // max_reads_per_bucket)  # ceil division
+    return max(1, by_parallelism, by_memory)
 
 
 def _split_modkit_tsv_by_bucket(
@@ -1021,7 +1166,11 @@ def _build_ragged_records_streaming_convertible(
             info = record_info[record]
             record_chromosome[record] = info.chromosome
             read_ids = _read_ids_for_reference(aligned_bam, record)
-            n_buckets = _n_buckets_for_reference(len(read_ids), max_workers)
+            n_buckets = _n_buckets_for_reference(
+                len(read_ids),
+                max_workers,
+                max_reads_per_bucket=int(getattr(cfg, "raw_bucket_max_reads", 4000)),
+            )
             buckets = _bucket_read_ids(read_ids, n_buckets)
             buckets_remaining[record] = len(buckets)
             for bucket in buckets:
@@ -1036,8 +1185,11 @@ def _build_ragged_records_streaming_convertible(
             barcode_sidecar=barcode_sidecar,
             umi_sidecar=umi_sidecar,
         )
-        accumulator = _ChromosomeGroupAccumulator(record_chromosome)
-        record_pending: dict[str, list[pd.DataFrame]] = {}
+        flush_threshold = int(getattr(cfg, "raw_shard_flush_max_reads", 20_000))
+        accumulator = _ChromosomeGroupAccumulator(
+            record_chromosome, flush_threshold=flush_threshold
+        )
+        strands_seen: dict[str, set[str]] = {}
         any_rows = False
         from ..memory_guard import resolve_max_workers
 
@@ -1046,7 +1198,9 @@ def _build_ragged_records_streaming_convertible(
         # chromosome siblings aren't blocked waiting on them forever.
         for record, remaining in buckets_remaining.items():
             if remaining == 0:
-                accumulator.complete(record, [])
+                yield from _yield_flush_result(
+                    accumulator.complete(record), record_chromosome[record], strands_seen
+                )
 
         for args, (bucket_frame, _found_columns) in _map_references_parallel(
             items,
@@ -1055,18 +1209,23 @@ def _build_ragged_records_streaming_convertible(
             worker_kwargs=worker_kwargs,
         ):
             record = args[0]
-            if bucket_frame is not None and not bucket_frame.empty:
-                record_pending.setdefault(record, []).append(bucket_frame)
+            chromosome = record_chromosome[record]
+            frames_for_bucket = (
+                [bucket_frame] if bucket_frame is not None and not bucket_frame.empty else []
+            )
+            for strand, frame, is_final in _yield_flush_result(
+                accumulator.add_partial(record, frames_for_bucket), chromosome, strands_seen
+            ):
+                any_rows = any_rows or frame is not None
+                yield strand, frame, is_final
             buckets_remaining[record] -= 1
             if buckets_remaining[record] != 0:
                 continue
-            frames = accumulator.complete(record, record_pending.pop(record, []))
-            if frames is None:
-                continue
-            if frames:
-                any_rows = True
-                combined = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
-                yield from _split_by_reference_strand(combined)
+            for strand, frame, is_final in _yield_flush_result(
+                accumulator.complete(record), chromosome, strands_seen
+            ):
+                any_rows = any_rows or frame is not None
+                yield strand, frame, is_final
         if not any_rows:
             raise RuntimeError(f"no primary mapped reads were extracted from {aligned_bam}")
 
@@ -1163,7 +1322,11 @@ def _build_ragged_records_streaming_direct(
         bucket_id_counter = 0
         for record, (_record_length, sequence) in reference_map.items():
             read_ids = _read_ids_for_reference(aligned_bam, record)
-            n_buckets = _n_buckets_for_reference(len(read_ids), max_workers)
+            n_buckets = _n_buckets_for_reference(
+                len(read_ids),
+                max_workers,
+                max_reads_per_bucket=int(getattr(cfg, "raw_bucket_max_reads", 4000)),
+            )
             buckets = _bucket_read_ids(read_ids, n_buckets)
             buckets_remaining[record] = len(buckets)
             for bucket in buckets:
@@ -1197,7 +1360,10 @@ def _build_ragged_records_streaming_direct(
             umi_sidecar=umi_sidecar,
         )
         pending: dict[str, list[pd.DataFrame]] = {}
+        pending_rows: dict[str, int] = {}
+        strands_seen: dict[str, set[str]] = {}
         any_rows = False
+        flush_threshold = int(getattr(cfg, "raw_shard_flush_max_reads", 20_000))
         from ..memory_guard import resolve_max_workers
 
         try:
@@ -1213,15 +1379,17 @@ def _build_ragged_records_streaming_direct(
                         signal_columns.append(column)
                 if bucket_frame is not None and not bucket_frame.empty:
                     pending.setdefault(record, []).append(bucket_frame)
+                    pending_rows[record] = pending_rows.get(record, 0) + len(bucket_frame)
                 buckets_remaining[record] -= 1
-                if buckets_remaining[record] == 0:
+                is_final = buckets_remaining[record] == 0
+                if is_final or pending_rows.get(record, 0) >= flush_threshold:
                     frames = pending.pop(record, [])
-                    if frames:
-                        any_rows = True
-                        combined = (
-                            frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
-                        )
-                        yield from _split_by_reference_strand(combined)
+                    pending_rows[record] = 0
+                    for strand, frame, strand_is_final in _yield_flush_result(
+                        (frames, is_final), record, strands_seen
+                    ):
+                        any_rows = any_rows or frame is not None
+                        yield strand, frame, strand_is_final
         finally:
             if split_dir is not None:
                 import shutil
@@ -1251,6 +1419,15 @@ def build_ragged_records_streaming(
     which ``_build_ragged_records_streaming_direct`` streams and splits into
     per-bucket chunks itself rather than joining the whole file in one
     process (see that function's docstring).
+
+    The returned generator yields ``(reference_strand, frame_or_None,
+    is_final)`` -- a low-read-depth reference may still appear as a single
+    item, but a high-read-depth one is flushed across several bounded-size
+    items (each capped around ``cfg.raw_shard_flush_max_reads``) instead of
+    accumulating that reference's whole ragged frame in memory first, which
+    otherwise scales with experiment size rather than staying bounded (see
+    dev/pipeline_scaling_audit.md). ``write_raw_store_streaming`` is the
+    intended consumer of this exact shape.
     """
     modality = str(cfg.smf_modality)
     if modality == "direct":

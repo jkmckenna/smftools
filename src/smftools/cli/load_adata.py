@@ -207,7 +207,6 @@ def load_adata_core(
         annotate_umi_tags_in_bam,
         bam_qc,
         build_barcode_sidecar_from_split_bams,
-        build_classified_read_set,
         concatenate_fastqs_to_bam,
         demux_and_index_BAM,
         derive_bm_from_bi_to_sidecar,
@@ -217,6 +216,7 @@ def load_adata_core(
         extract_read_tags_from_bam,
         load_barcode_references_from_yaml,
         load_umi_config_from_yaml,
+        rebuild_barcode_sidecar_via_dorado_classification,
         resolve_barcode_config,
         resolve_umi_config,
         split_and_index_BAM,
@@ -800,29 +800,40 @@ def load_adata_core(
                     barcode_sidecar,
                 )
             else:
-                logger.warning(
+                # The aligned BAM was never actually barcode-classified at basecall
+                # time (no reliable BC/bi tags to read) -- scanning it for BC tags,
+                # as this branch used to do, silently produces an almost-empty
+                # sidecar (observed: 156 reads recovered out of >1M) rather than a
+                # loud failure, since a handful of stray/mismatched tags is enough
+                # to avoid the `if read_to_barcode:` empty-dict check. Run real
+                # dorado classification instead, into a throwaway split directory
+                # purely to harvest a reliable read->barcode sidecar from -- the
+                # split BAMs themselves are discarded, honoring skip_bam_split's
+                # promise that the aligned BAM stays the one artifact used
+                # downstream. See dev/pipeline_scaling_audit.md.
+                logger.info(
                     "skip_bam_split=True with dorado backend: bi tag not found on aligned BAM. "
-                    "BM tag and demux_type (single/double) will not be derived. "
-                    "Building BC-only sidecar. Consider demux_backend='smftools' or "
-                    "setting skip_bam_split=False to enable per-end barcode scoring."
+                    "Running dorado demux classification into a temporary directory to build "
+                    "a reliable barcode sidecar (BM tag/demux_type still unavailable; use "
+                    "skip_bam_split=False for per-end barcode scoring)."
                 )
-                _, read_to_barcode = build_classified_read_set(bam_path=aligned_sorted_output)
-                if read_to_barcode:
-                    bc_df = pd.DataFrame(
-                        [{"read_name": rn, "BC": bc} for rn, bc in read_to_barcode.items()]
-                    )
-                else:
-                    bc_df = pd.DataFrame(columns=["read_name", "BC"])
-                bc_df.to_parquet(barcode_sidecar, index=False)
+                rebuild_barcode_sidecar_via_dorado_classification(
+                    aligned_sorted_output,
+                    barcode_sidecar,
+                    barcode_kit=cfg.barcode_kit,
+                    barcode_both_ends=getattr(cfg, "barcode_both_ends", False),
+                    trim=cfg.trim,
+                    threads=cfg.threads,
+                    samtools_backend=cfg.samtools_backend,
+                )
                 register_sidecar(
                     sidecar_manifest,
                     "barcode",
                     barcode_sidecar,
-                    metadata={"source": "dorado_skip_bam_split_bc_tags"},
+                    metadata={"source": "dorado_skip_bam_split_reclassified"},
                 )
                 logger.info(
-                    "Built BC-only barcode sidecar from aligned BAM: %d reads -> %s",
-                    len(bc_df),
+                    "Built barcode sidecar via dorado demux classification: %s",
                     barcode_sidecar,
                 )
     elif cfg.input_already_demuxed or use_smftools_demux:

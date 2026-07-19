@@ -220,13 +220,23 @@ def _live_worker_pids(pool) -> list[int]:
     return pids
 
 
+DEFAULT_WATCHDOG_TOLERANCE_FRACTION = 0.2
+DEFAULT_WATCHDOG_GRACE_POLLS = 3
+
+
 def start_worker_watchdog(
     pool,
     per_worker_budget_bytes: int,
     poll_interval: float = DEFAULT_WORKER_POLL_INTERVAL_SECONDS,
+    *,
+    tolerance_fraction: float = DEFAULT_WATCHDOG_TOLERANCE_FRACTION,
+    grace_polls: int = DEFAULT_WATCHDOG_GRACE_POLLS,
+    perf_logger=None,
+    pool_id=None,
 ) -> Callable[[], None]:
     """Best-effort: poll `pool`'s worker processes' RSS and kill any worker that
-    exceeds `per_worker_budget_bytes`.
+    *sustains* usage over `per_worker_budget_bytes` (plus `tolerance_fraction`
+    headroom) for `grace_polls` consecutive polls.
 
     `pool` may be a `multiprocessing.pool.Pool` or a
     `concurrent.futures.ProcessPoolExecutor` -- see `_live_worker_pids`.
@@ -236,6 +246,24 @@ def start_worker_watchdog(
     and running both mechanisms at once would just mean two different things can
     kill a worker for the same reason. This is the fallback for platforms (macOS)
     where no process-tree memory cap is available.
+
+    `per_worker_budget_bytes` is `resolve_memory_budget_bytes(cfg) // max_workers`
+    -- an even split of the aggregate budget, not a measured per-task estimate
+    (`resolve_max_workers` sizes the pool from `cfg.target_task_memory_mb`,
+    which can be off by an order of magnitude from a task's real footprint).
+    When real per-worker usage naturally clusters right at that even-split
+    boundary, multiple workers can each land a few percent over it from
+    ordinary run-to-run variance -- a bare "kill on the first sample over
+    budget" check (the previous behavior) then aborts the whole pool over a
+    handful of MB, even though the pool's *aggregate* usage may still be safe.
+    Confirmed on real batch data: 8 of 11 experiments were aborted this way in
+    a single run, each killed worker only 0-4% over budget (see
+    dev/pipeline_scaling_audit.md). `tolerance_fraction` absorbs that
+    variance, and `grace_polls` absorbs single-sample spikes (a worker must be
+    over budget on `grace_polls` *consecutive* polls, not just once) --
+    together these still catch genuine runaway growth (which keeps climbing
+    across polls) while not aborting a pool for a worker that's merely
+    hovering near its fair share.
 
     Returns a `stop()` callable that must be called (typically in a `finally`)
     once the pool's work is done, to stop the polling thread.
@@ -253,34 +281,86 @@ def start_worker_watchdog(
         logger.debug("No positive per-worker memory budget provided; watchdog disabled")
         return lambda: None
 
+    kill_threshold_bytes = per_worker_budget_bytes * (1.0 + max(0.0, tolerance_fraction))
+    grace_polls = max(1, grace_polls)
     stop_event = threading.Event()
 
+    parent_process = psutil.Process() if perf_logger is not None else None
+
+    def _emit_perf_sample(live_pids, workers_rss_bytes) -> None:
+        if perf_logger is None or parent_process is None:
+            return
+        try:
+            parent_rss = parent_process.memory_info().rss
+            virtual = psutil.virtual_memory()
+            perf_logger.sample(
+                pool_id,
+                tree_rss_gb=(parent_rss + workers_rss_bytes) / (1024**3),
+                parent_rss_gb=round(parent_rss / (1024**3), 3),
+                workers_rss_gb=round(workers_rss_bytes / (1024**3), 3),
+                n_live_workers=len(live_pids),
+                system_used_gb=round(virtual.used / (1024**3), 3),
+                system_available_gb=round(virtual.available / (1024**3), 3),
+            )
+        except Exception:
+            pass
+
     def _poll_loop() -> None:
+        consecutive_over: dict[int, int] = {}
         while not stop_event.is_set():
-            for pid in _live_worker_pids(pool):
+            live_pids = set(_live_worker_pids(pool))
+            for pid in list(consecutive_over):
+                if pid not in live_pids:
+                    consecutive_over.pop(pid, None)
+            workers_rss_bytes = 0
+            for pid in live_pids:
                 try:
                     rss = psutil.Process(pid).memory_info().rss
                 except psutil.NoSuchProcess:
+                    consecutive_over.pop(pid, None)
                     continue
-                if rss > per_worker_budget_bytes:
-                    logger.error(
-                        "MemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB budget; "
-                        "terminating to protect the machine",
+                workers_rss_bytes += rss
+                if rss <= kill_threshold_bytes:
+                    consecutive_over.pop(pid, None)
+                    continue
+                consecutive_over[pid] = consecutive_over.get(pid, 0) + 1
+                if consecutive_over[pid] < grace_polls:
+                    logger.warning(
+                        "MemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB threshold "
+                        "(budget %.2f GiB + %.0f%% tolerance) for %d/%d consecutive poll(s)",
                         pid,
                         rss / (1024**3),
+                        kill_threshold_bytes / (1024**3),
                         per_worker_budget_bytes / (1024**3),
+                        tolerance_fraction * 100,
+                        consecutive_over[pid],
+                        grace_polls,
                     )
-                    try:
-                        psutil.Process(pid).kill()
-                    except psutil.NoSuchProcess:
-                        pass
+                    continue
+                logger.error(
+                    "MemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB threshold "
+                    "for %d consecutive polls; terminating to protect the machine",
+                    pid,
+                    rss / (1024**3),
+                    kill_threshold_bytes / (1024**3),
+                    grace_polls,
+                )
+                try:
+                    psutil.Process(pid).kill()
+                except psutil.NoSuchProcess:
+                    pass
+                consecutive_over.pop(pid, None)
+            _emit_perf_sample(live_pids, workers_rss_bytes)
             stop_event.wait(poll_interval)
 
     thread = threading.Thread(target=_poll_loop, name="smftools-memory-watchdog", daemon=True)
     thread.start()
     logger.info(
-        "Per-worker memory watchdog enabled: %.2f GiB budget/worker, polling every %.1fs",
+        "Per-worker memory watchdog enabled: %.2f GiB budget/worker (+%.0f%% tolerance, "
+        "%d-poll grace period), polling every %.1fs",
         per_worker_budget_bytes / (1024**3),
+        tolerance_fraction * 100,
+        grace_polls,
         poll_interval,
     )
 
@@ -358,20 +438,129 @@ def run_tasks_parallel(
     only the order results are *collected* in is preserved), so callers don't
     need to handle reordering the way completion-order APIs (e.g.
     ``as_completed``) would require.
+
+    If the watchdog kills a worker, every other future still pending in that
+    same pool also raises ``BrokenProcessPool`` (the whole executor is
+    unusable once one worker dies unexpectedly) -- the previous behavior let
+    that propagate straight out of this function, aborting the entire task
+    list (and, for batch callers, the whole experiment) over a single killed
+    worker. This is common when the per-item memory estimate genuinely
+    underestimates a task type's real footprint (not just watchdog noise --
+    ``resolve_max_workers`` then packs more concurrent workers than the
+    machine can actually hold): confirmed on real data, this aborted 8 of 11
+    batch experiments in a single run (see dev/pipeline_scaling_audit.md).
+    Tasks that hadn't produced a result yet when the pool broke are now
+    retried in a fresh pool sized to half as many workers (floor 1), halving
+    again on each repeated break, down to a final sequential (single-worker)
+    attempt that always succeeds short of one task alone exceeding the
+    *aggregate* budget. Already-completed results are kept, not redone.
     """
+    from .perf_log import get_perf_logger
+
+    perf = get_perf_logger()
+    pool_id = perf.next_pool_id() if perf is not None else None
+
     max_workers = 1 if force_sequential else resolve_max_workers(cfg, len(task_args_list))
+    if perf is not None:
+        perf.pool_start(
+            pool_id,
+            n_tasks=len(task_args_list),
+            max_workers=max_workers,
+            force_sequential=bool(force_sequential),
+            **_worker_decision_inputs(cfg, len(task_args_list)),
+        )
     if max_workers <= 1:
-        return [worker(*args) for args in task_args_list]
+        try:
+            return [worker(*args) for args in task_args_list]
+        finally:
+            if perf is not None:
+                perf.pool_end(pool_id, final_max_workers=1, n_retries=0)
 
     from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
 
-    per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // max_workers
-    with ProcessPoolExecutor(
-        max_workers=max_workers, initializer=_limit_blas_threads_in_worker
-    ) as pool:
-        stop_watchdog = start_worker_watchdog(pool, per_worker_budget_bytes)
-        try:
-            futures = [pool.submit(worker, *args) for args in task_args_list]
-            return [future.result() for future in futures]
-        finally:
-            stop_watchdog()
+    poll_interval = float(getattr(cfg, "perf_log_sample_interval_seconds", 2.0) or 2.0)
+    results: list = [None] * len(task_args_list)
+    pending_indices = list(range(len(task_args_list)))
+    workers_for_attempt = max_workers
+    n_retries = 0
+    try:
+        while pending_indices:
+            per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // workers_for_attempt
+            with ProcessPoolExecutor(
+                max_workers=workers_for_attempt, initializer=_limit_blas_threads_in_worker
+            ) as pool:
+                stop_watchdog = start_worker_watchdog(
+                    pool,
+                    per_worker_budget_bytes,
+                    poll_interval,
+                    perf_logger=perf,
+                    pool_id=pool_id,
+                )
+                try:
+                    future_to_index = {
+                        pool.submit(worker, *task_args_list[i]): i for i in pending_indices
+                    }
+                    broke = False
+                    still_pending: list[int] = []
+                    for future, index in future_to_index.items():
+                        try:
+                            results[index] = future.result()
+                        except BrokenProcessPool:
+                            broke = True
+                            still_pending.append(index)
+                    if broke:
+                        for future, index in future_to_index.items():
+                            if index not in still_pending and not future.done():
+                                still_pending.append(index)
+                    pending_indices = sorted(still_pending)
+                finally:
+                    stop_watchdog()
+            if pending_indices:
+                if workers_for_attempt <= 1:
+                    raise RuntimeError(
+                        f"{len(pending_indices)} task(s) still failing after retrying down to a "
+                        "single worker -- at least one task alone exceeds the aggregate memory "
+                        "budget; increase cfg.max_memory_gb/max_memory_percent or "
+                        "cfg.target_task_memory_mb to shrink task size"
+                    )
+                workers_for_attempt = max(1, workers_for_attempt // 2)
+                n_retries += 1
+                if perf is not None:
+                    perf.pool_retry(
+                        pool_id,
+                        reason="broken_pool",
+                        n_pending=len(pending_indices),
+                        new_max_workers=workers_for_attempt,
+                    )
+                logger.warning(
+                    "run_tasks_parallel: pool broke (a worker was likely killed by the memory "
+                    "watchdog); retrying %d task(s) with reduced worker count %d",
+                    len(pending_indices),
+                    workers_for_attempt,
+                )
+    finally:
+        if perf is not None:
+            perf.pool_end(pool_id, final_max_workers=workers_for_attempt, n_retries=n_retries)
+    return results
+
+
+def _worker_decision_inputs(cfg, n_items: int) -> dict:
+    """The inputs ``resolve_max_workers`` used, for the perf log's ``pool_start``.
+
+    Surfacing *why* a worker count was chosen (threads vs. item count vs. the
+    aggregate-budget / per-task-estimate cap) is what makes the perf log
+    actionable when the estimate is wrong -- the exact failure mode behind the
+    batch OOM (see dev/pipeline_scaling_audit.md).
+    """
+    threads = max(1, int(getattr(cfg, "threads", 1) or 1))
+    per_item_mb = float(getattr(cfg, "target_task_memory_mb", 512) or 512)
+    budget_bytes = resolve_memory_budget_bytes(cfg)
+    by_memory = max(1, int(budget_bytes // (max(1.0, per_item_mb) * (1024**2))))
+    return {
+        "threads": threads,
+        "n_items": int(n_items),
+        "aggregate_budget_gb": round(budget_bytes / (1024**3), 3),
+        "target_task_memory_mb": per_item_mb,
+        "by_memory_workers": by_memory,
+    }

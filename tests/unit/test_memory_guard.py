@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import time
 from types import SimpleNamespace
@@ -142,6 +143,37 @@ def test_run_tasks_parallel_empty_task_list() -> None:
     assert run_tasks_parallel(_square, [], cfg=_cfg()) == []
 
 
+def test_run_tasks_parallel_emits_perf_pool_events(tmp_path, monkeypatch) -> None:
+    # Observability: when a perf logger is active, run_tasks_parallel records a
+    # pool_start (with the worker-count decision inputs), a pool_end, and the
+    # stage_summary -- so a reader can see how many workers ran and why.
+    from smftools.perf_log import PerfLogger, set_perf_logger, summarize_perf_logs
+
+    monkeypatch.setattr("smftools.memory_guard.total_system_memory_bytes", lambda: 1024 * 1024**3)
+    perf_path = tmp_path / "preprocess" / "logs" / "260719_120000_perf.jsonl"
+    logger = PerfLogger(perf_path, "preprocess", sample_interval_seconds=0.05)
+    set_perf_logger(logger)
+    try:
+        cfg = _cfg(threads=4, target_task_memory_mb=1)
+        results = run_tasks_parallel(_square, [(1,), (2,), (3,), (4,)], cfg=cfg)
+        assert results == [1, 4, 9, 16]
+    finally:
+        logger.close()
+        set_perf_logger(None)
+
+    records = [json.loads(line) for line in perf_path.read_text().splitlines() if line.strip()]
+    events = [r["event"] for r in records]
+    assert "pool_start" in events and "pool_end" in events and "stage_summary" in events
+    start = next(r for r in records if r["event"] == "pool_start")
+    assert start["n_tasks"] == 4
+    assert start["max_workers"] >= 1
+    # The inputs that decided the worker count are recorded.
+    for key in ("threads", "aggregate_budget_gb", "target_task_memory_mb", "by_memory_workers"):
+        assert key in start
+    summary = summarize_perf_logs(tmp_path)
+    assert len(summary) == 1 and summary[0]["stage"] == "preprocess"
+
+
 def test_run_tasks_parallel_force_sequential_skips_pool_regardless_of_resources(
     monkeypatch,
 ) -> None:
@@ -195,6 +227,79 @@ def test_start_worker_watchdog_noop_with_nonpositive_budget(monkeypatch) -> None
     monkeypatch.setattr(sys, "platform", "darwin")
     stop = start_worker_watchdog(pool=None, per_worker_budget_bytes=0)
     stop()  # must not raise
+
+
+def test_watchdog_tolerance_and_grace_period(monkeypatch) -> None:
+    # Regression test for a real batch failure: the watchdog used to kill on
+    # the very first sample over the *bare* per-worker budget, with no
+    # tolerance or grace period -- since that budget is an even split of the
+    # aggregate (resolve_memory_budget_bytes // max_workers), not a measured
+    # per-task estimate, ordinary run-to-run variance regularly puts several
+    # workers a few percent over it at once, aborting the whole pool.
+    # Confirmed on real data: 8 of 11 batch experiments were aborted this
+    # way, each killed worker only 0-4% over budget.
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    # pid 101: sustained ~10% over budget, forever -- within the 20% default
+    # tolerance, must never be killed.
+    # pid 102: alternates over/under threshold every poll -- never *sustains*
+    # over-threshold for grace_polls consecutive polls, must never be killed.
+    # pid 103: sustained ~30% over budget, forever -- beyond tolerance, must
+    # be killed once it has been over-threshold for grace_polls consecutive
+    # polls.
+    rss_sequences_mb = {101: [110], 102: [130, 90], 103: [130]}
+    call_counts = {pid: 0 for pid in rss_sequences_mb}
+    killed: list[int] = []
+
+    class _FakeMemInfo:
+        def __init__(self, rss: int) -> None:
+            self.rss = rss
+
+    class _FakeNoSuchProcess(Exception):
+        pass
+
+    class _FakePsutilProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def memory_info(self) -> _FakeMemInfo:
+            seq = rss_sequences_mb[self.pid]
+            idx = call_counts[self.pid] % len(seq)
+            call_counts[self.pid] += 1
+            return _FakeMemInfo(seq[idx] * 1024 * 1024)
+
+        def kill(self) -> None:
+            killed.append(self.pid)
+
+    class _FakeProc:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def is_alive(self) -> bool:
+            return True
+
+    fake_pool = SimpleNamespace(_processes={pid: _FakeProc(pid) for pid in rss_sequences_mb})
+    fake_psutil = SimpleNamespace(Process=_FakePsutilProcess, NoSuchProcess=_FakeNoSuchProcess)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    budget_bytes = 100 * 1024 * 1024
+    stop = start_worker_watchdog(
+        fake_pool,
+        budget_bytes,
+        poll_interval=0.02,
+        tolerance_fraction=0.2,
+        grace_polls=3,
+    )
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and 103 not in killed:
+            time.sleep(0.02)
+    finally:
+        stop()
+
+    assert 101 not in killed, "sustained-but-within-tolerance worker must not be killed"
+    assert 102 not in killed, "worker with only transient spikes must not be killed"
+    assert 103 in killed, "worker sustained beyond tolerance for grace_polls must be killed"
 
 
 def _hog_memory(mb: int, hold_seconds: float) -> None:
@@ -292,3 +397,53 @@ def test_watchdog_kills_overbudget_worker_via_process_pool_executor() -> None:
                 future.result(timeout=5)
         finally:
             stop()
+
+
+def _hog_and_return(mb: int, hold_seconds: float, value: int) -> int:
+    block = bytearray(mb * 1024 * 1024)
+    for i in range(0, len(block), 4096):
+        block[i] = 1
+    time.sleep(hold_seconds)
+    return value
+
+
+@pytest.mark.skipif(
+    sys.platform == "linux",
+    reason="watchdog is a no-op on Linux by design (aggregate cgroup cap covers it instead)",
+)
+def test_run_tasks_parallel_retries_with_fewer_workers_after_pool_breaks(monkeypatch) -> None:
+    # Regression test for a real batch failure: when the watchdog kills a
+    # worker, the whole ProcessPoolExecutor becomes unusable and every other
+    # pending future raises BrokenProcessPool -- the previous behavior let
+    # that propagate straight out of run_tasks_parallel, aborting the entire
+    # task list (and, for batch callers, the whole experiment) over a single
+    # killed worker. Confirmed on real data: 8 of 11 batch experiments were
+    # aborted this way in a single run, because resolve_max_workers's
+    # per-item memory estimate badly underestimated a task type's real
+    # footprint, packing more concurrent workers than the machine could
+    # actually hold. run_tasks_parallel now retries whatever tasks hadn't
+    # produced a result yet in a fresh, smaller pool instead of raising.
+    import smftools.memory_guard as memory_guard_module
+
+    real_start_watchdog = memory_guard_module.start_worker_watchdog
+    monkeypatch.setattr(
+        memory_guard_module,
+        "start_worker_watchdog",
+        lambda pool, budget, *a, **k: real_start_watchdog(pool, budget, poll_interval=0.1),
+    )
+    monkeypatch.setattr("smftools.memory_guard.total_system_memory_bytes", lambda: 10 * 1024**3)
+
+    # 2 workers initially (threads=2). Aggregate budget ~450 MiB: at 2
+    # workers the per-worker budget+tolerance (~270 MiB) is comfortably
+    # under each task's real ~300 MiB footprint, so both get killed; halved
+    # to 1 worker on retry, the per-worker budget becomes the full ~450 MiB
+    # aggregate (+tolerance ~540 MiB), comfortably enough for one 300 MiB
+    # task at a time.
+    cfg = _cfg(
+        threads=2,
+        max_memory_percent=None,
+        max_memory_gb=450.0 / 1024,
+        target_task_memory_mb=1,
+    )
+    results = run_tasks_parallel(_hog_and_return, [(300, 6.0, 1), (300, 6.0, 2)], cfg=cfg)
+    assert results == [1, 2]

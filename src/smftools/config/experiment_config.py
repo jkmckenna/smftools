@@ -692,6 +692,8 @@ class ExperimentConfig:
     input_data_path: Optional[str] = None
     output_directory: Optional[str] = None
     emit_log_file: Optional[bool] = True
+    emit_perf_log: Optional[bool] = True
+    perf_log_sample_interval_seconds: float = 2.0
     log_level: Optional[str] = "INFO"
     fasta: Optional[str] = None
     bam_suffix: str = BAM_SUFFIX
@@ -1001,6 +1003,7 @@ class ExperimentConfig:
     clustermap_cmap_a: Optional[str] = "coolwarm"
     spatial_clustermap_sortby: Optional[str] = "gpc"
     spatial_clustermap_restrict_to_read_span: bool = False
+    clustermap_max_reads_per_plot: Optional[int] = 5000
     omit_chimeric_reads: bool = True
     overlay_variant_calls: bool = False
     variant_overlay_seq1_color: str = "white"
@@ -1130,6 +1133,8 @@ class ExperimentConfig:
     # Pipeline control flow - load adata
     force_redo_load_adata: bool = False
     raw_parquet_shard_size: int = 100000
+    raw_bucket_max_reads: int = 4000
+    raw_shard_flush_max_reads: int = 20000
     analysis_mode: str = "auto"
     load_cache_mode: str = "auto"
     max_full_matrix_gb: float = 8.0
@@ -1812,6 +1817,10 @@ class ExperimentConfig:
             threads=merged.get("threads"),
             plot_threads_fraction=float(merged.get("plot_threads_fraction", 0.5)),
             emit_log_file=merged.get("emit_log_file", True),
+            emit_perf_log=_parse_bool(merged.get("emit_perf_log", True)),
+            perf_log_sample_interval_seconds=_parse_numeric(
+                merged.get("perf_log_sample_interval_seconds", 2.0), 2.0
+            ),
             log_level=merged.get("log_level", "INFO"),
             sample_sheet_path=merged.get("sample_sheet_path"),
             sample_sheet_mapping_column=merged.get("sample_sheet_mapping_column"),
@@ -1884,7 +1893,7 @@ class ExperimentConfig:
             output_binary_layer_name=merged.get(
                 "output_binary_layer_name", "binarized_methylation"
             ),
-            reindexing_offsets=merged.get("reindexing_offsets", {None: None}),
+            reindexing_offsets=merged.get("reindexing_offsets", {}),
             reindexed_var_suffix=merged.get("reindexed_var_suffix", "reindexed"),
             reindexing_invert=merged.get("reindexing_invert", {}),
             clustermap_demux_types_to_plot=merged.get(
@@ -1909,6 +1918,9 @@ class ExperimentConfig:
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
             spatial_clustermap_restrict_to_read_span=_parse_bool(
                 merged.get("spatial_clustermap_restrict_to_read_span", False)
+            ),
+            clustermap_max_reads_per_plot=_parse_numeric(
+                merged.get("clustermap_max_reads_per_plot", 5000), None
             ),
             omit_chimeric_reads=_parse_bool(merged.get("omit_chimeric_reads", True)),
             overlay_variant_calls=_parse_bool(merged.get("overlay_variant_calls", False)),
@@ -2128,6 +2140,12 @@ class ExperimentConfig:
             force_redo_load_adata=merged.get("force_redo_load_adata", False),
             raw_parquet_shard_size=int(
                 _parse_numeric(merged.get("raw_parquet_shard_size", 100000), 100000)
+            ),
+            raw_bucket_max_reads=int(
+                _parse_numeric(merged.get("raw_bucket_max_reads", 4000), 4000)
+            ),
+            raw_shard_flush_max_reads=int(
+                _parse_numeric(merged.get("raw_shard_flush_max_reads", 20000), 20000)
             ),
             analysis_mode=str(merged.get("analysis_mode", "auto")),
             load_cache_mode=str(merged.get("load_cache_mode", "auto")),

@@ -141,7 +141,7 @@ def _contiguous_value_ranges(values: pd.Series) -> list[tuple[str, int, int]]:
 
 
 def _write_raw_shards_streaming(
-    reference_groups: Iterable[pd.DataFrame],
+    reference_groups: Iterable[tuple[str, pd.DataFrame | None, bool]],
     output_dir: Path,
     raw_dir: Path,
     *,
@@ -149,9 +149,9 @@ def _write_raw_shards_streaming(
     start_bin_size: int,
     on_reference_written=None,
 ) -> dict[str, object]:
-    """Write ragged parquet shards one reference-group at a time.
+    """Write ragged parquet shards one incoming group at a time.
 
-    Never holds more than one reference's ragged array data (``sequence``/
+    Never holds more than one incoming group's ragged array data (``sequence``/
     ``quality``/``mismatch``/``modification_signal``) in memory at once --
     each group is sorted, bucketed by ``start_bin``, shard-written, and
     dropped before the next group arrives. Catalog/molecules/barcode-index
@@ -159,30 +159,44 @@ def _write_raw_shards_streaming(
     scalar bookkeeping, not ragged arrays) accumulate across groups and are
     returned once every group has been consumed.
 
-    Groups must not repeat a ``Reference_strand`` (each reference's rows
-    should arrive as a single, contiguous group) -- callers that already have
-    a full frame get this for free from ``DataFrame.groupby(REFERENCE_STRAND,
-    sort=True)``; a true streaming producer (e.g. one reference fully
-    extracted from a coordinate-sorted BAM before the next begins) gets it
-    naturally from the BAM's own reference ordering.
+    Each item is ``(reference_strand, frame_or_None, is_final)``. A single
+    ``reference_strand`` MAY now appear across multiple items -- a bounded-
+    size streaming producer (e.g. ``cli/raw_adata.py``'s
+    ``_ChromosomeGroupAccumulator``, flushing a chromosome's data in pieces
+    to keep the parent process's memory experiment-size-independent, see
+    dev/pipeline_scaling_audit.md) can't guarantee one reference arrives as a
+    single group the way a whole-frame ``groupby`` naturally does. Per-
+    ``(reference_strand, start_bin)`` shard-index numbering is tracked
+    persistently across items rather than restarted per item, so repeated
+    groups for the same reference append new shards instead of overwriting
+    earlier ones (a real prior data-loss bug -- see
+    ``_ChromosomeGroupAccumulator``'s docstring). ``frame`` may be ``None``
+    (no new data, just a completion signal for a reference whose last actual
+    rows arrived in an earlier item -- see ``_yield_flush_result``).
 
-    Sorting a reference's own rows by ``[start_bin, sample_or_reference_start,
-    read_id]`` and writing shards group-by-group like this is mathematically
-    equivalent to a single global stable sort by ``[Reference_strand,
-    start_bin, sample_or_reference_start, read_id]`` followed by one grouped
-    shard-write pass (``Reference_strand`` is the first, outermost sort key),
-    so callers that feed groups in the same reference order as today's global
-    sort reproduce byte-identical shard contents and ``canonical_row``
-    assignment.
+    Sorting a group's own rows by ``[start_bin, sample_or_reference_start,
+    read_id]`` and writing shards group-by-group like this reproduces
+    ``write_raw_store``'s shard *content* exactly when each reference arrives
+    as one whole group (the historical, still-supported case) -- when a
+    reference is split across multiple items instead, each item is
+    independently sorted and shard-written rather than globally sorted
+    first, so a ``start_bin`` that receives rows from more than one item
+    ends up as more, smaller shards rather than one larger combined-and-
+    sorted shard. Every row is still written exactly once, correctly sorted
+    *within* its own shard, and correctly indexed -- this is a deliberate,
+    accepted trade-off for bounded memory, not a correctness gap.
 
     ``on_reference_written``, when given, is called as ``on_reference_written
-    (reference_name, group, shard_by_read, row_by_read)`` immediately after
-    that reference's shards are written -- ``group`` is the same (sorted,
-    ragged-array-bearing) frame just written, ``shard_by_read``/``row_by_read``
-    are the accumulated-so-far pointer dicts (already containing entries for
-    this reference's own reads). Lets a streaming caller (e.g. a spine-obs
-    builder) consume a reference's data immediately and let it be freed,
-    instead of every reference's frame needing to stay alive until the end.
+    (reference_name, group_or_None, shard_by_read, row_by_read, is_final)``
+    for every item that has a non-empty frame, and additionally (with
+    ``group=None``) for any item whose frame is ``None`` -- ``group`` is the
+    same (sorted, ragged-array-bearing) frame just written (or ``None``),
+    ``shard_by_read``/``row_by_read`` are the accumulated-so-far pointer
+    dicts. Callers doing more than small scalar bookkeeping here (e.g.
+    anything needing a reference's *true total* read count, like
+    ``plan_references``) must accumulate across calls and only finalize when
+    ``is_final`` is ``True`` -- obs-shaped bookkeeping is safe to build
+    immediately per call, since a reference's rows never repeat across items.
     """
     shard_paths: list[Path] = []
     catalog_rows: list[dict[str, object]] = []
@@ -193,12 +207,18 @@ def _write_raw_shards_streaming(
     sample_column: str | None = None
     canonical_row = 0
     n_reads_total = 0
-    n_references = 0
+    references_seen: set[str] = set()
+    # Persists across items so a reference split into multiple groups keeps
+    # numbering shards forward instead of colliding at index 0 -- the fix for
+    # the overwrite bug this function's docstring describes.
+    shard_index_by_bin: dict[tuple[str, int], int] = {}
 
-    for group in reference_groups:
+    for reference_name, group, is_final in reference_groups:
         if group is None or group.empty:
+            if on_reference_written is not None:
+                on_reference_written(reference_name, None, shard_by_read, row_by_read, is_final)
             continue
-        n_references += 1
+        references_seen.add(reference_name)
         group_t0 = perf_counter()
         group = group.reset_index(drop=True)
         group["reference_end"] = (group["reference_start"] + group["aligned_length"]).astype(
@@ -218,13 +238,15 @@ def _write_raw_shards_streaming(
             sort_keys.append("reference_start")
         sort_keys.append(READ_ID)
         sorted_group = group.sort_values(sort_keys, kind="stable")
-        reference_name = str(sorted_group[REFERENCE_STRAND].iloc[0])
         n_reads_total += len(sorted_group)
 
         for start_bin, bucket in sorted_group.groupby("start_bin", sort=True, observed=True):
             reference_dir = raw_dir / f"reference={_reference_path_component(reference_name)}"
             bin_dir = reference_dir / f"start_bin={int(start_bin):012d}"
-            for shard_index, start in enumerate(range(0, len(bucket), shard_size)):
+            bin_key = (reference_name, int(start_bin))
+            next_shard_index = shard_index_by_bin.get(bin_key, 0)
+            for offset, start in enumerate(range(0, len(bucket), shard_size)):
+                shard_index = next_shard_index + offset
                 shard = bucket.iloc[start : start + shard_size]
                 path = bin_dir / RAW_SHARD_TEMPLATE.format(index=shard_index)
                 relative_path = path.relative_to(output_dir).as_posix()
@@ -277,6 +299,7 @@ def _write_raw_shards_streaming(
                                 "end_row": end_row,
                             }
                         )
+            shard_index_by_bin[bin_key] = next_shard_index + len(range(0, len(bucket), shard_size))
         logger.debug(
             "Finished raw shard group reference=%s (%d reads) in %.2fs",
             reference_name,
@@ -284,12 +307,14 @@ def _write_raw_shards_streaming(
             perf_counter() - group_t0,
         )
         if on_reference_written is not None:
-            on_reference_written(reference_name, sorted_group, shard_by_read, row_by_read)
+            on_reference_written(reference_name, sorted_group, shard_by_read, row_by_read, is_final)
 
-    if n_references == 0:
+    if not references_seen:
         raise ValueError("cannot write an empty raw store")
     logger.info(
-        "Streamed raw shards for %d reference(s), %d reads total", n_references, n_reads_total
+        "Streamed raw shards for %d reference(s), %d reads total",
+        len(references_seen),
+        n_reads_total,
     )
     return {
         "shard_paths": shard_paths,
@@ -362,7 +387,8 @@ def write_raw_store(
     )
 
     reference_groups = (
-        group for _, group in normalized.groupby(REFERENCE_STRAND, sort=True, observed=True)
+        (str(name), group, True)
+        for name, group in normalized.groupby(REFERENCE_STRAND, sort=True, observed=True)
     )
     streamed = _write_raw_shards_streaming(
         reference_groups,
@@ -471,7 +497,7 @@ def write_raw_store(
 
 
 def write_raw_store_streaming(
-    reference_groups: Iterable[pd.DataFrame],
+    reference_groups: Iterable[tuple[str, pd.DataFrame | None, bool]],
     output_dir: str | Path,
     *,
     reference_lengths: Mapping[str, int],
@@ -485,24 +511,31 @@ def write_raw_store_streaming(
     bam_path: str | Path | None = None,
     extra_uns: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """Streaming entry point: consumes one already-validated, already-attached
-    frame per reference, never holding more than one reference's ragged data
-    (``sequence``/``quality``/``mismatch``/``modification_signal``) in memory
-    at once. ``cli/raw_adata.py::build_ragged_records`` is the intended
-    producer -- it extracts and attaches one reference's rows, yields that
-    frame, and only then extracts the next reference's.
+    """Streaming entry point: consumes bounded-size, possibly-repeated-per-
+    reference groups (see ``_write_raw_shards_streaming``), never holding
+    more than one incoming group's ragged data (``sequence``/``quality``/
+    ``mismatch``/``modification_signal``) in memory at once.
+    ``cli/raw_adata.py::build_ragged_records_streaming`` is the intended
+    producer -- for a low-read-depth reference it may still extract and
+    attach one reference's rows as a single group, but for a high-read-depth
+    one it flushes that reference's data across several bounded-size groups
+    instead of accumulating the whole thing first (see
+    dev/pipeline_scaling_audit.md).
 
     Every other artifact this writes (catalog, molecules, barcode index,
     spine obs/uns, manifest) is identical in shape to ``write_raw_store``'s --
     this function differs only in how much of the experiment it needs
-    resident in memory to produce them, via ``_write_raw_shards_streaming``'s
-    ``on_reference_written`` callback: each reference's ``obs`` contribution
-    and ``ReferencePlan`` are built immediately after that reference's shards
-    are written (while its `shard_by_read`/`row_by_read` entries are already
-    available), so the reference's own frame can be dropped before the next
-    one arrives -- obs/plan data is small (scalar columns only), so
-    accumulating *that* across the whole run is not the memory concern this
-    function exists to avoid.
+    resident in memory to produce them. Each group's ``obs`` contribution is
+    built and appended immediately (safe regardless of how many groups a
+    reference is split into -- a read's row never repeats across groups), but
+    ``plan_references`` needs a reference's *true total* read count to choose
+    a correct locus/genome plan, so it can't be computed from a partial
+    group. This function accumulates a per-reference row count (a handful of
+    integers, not ragged data) across a reference's groups and only calls
+    ``plan_references`` -- using a synthetic single-column frame that
+    reproduces the true final ``Reference_strand`` value_counts without ever
+    holding the real ragged rows -- once ``is_final`` is ``True`` for that
+    reference.
 
     Each yielded frame must already be validated (``validate_ragged_frame``)
     by the caller -- unlike ``write_raw_store``, this function never sees the
@@ -520,12 +553,23 @@ def write_raw_store_streaming(
 
     obs_frames: list[pd.DataFrame] = []
     plans: list = []
+    reads_seen_by_reference: dict[str, int] = {}
 
-    def _on_reference_written(reference_name, group, shard_by_read, row_by_read):
-        obs_frames.append(_build_raw_spine_obs(group, shard_by_read, row_by_read))
+    def _on_reference_written(reference_name, group, shard_by_read, row_by_read, is_final):
+        if group is not None:
+            obs_frames.append(_build_raw_spine_obs(group, shard_by_read, row_by_read))
+            reads_seen_by_reference[reference_name] = reads_seen_by_reference.get(
+                reference_name, 0
+            ) + len(group)
+        if not is_final:
+            return
+        n_reads = reads_seen_by_reference.pop(reference_name, 0)
+        if n_reads == 0:
+            return
+        synthetic_frame = pd.DataFrame({REFERENCE_STRAND: [reference_name] * n_reads})
         plans.extend(
             plan_references(
-                group,
+                synthetic_frame,
                 reference_lengths,
                 analysis_mode=analysis_mode,
                 load_cache_mode=load_cache_mode,

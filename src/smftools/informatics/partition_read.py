@@ -295,8 +295,16 @@ def _load_ragged_selection(
     start: int | None,
     end: int | None,
 ) -> "ad.AnnData":
-    """Materialize a spine selection from its read-relative parquet shards."""
-    from .ragged_store import materialize_ragged, read_ragged_parquet
+    """Materialize a spine selection from its read-relative parquet shards.
+
+    Streams one shard at a time into a single preallocated dense grid
+    (``materialize_ragged_streaming``) rather than reading every selected read's
+    ragged arrays into one pandas frame first: those int64/float64 list-columns
+    are ~25-50x their dense footprint, so the whole-frame read drove a nominally-
+    0.5GB preprocess task to a 16-44GB peak (see dev/pipeline_scaling_audit.md).
+    Peak is now ~one shard's frame + the dense output.
+    """
+    from .ragged_store import materialize_ragged_streaming, read_ragged_parquet
 
     if "ragged_shard" in selection:
         paths = [
@@ -312,10 +320,18 @@ def _load_ragged_selection(
     missing = [str(path) for path in paths if not path.exists()]
     if missing:
         raise FileNotFoundError(f"ragged parquet shard(s) not found: {missing}")
-    frame = read_ragged_parquet(paths, read_ids=selection.index)
     lengths = _reference_lengths(spine, selection["Reference_strand"].unique())
-    return materialize_ragged(
-        frame,
+    selected_read_ids = selection.index
+
+    def _shard_chunks():
+        # One shard per iteration, filtered to the selection's reads (a shard
+        # holds many barcodes' reads); the streaming materializer scatters and
+        # frees each before the next is read.
+        for path in paths:
+            yield read_ragged_parquet([path], read_ids=selected_read_ids)
+
+    return materialize_ragged_streaming(
+        _shard_chunks(),
         obs=selection,
         reference_lengths=lengths,
         layers=layers,

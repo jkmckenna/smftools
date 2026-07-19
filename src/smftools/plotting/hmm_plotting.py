@@ -17,6 +17,7 @@ from smftools.plotting.plotting_utils import (
     _ordered_columns,
     clean_barplot,
     normalized_mean,
+    subsample_reads_for_plot,
 )
 
 gridspec = require("matplotlib.gridspec", extra="plotting", purpose="heatmap plotting")
@@ -1062,6 +1063,8 @@ def combined_hmm_raw_clustermap(
     omit_chimeric_reads: bool = False,
     n_jobs: int = 1,
     restrict_to_read_span: bool = False,
+    max_reads_per_plot: int | None = None,
+    cfg=None,
     # ---- optional small legends explaining what the two heatmap colors mean.
     # None (default) adds no legend -- existing callers/plots are unaffected.
     hmm_legend_labels: Optional[Tuple[str, str]] = None,
@@ -1189,6 +1192,7 @@ def combined_hmm_raw_clustermap(
                     continue
                 try:
                     subset = adata[row_mask, :].copy()
+                    subset = subsample_reads_for_plot(subset, max_reads_per_plot)
                     if span_start is not None and span_end is not None:
                         var_coords = pd.to_numeric(
                             pd.Series(subset.var_names), errors="coerce"
@@ -1372,7 +1376,17 @@ def combined_hmm_raw_clustermap(
     with ProcessPoolExecutor(
         max_workers=n_workers, initializer=configure_worker_threads, initargs=(1,)
     ) as executor:
-        return list(executor.map(_hmm_raw_one_group, _iter_group_args()))
+        stop_watchdog = None
+        if cfg is not None:
+            from smftools.memory_guard import resolve_memory_budget_bytes, start_worker_watchdog
+
+            per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // n_workers
+            stop_watchdog = start_worker_watchdog(executor, per_worker_budget_bytes)
+        try:
+            return list(executor.map(_hmm_raw_one_group, _iter_group_args()))
+        finally:
+            if stop_watchdog is not None:
+                stop_watchdog()
 
 
 def _hmm_length_one_group(args: dict) -> dict:
@@ -1750,6 +1764,8 @@ def combined_hmm_length_clustermap(
     omit_chimeric_reads: bool = False,
     n_jobs: int = 1,
     restrict_to_read_span: bool = False,
+    max_reads_per_plot: int | None = None,
+    cfg=None,
 ):
     """
     Plot clustermaps for length-encoded HMM feature layers with optional subclass colors.
@@ -1867,6 +1883,7 @@ def combined_hmm_length_clustermap(
                     continue
                 try:
                     subset = adata[row_mask, :].copy()
+                    subset = subsample_reads_for_plot(subset, max_reads_per_plot)
                     if span_start is not None and span_end is not None:
                         var_coords = pd.to_numeric(
                             pd.Series(subset.var_names), errors="coerce"
@@ -2053,7 +2070,17 @@ def combined_hmm_length_clustermap(
     with ProcessPoolExecutor(
         max_workers=n_workers, initializer=configure_worker_threads, initargs=(1,)
     ) as executor:
-        return list(executor.map(_hmm_length_one_group, _iter_group_args()))
+        stop_watchdog = None
+        if cfg is not None:
+            from smftools.memory_guard import resolve_memory_budget_bytes, start_worker_watchdog
+
+            per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // n_workers
+            stop_watchdog = start_worker_watchdog(executor, per_worker_budget_bytes)
+        try:
+            return list(executor.map(_hmm_length_one_group, _iter_group_args()))
+        finally:
+            if stop_watchdog is not None:
+                stop_watchdog()
 
 
 def plot_hmm_layers_rolling_by_sample_ref(

@@ -39,7 +39,10 @@ exclude_patterns = [
     "Thumbs.db",
     ".DS_Store",
     # exclude version md files
-    "release-notes/[!i]*.md"
+    "release-notes/[!i]*.md",
+    # agent-instruction files, not rendered documentation pages
+    "AGENTS.md",
+    "CLAUDE.md",
 ]
 extensions = [
     "myst_nb",

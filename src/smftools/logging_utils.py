@@ -88,14 +88,71 @@ def setup_stage_logging(cfg, stage_directory: Union[str, Path]) -> Optional[Path
     stage_directory = Path(stage_directory)
     log_level = getattr(logging, str(getattr(cfg, "log_level", "INFO")).upper(), logging.INFO)
 
+    logging_directory = stage_directory / STAGE_LOGGING_SUBDIR
+    now = datetime.now()
+    stem = f"{now.strftime('%y%m%d')}_{now.strftime('%H%M%S')}"
+
     log_file: Optional[Path] = None
     if getattr(cfg, "emit_log_file", True):
-        logging_directory = stage_directory / STAGE_LOGGING_SUBDIR
         logging_directory.mkdir(parents=True, exist_ok=True)
-        now = datetime.now()
-        log_file = logging_directory / f"{now.strftime('%y%m%d')}_{now.strftime('%H%M%S')}_log.log"
+        log_file = logging_directory / f"{stem}_log.log"
     else:
         stage_directory.mkdir(parents=True, exist_ok=True)
 
     setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
+    _setup_stage_perf_logging(cfg, logging_directory, stem, stage_directory.name)
     return log_file
+
+
+def _setup_stage_perf_logging(cfg, logging_directory, stem: str, stage_name: str) -> None:
+    """Start a per-command perf log (worker counts + memory) beside the stage log.
+
+    Best-effort and observability-only: any failure here (missing psutil, unwritable
+    dir) must never block the actual pipeline, so it is swallowed. Closes the
+    previous stage's perf logger first, since ``experiment full`` runs raw ->
+    preprocess -> spatial -> hmm in one process and each gets its own file.
+    """
+    from .perf_log import PerfLogger, get_perf_logger, set_perf_logger
+
+    previous = get_perf_logger()
+    if previous is not None:
+        try:
+            previous.close()
+        except Exception:
+            pass
+        set_perf_logger(None)
+
+    if not getattr(cfg, "emit_perf_log", True):
+        return
+    try:
+        logging_directory.mkdir(parents=True, exist_ok=True)
+        interval = float(getattr(cfg, "perf_log_sample_interval_seconds", 2.0) or 2.0)
+        logger = PerfLogger(
+            logging_directory / f"{stem}_perf.jsonl",
+            stage_name,
+            sample_interval_seconds=interval,
+        )
+        set_perf_logger(logger)
+        global _PERF_ATEXIT_REGISTERED
+        if not _PERF_ATEXIT_REGISTERED:
+            import atexit
+
+            atexit.register(_close_current_perf_logger)
+            _PERF_ATEXIT_REGISTERED = True
+    except Exception:
+        set_perf_logger(None)
+
+
+_PERF_ATEXIT_REGISTERED = False
+
+
+def _close_current_perf_logger() -> None:
+    from .perf_log import get_perf_logger, set_perf_logger
+
+    logger = get_perf_logger()
+    if logger is not None:
+        try:
+            logger.close()
+        except Exception:
+            pass
+        set_perf_logger(None)
