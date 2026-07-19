@@ -2,7 +2,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 
-from smftools.plotting.plotting_utils import subsample_reads_for_plot
+from smftools.plotting.plotting_utils import subsample_read_ids, subsample_reads_for_plot
 
 
 def _adata(n_obs: int) -> ad.AnnData:
@@ -52,3 +52,35 @@ def test_config_default_is_5000_and_int_override_applies():
     assert cfg.clustermap_max_reads_per_plot == 5000
     cfg_set, _ = ExperimentConfig.from_var_dict({"clustermap_max_reads_per_plot": "1200"})
     assert cfg_set.clustermap_max_reads_per_plot == 1200
+
+
+# ---- subsample_read_ids: list-level companion, used to cap a reduce-phase
+# materialize() *before* it loads data, not just the final rendered plot. ----
+
+
+def test_subsample_read_ids_returns_unchanged_when_at_or_under_cap():
+    ids = [f"r{i}" for i in range(50)]
+    assert subsample_read_ids(ids, 50) == ids
+    assert subsample_read_ids(ids, 100) == ids
+
+
+def test_subsample_read_ids_disabled_when_max_none_or_nonpositive():
+    ids = [f"r{i}" for i in range(50)]
+    assert subsample_read_ids(ids, None) == ids
+    assert subsample_read_ids(ids, 0) == ids
+    assert subsample_read_ids(ids, -1) == ids
+
+
+def test_subsample_read_ids_caps_to_exact_size_and_is_a_subset():
+    ids = [f"r{i}" for i in range(1000)]
+    out = subsample_read_ids(ids, 250)
+    assert len(out) == 250
+    assert set(out).issubset(set(ids))
+    assert len(set(out)) == 250  # no duplicates
+
+
+def test_subsample_read_ids_reproducible_and_independent_of_input_type():
+    ids = [f"r{i}" for i in range(1000)]
+    first = subsample_read_ids(ids, 100)
+    second = subsample_read_ids(iter(ids), 100)
+    assert first == second

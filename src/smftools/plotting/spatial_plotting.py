@@ -977,6 +977,7 @@ def combined_raw_clustermap(
     omit_chimeric_reads: bool = False,
     restrict_to_read_span: bool = False,
     max_reads_per_plot: int | None = None,
+    cfg=None,
 ):
     """
     Plot stacked heatmaps + per-position mean barplots for C, GpC, CpG, and optional A.
@@ -985,6 +986,14 @@ def combined_raw_clustermap(
     subsampled to at most this many reads before rendering (reproducible, order-
     preserving) -- a group with hundreds of thousands of reads is both illegible
     and memory-heavy to plot. ``None`` (default) keeps every read.
+
+    cfg: optional ``ExperimentConfig``, used only to size a reactive per-worker
+    memory watchdog around the internal ``ProcessPoolExecutor`` (n_jobs > 1) --
+    this pool renders each (reference, sample) group in its own process and
+    otherwise runs with no memory protection at all, unlike every other
+    parallel pool in the pipeline. ``None`` (default) skips the watchdog,
+    matching the previous unguarded behavior for callers that don't have a
+    config handy.
 
     Key fixes vs old version:
       - order computed ONCE per bin, applied to all matrices
@@ -1274,7 +1283,22 @@ def combined_raw_clustermap(
             initializer=configure_worker_threads,
             initargs=(1,),
         ) as executor:
-            raw_results = list(executor.map(_combined_raw_clustermap_one_group, _iter_group_args()))
+            stop_watchdog = None
+            if cfg is not None:
+                from smftools.memory_guard import (
+                    resolve_memory_budget_bytes,
+                    start_worker_watchdog,
+                )
+
+                per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // n_workers
+                stop_watchdog = start_worker_watchdog(executor, per_worker_budget_bytes)
+            try:
+                raw_results = list(
+                    executor.map(_combined_raw_clustermap_one_group, _iter_group_args())
+                )
+            finally:
+                if stop_watchdog is not None:
+                    stop_watchdog()
 
     results = [r for r in raw_results if r is not None]
 

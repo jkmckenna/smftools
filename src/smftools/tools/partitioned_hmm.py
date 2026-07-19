@@ -680,6 +680,7 @@ def _plot_feature_clustermaps(
     """Plot configured HMM feature and length layers one bounded core at a time."""
     from ..cli.hmm_adata import _resolve_feature_colormap, _resolve_length_feature_ranges
     from ..plotting import combined_hmm_length_clustermap, combined_hmm_raw_clustermap
+    from ..plotting.plotting_utils import subsample_read_ids
 
     # Imported directly from the submodule, not via `from ..preprocessing
     # import reindex_references_adata`: that lazy package-level attribute
@@ -713,15 +714,30 @@ def _plot_feature_clustermaps(
         )
         grouped.setdefault(key, []).append(record)
 
+    max_reads_per_plot = getattr(cfg, "clustermap_max_reads_per_plot", 5000)
     for (reference, core_start, core_end), core_records in sorted(grouped.items()):
-        read_ids: list[str] = []
+        # Capped per barcode, not globally: every barcode's read_ids are
+        # combined here before combined_hmm_raw_clustermap/_length_clustermap
+        # split back out by (reference, sample) and subsample again -- without
+        # this, materialize() below loads every barcode's *full* read set for
+        # the whole reference just to have most of it discarded a few lines
+        # later inside those functions' own per-group subsampling. Bounds this
+        # reduce-phase materialize to O(n_barcodes * max_reads_per_plot)
+        # instead of O(total reference reads); see
+        # dev/pipeline_scaling_audit.md, finding E.
+        by_barcode: dict[str, list[str]] = {}
         for record in core_records:
             task, _ = safe_read_zarr(output_dir / str(record["group_path"]), verbose=False)
-            read_ids.extend(map(str, task.obs_names))
+            barcode = str(record.get("barcode", ""))
+            by_barcode.setdefault(barcode, []).extend(map(str, task.obs_names))
+        read_ids: list[str] = []
+        for barcode_read_ids in by_barcode.values():
+            deduped = list(dict.fromkeys(barcode_read_ids))
+            read_ids.extend(subsample_read_ids(deduped, max_reads_per_plot))
         adata = materialize(
             output_spine,
             references=reference,
-            read_ids=list(dict.fromkeys(read_ids)),
+            read_ids=read_ids,
             start=core_start,
             end=core_end,
             layers=requested_layers,
@@ -785,6 +801,7 @@ def _plot_feature_clustermaps(
             n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
             restrict_to_read_span=bool(getattr(cfg, "hmm_clustermap_restrict_to_read_span", False)),
             max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
+            cfg=cfg,
         )
         for layer in feature_layers:
             plot_dir = base_dir / "features" / _component(layer)

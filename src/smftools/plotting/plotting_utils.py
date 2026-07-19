@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -133,6 +133,27 @@ def subsample_reads_for_plot(subset, max_reads: int | None, *, seed: int = 0):
     rng = np.random.default_rng(seed)
     chosen = np.sort(rng.choice(subset.n_obs, size=int(max_reads), replace=False))
     return subset[chosen, :].copy()
+
+
+def subsample_read_ids(read_ids: Sequence[str], max_reads: int | None, *, seed: int = 0) -> list:
+    """Randomly subsample a list of read IDs to at most ``max_reads``, list-level.
+
+    Companion to ``subsample_reads_for_plot`` for callers that build up a read
+    selection *before* materializing an AnnData -- a reduce-phase plot that
+    materializes a whole reference's/region's reads (every barcode combined)
+    just to subsample per-(reference, sample) group afterward defeats the
+    point: capping each group's read IDs up front bounds the materialize
+    itself instead of only the final plot (see dev/pipeline_scaling_audit.md,
+    finding E). Same reproducible, order-preserving semantics as
+    ``subsample_reads_for_plot``; call once per group (e.g. per barcode) so
+    each group is independently capped rather than the combined pool.
+    """
+    read_ids = list(read_ids)
+    if max_reads is None or max_reads <= 0 or len(read_ids) <= int(max_reads):
+        return read_ids
+    rng = np.random.default_rng(seed)
+    chosen = np.sort(rng.choice(len(read_ids), size=int(max_reads), replace=False))
+    return [read_ids[i] for i in chosen]
 
 
 def normalized_mean(matrix: np.ndarray, *, ignore_nan: bool = True) -> np.ndarray:

@@ -1332,6 +1332,7 @@ def _generate_dense_region_products(
                 ),
                 max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
                 index_col_suffix=index_suffix,
+                cfg=cfg,
             )
             for path in sorted(clustermap_dir.glob("*.png")):
                 register_plot_artifact(
