@@ -1884,7 +1884,7 @@ class ExperimentConfig:
             output_binary_layer_name=merged.get(
                 "output_binary_layer_name", "binarized_methylation"
             ),
-            reindexing_offsets=merged.get("reindexing_offsets", {None: None}),
+            reindexing_offsets=merged.get("reindexing_offsets", {}),
             reindexed_var_suffix=merged.get("reindexed_var_suffix", "reindexed"),
             reindexing_invert=merged.get("reindexing_invert", {}),
             clustermap_demux_types_to_plot=merged.get(

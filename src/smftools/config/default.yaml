@@ -270,8 +270,7 @@ mismatch_base_frequency_exclude_mod_sites: True
 ######## smftools spatial params #########
 invert_adata: False # Whether to invert the AnnData along the positions axis.
 # Reindexing params
-reindexing_offsets:
-  null : null
+reindexing_offsets: {}
 reindexed_var_suffix: "reindexed"
 # Per-reference display inversion: {ref: True} flips the sign of that
 # reference's reindexed coordinate so "left of anchor = negative, right of
