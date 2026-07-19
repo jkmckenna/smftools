@@ -3989,6 +3989,55 @@ def build_barcode_sidecar_from_split_bams(
     return output_path
 
 
+def rebuild_barcode_sidecar_via_dorado_classification(
+    aligned_sorted_bam: Path,
+    barcode_sidecar: Path,
+    *,
+    barcode_kit: str,
+    barcode_both_ends: bool,
+    trim: bool,
+    threads: int,
+    samtools_backend: str | None = None,
+) -> Path:
+    """Run real dorado demux classification to build a reliable barcode sidecar.
+
+    For ``skip_bam_split=True`` callers whose aligned BAM has no usable BC/bi
+    tags (see ``_bam_has_barcode_info_tags``) -- rather than falling back to
+    scanning the aligned BAM for tags that were never written (silently
+    producing an almost-empty sidecar; observed 156 reads recovered out of
+    over a million), this runs dorado's own classifier into a throwaway split
+    directory purely to harvest a read->barcode mapping from, then discards
+    the split BAMs. Honors ``skip_bam_split=True``'s promise that the aligned
+    BAM remains the one artifact used downstream -- no split files persist.
+
+    Returns ``barcode_sidecar``.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory(
+        dir=aligned_sorted_bam.parent, prefix="tmp_bam_split_"
+    ) as tmp_split_dir:
+        tmp_split_path = Path(tmp_split_dir)
+        classified_bam_files = demux_and_index_BAM(
+            aligned_sorted_bam,
+            tmp_split_path,
+            aligned_sorted_bam.suffix,
+            barcode_kit,
+            barcode_both_ends=barcode_both_ends,
+            trim=trim,
+            threads=threads,
+            no_classify=False,
+            file_prefix="",
+        )
+        bam_files_for_sidecar = [p for p in classified_bam_files if "unclassified" not in p.name]
+        build_barcode_sidecar_from_split_bams(
+            bam_files_for_sidecar,
+            barcode_sidecar,
+            samtools_backend=samtools_backend,
+        )
+    return barcode_sidecar
+
+
 def extract_read_relative_base_identities(
     bam_file,
     record,
