@@ -83,11 +83,15 @@ def _compute_read_spatial_statistics(
     peak_range = _config_range(cfg, "spatial_lomb_scargle_peak_range_bp", (150.0, 250.0))
     poly_degree = int(getattr(cfg, "spatial_lomb_scargle_poly_degree", 2))
     min_sites = int(getattr(cfg, "spatial_lomb_scargle_min_sites", 40))
-    autocorrelations = []
-    pair_counts = []
     n_sites = np.sum(np.isfinite(values), axis=1).astype(np.int64)
     periods = np.arange(period_range[1], period_range[0] - 1, -1, dtype=float)
     periodogram_power = np.full((values.shape[0], len(periods)), np.nan, dtype=np.float32)
+    # Preallocated to match periodogram_power's pattern -- binary_autocorrelation_with_spacing
+    # always returns a fixed-length (max_lag + 1) pair, so growing Python lists of
+    # per-read arrays (then np.asarray()-ing them at the end) only added per-object
+    # overhead and a second, momentarily-doubled copy at conversion time.
+    autocorrelation_matrix = np.full((values.shape[0], max_lag + 1), np.nan, dtype=np.float32)
+    pair_counts_matrix = np.zeros((values.shape[0], max_lag + 1), dtype=np.int64)
     scalar_names = (
         "ls_nrl_bp",
         "ls_snr",
@@ -106,8 +110,8 @@ def _compute_read_spatial_statistics(
             normalize=normalization,
             return_counts=True,
         )
-        autocorrelations.append(autocorrelation)
-        pair_counts.append(counts)
+        autocorrelation_matrix[read_index] = autocorrelation
+        pair_counts_matrix[read_index] = counts
         if compute_periodogram:
             result = analyze_ls_periodicity_direct(
                 site_positions,
@@ -123,8 +127,8 @@ def _compute_read_spatial_statistics(
                     scalars[name][read_index] = float(result[name])
                 periodogram_power[read_index] = np.asarray(result["ls_power"], dtype=np.float32)
     return {
-        "autocorrelation": np.asarray(autocorrelations, dtype=np.float32),
-        "pair_counts": np.asarray(pair_counts, dtype=np.int64),
+        "autocorrelation": autocorrelation_matrix,
+        "pair_counts": pair_counts_matrix,
         "n_sites": n_sites,
         "status": status,
         "periodogram_power": periodogram_power,
@@ -303,7 +307,13 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
         if not site_mask.any():
             continue
         site_positions = positions[site_mask]
-        values = np.asarray(core.X, dtype=float)[:, site_mask]
+        # core.X is already float32 binary/NaN data; slice to site columns
+        # *before* touching dtype (not np.asarray(core.X, dtype=float)[:, mask],
+        # which upcasts the whole locus-width window to float64 first). Nothing
+        # downstream needs float64 here -- binary_autocorrelation_with_spacing
+        # and analyze_ls_periodicity_direct each upcast per-read, on the much
+        # smaller already-masked row, when they actually need it.
+        values = np.asarray(core.X[:, site_mask])
         valid = np.isfinite(values)
         valid_count = valid.sum(axis=0).astype(np.int64)
         modified_sum = np.nansum(values, axis=0)
