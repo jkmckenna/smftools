@@ -68,6 +68,7 @@ class AdataPaths:
     preprocess_spine: Path | None = None
     spatial_spine: Path | None = None
     hmm_spine: Path | None = None
+    latent_spine: Path | None = None
 
 
 @dataclass
@@ -150,6 +151,7 @@ def get_adata_paths(cfg) -> AdataPaths:
     preprocess_spine = output_directory / PREPROCESS_DIR / "spine.h5ad"
     spatial_spine = output_directory / SPATIAL_DIR / "spine.h5ad"
     hmm_spine = output_directory / HMM_DIR / "spine.h5ad"
+    latent_spine = output_directory / LATENT_DIR / "spine.h5ad"
 
     return AdataPaths(
         raw=raw,
@@ -167,6 +169,7 @@ def get_adata_paths(cfg) -> AdataPaths:
         preprocess_spine=preprocess_spine,
         spatial_spine=spatial_spine,
         hmm_spine=hmm_spine,
+        latent_spine=latent_spine,
     )
 
 

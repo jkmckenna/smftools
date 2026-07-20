@@ -188,7 +188,7 @@ def full(config_path):
 @click.argument(
     "task",
     type=click.Choice(
-        ["raw", "load", "preprocess", "spatial", "variant", "hmm", "full"],
+        ["raw", "load", "preprocess", "spatial", "variant", "hmm", "latent", "full"],
         case_sensitive=False,
     ),
 )
@@ -210,7 +210,7 @@ def full(config_path):
 )
 def batch(task, config_table: Path, column: str, sep: str | None):
     """
-    Run a TASK (raw, load, preprocess, spatial, variant, hmm, full) on multiple CONFIG_PATHs
+    Run a TASK (raw, load, preprocess, spatial, variant, hmm, latent, full) on multiple CONFIG_PATHs
     listed in a CSV/TSV or plain TXT file.
 
     Plain text format: one config path per line, no header.
@@ -320,6 +320,11 @@ def batch(task, config_table: Path, column: str, sep: str | None):
 
         return hmm_adata(cfg_path)
 
+    def _latent(cfg_path: str):
+        from .cli.latent_adata import latent_adata
+
+        return latent_adata(cfg_path)
+
     def _full(cfg_path: str):
         from .cli.recipes import full_flow
 
@@ -332,6 +337,7 @@ def batch(task, config_table: Path, column: str, sep: str | None):
         "spatial": _spatial,
         "variant": _variant,
         "hmm": _hmm,
+        "latent": _latent,
         "full": _full,
     }
 

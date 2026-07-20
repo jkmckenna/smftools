@@ -1153,6 +1153,21 @@ class ExperimentConfig:
     preprocess_execution_mode: str = "auto"
     spatial_execution_mode: str = "auto"
     hmm_execution_mode: str = "auto"
+    latent_execution_mode: str = "auto"
+    latent_n_pcs: int = 10
+    latent_nmf_components: int = 2
+    latent_nmf_max_iter: int = 500
+    latent_knn_neighbors: int = 15
+    latent_leiden_resolution: float = 0.1
+    latent_random_state: int = 0
+    latent_max_fit_reads: int = 5000
+    latent_transform_chunk_reads: int = 2000
+    latent_min_reads: int = 3
+    latent_run_pca_umap: bool = True
+    latent_run_nmf: bool = True
+    latent_run_cp: bool = True
+    latent_cp_rank: int = 2
+    latent_cp_iterations: int = 100
     spatial_regions_bed: Optional[str] = None
     spatial_generate_clustermaps: bool = True
     spatial_generate_position_matrices: bool = True
@@ -1210,6 +1225,9 @@ class ExperimentConfig:
     bypass_hmm_apply: bool = False
     force_redo_hmm_apply: bool = False
     force_redo_hmm_plots: bool = False
+
+    # Pipeline control flow - Latent Analyses
+    force_redo_latent_analyses: bool = False
 
     # AnnData stage override (for CLI commands like plot-current)
     from_adata_stage: Optional[str] = None
@@ -2167,6 +2185,27 @@ class ExperimentConfig:
             preprocess_execution_mode=str(merged.get("preprocess_execution_mode", "auto")),
             spatial_execution_mode=str(merged.get("spatial_execution_mode", "auto")),
             hmm_execution_mode=str(merged.get("hmm_execution_mode", "auto")),
+            latent_execution_mode=str(merged.get("latent_execution_mode", "auto")),
+            latent_n_pcs=int(_parse_numeric(merged.get("latent_n_pcs", 10), 10)),
+            latent_nmf_components=int(_parse_numeric(merged.get("latent_nmf_components", 2), 2)),
+            latent_nmf_max_iter=int(_parse_numeric(merged.get("latent_nmf_max_iter", 500), 500)),
+            latent_knn_neighbors=int(_parse_numeric(merged.get("latent_knn_neighbors", 15), 15)),
+            latent_leiden_resolution=float(
+                _parse_numeric(merged.get("latent_leiden_resolution", 0.1), 0.1)
+            ),
+            latent_random_state=int(_parse_numeric(merged.get("latent_random_state", 0), 0)),
+            latent_max_fit_reads=int(
+                _parse_numeric(merged.get("latent_max_fit_reads", 5000), 5000)
+            ),
+            latent_transform_chunk_reads=int(
+                _parse_numeric(merged.get("latent_transform_chunk_reads", 2000), 2000)
+            ),
+            latent_min_reads=int(_parse_numeric(merged.get("latent_min_reads", 3), 3)),
+            latent_run_pca_umap=_parse_bool(merged.get("latent_run_pca_umap", True)),
+            latent_run_nmf=_parse_bool(merged.get("latent_run_nmf", True)),
+            latent_run_cp=_parse_bool(merged.get("latent_run_cp", True)),
+            latent_cp_rank=int(_parse_numeric(merged.get("latent_cp_rank", 2), 2)),
+            latent_cp_iterations=int(_parse_numeric(merged.get("latent_cp_iterations", 100), 100)),
             spatial_regions_bed=merged.get("spatial_regions_bed"),
             spatial_generate_clustermaps=_parse_bool(
                 merged.get("spatial_generate_clustermaps", True)
@@ -2268,6 +2307,7 @@ class ExperimentConfig:
             bypass_hmm_apply=merged.get("bypass_hmm_apply", False),
             force_redo_hmm_apply=merged.get("force_redo_hmm_apply", False),
             force_redo_hmm_plots=merged.get("force_redo_hmm_plots", False),
+            force_redo_latent_analyses=_parse_bool(merged.get("force_redo_latent_analyses", False)),
             references_to_align_for_variant_annotation=merged.get(
                 "references_to_align_for_variant_annotation", [None, None]
             ),

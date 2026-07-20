@@ -204,12 +204,26 @@ The hmm command adds HMM-based feature annotation and summary plots. It:
 The latent command constructs latent representations of the data. It:
 
 - Requires at least a preprocessed AnnData object.
+- In `auto` mode, prefers partitioned HMM, spatial, and preprocessing spines in that order.
+- Fits independent coordinate systems per reference locus or genome core. Coordinates and
+  components from different units are not directly comparable.
+- Bounds model fitting with `latent_max_fit_reads`; PCA, UMAP, and NMF project remaining reads in
+  chunks, while CP runs only when the complete unit fits that bound.
 - Runs various dimensionality reduction and graph construction modalities:
     - Principle component analysis (PCA)
     - K-nearest neighbor (KNN)
     - Uniform manifold approximation and projection (UMAP)
     - Non-negative matrix factorization (NMF)
     - Canonical polyadic decomposition (PARAFAC)
+- Writes a task catalog, per-unit Zarr outputs, plot catalog, and thin latent spine under
+  `latent_adata_outputs`.
+
+`latent_execution_mode` accepts `auto`, `partitioned`, or `legacy`. The latent command remains a
+standalone stage and is not run by `smftools experiment full`.
+
+Migration note: existing configs require no new rows because all latent settings have defaults.
+Set `latent_execution_mode,legacy` explicitly to retain monolithic output selection when both
+legacy AnnData files and partitioned spines are present.
 
 ### `smftools experiment full`
 

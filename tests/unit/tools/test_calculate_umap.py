@@ -98,6 +98,17 @@ def test_plot_embedding_grid_writes_file(tmp_path: Path) -> None:
     assert output.exists()
 
 
+def test_compact_category_labels_removes_long_shared_prefix() -> None:
+    from smftools.plotting.latent_plotting import _compact_category_labels
+
+    labels = [
+        "experiment_with_a_long_name_barcode01",
+        "experiment_with_a_long_name_barcode02",
+    ]
+
+    assert _compact_category_labels(labels) == ["barcode01", "barcode02"]
+
+
 @pytest.mark.unit
 def test_plot_pca_explained_variance_writes_file(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")

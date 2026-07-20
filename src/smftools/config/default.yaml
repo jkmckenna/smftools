@@ -550,6 +550,21 @@ parquet_start_bin_size: 1000000 # Reference-start bin used to partition ragged p
 preprocess_execution_mode: auto # auto, legacy, or partitioned; auto partitions any raw/load spine
 spatial_execution_mode: auto # auto, legacy, or partitioned; auto partitions a preprocess spine
 hmm_execution_mode: auto # auto, legacy, or partitioned; auto partitions a spatial/preprocess spine
+latent_execution_mode: auto # auto, legacy, or partitioned; auto partitions an hmm/spatial/preprocess spine
+latent_n_pcs: 10 # PCA components per latent analysis unit
+latent_nmf_components: 2 # NMF components per latent analysis unit
+latent_nmf_max_iter: 500 # Maximum NMF iterations
+latent_knn_neighbors: 15 # Neighbors used for UMAP and Leiden graph construction
+latent_leiden_resolution: 0.1 # Leiden resolution for latent clusters
+latent_random_state: 0 # Reproducible fit/read-sampling seed
+latent_max_fit_reads: 5000 # Maximum reads used to fit one reference/core latent space; remaining reads are transformed
+latent_transform_chunk_reads: 2000 # Reads materialized per out-of-sample transform chunk
+latent_min_reads: 3 # Minimum QC/deduplicated reads required for an analysis unit
+latent_run_pca_umap: True # Fit PCA, UMAP, and Leiden representations
+latent_run_nmf: True # Fit NMF representations
+latent_run_cp: True # Fit legacy CP representations when the complete unit is within latent_max_fit_reads
+latent_cp_rank: 2 # Rank for each CP representation
+latent_cp_iterations: 100 # Maximum iterations for each CP fit
 spatial_regions_bed: null # Optional 0-based half-open BED regions for genome matrix/clustermap analyses
 spatial_generate_clustermaps: True # Generate bounded barcode clustermaps per locus/BED region
 spatial_generate_position_matrices: True # Generate bounded position matrices per locus/BED region
@@ -604,3 +619,6 @@ force_redo_hmm_fit: False # Whether to redo HMM fitting for each sample/referenc
 bypass_hmm_apply: False # Whether to skip HMM application for each sample/reference
 force_redo_hmm_apply: False # Whether to redo HMM application for each sample/reference
 force_redo_hmm_plots: False # Whether to regenerate HMM clustermap/trace/contour plots even if output directories exist
+
+# Pipeline control flow - Latent analyses
+force_redo_latent_analyses: False # Whether to replace existing latent outputs

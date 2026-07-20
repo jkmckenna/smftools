@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Mapping, Sequence
 
@@ -379,7 +380,10 @@ def plot_cp_sequence_components(
                 base_factors.shape,
             )
         else:
-            base_labels = base_labels or [f"B{i + 1}" for i in range(base_factors.shape[0])]
+            if base_labels is None:
+                base_labels = [f"B{i + 1}" for i in range(base_factors.shape[0])]
+            else:
+                base_labels = np.asarray(base_labels).astype(str).tolist()
             fig, ax = plt.subplots(figsize=(4.5, 3))
             width = 0.8 / base_factors.shape[1]
             x = np.arange(base_factors.shape[0])
@@ -517,6 +521,21 @@ def _grid_dimensions(n_items: int, ncols: int | None) -> tuple[int, int]:
     return nrows, ncols
 
 
+def _compact_category_labels(labels: Sequence[str], max_length: int = 28) -> list[str]:
+    """Shorten display-only category labels while retaining distinctive suffixes."""
+    display = list(map(str, labels))
+    if len(display) > 1:
+        prefix = os.path.commonprefix(display)
+        separator = max(prefix.rfind("_"), prefix.rfind("/"), prefix.rfind("-"))
+        if separator >= 7:
+            shortened = [label[separator + 1 :] for label in display]
+            if all(shortened) and len(set(shortened)) == len(shortened):
+                display = shortened
+    return [
+        label if len(label) <= max_length else f"{label[: max_length - 1]}…" for label in display
+    ]
+
+
 def plot_embedding_grid(
     adata: "ad.AnnData",
     *,
@@ -608,9 +627,20 @@ def plot_embedding_grid(
                 linewidths=0,
             )
             handles = [
-                patches.Patch(color=color_map[label], label=str(label)) for label in label_strings
+                patches.Patch(color=color_map[label], label=display_label)
+                for label, display_label in zip(
+                    label_strings,
+                    _compact_category_labels(label_strings),
+                )
             ]
-            legend_ax.legend(handles=handles, loc="center left", fontsize=8, frameon=False)
+            legend_columns = max(1, int(math.ceil(len(handles) / 18)))
+            legend_ax.legend(
+                handles=handles,
+                loc="center left",
+                fontsize=7,
+                frameon=False,
+                ncol=legend_columns,
+            )
         else:
             scatter = ax.scatter(
                 embedding[:, 0],
@@ -627,7 +657,7 @@ def plot_embedding_grid(
         ax.set_ylabel(f"Component 2")
         ax.set_title(f"{color_key}")
 
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.08, right=0.98, bottom=0.08, top=0.92)
 
     filename_prefix = prefix or basis
     output_file = output_path / f"{filename_prefix}_grid.png"
@@ -769,11 +799,18 @@ def plot_pca_explained_variance(
         return None
 
     pca_data = adata.uns[pca_key]
-    if not isinstance(pca_data, Mapping) or "variance_ratio" not in pca_data:
+    if not isinstance(pca_data, Mapping):
+        logger.warning("Explained variance ratio not found in adata.uns[%s].", pca_key)
+        return None
+    variance_key = next(
+        (key for key in ("explained_variance_ratio", "variance_ratio") if key in pca_data),
+        None,
+    )
+    if variance_key is None:
         logger.warning("Explained variance ratio not found in adata.uns[%s].", pca_key)
         return None
 
-    variance_ratio = np.asarray(pca_data.get("variance_ratio", []), dtype=float)
+    variance_ratio = np.asarray(pca_data.get(variance_key, []), dtype=float)
     if variance_ratio.size == 0:
         logger.warning("Explained variance ratio for %s is empty; skipping plot.", pca_key)
         return None

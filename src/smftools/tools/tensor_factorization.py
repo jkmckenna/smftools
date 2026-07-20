@@ -198,8 +198,11 @@ def calculate_sequence_cp_decomposition(
         "random_state": random_state,
         "layer": layer,
         "components_key": components_key,
-        "weights": weights,
-        "base_factors": base_factors,
+        # Lists remain directly array-compatible for plotting while also being
+        # JSON-safe for the shared AnnData sanitizing writers. Nested NumPy
+        # arrays are otherwise restored as strings after a Zarr/H5AD round trip.
+        "weights": weights.tolist(),
+        "base_factors": base_factors.tolist(),
         "base_labels": list(bases),
         "backend": backend,
         "device": str(device),

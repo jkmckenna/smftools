@@ -28,7 +28,7 @@ def test_plot_cp_sequence_components_writes_files(tmp_path):
                 [0.4, 0.5],
             ]
         ),
-        "base_labels": ["A", "C", "G", "T"],
+        "base_labels": np.asarray(["A", "C", "G", "T"]),
     }
 
     outputs = plot_cp_sequence_components(adata, output_dir=tmp_path, max_positions=10)
