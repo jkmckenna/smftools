@@ -521,18 +521,21 @@ def _read_span_quality_plots(spine_path, layout, max_reads=300, max_positions=18
 
     from ..cli.stage_input import iter_stage_slices
 
+    # max_reads_per_sample caps read_ids *before* materialize() runs, not
+    # after -- this plot only ever uses `max_reads` reads per barcode, but
+    # without this the whole reference materialized first regardless (a real
+    # ~108s materialize() for one 43,735-read reference in a real experiment,
+    # with far larger references taking proportionally longer -- see
+    # dev/pipeline_scaling_audit.md).
     for stage_slice in iter_stage_slices(
         spine_path,
         layers=[READ_SPAN_MASK, BASE_QUALITY_SCORES],
+        max_reads_per_sample=max_reads,
     ):
         core = stage_slice.core()
         sample_column = _sample_column(core.obs)
         for sample, sample_obs in core.obs.groupby(sample_column, sort=True, observed=True):
-            read_ids = list(map(str, sample_obs.index))
-            if len(read_ids) > max_reads:
-                indices = np.linspace(0, len(read_ids) - 1, max_reads, dtype=int)
-                read_ids = [read_ids[index] for index in indices]
-            subset = core[read_ids]
+            subset = core[list(map(str, sample_obs.index))]
             column_step = max(1, math.ceil(subset.n_vars / max_positions))
             positions = np.asarray(subset.var_names, dtype=np.int64)[::column_step]
             span = np.asarray(subset.layers[READ_SPAN_MASK])[:, ::column_step]

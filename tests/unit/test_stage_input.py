@@ -74,3 +74,63 @@ def test_stage_iterator_yields_full_locus_reference(tmp_path):
     assert stage_slice.analysis_mode == "locus"
     assert stage_slice.adata.shape == (1, 20)
     np.testing.assert_array_equal(stage_slice.core().X, stage_slice.adata.X)
+
+
+def _multi_sample_frame(reads_per_barcode: int) -> pd.DataFrame:
+    rows = []
+    for barcode in ("bc1", "bc2"):
+        for i in range(reads_per_barcode):
+            rows.append(
+                {
+                    "read_id": f"{barcode}_read{i}",
+                    "reference": "chr1",
+                    "Reference_strand": "chr1_top",
+                    "barcode": barcode,
+                    "sample": barcode,
+                    "reference_start": 0,
+                    "cigar": "3M",
+                    "aligned_length": 3,
+                    "sequence": [0, 1, 2],
+                    "modification_signal": [0.0, 1.0, 0.0],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_stage_iterator_caps_reads_per_sample_before_materializing(tmp_path):
+    # Regression test for a real ~108s materialize() call on one 43,735-read
+    # reference in a real experiment, where only 300 reads/barcode were ever
+    # used downstream (a preprocess QC plot) -- max_reads_per_sample must cap
+    # read_ids *before* materialize() runs, independently per sample, not as
+    # a single flat cap across the whole reference (which could starve a
+    # low-abundance barcode of any reads at all).
+    paths = write_raw_store(
+        _multi_sample_frame(5),
+        tmp_path,
+        reference_lengths={"chr1_top": 20},
+        analysis_mode="locus",
+    )
+
+    stage_slice = next(
+        iter(iter_stage_slices(paths["spine"], filter_mask=None, max_reads_per_sample=2))
+    )
+
+    assert stage_slice.adata.n_obs == 4  # 2 samples x 2 capped reads each
+    obs_names = set(map(str, stage_slice.adata.obs_names))
+    bc1_kept = {name for name in obs_names if name.startswith("bc1_")}
+    bc2_kept = {name for name in obs_names if name.startswith("bc2_")}
+    assert len(bc1_kept) == 2
+    assert len(bc2_kept) == 2
+
+
+def test_stage_iterator_uncapped_by_default(tmp_path):
+    paths = write_raw_store(
+        _multi_sample_frame(5),
+        tmp_path,
+        reference_lengths={"chr1_top": 20},
+        analysis_mode="locus",
+    )
+
+    stage_slice = next(iter(iter_stage_slices(paths["spine"], filter_mask=None)))
+
+    assert stage_slice.adata.n_obs == 10  # 2 samples x 5 reads each, uncapped

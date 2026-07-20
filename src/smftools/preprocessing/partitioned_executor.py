@@ -614,22 +614,31 @@ def reduce_read_modification_stats(
             out=np.full(len(reduced), np.nan, dtype=float),
             where=reduced[count_column].to_numpy() != 0,
         )
-        context_column = reduced["reference"] + f"_{site_type}"
-        totals = {
-            (reference, column): int(
+        # Total valid sites per reference for this site_type: computed once per
+        # *unique* reference, not once per read. `column` here is a pure
+        # function of `reference` (always f"{reference}_{site_type}"), so the
+        # previous per-row dict comprehension recomputed the exact same
+        # var_frame["reference"] == reference scan (35,830 rows in a real
+        # experiment) redundantly for every one of up to 1.3M reads -- an
+        # O(n_reads * n_var_rows) blowup (~233 billion comparisons on real
+        # 260420 data) that took 30+ minutes on one thread, when only
+        # O(n_unique_references) (~10) lookups are actually needed. See
+        # dev/pipeline_scaling_audit.md.
+        totals_by_reference: dict[str, int] = {}
+        for reference in reduced["reference"].unique():
+            column = f"{reference}_{site_type}"
+            if column not in var_frame:
+                continue
+            totals_by_reference[reference] = int(
                 var_frame.loc[var_frame["reference"] == reference, column]
                 .astype("boolean")
                 .fillna(False)
                 .sum()
             )
-            for reference, column in zip(reduced["reference"], context_column)
-            if column in var_frame
-        }
         total_reference_column = f"Total_{site_type}_in_reference"
-        reduced[total_reference_column] = [
-            totals.get((reference, column), 0)
-            for reference, column in zip(reduced["reference"], context_column)
-        ]
+        reduced[total_reference_column] = (
+            reduced["reference"].map(totals_by_reference).fillna(0).astype(int)
+        )
         reduced[f"Valid_{site_type}_in_read_vs_reference"] = np.divide(
             reduced[count_column],
             reduced[total_reference_column],

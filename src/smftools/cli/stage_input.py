@@ -11,6 +11,7 @@ import numpy as np
 from smftools.constants import REFERENCE_STRAND
 
 from ..informatics.partition_read import load_spine, materialize
+from ..plotting.plotting_utils import subsample_read_ids
 
 
 @dataclass
@@ -54,11 +55,26 @@ def iter_stage_slices(
     layers=None,
     samples=None,
     filter_mask: str | None = "auto",
+    max_reads_per_sample: int | None = None,
 ) -> Iterable[StageSlice]:
     """Yield bounded, non-empty reference slices from a raw/load/preprocess spine.
 
     ``filter_mask='auto'`` prefers ``passes_dedup`` and then ``passes_qc``. Set it
     to ``None`` to retain every molecule.
+
+    ``max_reads_per_sample``: when set, each (reference, core, sample) group's
+    read_ids are randomly subsampled to at most this many *before*
+    materializing, not after -- a caller that only plots a bounded number of
+    reads per sample (e.g. ``_read_span_quality_plots``, capped to 300
+    reads/barcode for legibility) would otherwise still pay to materialize
+    every read for the whole reference first. Confirmed on real data: this
+    made a single 43,735-read reference's materialize() call take 107.6s
+    (of which only 300-per-barcode were ever used), with far larger
+    references in the same experiment taking proportionally longer -- see
+    dev/pipeline_scaling_audit.md. ``None`` (default) keeps every read,
+    matching the previous unbounded behavior for callers that need it (this
+    function currently has no other caller, but is a shared partition-aware
+    utility).
     """
     spine_path = Path(spine_path)
     spine = load_spine(spine_path)
@@ -97,10 +113,19 @@ def iter_stage_slices(
             ]
             if core_obs.empty:
                 continue
+            if max_reads_per_sample is not None:
+                cap_column = "Sample" if "Sample" in core_obs else "Barcode"
+                read_ids = [
+                    read_id
+                    for _sample, group in core_obs.groupby(cap_column, sort=False, observed=True)
+                    for read_id in subsample_read_ids(map(str, group.index), max_reads_per_sample)
+                ]
+            else:
+                read_ids = core_obs.index
             adata = materialize(
                 spine_path,
                 references=reference,
-                read_ids=core_obs.index,
+                read_ids=read_ids,
                 start=load_start,
                 end=load_end,
                 layers=layers,

@@ -945,6 +945,50 @@ def test_partitioned_spatial_writes_locus_clustermaps_and_position_matrices(tmp_
     assert "C_ls_status" not in filtered.obs
 
 
+def test_partitioned_spatial_task_keeps_site_values_float32(tmp_path, monkeypatch):
+    # Regression test: execute_spatial_task used to build
+    # np.asarray(core.X, dtype=float)[:, site_mask] -- upcasting the *entire*
+    # locus-width window to float64 before masking down to the actual site
+    # columns. core.X is already float32 binary/NaN data, and nothing
+    # downstream needs float64 at this stage (binary_autocorrelation_with_spacing
+    # and analyze_ls_periodicity_direct each upcast per-read, on the smaller
+    # already-masked row, only when they need to). Confirmed on real data this
+    # was a major contributor to spatial workers reaching 5.5-6.9GB RSS against
+    # a 512MB per-task budget. Capture the dtype actually reaching the
+    # per-read ACF call to guard against the wasteful upcast creeping back in.
+    import smftools.tools.partitioned_spatial as partitioned_spatial_module
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    cfg = _cfg()
+    cfg.read_len_filter_thresholds = [None, None]
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], cfg, tmp_path / "preprocess_outputs"
+    )
+    cfg.autocorr_site_types = ["C"]
+    cfg.spatial_generate_clustermaps = False
+    cfg.spatial_generate_position_matrices = False
+
+    seen_dtypes = []
+    real_acf = partitioned_spatial_module.binary_autocorrelation_with_spacing
+
+    def spy_acf(row, *args, **kwargs):
+        seen_dtypes.append(row.dtype)
+        return real_acf(row, *args, **kwargs)
+
+    monkeypatch.setattr(partitioned_spatial_module, "binary_autocorrelation_with_spacing", spy_acf)
+
+    execute_partitioned_spatial(preprocess["spine"], cfg, tmp_path / "spatial_outputs")
+
+    assert seen_dtypes
+    assert all(dtype == np.float32 for dtype in seen_dtypes)
+
+
 def test_partitioned_spatial_clustermaps_apply_reindexing_offsets(tmp_path, monkeypatch):
     # reindex_references_adata (previously only wired into the legacy,
     # non-partitioned pipeline -- see preprocessing/reindex_references_adata.py)
