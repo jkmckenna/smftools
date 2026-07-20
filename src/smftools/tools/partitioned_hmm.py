@@ -889,6 +889,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         [(spine_path, task, cfg, output_dir, models_dir) for task in tasks],
         cfg=cfg,
         force_sequential=str(device) != "cpu",
+        pool_label=f"hmm task pool ({len(tasks)} tasks, device={device})",
     )
     catalog_path = output_dir / HMM_TASK_CATALOG
     pd.DataFrame(records).to_parquet(catalog_path, index=False)

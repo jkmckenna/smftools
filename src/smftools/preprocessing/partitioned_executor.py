@@ -975,6 +975,7 @@ def execute_partitioned_preprocessing(
         bound_worker,
         [(spine_path, task, cfg, output_dir) for task in task_list],
         cfg=cfg,
+        pool_label=f"preprocess derived-layer tasks ({len(task_list)} tasks)",
     )
     catalog_path = output_dir / PREPROCESS_PARTITION_CATALOG
     pd.DataFrame(records).to_parquet(catalog_path, index=False)

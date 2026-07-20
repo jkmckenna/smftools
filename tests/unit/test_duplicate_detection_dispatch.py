@@ -140,7 +140,7 @@ def test_dispatch_and_fold_wires_run_tasks_parallel_and_folds_results(monkeypatc
     )
     captured = {}
 
-    def fake_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False):
+    def fake_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False, pool_label=None):
         captured["worker"] = worker
         captured["task_args_list"] = task_args_list
         captured["cfg"] = cfg
@@ -203,7 +203,7 @@ def test_dispatch_and_fold_carries_forward_reads_from_none_chunk_results(monkeyp
     those reads must still survive to the next round, not be silently dropped.
     """
 
-    def fake_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False):
+    def fake_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False, pool_label=None):
         return [None for _ in task_args_list]
 
     monkeypatch.setattr(memory_guard_module, "run_tasks_parallel", fake_run_tasks_parallel)
@@ -273,7 +273,7 @@ def test_round_cap_terminates_without_crashing_and_logs_warning(monkeypatch, cap
             "fwd_hamming_to_next": [np.nan] * n,
         }
 
-    def fake_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False):
+    def fake_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False, pool_label=None):
         return [fake_execute_chunk_task(*args) for args in task_args_list]
 
     monkeypatch.setattr(memory_guard_module, "run_tasks_parallel", fake_run_tasks_parallel)
@@ -345,7 +345,7 @@ def test_cross_chunk_duplicate_pair_reconciled_after_round_two(monkeypatch):
     var = pd.DataFrame({"ref_GpC_site": [True] * n_sites}, index=[str(i) for i in range(n_sites)])
     monkeypatch.setattr(dispatch_module, "materialize", _fake_materialize_factory(x_by_read, var))
 
-    def fake_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False):
+    def fake_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False, pool_label=None):
         return [worker(*args) for args in task_args_list]
 
     monkeypatch.setattr(memory_guard_module, "run_tasks_parallel", fake_run_tasks_parallel)

@@ -656,7 +656,9 @@ class _ChromosomeGroupAccumulator:
         return (flushed, True)
 
 
-def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: dict):
+def _map_references_parallel(
+    items, worker, *, max_workers: int, worker_kwargs: dict, pool_label: str | None = None
+):
     """Run ``worker(*args, **worker_kwargs)`` once per item in ``items``.
 
     Sequential when ``max_workers <= 1``. Otherwise runs in a process pool --
@@ -692,6 +694,8 @@ def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: 
     regardless of total experiment size.
     """
     if max_workers <= 1:
+        if pool_label:
+            logger.info("[%s] running sequentially", pool_label)
         for args in items:
             yield args, worker(*args, **worker_kwargs)
         return
@@ -724,7 +728,12 @@ def _map_references_parallel(items, worker, *, max_workers: int, worker_kwargs: 
         max_workers=max_workers, initializer=_limit_blas_threads_in_worker
     ) as pool:
         stop_watchdog = start_worker_watchdog(
-            pool, per_worker_budget_bytes, poll_interval, perf_logger=perf, pool_id=pool_id
+            pool,
+            per_worker_budget_bytes,
+            poll_interval,
+            perf_logger=perf,
+            pool_id=pool_id,
+            pool_label=pool_label,
         )
         try:
             future_to_args = {}
@@ -1207,6 +1216,7 @@ def _build_ragged_records_streaming_convertible(
             _extract_convertible_reference,
             max_workers=resolve_max_workers(cfg, len(items)),
             worker_kwargs=worker_kwargs,
+            pool_label=f"raw extraction (convertible, {len(items)} buckets)",
         ):
             record = args[0]
             chromosome = record_chromosome[record]
@@ -1372,6 +1382,7 @@ def _build_ragged_records_streaming_direct(
                 worker,
                 max_workers=resolve_max_workers(cfg, len(items)),
                 worker_kwargs=worker_kwargs,
+                pool_label=f"raw extraction (direct/{backend}, {len(items)} buckets)",
             ):
                 record = args[0]
                 for column in found_columns:

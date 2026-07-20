@@ -241,6 +241,8 @@ def _dispatch_and_fold(
     union_find: UnionFind,
     read_position: dict[str, int],
     hamming_minima: dict[str, np.ndarray],
+    *,
+    pool_label: str | None = None,
 ) -> list[str]:
     """Dispatch one round's chunk tasks in parallel, fold results, return survivors."""
     if not tasks:
@@ -250,7 +252,9 @@ def _dispatch_and_fold(
     task_args = [
         (spine_path, task, cfg, group_obs.loc[list(task.read_ids)]) for task in tasks
     ]
-    results = run_tasks_parallel(execute_duplicate_detection_chunk_task, task_args, cfg=cfg)
+    results = run_tasks_parallel(
+        execute_duplicate_detection_chunk_task, task_args, cfg=cfg, pool_label=pool_label
+    )
 
     survivors: list[str] = []
     for task, result in zip(tasks, results):
@@ -337,18 +341,50 @@ def run_duplicate_detection_rounds(
             round_shuffle_seed=round_shuffle_seed,
         )
         survivors = _dispatch_and_fold(
-            tasks, spine_path, cfg, group_obs, union_find, read_position, hamming_minima
+            tasks,
+            spine_path,
+            cfg,
+            group_obs,
+            union_find,
+            read_position,
+            hamming_minima,
+            pool_label=(
+                f"dedup {reference}/{sample} core={core_start}-{core_end} "
+                f"round={round_index} ({len(tasks)} chunk(s), {len(current_pool)} reads)"
+            ),
         )
 
         if fits_in_one_chunk:
             # Guaranteed-exact stop: the whole pool fit in one chunk, so this pass
             # is exactly as good as this algorithm gets for this group.
+            if round_index > 0:
+                logger.info(
+                    "duplicate detection: reference=%s sample=%s core=%d-%d converged after "
+                    "%d round(s), final pass on %d reads",
+                    reference,
+                    sample,
+                    core_start,
+                    core_end,
+                    round_index + 1,
+                    len(current_pool),
+                )
             break
 
         next_pool = current_pool.loc[current_pool.index.isin(survivors)]
         if len(next_pool) == len(current_pool):
             no_progress_rounds += 1
             if no_progress_rounds >= min_progress_rounds:
+                logger.info(
+                    "duplicate detection: reference=%s sample=%s core=%d-%d stopped after "
+                    "%d round(s) (%d consecutive round(s) with no new merges), %d reads remaining",
+                    reference,
+                    sample,
+                    core_start,
+                    core_end,
+                    round_index + 1,
+                    no_progress_rounds,
+                    len(next_pool),
+                )
                 break
         else:
             no_progress_rounds = 0

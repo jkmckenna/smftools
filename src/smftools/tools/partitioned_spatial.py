@@ -1468,6 +1468,7 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
         execute_spatial_task,
         [(spine_path, task, cfg, output_dir) for task in tasks],
         cfg=cfg,
+        pool_label=f"spatial task pool ({len(tasks)} tasks)",
     )
     task_catalog = output_dir / SPATIAL_TASK_CATALOG
     pd.DataFrame(records).to_parquet(task_catalog, index=False)
