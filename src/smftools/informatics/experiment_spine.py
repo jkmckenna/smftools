@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from smftools.constants import HMM_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
+from smftools.constants import HMM_DIR, LATENT_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
 
 from .partition_read import load_spine, relative_uns_path
 from .stage_obs import OBS_FILENAME, read_stage_obs
@@ -56,6 +56,7 @@ _STAGE_DIRS_IN_UNION_ORDER = (
     ("preprocess", PREPROCESS_DIR),
     ("spatial", SPATIAL_DIR),
     ("hmm", HMM_DIR),
+    ("latent", LATENT_DIR),
 )
 
 

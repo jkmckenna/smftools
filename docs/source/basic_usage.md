@@ -121,11 +121,17 @@ task catalog, model store, plot catalog, and linked thin spine under `hmm_adata_
 
 ## Latent Usage
 
-This command constructs various latent representations of the anndata object.
+This standalone command constructs latent representations. In the default `auto` mode it prefers
+an HMM spine, then a spatial spine, then a preprocessing spine, and writes independent
+reference/core-local coordinate systems under `latent_adata_outputs`. It is not part of the
+`experiment full` recipe.
 
 ```shell
 smftools experiment latent "/Path_to_experiment_config.csv"
 ```
+
+Use `latent_max_fit_reads` and `latent_transform_chunk_reads` to bound fitting and projection.
+CP decomposition runs only for units whose complete read set fits `latent_max_fit_reads`.
 
 ## Full Usage
 

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from smftools.constants import HMM_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
+from smftools.constants import HMM_DIR, LATENT_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
 from smftools.informatics.experiment_spine import (
     experiment_spine_path,
     write_experiment_spine,
@@ -11,7 +11,7 @@ from smftools.informatics.experiment_spine import (
 from smftools.informatics.partition_read import materialize
 from smftools.informatics.raw_store import write_raw_store
 from smftools.preprocessing.partitioned_executor import execute_partitioned_preprocessing
-from smftools.readwrite import safe_read_h5ad
+from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
 from smftools.tools.partitioned_hmm import execute_partitioned_hmm
 from smftools.tools.partitioned_spatial import execute_partitioned_spatial
 
@@ -141,6 +141,27 @@ def test_write_experiment_spine_joins_preprocess_columns(tmp_path):
     # doesn't replace raw's.
     assert "Reference_strand" in experiment_spine.obs.columns
     assert experiment_spine.uns["preprocess_catalog"]
+
+
+def test_write_experiment_spine_unions_latent_catalog_pointer(tmp_path):
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / RAW_DIR,
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+    )
+    raw_spine, _ = safe_read_h5ad(raw["spine"])
+    latent_spine = raw_spine.copy()
+    latent_spine.uns["latent_task_catalog"] = "latent_adata_outputs/task_catalog.parquet"
+    latent_path = tmp_path / LATENT_DIR / "spine.h5ad"
+    safe_write_h5ad(latent_spine, latent_path, backup=False, verbose=False)
+
+    write_experiment_spine(tmp_path)
+
+    experiment_spine, _ = safe_read_h5ad(experiment_spine_path(tmp_path))
+    assert experiment_spine.uns["latent_task_catalog"] == (
+        "latent_adata_outputs/task_catalog.parquet"
+    )
 
 
 def test_experiment_spine_resolves_sibling_branch_layers_together(tmp_path, monkeypatch):

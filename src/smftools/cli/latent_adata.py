@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
 import anndata as ad
 
@@ -10,6 +10,9 @@ from smftools.constants import LATENT_DIR, LOGGING_DIR, REFERENCE_STRAND, SEQUEN
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from .helpers import AdataPaths
 
 
 def _build_mod_sites_var_filter_mask(
@@ -134,25 +137,62 @@ def latent_adata(
     latent_adata_path : Path | None
         Path to the “current” latent AnnData.
     """
-    from ..readwrite import add_or_update_column_in_csv, safe_read_h5ad
+    from ..logging_utils import setup_stage_logging
+    from ..readwrite import safe_read_h5ad
     from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
 
     # 1) Ensure config + basic paths via load_adata
     cfg = load_experiment_config(config_path)
 
+    if getattr(cfg, "output_directory", None) is not None:
+        setup_stage_logging(cfg, Path(cfg.output_directory) / LATENT_DIR)
+
     paths = get_adata_paths(cfg)
 
     latent_path = paths.latent
+    partitioned_latent_path = paths.latent_spine
+    execution_mode = str(getattr(cfg, "latent_execution_mode", "auto")).lower()
+    if execution_mode not in {"auto", "legacy", "partitioned"}:
+        raise ValueError("latent_execution_mode must be auto, legacy, or partitioned")
 
     # Stage-skipping logic for latent
     if not getattr(cfg, "force_redo_latent_analyses", False):
-        # If latent exists, we consider latent analyses already done.
-        if latent_path.exists():
+        if (
+            execution_mode != "legacy"
+            and partitioned_latent_path is not None
+            and partitioned_latent_path.exists()
+        ):
+            logger.info(
+                "Partitioned latent spine found: %s\nSkipping smftools latent",
+                partitioned_latent_path,
+            )
+            return None, partitioned_latent_path
+        if execution_mode != "partitioned" and latent_path.exists():
             logger.info(f"Latent AnnData found: {latent_path}\nSkipping smftools latent")
             return None, latent_path
 
+    partitioned_source = None
+    if getattr(cfg, "from_adata_stage", None) is None and execution_mode != "legacy":
+        for candidate in (paths.hmm_spine, paths.spatial_spine, paths.preprocess_spine):
+            if candidate is not None and Path(candidate).exists():
+                partitioned_source = Path(candidate)
+                break
+    if execution_mode == "partitioned" and partitioned_source is None:
+        raise FileNotFoundError(
+            "partitioned latent analysis requires an HMM, spatial, or preprocessing spine"
+        )
+    if partitioned_source is not None:
+        from ..tools.partitioned_latent import execute_partitioned_latent
+
+        outputs = execute_partitioned_latent(
+            partitioned_source,
+            cfg,
+            Path(cfg.output_directory) / LATENT_DIR,
+        )
+        return None, outputs["spine"]
+
     # Decide which AnnData to use as the *starting point* for latent analyses
-    source_path, stage = resolve_adata_stage(cfg, paths, min_stage="pp")
+    source_path, _stage = resolve_adata_stage(cfg, paths, min_stage="pp")
     if source_path is None:
         logger.warning(
             "No suitable AnnData found for latent analyses (need at least preprocessed)."
@@ -181,7 +221,7 @@ def latent_adata_core(
     config_path: Optional[str] = None,
 ) -> Tuple[ad.AnnData, Path]:
     """
-    Core spatial analysis pipeline.
+    Core latent analysis pipeline.
 
     Assumes:
     - `adata` is (typically) the preprocessed, duplicate-removed AnnData.
@@ -337,7 +377,7 @@ def latent_adata_core(
         adata,
         layer=cfg.layer_for_umap_plotting,
         var_mask=mod_sites_mask,
-        n_pcs=10,
+        n_pcs=cfg.latent_n_pcs,
         output_suffix=SUBSET,
     )
 
@@ -345,7 +385,9 @@ def latent_adata_core(
     adata = calculate_knn(
         adata,
         obsm=f"X_pca_{SUBSET}",
-        knn_neighbors=15,
+        knn_neighbors=cfg.latent_knn_neighbors,
+        threads=cfg.threads or 1,
+        random_state=cfg.latent_random_state,
     )
 
     # UMAP Calculation
@@ -353,22 +395,31 @@ def latent_adata_core(
         adata,
         obsm=f"X_pca_{SUBSET}",
         output_suffix=SUBSET,
+        threads=cfg.threads or 1,
+        random_state=cfg.latent_random_state,
     )
 
     # Leiden clustering
-    calculate_leiden(adata, resolution=0.1, connectivities_key=f"connectivities_X_pca_{SUBSET}")
+    calculate_leiden(
+        adata,
+        resolution=cfg.latent_leiden_resolution,
+        key_added=f"leiden_{SUBSET}",
+        connectivities_key=f"connectivities_X_pca_{SUBSET}",
+    )
 
     # NMF Calculation
     adata = calculate_nmf(
         adata,
         layer=cfg.layer_for_umap_plotting,
         var_mask=mod_sites_mask,
-        n_components=2,
+        n_components=cfg.latent_nmf_components,
+        max_iter=cfg.latent_nmf_max_iter,
+        random_state=cfg.latent_random_state,
         suffix=SUBSET,
     )
 
     # PCA
-    if pca_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if pca_dir.is_dir() and not cfg.force_redo_latent_analyses:
         logger.debug(f"{pca_dir} already exists. Skipping PCA calculation and plotting.")
     else:
         make_dirs([pca_dir])
@@ -377,14 +428,14 @@ def latent_adata_core(
         plot_pca_components(adata, output_dir=pca_dir, suffix=SUBSET)
 
     # UMAP
-    if umap_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if umap_dir.is_dir() and not cfg.force_redo_latent_analyses:
         logger.debug(f"{umap_dir} already exists. Skipping UMAP plotting.")
     else:
         make_dirs([umap_dir])
         plot_umap_grid(adata, subset=SUBSET, color=plotting_layers, output_dir=umap_dir)
 
     # NMF
-    if nmf_dir.is_dir() and not getattr(cfg, "force_redo_spatial_analyses", False):
+    if nmf_dir.is_dir() and not cfg.force_redo_latent_analyses:
         logger.debug(f"{nmf_dir} already exists. Skipping NMF plotting.")
     else:
         make_dirs([nmf_dir])
@@ -408,7 +459,7 @@ def latent_adata_core(
         adata,
         layer=SEQUENCE_INTEGER_ENCODING,
         var_mask=valid_sites,
-        n_pcs=10,
+        n_pcs=cfg.latent_n_pcs,
         output_suffix=SUBSET,
     )
 
@@ -416,7 +467,9 @@ def latent_adata_core(
     adata = calculate_knn(
         adata,
         obsm=f"X_pca_{SUBSET}",
-        knn_neighbors=15,
+        knn_neighbors=cfg.latent_knn_neighbors,
+        threads=cfg.threads or 1,
+        random_state=cfg.latent_random_state,
     )
 
     # UMAP Calculation
@@ -424,17 +477,26 @@ def latent_adata_core(
         adata,
         obsm=f"X_pca_{SUBSET}",
         output_suffix=SUBSET,
+        threads=cfg.threads or 1,
+        random_state=cfg.latent_random_state,
     )
 
     # Leiden clustering
-    calculate_leiden(adata, resolution=0.1, connectivities_key=f"connectivities_X_pca_{SUBSET}")
+    calculate_leiden(
+        adata,
+        resolution=cfg.latent_leiden_resolution,
+        key_added=f"leiden_{SUBSET}",
+        connectivities_key=f"connectivities_X_pca_{SUBSET}",
+    )
 
     # NMF Calculation
     adata = calculate_nmf(
         adata,
         layer=SEQUENCE_INTEGER_ENCODING,
         var_mask=valid_sites,
-        n_components=2,
+        n_components=cfg.latent_nmf_components,
+        max_iter=cfg.latent_nmf_max_iter,
+        random_state=cfg.latent_random_state,
         suffix=SUBSET,
     )
 
@@ -482,7 +544,9 @@ def latent_adata_core(
             layer=SEQUENCE_INTEGER_ENCODING,
             var_mask=mod_sites_mask,
             var_mask_name="shared_reference_and_mod_site_positions",
-            rank=2,
+            rank=cfg.latent_cp_rank,
+            n_iter_max=cfg.latent_cp_iterations,
+            random_state=cfg.latent_random_state,
             embedding_key=f"X_cp_{SUBSET}",
             components_key=f"H_cp_{SUBSET}",
             uns_key=f"cp_{SUBSET}",
@@ -526,7 +590,9 @@ def latent_adata_core(
             layer=SEQUENCE_INTEGER_ENCODING,
             var_mask=mod_sites_mask,
             var_mask_name="shared_reference_mod_site_positions",
-            rank=2,
+            rank=cfg.latent_cp_rank,
+            n_iter_max=cfg.latent_cp_iterations,
+            random_state=cfg.latent_random_state,
             embedding_key=f"X_cp_{SUBSET}",
             components_key=f"H_cp_{SUBSET}",
             uns_key=f"cp_{SUBSET}",
@@ -569,7 +635,9 @@ def latent_adata_core(
             layer=SEQUENCE_INTEGER_ENCODING,
             var_mask=non_mod_sites_mask,
             var_mask_name="non_mod_site_reference_positions",
-            rank=2,
+            rank=cfg.latent_cp_rank,
+            n_iter_max=cfg.latent_cp_iterations,
+            random_state=cfg.latent_random_state,
             embedding_key=f"X_cp_{SUBSET}",
             components_key=f"H_cp_{SUBSET}",
             uns_key=f"cp_{SUBSET}",
@@ -613,7 +681,9 @@ def latent_adata_core(
             layer=SEQUENCE_INTEGER_ENCODING,
             var_mask=non_mod_sites_mask,
             var_mask_name="non_mod_site_reference_positions",
-            rank=2,
+            rank=cfg.latent_cp_rank,
+            n_iter_max=cfg.latent_cp_iterations,
+            random_state=cfg.latent_random_state,
             embedding_key=f"X_cp_{SUBSET}",
             components_key=f"H_cp_{SUBSET}",
             uns_key=f"cp_{SUBSET}",
@@ -657,7 +727,9 @@ def latent_adata_core(
             layer=SEQUENCE_INTEGER_ENCODING,
             var_mask=_build_reference_position_mask(adata, references),
             var_mask_name="shared_reference_positions",
-            rank=2,
+            rank=cfg.latent_cp_rank,
+            n_iter_max=cfg.latent_cp_iterations,
+            random_state=cfg.latent_random_state,
             embedding_key=f"X_cp_{SUBSET}",
             components_key=f"H_cp_{SUBSET}",
             uns_key=f"cp_{SUBSET}",
@@ -701,7 +773,9 @@ def latent_adata_core(
             layer=SEQUENCE_INTEGER_ENCODING,
             var_mask=_build_reference_position_mask(adata, references),
             var_mask_name="shared_reference_positions",
-            rank=2,
+            rank=cfg.latent_cp_rank,
+            n_iter_max=cfg.latent_cp_iterations,
+            random_state=cfg.latent_random_state,
             embedding_key=f"X_cp_{SUBSET}",
             components_key=f"H_cp_{SUBSET}",
             uns_key=f"cp_{SUBSET}",
@@ -729,7 +803,7 @@ def latent_adata_core(
     # ============================================================
     # 10) Save latent AnnData
     # ============================================================
-    if not latent_adata_path.exists():
+    if (not latent_adata_path.exists()) or cfg.force_redo_latent_analyses:
         logger.info("Saving latent analyzed AnnData")
         record_smftools_metadata(
             adata,

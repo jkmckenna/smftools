@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import anndata as ad
 import numpy as np
 import pytest
@@ -61,7 +63,13 @@ def test_calculate_sequence_cp_decomposition() -> None:
     assert "H_cp_sequence" in result.varm
     assert result.varm["H_cp_sequence"].shape == (4, 2)
     assert "cp_sequence" in result.uns
-    assert result.uns["cp_sequence"]["base_factors"].shape == (4, 2)
+    assert np.asarray(result.uns["cp_sequence"]["base_factors"]).shape == (4, 2)
+    assert json.loads(json.dumps(result.uns["cp_sequence"]))["base_labels"] == [
+        "A",
+        "C",
+        "G",
+        "T",
+    ]
     assert result.uns["cp_sequence"]["backend"] == "pytorch"
 
 
