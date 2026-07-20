@@ -896,12 +896,26 @@ def test_preprocess_wrapper_dispatches_planned_spine(tmp_path, monkeypatch):
 
 
 def test_preprocess_wrapper_returns_existing_partitioned_spine(tmp_path, monkeypatch):
+    import anndata as ad
+
     from smftools.cli import helpers
     from smftools.cli import preprocess_adata as preprocess_module
+    from smftools.readwrite import safe_write_h5ad
 
+    # A completed partitioned preprocess spine has passes_qc (and usually
+    # passes_dedup) in obs -- the skip-if-exists check verifies this before
+    # trusting a cached spine, since a spine.h5ad can exist on disk from a run
+    # that crashed after writing it but before QC/dedup columns were merged in
+    # (see reduce_duplicate_reads' staging-write fix). An empty placeholder file
+    # no longer qualifies as "existing" for skip purposes.
     output_spine = tmp_path / PREPROCESS_DIR / "spine.h5ad"
     output_spine.parent.mkdir()
-    output_spine.touch()
+    safe_write_h5ad(
+        ad.AnnData(obs=pd.DataFrame({"passes_qc": [True, False]}, index=["read1", "read2"])),
+        output_spine,
+        backup=False,
+        verbose=False,
+    )
     paths = SimpleNamespace(
         raw=tmp_path / "missing.h5ad.gz",
         spine=tmp_path / "missing-load-spine.h5ad",
@@ -918,3 +932,71 @@ def test_preprocess_wrapper_returns_existing_partitioned_spine(tmp_path, monkeyp
     monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg: paths)
 
     assert preprocess_module.preprocess_adata("experiment.csv") == (output_spine, None)
+
+
+def test_preprocess_wrapper_reruns_when_partitioned_spine_missing_qc_dedup(tmp_path, monkeypatch):
+    # Companion to test_preprocess_wrapper_returns_existing_partitioned_spine:
+    # a spine.h5ad present on disk but lacking passes_qc/passes_dedup (a crash
+    # inside reduce_duplicate_reads used to leave exactly this behind, in a real
+    # production incident) must NOT be trusted as complete -- preprocessing
+    # should re-run from the raw spine instead of silently skipping.
+    import anndata as ad
+
+    from smftools.cli import helpers
+    from smftools.cli import preprocess_adata as preprocess_module
+    from smftools.readwrite import safe_write_h5ad
+
+    incomplete_spine = tmp_path / PREPROCESS_DIR / "spine.h5ad"
+    incomplete_spine.parent.mkdir()
+    safe_write_h5ad(
+        ad.AnnData(obs=pd.DataFrame({"read_id": ["read1"]}, index=["read1"])),
+        incomplete_spine,
+        backup=False,
+        verbose=False,
+    )
+
+    raw_spine = tmp_path / "raw-spine.h5ad"
+    safe_write_h5ad(
+        ad.AnnData(
+            obs=pd.DataFrame({"read_id": ["read1"]}, index=["read1"]),
+            uns={"reference_plans": {"ref": {"analysis_mode": "locus", "reference_length": 10}}},
+        ),
+        raw_spine,
+        backup=False,
+        verbose=False,
+    )
+
+    paths = SimpleNamespace(
+        raw=tmp_path / "missing.h5ad.gz",
+        spine=tmp_path / "missing-load-spine.h5ad",
+        raw_spine=raw_spine,
+        pp=tmp_path / "missing-pp.h5ad.gz",
+        pp_dedup=tmp_path / "missing-dedup.h5ad.gz",
+    )
+    cfg = SimpleNamespace(
+        output_directory=tmp_path,
+        force_redo_preprocessing=False,
+        force_redo_flag_duplicate_reads=False,
+        preprocess_execution_mode="auto",
+    )
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg: paths)
+
+    captured = {}
+
+    def fake_execute_partitioned_preprocessing(source_path, executor_cfg, output_dir):
+        captured["source_path"] = source_path
+        return {"spine": incomplete_spine}
+
+    import smftools.preprocessing.partitioned_executor as partitioned_executor_module
+
+    monkeypatch.setattr(
+        partitioned_executor_module,
+        "execute_partitioned_preprocessing",
+        fake_execute_partitioned_preprocessing,
+    )
+
+    result = preprocess_module.preprocess_adata("experiment.csv")
+
+    assert captured.get("source_path") == raw_spine
+    assert result == (incomplete_spine, None)

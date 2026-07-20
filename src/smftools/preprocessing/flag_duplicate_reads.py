@@ -20,11 +20,11 @@ from smftools.optional_imports import require
 from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
 
 from ..readwrite import make_dirs
+from ._bitpack_utils import pack_calls_and_valid_mask, popcount_hamming_windowed, unpack_to_float
 
 logger = get_logger(__name__)
 
 plt = require("matplotlib.pyplot", extra="plotting", purpose="duplicate read plots")
-torch = require("torch", extra="torch", purpose="duplicate read detection")
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -222,18 +222,28 @@ def _process_group(args: dict) -> Optional[dict]:
     hierarchical_linkage = args["hierarchical_linkage"]
     hierarchical_metric = args["hierarchical_metric"]
     hierarchical_window = args["hierarchical_window"]
+    hierarchical_max_representatives = int(args.get("hierarchical_max_representatives", 5000))
     do_pca = args["do_pca"]
     pca_n_components = args["pca_n_components"]
     random_state = args["random_state"]
     demux_col = args["demux_col"]
     demux_types = args["demux_types"]
+    n_permutation_passes = int(args.get("n_permutation_passes", 0))
+    permutation_seed = int(args.get("permutation_seed", 0))
 
-    N = X_sub.shape[0]
+    N, n_sites = X_sub.shape
     if N < 2:
         return None
 
-    # convert to torch for vector ops
-    X_tensor = torch.from_numpy(X_sub.copy())
+    # Pack immediately and drop the dense float representation -- everything
+    # below operates on ``sortable_int8`` (1 byte/site, sort-key construction
+    # only) and ``calls_u64``/``valid_u64`` (~1 bit/site each, all Hamming
+    # comparisons), never on a resident float array. See _bitpack_utils.py.
+    valid = ~np.isnan(X_sub)
+    sortable_int8 = np.full(X_sub.shape, -1, dtype=np.int8)
+    sortable_int8[valid] = X_sub[valid].astype(np.int8)
+    calls_u64, valid_u64 = pack_calls_and_valid_mask(X_sub)
+    del X_sub, valid
 
     # per-read nearest distances
     fwd_hamming_to_next = np.full((N,), np.nan, dtype=float)
@@ -243,70 +253,80 @@ def _process_group(args: dict) -> Optional[dict]:
     local_hamming_dists: list = []
     hierarchical_found_dists: list = []
 
-    def cluster_pass(
-        X_tensor_local, reverse=False, window=int(window_size), record_distances=False
-    ):
-        """Perform a lexicographic windowed clustering pass."""
-        _X_np = X_tensor_local.numpy()
-        _sortable = np.full(_X_np.shape, -1, dtype=np.int8)
-        _valid = ~np.isnan(_X_np)
-        _sortable[_valid] = _X_np[_valid].astype(np.int8)
-        _u8 = np.ascontiguousarray((_sortable + np.int8(1)).astype(np.uint8))
+    def cluster_pass(column_order, *, reverse, window=int(window_size), record_distances=False):
+        """One windowed pass: sort rows by a column_order-prioritized key, compare
+        adjacent-in-sort-order reads via bit-packed popcount Hamming distance.
+
+        ``column_order`` is a permutation of site-column indices used *only* to
+        build the sort key -- the packed calls/valid arrays are never reordered,
+        since Hamming distance is order-independent. Passing the identity
+        permutation reproduces the natural-order pass; independent random
+        permutations are a near-linear generalization that catches duplicate
+        pairs an unlucky single sort order would separate (see
+        dev/duplicate_detection_scaling.md).
+        """
+        key_source = sortable_int8[:, column_order]
+        _u8 = np.ascontiguousarray((key_source + np.int8(1)).astype(np.uint8))
         _dt = np.dtype(",".join(["u1"] * _u8.shape[1]))
-        _sorted_idx_np = np.argsort(_u8.view(_dt).ravel(), kind="stable")
+        sorted_idx_np = np.argsort(_u8.view(_dt).ravel(), kind="stable")
         if reverse:
-            _sorted_idx_np = _sorted_idx_np[::-1]
-        sorted_idx = _sorted_idx_np.tolist()
-        sorted_X = X_tensor_local[sorted_idx]
+            sorted_idx_np = sorted_idx_np[::-1]
+        sorted_idx = sorted_idx_np.tolist()
         cluster_pairs_local = []
 
-        for i in range(len(sorted_X)):
-            row_i = sorted_X[i]
-            j_range_local = range(i + 1, min(i + 1 + window, len(sorted_X)))
-            if len(j_range_local) == 0:
+        for i in range(len(sorted_idx)):
+            j_local = range(i + 1, min(i + 1 + window, len(sorted_idx)))
+            if len(j_local) == 0:
                 continue
-            block_rows = sorted_X[list(j_range_local)]
-            row_i_exp = row_i.unsqueeze(0)  # (1, D)
-            valid_mask = (~torch.isnan(row_i_exp)) & (~torch.isnan(block_rows))  # (M, D)
-            valid_counts = valid_mask.sum(dim=1).float()
-            enough_overlap = valid_counts >= float(min_overlap_positions)
-            if enough_overlap.any():
-                diffs = (row_i_exp != block_rows) & valid_mask
-                hamming_counts = diffs.sum(dim=1).float()
-                hamming_dists = torch.where(
-                    valid_counts > 0,
-                    hamming_counts / valid_counts,
-                    torch.tensor(float("nan")),
+            i_global = sorted_idx[i]
+            j_global_indices = np.asarray([sorted_idx[k] for k in j_local])
+            distances, _overlaps = popcount_hamming_windowed(
+                calls_u64,
+                valid_u64,
+                i_global,
+                j_global_indices,
+                min_overlap_positions=min_overlap_positions,
+            )
+            finite = ~np.isnan(distances)
+            if finite.any():
+                local_hamming_dists.extend(distances[finite].tolist())
+                matches = finite & (distances < distance_threshold)
+                for offset_local in np.flatnonzero(matches):
+                    cluster_pairs_local.append((i_global, int(j_global_indices[offset_local])))
+            if record_distances and len(sorted_idx) > i + 1:
+                next_global = sorted_idx[i + 1]
+                d0, _ = popcount_hamming_windowed(
+                    calls_u64,
+                    valid_u64,
+                    i_global,
+                    np.asarray([next_global]),
+                    min_overlap_positions=min_overlap_positions,
                 )
-                hamming_np = hamming_dists.cpu().numpy().tolist()
-                local_hamming_dists.extend([float(x) for x in hamming_np if (not np.isnan(x))])
-                matches = (hamming_dists < distance_threshold) & (enough_overlap)
-                for offset_local, m in enumerate(matches):
-                    if m:
-                        i_global = sorted_idx[i]
-                        j_global = sorted_idx[i + 1 + offset_local]
-                        cluster_pairs_local.append((i_global, j_global))
-                if record_distances:
-                    next_local_idx = i + 1
-                    if next_local_idx < len(sorted_X):
-                        next_global = sorted_idx[next_local_idx]
-                        vm_pair = (~torch.isnan(row_i)) & (~torch.isnan(sorted_X[next_local_idx]))
-                        vc = vm_pair.sum().item()
-                        if vc >= min_overlap_positions:
-                            d = float(
-                                ((row_i[vm_pair] != sorted_X[next_local_idx][vm_pair]).sum().item())
-                                / vc
-                            )
-                            if reverse:
-                                rev_hamming_to_prev[next_global] = d
-                            else:
-                                fwd_hamming_to_next[sorted_idx[i]] = d
+                if not np.isnan(d0[0]):
+                    if reverse:
+                        rev_hamming_to_prev[next_global] = float(d0[0])
+                    else:
+                        fwd_hamming_to_next[i_global] = float(d0[0])
         return cluster_pairs_local
 
-    # run forward & reverse windows on all reads
-    pairs_fwd = cluster_pass(X_tensor, reverse=False, record_distances=True)
-    pairs_rev = cluster_pass(X_tensor, reverse=True, record_distances=True)
+    # Natural-order forward & reverse passes -- unchanged semantics from before
+    # the permutation-banding generalization; these also populate the
+    # fwd/rev diagnostic distance columns.
+    natural_order = np.arange(n_sites)
+    pairs_fwd = cluster_pass(natural_order, reverse=False, record_distances=True)
+    pairs_rev = cluster_pass(natural_order, reverse=True, record_distances=True)
     all_pairs = pairs_fwd + pairs_rev
+
+    # K additional random-permutation passes: each independently-seeded column
+    # order gives duplicate pairs separated by an unlucky natural-order
+    # divergence another independent chance to land within a comparison
+    # window. Deterministic per-pass seeds mean every chunk/round rederives
+    # the same K orderings with no shared state needed across workers.
+    for perm_index in range(n_permutation_passes):
+        rng = np.random.default_rng(permutation_seed + perm_index)
+        column_order = rng.permutation(n_sites)
+        all_pairs.extend(cluster_pass(column_order, reverse=False))
+        all_pairs.extend(cluster_pass(column_order, reverse=True))
 
     # initial union-find based on lex pairs
     uf = UnionFind(N)
@@ -368,17 +388,30 @@ def _process_group(args: dict) -> Optional[dict]:
         if vals_pair:
             min_pair[i] = float(np.nanmin(vals_pair))
 
-    # --- hierarchical on representatives only ---
+    # --- hierarchical on representatives only, hard-capped ---
+    # Exact pdist+linkage is O(n^2) memory/time in the representative count --
+    # for real nanopore SMF data most reads are genuinely distinct, so this
+    # count is typically still a large fraction of N. Uncapped, this crashed
+    # a real production run (~40,000 representatives -> an ~800M-entry
+    # condensed distance array, ~6.4GB). The K-permutation passes above are
+    # now the primary duplicate-catching mechanism at scale; this is kept as
+    # a bounded "polish" pass, skipped above the cap rather than risking the
+    # blowup. See dev/duplicate_detection_scaling.md.
     hierarchical_pairs = []  # (rep_global_i, rep_global_j, d)
     rep_global_indices = sorted(set(keeper_for_cluster.values()))
     if do_hierarchical and len(rep_global_indices) > 1:
-        if not SKLEARN_AVAILABLE:
+        if len(rep_global_indices) > hierarchical_max_representatives:
+            warnings.warn(
+                f"duplicate detection: skipping hierarchical top-up for sample={sample} "
+                f"ref={ref} -- {len(rep_global_indices)} representatives exceeds "
+                f"hierarchical_max_representatives={hierarchical_max_representatives}"
+            )
+        elif not SKLEARN_AVAILABLE:
             warnings.warn("sklearn not available; skipping PCA/hierarchical pass.")
         elif not SCIPY_AVAILABLE:
             warnings.warn("scipy not available; skipping hierarchical pass.")
         else:
-            reps_X = X_sub[rep_global_indices, :]
-            reps_arr = np.array(reps_X, dtype=float, copy=True)
+            reps_arr = unpack_to_float(calls_u64, valid_u64, n_sites, rep_global_indices)
             col_means = np.nanmean(reps_arr, axis=0)
             col_means = np.where(np.isnan(col_means), 0.0, col_means)
             inds = np.where(np.isnan(reps_arr))
@@ -414,14 +447,16 @@ def _process_group(args: dict) -> Optional[dict]:
                 i_global = order_global_reps[pos]
                 for jpos in range(pos + 1, min(pos + 1 + hierarchical_window, n_reps)):
                     j_global = order_global_reps[jpos]
-                    vi = X_sub[int(i_global), :]
-                    vj = X_sub[int(j_global), :]
-                    valid_mask_h = (~np.isnan(vi)) & (~np.isnan(vj))
-                    overlap = int(valid_mask_h.sum())
-                    if overlap < min_overlap_positions:
+                    d_arr, _overlap_arr = popcount_hamming_windowed(
+                        calls_u64,
+                        valid_u64,
+                        int(i_global),
+                        np.asarray([int(j_global)]),
+                        min_overlap_positions=min_overlap_positions,
+                    )
+                    if np.isnan(d_arr[0]):
                         continue
-                    diffs = (vi[valid_mask_h] != vj[valid_mask_h]).sum()
-                    d = float(diffs) / float(overlap)
+                    d = float(d_arr[0])
                     if d < distance_threshold:
                         uf.union(int(i_global), int(j_global))
                         hierarchical_pairs.append((int(i_global), int(j_global), float(d)))
@@ -539,10 +574,13 @@ def flag_duplicate_reads(
     hierarchical_linkage: str = "average",
     hierarchical_metric: str = "euclidean",
     hierarchical_window: int = 50,
+    hierarchical_max_representatives: int = 5000,
     random_state: int = 0,
     demux_types: Optional[Sequence[str]] = None,
     demux_col: str = "demux_type",
     n_jobs: int = 1,
+    n_permutation_passes: int = 4,
+    permutation_seed: int = 0,
 ) -> ad.AnnData:
     """Flag duplicate reads with demux-aware keeper preference.
 
@@ -575,11 +613,19 @@ def flag_duplicate_reads(
         hierarchical_linkage: Linkage method for hierarchical clustering.
         hierarchical_metric: Distance metric for hierarchical clustering.
         hierarchical_window: Window size for hierarchical clustering.
+        hierarchical_max_representatives: Skip the hierarchical top-up pass (with a
+            logged warning) when a group's representative count exceeds this --
+            exact pdist+linkage is O(n^2), unsafe above a few thousand points.
         random_state: Random seed.
         demux_types: Preferred demux types for keeper selection.
         demux_col: Obs column containing demux type labels.
         n_jobs: Number of parallel workers for (sample, ref) groups.
             1 (default) runs serially. Negative values use all available CPUs.
+        n_permutation_passes: Extra random column-order permutation passes (beyond
+            the always-run natural-order forward/reverse pair) for the windowed
+            lex-sort pass -- the primary duplicate-catching mechanism at scale.
+        permutation_seed: Base seed for the permutation passes; deterministic and
+            reused identically across groups.
 
     Returns:
         anndata.AnnData: AnnData object with duplicate flags stored in ``adata.obs``.
@@ -690,12 +736,15 @@ def flag_duplicate_reads(
                     "hierarchical_linkage": hierarchical_linkage,
                     "hierarchical_metric": hierarchical_metric,
                     "hierarchical_window": hierarchical_window,
+                    "hierarchical_max_representatives": hierarchical_max_representatives,
                     "do_pca": do_pca,
                     "pca_n_components": pca_n_components,
                     "pca_center": pca_center,
                     "random_state": random_state,
                     "demux_col": demux_col,
                     "demux_types": list(demux_types) if demux_types is not None else None,
+                    "n_permutation_passes": n_permutation_passes,
+                    "permutation_seed": permutation_seed,
                 }
 
     # -------- Phase B: dispatch (serial or parallel) --------

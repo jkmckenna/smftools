@@ -697,8 +697,19 @@ def reduce_duplicate_reads(
     obs_path: str | Path,
     cfg,
 ) -> Path:
-    """Run bounded duplicate comparisons and reconcile clusters across cores."""
-    from .flag_duplicate_reads import UnionFind, _process_group
+    """Run bounded, parallel, multi-round duplicate comparisons and reconcile clusters.
+
+    Delegates the actual per-group comparison work to
+    ``duplicate_detection_dispatch.run_duplicate_detection_rounds``, which chunks a
+    group's reads, dispatches chunk tasks through the shared memory-watchdog-covered
+    worker pool, and iterates bounded rounds until the group's survivor pool
+    converges -- see that module's docstring for the full design rationale. This
+    function keeps ownership of the single global ``UnionFind``/``hamming_minima``
+    arrays spanning every read in the dataset (workers never see them directly) and
+    the final per-dataset keeper/cluster reconciliation.
+    """
+    from .duplicate_detection_dispatch import run_duplicate_detection_rounds
+    from .flag_duplicate_reads import UnionFind
 
     obs_path = Path(obs_path)
     obs = pd.read_parquet(obs_path).set_index("read_id", drop=False)
@@ -728,7 +739,6 @@ def reduce_duplicate_reads(
     sample_column = str(getattr(cfg, "sample_name_col_for_plotting", "Sample"))
     if sample_column not in obs:
         sample_column = "Sample" if "Sample" in obs else "Barcode"
-    max_reads = int(getattr(cfg, "duplicate_detection_max_reads_per_window", 50_000))
 
     for reference, raw_plan in sorted(plans.items()):
         plan = dict(raw_plan)
@@ -748,91 +758,22 @@ def reduce_duplicate_reads(
                 ]
                 if len(core_obs) < 2:
                     continue
-                if len(core_obs) > max_reads:
-                    raise MemoryError(
-                        f"duplicate window {reference}:{core_start}-{core_end} sample "
-                        f"{sample!r} has {len(core_obs)} reads, exceeding "
-                        f"duplicate_detection_max_reads_per_window={max_reads}"
-                    )
                 load_start = max(0, int(core_obs["reference_start"].min()))
                 load_end = min(reference_length, int(core_obs["reference_end"].max()))
-                window = materialize(
+                run_duplicate_detection_rounds(
                     preprocess_spine_path,
-                    references=reference,
-                    read_ids=core_obs.index,
-                    start=load_start,
-                    end=load_end,
-                    layers=[],
+                    core_obs,
+                    reference=str(reference),
+                    sample=str(sample),
+                    core_start=core_start,
+                    core_end=core_end,
+                    load_start=load_start,
+                    load_end=load_end,
+                    cfg=cfg,
+                    union_find=union_find,
+                    read_position=read_position,
+                    hamming_minima=hamming_minima,
                 )
-                context_mask = np.zeros(window.n_vars, dtype=bool)
-                for site_type in cfg.duplicate_detection_site_types:
-                    column = f"{reference}_{site_type}_site"
-                    if column in window.var:
-                        context_mask |= (
-                            window.var[column].astype("boolean").fillna(False).to_numpy(dtype=bool)
-                        )
-                valid_column = f"position_in_{reference}"
-                if valid_column in window.var:
-                    context_mask &= (
-                        window.var[valid_column]
-                        .astype("boolean")
-                        .fillna(False)
-                        .to_numpy(dtype=bool)
-                    )
-                if not context_mask.any():
-                    continue
-                local_obs = obs.loc[window.obs_names]
-                result = _process_group(
-                    {
-                        "X_sub": np.asarray(window.X)[:, context_mask].astype(float),
-                        "obs_df": local_obs,
-                        "obs_index": list(map(str, window.obs_names)),
-                        "sample": sample,
-                        "ref": reference,
-                        "distance_threshold": float(cfg.duplicate_detection_distance_threshold),
-                        "window_size": int(
-                            cfg.duplicate_detection_window_size_for_hamming_neighbors
-                        ),
-                        "min_overlap_positions": int(
-                            cfg.duplicate_detection_min_overlapping_positions
-                        ),
-                        "keep_best_metric": cfg.duplicate_detection_keep_best_metric,
-                        "keep_best_higher": True,
-                        "do_hierarchical": bool(cfg.duplicate_detection_do_hierarchical),
-                        "hierarchical_linkage": cfg.duplicate_detection_hierarchical_linkage,
-                        "hierarchical_metric": "euclidean",
-                        "hierarchical_window": int(
-                            cfg.duplicate_detection_window_size_for_hamming_neighbors
-                        ),
-                        "do_pca": bool(cfg.duplicate_detection_do_pca),
-                        "pca_n_components": 50,
-                        "pca_center": True,
-                        "random_state": 0,
-                        "demux_col": "demux_type",
-                        "demux_types": list(cfg.duplicate_detection_demux_types_to_use),
-                    }
-                )
-                if result is None:
-                    continue
-                local_ids = list(map(str, result["obs_index"]))
-                cluster_ids = np.asarray(result["sequence__merged_cluster_id"])
-                cluster_sizes = np.asarray(result["sequence__cluster_size"])
-                for cluster_id in np.unique(cluster_ids[cluster_sizes > 1]):
-                    members = np.where(cluster_ids == cluster_id)[0]
-                    anchor = read_position[local_ids[int(members[0])]]
-                    for member in members[1:]:
-                        union_find.union(anchor, read_position[local_ids[int(member)]])
-                for column in hamming_columns:
-                    local_values = np.asarray(result[column], dtype=float)
-                    global_values = hamming_minima[column]
-                    for local_index, read_id in enumerate(local_ids):
-                        value = local_values[local_index]
-                        global_index = read_position[read_id]
-                        if not np.isnan(value) and (
-                            np.isnan(global_values[global_index])
-                            or value < global_values[global_index]
-                        ):
-                            global_values[global_index] = value
 
     clusters: dict[int, list[str]] = {}
     for read_id, index in read_position.items():
@@ -1065,14 +1006,28 @@ def execute_partitioned_preprocessing(
         layer: float(DERIVED_LAYER_ABSENT_FILL.get(layer, np.nan)) for layer in published_layers
     }
     output_spine = output_dir / PREPROCESS_SPINE_FILENAME
-    # Duplicate reduction reads bounded raw + derived slices through this spine.
-    safe_write_h5ad(derived_spine, output_spine, backup=False, verbose=False)
-    obs_sidecar = reduce_duplicate_reads(output_spine, obs_sidecar, cfg)
+    # reduce_duplicate_reads needs a real spine.h5ad on disk (materialize()/
+    # load_spine() resolve partition data relative to it), but must NOT write
+    # that pre-dedup snapshot to the *final* output_spine path: cli.preprocess
+    # _adata's "skip if partitioned_pp_path.exists()" restart check only tests
+    # existence, not whether QC/dedup actually completed. A spine.h5ad written
+    # here and then left behind by a crash inside reduce_duplicate_reads (a
+    # real production incident: the 260420 experiment's Hamming-distance
+    # dedup pass over ~1.3M reads never finished, but its pre-dedup spine.h5ad
+    # was already on disk, so every later restart silently skipped
+    # preprocessing and downstream stages analyzed unfiltered, non-dedup'd
+    # data with no error). Write to a staging path instead; only the fully
+    # merged spine (QC + dedup columns both present) ever lands at
+    # output_spine.
+    staging_spine = output_dir / f"{PREPROCESS_SPINE_FILENAME}.partial"
+    safe_write_h5ad(derived_spine, staging_spine, backup=False, verbose=False)
+    obs_sidecar = reduce_duplicate_reads(staging_spine, obs_sidecar, cfg)
     derived_obs = pd.read_parquet(obs_sidecar).set_index("read_id")
     for column in derived_obs.columns:
         if column not in derived_spine.obs:
             derived_spine.obs[column] = derived_obs[column].reindex(derived_spine.obs_names)
     safe_write_h5ad(derived_spine, output_spine, backup=False, verbose=False)
+    staging_spine.unlink(missing_ok=True)
     new_columns = [
         column for column in derived_spine.obs.columns if column not in spine.obs.columns
     ]

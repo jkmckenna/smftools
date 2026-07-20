@@ -179,11 +179,28 @@ def preprocess_adata(
     # -----------------------------
 
     if partitioned_pp_path is not None and partitioned_pp_path.exists():
-        logger.info(
-            "Skipping preprocessing. Partitioned preprocessing spine found: %s",
-            partitioned_pp_path,
-        )
-        return partitioned_pp_path, None
+        from ..informatics.partition_read import load_spine
+
+        # Existence alone isn't enough: execute_partitioned_preprocessing can
+        # crash after writing spine.h5ad but before QC/dedup columns are
+        # merged in (e.g. reduce_duplicate_reads failing partway through a
+        # long Hamming-distance pass). A spine missing both columns is a
+        # partial write from an earlier crashed run, not a completed one --
+        # trusting it here silently sends every downstream stage unfiltered,
+        # non-dedup'd data with no error anywhere in the chain.
+        partitioned_pp_obs = load_spine(partitioned_pp_path).obs
+        if not any(column in partitioned_pp_obs for column in ("passes_dedup", "passes_qc")):
+            logger.warning(
+                "Partitioned preprocessing spine found but missing passes_qc/passes_dedup "
+                "(likely a crashed prior run); re-running preprocessing instead of skipping: %s",
+                partitioned_pp_path,
+            )
+        else:
+            logger.info(
+                "Skipping preprocessing. Partitioned preprocessing spine found: %s",
+                partitioned_pp_path,
+            )
+            return partitioned_pp_path, None
 
     # If pp_dedup exists, just return paths (no recomputation)
     if pp_dedup_exists:

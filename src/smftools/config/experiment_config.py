@@ -983,7 +983,16 @@ class ExperimentConfig:
     duplicate_detection_do_hierarchical: bool = True
     duplicate_detection_hierarchical_linkage: str = "average"
     duplicate_detection_do_pca: bool = False
-    duplicate_detection_max_reads_per_window: int = 50000
+    duplicate_detection_pca_n_components: int = 50
+    duplicate_detection_pca_center: bool = True
+    duplicate_detection_max_reads_per_window: int = 20000
+    duplicate_detection_n_permutation_passes: int = 4
+    duplicate_detection_permutation_seed: int = 0
+    duplicate_detection_max_rounds: int = 6
+    duplicate_detection_min_progress_rounds_before_stop: int = 1
+    duplicate_detection_chunk_presort_metric: str = "Fraction_any_C_site_modified"
+    duplicate_detection_round_shuffle_seed: int = 0
+    duplicate_detection_hierarchical_max_representatives: int = 5000
 
     # Preprocessing - Position QC
     position_max_nan_threshold: float = 0.1
@@ -2110,8 +2119,39 @@ class ExperimentConfig:
                 "duplicate_detection_hierarchical_linkage", "average"
             ),
             duplicate_detection_do_pca=merged.get("duplicate_detection_do_pca", False),
+            duplicate_detection_pca_n_components=int(
+                _parse_numeric(merged.get("duplicate_detection_pca_n_components", 50), 50)
+            ),
+            duplicate_detection_pca_center=_parse_bool(
+                merged.get("duplicate_detection_pca_center", True)
+            ),
             duplicate_detection_max_reads_per_window=int(
-                _parse_numeric(merged.get("duplicate_detection_max_reads_per_window", 50000), 50000)
+                _parse_numeric(merged.get("duplicate_detection_max_reads_per_window", 20000), 20000)
+            ),
+            duplicate_detection_n_permutation_passes=int(
+                _parse_numeric(merged.get("duplicate_detection_n_permutation_passes", 4), 4)
+            ),
+            duplicate_detection_permutation_seed=int(
+                _parse_numeric(merged.get("duplicate_detection_permutation_seed", 0), 0)
+            ),
+            duplicate_detection_max_rounds=int(
+                _parse_numeric(merged.get("duplicate_detection_max_rounds", 6), 6)
+            ),
+            duplicate_detection_min_progress_rounds_before_stop=int(
+                _parse_numeric(
+                    merged.get("duplicate_detection_min_progress_rounds_before_stop", 1), 1
+                )
+            ),
+            duplicate_detection_chunk_presort_metric=merged.get(
+                "duplicate_detection_chunk_presort_metric", "Fraction_any_C_site_modified"
+            ),
+            duplicate_detection_round_shuffle_seed=int(
+                _parse_numeric(merged.get("duplicate_detection_round_shuffle_seed", 0), 0)
+            ),
+            duplicate_detection_hierarchical_max_representatives=int(
+                _parse_numeric(
+                    merged.get("duplicate_detection_hierarchical_max_representatives", 5000), 5000
+                )
             ),
             position_max_nan_threshold=merged.get("position_max_nan_threshold", 0.1),
             correlation_matrix_types=merged.get(

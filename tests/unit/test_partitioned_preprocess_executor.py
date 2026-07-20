@@ -14,6 +14,7 @@ from smftools.preprocessing.partitioned_executor import (
 )
 from smftools.readwrite import safe_read_h5ad, safe_read_zarr
 from smftools.tools.partitioned_spatial import (
+    _cap_clustermap_rows,
     _compute_read_spatial_statistics,
     execute_partitioned_spatial,
 )
@@ -105,8 +106,17 @@ def _cfg():
         duplicate_detection_do_hierarchical=False,
         duplicate_detection_hierarchical_linkage="average",
         duplicate_detection_do_pca=False,
+        duplicate_detection_pca_n_components=50,
+        duplicate_detection_pca_center=True,
         duplicate_detection_demux_types_to_use=[],
         duplicate_detection_max_reads_per_window=1000,
+        duplicate_detection_n_permutation_passes=4,
+        duplicate_detection_permutation_seed=0,
+        duplicate_detection_max_rounds=6,
+        duplicate_detection_min_progress_rounds_before_stop=1,
+        duplicate_detection_chunk_presort_metric="Fraction_any_C_site_modified",
+        duplicate_detection_round_shuffle_seed=0,
+        duplicate_detection_hierarchical_max_representatives=5000,
         sample_name_col_for_plotting="Sample",
     )
 
@@ -718,6 +728,40 @@ def test_partitioned_executor_writes_normalized_stage_obs(tmp_path):
     assert set(raw_obs.columns) - {"read_id"} <= set(joined.columns)
 
 
+def test_partitioned_executor_leaves_no_final_spine_if_dedup_crashes(tmp_path, monkeypatch):
+    # Regression test for a real production incident: reduce_duplicate_reads
+    # crashed partway through a long Hamming-distance pass over ~1.3M reads,
+    # but spine.h5ad had already been written (pre-dedup) to the *final*
+    # output path -- so cli.preprocess_adata's "skip if spine.h5ad exists"
+    # restart check silently treated the crashed run as complete on every
+    # later invocation, and downstream stages analyzed unfiltered,
+    # non-dedup'd data with no error anywhere in the chain. The final
+    # output_spine must not exist (or must be the prior complete version, if
+    # any) after a crash inside reduce_duplicate_reads -- only a staging path
+    # should ever hold the pre-dedup snapshot.
+    import smftools.preprocessing.partitioned_executor as partitioned_executor_module
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated crash mid-dedup")
+
+    monkeypatch.setattr(partitioned_executor_module, "reduce_duplicate_reads", boom)
+
+    output_dir = tmp_path / "preprocess_outputs"
+    with pytest.raises(RuntimeError, match="simulated crash mid-dedup"):
+        execute_partitioned_preprocessing(raw["spine"], _cfg(), output_dir)
+
+    assert not (output_dir / "spine.h5ad").exists()
+    assert (output_dir / "spine.h5ad.partial").exists()
+
+
 def test_genome_derived_layers_stitch_across_cores_with_absent_read_fill(tmp_path):
     raw = write_raw_store(
         _frame(),
@@ -825,6 +869,49 @@ def test_duplicate_reduction_reconciles_clusters_across_genome_core_boundary(tmp
     plot_types = set(pd.read_parquet(outputs["plot_catalog"])["plot_type"])
     assert "hamming_distance_by_reference" in plot_types
     assert "duplicate_cluster_size_histogram" in plot_types
+
+
+def test_duplicate_detection_never_materializes_more_than_one_chunk_at_once(tmp_path, monkeypatch):
+    # Regression test for the real production crash: reduce_duplicate_reads used
+    # to materialize an entire (reference, sample) group's read x site matrix in
+    # one call, with no chunking axis at all for locus-mode references. A group
+    # of 15 reads with duplicate_detection_max_reads_per_window=3 must never be
+    # materialized in one piece -- confirms the chunking axis added one level
+    # above _process_group actually bounds materialize() calls, not just
+    # in-memory array sizes further downstream.
+    import smftools.preprocessing.duplicate_detection_dispatch as dispatch_module
+
+    raw = write_raw_store(
+        _many_reads_frame(15),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    cfg = _cfg()
+    cfg.read_len_filter_thresholds = [None, None]
+    cfg.bypass_flag_duplicate_reads = False
+    cfg.duplicate_detection_site_types = ["C"]
+    cfg.duplicate_detection_max_reads_per_window = 3
+    cfg.duplicate_detection_min_overlapping_positions = 1
+    cfg.mod_target_bases = ["C"]
+
+    materialize_call_sizes = []
+    real_materialize = dispatch_module.materialize
+
+    def spy_materialize(spine_path, *, references, read_ids, start, end, layers):
+        read_ids = list(read_ids)
+        materialize_call_sizes.append(len(read_ids))
+        return real_materialize(
+            spine_path, references=references, read_ids=read_ids, start=start, end=end, layers=layers
+        )
+
+    monkeypatch.setattr(dispatch_module, "materialize", spy_materialize)
+
+    execute_partitioned_preprocessing(raw["spine"], cfg, tmp_path / "preprocess_outputs")
+
+    assert materialize_call_sizes  # duplicate detection actually ran
+    assert all(size <= 3 for size in materialize_call_sizes)
 
 
 def test_partitioned_spatial_writes_locus_clustermaps_and_position_matrices(tmp_path):
@@ -945,6 +1032,32 @@ def test_partitioned_spatial_writes_locus_clustermaps_and_position_matrices(tmp_
     assert "C_ls_status" not in filtered.obs
 
 
+def test_cap_clustermap_rows_bounds_hierarchical_clustering_input():
+    # Regression test: _plot_read_metric_clustermaps used to hand every read
+    # in a barcode straight to scipy's hierarchical linkage (O(n^2) memory,
+    # worse-than-quadratic time). On a real busy barcode (~27,000 reads for
+    # one 6B6_top barcode) this turned one read-metric clustermap PNG into a
+    # multi-minute single-threaded stall observed live in production.
+    rng = np.random.default_rng(0)
+    matrix = rng.random((10_000, 5))
+
+    uncapped = _cap_clustermap_rows(matrix, max_rows=20_000)
+    assert uncapped is matrix
+
+    capped = _cap_clustermap_rows(matrix, max_rows=50)
+    assert capped.shape == (50, 5)
+    # Every kept row must be a real row from the source matrix, not fabricated.
+    assert all((matrix == row).all(axis=1).any() for row in capped)
+
+    # Reproducible: same seed -> identical selection, matching
+    # subsample_reads_for_plot/subsample_read_ids's convention elsewhere.
+    again = _cap_clustermap_rows(matrix, max_rows=50)
+    np.testing.assert_array_equal(capped, again)
+
+    assert _cap_clustermap_rows(matrix, max_rows=None) is matrix
+    assert _cap_clustermap_rows(matrix, max_rows=0) is matrix
+
+
 def test_partitioned_spatial_task_keeps_site_values_float32(tmp_path, monkeypatch):
     # Regression test: execute_spatial_task used to build
     # np.asarray(core.X, dtype=float)[:, site_mask] -- upcasting the *entire*
@@ -987,6 +1100,80 @@ def test_partitioned_spatial_task_keeps_site_values_float32(tmp_path, monkeypatc
 
     assert seen_dtypes
     assert all(dtype == np.float32 for dtype in seen_dtypes)
+
+
+def _many_reads_frame(n_reads: int) -> pd.DataFrame:
+    rows = []
+    for i in range(n_reads):
+        rows.append(
+            {
+                "read_id": f"read{i}",
+                "reference": "ref",
+                "Reference_strand": "ref_top",
+                "barcode": "bc1",
+                "sample": "bc1",
+                "reference_start": 0,
+                "cigar": "4M",
+                "aligned_length": 4,
+                "sequence": [0, 1, 2, 3],
+                "quality": [30, 30, 30, 30],
+                "mismatch": [4, 4, 4, 4],
+                "modification_signal": [float(i % 2), np.nan, float((i + 1) % 2), 1.0],
+                "read_length": 4,
+                "mapped_length": 4,
+                "reference_length": 12,
+                "read_quality": 30,
+                "mapping_quality": 60,
+                "read_length_to_reference_length_ratio": 4 / 12,
+                "mapped_length_to_reference_length_ratio": 4 / 12,
+                "mapped_length_to_read_length_ratio": 1.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def test_partitioned_spatial_plot_read_metric_clustermaps_caps_rows(tmp_path, monkeypatch):
+    # Integration-level companion to test_cap_clustermap_rows_bounds_hierarchical_
+    # clustering_input: confirms _plot_read_metric_clustermaps actually wires
+    # clustermap_max_reads_per_plot into the values it hands to
+    # _plot_read_profile_clustermap (and therefore into _clustered_row_order's
+    # hierarchical linkage), not just that the helper function works in isolation.
+    import smftools.tools.partitioned_spatial as partitioned_spatial_module
+
+    raw = write_raw_store(
+        _many_reads_frame(40),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    cfg = _cfg()
+    cfg.read_len_filter_thresholds = [None, None]
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], cfg, tmp_path / "preprocess_outputs"
+    )
+    cfg.autocorr_site_types = ["C"]
+    cfg.autocorr_max_lag = 4
+    cfg.autocorr_normalization_method = "pearson"
+    cfg.spatial_generate_clustermaps = False
+    cfg.spatial_generate_position_matrices = False
+    cfg.rows_per_qc_autocorr_grid = 4
+    cfg.threads = 1
+    cfg.clustermap_max_reads_per_plot = 3
+
+    seen_row_counts = []
+    real_plot = partitioned_spatial_module._plot_read_profile_clustermap
+
+    def spy_plot(values, *args, **kwargs):
+        seen_row_counts.append(values.shape[0])
+        return real_plot(values, *args, **kwargs)
+
+    monkeypatch.setattr(partitioned_spatial_module, "_plot_read_profile_clustermap", spy_plot)
+
+    execute_partitioned_spatial(preprocess["spine"], cfg, tmp_path / "spatial_outputs")
+
+    assert seen_row_counts
+    assert all(count <= 3 for count in seen_row_counts)
 
 
 def test_partitioned_spatial_clustermaps_apply_reindexing_offsets(tmp_path, monkeypatch):

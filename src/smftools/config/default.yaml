@@ -253,10 +253,19 @@ hamming_vs_metric_keys: # Metrics to plot the hamming distance against.
 duplicate_detection_keep_best_metric: "read_quality" # Obs metric to use to keep a representative read from a read duplicate cluster
 duplicate_detection_window_size_for_hamming_neighbors: 50 # How many neighboring reads to look at for calculating hamming distance pairs
 duplicate_detection_min_overlapping_positions: 20 # The minimum amount of valid overlapping positions that will allow duplicate detection to work
-duplicate_detection_do_hierarchical: True # Whether to follow up fwd/rev lexicographic duplicate detection with hieratchical clustering based method
+duplicate_detection_do_hierarchical: True # Whether to follow up fwd/rev lexicographic duplicate detection with hieratchical clustering based method (capped, see duplicate_detection_hierarchical_max_representatives)
 duplicate_detection_hierarchical_linkage: "average" # Method for hierarchical clustering distance calculation
 duplicate_detection_do_pca: False # Whether to do PCA before hierarchical linkage based duplicate detection.
-duplicate_detection_max_reads_per_window: 50000 # Fail rather than silently approximate above this per-sample/core read count
+duplicate_detection_pca_n_components: 50 # Number of PCA components for the hierarchical top-up pass, when duplicate_detection_do_pca is True.
+duplicate_detection_pca_center: True # Whether to center data before PCA in the hierarchical top-up pass.
+duplicate_detection_max_reads_per_window: 20000 # Per-chunk read ceiling for duplicate-detection tasks (every round) -- no longer raises; larger groups are chunked instead.
+duplicate_detection_n_permutation_passes: 4 # Extra random column-order permutation passes (beyond the always-run natural-order forward/reverse pair) for the windowed lex-sort pass -- the primary near-linear duplicate-catching mechanism at scale.
+duplicate_detection_permutation_seed: 0 # Base seed for the permutation passes; deterministic and reused identically across chunks/rounds.
+duplicate_detection_max_rounds: 6 # Hard cap on chunk+reduce rounds per group before accepting remaining survivors as distinct with a logged warning, rather than looping forever.
+duplicate_detection_min_progress_rounds_before_stop: 1 # Consecutive zero-new-merge rounds required to declare a group's duplicate detection converged.
+duplicate_detection_chunk_presort_metric: "Fraction_any_C_site_modified" # Obs column used to order reads before round-1 chunk splitting; true duplicates have near-identical aggregate metrics, so this front-loads recall into round 1.
+duplicate_detection_round_shuffle_seed: 0 # Base seed for the reshuffle used to plan chunk boundaries in rounds after the first.
+duplicate_detection_hierarchical_max_representatives: 5000 # Skip the hierarchical top-up pass (logged) above this many representatives -- exact pdist+linkage is O(n^2), unsafe above a few thousand points.
 
 # Position QC params
 position_max_nan_threshold: 0.8 # The maximum amount of nans to tolerate in a column
