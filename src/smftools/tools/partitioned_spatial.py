@@ -576,6 +576,29 @@ def _plot_autocorrelation(autocorrelation, layout) -> None:
         )
 
 
+def _cap_clustermap_rows(matrix: np.ndarray, max_rows: int | None, *, seed: int = 0) -> np.ndarray:
+    """Reproducibly subsample a matrix's rows to at most ``max_rows``.
+
+    ``_clustered_row_order`` runs scipy's hierarchical ``linkage`` on every row
+    it's given -- O(n^2) memory and worse-than-quadratic time in row count.
+    Uncapped, a busy barcode with tens of thousands of reads (e.g. a
+    genome-mode reference like ``6B6_top`` at 650k+ reads total) turned one
+    read-metric clustermap PNG into a multi-minute single-threaded stall.
+    Same reproducible convention as ``subsample_reads_for_plot``/
+    ``subsample_read_ids`` in ``plotting_utils`` (fixed seed, sorted indices),
+    but applied to an already-vstacked numpy matrix -- read identity isn't
+    tracked this far into the reduce phase. Only the heatmap/clustering input
+    is capped; callers pass the *uncapped* matrix when computing the mean
+    profile line, so the true full-population mean is unaffected.
+    """
+    n_rows = matrix.shape[0]
+    if max_rows is None or max_rows <= 0 or n_rows <= int(max_rows):
+        return matrix
+    rng = np.random.default_rng(seed)
+    chosen = np.sort(rng.choice(n_rows, size=int(max_rows), replace=False))
+    return matrix[chosen]
+
+
 def _clustered_row_order(values: np.ndarray) -> np.ndarray:
     """Return a deterministic hierarchical row order for a NaN-aware matrix."""
     if values.shape[0] < 2:
@@ -707,6 +730,7 @@ def _plot_read_metric_clustermaps(records, output_dir: Path, layout, cfg) -> Non
                 )
 
     peak_range = _config_range(cfg, "spatial_lomb_scargle_peak_range_bp", (150.0, 250.0))
+    max_reads_per_plot = getattr(cfg, "clustermap_max_reads_per_plot", 5000)
     for (reference, core_start, core_end, barcode, site_type), bucket in sorted(groups.items()):
         region_label = f"{_component(reference)}__{core_start}_{core_end}__{_component(site_type)}"
         acf = np.vstack(bucket["acf"])
@@ -726,7 +750,7 @@ def _plot_read_metric_clustermaps(records, output_dir: Path, layout, cfg) -> Non
             / f"{_component(barcode)}.png"
         )
         _plot_read_profile_clustermap(
-            acf,
+            _cap_clustermap_rows(acf, max_reads_per_plot),
             np.asarray(bucket["lags"]),
             mean_acf,
             path=acf_path,
@@ -776,7 +800,7 @@ def _plot_read_metric_clustermaps(records, output_dir: Path, layout, cfg) -> Non
             / f"{_component(barcode)}.png"
         )
         _plot_read_profile_clustermap(
-            power,
+            _cap_clustermap_rows(power, max_reads_per_plot),
             periods,
             mean_power,
             path=periodogram_path,
@@ -1442,6 +1466,7 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
         execute_spatial_task,
         [(spine_path, task, cfg, output_dir) for task in tasks],
         cfg=cfg,
+        pool_label=f"spatial task pool ({len(tasks)} tasks)",
     )
     task_catalog = output_dir / SPATIAL_TASK_CATALOG
     pd.DataFrame(records).to_parquet(task_catalog, index=False)

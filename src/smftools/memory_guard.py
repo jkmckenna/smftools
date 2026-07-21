@@ -233,6 +233,7 @@ def start_worker_watchdog(
     grace_polls: int = DEFAULT_WATCHDOG_GRACE_POLLS,
     perf_logger=None,
     pool_id=None,
+    pool_label: str | None = None,
 ) -> Callable[[], None]:
     """Best-effort: poll `pool`'s worker processes' RSS and kill any worker that
     *sustains* usage over `per_worker_budget_bytes` (plus `tolerance_fraction`
@@ -284,6 +285,7 @@ def start_worker_watchdog(
     kill_threshold_bytes = per_worker_budget_bytes * (1.0 + max(0.0, tolerance_fraction))
     grace_polls = max(1, grace_polls)
     stop_event = threading.Event()
+    label_prefix = f"[{pool_label}] " if pool_label else ""
 
     parent_process = psutil.Process() if perf_logger is not None else None
 
@@ -326,8 +328,9 @@ def start_worker_watchdog(
                 consecutive_over[pid] = consecutive_over.get(pid, 0) + 1
                 if consecutive_over[pid] < grace_polls:
                     logger.warning(
-                        "MemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB threshold "
+                        "%sMemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB threshold "
                         "(budget %.2f GiB + %.0f%% tolerance) for %d/%d consecutive poll(s)",
+                        label_prefix,
                         pid,
                         rss / (1024**3),
                         kill_threshold_bytes / (1024**3),
@@ -338,8 +341,9 @@ def start_worker_watchdog(
                     )
                     continue
                 logger.error(
-                    "MemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB threshold "
+                    "%sMemoryGuard: worker pid=%d using %.2f GiB > %.2f GiB threshold "
                     "for %d consecutive polls; terminating to protect the machine",
+                    label_prefix,
                     pid,
                     rss / (1024**3),
                     kill_threshold_bytes / (1024**3),
@@ -356,8 +360,9 @@ def start_worker_watchdog(
     thread = threading.Thread(target=_poll_loop, name="smftools-memory-watchdog", daemon=True)
     thread.start()
     logger.info(
-        "Per-worker memory watchdog enabled: %.2f GiB budget/worker (+%.0f%% tolerance, "
+        "%sPer-worker memory watchdog enabled: %.2f GiB budget/worker (+%.0f%% tolerance, "
         "%d-poll grace period), polling every %.1fs",
+        label_prefix,
         per_worker_budget_bytes / (1024**3),
         tolerance_fraction * 100,
         grace_polls,
@@ -401,10 +406,27 @@ def _limit_blas_threads_in_worker() -> None:
 
 
 def run_tasks_parallel(
-    worker: Callable, task_args_list: list[tuple], *, cfg, force_sequential: bool = False
+    worker: Callable,
+    task_args_list: list[tuple],
+    *,
+    cfg,
+    force_sequential: bool = False,
+    pool_label: str | None = None,
 ) -> list:
     """Run ``worker(*args)`` once per item in ``task_args_list``, in a
     memory-aware ``ProcessPoolExecutor`` pool.
+
+    ``pool_label``: short human-readable description of what this pool is
+    doing (e.g. ``"spatial task pool"``, or, for callers invoked many times
+    per stage, something identifying enough to distinguish one call from the
+    next -- e.g. duplicate detection's ``f"dedup {reference}/{sample} round
+    {round_index}"``). Included as a ``[label]`` prefix on this pool's
+    watchdog/retry log lines, which are otherwise generic regardless of which
+    of this function's several call sites (or, for a repeatedly-invoked
+    caller, which specific invocation) produced them -- confirmed as a real
+    gap while live-monitoring a production run: long stretches of
+    "Per-worker memory watchdog enabled"/"MemoryGuard: worker pid=..." with
+    no indication of what task was actually running.
 
     Shared orchestration for every parallel task-execution loop in this
     codebase (preprocess/spatial/hmm task dispatch, raw-ingestion extraction
@@ -470,6 +492,15 @@ def run_tasks_parallel(
             **_worker_decision_inputs(cfg, len(task_args_list)),
         )
     if max_workers <= 1:
+        # The parallel branch below always logs something (the watchdog's
+        # "enabled" line at minimum) -- without an equivalent here, a caller
+        # that resolves to a single worker (small task counts, or a tight
+        # memory budget) runs with zero indication of what's happening until
+        # it returns, which can be a long, log-silent stretch for a
+        # repeatedly-invoked caller like duplicate detection's per-group,
+        # per-round dispatch.
+        if pool_label:
+            logger.info("[%s] running %d task(s) sequentially", pool_label, len(task_args_list))
         try:
             return [worker(*args) for args in task_args_list]
         finally:
@@ -496,6 +527,7 @@ def run_tasks_parallel(
                     poll_interval,
                     perf_logger=perf,
                     pool_id=pool_id,
+                    pool_label=pool_label,
                 )
                 try:
                     future_to_index = {
@@ -534,8 +566,9 @@ def run_tasks_parallel(
                         new_max_workers=workers_for_attempt,
                     )
                 logger.warning(
-                    "run_tasks_parallel: pool broke (a worker was likely killed by the memory "
+                    "%srun_tasks_parallel: pool broke (a worker was likely killed by the memory "
                     "watchdog); retrying %d task(s) with reduced worker count %d",
+                    f"[{pool_label}] " if pool_label else "",
                     len(pending_indices),
                     workers_for_attempt,
                 )

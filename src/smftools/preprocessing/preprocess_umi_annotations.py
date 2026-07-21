@@ -13,6 +13,8 @@ import pandas as pd
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
+from ._bitpack_utils import _pack_bool_to_u64, _popcount_u64_matrix
+
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
@@ -158,24 +160,6 @@ def add_umi_pass_obs_fields(
         )
 
     return adata
-
-
-def _pack_bool_to_u64(b: np.ndarray) -> np.ndarray:
-    """Pack boolean matrix (n, w) into uint64 blocks (n, ceil(w/64))."""
-    b = np.asarray(b, dtype=np.uint8)
-    packed_u8 = np.packbits(b, axis=1)
-    n, nb = packed_u8.shape
-    pad = (-nb) % 8
-    if pad:
-        packed_u8 = np.pad(packed_u8, ((0, 0), (0, pad)), mode="constant", constant_values=0)
-    packed_u8 = np.ascontiguousarray(packed_u8)
-    return packed_u8.reshape(n, -1, 8).view(np.uint64).reshape(n, -1)
-
-
-def _popcount_u64_matrix(a_u64: np.ndarray) -> np.ndarray:
-    """Vectorized popcount for uint64 arrays."""
-    b = a_u64.view(np.uint8).reshape(a_u64.shape + (8,))
-    return np.unpackbits(b, axis=-1).sum(axis=-1)
 
 
 def _bitpack_onehot_dna_sequences(sequences: Sequence[str]) -> np.ndarray:

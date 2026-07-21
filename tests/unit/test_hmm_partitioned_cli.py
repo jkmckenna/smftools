@@ -503,7 +503,9 @@ def test_partitioned_hmm_forces_sequential_execution_on_gpu_device(tmp_path, mon
 
     real_run_tasks_parallel = memory_guard.run_tasks_parallel
 
-    def spying_run_tasks_parallel(worker, task_args_list, *, cfg, force_sequential=False):
+    def spying_run_tasks_parallel(
+        worker, task_args_list, *, cfg, force_sequential=False, pool_label=None
+    ):
         captured["force_sequential"] = force_sequential
         return real_run_tasks_parallel(
             worker, task_args_list, cfg=cfg, force_sequential=force_sequential
