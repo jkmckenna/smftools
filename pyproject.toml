@@ -43,11 +43,17 @@ dependencies = [
     "biopython>=1.79",
     "click",
     "dask[array]",
+    "joblib",
+    "matplotlib>=3.6.2",
     "numpy>=1.22.0,<2",
     "pandas>=2.1,<3",
     "psutil>=5.9.0",
     "pyarrow>=15",
+    "pysam>=0.19.1",
+    "scikit-learn>=1.2",
+    "seaborn>=0.11",
     "scipy>=1.7.3",
+    "torch>=2.0",
     "tqdm",
     "zarr>=3.1,<4",
 ]
@@ -62,11 +68,14 @@ smftools = "smftools.cli_entry:cli"
 
 [project.optional-dependencies]
 
+# Compatibility extras for existing development and documentation installs.
+# New contributor installs should use the dependency groups below.
 dev = [
     "ruff==0.15.0",
     "pre-commit",
     "pytest",
-    "pytest-cov"]
+    "pytest-cov",
+]
 
 docs = [
     "sphinx>=7,<8",
@@ -87,6 +96,51 @@ docs = [
     "pyyaml"
 ]
 
+# Feature profiles.
+ont = [
+    "pod5>=0.1.21",
+]
+
+umi = [
+    "edlib",
+]
+
+genome-io = [
+    "pybedtools>=0.12.0",
+    "pyBigWig>=0.3.24",
+]
+
+project = [
+    "duckdb",
+    "xarray",
+]
+
+analysis = [
+    "igraph",
+    "leidenalg",
+    "networkx>=3.2",
+    "pynndescent>=0.5.10",
+    "tensorly",
+    "umap-learn>=0.5.5",
+    "upsetplot",
+    "xgboost>=1.7",
+]
+
+ml-extended = [
+    "captum",
+    "hydra-core",
+    "lightning",
+    "omegaconf",
+    "shap",
+    "wandb",
+]
+
+qc = [
+    "multiqc",
+]
+
+# Compatibility aliases for the previous fine-grained extras. Dependencies
+# that moved into the default install remain here so existing commands work.
 cluster = [
     "igraph",
     "leidenalg",
@@ -95,10 +149,6 @@ cluster = [
 misc = [
     "networkx>=3.2",
     "upsetplot",
-]
-
-ont = [
-    "pod5>=0.1.21",
 ]
 
 plotting = [
@@ -119,31 +169,14 @@ pysam = [
 ]
 
 ml-base = [
-    "scikit-learn>=1.0.2",
+    "scikit-learn>=1.2",
     "tensorly",
-    "torch>=1.9.0",
+    "torch>=2.0",
     "xgboost>=1.7",
 ]
 
 xgboost = [
     "xgboost>=1.7",
-]
-
-ml-extended = [
-    "captum",
-    "hydra-core",
-    "lightning",
-    "omegaconf",
-    "shap",
-    "wandb",
-]
-
-qc = [
-    "multiqc",
-]
-
-umi = [
-    "edlib",
 ]
 
 umap = [
@@ -152,7 +185,7 @@ umap = [
 ]
 
 torch = [
-    "torch>=1.9.0",
+    "torch>=2.0",
 ]
 
 lazy = [
@@ -168,45 +201,34 @@ catalog = [
 ]
 
 all = [
-    # lazy
+    # project
+    "duckdb",
     "xarray",
 
-    # catalog
-    "duckdb",
-
-    # cluster
+    # analysis
     "igraph",
     "leidenalg",
-
-    # informatics
-    "pysam>=0.19.1",
-
-    # misc
     "networkx>=3.2",
+    "pynndescent>=0.5.10",
+    "tensorly",
+    "umap-learn>=0.5.5",
     "upsetplot",
+    "xgboost>=1.7",
 
     # ont
     "pod5>=0.1.21",
 
-    # plotting
-    "matplotlib>=3.6.2",
-    "seaborn>=0.11",
+    # genome-io
+    "pybedtools>=0.12.0",
+    "pyBigWig>=0.3.24",
 
-    # ml
+    # ml-extended
     "captum",
     "hydra-core",
     "lightning",
     "omegaconf",
-    "scikit-learn>=1.0.2",
     "shap",
-    "tensorly",
-    "torch>=1.9.0",
     "wandb",
-    "xgboost>=1.7",
-
-    # umap
-    "pynndescent>=0.5.10",
-    "umap-learn>=0.5.5",
 
     # qc
     "multiqc",
@@ -215,54 +237,77 @@ all = [
     "edlib",
 ]
 
+# Deprecated compatibility alias for `all`.
 all_2 = [
-    # lazy
+    # project
+    "duckdb",
     "xarray",
 
-    # catalog
-    "duckdb",
-
-    # cluster
+    # analysis
     "igraph",
     "leidenalg",
-
-    # informatics
-    "pybedtools>=0.12.0",
-    "pyBigWig>=0.3.24",
-    "pysam>=0.19.1",
-
-    # misc
     "networkx>=3.2",
+    "pynndescent>=0.5.10",
+    "tensorly",
+    "umap-learn>=0.5.5",
     "upsetplot",
+    "xgboost>=1.7",
 
     # ont
     "pod5>=0.1.21",
 
-    # plotting
-    "matplotlib>=3.6.2",
-    "seaborn>=0.11",
+    # genome-io
+    "pybedtools>=0.12.0",
+    "pyBigWig>=0.3.24",
 
-    # ml
+    # ml-extended
     "captum",
     "hydra-core",
     "lightning",
     "omegaconf",
-    "scikit-learn>=1.0.2",
     "shap",
-    "tensorly",
-    "torch>=1.9.0",
     "wandb",
-    "xgboost>=1.7",
-
-    # umap
-    "pynndescent>=0.5.10",
-    "umap-learn>=0.5.5",
 
     # qc
     "multiqc",
 
     # umi
     "edlib",
+]
+
+[dependency-groups]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
+lint = [
+    "pre-commit",
+    "ruff==0.15.0",
+]
+
+docs = [
+    "sphinx>=7,<8",
+    "sphinx-book-theme>=1.1,<2",
+    "sphinx-autodoc-typehints>=1.25.2,<4",
+    "myst-parser>=2,<3",
+    "myst-nb>=1,<2",
+    "sphinx-design",
+    "readthedocs-sphinx-search",
+    "sphinxext-opengraph>=0.9,<0.10",
+    "sphinx-copybutton>=0.5,<0.6",
+    "sphinx-click>=5,<7",
+    "nbsphinx>=0.9",
+    "ipython>=7.20",
+    "matplotlib!=3.6.1",
+    "sphinxcontrib-bibtex>=2,<3",
+    "setuptools",
+    "pyyaml",
+]
+
+dev = [
+    {include-group = "test"},
+    {include-group = "lint"},
 ]
 
 [tool.hatch.build]

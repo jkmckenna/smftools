@@ -1,89 +1,97 @@
 # Installation
 
-## PyPi version - Easiest starting point
-
-SMFtools requires Python 3.11 or newer. It is recommended to first create and activate a conda environment before installing smftools to ensure dependencies are managed smoothly. The following sets up a Python 3.11 environment, activates the environment, and installs the base smftools with a PyTorch backend:
+SMFtools requires Python 3.11 or newer. Create an isolated environment and
+upgrade pip before installing:
 
 ```shell
 conda create -n smftools python=3.11
 conda activate smftools
-pip install --upgrade pip
-pip install smftools[torch]
+python -m pip install --upgrade pip
+python -m pip install smftools
 ```
 
-Ensure that you can access dorado, modkit, and minimap2 executables from the terminal in this environment.
-You may need to add them to $PATH if they are not globally configured.
-For example, if you want to check if dorado is executable, simply run this in the terminal:
+The default install supports `smftools experiment full` from a basecalled BAM.
+It includes the portable pysam BAM backend and the dependencies used by
+preprocessing, spatial analysis, HMM analysis, and pipeline plotting.
+
+## Optional feature profiles
+
+Install profiles individually or combine them in one command, such as
+`python -m pip install "smftools[ont,project]"`.
+
+| Profile | Additional capability |
+| --- | --- |
+| `ont` | POD5 input and Nanopore signal I/O |
+| `umi` | Edit-distance-based UMI and barcode processing |
+| `genome-io` | pybedtools and pyBigWig genome-format backends |
+| `project` | DuckDB catalogs and lazy xarray-backed project reads |
+| `analysis` | Clustering, UMAP, tensor, graph, and XGBoost analyses |
+| `ml-extended` | Captum, Lightning, SHAP, Weights & Biases, and related ML tools |
+| `qc` | MultiQC report generation |
+| `all` | Every optional runtime capability |
+
+For example, a POD5-starting experiment that also uses UMI processing can use:
 
 ```shell
-dorado
+python -m pip install "smftools[ont,umi]"
 ```
 
-On Mac OSX, the following can be used to congigure minimap2 (with brew) if you do not want to use the dorado aligner.
-Also, optional samtools (brew), bedtools (brew) and BedGraphToBigWig (with wget) can be installed and configured if you prefer to use the CLI backend. SMFtools also has the option to use a Python backend instead of these CLI backends if you pip install with the optional dependency flags: pysamtools, pybedtools, pybigwig.
+The `genome-io` profile installs Python packages for working with BED and
+BigWig data. Some pybedtools operations also require a separately installed
+`bedtools` executable.
+
+## External command-line tools
+
+External tools depend on the experiment's input and configured backends:
+
+- Dorado performs Nanopore basecalling and can perform alignment and
+  demultiplexing. It is not needed when the configured workflow starts from a
+  suitable basecalled BAM and uses another aligner/backend.
+- Minimap2 can perform alignment when Dorado alignment is not used.
+- Modkit extracts modification probabilities from MM/ML BAM tags for direct
+  modification-detection protocols. The pysam modification backend is included
+  in the default Python install and can be selected instead.
+- samtools, bedtools, and BedGraphToBigWig are optional CLI backends. pysam is
+  included by default; pybedtools and pyBigWig are available through
+  `smftools[genome-io]`.
+
+Make any selected executable available on `PATH`. For example:
 
 ```shell
-brew install minimap2
-wget http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.x86_64/bedGraphToBigWig
-chmod +x bedGraphToBigWig
-sudo mv bedGraphToBigWig /usr/local/bin/
+dorado --version
+minimap2 --version
 ```
 
-If you are starting from Nanopore POD5 files, you will need to install with the ont option.
-```shell
-pip install smftools[ont]
-```
+## Development installation
 
-If you want multiqc to be performed on your experiment, you will need to use the qc option on install.
-```shell
-pip install smftools[qc]
-```
-
-If you want to use the automated plotting functions, you will need to install the plotting dependencies.
-```shell
-pip install smftools[plotting]
-```
-
-If you prefer to use python backends (or do not have the CLI backends installed) for samtools, bedtools, BedGraphToBigWig, use the following options.
-```shell
-pip install smftools[pysamtools,pybedtools,pybigwig]
-```
-
-If you want to generate UMAPs and perform Leiden clustering, use the following options.
-```shell
-pip install smftools[scanpy,clustering]
-```
-
-If you just want to install the full functionality of smftools, just use the following install option.
-```shell
-pip install smftools[all]
-```
-
-## Development Version - recommended to use this method for most up to date versions
-
-Clone smftools from source and change into the smftools directory:
+Clone the repository and install it in editable mode. Runtime feature extras
+remain package extras, while the canonical test, lint, and documentation setup
+uses local dependency groups and is never installed by a normal runtime install:
 
 ```shell
 git clone https://github.com/jkmckenna/smftools.git
 cd smftools
-```
-
-A python virtual environment can be created as an alternative to conda. I like to do venv-smftools-X.X.X to keep a seperate venv for each version:
-
-```shell
 python -m venv venv-smftools
 source venv-smftools/bin/activate
-pip install --upgrade pip
-pip install .
-pip install ipykernel jupyter
+python -m pip install --upgrade pip
+python -m pip install -e ".[all]"
+python -m pip install --group dev --group docs
+```
+
+To use the environment as a Jupyter kernel, install Jupyter tooling separately:
+
+```shell
+python -m pip install ipykernel jupyter
 python -m ipykernel install --user --name=venv-smftools --display-name "Python (smftools)"
 ```
 
-Subsequent use of the installed version of smftools can be run by changing to the smftools directory and activating the venv:
+## Compatibility aliases
 
-```shell
-cd smftools
-source venv-smftools/bin/activate
-```
-
-You can now run smftools from the terminal, an IDE, or a notebook within the virtual environment.
+Existing install commands continue to work during this migration. The previous
+fine-grained extras (`cluster`, `misc`, `plotting`, `pybedtools`, `pybigwig`,
+`pysam`, `ml-base`, `xgboost`, `umap`, `torch`, `lazy`, and `catalog`) remain as
+aliases. The old `dev` and `docs` extras also remain available while contributor
+automation moves to dependency groups. The `torch`, `plotting`, and `pysam`
+extras are now redundant because those dependencies are installed by default.
+`all_2` is retained as a deprecated alias for `all`; new documentation and
+automation should use `all`.
