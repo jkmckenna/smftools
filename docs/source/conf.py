@@ -173,13 +173,9 @@ def _generate_schema_tables() -> None:
         print("PyYAML not installed; skipping schema table generation.")
         return
 
-    try:
-        from smftools.schema import get_schema_registry_path
-    except Exception as exc:
-        print(f"Unable to import smftools schema registry: {exc}")
-        return
-
-    registry_path = get_schema_registry_path()
+    # Read the registry from the source tree so documentation-only installs do
+    # not need to import smftools and its runtime dependencies.
+    registry_path = SRC_PATH / "smftools" / "schema" / "anndata_schema_v1.yaml"
     if not registry_path.exists():
         print(f"Schema registry not found at {registry_path}; skipping.")
         return
