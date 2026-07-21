@@ -2,10 +2,10 @@
 
 ## PyPi version - Easiest starting point
 
-It is recommended to first create and activate a conda environment before installing smftools to ensure dependencies are managed smoothly. The following sets up a conda environment, activates the environment, and installs the base smftools and uses a Pytorch backend:
+SMFtools requires Python 3.11 or newer. It is recommended to first create and activate a conda environment before installing smftools to ensure dependencies are managed smoothly. The following sets up a Python 3.11 environment, activates the environment, and installs the base smftools with a PyTorch backend:
 
 ```shell
-conda create -n smftools
+conda create -n smftools python=3.11
 conda activate smftools
 pip install --upgrade pip
 pip install smftools[torch]
