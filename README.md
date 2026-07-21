@@ -8,25 +8,45 @@ A Python tool for automated processing of raw sequencing data derived from singl
 While genomic data structures (SAM/BAM) were built to store read alignment data and basic read metadata along large references, integration of downstream analyses is not feasible using this format alone. Smftools integrates experimental analyses across file formats, linking raw sequencing data files, BAM alignment files, and downstream analyses into modern storage formats such as zarr for arrays and parquet for tables. This enables efficient partitioned data storage, rapid and parallel data operations, hierarchical metadata handling, and seamless integration with machine-learning workflows. Furthermore, functionality is modularized into multiple processing stages, enabling analysis to restart from convenient checkpoints without having to rerun the full workflow. Collections of experiments are managed under smftools projects, which indexes individual experiments and combine them for continuously growing scientific projects.
 
 ## Installation
-PyPI releases lag behind active development (currently `0.3.2` on PyPI vs. the version in this repo), so installing from source is recommended for now:
+SMFtools requires Python 3.11 or newer. The default installation supports
+`smftools experiment full` from a basecalled BAM, including the portable pysam
+BAM backend, preprocessing, spatial analysis, HMM analysis, and plotting:
 
 ```bash
+pip install smftools
+
+# Or install the current development checkout.
 git clone https://github.com/jkmckenna/smftools.git
 cd smftools
-pip install -e ".[torch]"      # core install; torch is listed as an extra but is currently required
-pip install -e ".[all]"        # everything, including optional extras below
+pip install -e .
 ```
 
-Optional extras can be installed individually as needed, e.g. `pip install -e ".[ont,plotting]"`:
-- `ont` -> POD5 I/O for Nanopore data.
-- `plotting` -> matplotlib/seaborn-based figure generation.
-- `ml-base` / `ml-extended` -> scikit-learn/torch-based and extended (captum, lightning, wandb, ...) machine-learning workflows.
-- `umap` -> UMAP-based dimensionality reduction.
-- `cluster` -> igraph/leidenalg-based clustering.
-- `catalog` -> DuckDB-backed project catalog (falls back to pandas/pyarrow without it).
-- `qc` -> MultiQC report generation.
+Install only the optional capabilities a run needs, for example
+`pip install -e ".[ont,project]"`:
 
-See `pyproject.toml`'s `[project.optional-dependencies]` for the full, current list.
+- `ont` -> POD5 input and Nanopore signal I/O.
+- `umi` -> edit-distance-based UMI and barcode processing.
+- `genome-io` -> pybedtools and pyBigWig genome-format backends.
+- `project` -> DuckDB catalogs and lazy xarray-backed project reads.
+- `analysis` -> downstream clustering, UMAP, tensor, graph, and XGBoost analyses.
+- `ml-extended` -> Captum, Lightning, SHAP, Weights & Biases, and related ML tools.
+- `qc` -> MultiQC report generation.
+- `all` -> every optional runtime capability.
+
+Older fine-grained extras remain compatibility aliases. In particular, `torch`,
+`plotting`, and `pysam` are now redundant because those dependencies are part of
+the default workflow install, and `all_2` is an alias for `all`.
+
+Canonical contributor installs use dependency groups so test, lint, and docs
+tools are never installed by a normal runtime install:
+
+```bash
+python -m pip install -e ".[all]"
+python -m pip install --group dev --group docs
+```
+
+See the [installation guide](https://smftools.readthedocs.io/en/latest/installation.html)
+for profile details and external command-line requirements.
 
 ## Command-line interface
 smftools exposes two top-level command groups (`smftools --help` for the full list):
