@@ -22,6 +22,8 @@ from smftools.informatics.modkit_extract_to_adata import modkit_extract_to_adata
 
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "_test_inputs" / "parallel_dispatch"
 
+pytestmark = pytest.mark.integration
+
 
 def _build_barcode_sidecar(bam_path: Path, out_path: Path) -> int:
     with pysam.AlignmentFile(str(bam_path), "rb") as bam:
@@ -86,7 +88,6 @@ def _summarize(adata) -> dict:
     }
 
 
-@pytest.mark.e2e
 def test_parallel_dispatch_matches_serial_dispatch(tmp_path):
     serial = _summarize(_run(tmp_path, "serial", max_workers=None))
     parallel = _summarize(_run(tmp_path, "parallel", max_workers=4))
@@ -98,7 +99,6 @@ def test_parallel_dispatch_matches_serial_dispatch(tmp_path):
     assert serial["var_names_sha256"] == parallel["var_names_sha256"]
 
 
-@pytest.mark.e2e
 def test_auto_worker_count_matches_serial_dispatch(tmp_path):
     # "auto" must never crash and must still agree with serial on this tiny fixture,
     # regardless of what worker count it resolves to on the current machine.
@@ -109,7 +109,6 @@ def test_auto_worker_count_matches_serial_dispatch(tmp_path):
     assert serial["layer_sha256"] == auto["layer_sha256"]
 
 
-@pytest.mark.e2e
 def test_nonsplit_chunks_are_genuinely_scoped_not_aliased(tmp_path):
     """Regression test for a real production OOM: non-split mode used to write one
     full-corpus cache/TSV per pseudo-sample "chunk" and alias the *same* file list
@@ -172,7 +171,6 @@ def test_nonsplit_chunks_are_genuinely_scoped_not_aliased(tmp_path):
             assert chunks[i].isdisjoint(chunks[j]) or (not chunks[i] and not chunks[j])
 
 
-@pytest.mark.e2e
 def test_partial_batch_output_without_marker_is_reprocessed(tmp_path):
     """Regression test for a real production incident: a worker killed (by the
     memory watchdog) partway through writing a batch's several per-dict-type
