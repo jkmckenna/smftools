@@ -903,7 +903,12 @@ def test_duplicate_detection_never_materializes_more_than_one_chunk_at_once(tmp_
         read_ids = list(read_ids)
         materialize_call_sizes.append(len(read_ids))
         return real_materialize(
-            spine_path, references=references, read_ids=read_ids, start=start, end=end, layers=layers
+            spine_path,
+            references=references,
+            read_ids=read_ids,
+            start=start,
+            end=end,
+            layers=layers,
         )
 
     monkeypatch.setattr(dispatch_module, "materialize", spy_materialize)

@@ -32,7 +32,9 @@ def _args_with_early_divergent_pair(n_permutation_passes: int, *, n_sites: int =
     n_fillers_block0 = 60
     fillers_block0 = rng.integers(0, 2, size=(n_fillers_block0, n_sites)).astype(float)
     fillers_block0[:, 0] = 0.0
-    fillers_block0[np.all(fillers_block0[:, 1:] == 0.0, axis=1), 1] = 1.0  # avoid accidental all-zero ties
+    fillers_block0[np.all(fillers_block0[:, 1:] == 0.0, axis=1), 1] = (
+        1.0  # avoid accidental all-zero ties
+    )
 
     n_fillers_block1 = 20
     fillers_block1 = rng.integers(0, 2, size=(n_fillers_block1, n_sites)).astype(float)

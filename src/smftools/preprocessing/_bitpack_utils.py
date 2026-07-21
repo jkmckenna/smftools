@@ -98,7 +98,5 @@ def popcount_hamming_windowed(
 
     distances = np.full(len(j_indices), np.nan, dtype=float)
     enough_overlap = overlap_counts >= min_overlap_positions
-    distances[enough_overlap] = (
-        mismatch_counts[enough_overlap] / overlap_counts[enough_overlap]
-    )
+    distances[enough_overlap] = mismatch_counts[enough_overlap] / overlap_counts[enough_overlap]
     return distances, overlap_counts

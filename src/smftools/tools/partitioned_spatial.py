@@ -576,9 +576,7 @@ def _plot_autocorrelation(autocorrelation, layout) -> None:
         )
 
 
-def _cap_clustermap_rows(
-    matrix: np.ndarray, max_rows: int | None, *, seed: int = 0
-) -> np.ndarray:
+def _cap_clustermap_rows(matrix: np.ndarray, max_rows: int | None, *, seed: int = 0) -> np.ndarray:
     """Reproducibly subsample a matrix's rows to at most ``max_rows``.
 
     ``_clustered_row_order`` runs scipy's hierarchical ``linkage`` on every row
