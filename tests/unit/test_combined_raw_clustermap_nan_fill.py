@@ -9,7 +9,7 @@ import pandas as pd
 from smftools.plotting import combined_raw_clustermap
 
 
-def test_combined_raw_clustermap_nan_fill(tmp_path):
+def test_combined_raw_clustermap_nan_fill(tmp_path, monkeypatch):
     matrix = np.array(
         [
             [0.0, np.nan, 1.0],
@@ -26,6 +26,22 @@ def test_combined_raw_clustermap_nan_fill(tmp_path):
     adata.var["R1_CpG_site"] = [True, True, True]
     adata.var["R1_A_site"] = [False, False, False]
 
+    captured_heatmaps = []
+
+    from smftools.optional_imports import require as real_require
+
+    class SeabornProxy:
+        @staticmethod
+        def heatmap(data, **_kwargs):
+            captured_heatmaps.append(np.asarray(data))
+
+    def capture_seaborn(module, **kwargs):
+        if module == "seaborn":
+            return SeabornProxy()
+        return real_require(module, **kwargs)
+
+    monkeypatch.setattr("smftools.optional_imports.require", capture_seaborn)
+
     results = combined_raw_clustermap(
         adata,
         min_quality=None,
@@ -39,5 +55,5 @@ def test_combined_raw_clustermap_nan_fill(tmp_path):
     )
 
     assert len(results) == 1
-    gpc_matrix = results[0]["gpc_matrix"]
-    assert not np.isnan(gpc_matrix).any()
+    assert captured_heatmaps
+    assert all(not np.isnan(matrix).any() for matrix in captured_heatmaps)
