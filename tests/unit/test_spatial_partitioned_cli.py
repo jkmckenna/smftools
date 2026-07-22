@@ -32,6 +32,7 @@ def _spatial_outputs(output):
     paths = {
         "spine": output / "spine.h5ad",
         "task_catalog": output / "task_catalog.parquet",
+        "read_index": output / "read_index",
         "metrics": output / "metrics.parquet",
         "autocorrelation": output / "autocorrelation.parquet",
         "task_store": output / "store",
@@ -44,6 +45,7 @@ def _spatial_outputs(output):
     for key in ("metrics", "autocorrelation", "region_catalog"):
         pd.DataFrame().to_parquet(paths[key], index=False)
     paths["task_store"].mkdir(exist_ok=True)
+    paths["read_index"].mkdir(exist_ok=True)
     (paths["task_store"] / "task-1").touch()
     paths["plot_catalog"].parent.mkdir(exist_ok=True)
     pd.DataFrame().to_parquet(paths["plot_catalog"], index=False)
@@ -117,7 +119,7 @@ def test_spatial_cli_reruns_when_completed_artifact_is_missing(tmp_path, monkeyp
             lifecycle,
             outputs,
             required=required,
-            schema_versions={"spatial": 2},
+            schema_versions={"spatial": 3, "derived_read_index": 1},
             nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["spatial"],
         )
     outputs["metrics"].unlink()

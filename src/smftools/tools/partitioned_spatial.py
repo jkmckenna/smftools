@@ -296,7 +296,10 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
     metric_rows = []
     autocorr_rows = []
     position_rows = []
-    read_obs = pd.DataFrame(index=core.obs_names.copy())
+    identity_columns = [
+        column for column in ("read_id", "experiment_uid", "molecule_uid") if column in core.obs
+    ]
+    read_obs = core.obs[identity_columns].copy()
     read_obsm = {}
     read_uns = {
         "task_id": task.task_id,
@@ -437,6 +440,16 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
             )
             del array
         group_path = read_metrics_path.relative_to(output_dir).as_posix()
+    from ..informatics.derived_read_index import write_derived_read_index
+
+    read_index_path = write_derived_read_index(
+        output_dir,
+        stage="spatial",
+        task=task,
+        obs=core.obs,
+        group_path=group_path,
+        stage_schema_version=3,
+    )
     return {
         **task.to_dict(include_read_ids=False),
         "metrics_path": metrics_path.relative_to(output_dir).as_posix(),
@@ -449,6 +462,7 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
         "group_path": group_path,
         "obsm_keys": obsm_keys,
         "site_types": sorted({row["site_type"] for row in metric_rows}),
+        "read_index_path": read_index_path.relative_to(output_dir).as_posix(),
     }
 
 
@@ -1469,6 +1483,9 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     spine_path = Path(spine_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    from ..informatics.derived_read_index import prepare_derived_read_index
+
+    prepare_derived_read_index(output_dir)
     spine = load_spine(spine_path)
     filter_mask = next(
         (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
@@ -1552,7 +1569,11 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
             read_periodogram_axis, run_root
         )
     spatial_spine.uns["spatial_filter_mask"] = filter_mask or ""
-    spatial_spine.uns["spatial_schema_version"] = 2
+    from ..informatics.derived_read_index import DERIVED_READ_INDEX_DIRNAME
+
+    read_index_dir = output_dir / DERIVED_READ_INDEX_DIRNAME
+    spatial_spine.uns["spatial_read_index"] = relative_uns_path(read_index_dir, run_root)
+    spatial_spine.uns["spatial_schema_version"] = 3
     output_spine = output_dir / SPATIAL_SPINE_FILENAME
     safe_write_h5ad(spatial_spine, output_spine, backup=False, verbose=False)
     write_experiment_spine(run_root)
@@ -1561,6 +1582,7 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     register_sidecar(manifest, "spatial_spine", output_spine)
     register_sidecar(manifest, "spatial_source_spine", spine_path)
     register_sidecar(manifest, "spatial_task_catalog", task_catalog)
+    register_sidecar(manifest, "spatial_read_index", read_index_dir)
     register_sidecar(manifest, "spatial_metrics", metrics_path)
     register_sidecar(manifest, "spatial_autocorrelation", autocorrelation_path)
     register_sidecar(manifest, "spatial_position_store", output_dir / SPATIAL_PARTIAL_SUBDIR)
@@ -1595,6 +1617,7 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     outputs = {
         "spine": output_spine,
         "task_catalog": task_catalog,
+        "read_index": read_index_dir,
         "metrics": metrics_path,
         "autocorrelation": autocorrelation_path,
         "task_store": output_dir / SPATIAL_PARTIAL_SUBDIR,

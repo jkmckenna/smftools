@@ -47,7 +47,17 @@ def write_stage_obs(
     """
     selected = obs if columns is None else obs[list(columns)]
     frame = selected.copy()
-    frame.insert(0, "read_id", frame.index.astype(str))
+    index_read_ids = frame.index.astype(str)
+    if "read_id" in frame:
+        if (
+            not frame["read_id"]
+            .astype(str)
+            .reset_index(drop=True)
+            .equals(pd.Series(index_read_ids, dtype=object))
+        ):
+            raise ValueError("obs read_id column must match its observation index")
+    else:
+        frame.insert(0, "read_id", index_read_ids)
     frame = frame.reset_index(drop=True)
     path = obs_parquet_path(stage_dir, filename=filename)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,7 +68,7 @@ def write_stage_obs(
 def read_stage_obs(stage_dir: str | Path, *, filename: str = OBS_FILENAME) -> pd.DataFrame:
     """Read one stage's ``obs.parquet`` back, indexed by ``read_id``."""
     frame = pd.read_parquet(obs_parquet_path(stage_dir, filename=filename))
-    return frame.set_index("read_id")
+    return frame.set_index("read_id", drop=False)
 
 
 def read_joined_obs(stage_dirs: list[str | Path]) -> pd.DataFrame:

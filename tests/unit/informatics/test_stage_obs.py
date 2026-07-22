@@ -25,7 +25,7 @@ def test_write_stage_obs_with_no_columns_filter_keeps_everything(tmp_path):
     assert path == obs_parquet_path(tmp_path)
     reloaded = read_stage_obs(tmp_path)
     assert list(reloaded.index) == ["r0", "r1"]
-    assert list(reloaded.columns) == ["Reference_strand", "Sample"]
+    assert list(reloaded.columns) == ["read_id", "Reference_strand", "Sample"]
     assert list(reloaded["Sample"]) == ["bc00", "bc01"]
 
 
@@ -41,7 +41,7 @@ def test_write_stage_obs_with_columns_filter_keeps_only_those(tmp_path):
     write_stage_obs(tmp_path, obs, columns=["passes_read_qc"])
 
     reloaded = read_stage_obs(tmp_path)
-    assert list(reloaded.columns) == ["passes_read_qc"]
+    assert list(reloaded.columns) == ["read_id", "passes_read_qc"]
     assert list(reloaded["passes_read_qc"]) == [True, False]
     # Not re-stored -- those live in an earlier stage's obs.parquet.
     assert "Reference_strand" not in reloaded.columns
@@ -68,7 +68,12 @@ def test_read_joined_obs_combines_stages_by_read_id(tmp_path):
     joined = read_joined_obs([raw_dir, preprocess_dir])
 
     assert list(joined.index) == ["r0", "r1"]  # narrowed to preprocess's row set
-    assert set(joined.columns) == {"Reference_strand", "Sample", "passes_read_qc"}
+    assert set(joined.columns) == {
+        "read_id",
+        "Reference_strand",
+        "Sample",
+        "passes_read_qc",
+    }
     assert list(joined["Sample"]) == ["bc00", "bc00"]
     assert list(joined["passes_read_qc"]) == [True, True]
 

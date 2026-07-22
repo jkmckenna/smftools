@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from time import perf_counter
 from typing import Iterable, Mapping
@@ -24,6 +25,14 @@ from smftools.logging_utils import get_logger
 
 from ..readwrite import safe_write_h5ad
 from .experiment_spine import write_experiment_spine
+from .molecule_identity import (
+    EXPERIMENT_UID_COLUMN,
+    IDENTITY_SCHEMA_VERSION,
+    MOLECULE_UID_COLUMN,
+    molecule_uid,
+    new_experiment_uid,
+    validate_experiment_uid,
+)
 from .partition_read import relative_uns_path
 from .ragged_store import (
     RAGGED_ARRAY_COLUMNS,
@@ -41,9 +50,10 @@ RAW_SUBDIR = "raw"
 RAW_SHARD_TEMPLATE = "part-{index:05d}.parquet"
 INTERVAL_CATALOG_FILENAME = "interval_catalog.parquet"
 MOLECULES_FILENAME = "molecules.parquet"
+MOLECULE_INDEX_DIRNAME = "molecule_index"
 BARCODE_INDEX_FILENAME = "barcode_index.parquet"
 SPINE_FILENAME = "spine.h5ad"
-RAW_SCHEMA_VERSION = 2
+RAW_SCHEMA_VERSION = 3
 
 _OBS_COLUMN_ALIASES = {
     REFERENCE: (REFERENCE, "reference"),
@@ -123,6 +133,51 @@ def _build_raw_spine_obs(
     return obs
 
 
+def _resolve_experiment_uid(output_dir: Path, extra_uns: Mapping[str, object] | None) -> str:
+    """Reuse the run's persisted experiment identity or create it exactly once."""
+    from .experiment_manifest import read_experiment_manifest, update_experiment_manifest
+
+    proposed = (extra_uns or {}).get(EXPERIMENT_UID_COLUMN)
+    persisted = read_experiment_manifest(output_dir.parent).get(EXPERIMENT_UID_COLUMN)
+    existing = None
+    existing_spine = output_dir / SPINE_FILENAME
+    if existing_spine.exists():
+        from ..readwrite import safe_read_h5ad
+
+        existing = safe_read_h5ad(existing_spine, verbose=False)[0].uns.get(EXPERIMENT_UID_COLUMN)
+    candidates = {
+        validate_experiment_uid(value)
+        for value in (proposed, persisted, existing)
+        if value is not None
+    }
+    if len(candidates) > 1:
+        raise ValueError("configured experiment_uid conflicts with the persisted run identity")
+    resolved = next(iter(candidates), new_experiment_uid())
+    update_experiment_manifest(
+        output_dir.parent,
+        experiment_uid=resolved,
+        identity_schema_version=IDENTITY_SCHEMA_VERSION,
+    )
+    return resolved
+
+
+def _write_molecule_index(rows: list[dict[str, object]], output_dir: Path) -> Path:
+    """Write bounded Parquet index pieces mirroring raw shard boundaries."""
+    index_dir = output_dir.parent / MOLECULE_INDEX_DIRNAME
+    if index_dir.exists():
+        shutil.rmtree(index_dir)
+    index_dir.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(rows)
+    for group_path, group in frame.groupby("group_path", sort=True, observed=True):
+        first = group.iloc[0]
+        reference_dir = index_dir / _reference_path_component(str(first[REFERENCE_STRAND]))
+        bin_dir = reference_dir / f"start-bin-{int(first['start_bin']):012d}"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{Path(str(group_path)).name}.index.parquet"
+        group.sort_values("group_row", kind="stable").to_parquet(bin_dir / filename, index=False)
+    return index_dir
+
+
 def _reference_path_component(reference: str) -> str:
     """Return a reversible filesystem-safe reference component."""
     return quote(str(reference), safe="._-")
@@ -147,6 +202,7 @@ def _write_raw_shards_streaming(
     *,
     shard_size: int,
     start_bin_size: int,
+    experiment_uid: str,
     on_reference_written=None,
 ) -> dict[str, object]:
     """Write ragged parquet shards one incoming group at a time.
@@ -221,6 +277,14 @@ def _write_raw_shards_streaming(
         references_seen.add(reference_name)
         group_t0 = perf_counter()
         group = group.reset_index(drop=True)
+        incoming_ids = group[READ_ID].astype(str)
+        duplicated = incoming_ids[incoming_ids.duplicated()].unique().tolist()
+        duplicated.extend(sorted(set(incoming_ids).intersection(shard_by_read)))
+        if duplicated:
+            preview = ", ".join(map(repr, duplicated[:5]))
+            raise ValueError(
+                f"raw read_id values must be experiment-global unique; repeated: {preview}"
+            )
         group["reference_end"] = (group["reference_start"] + group["aligned_length"]).astype(
             "int64"
         )
@@ -259,8 +323,15 @@ def _write_raw_shards_streaming(
                     molecules_rows.append(
                         {
                             "read_id": read_id,
+                            EXPERIMENT_UID_COLUMN: experiment_uid,
+                            MOLECULE_UID_COLUMN: molecule_uid(experiment_uid, read_id),
                             "canonical_row": canonical_row,
                             REFERENCE_STRAND: reference_name,
+                            "reference_start": int(shard["reference_start"].iloc[row_number]),
+                            "reference_end": int(shard["reference_end"].iloc[row_number]),
+                            "start_bin": int(start_bin),
+                            "group_path": relative_path,
+                            "group_row": row_number,
                             **(
                                 {SAMPLE: str(shard[sample_column].iloc[row_number])}
                                 if sample_column is not None and sample_column in shard.columns
@@ -376,6 +447,7 @@ def write_raw_store(
         raise ValueError("cannot write an empty raw store")
 
     output_dir = Path(output_dir)
+    experiment_uid = _resolve_experiment_uid(output_dir, extra_uns)
     raw_dir = output_dir / RAW_SUBDIR
     raw_dir.mkdir(parents=True, exist_ok=True)
     logger.info(
@@ -396,6 +468,7 @@ def write_raw_store(
         raw_dir,
         shard_size=shard_size,
         start_bin_size=start_bin_size,
+        experiment_uid=experiment_uid,
     )
     shard_paths = streamed["shard_paths"]
     catalog_rows = streamed["catalog_rows"]
@@ -415,6 +488,7 @@ def write_raw_store(
     # is purely additive, no existing consumer changes).
     molecules_path = output_dir.parent / MOLECULES_FILENAME
     pd.DataFrame(molecules_rows).to_parquet(molecules_path, index=False)
+    molecule_index_path = _write_molecule_index(molecules_rows, output_dir)
 
     barcode_index_path: Path | None = None
     if barcode_index_rows:
@@ -422,6 +496,12 @@ def write_raw_store(
         pd.DataFrame(barcode_index_rows).to_parquet(barcode_index_path, index=False)
 
     obs = _build_raw_spine_obs(normalized, shard_by_read, row_by_read)
+    obs.insert(0, "read_id", obs.index.astype(str))
+    obs.insert(1, EXPERIMENT_UID_COLUMN, experiment_uid)
+    obs.insert(
+        2, MOLECULE_UID_COLUMN, [molecule_uid(experiment_uid, read_id) for read_id in obs.index]
+    )
+    obs.index.name = None
     if bam_path is not None:
         # Relative to the run's output_directory (not output_dir/raw_dir), not
         # absolute -- the aligned BAM lives under this same raw store (bam_outputs/),
@@ -452,6 +532,9 @@ def write_raw_store(
             # Relative to the run root (output_dir.parent), same anchor as bam_path
             # above, since molecules.parquet lives alongside output_dir, not inside it.
             "molecules_catalog": relative_uns_path(molecules_path, output_dir.parent),
+            "molecule_index": relative_uns_path(molecule_index_path, output_dir.parent),
+            EXPERIMENT_UID_COLUMN: experiment_uid,
+            "identity_schema_version": IDENTITY_SCHEMA_VERSION,
             "reference_plans": {plan.reference: plan.to_dict() for plan in plans},
             "reference_lengths": {
                 str(reference): int(length) for reference, length in reference_lengths.items()
@@ -475,6 +558,7 @@ def write_raw_store(
     register_sidecar(manifest_path, "spine", spine_path)
     register_sidecar(manifest_path, "interval_catalog", catalog_path)
     register_sidecar(manifest_path, "molecules", molecules_path)
+    register_sidecar(manifest_path, "molecule_index", molecule_index_path)
     if barcode_index_path is not None:
         register_sidecar(manifest_path, "barcode_index", barcode_index_path)
     register_sidecar(manifest_path, "obs", obs_path)
@@ -490,6 +574,7 @@ def write_raw_store(
         "ragged_store": shard_paths,
         "interval_catalog": catalog_path,
         "molecules": molecules_path,
+        "molecule_index": molecule_index_path,
         "barcode_index": barcode_index_path,
         "obs": obs_path,
         "manifest": manifest_path,
@@ -548,6 +633,7 @@ def write_raw_store_streaming(
         raise ValueError("start_bin_size must be positive")
     t0 = perf_counter()
     output_dir = Path(output_dir)
+    experiment_uid = _resolve_experiment_uid(output_dir, extra_uns)
     raw_dir = output_dir / RAW_SUBDIR
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -585,6 +671,7 @@ def write_raw_store_streaming(
         raw_dir,
         shard_size=shard_size,
         start_bin_size=start_bin_size,
+        experiment_uid=experiment_uid,
         on_reference_written=_on_reference_written,
     )
     shard_paths = streamed["shard_paths"]
@@ -597,6 +684,7 @@ def write_raw_store_streaming(
 
     molecules_path = output_dir.parent / MOLECULES_FILENAME
     pd.DataFrame(molecules_rows).to_parquet(molecules_path, index=False)
+    molecule_index_path = _write_molecule_index(molecules_rows, output_dir)
 
     barcode_index_path: Path | None = None
     if barcode_index_rows:
@@ -611,6 +699,12 @@ def write_raw_store_streaming(
     # regression. See raw_store.py's module docstring / write_raw_store's own
     # docstring for the equivalence argument this relies on for everything else.
     obs = pd.concat(obs_frames) if obs_frames else pd.DataFrame()
+    obs.insert(0, "read_id", obs.index.astype(str))
+    obs.insert(1, EXPERIMENT_UID_COLUMN, experiment_uid)
+    obs.insert(
+        2, MOLECULE_UID_COLUMN, [molecule_uid(experiment_uid, read_id) for read_id in obs.index]
+    )
+    obs.index.name = None
     if bam_path is not None:
         obs["bam_path"] = relative_uns_path(bam_path, output_dir.parent)
     obs_path = write_stage_obs(output_dir, obs)
@@ -622,6 +716,9 @@ def write_raw_store_streaming(
             "ragged_store": [path.relative_to(output_dir).as_posix() for path in shard_paths],
             "interval_catalog": catalog_path.relative_to(output_dir).as_posix(),
             "molecules_catalog": relative_uns_path(molecules_path, output_dir.parent),
+            "molecule_index": relative_uns_path(molecule_index_path, output_dir.parent),
+            EXPERIMENT_UID_COLUMN: experiment_uid,
+            "identity_schema_version": IDENTITY_SCHEMA_VERSION,
             "reference_plans": {plan.reference: plan.to_dict() for plan in plans},
             "reference_lengths": {
                 str(reference): int(length) for reference, length in reference_lengths.items()
@@ -645,6 +742,7 @@ def write_raw_store_streaming(
     register_sidecar(manifest_path, "spine", spine_path)
     register_sidecar(manifest_path, "interval_catalog", catalog_path)
     register_sidecar(manifest_path, "molecules", molecules_path)
+    register_sidecar(manifest_path, "molecule_index", molecule_index_path)
     if barcode_index_path is not None:
         register_sidecar(manifest_path, "barcode_index", barcode_index_path)
     register_sidecar(manifest_path, "obs", obs_path)
@@ -660,6 +758,7 @@ def write_raw_store_streaming(
         "ragged_store": shard_paths,
         "interval_catalog": catalog_path,
         "molecules": molecules_path,
+        "molecule_index": molecule_index_path,
         "barcode_index": barcode_index_path,
         "obs": obs_path,
         "manifest": manifest_path,

@@ -74,7 +74,7 @@ def resolve_set_members(
     )
 
 
-def normalize_part(sub, experiment: str, stage: str):
+def normalize_part(sub, experiment: str, stage: str, experiment_uid: str):
     """Apply the per-part normalization every cross-experiment consumer needs.
 
     - stamps ``obs["experiment"]`` and ``uns["project_stage"]``,
@@ -84,7 +84,16 @@ def normalize_part(sub, experiment: str, stage: str):
       per-reference var columns whose outer-union overflows HDF5's per-attribute
       limit -- see the design doc).
     """
+    from ..informatics.molecule_identity import molecule_uid, pooled_obs_name
+
+    read_ids = sub.obs.get("read_id", sub.obs.index.to_series()).astype(str)
+    if read_ids.duplicated().any():
+        raise ValueError(f"experiment {experiment!r} contains duplicate instrument read IDs")
+    sub.obs["read_id"] = read_ids.to_numpy()
+    sub.obs["experiment_uid"] = str(experiment_uid)
+    sub.obs["molecule_uid"] = [molecule_uid(experiment_uid, read_id) for read_id in read_ids]
     sub.obs["experiment"] = experiment
+    sub.obs.index = [pooled_obs_name(experiment_uid, read_id) for read_id in read_ids]
     sub.uns["project_stage"] = stage
     sub.obs.index.name = None
     sub.var = sub.var.iloc[:, :0]
@@ -150,6 +159,11 @@ def iter_set_parts(
                 read_metrics=read_metrics,
                 lazy=lazy,
             )
-            yield normalize_part(sub, member["experiment"], member["stage"])
+            yield normalize_part(
+                sub,
+                member["experiment"],
+                member["stage"],
+                member["experiment_uid"],
+            )
 
     return _gen()

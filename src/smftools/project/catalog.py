@@ -124,6 +124,53 @@ class ProjectCatalog:
                 frames.append(frame)
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+    def lookup_molecule(
+        self,
+        *,
+        experiment_uid: str | None = None,
+        read_id: str | None = None,
+        molecule_uid: str | None = None,
+    ) -> pd.DataFrame:
+        """Locate one molecule's raw and derived records using Parquet indexes only.
+
+        Supply either ``molecule_uid`` or both ``experiment_uid`` and ``read_id``.
+        Task Zarr stores and experiment spines are not opened.
+        """
+        import pyarrow.dataset as ds
+
+        if molecule_uid is None and (experiment_uid is None or read_id is None):
+            raise ValueError("supply molecule_uid or both experiment_uid and read_id")
+        if molecule_uid is not None and (experiment_uid is not None or read_id is not None):
+            raise ValueError("molecule_uid cannot be combined with experiment_uid/read_id")
+
+        frames: list[pd.DataFrame] = []
+        for entry in self.experiments():
+            if experiment_uid is not None and str(entry["experiment_uid"]) != str(experiment_uid):
+                continue
+            for key, path_value in entry.get("catalogs", {}).items():
+                if key != "molecule_index" and not key.endswith("_read_index"):
+                    continue
+                path = Path(path_value)
+                if not path.exists():
+                    continue
+                dataset = ds.dataset(path, format="parquet")
+                expression = (
+                    ds.field("molecule_uid") == str(molecule_uid)
+                    if molecule_uid is not None
+                    else (ds.field("experiment_uid") == str(experiment_uid))
+                    & (ds.field("read_id") == str(read_id))
+                )
+                frame = dataset.to_table(filter=expression).to_pandas()
+                if frame.empty:
+                    continue
+                if "stage" not in frame:
+                    frame["stage"] = "raw"
+                frame["experiment"] = entry["id"]
+                frames.append(frame)
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True, sort=False)
+
     def query(self, sql: str) -> pd.DataFrame:
         """Run SQL over the ``refs`` (harmonized references) and ``intervals`` tables.
 
@@ -193,6 +240,7 @@ def resolve_set_members(
         members.append(
             {
                 "experiment": str(exp_id),
+                "experiment_uid": str(entry["experiment_uid"]),
                 "stage": resolved_stage,
                 "spine_path": spine_path,
                 "reference_strands": sorted(group["reference_strand"].unique()),

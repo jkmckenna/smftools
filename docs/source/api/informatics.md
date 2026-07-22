@@ -17,11 +17,13 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.binarize_converted_base_identities
    smftools.informatics.complement_base_list
    smftools.informatics.converted_BAM_to_adata
+   smftools.informatics.derived_read_index
    smftools.informatics.fasta_functions
    smftools.informatics.fastq_export
    smftools.informatics.h5ad_functions
    smftools.informatics.modkit_extract_to_adata
    smftools.informatics.modkit_functions
+   smftools.informatics.molecule_identity
    smftools.informatics.ohe
    smftools.informatics.partition_read
    smftools.informatics.partition_store
@@ -38,9 +40,10 @@ Processes raw sequencing data to load an adata object.
 
 The `ragged_store`/`raw_store`/`partition_read`/`partition_store` modules implement the v2.x
 partitioned storage architecture: a read-relative ragged parquet source of truth, a thin
-molecule-index `spine.h5ad`, and on-demand dense-slice materialization. `fastq_export` and
-`sequence_encoding` build on the ragged store to reconstruct literal read sequence/quality for
-FASTQ export.
+molecule-index `spine.h5ad`, and on-demand dense-slice materialization. `molecule_identity` and
+`derived_read_index` provide project-wide molecule keys and searchable raw-to-derived task
+lineage. `fastq_export` and `sequence_encoding` build on the ragged store to reconstruct literal
+read sequence/quality for FASTQ export.
 
 ```{eval-rst}
 .. automodule:: smftools.informatics

@@ -426,6 +426,17 @@ def execute_hmm_task(
     if not appended_layers:
         consolidate_zarr_store(path)
 
+    from ..informatics.derived_read_index import write_derived_read_index
+
+    read_index_path = write_derived_read_index(
+        output_dir,
+        stage="hmm",
+        task=task,
+        obs=core_obs,
+        group_path=path.relative_to(output_dir).as_posix(),
+        stage_schema_version=2,
+        model_artifacts=model_artifacts,
+    )
     return {
         **task.to_dict(include_read_ids=False),
         "group_path": path.relative_to(output_dir).as_posix(),
@@ -442,6 +453,7 @@ def execute_hmm_task(
         "hmm_layer_model_map_json": json.dumps(
             layer_model_map, sort_keys=True, separators=(",", ":")
         ),
+        "read_index_path": read_index_path.relative_to(output_dir).as_posix(),
     }
 
 
@@ -1145,6 +1157,9 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     spine_path = Path(spine_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    from ..informatics.derived_read_index import prepare_derived_read_index
+
+    prepare_derived_read_index(output_dir)
     spine = load_spine(spine_path)
     filter_mask = next(
         (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
@@ -1291,7 +1306,11 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     hmm_spine.uns["hmm_layer_absent_fill"] = {
         layer: 0.0 for record in records for layer in record["layers"]
     }
-    hmm_spine.uns["hmm_schema_version"] = 1
+    from ..informatics.derived_read_index import DERIVED_READ_INDEX_DIRNAME
+
+    read_index_dir = output_dir / DERIVED_READ_INDEX_DIRNAME
+    hmm_spine.uns["hmm_read_index"] = relative_uns_path(read_index_dir, run_root)
+    hmm_spine.uns["hmm_schema_version"] = 2
     safe_write_h5ad(hmm_spine, output_spine, backup=False, verbose=False)
     write_experiment_spine(run_root)
     _plot_feature_clustermaps(records, output_spine, output_dir, layout, cfg)
@@ -1300,6 +1319,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     register_sidecar(manifest, "hmm_spine", output_spine)
     register_sidecar(manifest, "hmm_source_spine", spine_path)
     register_sidecar(manifest, "hmm_task_catalog", catalog_path)
+    register_sidecar(manifest, "hmm_read_index", read_index_dir)
     register_sidecar(manifest, "hmm_store", output_dir / HMM_PARTIAL_SUBDIR)
     register_sidecar(manifest, "hmm_model_store", models_dir)
     register_sidecar(manifest, "hmm_fit_catalog", fit_catalog_path)
@@ -1309,6 +1329,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     return {
         "spine": output_spine,
         "task_catalog": catalog_path,
+        "read_index": read_index_dir,
         "store": output_dir / HMM_PARTIAL_SUBDIR,
         "models": models_dir,
         "fit_catalog": fit_catalog_path,

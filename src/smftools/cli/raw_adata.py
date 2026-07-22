@@ -1547,7 +1547,11 @@ def raw_adata(config_path: str):
             paths.raw_spine,
         )
 
-    from ..informatics.raw_store import INTERVAL_CATALOG_FILENAME, MOLECULES_FILENAME
+    from ..informatics.raw_store import (
+        INTERVAL_CATALOG_FILENAME,
+        MOLECULE_INDEX_DIRNAME,
+        MOLECULES_FILENAME,
+    )
     from ..informatics.sidecar_manifest import sidecar_manifest_path
 
     with stage_lifecycle(cfg, "raw") as lifecycle:
@@ -1558,6 +1562,7 @@ def raw_adata(config_path: str):
             "ragged_store": raw_root / "raw",
             "interval_catalog": raw_root / INTERVAL_CATALOG_FILENAME,
             "molecules": Path(cfg.output_directory) / MOLECULES_FILENAME,
+            "molecule_index": Path(cfg.output_directory) / MOLECULE_INDEX_DIRNAME,
             "manifest": sidecar_manifest_path(raw_root),
         }
         publish_stage_outputs(
@@ -1566,7 +1571,7 @@ def raw_adata(config_path: str):
             required=required,
             task_catalog_key=None,
             checksum_keys=("interval_catalog", "manifest"),
-            schema_versions={"raw": 2},
+            schema_versions={"raw": 3, "identity": 1},
             extra={"n_molecules": int(result[0].n_obs)},
             nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["raw"],
         )
