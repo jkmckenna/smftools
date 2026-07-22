@@ -400,6 +400,8 @@ hmm_adapt_emissions: true
 hmm_adapt_startprobs: true
 hmm_emission_adapt_iters: 5
 hmm_emission_adapt_tol: 1.0e-4
+hmm_max_fit_reads: 1000 # Deterministic upper bound per partitioned HMM fit; memory limits may lower it further
+hmm_fit_selection_seed: 0 # Stable seed used to hash-rank reads for bounded HMM fitting
 hmm_dtype: "float64"
 hmm_annotation_threshold: 0.5 # The minimum probability threshold of a feature interval to accept it for layer annotation.
 hmm_batch_size: 1024 # hmm batch size

@@ -43,6 +43,16 @@ def test_latent_partitioned_config_defaults_and_bool_parsing(tmp_path):
     assert cfg.latent_n_pcs == 10
 
 
+def test_partitioned_hmm_fit_selection_defaults():
+    from smftools.cli.helpers import load_experiment_config
+
+    with as_file(csv_resource) as csv_path:
+        config = load_experiment_config(str(csv_path))
+
+    assert config.hmm_max_fit_reads == 1000
+    assert config.hmm_fit_selection_seed == 0
+
+
 def test_repeated_stage_loads_reuse_immutable_resource_envelope():
     from smftools.cli import helpers
 
@@ -65,6 +75,7 @@ def test_repeated_stage_loads_reuse_immutable_resource_envelope():
         ("max_memory_gb", "-1", "max_memory_gb must be positive"),
         ("memory_reserve_gb", "-1", "memory_reserve_gb must be non-negative"),
         ("target_task_memory_mb", "0", "target_task_memory_mb must be positive"),
+        ("hmm_max_fit_reads", "0", "hmm_max_fit_reads must be positive"),
     ],
 )
 def test_invalid_resource_values_fail_during_config_loading(tmp_path, key, value, message):

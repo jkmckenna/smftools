@@ -44,6 +44,8 @@ HMM_FIT_CONFIG_FIELDS = (
     "hmm_adapt_startprobs",
     "hmm_emission_adapt_iters",
     "hmm_emission_adapt_tol",
+    "hmm_max_fit_reads",
+    "hmm_fit_selection_seed",
     "hmm_methbases",
 )
 
@@ -67,6 +69,8 @@ HMM_FIT_CONFIG_DEFAULTS = {
     "hmm_adapt_startprobs": True,
     "hmm_emission_adapt_iters": 5,
     "hmm_emission_adapt_tol": 1e-4,
+    "hmm_max_fit_reads": 1000,
+    "hmm_fit_selection_seed": 0,
 }
 
 
@@ -217,6 +221,7 @@ def _artifact_record(
         "checkpoint": checkpoint.name,
         "checkpoint_sha256": checksum,
         "checkpoint_content_sha256": content_checksum,
+        "model_checksum": content_checksum,
         "training_selection": dict(training_selection or {}),
     }
 
