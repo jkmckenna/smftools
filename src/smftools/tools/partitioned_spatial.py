@@ -41,6 +41,13 @@ SPATIAL_REGION_CATALOG = "regions.parquet"
 SPATIAL_MATRIX_SUBDIR = "matrices"
 SPATIAL_READ_AUTOCORRELATION_AXIS = "read_autocorrelation_lags.parquet"
 SPATIAL_READ_PERIODOGRAM_AXIS = "read_periodogram_axis.parquet"
+SPATIAL_REGION_CATALOG_DTYPES = {
+    "reference": "string",
+    "start": "int64",
+    "end": "int64",
+    "name": "string",
+    "source": "string",
+}
 
 
 def _component(value: object) -> str:
@@ -1143,6 +1150,7 @@ def _plot_position_profiles(records, output_dir: Path, layout) -> None:
 
 
 def _dense_product_regions(spine, bed_regions: pd.DataFrame) -> pd.DataFrame:
+    """Build the portable catalog of regions eligible for dense products."""
     plans = {str(key): dict(value) for key, value in spine.uns["reference_plans"].items()}
     records = [
         {
@@ -1168,7 +1176,16 @@ def _dense_product_regions(spine, bed_regions: pd.DataFrame) -> pd.DataFrame:
                 "source": "bed",
             }
         )
-    return pd.DataFrame(records).sort_values(["reference", "start", "end"]).reset_index(drop=True)
+    regions = pd.DataFrame(
+        {
+            column: pd.Series(
+                (record[column] for record in records),
+                dtype=dtype,
+            )
+            for column, dtype in SPATIAL_REGION_CATALOG_DTYPES.items()
+        }
+    )
+    return regions.sort_values(["reference", "start", "end"]).reset_index(drop=True)
 
 
 def _write_position_matrix_sidecars(adata, output_dir: Path, region, output_key: str) -> list[Path]:

@@ -119,3 +119,24 @@ def test_spatial_bed_replaces_genome_tiles_but_preserves_full_locus(tmp_path):
         ("locus_top", 0, 40),
         ("chr1_top", 5, 17),
     }
+
+
+def test_genome_without_spatial_bed_has_portable_empty_dense_region_catalog(tmp_path):
+    spine = _spine()
+    spine.uns["reference_plans"].pop("locus_top")
+    bed_regions = pd.DataFrame(columns=["reference", "start", "end", "name", "bed_chrom"])
+
+    dense_regions = _dense_product_regions(spine, bed_regions)
+    catalog = tmp_path / "regions.parquet"
+    dense_regions.to_parquet(catalog, index=False)
+    restored = pd.read_parquet(catalog)
+
+    assert restored.empty
+    assert list(restored.columns) == ["reference", "start", "end", "name", "source"]
+    assert restored.dtypes.astype(str).to_dict() == {
+        "reference": "string",
+        "start": "int64",
+        "end": "int64",
+        "name": "string",
+        "source": "string",
+    }
