@@ -1,9 +1,12 @@
 ## readwrite ##
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import warnings
 from pathlib import Path
-from typing import Iterable, List, Sequence, Union
+from typing import Any, Iterable, List, Sequence, Union
 
 import anndata as ad
 import pandas as pd
@@ -70,6 +73,57 @@ def make_dirs(directories: Union[str, Path, Iterable[Union[str, Path]]]) -> None
             p = p.parent
 
         p.mkdir(parents=True, exist_ok=True)
+
+
+def atomic_write_json(
+    path: str | Path,
+    payload: Any,
+    *,
+    indent: int | None = 2,
+    sort_keys: bool = True,
+    default=str,
+) -> Path:
+    """Atomically publish JSON using a temporary file on the target filesystem.
+
+    The temporary file is flushed and synchronized before :func:`os.replace`
+    publishes it. If serialization or publication fails, an existing target is
+    left untouched and the temporary file is removed.
+
+    Args:
+        path: Final JSON path.
+        payload: JSON-serializable value.
+        indent: Indentation passed to :func:`json.dump`.
+        sort_keys: Whether to sort mapping keys.
+        default: Fallback serializer for otherwise unsupported values.
+
+    Returns:
+        The final path.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+            json.dump(
+                payload,
+                handle,
+                indent=indent,
+                sort_keys=sort_keys,
+                default=default,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return path
 
 
 def add_or_update_column_in_csv(

@@ -1208,8 +1208,6 @@ def load_adata_core(
         # none of which spine.uns previously captured (only a hash, not the values, and
         # nothing for input_data_path at all).
         from ..informatics.experiment_manifest import (
-            config_hash,
-            record_stage_completion,
             update_experiment_manifest,
         )
         from ..informatics.partition_read import relative_uns_path as _relative_uns_path
@@ -1227,12 +1225,6 @@ def load_adata_core(
             reference_uids=extra_uns.get("reference_uids"),
             reference_lengths={str(k): int(v) for k, v in reference_lengths.items()},
             config=resolved_config,
-        )
-        record_stage_completion(
-            run_root,
-            "raw",
-            config_hash=config_hash(resolved_config),
-            n_molecules=n_molecules,
         )
         spine, _ = safe_read_h5ad(raw_paths["spine"])
         if str(cfg.smf_modality) == "deaminase" and not getattr(

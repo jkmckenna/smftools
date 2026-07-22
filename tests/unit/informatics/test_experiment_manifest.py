@@ -1,8 +1,17 @@
+import hashlib
+
+import anndata as ad
+
 from smftools.informatics.experiment_manifest import (
+    MANIFEST_SCHEMA_VERSION,
+    StageLifecycle,
+    artifact_record,
     config_hash,
     experiment_manifest_path,
     read_experiment_manifest,
     record_stage_completion,
+    record_stage_state,
+    stage_is_complete,
     update_experiment_manifest,
 )
 
@@ -58,6 +67,160 @@ def test_record_stage_completion_and_update_manifest_coexist(tmp_path):
     manifest = read_experiment_manifest(tmp_path)
     assert manifest["experiment"] == "expA"
     assert manifest["stages"]["raw"]["n_molecules"] == 100
+
+
+def test_stage_lifecycle_records_complete_state_and_validates_artifacts(tmp_path):
+    spine = tmp_path / "preprocess_adata_outputs" / "spine.h5ad"
+    spine.parent.mkdir()
+    ad.AnnData().write_h5ad(spine)
+
+    with StageLifecycle(tmp_path, "preprocess", config_hash="abc123") as lifecycle:
+        running = read_experiment_manifest(tmp_path)["stages"]["preprocess"]
+        assert running["state"] == "running"
+        assert "planned_at" in running
+        assert "started_at" in running
+        lifecycle.complete(
+            artifacts={"spine": artifact_record(spine, tmp_path)},
+            expected_tasks=3,
+            successful_tasks=3,
+            schema_versions={"spine": 1},
+            timings={"elapsed_seconds": 2.5},
+            outcome="success",
+        )
+
+    manifest = read_experiment_manifest(tmp_path)
+    entry = manifest["stages"]["preprocess"]
+    assert manifest["schema_version"] == MANIFEST_SCHEMA_VERSION
+    assert entry["state"] == "complete"
+    assert entry["config_hash"] == "abc123"
+    assert entry["expected_tasks"] == entry["successful_tasks"] == 3
+    assert stage_is_complete(
+        tmp_path,
+        "preprocess",
+        config_hash="abc123",
+        required_artifacts=("spine",),
+    )
+    assert not stage_is_complete(tmp_path, "preprocess", config_hash="different")
+
+    spine.unlink()
+    assert not stage_is_complete(
+        tmp_path,
+        "preprocess",
+        config_hash="abc123",
+        required_artifacts=("spine",),
+    )
+
+
+def test_stage_completion_rejects_changed_artifact_and_task_shortfall(tmp_path):
+    artifact = tmp_path / "metrics.bin"
+    artifact.write_bytes(b"original")
+    record = artifact_record(artifact, tmp_path, sha256=hashlib.sha256(b"original").hexdigest())
+    with StageLifecycle(tmp_path, "spatial") as lifecycle:
+        lifecycle.complete(
+            artifacts={"metrics": record},
+            expected_tasks=2,
+            successful_tasks=1,
+        )
+
+    assert not stage_is_complete(tmp_path, "spatial", required_artifacts=("metrics",))
+
+    record_stage_state(tmp_path, "spatial", "planned")
+    record_stage_state(tmp_path, "spatial", "running")
+    record_stage_state(
+        tmp_path,
+        "spatial",
+        "complete",
+        artifacts={"metrics": record},
+        expected_tasks=2,
+        successful_tasks=2,
+    )
+    assert stage_is_complete(tmp_path, "spatial", required_artifacts=("metrics",))
+
+    artifact.write_bytes(b"changed!")
+    assert not stage_is_complete(tmp_path, "spatial", required_artifacts=("metrics",))
+
+
+def test_stage_completion_rejects_unreadable_structured_artifact(tmp_path):
+    catalog = tmp_path / "task_catalog.parquet"
+    catalog.write_bytes(b"not a parquet file")
+    with StageLifecycle(tmp_path, "preprocess") as lifecycle:
+        lifecycle.complete(artifacts={"task_catalog": artifact_record(catalog, tmp_path)})
+
+    assert not stage_is_complete(
+        tmp_path,
+        "preprocess",
+        required_artifacts=("task_catalog",),
+    )
+
+
+def test_stage_completion_rejects_required_empty_directory(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    record = artifact_record(store, tmp_path, require_nonempty=True)
+    with StageLifecycle(tmp_path, "preprocess") as lifecycle:
+        lifecycle.complete(artifacts={"store": record})
+
+    assert not stage_is_complete(tmp_path, "preprocess", required_artifacts=("store",))
+
+    (store / "partition.parquet").write_bytes(b"partition")
+    assert stage_is_complete(tmp_path, "preprocess", required_artifacts=("store",))
+
+
+def test_stage_lifecycle_records_failure_without_masking_exception(tmp_path):
+    try:
+        with StageLifecycle(tmp_path, "spatial", config_hash="abc123"):
+            raise RuntimeError("simulated task failure")
+    except RuntimeError as exc:
+        assert str(exc) == "simulated task failure"
+    else:
+        raise AssertionError("StageLifecycle suppressed the stage exception")
+
+    entry = read_experiment_manifest(tmp_path)["stages"]["spatial"]
+    assert entry["state"] == "failed"
+    assert entry["outcome"] == "RuntimeError: simulated task failure"
+    assert not stage_is_complete(tmp_path, "spatial")
+
+
+def test_stage_lifecycle_requires_explicit_completion(tmp_path):
+    with StageLifecycle(tmp_path, "hmm"):
+        pass
+
+    entry = read_experiment_manifest(tmp_path)["stages"]["hmm"]
+    assert entry["state"] == "failed"
+    assert entry["outcome"] == "stage exited without publishing completion"
+
+
+def test_stage_state_rejects_unknown_state(tmp_path):
+    try:
+        record_stage_state(tmp_path, "raw", "done")
+    except ValueError as exc:
+        assert "stage state must be one of" in str(exc)
+    else:
+        raise AssertionError("unknown lifecycle state was accepted")
+
+
+def test_stage_state_rejects_transition_that_bypasses_planning(tmp_path):
+    record_stage_state(tmp_path, "raw", "planned")
+    record_stage_state(tmp_path, "raw", "running")
+    record_stage_state(tmp_path, "raw", "failed")
+
+    try:
+        record_stage_state(tmp_path, "raw", "running")
+    except ValueError as exc:
+        assert "'failed' -> 'running'" in str(exc)
+    else:
+        raise AssertionError("invalid lifecycle transition was accepted")
+
+
+def test_legacy_completion_record_remains_readable(tmp_path):
+    path = experiment_manifest_path(tmp_path)
+    path.write_text(
+        '{"stages": {"raw": {"completed_at": "2026-01-01T00:00:00+00:00"}}}',
+        encoding="utf-8",
+    )
+
+    assert stage_is_complete(tmp_path, "raw")
+    assert not stage_is_complete(tmp_path, "raw", required_artifacts=("spine",))
 
 
 def test_config_hash_is_stable_and_key_order_independent():

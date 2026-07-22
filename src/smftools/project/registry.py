@@ -28,6 +28,7 @@ from smftools.constants import (
     VARIANT_DIR,
 )
 from smftools.logging_utils import get_logger
+from smftools.readwrite import atomic_write_json
 
 logger = get_logger(__name__)
 
@@ -94,12 +95,9 @@ def load_registry(project_dir: str | Path) -> dict:
 
 def save_registry(project_dir: str | Path, registry: dict) -> Path:
     path = project_registry_path(project_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
     registry = dict(registry)
     registry["updated_at"] = _now()
-    with path.open("w") as handle:
-        json.dump(registry, handle, indent=2, sort_keys=True)
-    return path
+    return atomic_write_json(path, registry)
 
 
 def discover_stage_spines(experiment_dir: Path) -> tuple[Path, dict[str, Path]]:

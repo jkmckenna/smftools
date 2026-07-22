@@ -31,6 +31,25 @@ from ..readwrite import safe_write_h5ad
 
 logger = get_logger(__name__)
 
+_NON_SEMANTIC_STAGE_CONFIG_KEYS = {
+    "bam_outputs_path",
+    "bed_outputs_path",
+    "device",
+    "emit_log_file",
+    "fasta_outputs_path",
+    "hmm_device",
+    "informatics_outputs_path",
+    "log_level",
+    "output_directory",
+    "modkit_outputs_path",
+    "split_path",
+    "summary_file",
+    "threads",
+    "max_memory_gb",
+    "max_memory_percent",
+    "target_task_memory_mb",
+}
+
 # Canonical mapping from user-facing stage aliases to AdataPaths attribute names
 STAGE_MAP = {
     "raw": "raw",
@@ -109,6 +128,113 @@ class ArtifactPaths:
     def as_dict(self) -> dict[str, str]:
         """Serialize all path fields as strings."""
         return {k: str(v) for k, v in self.__dict__.items()}
+
+
+def resolved_stage_config(cfg) -> dict[str, Any]:
+    """Return semantic config values used for stage compatibility checks."""
+    if hasattr(cfg, "to_dict"):
+        values = dict(cfg.to_dict())
+    else:
+        values = dict(vars(cfg))
+    return {
+        key: value
+        for key, value in values.items()
+        if key not in _NON_SEMANTIC_STAGE_CONFIG_KEYS
+        and not key.startswith("force_redo_")
+        and not key.endswith("_max_workers")
+    }
+
+
+def stage_config_hash(cfg) -> str:
+    """Hash semantic stage configuration without machine-local resource limits."""
+    from ..informatics.experiment_manifest import config_hash
+
+    return config_hash(resolved_stage_config(cfg))
+
+
+def stage_lifecycle(cfg, stage: str, source_path: str | Path | None = None):
+    """Create a lifecycle context for one partitioned CLI stage."""
+    from ..informatics.experiment_manifest import StageLifecycle, artifact_record, config_hash
+
+    run_root = Path(cfg.output_directory)
+    input_artifact_ids = []
+    if source_path is not None:
+        source = artifact_record(source_path, run_root)
+        input_artifact_ids.append(f"path:{config_hash(source)}")
+    return StageLifecycle(
+        run_root,
+        str(stage),
+        config_hash=stage_config_hash(cfg),
+        input_artifact_ids=input_artifact_ids,
+    )
+
+
+def publish_stage_outputs(
+    lifecycle,
+    outputs: dict[str, Path],
+    *,
+    required: tuple[str, ...],
+    task_catalog_key: str | None = "task_catalog",
+    checksum_keys: tuple[str, ...] = ("manifest", "task_catalog"),
+    schema_versions: dict[str, int] | None = None,
+    task_count: int | None = None,
+    extra: dict[str, Any] | None = None,
+    nonempty_directory_keys: tuple[str, ...] = (),
+) -> None:
+    """Validate executor outputs and publish the terminal complete record."""
+    from ..informatics.experiment_manifest import artifact_record, stage_is_complete
+
+    missing = [key for key in required if key not in outputs or not Path(outputs[key]).exists()]
+    if missing:
+        raise RuntimeError(f"stage did not publish required artifact(s): {missing}")
+
+    artifacts = {
+        key: artifact_record(
+            path,
+            lifecycle.run_root,
+            checksum=key in checksum_keys,
+            artifact_id=f"{lifecycle.stage}:{key}:{lifecycle.config_hash}",
+            require_nonempty=key in nonempty_directory_keys,
+        )
+        for key, path in outputs.items()
+        if path is not None and isinstance(path, (str, Path)) and Path(path).exists()
+    }
+    expected_tasks = task_count
+    if task_catalog_key is not None and task_catalog_key in outputs:
+        import pandas as pd
+
+        expected_tasks = len(pd.read_parquet(outputs[task_catalog_key]))
+    lifecycle.complete(
+        artifacts=artifacts,
+        expected_tasks=expected_tasks,
+        successful_tasks=expected_tasks,
+        schema_versions=dict(schema_versions or {}),
+        **dict(extra or {}),
+    )
+    if not stage_is_complete(
+        lifecycle.run_root,
+        lifecycle.stage,
+        config_hash=lifecycle.config_hash,
+        required_artifacts=required,
+    ):
+        raise RuntimeError(f"published {lifecycle.stage} stage record failed validation")
+
+
+def partitioned_stage_is_complete(
+    cfg,
+    stage: str,
+    *,
+    required: tuple[str, ...],
+) -> bool:
+    """Check the compatible completion record used by partitioned CLI skips."""
+    from ..informatics.experiment_manifest import stage_is_complete
+
+    return stage_is_complete(
+        cfg.output_directory,
+        stage,
+        config_hash=stage_config_hash(cfg),
+        required_artifacts=required,
+    )
 
 
 def get_adata_paths(cfg) -> AdataPaths:
@@ -300,16 +426,15 @@ def read_artifact_manifest(path: str | Path) -> dict[str, Any]:
 
 
 def write_artifact_manifest(path: str | Path, manifest: dict[str, Any]) -> Path:
-    """Write artifact manifest JSON atomically-ish via parent mkdir + overwrite."""
+    """Write the load artifact manifest atomically."""
+    from ..readwrite import atomic_write_json
+
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
     manifest = dict(manifest)
     manifest["updated_at"] = _utc_now_iso()
     if "created_at" not in manifest:
         manifest["created_at"] = manifest["updated_at"]
-    with p.open("w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, indent=2, sort_keys=True)
-    return p
+    return atomic_write_json(p, manifest)
 
 
 def register_artifact(

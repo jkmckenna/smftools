@@ -10,6 +10,8 @@ from smftools.constants import (
     BASE_QUALITY_SCORES,
     DEMUX_TYPE,
     MISMATCH_INTEGER_ENCODING,
+    PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
+    PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
     PREPROCESS_DIR,
     READ_SPAN_MASK,
     SEQUENCE_INTEGER_ENCODING,
@@ -42,7 +44,13 @@ def preprocess_adata(
     """
     from ..logging_utils import setup_stage_logging
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config
+    from .helpers import (
+        get_adata_paths,
+        load_experiment_config,
+        partitioned_stage_is_complete,
+        publish_stage_outputs,
+        stage_lifecycle,
+    )
 
     # 1) Ensure config is loaded and at least *some* AnnData stage exists
     cfg = load_experiment_config(config_path)
@@ -94,7 +102,15 @@ def preprocess_adata(
         )
 
         output_dir = Path(cfg.output_directory) / PREPROCESS_DIR
-        outputs = execute_partitioned_preprocessing(source_path, cfg, output_dir)
+        with stage_lifecycle(cfg, "preprocess", source_path) as lifecycle:
+            outputs = execute_partitioned_preprocessing(source_path, cfg, output_dir)
+            publish_stage_outputs(
+                lifecycle,
+                outputs,
+                required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["preprocess"],
+                schema_versions={"preprocess": 1},
+                nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["preprocess"],
+            )
         return outputs["spine"], None
 
     # Helper: read from disk
@@ -179,20 +195,14 @@ def preprocess_adata(
     # -----------------------------
 
     if partitioned_pp_path is not None and partitioned_pp_path.exists():
-        from ..informatics.partition_read import load_spine
-
-        # Existence alone isn't enough: execute_partitioned_preprocessing can
-        # crash after writing spine.h5ad but before QC/dedup columns are
-        # merged in (e.g. reduce_duplicate_reads failing partway through a
-        # long Hamming-distance pass). A spine missing both columns is a
-        # partial write from an earlier crashed run, not a completed one --
-        # trusting it here silently sends every downstream stage unfiltered,
-        # non-dedup'd data with no error anywhere in the chain.
-        partitioned_pp_obs = load_spine(partitioned_pp_path).obs
-        if not any(column in partitioned_pp_obs for column in ("passes_dedup", "passes_qc")):
+        if not partitioned_stage_is_complete(
+            cfg,
+            "preprocess",
+            required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["preprocess"],
+        ):
             logger.warning(
-                "Partitioned preprocessing spine found but missing passes_qc/passes_dedup "
-                "(likely a crashed prior run); re-running preprocessing instead of skipping: %s",
+                "Partitioned preprocessing spine exists without a compatible complete stage "
+                "record; re-running preprocessing: %s",
                 partitioned_pp_path,
             )
         else:

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 import pandas as pd
+
+from ..readwrite import atomic_write_json
 
 DEFAULT_PLOT_CATEGORIES = (
     "global",
@@ -94,23 +95,18 @@ def prepare_stage_plot_layout(
     if not catalog.exists():
         pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(catalog, index=False)
     context = plot_root / "context.json"
-    context.write_text(
-        json.dumps(
-            {
-                "stage": str(stage),
-                "source_spine": (
-                    str(Path(source_spine).resolve()) if source_spine is not None else None
-                ),
-                "categories": {
-                    name: path.relative_to(stage_root).as_posix()
-                    for name, path in category_paths.items()
-                },
+    atomic_write_json(
+        context,
+        {
+            "stage": str(stage),
+            "source_spine": (
+                str(Path(source_spine).resolve()) if source_spine is not None else None
+            ),
+            "categories": {
+                name: path.relative_to(stage_root).as_posix()
+                for name, path in category_paths.items()
             },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+        },
     )
     return StagePlotPaths(
         root=plot_root,

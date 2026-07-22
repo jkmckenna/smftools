@@ -5,7 +5,11 @@ from typing import Optional, Tuple
 
 import anndata as ad
 
-from smftools.constants import SPATIAL_DIR
+from smftools.constants import (
+    PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
+    PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
+    SPATIAL_DIR,
+)
 from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -36,7 +40,14 @@ def spatial_adata(
     """
     from ..logging_utils import setup_stage_logging
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
+    from .helpers import (
+        get_adata_paths,
+        load_experiment_config,
+        partitioned_stage_is_complete,
+        publish_stage_outputs,
+        resolve_adata_stage,
+        stage_lifecycle,
+    )
 
     # 1) Ensure config + basic paths via load_adata
     cfg = load_experiment_config(config_path)
@@ -61,12 +72,27 @@ def spatial_adata(
             execution_mode != "legacy"
             and partitioned_spatial_path is not None
             and partitioned_spatial_path.exists()
+            and partitioned_stage_is_complete(
+                cfg,
+                "spatial",
+                required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["spatial"],
+            )
         ):
             logger.info(
                 "Partitioned spatial spine found: %s\nSkipping smftools spatial",
                 partitioned_spatial_path,
             )
             return None, partitioned_spatial_path
+        if (
+            execution_mode != "legacy"
+            and partitioned_spatial_path is not None
+            and partitioned_spatial_path.exists()
+        ):
+            logger.warning(
+                "Partitioned spatial spine exists without a compatible complete stage record; "
+                "re-running spatial: %s",
+                partitioned_spatial_path,
+            )
         # If spatial exists, we consider spatial analyses already done.
         if execution_mode != "partitioned" and spatial_path.exists():
             logger.info(f"Spatial AnnData found: {spatial_path}\nSkipping smftools spatial")
@@ -84,11 +110,19 @@ def spatial_adata(
             )
         from ..tools.partitioned_spatial import execute_partitioned_spatial
 
-        outputs = execute_partitioned_spatial(
-            partitioned_source_path,
-            cfg,
-            Path(cfg.output_directory) / SPATIAL_DIR,
-        )
+        with stage_lifecycle(cfg, "spatial", partitioned_source_path) as lifecycle:
+            outputs = execute_partitioned_spatial(
+                partitioned_source_path,
+                cfg,
+                Path(cfg.output_directory) / SPATIAL_DIR,
+            )
+            publish_stage_outputs(
+                lifecycle,
+                outputs,
+                required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["spatial"],
+                schema_versions={"spatial": 2},
+                nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["spatial"],
+            )
         return None, outputs["spine"]
 
     # Decide which AnnData to use as the *starting point* for spatial analyses
