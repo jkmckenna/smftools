@@ -405,6 +405,9 @@ def execute_hmm_task(
             "core_end": task.core_end,
             "load_start": task.load_start,
             "load_end": task.load_end,
+            "analysis_core_id": task.analysis_core_id,
+            "analysis_region_ids": list(task.analysis_region_ids),
+            "analysis_planner_version": task.analysis_planner_version,
             "hmm_appended_layers": appended_layers,
             "hmm_model_artifacts_json": json.dumps(
                 model_artifacts, sort_keys=True, separators=(",", ":")
@@ -1170,6 +1173,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         target_task_memory_mb=int(getattr(cfg, "target_task_memory_mb", 512)),
         partition_by_barcode=True,
         filter_mask=filter_mask,
+        spine_path=spine_path,
     )
     if not tasks:
         raise RuntimeError("partitioned HMM has no non-empty tasks")

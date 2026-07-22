@@ -10,6 +10,7 @@ import numpy as np
 
 from smftools.constants import REFERENCE_STRAND
 
+from ..informatics.analysis_region_plan import plan_analysis_cores
 from ..informatics.partition_read import load_spine, materialize
 from ..plotting.plotting_utils import subsample_read_ids
 
@@ -25,28 +26,14 @@ class StageSlice:
     load_start: int
     load_end: int
     adata: object
+    analysis_core_id: str = ""
+    analysis_region_ids: tuple[str, ...] = ()
+    analysis_planner_version: int = 1
 
     def core(self):
         """Return a copy cropped to the non-overlapping output core."""
         positions = np.asarray(self.adata.var_names, dtype=np.int64)
         return self.adata[:, (positions >= self.core_start) & (positions < self.core_end)].copy()
-
-
-def _reference_windows(plan: dict[str, object]) -> Iterable[tuple[int, int, int, int]]:
-    reference_length = int(plan["reference_length"])
-    if plan.get("analysis_mode") == "locus":
-        yield 0, reference_length, 0, reference_length
-        return
-    tile_size = int(plan["tile_size"])
-    tile_halo = int(plan["tile_halo"])
-    for core_start in range(0, reference_length, tile_size):
-        core_end = min(core_start + tile_size, reference_length)
-        yield (
-            core_start,
-            core_end,
-            max(0, core_start - tile_halo),
-            min(reference_length, core_end + tile_halo),
-        )
 
 
 def iter_stage_slices(
@@ -56,6 +43,7 @@ def iter_stage_slices(
     samples=None,
     filter_mask: str | None = "auto",
     max_reads_per_sample: int | None = None,
+    minimum_halo: int = 0,
 ) -> Iterable[StageSlice]:
     """Yield bounded, non-empty reference slices from a raw/load/preprocess spine.
 
@@ -96,8 +84,9 @@ def iter_stage_slices(
         else {str(value) for value in samples}
     )
 
-    for reference, raw_plan in sorted(plans.items()):
-        plan = dict(raw_plan)
+    for core in plan_analysis_cores(spine, spine_path=spine_path):
+        reference = core.reference
+        plan = dict(plans[reference])
         reference_obs = spine.obs.loc[spine.obs[REFERENCE_STRAND].astype(str) == str(reference)]
         if filter_mask is not None:
             reference_obs = reference_obs.loc[reference_obs[filter_mask].astype(bool)]
@@ -106,36 +95,40 @@ def iter_stage_slices(
             reference_obs = reference_obs.loc[
                 reference_obs[sample_column].astype(str).isin(selected_samples)
             ]
-        for core_start, core_end, load_start, load_end in _reference_windows(plan):
-            core_obs = reference_obs.loc[
-                (reference_obs["reference_start"].astype("int64") < core_end)
-                & (reference_obs["reference_end"].astype("int64") > core_start)
+        core_obs = reference_obs.loc[
+            (reference_obs["reference_start"].astype("int64") < core.core_end)
+            & (reference_obs["reference_end"].astype("int64") > core.core_start)
+        ]
+        if core_obs.empty:
+            continue
+        if max_reads_per_sample is not None:
+            cap_column = "Sample" if "Sample" in core_obs else "Barcode"
+            read_ids = [
+                read_id
+                for _sample, group in core_obs.groupby(cap_column, sort=False, observed=True)
+                for read_id in subsample_read_ids(map(str, group.index), max_reads_per_sample)
             ]
-            if core_obs.empty:
-                continue
-            if max_reads_per_sample is not None:
-                cap_column = "Sample" if "Sample" in core_obs else "Barcode"
-                read_ids = [
-                    read_id
-                    for _sample, group in core_obs.groupby(cap_column, sort=False, observed=True)
-                    for read_id in subsample_read_ids(map(str, group.index), max_reads_per_sample)
-                ]
-            else:
-                read_ids = core_obs.index
-            adata = materialize(
-                spine_path,
-                references=reference,
-                read_ids=read_ids,
-                start=load_start,
-                end=load_end,
-                layers=layers,
-            )
-            yield StageSlice(
-                reference=str(reference),
-                analysis_mode=str(plan["analysis_mode"]),
-                core_start=core_start,
-                core_end=core_end,
-                load_start=load_start,
-                load_end=load_end,
-                adata=adata,
-            )
+        else:
+            read_ids = core_obs.index
+        halo = max(int(plan.get("tile_halo", 0)), int(minimum_halo))
+        load_start, load_end = core.load_bounds(int(plan["reference_length"]), halo)
+        adata = materialize(
+            spine_path,
+            references=reference,
+            read_ids=read_ids,
+            start=load_start,
+            end=load_end,
+            layers=layers,
+        )
+        yield StageSlice(
+            reference=str(reference),
+            analysis_mode=str(plan["analysis_mode"]),
+            core_start=core.core_start,
+            core_end=core.core_end,
+            load_start=load_start,
+            load_end=load_end,
+            adata=adata,
+            analysis_core_id=core.analysis_core_id,
+            analysis_region_ids=core.analysis_region_ids,
+            analysis_planner_version=core.planner_version,
+        )

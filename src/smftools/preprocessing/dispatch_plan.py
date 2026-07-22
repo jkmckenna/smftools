@@ -10,6 +10,12 @@ import pandas as pd
 
 from smftools.constants import BARCODE, REFERENCE_STRAND, SAMPLE
 
+from ..informatics.analysis_region_plan import (
+    ANALYSIS_REGION_PLANNER_VERSION,
+    AnalysisCore,
+    plan_analysis_cores,
+)
+
 BYTES_PER_WORKING_POSITION = 8
 
 
@@ -29,6 +35,12 @@ class PreprocessTask:
     n_reads: int
     estimated_memory_bytes: int
     read_ids: tuple[str, ...]
+    analysis_core_id: str = ""
+    analysis_region_ids: tuple[str, ...] = ()
+    original_reference: str | None = None
+    original_start: int | None = None
+    original_end: int | None = None
+    analysis_planner_version: int = ANALYSIS_REGION_PLANNER_VERSION
 
     def to_dict(self, *, include_read_ids: bool = True) -> dict[str, object]:
         """Return a serializable task record."""
@@ -53,7 +65,13 @@ def _plan_dict(spine, reference: str) -> dict[str, object]:
     return dict(plan)
 
 
-def reference_windows(spine, reference: str) -> list[tuple[int, int, int, int]]:
+def reference_windows(
+    spine,
+    reference: str,
+    *,
+    spine_path: str | Path | None = None,
+    minimum_halo: int = 0,
+) -> list[tuple[int, int, int, int]]:
     """Return ``(core_start, core_end, load_start, load_end)`` windows for one reference.
 
     Locus mode is a single window spanning the whole reference. Genome mode tiles
@@ -63,19 +81,15 @@ def reference_windows(spine, reference: str) -> list[tuple[int, int, int, int]]:
     """
     plan = _plan_dict(spine, reference)
     reference_length = int(plan["reference_length"])
-    analysis_mode = str(plan["analysis_mode"])
-    if analysis_mode == "locus":
-        return [(0, reference_length, 0, reference_length)]
-    tile_size = int(plan["tile_size"])
-    tile_halo = int(plan["tile_halo"])
+    halo = max(int(plan.get("tile_halo", 0)), int(minimum_halo))
     return [
         (
-            core_start,
-            min(core_start + tile_size, reference_length),
-            max(0, core_start - tile_halo),
-            min(reference_length, core_start + tile_size + tile_halo),
+            core.core_start,
+            core.core_end,
+            *core.load_bounds(reference_length, halo),
         )
-        for core_start in range(0, reference_length, tile_size)
+        for core in plan_analysis_cores(spine, spine_path=spine_path)
+        if core.reference == reference
     ]
 
 
@@ -85,6 +99,8 @@ def plan_preprocess_tasks(
     target_task_memory_mb: int = 512,
     partition_by_barcode: bool = True,
     filter_mask: str | None = None,
+    spine_path: str | Path | None = None,
+    minimum_halo: int = 0,
 ) -> list[PreprocessTask]:
     """Plan bounded tasks by reference, genomic window, barcode, and read chunk.
 
@@ -106,12 +122,19 @@ def plan_preprocess_tasks(
     group_column = BARCODE if BARCODE in obs else SAMPLE if SAMPLE in obs else None
     memory_budget = int(target_task_memory_mb) * 1024**2
     tasks: list[PreprocessTask] = []
+    cores_by_reference: dict[str, list[AnalysisCore]] = {}
+    for core in plan_analysis_cores(spine, spine_path=spine_path):
+        cores_by_reference.setdefault(core.reference, []).append(core)
 
     for reference in sorted(obs[REFERENCE_STRAND].astype(str).unique()):
         plan = _plan_dict(spine, reference)
         analysis_mode = str(plan["analysis_mode"])
+        reference_length = int(plan["reference_length"])
+        halo = max(int(plan.get("tile_halo", 0)), int(minimum_halo))
         reference_obs = obs.loc[obs[REFERENCE_STRAND].astype(str) == reference]
-        for core_start, core_end, load_start, load_end in reference_windows(spine, reference):
+        for core in cores_by_reference.get(reference, []):
+            core_start, core_end = core.core_start, core.core_end
+            load_start, load_end = core.load_bounds(reference_length, halo)
             # Core overlap assigns ownership. Halo-only reads must not create work
             # for a genomic span with no data of its own.
             overlapping = reference_obs.loc[
@@ -155,6 +178,12 @@ def plan_preprocess_tasks(
                                 len(chunk_read_ids) * loaded_width * BYTES_PER_WORKING_POSITION
                             ),
                             read_ids=tuple(chunk_read_ids),
+                            analysis_core_id=core.analysis_core_id,
+                            analysis_region_ids=core.analysis_region_ids,
+                            original_reference=core.original_reference,
+                            original_start=core.original_start,
+                            original_end=core.original_end,
+                            analysis_planner_version=core.planner_version,
                         )
                     )
     return tasks

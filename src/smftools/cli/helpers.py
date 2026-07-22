@@ -54,6 +54,9 @@ _NON_SEMANTIC_STAGE_CONFIG_KEYS = {
     "max_memory_percent",
     "target_task_memory_mb",
 }
+_STAGE_NON_SEMANTIC_CONFIG_KEYS = {
+    stage: {"plot_regions_bed"} for stage in ("preprocess", "spatial", "hmm", "latent", "full")
+}
 
 # Canonical mapping from user-facing stage aliases to AdataPaths attribute names
 STAGE_MAP = {
@@ -135,26 +138,29 @@ class ArtifactPaths:
         return {k: str(v) for k, v in self.__dict__.items()}
 
 
-def resolved_stage_config(cfg) -> dict[str, Any]:
+def resolved_stage_config(cfg, stage: str | None = None) -> dict[str, Any]:
     """Return semantic config values used for stage compatibility checks."""
     if hasattr(cfg, "to_dict"):
         values = dict(cfg.to_dict())
     else:
         values = dict(vars(cfg))
+    ignored = _NON_SEMANTIC_STAGE_CONFIG_KEYS | _STAGE_NON_SEMANTIC_CONFIG_KEYS.get(
+        str(stage), set()
+    )
     return {
         key: value
         for key, value in values.items()
-        if key not in _NON_SEMANTIC_STAGE_CONFIG_KEYS
+        if key not in ignored
         and not key.startswith("force_redo_")
         and not key.endswith("_max_workers")
     }
 
 
-def stage_config_hash(cfg) -> str:
+def stage_config_hash(cfg, stage: str | None = None) -> str:
     """Hash semantic stage configuration without machine-local resource limits."""
     from ..informatics.experiment_manifest import config_hash
 
-    return config_hash(resolved_stage_config(cfg))
+    return config_hash(resolved_stage_config(cfg, stage))
 
 
 def stage_lifecycle(cfg, stage: str, source_path: str | Path | None = None):
@@ -169,7 +175,7 @@ def stage_lifecycle(cfg, stage: str, source_path: str | Path | None = None):
     return StageLifecycle(
         run_root,
         str(stage),
-        config_hash=stage_config_hash(cfg),
+        config_hash=stage_config_hash(cfg, stage),
         input_artifact_ids=input_artifact_ids,
     )
 
@@ -237,7 +243,7 @@ def partitioned_stage_is_complete(
     return stage_is_complete(
         cfg.output_directory,
         stage,
-        config_hash=stage_config_hash(cfg),
+        config_hash=stage_config_hash(cfg, stage),
         required_artifacts=required,
     )
 

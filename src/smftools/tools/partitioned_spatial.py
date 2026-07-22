@@ -16,6 +16,7 @@ from ..cli.stage_artifacts import (
     prepare_analysis_plot_layout,
     register_plot_artifact,
 )
+from ..informatics.analysis_region_plan import has_analysis_catalog
 from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
@@ -209,14 +210,40 @@ def _read_spatial_regions(spine, bed_path: str | Path | None) -> pd.DataFrame:
     return regions.sort_values(["reference", "start", "end"]).reset_index(drop=True)
 
 
-def _region_tasks(spine, cfg, filter_mask: str | None) -> tuple[list[PreprocessTask], pd.DataFrame]:
-    """Plan locus tasks normally and replace genome tiles with optional BED regions."""
+def _region_tasks(
+    spine,
+    cfg,
+    filter_mask: str | None,
+    *,
+    spine_path: str | Path | None = None,
+) -> tuple[list[PreprocessTask], pd.DataFrame]:
+    """Plan shared analysis tasks or preserve the legacy spatial-only BED scope."""
     standard_tasks = plan_preprocess_tasks(
         spine,
         target_task_memory_mb=int(getattr(cfg, "target_task_memory_mb", 512)),
         partition_by_barcode=True,
         filter_mask=filter_mask,
+        spine_path=spine_path,
+        minimum_halo=int(getattr(cfg, "autocorr_max_lag", 800)),
     )
+    if has_analysis_catalog(spine):
+        regions = pd.DataFrame(
+            [
+                {
+                    "reference": task.reference,
+                    "start": task.core_start,
+                    "end": task.core_end,
+                    "name": task.analysis_core_id,
+                    "bed_chrom": task.original_reference,
+                    "source": "analysis",
+                }
+                for task in standard_tasks
+                if task.analysis_mode == "genome"
+            ],
+            columns=["reference", "start", "end", "name", "bed_chrom", "source"],
+        ).drop_duplicates(["reference", "start", "end"])
+        return standard_tasks, regions
+
     bed_path = getattr(cfg, "spatial_regions_bed", None)
     regions = _read_spatial_regions(spine, bed_path)
     if regions.empty:
@@ -307,6 +334,11 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
         "barcode": task.barcode,
         "core_start": task.core_start,
         "core_end": task.core_end,
+        "load_start": task.load_start,
+        "load_end": task.load_end,
+        "analysis_core_id": task.analysis_core_id,
+        "analysis_region_ids": list(task.analysis_region_ids),
+        "analysis_planner_version": task.analysis_planner_version,
     }
     for requested_site in getattr(cfg, "autocorr_site_types", ["GpC"]):
         site_type = str(requested_site).removesuffix("_site")
@@ -1187,7 +1219,7 @@ def _dense_product_regions(spine, bed_regions: pd.DataFrame) -> pd.DataFrame:
                 "start": int(region["start"]),
                 "end": int(region["end"]),
                 "name": str(region["name"]),
-                "source": "bed",
+                "source": str(region.get("source", "bed")),
             }
         )
     regions = pd.DataFrame(
@@ -1491,7 +1523,12 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
         (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
         None,
     )
-    tasks, bed_regions = _region_tasks(spine, cfg, filter_mask)
+    tasks, bed_regions = _region_tasks(
+        spine,
+        cfg,
+        filter_mask,
+        spine_path=spine_path,
+    )
     if not tasks:
         raise RuntimeError("partitioned spatial analysis has no non-empty tasks")
     from ..memory_guard import require_memory_headroom, run_tasks_parallel

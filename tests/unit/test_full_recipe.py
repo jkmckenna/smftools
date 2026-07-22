@@ -122,3 +122,19 @@ def test_stage_config_hash_ignores_machine_resources_but_not_analysis_config():
 
     cfg.autocorr_max_lag = 800
     assert helpers.stage_config_hash(cfg) != original
+
+
+def test_plot_regions_do_not_invalidate_compute_stage_hashes():
+    cfg = SimpleNamespace(
+        output_directory="/run",
+        analysis_regions_bed="analysis.bed",
+        plot_regions_bed="plot-a.bed",
+    )
+    compute_stages = ("preprocess", "spatial", "hmm", "latent", "full")
+    original = {stage: helpers.stage_config_hash(cfg, stage) for stage in compute_stages}
+    raw_hash = helpers.stage_config_hash(cfg, "raw")
+
+    cfg.plot_regions_bed = "plot-b.bed"
+
+    assert {stage: helpers.stage_config_hash(cfg, stage) for stage in compute_stages} == original
+    assert helpers.stage_config_hash(cfg, "raw") != raw_hash

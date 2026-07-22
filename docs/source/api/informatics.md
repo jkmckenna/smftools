@@ -11,6 +11,7 @@ Processes raw sequencing data to load an adata object.
 .. autosummary::
    :toctree: generated/informatics
    
+   smftools.informatics.analysis_region_plan
    smftools.informatics.bam_functions
    smftools.informatics.basecalling
    smftools.informatics.bed_functions
@@ -47,6 +48,8 @@ lineage. `fastq_export` and `sequence_encoding` build on the ragged store to rec
 read sequence/quality for FASTQ export.
 `region_catalog` validates the three original-coordinate BED scopes and publishes the mapping from
 alignment/reduced/conversion records and stored strand references back to the original FASTA.
+`analysis_region_plan` consumes that inherited mapping to define shared, non-overlapping analysis
+cores for partition-aware stages.
 
 ```{eval-rst}
 .. automodule:: smftools.informatics

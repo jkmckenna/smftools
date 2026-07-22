@@ -39,8 +39,7 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `alignment_regions_bed`: Optional original-FASTA BED file that restricts the alignment
   reference universe.
 - `analysis_regions_bed`: Optional original-FASTA BED file defining shared downstream analysis
-  scope. The catalog is published now; shared task planning consumes it in the next pipeline
-  planning update.
+  scope. Preprocess, spatial, HMM, latent, and shared stage inputs inherit its normalized catalog.
 - `plot_regions_bed`: Optional original-FASTA BED file defining presentation-only intervals. The
   catalog is published independently of compute scope.
 - `output_directory`: Root output folder for all generated AnnData files and plots.
@@ -83,6 +82,12 @@ Catalog normalization is deterministic:
 Records are sorted by original reference and coordinates without merging. Region IDs are derived
 from normalized record content and therefore do not change when source rows are reordered. The
 source-file SHA-256 remains available in Parquet metadata even for a zero-row catalog.
+
+Analysis planning maps the catalog through `reference_interval_map.parquet`, unions overlapping
+records, and splits the union on portable storage-tile boundaries. Every stage uses the same
+non-overlapping authoritative cores and source region IDs. Stage-specific halos may extend loaded
+context beyond a core, but only core positions are published. Changing `plot_regions_bed` does not
+change this compute plan.
 
 `fasta_regions_of_interest` is a deprecated alias for `alignment_regions_bed`. Existing configs
 continue to work with a warning. If both are supplied, they must identify the same path.
