@@ -12,6 +12,7 @@ Processes raw sequencing data to load an adata object.
    :toctree: generated/informatics
    
    smftools.informatics.analysis_region_plan
+   smftools.informatics.artifact_paths
    smftools.informatics.bam_functions
    smftools.informatics.basecalling
    smftools.informatics.bed_functions
@@ -22,12 +23,15 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.fasta_functions
    smftools.informatics.fastq_export
    smftools.informatics.h5ad_functions
+   smftools.informatics.incremental_zarr
    smftools.informatics.modkit_extract_to_adata
    smftools.informatics.modkit_functions
    smftools.informatics.molecule_identity
    smftools.informatics.ohe
    smftools.informatics.partition_read
+   smftools.informatics.partition_query
    smftools.informatics.partition_store
+   smftools.informatics.physical_layout
    smftools.informatics.pod5_functions
    smftools.informatics.ragged_store
    smftools.informatics.raw_store
@@ -46,6 +50,10 @@ molecule-index `spine.h5ad`, and on-demand dense-slice materialization. `molecul
 `derived_read_index` provide project-wide molecule keys and searchable raw-to-derived task
 lineage. `fastq_export` and `sequence_encoding` build on the ragged store to reconstruct literal
 read sequence/quality for FASTQ export.
+`partition_query` prunes molecule and derived-task Parquet indexes before opening array stores,
+then projects Zarr rows, genomic columns, and requested layers before bounded conversion to memory.
+`artifact_paths` keeps cross-stage pointers relative to the run or project root when the platform
+supports it, so a complete dataset tree remains readable after copying or renaming.
 `region_catalog` validates the three original-coordinate BED scopes and publishes the mapping from
 alignment/reduced/conversion records and stored strand references back to the original FASTA.
 `analysis_region_plan` consumes that inherited mapping to define shared, non-overlapping analysis

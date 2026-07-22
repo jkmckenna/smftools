@@ -23,6 +23,7 @@ from smftools.constants import (
     SEQUENCE_INTEGER_ENCODING,
 )
 
+from .physical_layout import portable_parquet_row_group_rows
 from .signal_features import SIGNAL_FEATURE_COLUMNS
 
 if TYPE_CHECKING:
@@ -267,7 +268,12 @@ def write_ragged_parquet(frame: pd.DataFrame, path: str | Path) -> Path:
     """Validate and write one shard of read-relative molecule records."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    validate_ragged_frame(frame).to_parquet(path, index=False)
+    normalized = validate_ragged_frame(frame)
+    normalized.to_parquet(
+        path,
+        index=False,
+        row_group_size=portable_parquet_row_group_rows(normalized),
+    )
     return path
 
 

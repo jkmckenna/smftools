@@ -296,7 +296,7 @@ def project_adata(
     end: int | None = None,
     layers=None,
     read_metrics=False,
-    lazy: bool = False,
+    lazy: bool | None = None,
     allow_large: bool = False,
     max_bytes: int = DEFAULT_MAX_POOL_BYTES,
 ):

@@ -33,6 +33,8 @@ from smftools.constants import (
 from smftools.logging_utils import get_logger
 from smftools.readwrite import atomic_write_json
 
+from ..informatics.artifact_paths import resolve_artifact_path, serialize_artifact_path
+
 logger = get_logger(__name__)
 
 REGISTRY_FILENAME = "registry.json"
@@ -165,9 +167,7 @@ def _relative_registry_path(path: Path, anchor: Path) -> str:
     or mount point, the same way the project's ``runs/`` symlinks already do.
     Pair with :func:`_resolve_registry_path` on the read side.
     """
-    import os
-
-    return Path(os.path.relpath(path.resolve(), start=anchor.resolve())).as_posix()
+    return serialize_artifact_path(path, anchor)
 
 
 def _resolve_registry_path(value: str, anchor: Path) -> Path:
@@ -178,8 +178,10 @@ def _resolve_registry_path(value: str, anchor: Path) -> Path:
     registries written before this fix), so existing registries keep working
     without needing every experiment re-added.
     """
-    candidate = Path(value)
-    return candidate if candidate.is_absolute() else (anchor / candidate).resolve()
+    resolved = resolve_artifact_path(value, anchor)
+    if resolved is None:  # value is a required string; retained for type narrowing.
+        raise ValueError("registry path cannot be empty")
+    return resolved
 
 
 def _discover_catalogs(spines: dict[str, Path], project_dir: Path) -> dict[str, str]:

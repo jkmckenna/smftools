@@ -16,6 +16,7 @@ from .molecule_identity import (
     molecule_uid,
     validate_experiment_uid,
 )
+from .physical_layout import portable_parquet_row_group_rows
 
 DERIVED_READ_INDEX_DIRNAME = "read_index"
 DERIVED_READ_INDEX_SCHEMA_VERSION = 1
@@ -114,7 +115,11 @@ def write_derived_read_index(
     frame["group_row"] = frame["group_row"].astype("Int64")
     temporary_path = path.with_suffix(".tmp.parquet")
     try:
-        frame.to_parquet(temporary_path, index=False)
+        frame.to_parquet(
+            temporary_path,
+            index=False,
+            row_group_size=portable_parquet_row_group_rows(frame),
+        )
         os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
