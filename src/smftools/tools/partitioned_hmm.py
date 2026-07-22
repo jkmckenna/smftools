@@ -870,7 +870,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     if not tasks:
         raise RuntimeError("partitioned HMM has no non-empty tasks")
     models_dir = output_dir / HMM_MODEL_SUBDIR
-    from ..memory_guard import run_tasks_parallel
+    from ..memory_guard import require_memory_headroom, run_tasks_parallel
 
     # A GPU device (MPS on Apple Silicon, confirmed via real-data testing;
     # CUDA not verified here but not assumed safe either) isn't something
@@ -890,10 +890,17 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         cfg=cfg,
         force_sequential=str(device) != "cpu",
         pool_label=f"hmm task pool ({len(tasks)} tasks, device={device})",
+        per_item_memory_mb=max(task.estimated_memory_bytes for task in tasks) / (1024**2),
+        estimator="hmm_task_plan_peak",
     )
     catalog_path = output_dir / HMM_TASK_CATALOG
     pd.DataFrame(records).to_parquet(catalog_path, index=False)
 
+    require_memory_headroom(
+        cfg,
+        operation_label="HMM plots",
+        estimator="hmm_plot_peak",
+    )
     layout = prepare_analysis_plot_layout(output_dir, stage="hmm", source_spine=spine_path)
     pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
     _plot_feature_fractions(records, output_dir, layout)

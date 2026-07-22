@@ -968,17 +968,28 @@ def execute_partitioned_preprocessing(
 
     import functools
 
-    from ..memory_guard import run_tasks_parallel
+    from ..memory_guard import require_memory_headroom, run_tasks_parallel
 
     bound_worker = functools.partial(execute_preprocess_task, youden_thresholds=youden_thresholds)
+    estimated_task_bytes = max(
+        (task.estimated_memory_bytes for task in task_list),
+        default=int(getattr(cfg, "target_task_memory_mb", 512)) * (1024**2),
+    )
     records = run_tasks_parallel(
         bound_worker,
         [(spine_path, task, cfg, output_dir) for task in task_list],
         cfg=cfg,
         pool_label=f"preprocess derived-layer tasks ({len(task_list)} tasks)",
+        per_item_memory_mb=estimated_task_bytes / (1024**2),
+        estimator="preprocess_task_plan_peak",
     )
     catalog_path = output_dir / PREPROCESS_PARTITION_CATALOG
     pd.DataFrame(records).to_parquet(catalog_path, index=False)
+    require_memory_headroom(
+        cfg,
+        operation_label="preprocess reducers",
+        estimator="preprocess_reducer_peak",
+    )
     var_catalog = reduce_partial_coverage(
         catalog_path,
         spine,

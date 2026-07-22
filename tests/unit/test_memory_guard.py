@@ -9,11 +9,14 @@ import pytest
 
 import smftools.memory_guard as memory_guard_module
 from smftools.memory_guard import (
+    PoolBudgetError,
     _cgroup_v2_self_path,
     _live_worker_pids,
+    bounded_executor_map,
     enable_aggregate_memory_cap,
     resolve_max_workers,
     resolve_memory_budget_bytes,
+    resolve_pool_budget,
     run_tasks_parallel,
     start_worker_watchdog,
 )
@@ -114,6 +117,45 @@ def test_resolve_max_workers_always_at_least_one() -> None:
     assert resolve_max_workers(_cfg(threads=4), n_items=0) == 1
 
 
+def test_resolve_pool_budget_uses_live_system_cgroup_and_process_tree_headroom(
+    monkeypatch,
+) -> None:
+    gib = 1024**3
+    monkeypatch.setattr(memory_guard_module, "total_system_memory_bytes", lambda: 10 * gib)
+    cfg = _cfg(threads=8, max_memory_percent=60.0, target_task_memory_mb=512)
+    # Resolve and attach the immutable 6-GiB run envelope before changing the
+    # point-in-time signals used by the pool snapshot.
+    memory_guard_module.resource_envelope_for_config(cfg)
+    monkeypatch.setattr(memory_guard_module, "available_system_memory_bytes", lambda: 3 * gib)
+    monkeypatch.setattr(memory_guard_module, "process_tree_rss_bytes", lambda: 2 * gib)
+    monkeypatch.setattr(memory_guard_module, "process_tree_private_bytes", lambda: 1 * gib)
+    monkeypatch.setattr(
+        memory_guard_module, "current_cgroup_memory_headroom_bytes", lambda: int(2.5 * gib)
+    )
+
+    budget = resolve_pool_budget(cfg, 20, estimator="synthetic_peak")
+
+    # The 1-GiB configured reserve leaves 1.5 GiB of cgroup headroom, the
+    # tightest live signal: exactly three 512-MiB tasks.
+    assert budget.usable_headroom_bytes == int(1.5 * gib)
+    assert budget.max_workers == 3
+    assert budget.max_in_flight == 3
+    assert budget.process_tree_rss_bytes == 2 * gib
+    assert budget.process_tree_private_bytes == 1 * gib
+    assert budget.estimator == "synthetic_peak"
+    assert budget.estimator_version == "1"
+
+
+def test_run_tasks_parallel_fails_clearly_when_one_task_cannot_fit(monkeypatch) -> None:
+    gib = 1024**3
+    monkeypatch.setattr(memory_guard_module, "total_system_memory_bytes", lambda: 2 * gib)
+    monkeypatch.setattr(memory_guard_module, "process_tree_private_bytes", lambda: 2 * gib)
+    cfg = _cfg(threads=1, max_memory_percent=None, max_memory_gb=1.0)
+
+    with pytest.raises(PoolBudgetError, match="Cannot admit one task for synthetic"):
+        run_tasks_parallel(_square, [(2,)], cfg=cfg, pool_label="synthetic")
+
+
 def test_live_worker_pids_from_multiprocessing_pool_shape() -> None:
     alive = SimpleNamespace(pid=111, is_alive=lambda: True)
     dead = SimpleNamespace(pid=222, is_alive=lambda: False)
@@ -150,6 +192,59 @@ def test_run_tasks_parallel_sequential_path_matches_expected(monkeypatch) -> Non
     cfg = _cfg(threads=1)
     results = run_tasks_parallel(_square, [(1,), (2,), (3,), (4,)], cfg=cfg)
     assert results == [1, 4, 9, 16]
+
+
+def test_run_tasks_parallel_refreshes_budget_before_each_sequential_task(monkeypatch) -> None:
+    monkeypatch.setattr("smftools.memory_guard.total_system_memory_bytes", lambda: 1024 * 1024**3)
+    real_resolve = memory_guard_module.resolve_pool_budget
+    calls = []
+
+    def _recording_resolve(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(memory_guard_module, "resolve_pool_budget", _recording_resolve)
+    results = run_tasks_parallel(_square, [(1,), (2,), (3,)], cfg=_cfg(threads=1))
+
+    assert results == [1, 4, 9]
+    assert len(calls) == 4  # initial dispatch decision plus one preflight per task
+
+
+def test_bounded_executor_map_limits_in_flight_and_preserves_order(monkeypatch) -> None:
+    monkeypatch.setattr("smftools.memory_guard.total_system_memory_bytes", lambda: 1024 * 1024**3)
+    executor = SimpleNamespace(active=0, peak_active=0)
+
+    class _Future:
+        def __init__(self, value):
+            self.value = value
+
+        def result(self):
+            executor.active -= 1
+            return self.value
+
+    def _submit(worker, item):
+        executor.active += 1
+        executor.peak_active = max(executor.peak_active, executor.active)
+        return _Future(worker(item))
+
+    executor.submit = _submit
+    monkeypatch.setattr(
+        "concurrent.futures.wait",
+        lambda futures, return_when=None: (
+            {next(iter(futures))},
+            set(list(futures)[1:]),
+        ),
+    )
+    results = bounded_executor_map(
+        executor,
+        _square,
+        iter([3, 1, 2]),
+        cfg=_cfg(threads=2, target_task_memory_mb=1),
+        max_workers=2,
+    )
+
+    assert results == [9, 1, 4]
+    assert executor.peak_active == 2
 
 
 def test_run_tasks_parallel_process_pool_path_preserves_order(monkeypatch) -> None:
@@ -190,8 +285,13 @@ def test_run_tasks_parallel_emits_perf_pool_events(tmp_path, monkeypatch) -> Non
     # The inputs that decided the worker count are recorded.
     for key in ("threads", "aggregate_budget_gb", "target_task_memory_mb", "by_memory_workers"):
         assert key in start
+    assert start["pool_budget"]["estimator_version"] == "1"
+    assert start["pool_budget"]["max_in_flight"] == start["max_workers"]
+    assert start["pool_budget"]["process_tree_rss_bytes"] > 0
     summary = summarize_perf_logs(tmp_path)
     assert len(summary) == 1 and summary[0]["stage"] == "preprocess"
+    assert summary[0]["max_predicted_peak_gb"] > 0
+    assert "peak_to_predicted_ratio" in summary[0]
 
 
 def test_run_tasks_parallel_force_sequential_skips_pool_regardless_of_resources(
@@ -237,10 +337,20 @@ def test_cgroup_v2_self_path_returns_none_when_unmounted() -> None:
     assert _cgroup_v2_self_path() is None
 
 
-def test_start_worker_watchdog_noop_on_linux(monkeypatch) -> None:
+def test_start_worker_watchdog_linux_fallback_is_safe_without_workers(monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(memory_guard_module, "_ACTIVE_CGROUP_PATH", None)
     stop = start_worker_watchdog(pool=None, per_worker_budget_bytes=1)
-    stop()  # must not raise, and must not have tried to touch `pool`
+    stop()
+
+
+def test_start_worker_watchdog_noop_with_active_linux_cgroup(tmp_path, monkeypatch) -> None:
+    cgroup = tmp_path / "smftools-cgroup"
+    cgroup.mkdir()
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(memory_guard_module, "_ACTIVE_CGROUP_PATH", cgroup)
+    stop = start_worker_watchdog(pool=None, per_worker_budget_bytes=1)
+    stop()
 
 
 def test_start_worker_watchdog_noop_with_nonpositive_budget(monkeypatch) -> None:
@@ -452,17 +562,21 @@ def test_run_tasks_parallel_retries_with_fewer_workers_after_pool_breaks(monkeyp
         lambda pool, budget, *a, **k: real_start_watchdog(pool, budget, poll_interval=0.1),
     )
     monkeypatch.setattr("smftools.memory_guard.total_system_memory_bytes", lambda: 10 * 1024**3)
+    # Keep this retry test independent of the parent pytest process's retained
+    # memory from earlier tests; process-tree accounting has dedicated tests.
+    monkeypatch.setattr("smftools.memory_guard.process_tree_private_bytes", lambda: 100 * 1024**2)
 
-    # 2 workers initially (threads=2). Aggregate budget ~450 MiB: at 2
-    # workers the per-worker budget+tolerance (~270 MiB) is comfortably
+    # 2 workers initially (threads=2). Aggregate budget ~700 MiB: at 2
+    # workers the per-worker budget+tolerance (~420 MiB) is
     # under each task's real ~300 MiB footprint, so both get killed; halved
-    # to 1 worker on retry, the per-worker budget becomes the full ~450 MiB
-    # aggregate (+tolerance ~540 MiB), comfortably enough for one 300 MiB
-    # task at a time.
+    # to 1 worker on retry, the per-worker budget becomes the full ~700 MiB
+    # aggregate (+tolerance ~840 MiB), comfortably enough for one task plus
+    # parent-process overhead at a time. The aggregate budget must include
+    # that parent overhead under the PoolBudget contract.
     cfg = _cfg(
         threads=2,
         max_memory_percent=None,
-        max_memory_gb=450.0 / 1024,
+        max_memory_gb=700.0 / 1024,
         target_task_memory_mb=1,
     )
     results = run_tasks_parallel(_hog_and_return, [(300, 6.0, 1), (300, 6.0, 2)], cfg=cfg)

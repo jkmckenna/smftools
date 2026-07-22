@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import re
 from pathlib import Path
 
@@ -695,20 +694,44 @@ def _map_references_parallel(
     caps peak parent-side memory at O(max_workers * per_bucket_result_size)
     regardless of total experiment size.
     """
+    from ..memory_guard import (
+        require_memory_headroom,
+        require_task_admission,
+        resolve_memory_budget_bytes,
+        resolve_pool_budget,
+        start_worker_watchdog,
+    )
+
+    cfg = worker_kwargs.get("cfg")
+    n_items = len(items) if hasattr(items, "__len__") else max_workers
+    if cfg is not None:
+        pool_budget = resolve_pool_budget(
+            cfg,
+            n_items,
+            estimator="raw_extraction_bucket_peak",
+        )
+        require_task_admission(pool_budget, pool_label=pool_label)
+        max_workers = min(max_workers, pool_budget.max_workers)
+    else:
+        pool_budget = None
     if max_workers <= 1:
         if pool_label:
             logger.info("[%s] running sequentially", pool_label)
         for args in items:
+            if cfg is not None:
+                require_memory_headroom(
+                    cfg,
+                    operation_label=pool_label,
+                    estimator="raw_extraction_bucket_peak",
+                )
             yield args, worker(*args, **worker_kwargs)
         return
 
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
-    from ..memory_guard import resolve_memory_budget_bytes, start_worker_watchdog
     from ..parallel_utils import configure_worker_threads
     from ..perf_log import get_perf_logger
 
-    cfg = worker_kwargs.get("cfg")
     per_worker_budget_bytes = (
         resolve_memory_budget_bytes(cfg) // max_workers if cfg is not None else 0
     )
@@ -721,6 +744,7 @@ def _map_references_parallel(
             n_tasks=len(items) if hasattr(items, "__len__") else None,
             max_workers=max_workers,
             stage_component="raw_extraction",
+            pool_budget=pool_budget.as_dict() if pool_budget is not None else None,
         )
     items_iter = iter(items)
     with ProcessPoolExecutor(
@@ -738,16 +762,39 @@ def _map_references_parallel(
         )
         try:
             future_to_args = {}
-            for args in itertools.islice(items_iter, max_workers):
-                future_to_args[pool.submit(worker, *args, **worker_kwargs)] = args
-            while future_to_args:
+            exhausted = object()
+            next_args = next(items_iter, exhausted)
+            while next_args is not exhausted and len(future_to_args) < max_workers:
+                future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
+                next_args = next(items_iter, exhausted)
+            while future_to_args or next_args is not exhausted:
+                if not future_to_args:
+                    if cfg is None:
+                        future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
+                        next_args = next(items_iter, exhausted)
+                        continue
+                    blocked_budget = resolve_pool_budget(
+                        cfg,
+                        1,
+                        estimator="raw_extraction_bucket_peak",
+                    )
+                    require_task_admission(blocked_budget, pool_label=pool_label)
                 done, _pending = wait(future_to_args, return_when=FIRST_COMPLETED)
                 for future in done:
                     args = future_to_args.pop(future)
                     yield args, future.result()
-                    next_args = next(items_iter, None)
-                    if next_args is not None:
-                        future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
+                if cfg is None:
+                    target_in_flight = max_workers
+                else:
+                    refill_budget = resolve_pool_budget(
+                        cfg,
+                        max_workers,
+                        estimator="raw_extraction_bucket_peak",
+                    )
+                    target_in_flight = min(max_workers, refill_budget.max_in_flight)
+                while next_args is not exhausted and len(future_to_args) < target_in_flight:
+                    future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
+                    next_args = next(items_iter, exhausted)
         finally:
             stop_watchdog()
             if perf is not None:

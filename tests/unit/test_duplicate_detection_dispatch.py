@@ -141,7 +141,7 @@ def test_dispatch_and_fold_wires_run_tasks_parallel_and_folds_results(monkeypatc
     captured = {}
 
     def fake_run_tasks_parallel(
-        worker, task_args_list, *, cfg, force_sequential=False, pool_label=None
+        worker, task_args_list, *, cfg, force_sequential=False, pool_label=None, **_budget
     ):
         captured["worker"] = worker
         captured["task_args_list"] = task_args_list
@@ -206,7 +206,7 @@ def test_dispatch_and_fold_carries_forward_reads_from_none_chunk_results(monkeyp
     """
 
     def fake_run_tasks_parallel(
-        worker, task_args_list, *, cfg, force_sequential=False, pool_label=None
+        worker, task_args_list, *, cfg, force_sequential=False, pool_label=None, **_budget
     ):
         return [None for _ in task_args_list]
 
@@ -278,7 +278,7 @@ def test_round_cap_terminates_without_crashing_and_logs_warning(monkeypatch, cap
         }
 
     def fake_run_tasks_parallel(
-        worker, task_args_list, *, cfg, force_sequential=False, pool_label=None
+        worker, task_args_list, *, cfg, force_sequential=False, pool_label=None, **_budget
     ):
         return [fake_execute_chunk_task(*args) for args in task_args_list]
 
@@ -352,7 +352,7 @@ def test_cross_chunk_duplicate_pair_reconciled_after_round_two(monkeypatch):
     monkeypatch.setattr(dispatch_module, "materialize", _fake_materialize_factory(x_by_read, var))
 
     def fake_run_tasks_parallel(
-        worker, task_args_list, *, cfg, force_sequential=False, pool_label=None
+        worker, task_args_list, *, cfg, force_sequential=False, pool_label=None, **_budget
     ):
         return [worker(*args) for args in task_args_list]
 
