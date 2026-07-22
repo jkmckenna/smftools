@@ -15,10 +15,16 @@ from ..cli.stage_artifacts import (
     PLOT_CATALOG_COLUMNS,
     prepare_analysis_plot_layout,
     register_plot_artifact,
+    write_plot_source_manifest,
 )
 from ..informatics.analysis_region_plan import has_analysis_catalog
 from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
+from ..informatics.plot_region_stitching import (
+    mask_unanalyzed_gaps,
+    resolve_plot_region_plans,
+    select_plot_reads,
+)
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..preprocessing.dispatch_plan import (
     BYTES_PER_WORKING_POSITION,
@@ -1336,7 +1342,7 @@ def _plot_position_matrix_sidecars(
 
 
 def _generate_dense_region_products(
-    spine_path, spine, regions, cfg, output_dir, layout
+    spine_path, spine, plans, cfg, output_dir, layout
 ) -> list[Path]:
     """Generate full-locus or BED-bounded clustermaps and position matrices."""
     from ..plotting import combined_raw_clustermap
@@ -1348,7 +1354,7 @@ def _generate_dense_region_products(
     from ..preprocessing.reindex_references_adata import reindex_references_adata
     from .position_stats import compute_positionwise_statistics
 
-    if regions.empty:
+    if not plans:
         return []
     filter_mask = next(
         (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
@@ -1358,9 +1364,16 @@ def _generate_dense_region_products(
     sample_column = "Barcode" if "Barcode" in spine.obs else "Sample"
     minimum_reads = int(getattr(cfg, "spatial_matrix_min_reads", 2))
     requested_layer = str(getattr(cfg, "layer_for_clustermap_plotting", "nan0_0minus1"))
-    for region in regions.to_dict("records"):
-        reference = str(region["reference"])
-        start, end = int(region["start"]), int(region["end"])
+    selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
+    for plan in plans:
+        reference, start, end = plan.reference, plan.start, plan.end
+        region = {
+            "reference": reference,
+            "start": start,
+            "end": end,
+            "name": plan.name,
+            "source": plan.source,
+        }
         region_obs = spine.obs.loc[
             (spine.obs[REFERENCE_STRAND].astype(str) == reference)
             & (spine.obs["reference_start"].astype("int64") < end)
@@ -1373,15 +1386,25 @@ def _generate_dense_region_products(
         region_obs = region_obs.loc[region_obs[sample_column].astype(str).isin(keep_samples)]
         if region_obs.empty:
             continue
+        selection = select_plot_reads(
+            output_dir / "read_index",
+            plan,
+            max_reads_per_barcode=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
+            seed=selection_seed,
+            eligible_read_ids=region_obs.index,
+        )
+        if not selection.read_ids:
+            continue
         layers = sorted({"nan0_0minus1", requested_layer})
         adata = materialize(
             spine_path,
             references=reference,
-            read_ids=region_obs.index,
+            read_ids=selection.read_ids,
             start=start,
             end=end,
             layers=layers,
         )
+        mask_unanalyzed_gaps(adata, plan.gaps)
         # Materialization preserves global category levels from the spine; dense
         # region routines must only iterate groups actually present in this slice.
         adata.obs[sample_column] = adata.obs[sample_column].astype(str).astype("category")
@@ -1440,6 +1463,17 @@ def _generate_dense_region_products(
                 cfg=cfg,
             )
             for path in sorted(clustermap_dir.glob("*.png")):
+                source_manifest = write_plot_source_manifest(
+                    layout,
+                    path,
+                    stage="spatial",
+                    plot_type="barcode_region_clustermap",
+                    region=plan.source_manifest(),
+                    layers=layers,
+                    selection_seed=selection.seed,
+                    selection_sha256=selection.selection_sha256,
+                    selected_molecule_uids=selection.molecule_uids,
+                )
                 register_plot_artifact(
                     layout,
                     path,
@@ -1449,6 +1483,7 @@ def _generate_dense_region_products(
                     reference=reference,
                     core_start=start,
                     core_end=end,
+                    source_manifest=source_manifest,
                 )
 
         if bool(getattr(cfg, "spatial_generate_position_matrices", True)):
@@ -1479,6 +1514,17 @@ def _generate_dense_region_products(
                 cfg,
             )
             for path, barcode in matrix_plots:
+                source_manifest = write_plot_source_manifest(
+                    layout,
+                    path,
+                    stage="spatial",
+                    plot_type="barcode_region_position_matrix",
+                    region=plan.source_manifest(),
+                    layers=["nan0_0minus1"],
+                    selection_seed=selection.seed,
+                    selection_sha256=selection.selection_sha256,
+                    selected_molecule_uids=selection.molecule_uids,
+                )
                 register_plot_artifact(
                     layout,
                     path,
@@ -1489,6 +1535,7 @@ def _generate_dense_region_products(
                     sample=barcode,
                     core_start=start,
                     core_end=end,
+                    source_manifest=source_manifest,
                 )
     return matrix_paths
 
@@ -1558,7 +1605,30 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     )
     read_autocorrelation_axis, read_periodogram_axis = _write_read_metric_axes(output_dir, cfg)
     metrics_path, autocorrelation_path = _reduce_metrics(records, output_dir)
-    dense_regions = _dense_product_regions(spine, bed_regions)
+    legacy_dense_regions = _dense_product_regions(spine, bed_regions)
+    plot_plans = resolve_plot_region_plans(
+        spine,
+        pd.DataFrame(records),
+        spine_path=spine_path,
+        allow_gaps=bool(getattr(cfg, "plot_allow_unanalyzed_gaps", False)),
+        fallback_regions=legacy_dense_regions,
+    )
+    dense_region_records = [
+        {
+            "reference": plan.reference,
+            "start": plan.start,
+            "end": plan.end,
+            "name": plan.name,
+            "source": plan.source,
+        }
+        for plan in plot_plans
+    ]
+    dense_regions = pd.DataFrame(
+        {
+            column: pd.Series((record[column] for record in dense_region_records), dtype=dtype)
+            for column, dtype in SPATIAL_REGION_CATALOG_DTYPES.items()
+        }
+    )
     region_catalog = output_dir / SPATIAL_REGION_CATALOG
     dense_regions.to_parquet(region_catalog, index=False)
 
@@ -1581,7 +1651,7 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     matrix_paths = _generate_dense_region_products(
         spine_path,
         spine,
-        dense_regions,
+        plot_plans,
         cfg,
         output_dir,
         layout,

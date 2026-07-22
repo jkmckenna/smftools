@@ -62,7 +62,29 @@ def test_region_catalog_config_defaults_are_independent():
     assert config.alignment_regions_bed == config.fasta_regions_of_interest
     assert config.analysis_regions_bed is None
     assert config.plot_regions_bed is None
+    assert config.plot_allow_unanalyzed_gaps is False
+    assert config.plot_subsample_seed == 0
     assert config.spatial_regions_bed is None
+
+
+def test_plot_region_config_parses_gap_policy_and_seed():
+    from smftools.config import ExperimentConfig
+
+    config, _ = ExperimentConfig.from_var_dict(
+        {"plot_allow_unanalyzed_gaps": "True", "plot_subsample_seed": "17"},
+        defaults_map={},
+    )
+
+    assert config.plot_allow_unanalyzed_gaps is True
+    assert config.plot_subsample_seed == 17
+
+
+def test_plot_subsample_seed_must_be_non_negative():
+    from smftools.config import ExperimentConfig
+
+    config = ExperimentConfig(plot_subsample_seed=-1)
+    with pytest.raises(ValueError, match="plot_subsample_seed must be non-negative"):
+        config.validate(require_paths=False)
 
 
 def test_legacy_fasta_regions_alias_resolves_with_warning(tmp_path):

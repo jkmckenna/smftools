@@ -171,6 +171,8 @@ The spatial command runs downstream spatial analyses on the preprocessed data. I
   versioned catalogs and publishes `reference_interval_map.parquet`. Partition-aware compute
   stages inherit the analysis catalog and share its authoritative cores. `spatial_regions_bed`
   retains its existing spatial-only behavior when no analysis catalog is configured.
+- Plot intervals may span any number of adjacent analysis cores. They are stitched in coordinate
+  order without halo duplication, and each plot-catalog row links to a JSON source manifest.
 - Saves per-read ACF arrays and lag-pair counts in `read_metrics.zarr` `obsm` entries inside each
   general spatial task-store partition.
 - Runs direct-signal Lomb-Scargle per read and site type, saving the normalized periodogram,

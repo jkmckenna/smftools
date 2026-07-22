@@ -619,6 +619,7 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
         "read_span_quality",
         "coverage",
         "task_diagnostics",
+        "source_manifests",
     }
     plot_catalog = pd.read_parquet(outputs["plot_catalog"])
     assert {
@@ -944,6 +945,10 @@ def test_duplicate_detection_never_materializes_more_than_one_chunk_at_once(tmp_
     cfg.duplicate_detection_max_reads_per_window = 3
     cfg.duplicate_detection_min_overlapping_positions = 1
     cfg.mod_target_bases = ["C"]
+    # This test observes materialize() calls through a parent-process monkeypatch;
+    # multiprocessing behavior is covered separately. Keep execution local so the
+    # assertion remains portable and avoids forking a multithreaded pytest process.
+    cfg.threads = 1
 
     materialize_call_sizes = []
     real_materialize = dispatch_module.materialize

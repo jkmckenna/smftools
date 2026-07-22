@@ -25,11 +25,17 @@ from ..cli.stage_artifacts import (
     PLOT_CATALOG_COLUMNS,
     prepare_analysis_plot_layout,
     register_plot_artifact,
+    write_plot_source_manifest,
 )
 from ..hmm.fit_plan import HMMFitPlan, HMMModelSpec, build_hmm_fit_plan
 from ..hmm.HMM import mask_layers_outside_read_span, normalize_hmm_feature_sets
 from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
+from ..informatics.plot_region_stitching import (
+    mask_unanalyzed_gaps,
+    resolve_plot_region_plans,
+    select_plot_reads,
+)
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..preprocessing.dispatch_plan import plan_preprocess_tasks
 from ..readwrite import safe_read_zarr, safe_write_h5ad, safe_write_zarr
@@ -914,7 +920,6 @@ def _plot_feature_clustermaps(
     """Plot configured HMM feature and length layers one bounded core at a time."""
     from ..cli.hmm_adata import _resolve_feature_colormap, _resolve_length_feature_ranges
     from ..plotting import combined_hmm_length_clustermap, combined_hmm_raw_clustermap
-    from ..plotting.plotting_utils import subsample_read_ids
 
     # Imported directly from the submodule, not via `from ..preprocessing
     # import reindex_references_adata`: that lazy package-level attribute
@@ -939,43 +944,35 @@ def _plot_feature_clustermaps(
 
     raw_layer = str(getattr(cfg, "layer_for_clustermap_plotting", "nan0_0minus1"))
     requested_layers = [raw_layer, *feature_layers, *length_layers]
-    grouped: dict[tuple[str, int, int], list[dict[str, object]]] = {}
-    for record in records:
-        key = (
-            str(record["reference"]),
-            int(record["core_start"]),
-            int(record["core_end"]),
-        )
-        grouped.setdefault(key, []).append(record)
-
+    spine = load_spine(output_spine, verbose=False)
+    plans = resolve_plot_region_plans(
+        spine,
+        pd.DataFrame(records),
+        spine_path=output_spine,
+        allow_gaps=bool(getattr(cfg, "plot_allow_unanalyzed_gaps", False)),
+    )
+    read_index = output_dir / "read_index"
     max_reads_per_plot = getattr(cfg, "clustermap_max_reads_per_plot", 5000)
-    for (reference, core_start, core_end), core_records in sorted(grouped.items()):
-        # Capped per barcode, not globally: every barcode's read_ids are
-        # combined here before combined_hmm_raw_clustermap/_length_clustermap
-        # split back out by (reference, sample) and subsample again -- without
-        # this, materialize() below loads every barcode's *full* read set for
-        # the whole reference just to have most of it discarded a few lines
-        # later inside those functions' own per-group subsampling. Bounds this
-        # reduce-phase materialize to O(n_barcodes * max_reads_per_plot)
-        # instead of O(total reference reads); see
-        # dev/pipeline_scaling_audit.md, finding E.
-        by_barcode: dict[str, list[str]] = {}
-        for record in core_records:
-            task, _ = safe_read_zarr(output_dir / str(record["group_path"]), verbose=False)
-            barcode = str(record.get("barcode", ""))
-            by_barcode.setdefault(barcode, []).extend(map(str, task.obs_names))
-        read_ids: list[str] = []
-        for barcode_read_ids in by_barcode.values():
-            deduped = list(dict.fromkeys(barcode_read_ids))
-            read_ids.extend(subsample_read_ids(deduped, max_reads_per_plot))
+    selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
+    for plan in plans:
+        reference, core_start, core_end = plan.reference, plan.start, plan.end
+        selection = select_plot_reads(
+            read_index,
+            plan,
+            max_reads_per_barcode=max_reads_per_plot,
+            seed=selection_seed,
+        )
+        if not selection.read_ids:
+            continue
         adata = materialize(
             output_spine,
             references=reference,
-            read_ids=read_ids,
+            read_ids=selection.read_ids,
             start=core_start,
             end=core_end,
             layers=requested_layers,
         )
+        mask_unanalyzed_gaps(adata, plan.gaps)
         for column in (REFERENCE_STRAND, "Barcode"):
             if column not in adata.obs:
                 continue
@@ -1006,8 +1003,34 @@ def _plot_feature_clustermaps(
         base_dir = (
             layout.categories["clustermaps"]
             / f"reference={_component(reference)}"
-            / f"core={core_start:012d}-{core_end:012d}"
+            / f"region={core_start:012d}-{core_end:012d}"
         )
+
+        def _register_region_plot(path: Path, *, plot_type: str, layer: str) -> None:
+            source_manifest = write_plot_source_manifest(
+                layout,
+                path,
+                stage="hmm",
+                plot_type=plot_type,
+                region=plan.source_manifest(),
+                layers=[raw_layer, layer],
+                selection_seed=selection.seed,
+                selection_sha256=selection.selection_sha256,
+                selected_molecule_uids=selection.molecule_uids,
+            )
+            register_plot_artifact(
+                layout,
+                path,
+                stage="hmm",
+                category="clustermaps",
+                plot_type=plot_type,
+                reference=reference,
+                sample=path.stem.rsplit("__", 1)[-1],
+                core_start=core_start,
+                core_end=core_end,
+                source_manifest=source_manifest,
+            )
+
         common = dict(
             sample_col="Barcode",
             reference_col=REFERENCE_STRAND,
@@ -1050,16 +1073,10 @@ def _plot_feature_clustermaps(
                 **common,
             )
             for path in sorted(plot_dir.glob("*.png")):
-                register_plot_artifact(
-                    layout,
+                _register_region_plot(
                     path,
-                    stage="hmm",
-                    category="clustermaps",
                     plot_type="hmm_accessible_feature_clustermap",
-                    reference=reference,
-                    sample=path.stem.rsplit("__", 1)[-1],
-                    core_start=core_start,
-                    core_end=core_end,
+                    layer=layer,
                 )
         for layer in length_layers:
             plot_dir = base_dir / "lengths" / _component(layer)
@@ -1072,16 +1089,10 @@ def _plot_feature_clustermaps(
                 **common,
             )
             for path in sorted(plot_dir.glob("*.png")):
-                register_plot_artifact(
-                    layout,
+                _register_region_plot(
                     path,
-                    stage="hmm",
-                    category="clustermaps",
                     plot_type="hmm_footprint_length_clustermap",
-                    reference=reference,
-                    sample=path.stem.rsplit("__", 1)[-1],
-                    core_start=core_start,
-                    core_end=core_end,
+                    layer=layer,
                 )
 
 

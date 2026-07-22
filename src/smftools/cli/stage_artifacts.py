@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import pandas as pd
 
@@ -63,6 +64,7 @@ PLOT_CATALOG_COLUMNS = (
     "sample",
     "core_start",
     "core_end",
+    "source_manifest",
     "path",
     "created_at",
 )
@@ -144,6 +146,7 @@ def register_plot_artifact(
     sample: str | None = None,
     core_start: int | None = None,
     core_end: int | None = None,
+    source_manifest: str | Path | None = None,
 ) -> Path:
     """Append one generated plot to the stage plot catalog."""
     if category not in layout.categories:
@@ -154,6 +157,15 @@ def register_plot_artifact(
     except ValueError as exc:
         raise ValueError("plot artifacts must be stored inside the stage directory") from exc
     catalog = pd.read_parquet(layout.catalog)
+    relative_manifest = None
+    if source_manifest is not None:
+        source_manifest = Path(source_manifest)
+        try:
+            relative_manifest = source_manifest.resolve().relative_to(layout.root.parent.resolve())
+        except ValueError as exc:
+            raise ValueError(
+                "plot source manifests must be stored inside the stage directory"
+            ) from exc
     artifact_id = f"{stage}:{category}:{plot_type}:{len(catalog):06d}"
     row = pd.DataFrame(
         [
@@ -166,6 +178,9 @@ def register_plot_artifact(
                 "sample": sample,
                 "core_start": core_start,
                 "core_end": core_end,
+                "source_manifest": (
+                    relative_manifest.as_posix() if relative_manifest is not None else None
+                ),
                 "path": relative_path.as_posix(),
                 "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             }
@@ -173,3 +188,40 @@ def register_plot_artifact(
     )
     pd.concat([catalog, row], ignore_index=True).to_parquet(layout.catalog, index=False)
     return layout.catalog
+
+
+def write_plot_source_manifest(
+    layout: StagePlotPaths,
+    plot_path: str | Path,
+    *,
+    stage: str,
+    plot_type: str,
+    region: Mapping[str, object],
+    layers: Iterable[str] = (),
+    selection_seed: int | None = None,
+    selection_sha256: str | None = None,
+    selected_molecule_uids: Iterable[str] = (),
+) -> Path:
+    """Write deterministic plot-to-task provenance beside a stage's plot catalog."""
+    plot_path = Path(plot_path)
+    try:
+        relative_plot = plot_path.resolve().relative_to(layout.root.parent.resolve())
+    except ValueError as exc:
+        raise ValueError("plot artifacts must be stored inside the stage directory") from exc
+    digest = hashlib.sha256(relative_plot.as_posix().encode("utf-8")).hexdigest()[:24]
+    path = layout.root / "source_manifests" / f"plot-{digest}.json"
+    atomic_write_json(
+        path,
+        {
+            "schema_version": 1,
+            "stage": str(stage),
+            "plot_type": str(plot_type),
+            "plot_path": relative_plot.as_posix(),
+            "region": dict(region),
+            "layers": sorted(map(str, layers)),
+            "selection_seed": selection_seed,
+            "selection_sha256": selection_sha256,
+            "selected_molecule_uids": list(map(str, selected_molecule_uids)),
+        },
+    )
+    return path

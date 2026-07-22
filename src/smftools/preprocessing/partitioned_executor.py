@@ -1085,6 +1085,8 @@ def execute_partitioned_preprocessing(
             plot_layout,
             cfg=cfg,
             spine_path=output_spine,
+            task_catalog=task_catalog,
+            read_index=read_index_dir,
         )
 
     manifest = sidecar_manifest_path(output_dir)
