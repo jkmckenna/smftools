@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +27,7 @@ from ..cli.stage_artifacts import (
     register_plot_artifact,
 )
 from ..hmm.HMM import mask_layers_outside_read_span, normalize_hmm_feature_sets
+from ..hmm.model_artifacts import training_selection_metadata
 from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
@@ -106,7 +109,26 @@ def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
     smf_modality = str(getattr(cfg, "smf_modality", "conversion"))
     uns_key = "hmm_appended_layers"
     adata.uns[uns_key] = []
-    model_reference = f"{task.reference}__{task.core_start}_{task.core_end}"
+    adata.uns["hmm_model_artifacts"] = []
+    selection = training_selection_metadata(
+        task.read_ids,
+        n_reads=len(task.read_ids),
+        reference=str(task.reference),
+        barcode=str(task.barcode),
+        core_start=int(task.core_start),
+        core_end=int(task.core_end),
+        load_start=int(task.load_start),
+        load_end=int(task.load_end),
+    )
+
+    def record_model_artifact(layers: list[str]) -> None:
+        if trainer.last_artifact is None:
+            return
+        artifact = dict(trainer.last_artifact)
+        artifact["checkpoint"] = (Path(HMM_MODEL_SUBDIR) / str(artifact["checkpoint"])).as_posix()
+        artifact["metadata"] = (Path(HMM_MODEL_SUBDIR) / str(artifact["metadata"])).as_posix()
+        artifact["layers"] = list(layers)
+        adata.uns["hmm_model_artifacts"].append(artifact)
 
     for hmm_task in build_hmm_tasks(cfg):
         feature_sets = {
@@ -154,16 +176,22 @@ def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
             prefix = str(hmm_task.output_prefix or "Combined")
             architecture = trainer.choose_arch(multichannel=True)
 
+        layers_before = set(adata.uns.get(uns_key, []))
         model = trainer.fit_or_load(
             sample=task.barcode,
-            ref=model_reference,
+            ref=task.reference,
             label=prefix,
             arch=architecture,
             X=values,
             coords=coordinates,
             device=device,
+            reference=task.reference,
+            core_start=task.core_start,
+            core_end=task.core_end,
+            training_selection=selection,
         )
         if bool(getattr(cfg, "bypass_hmm_apply", False)):
+            record_model_artifact([])
             continue
         model.annotate_adata(
             adata,
@@ -190,6 +218,13 @@ def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
             mask_use_original_var_names=True,
         )
         _apply_merges(adata, model, prefix, feature_sets, cfg)
+        record_model_artifact(
+            [
+                name
+                for name in adata.uns.get(uns_key, [])
+                if name not in layers_before and name in adata.layers
+            ]
+        )
     return [name for name in adata.uns.get(uns_key, []) if name in adata.layers]
 
 
@@ -219,6 +254,23 @@ def execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) -> dict[str,
         if column in adata.obs and isinstance(adata.obs[column].dtype, pd.CategoricalDtype):
             adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
     appended_layers = _annotate_task(adata, task, cfg, Path(models_dir))
+    model_artifacts = list(adata.uns.get("hmm_model_artifacts", []))
+    layer_model_map: dict[str, str] = {}
+    for artifact in model_artifacts:
+        model_id = str(artifact["model_id"])
+        for layer in artifact.get("layers", []):
+            layer = str(layer)
+            existing = layer_model_map.get(layer)
+            if existing is not None and existing != model_id:
+                raise RuntimeError(
+                    f"HMM layer {layer!r} was produced by conflicting models "
+                    f"{existing!r} and {model_id!r}"
+                )
+            layer_model_map[layer] = model_id
+    if model_artifacts:
+        unmapped = sorted(set(appended_layers).difference(layer_model_map))
+        if unmapped:
+            raise RuntimeError(f"HMM layers lack immutable model provenance: {unmapped}")
     positions = np.asarray(adata.var_names, dtype=np.int64)
     core_mask = (positions >= task.core_start) & (positions < task.core_end)
     core_obs = adata.obs.copy()
@@ -238,6 +290,12 @@ def execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) -> dict[str,
             "load_start": task.load_start,
             "load_end": task.load_end,
             "hmm_appended_layers": appended_layers,
+            "hmm_model_artifacts_json": json.dumps(
+                model_artifacts, sort_keys=True, separators=(",", ":")
+            ),
+            "hmm_layer_model_map_json": json.dumps(
+                layer_model_map, sort_keys=True, separators=(",", ":")
+            ),
         }
     )
     path = _task_path(Path(output_dir), task)
@@ -257,6 +315,15 @@ def execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) -> dict[str,
         "group_path": path.relative_to(output_dir).as_posix(),
         "n_positions": n_positions,
         "layers": appended_layers,
+        "hmm_model_ids": [str(item["model_id"]) for item in model_artifacts],
+        "hmm_model_checksums": [str(item["checkpoint_sha256"]) for item in model_artifacts],
+        "hmm_model_artifact_refs": [str(item["checkpoint"]) for item in model_artifacts],
+        "hmm_model_artifacts_json": json.dumps(
+            model_artifacts, sort_keys=True, separators=(",", ":")
+        ),
+        "hmm_layer_model_map_json": json.dumps(
+            layer_model_map, sort_keys=True, separators=(",", ":")
+        ),
     }
 
 
@@ -512,7 +579,30 @@ def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout)
 
             loaded = {}
             for barcode in sorted(barcodes):
-                path = trainer._path(kind, barcode, model_reference, label)
+                path = None
+                for record in records:
+                    if (
+                        str(record.get("reference")) != reference
+                        or str(record.get("barcode")) != barcode
+                        or int(record.get("core_start", -1)) != core_start
+                        or int(record.get("core_end", -1)) != core_end
+                    ):
+                        continue
+                    raw_artifacts = record.get("hmm_model_artifacts_json", "[]")
+                    artifacts = json.loads(raw_artifacts) if isinstance(raw_artifacts, str) else []
+                    matching = [
+                        item
+                        for item in artifacts
+                        if item.get("model_key", {}).get("fit_kind") == kind
+                        and item.get("model_key", {}).get("label") == label
+                    ]
+                    if matching:
+                        path = models_dir.parent / str(matching[0]["checkpoint"])
+                        break
+                if path is None:
+                    # Backward-compatible discovery for checkpoints written before
+                    # immutable model artifacts were introduced.
+                    path = trainer._path(kind, barcode, model_reference, label)
                 if not path.exists():
                     continue
                 try:
@@ -627,7 +717,7 @@ def _plot_hmm_fit_history(models_dir: Path, layout) -> None:
 
     models_dir = Path(models_dir)
     curves: dict[str, list[float]] = {}
-    for path in sorted(models_dir.glob("*.pt")):
+    for path in sorted(models_dir.rglob("*.pt")):
         try:
             payload = torch.load(path, map_location="cpu")
         except Exception:
@@ -870,6 +960,10 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     if not tasks:
         raise RuntimeError("partitioned HMM has no non-empty tasks")
     models_dir = output_dir / HMM_MODEL_SUBDIR
+    if bool(getattr(cfg, "force_redo_hmm_fit", False)):
+        # One revision per stage invocation: every worker resolves the same new
+        # immutable IDs, while a later forced invocation receives fresh IDs.
+        setattr(cfg, "_hmm_fit_revision", uuid.uuid4().hex)
     from ..memory_guard import require_memory_headroom, run_tasks_parallel
 
     # A GPU device (MPS on Apple Silicon, confirmed via real-data testing;
