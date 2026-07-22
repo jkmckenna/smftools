@@ -619,6 +619,7 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
         "read_span_quality",
         "coverage",
         "task_diagnostics",
+        "source_manifests",
     }
     plot_catalog = pd.read_parquet(outputs["plot_catalog"])
     assert {

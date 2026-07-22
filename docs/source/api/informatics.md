@@ -32,6 +32,7 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.partition_query
    smftools.informatics.partition_store
    smftools.informatics.physical_layout
+   smftools.informatics.plot_region_stitching
    smftools.informatics.pod5_functions
    smftools.informatics.ragged_store
    smftools.informatics.raw_store
@@ -58,6 +59,9 @@ supports it, so a complete dataset tree remains readable after copying or renami
 alignment/reduced/conversion records and stored strand references back to the original FASTA.
 `analysis_region_plan` consumes that inherited mapping to define shared, non-overlapping analysis
 cores for partition-aware stages.
+`plot_region_stitching` resolves presentation intervals against completed task cores, selects
+molecules deterministically before materialization, and records the exact task and layer
+provenance used by each stitched plot.
 
 ```{eval-rst}
 .. automodule:: smftools.informatics

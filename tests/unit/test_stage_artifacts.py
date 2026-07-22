@@ -7,6 +7,7 @@ from smftools.cli.stage_artifacts import (
     prepare_analysis_plot_layout,
     prepare_stage_plot_layout,
     register_plot_artifact,
+    write_plot_source_manifest,
 )
 
 
@@ -68,3 +69,44 @@ def test_analysis_stage_uses_specific_plot_categories(tmp_path):
         "embeddings",
         "diagnostics",
     }
+
+
+def test_plot_catalog_links_deterministic_source_manifest(tmp_path):
+    layout = prepare_analysis_plot_layout(tmp_path / "hmm", stage="hmm")
+    plot = layout.categories["clustermaps"] / "region.png"
+    plot.touch()
+    manifest = write_plot_source_manifest(
+        layout,
+        plot,
+        stage="hmm",
+        plot_type="feature",
+        region={
+            "reference": "ref_top",
+            "start": 3,
+            "end": 8,
+            "task_ids": ["left", "right"],
+            "artifact_paths": ["left.zarr", "right.zarr"],
+            "model_ids": ["model-a"],
+        },
+        layers=["raw", "feature"],
+        selection_seed=7,
+        selection_sha256="abc",
+        selected_molecule_uids=["molecule-1"],
+    )
+    register_plot_artifact(
+        layout,
+        plot,
+        stage="hmm",
+        category="clustermaps",
+        plot_type="feature",
+        reference="ref_top",
+        core_start=3,
+        core_end=8,
+        source_manifest=manifest,
+    )
+
+    payload = json.loads(manifest.read_text())
+    catalog = pd.read_parquet(layout.catalog)
+    assert payload["region"]["task_ids"] == ["left", "right"]
+    assert payload["selection_seed"] == 7
+    assert catalog.iloc[0]["source_manifest"] == manifest.relative_to(tmp_path / "hmm").as_posix()

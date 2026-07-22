@@ -781,6 +781,8 @@ class ExperimentConfig:
     alignment_regions_bed: Optional[str] = None
     analysis_regions_bed: Optional[str] = None
     plot_regions_bed: Optional[str] = None
+    plot_allow_unanalyzed_gaps: bool = False
+    plot_subsample_seed: int = 0
     fasta_regions_of_interest: Optional[str] = None
     sample_sheet_path: Optional[str] = None
     sample_sheet_mapping_column: Optional[str] = "Experiment_name_and_barcode"
@@ -1888,6 +1890,8 @@ class ExperimentConfig:
             alignment_regions_bed=merged.get("alignment_regions_bed"),
             analysis_regions_bed=merged.get("analysis_regions_bed"),
             plot_regions_bed=merged.get("plot_regions_bed"),
+            plot_allow_unanalyzed_gaps=_parse_bool(merged.get("plot_allow_unanalyzed_gaps", False)),
+            plot_subsample_seed=int(_parse_numeric(merged.get("plot_subsample_seed", 0), 0)),
             fasta_regions_of_interest=merged.get("fasta_regions_of_interest"),
             mapping_threshold=float(merged.get("mapping_threshold", 0.01)),
             experiment_name=merged.get("experiment_name"),
@@ -2598,6 +2602,8 @@ class ExperimentConfig:
 
         if not (0.0 <= float(self.mapping_threshold) <= 1.0):
             errors.append("mapping_threshold must be in [0,1].")
+        if int(self.plot_subsample_seed) < 0:
+            errors.append("plot_subsample_seed must be non-negative.")
         for t in (
             self.filter_threshold,
             self.m6A_threshold,

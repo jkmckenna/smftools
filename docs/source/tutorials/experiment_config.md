@@ -41,7 +41,12 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `analysis_regions_bed`: Optional original-FASTA BED file defining shared downstream analysis
   scope. Preprocess, spatial, HMM, latent, and shared stage inputs inherit its normalized catalog.
 - `plot_regions_bed`: Optional original-FASTA BED file defining presentation-only intervals. The
-  catalog is published independently of compute scope.
+  catalog is published independently of compute scope and downstream plots stitch every completed
+  analysis core that overlaps each interval.
+- `plot_allow_unanalyzed_gaps`: Defaults to `False`, causing plot generation to fail when a
+  requested interval is not fully covered by completed cores. Set it to `True` to retain and label
+  those positions as `NaN`.
+- `plot_subsample_seed`: Non-negative seed for deterministic per-barcode plot subsampling.
 - `output_directory`: Root output folder for all generated AnnData files and plots.
 - `experiment_name`: Base name used for output AnnData files.
 - `model_dir` / `model`: Dorado basecalling model configuration (nanopore runs).
@@ -88,6 +93,12 @@ records, and splits the union on portable storage-tile boundaries. Every stage u
 non-overlapping authoritative cores and source region IDs. Stage-specific halos may extend loaded
 context beyond a core, but only core positions are published. Changing `plot_regions_bed` does not
 change this compute plan.
+
+Plot generation maps each presentation interval back into stored coordinates, assembles adjacent
+authoritative cores without repeating halo positions, and aligns rows by stable molecule identity.
+Reads are selected from the derived index before arrays are loaded. Each registered stitched plot
+links to a JSON source manifest containing the contributing task and artifact IDs, requested
+layers, model IDs when applicable, and deterministic selection provenance.
 
 `fasta_regions_of_interest` is a deprecated alias for `alignment_regions_bed`. Existing configs
 continue to work with a warning. If both are supplied, they must identify the same path.

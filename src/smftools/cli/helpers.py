@@ -55,7 +55,8 @@ _NON_SEMANTIC_STAGE_CONFIG_KEYS = {
     "target_task_memory_mb",
 }
 _STAGE_NON_SEMANTIC_CONFIG_KEYS = {
-    stage: {"plot_regions_bed"} for stage in ("preprocess", "spatial", "hmm", "latent", "full")
+    stage: {"plot_regions_bed", "plot_allow_unanalyzed_gaps", "plot_subsample_seed"}
+    for stage in ("preprocess", "spatial", "hmm", "latent", "full")
 }
 
 # Canonical mapping from user-facing stage aliases to AdataPaths attribute names

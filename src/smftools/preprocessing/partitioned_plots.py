@@ -516,23 +516,61 @@ def _complexity_plots(obs, sample_column, layout, cfg):
     return results
 
 
-def _read_span_quality_plots(spine_path, layout, max_reads=300, max_positions=1800):
+def _read_span_quality_plots(
+    spine_path,
+    layout,
+    task_catalog,
+    read_index,
+    *,
+    cfg,
+    max_reads=300,
+    max_positions=1800,
+):
     import matplotlib.pyplot as plt
 
-    from ..cli.stage_input import iter_stage_slices
+    from ..cli.stage_artifacts import write_plot_source_manifest
+    from ..informatics.partition_read import load_spine, materialize
+    from ..informatics.plot_region_stitching import (
+        mask_unanalyzed_gaps,
+        resolve_plot_region_plans,
+        select_plot_reads,
+    )
 
-    # max_reads_per_sample caps read_ids *before* materialize() runs, not
-    # after -- this plot only ever uses `max_reads` reads per barcode, but
-    # without this the whole reference materialized first regardless (a real
-    # ~108s materialize() for one 43,735-read reference in a real experiment,
-    # with far larger references taking proportionally longer -- see
-    # dev/pipeline_scaling_audit.md).
-    for stage_slice in iter_stage_slices(
-        spine_path,
-        layers=[READ_SPAN_MASK, BASE_QUALITY_SCORES],
-        max_reads_per_sample=max_reads,
-    ):
-        core = stage_slice.core()
+    spine = load_spine(spine_path, verbose=False)
+    plans = resolve_plot_region_plans(
+        spine,
+        task_catalog,
+        spine_path=spine_path,
+        allow_gaps=bool(getattr(cfg, "plot_allow_unanalyzed_gaps", False)),
+    )
+    selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
+    filter_mask = next(
+        (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
+        None,
+    )
+    eligible_read_ids = (
+        spine.obs.index[spine.obs[filter_mask].astype(bool)] if filter_mask is not None else None
+    )
+    for plan in plans:
+        selection = select_plot_reads(
+            read_index,
+            plan,
+            max_reads_per_barcode=max_reads,
+            seed=selection_seed,
+            eligible_read_ids=eligible_read_ids,
+        )
+        read_ids = list(selection.read_ids)
+        if not read_ids:
+            continue
+        core = materialize(
+            spine_path,
+            references=plan.reference,
+            read_ids=read_ids,
+            start=plan.start,
+            end=plan.end,
+            layers=[READ_SPAN_MASK, BASE_QUALITY_SCORES],
+        )
+        mask_unanalyzed_gaps(core, plan.gaps)
         sample_column = _sample_column(core.obs)
         for sample, sample_obs in core.obs.groupby(sample_column, sort=True, observed=True):
             subset = core[list(map(str, sample_obs.index))]
@@ -564,28 +602,35 @@ def _read_span_quality_plots(spine_path, layout, max_reads=300, max_positions=18
             )
             axes[1, 1].set(xlabel="Reference position", title="Base-quality scores")
             figure.colorbar(image, ax=axes[1, 1], label="Phred score", shrink=0.8)
-            figure.suptitle(f"{sample} / {stage_slice.reference} ({len(sample_obs)} reads)")
+            figure.suptitle(f"{sample} / {plan.reference} ({len(sample_obs)} reads)")
             figure.tight_layout()
-            core_suffix = (
-                ""
-                if stage_slice.analysis_mode == "locus"
-                else f"__{stage_slice.core_start}_{stage_slice.core_end}"
-            )
             path = layout.categories["read_span_quality"] / (
-                f"{str(stage_slice.reference).replace('/', '_')}__"
-                f"{str(sample).replace('/', '_')}{core_suffix}.png"
+                f"{str(plan.reference).replace('/', '_')}__"
+                f"{str(sample).replace('/', '_')}__{plan.start}_{plan.end}.png"
             )
             figure.savefig(path, dpi=140)
             plt.close(figure)
+            source_manifest = write_plot_source_manifest(
+                layout,
+                path,
+                stage="preprocess",
+                plot_type="read_span_base_quality",
+                region=plan.source_manifest(),
+                layers=[READ_SPAN_MASK, BASE_QUALITY_SCORES],
+                selection_seed=selection.seed,
+                selection_sha256=selection.selection_sha256,
+                selected_molecule_uids=selection.molecule_uids,
+            )
             _register(
                 layout,
                 path,
                 "read_span_quality",
                 "read_span_base_quality",
-                reference=stage_slice.reference,
+                reference=plan.reference,
                 sample=str(sample),
-                core_start=stage_slice.core_start,
-                core_end=stage_slice.core_end,
+                core_start=plan.start,
+                core_end=plan.end,
+                source_manifest=source_manifest,
             )
 
 
@@ -596,6 +641,8 @@ def generate_preprocess_summary_plots(
     *,
     cfg=None,
     spine_path=None,
+    task_catalog=None,
+    read_index=None,
 ) -> None:
     """Generate global, sample-stratified, and bounded matrix diagnostics."""
     import matplotlib.pyplot as plt
@@ -690,10 +737,13 @@ def generate_preprocess_summary_plots(
             plot_layout, path, "coverage", "valid_fraction_by_position", reference=str(reference)
         )
 
-    if spine_path is not None:
+    if spine_path is not None and task_catalog is not None and read_index is not None:
         _read_span_quality_plots(
             spine_path,
             plot_layout,
+            task_catalog,
+            read_index,
+            cfg=cfg,
             max_reads=int(getattr(cfg, "preprocess_plot_max_heatmap_reads", 300)),
             max_positions=int(getattr(cfg, "preprocess_plot_max_heatmap_positions", 1800)),
         )
