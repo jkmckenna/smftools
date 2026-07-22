@@ -25,6 +25,8 @@ from smftools.constants import (
     MODKIT_EXTRACT_TSV_COLUMN_REF_POSITION,
     MODKIT_EXTRACT_TSV_COLUMN_REF_STRAND,
     MODKIT_OUTPUTS_DIR,
+    PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
+    PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
     RAW_DIR,
     SPLIT_DIR,
 )
@@ -1470,7 +1472,13 @@ def build_ragged_records_streaming(
 def raw_adata(config_path: str):
     """Run BAM preparation through section 6 and emit ragged raw artifacts."""
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config
+    from .helpers import (
+        get_adata_paths,
+        load_experiment_config,
+        partitioned_stage_is_complete,
+        publish_stage_outputs,
+        stage_lifecycle,
+    )
     from .load_adata import load_adata_core
 
     cfg = load_experiment_config(config_path)
@@ -1482,9 +1490,38 @@ def raw_adata(config_path: str):
     cfg.modkit_outputs_path = raw_root / MODKIT_OUTPUTS_DIR
     cfg.split_path = cfg.bam_outputs_path / SPLIT_DIR
     paths = get_adata_paths(cfg)
+    required = PARTITIONED_STAGE_REQUIRED_ARTIFACTS["raw"]
     if paths.raw_spine and paths.raw_spine.exists() and not cfg.force_redo_load_adata:
-        spine, _ = safe_read_h5ad(paths.raw_spine)
-        if "ragged_store" in spine.uns:
+        if partitioned_stage_is_complete(cfg, "raw", required=required):
+            spine, _ = safe_read_h5ad(paths.raw_spine)
             logger.info("Raw ragged store already exists: %s", paths.raw_spine)
             return spine, paths.raw_spine, cfg
-    return load_adata_core(cfg, paths, config_path=config_path, raw_only=True)
+        logger.warning(
+            "Raw spine exists without a compatible complete stage record; re-running raw: %s",
+            paths.raw_spine,
+        )
+
+    from ..informatics.raw_store import INTERVAL_CATALOG_FILENAME, MOLECULES_FILENAME
+    from ..informatics.sidecar_manifest import sidecar_manifest_path
+
+    with stage_lifecycle(cfg, "raw") as lifecycle:
+        result = load_adata_core(cfg, paths, config_path=config_path, raw_only=True)
+        raw_root = Path(cfg.output_directory) / RAW_DIR
+        outputs = {
+            "spine": Path(result[1]),
+            "ragged_store": raw_root / "raw",
+            "interval_catalog": raw_root / INTERVAL_CATALOG_FILENAME,
+            "molecules": Path(cfg.output_directory) / MOLECULES_FILENAME,
+            "manifest": sidecar_manifest_path(raw_root),
+        }
+        publish_stage_outputs(
+            lifecycle,
+            outputs,
+            required=required,
+            task_catalog_key=None,
+            checksum_keys=("interval_catalog", "manifest"),
+            schema_versions={"raw": 2},
+            extra={"n_molecules": int(result[0].n_obs)},
+            nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["raw"],
+        )
+    return result

@@ -96,6 +96,45 @@ LATENT_DIR: Final[str] = "latent_adata_outputs"
 VARIANT_DIR: Final[str] = "variant_adata_outputs"
 CHIMERIC_DIR: Final[str] = "chimeric_adata_outputs"
 
+_private_partitioned_stage_required_artifacts = {
+    "raw": ("spine", "ragged_store", "interval_catalog", "molecules", "manifest"),
+    "preprocess": (
+        "spine",
+        "store",
+        "task_catalog",
+        "catalog",
+        "var",
+        "obs",
+        "stage_obs",
+        "plot_catalog",
+        "manifest",
+    ),
+    "spatial": (
+        "spine",
+        "task_catalog",
+        "metrics",
+        "autocorrelation",
+        "task_store",
+        "region_catalog",
+        "plot_catalog",
+        "manifest",
+    ),
+    "hmm": ("spine", "task_catalog", "store", "models", "plot_catalog", "manifest"),
+}
+PARTITIONED_STAGE_REQUIRED_ARTIFACTS: Final[Mapping[str, tuple[str, ...]]] = _deep_freeze(
+    _private_partitioned_stage_required_artifacts
+)
+
+_private_partitioned_stage_nonempty_directories = {
+    "raw": ("ragged_store",),
+    "preprocess": ("store",),
+    "spatial": ("task_store",),
+    "hmm": ("store", "models"),
+}
+PARTITIONED_STAGE_NONEMPTY_DIRECTORIES: Final[Mapping[str, tuple[str, ...]]] = _deep_freeze(
+    _private_partitioned_stage_nonempty_directories
+)
+
 LOGGING_DIR: Final[str] = "logs"
 
 TRIM: Final[bool] = False

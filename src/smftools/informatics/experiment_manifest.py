@@ -7,10 +7,10 @@ previously nowhere in the store at all (only a ``config_hash`` for staleness
 detection, not the values); "which stages have run" was previously inferred only from
 directory presence, with no single readable index.
 
-Phase 2 of ``dev/experiment_storage_schema.md`` (not tracked in git). Currently wired
-into the raw stage only (``cli/load_adata.py``) -- preprocess/spatial/hmm can adopt
-``record_stage_completion`` the same way once their executors are touched for the
-schema's later phases; nothing here is raw-specific.
+The partitioned raw, preprocess, spatial, HMM, and full-workflow entry points use the
+lifecycle records here to distinguish validated completion from partial directory
+creation. Artifact paths are relative to the run root whenever possible, allowing a
+completed experiment directory to move between machines.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from ..readwrite import atomic_write_json
@@ -32,7 +33,7 @@ _ALLOWED_STAGE_TRANSITIONS = {
     None: frozenset({"planned", "complete"}),
     "planned": frozenset({"running", "failed"}),
     "running": frozenset({"complete", "failed"}),
-    "complete": frozenset({"planned", "complete"}),
+    "complete": frozenset({"planned", "complete", "failed"}),
     "failed": frozenset({"planned", "failed"}),
 }
 
@@ -82,7 +83,13 @@ def _artifact_path(run_root: Path, artifact: dict[str, Any]) -> Path | None:
     return run_root / path
 
 
-def artifact_record(path: str | Path, run_root: str | Path, **metadata: Any) -> dict[str, Any]:
+def artifact_record(
+    path: str | Path,
+    run_root: str | Path,
+    *,
+    checksum: bool = False,
+    **metadata: Any,
+) -> dict[str, Any]:
     """Describe an artifact with explicit, relocatable path semantics."""
     import os
 
@@ -106,6 +113,8 @@ def artifact_record(path: str | Path, run_root: str | Path, **metadata: Any) -> 
     payload["kind"] = "directory" if path.is_dir() else "file"
     if path.is_file():
         payload["size_bytes"] = path.stat().st_size
+        if checksum:
+            payload["sha256"] = _sha256(path)
     payload.update(metadata)
     return payload
 
@@ -116,6 +125,27 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _artifact_is_readable(path: Path) -> bool:
+    """Probe structured essential files without materializing their data."""
+    try:
+        if path.suffix == ".json":
+            with path.open("r", encoding="utf-8") as handle:
+                json.load(handle)
+        elif path.suffix == ".parquet":
+            import pyarrow.parquet as parquet
+
+            parquet.ParquetFile(path).schema
+        elif path.suffix == ".h5ad":
+            import h5py
+
+            with h5py.File(path, "r") as handle:
+                if "obs" not in handle or "var" not in handle:
+                    return False
+    except Exception:
+        return False
+    return True
 
 
 def record_stage_state(
@@ -216,6 +246,8 @@ def stage_is_complete(
             return False
         if expected_kind == "directory" and not path.is_dir():
             return False
+        if artifact.get("require_nonempty") and path.is_dir() and not any(path.iterdir()):
+            return False
         expected_size = artifact.get("size_bytes")
         if (
             expected_size is not None
@@ -225,6 +257,8 @@ def stage_is_complete(
             return False
         expected_sha256 = artifact.get("sha256")
         if expected_sha256 is not None and path.is_file() and _sha256(path) != expected_sha256:
+            return False
+        if path.is_file() and not _artifact_is_readable(path):
             return False
     return True
 
@@ -238,8 +272,10 @@ class StageLifecycle(AbstractContextManager["StageLifecycle"]):
     config_hash: str | None = None
     input_artifact_ids: list[str] = field(default_factory=list)
     _complete: bool = field(default=False, init=False)
+    _started: float | None = field(default=None, init=False)
 
     def __enter__(self) -> "StageLifecycle":
+        self._started = perf_counter()
         record_stage_state(
             self.run_root,
             self.stage,
@@ -252,6 +288,11 @@ class StageLifecycle(AbstractContextManager["StageLifecycle"]):
 
     def complete(self, **fields: Any) -> Path:
         """Publish the terminal complete state after all artifacts validate."""
+        timings = dict(fields.pop("timings", {}) or {})
+        if self._started is not None:
+            timings.setdefault("elapsed_seconds", perf_counter() - self._started)
+        fields["timings"] = timings
+        fields.setdefault("outcome", "success")
         path = record_stage_state(self.run_root, self.stage, "complete", **fields)
         self._complete = True
         return path
@@ -278,7 +319,7 @@ def update_experiment_manifest(run_root: str | Path, **fields: Any) -> Path:
     """Merge top-level fields into the manifest (``None`` values are skipped, so
     callers can pass everything they have without clobbering an already-recorded
     field with an absent one). Never touches the ``"stages"`` sub-dict -- see
-    :func:`record_stage_completion` for that.
+    :func:`record_stage_state` and :class:`StageLifecycle` for that.
     """
     path = experiment_manifest_path(run_root)
     manifest = _load(path)
@@ -295,10 +336,7 @@ def record_stage_completion(
     n_molecules: int | None = None,
     **extra: Any,
 ) -> Path:
-    """Record (or overwrite, on a re-run) one stage's entry in the manifest's
-    ``"stages"`` index -- a readable completion/provenance log, in addition to (not
-    instead of) the existing structural signal of whether ``<stage>_outputs/`` exists.
-    """
+    """Publish a legacy-compatible completion entry for callers without a lifecycle."""
     if n_molecules is not None:
         extra["n_molecules"] = int(n_molecules)
     return record_stage_state(

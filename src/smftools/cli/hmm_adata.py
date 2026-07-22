@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from smftools.constants import HMM_DIR
+from smftools.constants import (
+    HMM_DIR,
+    PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
+    PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
+)
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
@@ -596,7 +600,14 @@ def hmm_adata(config_path: str):
     """
     from ..logging_utils import setup_stage_logging
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
+    from .helpers import (
+        get_adata_paths,
+        load_experiment_config,
+        partitioned_stage_is_complete,
+        publish_stage_outputs,
+        resolve_adata_stage,
+        stage_lifecycle,
+    )
 
     # 1) load cfg / stage paths
     cfg = load_experiment_config(config_path)
@@ -623,9 +634,25 @@ def hmm_adata(config_path: str):
         and partitioned_output is not None
         and Path(partitioned_output).exists()
         and not force_redo
+        and partitioned_stage_is_complete(
+            cfg,
+            "hmm",
+            required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["hmm"],
+        )
     ):
         logger.info("Skipping HMM. Partitioned HMM spine found: %s", partitioned_output)
         return None, Path(partitioned_output)
+    if (
+        execution_mode != "legacy"
+        and partitioned_output is not None
+        and Path(partitioned_output).exists()
+        and not force_redo
+    ):
+        logger.warning(
+            "Partitioned HMM spine exists without a compatible complete stage record; "
+            "re-running HMM: %s",
+            partitioned_output,
+        )
     if execution_mode != "partitioned" and paths.hmm.exists() and not force_redo:
         logger.info(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
         return None
@@ -647,11 +674,19 @@ def hmm_adata(config_path: str):
     if partitioned_source is not None:
         from ..tools.partitioned_hmm import execute_partitioned_hmm
 
-        outputs = execute_partitioned_hmm(
-            partitioned_source,
-            cfg,
-            Path(cfg.output_directory) / HMM_DIR,
-        )
+        with stage_lifecycle(cfg, "hmm", partitioned_source) as lifecycle:
+            outputs = execute_partitioned_hmm(
+                partitioned_source,
+                cfg,
+                Path(cfg.output_directory) / HMM_DIR,
+            )
+            publish_stage_outputs(
+                lifecycle,
+                outputs,
+                required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["hmm"],
+                schema_versions={"hmm": 1},
+                nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["hmm"],
+            )
         return None, outputs["spine"]
 
     source_path, stage = resolve_adata_stage(cfg, paths)

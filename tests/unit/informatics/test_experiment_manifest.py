@@ -1,5 +1,7 @@
 import hashlib
 
+import anndata as ad
+
 from smftools.informatics.experiment_manifest import (
     MANIFEST_SCHEMA_VERSION,
     StageLifecycle,
@@ -70,7 +72,7 @@ def test_record_stage_completion_and_update_manifest_coexist(tmp_path):
 def test_stage_lifecycle_records_complete_state_and_validates_artifacts(tmp_path):
     spine = tmp_path / "preprocess_adata_outputs" / "spine.h5ad"
     spine.parent.mkdir()
-    spine.write_text("complete", encoding="utf-8")
+    ad.AnnData().write_h5ad(spine)
 
     with StageLifecycle(tmp_path, "preprocess", config_hash="abc123") as lifecycle:
         running = read_experiment_manifest(tmp_path)["stages"]["preprocess"]
@@ -110,7 +112,7 @@ def test_stage_lifecycle_records_complete_state_and_validates_artifacts(tmp_path
 
 
 def test_stage_completion_rejects_changed_artifact_and_task_shortfall(tmp_path):
-    artifact = tmp_path / "metrics.parquet"
+    artifact = tmp_path / "metrics.bin"
     artifact.write_bytes(b"original")
     record = artifact_record(artifact, tmp_path, sha256=hashlib.sha256(b"original").hexdigest())
     with StageLifecycle(tmp_path, "spatial") as lifecycle:
@@ -136,6 +138,32 @@ def test_stage_completion_rejects_changed_artifact_and_task_shortfall(tmp_path):
 
     artifact.write_bytes(b"changed!")
     assert not stage_is_complete(tmp_path, "spatial", required_artifacts=("metrics",))
+
+
+def test_stage_completion_rejects_unreadable_structured_artifact(tmp_path):
+    catalog = tmp_path / "task_catalog.parquet"
+    catalog.write_bytes(b"not a parquet file")
+    with StageLifecycle(tmp_path, "preprocess") as lifecycle:
+        lifecycle.complete(artifacts={"task_catalog": artifact_record(catalog, tmp_path)})
+
+    assert not stage_is_complete(
+        tmp_path,
+        "preprocess",
+        required_artifacts=("task_catalog",),
+    )
+
+
+def test_stage_completion_rejects_required_empty_directory(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    record = artifact_record(store, tmp_path, require_nonempty=True)
+    with StageLifecycle(tmp_path, "preprocess") as lifecycle:
+        lifecycle.complete(artifacts={"store": record})
+
+    assert not stage_is_complete(tmp_path, "preprocess", required_artifacts=("store",))
+
+    (store / "partition.parquet").write_bytes(b"partition")
+    assert stage_is_complete(tmp_path, "preprocess", required_artifacts=("store",))
 
 
 def test_stage_lifecycle_records_failure_without_masking_exception(tmp_path):

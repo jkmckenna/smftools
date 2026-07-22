@@ -10,6 +10,7 @@ from smftools.cli.hmm_adata import (
     hmm_adata,
 )
 from smftools.hmm.HMM import SingleBernoulliHMM
+from smftools.informatics.experiment_manifest import read_experiment_manifest
 from smftools.informatics.partition_read import materialize, relative_uns_path
 from smftools.informatics.raw_store import write_raw_store
 from smftools.preprocessing.partitioned_executor import execute_partitioned_preprocessing
@@ -130,13 +131,45 @@ def test_hmm_wrapper_dispatches_partitioned_spatial_spine(tmp_path, monkeypatch)
 
     def execute(source, executor_cfg, output_dir):
         captured.update(source=source, cfg=executor_cfg, output_dir=output_dir)
-        return {"spine": paths.hmm_spine}
+        output_dir.mkdir(parents=True, exist_ok=True)
+        ad.AnnData().write_h5ad(paths.hmm_spine)
+        task_catalog = output_dir / "task_catalog.parquet"
+        pd.DataFrame({"task_id": ["task-1"]}).to_parquet(task_catalog, index=False)
+        store = output_dir / "store"
+        models = output_dir / "models"
+        store.mkdir()
+        models.mkdir()
+        (store / "task-1").touch()
+        (models / "model-1.json").write_text("{}\n", encoding="utf-8")
+        plot_catalog = output_dir / "plots" / "catalog.parquet"
+        plot_catalog.parent.mkdir()
+        pd.DataFrame().to_parquet(plot_catalog, index=False)
+        manifest = output_dir / "sidecar_manifest.json"
+        manifest.write_text("{}\n", encoding="utf-8")
+        return {
+            "spine": paths.hmm_spine,
+            "task_catalog": task_catalog,
+            "store": store,
+            "models": models,
+            "plot_catalog": plot_catalog,
+            "manifest": manifest,
+        }
 
     monkeypatch.setattr(partitioned_hmm, "execute_partitioned_hmm", execute)
 
     assert hmm_adata("experiment.csv") == (None, paths.hmm_spine)
     assert captured["source"] == spatial_spine
     assert captured["output_dir"] == tmp_path / "hmm_adata_outputs"
+    entry = read_experiment_manifest(tmp_path)["stages"]["hmm"]
+    assert entry["state"] == "complete"
+    assert entry["expected_tasks"] == entry["successful_tasks"] == 1
+
+    monkeypatch.setattr(
+        partitioned_hmm,
+        "execute_partitioned_hmm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected rerun")),
+    )
+    assert hmm_adata("experiment.csv") == (None, paths.hmm_spine)
 
 
 def test_hmm_position_mask_normalizes_nullable_boolean_values():

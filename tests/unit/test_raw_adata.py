@@ -1,6 +1,7 @@
 import gzip
 from types import SimpleNamespace
 
+import anndata as ad
 import numpy as np
 import pandas as pd
 from click.testing import CliRunner
@@ -18,7 +19,13 @@ from smftools.cli.raw_adata import (
     _split_modkit_tsv_by_bucket,
     _yield_flush_result,
 )
-from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT, PREPROCESS_DIR
+from smftools.constants import (
+    MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
+    PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
+    PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
+    PREPROCESS_DIR,
+)
+from smftools.informatics.experiment_manifest import read_experiment_manifest
 
 
 def _double_record(record, *, multiplier):
@@ -27,6 +34,41 @@ def _double_record(record, *, multiplier):
     unpickle a top-level function, not a test-local closure.
     """
     return [record * multiplier], [str(record)]
+
+
+def _fake_preprocess_outputs(output_spine):
+    output_spine.parent.mkdir(parents=True, exist_ok=True)
+    if not output_spine.exists():
+        ad.AnnData().write_h5ad(output_spine)
+    task_catalog = output_spine.parent / "task_catalog.parquet"
+    store = output_spine.parent / "store"
+    catalog = output_spine.parent / "catalog.parquet"
+    var = output_spine.parent / "var.parquet"
+    obs = output_spine.parent / "obs.parquet"
+    stage_obs = output_spine.parent / "stage_obs.parquet"
+    plot_catalog = output_spine.parent / "plots" / "catalog.parquet"
+    store.mkdir(exist_ok=True)
+    (store / "task-1").touch()
+    pd.DataFrame({"task_id": ["task-1"]}).to_parquet(task_catalog, index=False)
+    pd.DataFrame().to_parquet(catalog, index=False)
+    pd.DataFrame().to_parquet(var, index=False)
+    pd.DataFrame().to_parquet(obs, index=False)
+    pd.DataFrame().to_parquet(stage_obs, index=False)
+    plot_catalog.parent.mkdir(exist_ok=True)
+    pd.DataFrame().to_parquet(plot_catalog, index=False)
+    manifest = output_spine.parent / "sidecar_manifest.json"
+    manifest.write_text("{}\n", encoding="utf-8")
+    return {
+        "spine": output_spine,
+        "store": store,
+        "task_catalog": task_catalog,
+        "catalog": catalog,
+        "var": var,
+        "obs": obs,
+        "stage_obs": stage_obs,
+        "plot_catalog": plot_catalog,
+        "manifest": manifest,
+    }
 
 
 def test_conversion_signal_matches_existing_binarization_maps():
@@ -770,13 +812,38 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
             config_path=config_path,
             raw_only=raw_only,
         )
-        return "spine", paths.raw_spine, core_cfg
+        paths.raw_spine.parent.mkdir(parents=True)
+        ad.AnnData().write_h5ad(paths.raw_spine)
+        ragged_store = paths.raw_spine.parent / "raw"
+        ragged_store.mkdir()
+        (ragged_store / "part-00000.parquet").touch()
+        pd.DataFrame().to_parquet(paths.raw_spine.parent / "interval_catalog.parquet", index=False)
+        pd.DataFrame().to_parquet(tmp_path / "molecules.parquet", index=False)
+        (paths.raw_spine.parent / "sidecar_manifest.json").write_text("{}\n", encoding="utf-8")
+        return SimpleNamespace(n_obs=1), paths.raw_spine, core_cfg
 
     monkeypatch.setattr(load_module, "load_adata_core", fake_core)
     result = raw_adata("experiment.csv")
 
-    assert result == ("spine", paths.raw_spine, cfg)
+    assert result[0].n_obs == 1
+    assert result[1:] == (paths.raw_spine, cfg)
     assert captured["raw_only"] is True
+    entry = read_experiment_manifest(tmp_path)["stages"]["raw"]
+    assert entry["state"] == "complete"
+    assert entry["n_molecules"] == 1
+    assert set(entry["artifacts"]) == {
+        "spine",
+        "ragged_store",
+        "interval_catalog",
+        "molecules",
+        "manifest",
+    }
+    monkeypatch.setattr(
+        load_module,
+        "load_adata_core",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected rerun")),
+    )
+    assert raw_adata("experiment.csv")[1:] == (paths.raw_spine, cfg)
 
 
 def test_load_dense_cache_runs_raw_then_cache_builder(tmp_path, monkeypatch):
@@ -889,7 +956,7 @@ def test_preprocess_wrapper_dispatches_planned_spine(tmp_path, monkeypatch):
     monkeypatch.setattr(
         partitioned_executor,
         "execute_partitioned_preprocessing",
-        lambda source, config, output: {"spine": output_spine},
+        lambda source, config, output: _fake_preprocess_outputs(output_spine),
     )
 
     assert preprocess_module.preprocess_adata("experiment.csv") == (output_spine, None)
@@ -902,12 +969,8 @@ def test_preprocess_wrapper_returns_existing_partitioned_spine(tmp_path, monkeyp
     from smftools.cli import preprocess_adata as preprocess_module
     from smftools.readwrite import safe_write_h5ad
 
-    # A completed partitioned preprocess spine has passes_qc (and usually
-    # passes_dedup) in obs -- the skip-if-exists check verifies this before
-    # trusting a cached spine, since a spine.h5ad can exist on disk from a run
-    # that crashed after writing it but before QC/dedup columns were merged in
-    # (see reduce_duplicate_reads' staging-write fix). An empty placeholder file
-    # no longer qualifies as "existing" for skip purposes.
+    # A final spine is necessary but no longer sufficient: the compatible
+    # complete record and its essential artifact set authorize the skip.
     output_spine = tmp_path / PREPROCESS_DIR / "spine.h5ad"
     output_spine.parent.mkdir()
     safe_write_h5ad(
@@ -930,6 +993,15 @@ def test_preprocess_wrapper_returns_existing_partitioned_spine(tmp_path, monkeyp
     )
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
     monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg: paths)
+
+    with helpers.stage_lifecycle(cfg, "preprocess") as lifecycle:
+        helpers.publish_stage_outputs(
+            lifecycle,
+            _fake_preprocess_outputs(output_spine),
+            required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["preprocess"],
+            schema_versions={"preprocess": 1},
+            nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["preprocess"],
+        )
 
     assert preprocess_module.preprocess_adata("experiment.csv") == (output_spine, None)
 
@@ -986,7 +1058,7 @@ def test_preprocess_wrapper_reruns_when_partitioned_spine_missing_qc_dedup(tmp_p
 
     def fake_execute_partitioned_preprocessing(source_path, executor_cfg, output_dir):
         captured["source_path"] = source_path
-        return {"spine": incomplete_spine}
+        return _fake_preprocess_outputs(incomplete_spine)
 
     import smftools.preprocessing.partitioned_executor as partitioned_executor_module
 
