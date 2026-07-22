@@ -71,6 +71,15 @@ BAM_OUTPUTS_DIR: Final[str] = "bam_outputs"
 MODKIT_OUTPUTS_DIR: Final[str] = "modkit_outputs"
 FASTA_OUTPUTS_DIR: Final[str] = "fasta_outputs"
 BED_OUTPUTS_DIR: Final[str] = "bed_outputs"
+REGION_CATALOG_DIRNAME: Final[str] = "region_catalogs"
+REFERENCE_INTERVAL_MAP_FILENAME: Final[str] = "reference_interval_map.parquet"
+REGION_CATALOG_FILENAMES: Final[Mapping[str, str]] = _deep_freeze(
+    {
+        "alignment": "alignment_regions.parquet",
+        "analysis": "analysis_regions.parquet",
+        "plot": "plot_regions.parquet",
+    }
+)
 H5_DIR: Final[str] = "h5ads"
 DEMUX_TYPE: Final[str] = "demux_type"
 BARCODE: Final[str] = "Barcode"
@@ -103,6 +112,7 @@ _private_partitioned_stage_required_artifacts = {
         "interval_catalog",
         "molecules",
         "molecule_index",
+        "reference_interval_map",
         "manifest",
     ),
     "preprocess": (

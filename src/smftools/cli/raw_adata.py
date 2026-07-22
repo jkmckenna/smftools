@@ -27,6 +27,9 @@ from smftools.constants import (
     PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
     PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
     RAW_DIR,
+    REFERENCE_INTERVAL_MAP_FILENAME,
+    REGION_CATALOG_DIRNAME,
+    REGION_CATALOG_FILENAMES,
     SPLIT_DIR,
 )
 from smftools.logging_utils import get_logger
@@ -1563,15 +1566,35 @@ def raw_adata(config_path: str):
             "interval_catalog": raw_root / INTERVAL_CATALOG_FILENAME,
             "molecules": Path(cfg.output_directory) / MOLECULES_FILENAME,
             "molecule_index": Path(cfg.output_directory) / MOLECULE_INDEX_DIRNAME,
+            "reference_interval_map": (
+                Path(cfg.output_directory) / REFERENCE_INTERVAL_MAP_FILENAME
+            ),
             "manifest": sidecar_manifest_path(raw_root),
         }
+        region_catalog_root = Path(cfg.output_directory) / REGION_CATALOG_DIRNAME
+        for scope, filename in REGION_CATALOG_FILENAMES.items():
+            catalog_path = region_catalog_root / filename
+            if catalog_path.exists():
+                outputs[f"{scope}_regions"] = catalog_path
         publish_stage_outputs(
             lifecycle,
             outputs,
             required=required,
             task_catalog_key=None,
-            checksum_keys=("interval_catalog", "manifest"),
-            schema_versions={"raw": 3, "identity": 1},
+            checksum_keys=(
+                "interval_catalog",
+                "reference_interval_map",
+                "alignment_regions",
+                "analysis_regions",
+                "plot_regions",
+                "manifest",
+            ),
+            schema_versions={
+                "raw": 3,
+                "identity": 1,
+                "region_catalog": 1,
+                "reference_interval_map": 1,
+            },
             extra={"n_molecules": int(result[0].n_obs)},
             nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["raw"],
         )

@@ -53,6 +53,88 @@ def test_partitioned_hmm_fit_selection_defaults():
     assert config.hmm_fit_selection_seed == 0
 
 
+def test_region_catalog_config_defaults_are_independent():
+    from smftools.cli.helpers import load_experiment_config
+
+    with as_file(csv_resource) as csv_path:
+        config = load_experiment_config(str(csv_path))
+
+    assert config.alignment_regions_bed == config.fasta_regions_of_interest
+    assert config.analysis_regions_bed is None
+    assert config.plot_regions_bed is None
+    assert config.spatial_regions_bed is None
+
+
+def test_legacy_fasta_regions_alias_resolves_with_warning(tmp_path):
+    from smftools.config import ExperimentConfig
+
+    legacy = tmp_path / "alignment.bed"
+    with pytest.warns(FutureWarning, match="deprecated"):
+        config, _ = ExperimentConfig.from_var_dict(
+            {"fasta_regions_of_interest": str(legacy)}, defaults_map={}
+        )
+
+    assert config.alignment_regions_bed == str(legacy)
+    assert config.fasta_regions_of_interest == str(legacy)
+
+
+def test_equal_alignment_and_legacy_alias_values_are_accepted(tmp_path):
+    from smftools.config import ExperimentConfig
+
+    bed = tmp_path / "alignment.bed"
+    with pytest.warns(FutureWarning, match="deprecated"):
+        config, _ = ExperimentConfig.from_var_dict(
+            {
+                "alignment_regions_bed": str(bed),
+                "fasta_regions_of_interest": str(bed),
+            },
+            defaults_map={},
+        )
+
+    assert config.alignment_regions_bed == str(bed)
+
+
+def test_conflicting_alignment_and_legacy_alias_values_fail(tmp_path):
+    from smftools.config import ExperimentConfig
+
+    with pytest.warns(FutureWarning, match="deprecated"):
+        with pytest.raises(ValueError, match="conflict"):
+            ExperimentConfig.from_var_dict(
+                {
+                    "alignment_regions_bed": str(tmp_path / "new.bed"),
+                    "fasta_regions_of_interest": str(tmp_path / "legacy.bed"),
+                },
+                defaults_map={},
+            )
+
+
+def test_spatial_regions_bed_is_not_promoted_to_new_scopes(tmp_path):
+    from smftools.config import ExperimentConfig
+
+    config, _ = ExperimentConfig.from_var_dict(
+        {"spatial_regions_bed": str(tmp_path / "legacy-spatial.bed")}, defaults_map={}
+    )
+
+    assert config.spatial_regions_bed == str(tmp_path / "legacy-spatial.bed")
+    assert config.alignment_regions_bed is None
+    assert config.analysis_regions_bed is None
+    assert config.plot_regions_bed is None
+
+
+def test_region_catalog_paths_participate_in_config_validation(tmp_path):
+    from smftools.config import ExperimentConfig
+
+    config = ExperimentConfig(
+        input_data_path=str(tmp_path),
+        output_directory=str(tmp_path / "output"),
+        fasta=str(tmp_path / "missing.fa"),
+        analysis_regions_bed=str(tmp_path / "missing.bed"),
+    )
+
+    with pytest.raises(ValueError, match="analysis_regions_bed does not exist"):
+        config.validate(require_paths=True)
+
+
 def test_repeated_stage_loads_reuse_immutable_resource_envelope():
     from smftools.cli import helpers
 

@@ -24,6 +24,9 @@ from smftools.constants import (
     LATENT_DIR,
     PREPROCESS_DIR,
     RAW_DIR,
+    REFERENCE_INTERVAL_MAP_FILENAME,
+    REGION_CATALOG_DIRNAME,
+    REGION_CATALOG_FILENAMES,
     SPATIAL_DIR,
     VARIANT_DIR,
 )
@@ -34,7 +37,7 @@ logger = get_logger(__name__)
 
 REGISTRY_FILENAME = "registry.json"
 SETS_SUBDIR = "sets"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SPINE_FILENAME = "spine.h5ad"
 _CATALOG_NAMES = ("interval_catalog.parquet", "catalog.parquet")
 
@@ -96,6 +99,7 @@ def load_registry(project_dir: str | Path) -> dict:
 def save_registry(project_dir: str | Path, registry: dict) -> Path:
     path = project_registry_path(project_dir)
     registry = dict(registry)
+    registry["schema_version"] = SCHEMA_VERSION
     registry["updated_at"] = _now()
     return atomic_write_json(path, registry)
 
@@ -189,6 +193,17 @@ def _discover_catalogs(spines: dict[str, Path], project_dir: Path) -> dict[str, 
         molecule_index = raw_dir.parent / "molecule_index"
         if molecule_index.exists():
             found["molecule_index"] = _relative_registry_path(molecule_index, project_dir)
+        run_root = raw_dir.parent
+        reference_interval_map = run_root / REFERENCE_INTERVAL_MAP_FILENAME
+        if reference_interval_map.exists():
+            found["reference_interval_map"] = _relative_registry_path(
+                reference_interval_map, project_dir
+            )
+        region_catalog_root = run_root / REGION_CATALOG_DIRNAME
+        for scope, filename in REGION_CATALOG_FILENAMES.items():
+            region_catalog = region_catalog_root / filename
+            if region_catalog.exists():
+                found[f"{scope}_regions"] = _relative_registry_path(region_catalog, project_dir)
     for stage in ("preprocess", "spatial", "hmm"):
         spine = spines.get(stage)
         if spine is None:

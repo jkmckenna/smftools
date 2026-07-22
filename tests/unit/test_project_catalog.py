@@ -70,6 +70,39 @@ def test_catalog_harmonizes_different_names(project_with_two_experiments):
     assert set(cat.select(canonical_reference=uid)["experiment"]) == {"expA", "expB"}
 
 
+def test_project_catalog_reads_registered_region_and_reference_maps(tmp_path):
+    uid = reference_uid(SEQUENCE, 12)
+    run_root = tmp_path / "expA"
+    _make_raw_experiment(run_root / "raw_outputs", reference_strand="geneA_top", uid=uid, n=1)
+    pd.DataFrame(
+        {
+            "stored_reference": ["geneA_top"],
+            "original_reference": ["chr1"],
+        }
+    ).to_parquet(run_root / "reference_interval_map.parquet", index=False)
+    region_dir = run_root / "region_catalogs"
+    region_dir.mkdir()
+    pd.DataFrame(
+        {
+            "region_id": ["reg_a"],
+            "original_reference": ["chr1"],
+            "original_start": [0],
+            "original_end": [12],
+        }
+    ).to_parquet(region_dir / "analysis_regions.parquet", index=False)
+    project = tmp_path / "project"
+    reg.init_project(project)
+    reg.add_experiment(project, run_root, experiment_id="expA")
+
+    catalog = ProjectCatalog.open(project)
+
+    assert catalog.reference_interval_map()["experiment"].tolist() == ["expA"]
+    assert catalog.region_catalog("analysis")["region_id"].tolist() == ["reg_a"]
+    assert catalog.region_catalog("plot").empty
+    with pytest.raises(ValueError, match="scope must be"):
+        catalog.region_catalog("spatial")
+
+
 def test_project_adata_concats_across_experiments(project_with_two_experiments):
     proj, uid = project_with_two_experiments
     combined = project_adata(proj, uid)

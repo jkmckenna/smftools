@@ -91,6 +91,11 @@ reference strand. For genome-mode references, set `spatial_regions_bed` to a sta
 half-open BED file; dense products are then limited to those intervals. BED chromosome names may
 be exact reference-strand names or native reference names that apply to both strands.
 
+This legacy `spatial_regions_bed` setting remains spatial-only. The independent
+`alignment_regions_bed`, `analysis_regions_bed`, and `plot_regions_bed` fields always use original
+FASTA coordinates and are persisted as versioned catalogs. `fasta_regions_of_interest` remains a
+deprecated alias for alignment scope; do not use it to express downstream analysis scope.
+
 Partitioned spatial analysis also saves read-level ACF and direct-signal Lomb-Scargle results by
 default. Each task directory in the general spatial `store` contains a `read_metrics.zarr` AnnData
 partition. Per-read ACF, pair-count, and normalized periodogram arrays use `obsm`; peak period,

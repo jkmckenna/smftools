@@ -124,6 +124,30 @@ class ProjectCatalog:
                 frames.append(frame)
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
+    def region_catalog(self, scope: str) -> pd.DataFrame:
+        """Union one original-coordinate region scope across experiments."""
+        if scope not in {"alignment", "analysis", "plot"}:
+            raise ValueError("scope must be one of: alignment, analysis, plot")
+        frames = []
+        for entry in self.experiments():
+            path = entry.get("catalogs", {}).get(f"{scope}_regions")
+            if path and Path(path).exists():
+                frame = pd.read_parquet(path)
+                frame["experiment"] = entry["id"]
+                frames.append(frame)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    def reference_interval_map(self) -> pd.DataFrame:
+        """Union stored-to-original reference maps across experiments."""
+        frames = []
+        for entry in self.experiments():
+            path = entry.get("catalogs", {}).get("reference_interval_map")
+            if path and Path(path).exists():
+                frame = pd.read_parquet(path)
+                frame["experiment"] = entry["id"]
+                frames.append(frame)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
     def lookup_molecule(
         self,
         *,

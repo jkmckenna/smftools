@@ -16,6 +16,10 @@ strands:
   - top
 conversions:
   - unconverted
+alignment_regions_bed: null # Optional original-FASTA 0-based half-open BED restricting the alignment reference universe
+analysis_regions_bed: null # Optional original-FASTA 0-based half-open BED defining shared downstream analysis scope (consumed beginning in PR-09)
+plot_regions_bed: null # Optional original-FASTA 0-based half-open BED defining presentation-only regions (consumed beginning in PR-11)
+fasta_regions_of_interest: null # Deprecated alias for alignment_regions_bed
 fastq_barcode_map: null # For FASTQ files, an optional map of file paths to barcodes can be provided. Default is autodetecting barcodes.
 fastq_auto_pairing: True # For FASTQ files, attempt to find read pair files automatically.
 input_already_demuxed: False # If the input files are already demultiplexed.
