@@ -787,6 +787,44 @@ def test_genome_derived_layers_stitch_across_cores_with_absent_read_fill(tmp_pat
     assert derived.layers["nan_half"][1].tolist() == [0.5, 0.5, 0.0, 1.0, 1.0, 0.0]
 
 
+def test_genome_spatial_without_regions_bed_publishes_empty_region_catalog(tmp_path):
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="genome",
+        genome_tile_size=4,
+        genome_tile_halo=1,
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    cfg = _cfg()
+    cfg.read_len_filter_thresholds = [None, None]
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], cfg, tmp_path / "preprocess_outputs"
+    )
+    cfg.autocorr_site_types = ["C"]
+    cfg.autocorr_max_lag = 4
+    cfg.spatial_generate_clustermaps = True
+    cfg.spatial_generate_position_matrices = True
+    cfg.threads = 1
+
+    spatial = execute_partitioned_spatial(preprocess["spine"], cfg, tmp_path / "spatial_outputs")
+
+    tasks = pd.read_parquet(spatial["task_catalog"])
+    regions = pd.read_parquet(spatial["region_catalog"])
+    spatial_spine, _ = safe_read_h5ad(spatial["spine"])
+
+    assert not tasks.empty
+    assert set(tasks["analysis_mode"]) == {"genome"}
+    assert regions.empty
+    assert list(regions.columns) == ["reference", "start", "end", "name", "source"]
+    assert not list(spatial["matrix_store"].rglob("*.parquet"))
+    assert spatial["manifest"].is_file()
+    assert spatial_spine.uns["spatial_region_catalog"] == relative_uns_path(
+        spatial["region_catalog"], tmp_path
+    )
+
+
 def test_duplicate_reduction_reconciles_clusters_across_genome_core_boundary(tmp_path):
     frame = pd.DataFrame(
         [
