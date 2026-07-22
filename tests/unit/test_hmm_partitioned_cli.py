@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import anndata as ad
@@ -256,6 +257,16 @@ def test_partitioned_hmm_writes_task_store_and_rematerializes_layers(tmp_path, m
     def annotate(adata, task, cfg, models_dir):
         adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
         adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
+        adata.uns["hmm_model_artifacts"] = [
+            {
+                "model_id": "hmm-0123456789abcdef",
+                "checkpoint_sha256": "a" * 64,
+                "checkpoint": "models/ef/hmm-0123456789abcdef.pt",
+                "metadata": "models/ef/hmm-0123456789abcdef.json",
+                "model_key": {"label": "GpC", "fit_kind": "PER"},
+                "layers": ["GpC_test_feature"],
+            }
+        ]
         return ["GpC_test_feature"]
 
     monkeypatch.setattr(partitioned_hmm, "_annotate_task", annotate)
@@ -266,6 +277,11 @@ def test_partitioned_hmm_writes_task_store_and_rematerializes_layers(tmp_path, m
     assert len(catalog) == 1
     task, _ = safe_read_zarr(outputs["task_catalog"].parent / catalog.iloc[0]["group_path"])
     assert set(task.layers) == {"GpC_test_feature"}
+    task_models = task.uns["hmm_model_artifacts"]
+    assert task_models[0]["model_id"] == "hmm-0123456789abcdef"
+    assert task.uns["hmm_layer_model_map"] == {"GpC_test_feature": "hmm-0123456789abcdef"}
+    assert catalog.iloc[0]["hmm_model_ids"][0] == "hmm-0123456789abcdef"
+    assert catalog.iloc[0]["hmm_model_checksums"][0] == "a" * 64
     spine, _ = safe_read_h5ad(outputs["spine"])
     assert spine.uns["hmm_catalog"] == relative_uns_path(outputs["task_catalog"], tmp_path)
     assert spine.uns["hmm_source_spine"] == relative_uns_path(preprocess["spine"], tmp_path)
@@ -315,7 +331,7 @@ def test_partitioned_hmm_masks_read_span_for_single_channel_signals(tmp_path, mo
     monkeypatch.setattr(hmm_module, "mask_layers_outside_read_span", spy_mask)
 
     cfg = _hmm_cfg(hmm_methbases=["C"], hmm_max_iter=2, target_task_memory_mb=1)
-    execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
 
     # A single-channel ("C") signal was used -- with the bug, this call never
     # happened at all for the raw (non-merged) layers.
@@ -325,6 +341,15 @@ def test_partitioned_hmm_masks_read_span_for_single_channel_signals(tmp_path, mo
     masked_layers = {layer for call in captured_calls for layer in call}
     assert any(layer.endswith("_all_accessible_features") for layer in masked_layers)
     assert any(layer.endswith("_all_accessible_features_lengths") for layer in masked_layers)
+    catalog = pd.read_parquet(outputs["task_catalog"])
+    model_id = catalog.iloc[0]["hmm_model_ids"][0]
+    artifact_ref = catalog.iloc[0]["hmm_model_artifact_refs"][0]
+    assert model_id.startswith("hmm-")
+    assert (outputs["task_catalog"].parent / artifact_ref).is_file()
+    task, _ = safe_read_zarr(outputs["task_catalog"].parent / catalog.iloc[0]["group_path"])
+    layer_model_map = task.uns["hmm_layer_model_map"]
+    assert layer_model_map
+    assert set(layer_model_map.values()) == {model_id}
 
 
 def test_partitioned_hmm_excludes_reads_failing_qc(tmp_path, monkeypatch):
@@ -771,7 +796,7 @@ def test_hmm_trainer_fit_or_load_records_fit_history_for_new_fits(tmp_path):
         device="cpu",
     )
 
-    path = trainer._path("PER", "bc1", "ref_top__0_10", "GpC")
+    path = trainer.models_dir / trainer.last_artifact["checkpoint"]
     payload = torch.load(path, map_location="cpu")
     assert "fit_history" in payload
     assert len(payload["fit_history"]) >= 1
@@ -808,7 +833,9 @@ def test_hmm_trainer_fit_or_load_default_tol_stops_before_max_iter(tmp_path):
         device="cpu",
     )
 
-    payload = torch.load(trainer._path("PER", "bc1", "ref_top__0_12", "GpC"), map_location="cpu")
+    payload = torch.load(
+        trainer.models_dir / trainer.last_artifact["checkpoint"], map_location="cpu"
+    )
     assert len(payload["fit_history"]) < 200
 
 

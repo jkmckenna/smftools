@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
 
@@ -22,6 +23,17 @@ from ..hmm.HMM import (
     create_hmm,
     mask_layers_outside_read_span,
     normalize_hmm_feature_sets,
+)
+from ..hmm.model_artifacts import (
+    HMMModelKey,
+    atomic_torch_save,
+    checkpoint_path,
+    hmm_fit_config_hash,
+    load_artifact_record,
+    metadata_path,
+    model_fit_lock,
+    portable_artifact_record,
+    publish_checkpoint,
 )
 
 logger = get_logger(__name__)
@@ -418,10 +430,16 @@ def resolve_torch_device(device_str: str | None) -> torch.device:
 class HMMTrainer:
     cfg: Any
     models_dir: Path
+    last_artifact: Optional[dict[str, Any]] = field(init=False, default=None)
+    fit_revision: Optional[str] = field(init=False, default=None)
 
     def __post_init__(self):
         self.models_dir = Path(self.models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
+        if bool(getattr(self.cfg, "force_redo_hmm_fit", False)):
+            self.fit_revision = str(
+                getattr(self.cfg, "_hmm_fit_revision", None) or uuid.uuid4().hex
+            )
 
     def choose_arch(self, *, multichannel: bool) -> str:
         use_dist = bool(getattr(self.cfg, "hmm_distance_aware", False))
@@ -434,13 +452,38 @@ class HMMTrainer:
         # "per_sample" | "global" | "global_then_adapt"
 
     def _path(self, kind: str, sample: str, ref: str, label: str) -> Path:
+        """Return the legacy checkpoint path used by pre-artifact runs."""
+
         # kind: "GLOBAL" | "PER" | "ADAPT"
         def safe(s):
             return str(s).replace("/", "_")
 
         return self.models_dir / f"{kind}_{safe(sample)}_{safe(ref)}_{safe(label)}.pt"
 
-    def _save(self, model, path: Path, hist: Optional[List[float]] = None):
+    def _key(
+        self,
+        *,
+        kind: str,
+        sample: str,
+        reference: str,
+        label: str,
+        arch: str,
+        core_start: Optional[int],
+        core_end: Optional[int],
+    ) -> HMMModelKey:
+        return HMMModelKey(
+            fit_kind=str(kind),
+            reference=str(reference),
+            barcode=str(sample),
+            label=str(label),
+            architecture=str(arch),
+            fit_config_hash=hmm_fit_config_hash(self.cfg),
+            core_start=None if core_start is None else int(core_start),
+            core_end=None if core_end is None else int(core_end),
+            revision=self.fit_revision,
+        )
+
+    def _payload(self, model, hist: Optional[List[float]] = None) -> dict[str, Any]:
         override = {}
         if getattr(model, "hmm_name", None) == "multi":
             override["hmm_n_channels"] = int(getattr(model, "n_channels", 2))
@@ -455,11 +498,12 @@ class HMMTrainer:
             "override": override,
         }
         if hist is not None:
-            # Per-iteration EM log-likelihood proxy from fit_em, kept alongside the
-            # checkpoint so convergence can be inspected/plotted without refitting
-            # (see tools.partitioned_hmm._plot_hmm_fit_history).
-            payload["fit_history"] = [float(v) for v in hist]
-        torch.save(payload, path)
+            payload["fit_history"] = [float(value) for value in hist]
+        return payload
+
+    def _save(self, model, path: Path, hist: Optional[List[float]] = None):
+        """Atomically write a legacy-format checkpoint for API compatibility."""
+        atomic_torch_save(self._payload(model, hist), path)
 
     def _load(self, path: Path, arch: str, device):
         payload = torch.load(path, map_location="cpu")
@@ -477,6 +521,40 @@ class HMMTrainer:
         m.eval()
         return m
 
+    def _load_or_fit_artifact(
+        self,
+        *,
+        key: HMMModelKey,
+        arch: str,
+        device,
+        fit_model,
+        training_selection: Optional[dict[str, Any]],
+    ):
+        path = checkpoint_path(self.models_dir, key)
+        with model_fit_lock(path):
+            if path.exists() and not metadata_path(path).exists():
+                # The JSON sidecar is the commit marker. A checkpoint without it
+                # can only be left by an interrupted publication and is safe to
+                # discard while holding the exclusive model lock.
+                path.unlink()
+            if path.exists():
+                record = load_artifact_record(path)
+                if record.get("model_key") != key.to_dict():
+                    raise RuntimeError(
+                        f"HMM artifact {key.model_id} does not match its requested model key"
+                    )
+                model = self._load(path, arch=arch, device=device)
+            else:
+                model, history = fit_model()
+                record = publish_checkpoint(
+                    self._payload(model, history),
+                    path,
+                    key,
+                    training_selection=training_selection,
+                )
+        self.last_artifact = portable_artifact_record(record, self.models_dir)
+        return model
+
     def fit_or_load(
         self,
         *,
@@ -487,9 +565,13 @@ class HMMTrainer:
         X,
         coords: Optional[np.ndarray],
         device,
+        reference: Optional[str] = None,
+        core_start: Optional[int] = None,
+        core_end: Optional[int] = None,
+        training_selection: Optional[dict[str, Any]] = None,
     ):
-        force_fit = bool(getattr(self.cfg, "force_redo_hmm_fit", False))
         scope = self._fit_scope()
+        configured_reference = str(reference if reference is not None else ref)
 
         max_iter = int(getattr(self.cfg, "hmm_max_iter", 50))
         # Relative tolerance (see BaseHMM.fit's docstring) -- 1e-5 was chosen
@@ -500,67 +582,91 @@ class HMMTrainer:
         tol = float(getattr(self.cfg, "hmm_tol", 1e-5))
         verbose = bool(getattr(self.cfg, "hmm_verbose", False))
 
+        def fit_new():
+            model = create_hmm(self.cfg, arch=arch, device=device)
+            if arch == "single_distance_binned":
+                history = model.fit(
+                    X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose
+                )
+            else:
+                history = model.fit(
+                    X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose
+                )
+            return model, history
+
         # ---- global then adapt ----
         if scope == "global_then_adapt":
-            p_global = self._path("GLOBAL", "ALL", ref, label)
-            if p_global.exists() and not force_fit:
-                base = self._load(p_global, arch=arch, device=device)
-            else:
-                base = create_hmm(self.cfg, arch=arch).to(device)
-                if arch == "single_distance_binned":
-                    hist = base.fit(
-                        X, device=device, coords=coords, max_iter=max_iter, tol=tol, verbose=verbose
-                    )
-                else:
-                    hist = base.fit(X, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
-                self._save(base, p_global, hist=hist)
+            global_key = self._key(
+                kind="GLOBAL",
+                sample="ALL",
+                reference=configured_reference,
+                label=label,
+                arch=arch,
+                core_start=core_start,
+                core_end=core_end,
+            )
+            base = self._load_or_fit_artifact(
+                key=global_key,
+                arch=arch,
+                device=device,
+                fit_model=fit_new,
+                training_selection=training_selection,
+            )
 
-            p_adapt = self._path("ADAPT", sample, ref, label)
-            if p_adapt.exists() and not force_fit:
-                return self._load(p_adapt, arch=arch, device=device)
-
-            # IMPORTANT: this assumes you added model.adapt_emissions(...)
-            adapted = copy.deepcopy(base).to(device)
-            if arch == "single_distance_binned":
-                adapt_hist = adapted.adapt_emissions(
+            def fit_adapted():
+                adapted = copy.deepcopy(base).to(device)
+                history = adapted.adapt_emissions(
                     X,
                     coords,
                     device=device,
-                    max_iter=int(getattr(self.cfg, "hmm_adapt_iters", 10)),
+                    iters=int(getattr(self.cfg, "hmm_adapt_iters", 10)),
                     verbose=verbose,
                 )
+                return adapted, history
 
-            else:
-                adapt_hist = adapted.adapt_emissions(
-                    X,
-                    coords,
-                    device=device,
-                    max_iter=int(getattr(self.cfg, "hmm_adapt_iters", 10)),
-                    verbose=verbose,
-                )
-
-            self._save(adapted, p_adapt, hist=adapt_hist)
-            return adapted
+            adapt_key = self._key(
+                kind="ADAPT",
+                sample=sample,
+                reference=configured_reference,
+                label=label,
+                arch=arch,
+                core_start=core_start,
+                core_end=core_end,
+            )
+            return self._load_or_fit_artifact(
+                key=adapt_key,
+                arch=arch,
+                device=device,
+                fit_model=fit_adapted,
+                training_selection=training_selection,
+            )
 
         # ---- global only ----
         if scope == "global":
-            p = self._path("GLOBAL", "ALL", ref, label)
-            if p.exists() and not force_fit:
-                return self._load(p, arch=arch, device=device)
+            kind = "GLOBAL"
+            model_sample = "ALL"
 
         # ---- per sample ----
         else:
-            p = self._path("PER", sample, ref, label)
-            if p.exists() and not force_fit:
-                return self._load(p, arch=arch, device=device)
+            kind = "PER"
+            model_sample = sample
 
-        m = create_hmm(self.cfg, arch=arch, device=device)
-        if arch == "single_distance_binned":
-            hist = m.fit(X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
-        else:
-            hist = m.fit(X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose)
-        self._save(m, p, hist=hist)
-        return m
+        key = self._key(
+            kind=kind,
+            sample=model_sample,
+            reference=configured_reference,
+            label=label,
+            arch=arch,
+            core_start=core_start,
+            core_end=core_end,
+        )
+        return self._load_or_fit_artifact(
+            key=key,
+            arch=arch,
+            device=device,
+            fit_model=fit_new,
+            training_selection=training_selection,
+        )
 
 
 def _fully_qualified_merge_layers(cfg, prefix: str) -> List[Tuple[str, int]]:
