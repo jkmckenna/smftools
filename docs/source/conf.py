@@ -95,6 +95,7 @@ autodoc_mock_imports = [
     "omegaconf",
     "pandas",
     "pod5",
+    "pyarrow",
     "pybedtools",
     "pyBigWig",
     "pyfaidx",
