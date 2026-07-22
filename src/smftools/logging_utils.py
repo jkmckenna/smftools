@@ -101,7 +101,28 @@ def setup_stage_logging(cfg, stage_directory: Union[str, Path]) -> Optional[Path
 
     setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
     _setup_stage_perf_logging(cfg, logging_directory, stem, stage_directory.name)
+    _log_resource_envelope(cfg)
     return log_file
+
+
+def _log_resource_envelope(cfg) -> None:
+    """Write the resolved run ceiling to both human and performance logs."""
+    envelope = getattr(cfg, "_resource_envelope", None)
+    if envelope is None:
+        return
+    record = envelope.as_dict()
+    get_logger(__name__).info(
+        "Resolved resources: %d CPU, %.2f GiB memory; enforcement=%s active=%s",
+        envelope.resolved_threads,
+        envelope.resolved_memory_bytes / (1024**3),
+        envelope.enforcement_mode,
+        envelope.enforcement_active,
+    )
+    from .perf_log import get_perf_logger
+
+    perf = get_perf_logger()
+    if perf is not None:
+        perf.resource_envelope(**record)
 
 
 def _setup_stage_perf_logging(cfg, logging_directory, stem: str, stage_name: str) -> None:

@@ -499,7 +499,7 @@ def test_map_references_parallel_bounds_in_flight_submissions(monkeypatch):
     submit_calls = []
 
     class _FakeExecutor:
-        def __init__(self, max_workers=None, initializer=None):
+        def __init__(self, max_workers=None, initializer=None, initargs=()):
             self.max_workers = max_workers
 
         def __enter__(self):

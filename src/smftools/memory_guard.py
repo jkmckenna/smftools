@@ -29,11 +29,13 @@ blocked by it.
 from __future__ import annotations
 
 import atexit
+import math
 import os
 import sys
 import threading
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 from .logging_utils import get_logger
 
@@ -41,6 +43,193 @@ logger = get_logger(__name__)
 
 DEFAULT_AGGREGATE_SAFETY_FRACTION = 0.9
 DEFAULT_WORKER_POLL_INTERVAL_SECONDS = 2.0
+_ACTIVE_CGROUP_PATH: Path | None = None
+_UPSTREAM_CGROUP_CPU_COUNT: int | None = None
+_UPSTREAM_CGROUP_MEMORY_LIMIT: int | None = None
+_UPSTREAM_CGROUP_MEMORY_CURRENT: int | None = None
+
+
+@dataclass(frozen=True)
+class ResourceEnvelope:
+    """Immutable requested, detected, and resolved resources for one invocation."""
+
+    platform: str
+    logical_cpu_count: int
+    affinity_cpu_count: int | None
+    cgroup_cpu_count: int | None
+    scheduler_cpu_count: int | None
+    requested_threads: int
+    resolved_threads: int
+    total_memory_bytes: int
+    available_memory_bytes: int
+    cgroup_memory_limit_bytes: int | None
+    cgroup_memory_current_bytes: int | None
+    scheduler_memory_limit_bytes: int | None
+    requested_memory_bytes: int
+    memory_reserve_bytes: int
+    resolved_memory_bytes: int
+    enforcement_capability: str
+    enforcement_mode: str
+    enforcement_active: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable resource provenance record."""
+        return asdict(self)
+
+
+def _minimum_positive(values: list[int | None], *, fallback: int) -> int:
+    positive = [int(value) for value in values if value is not None and int(value) > 0]
+    return min(positive) if positive else max(1, int(fallback))
+
+
+def affinity_cpu_count() -> int | None:
+    """Return CPUs available through process affinity, when the OS exposes it."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        try:
+            import psutil
+
+            affinity = psutil.Process().cpu_affinity()
+            return len(affinity) if affinity else None
+        except (AttributeError, OSError, NotImplementedError):
+            return None
+
+
+def _read_cgroup_value(path: Path) -> int | None:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not value or value == "max":
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def cgroup_cpu_quota_count(cgroup_path: Path | None = None) -> int | None:
+    """Return the integral CPU ceiling from a cgroup v2 ``cpu.max`` file."""
+    if cgroup_path is None and _ACTIVE_CGROUP_PATH is not None:
+        return _UPSTREAM_CGROUP_CPU_COUNT
+    cgroup_path = cgroup_path or _cgroup_v2_self_path()
+    if cgroup_path is None:
+        return None
+    try:
+        raw = (cgroup_path / "cpu.max").read_text(encoding="utf-8").split()
+    except OSError:
+        return None
+    if len(raw) < 2 or raw[0] == "max":
+        return None
+    try:
+        quota, period = int(raw[0]), int(raw[1])
+    except ValueError:
+        return None
+    if quota <= 0 or period <= 0:
+        return None
+    return max(1, math.floor(quota / period))
+
+
+def cgroup_memory_values(cgroup_path: Path | None = None) -> tuple[int | None, int | None]:
+    """Return cgroup v2 memory limit and current use, when available."""
+    if cgroup_path is None and _ACTIVE_CGROUP_PATH is not None:
+        return _UPSTREAM_CGROUP_MEMORY_LIMIT, _UPSTREAM_CGROUP_MEMORY_CURRENT
+    cgroup_path = cgroup_path or _cgroup_v2_self_path()
+    if cgroup_path is None:
+        return None, None
+    return (
+        _read_cgroup_value(cgroup_path / "memory.max"),
+        _read_cgroup_value(cgroup_path / "memory.current"),
+    )
+
+
+_SCHEDULER_CPU_VARIABLES = (
+    "SLURM_CPUS_PER_TASK",
+    "SLURM_CPUS_ON_NODE",
+    "SLURM_JOB_CPUS_PER_NODE",
+    "PBS_NP",
+    "NSLOTS",
+    "LSB_DJOB_NUMPROC",
+)
+
+
+def scheduler_cpu_count(environ: Mapping[str, str] | None = None) -> int | None:
+    """Return the most restrictive recognized scheduler CPU allocation."""
+    environ = os.environ if environ is None else environ
+    values: list[int] = []
+    for key in _SCHEDULER_CPU_VARIABLES:
+        raw = str(environ.get(key, "")).strip().split("(", 1)[0]
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if value > 0:
+            values.append(value)
+    return min(values) if values else None
+
+
+def _parse_memory_size(value: str, *, default_unit_bytes: int = 1) -> int | None:
+    raw = str(value).strip().upper()
+    if not raw:
+        return None
+    units = {
+        "K": 1024,
+        "KB": 1024,
+        "M": 1024**2,
+        "MB": 1024**2,
+        "G": 1024**3,
+        "GB": 1024**3,
+        "T": 1024**4,
+        "TB": 1024**4,
+    }
+    multiplier = default_unit_bytes
+    for suffix in sorted(units, key=len, reverse=True):
+        if raw.endswith(suffix):
+            multiplier = units[suffix]
+            raw = raw[: -len(suffix)]
+            break
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return None
+    return int(parsed * multiplier) if parsed > 0 else None
+
+
+def scheduler_memory_limit_bytes(
+    environ: Mapping[str, str] | None = None,
+    *,
+    allocated_cpus: int | None = None,
+) -> int | None:
+    """Return a recognized scheduler job-memory ceiling in bytes."""
+    environ = os.environ if environ is None else environ
+    candidates: list[int] = []
+    per_node = _parse_memory_size(environ.get("SLURM_MEM_PER_NODE", ""), default_unit_bytes=1024**2)
+    if per_node is not None:
+        candidates.append(per_node)
+    per_cpu = _parse_memory_size(environ.get("SLURM_MEM_PER_CPU", ""), default_unit_bytes=1024**2)
+    if per_cpu is not None and allocated_cpus is not None:
+        candidates.append(per_cpu * allocated_cpus)
+    for key in ("PBS_RESC_MEM", "PBS_RESOURCE_LIST_MEM", "SGE_H_VMEM", "LSB_MAX_MEM"):
+        parsed = _parse_memory_size(environ.get(key, ""))
+        if parsed is not None:
+            candidates.append(parsed)
+    return min(candidates) if candidates else None
+
+
+def detected_usable_cpu_count(environ: Mapping[str, str] | None = None) -> int:
+    """Return the CPU ceiling imposed by the host, affinity, cgroup, and scheduler."""
+    logical = max(1, int(os.cpu_count() or 1))
+    return _minimum_positive(
+        [
+            logical,
+            affinity_cpu_count(),
+            cgroup_cpu_quota_count(),
+            scheduler_cpu_count(environ),
+        ],
+        fallback=logical,
+    )
 
 
 def total_system_memory_bytes() -> int:
@@ -50,28 +239,113 @@ def total_system_memory_bytes() -> int:
     return int(psutil.virtual_memory().total)
 
 
-def resolve_memory_budget_bytes(cfg) -> int:
-    """Resolve the aggregate memory budget (bytes) for the whole workflow from
-    ``cfg.max_memory_percent``/``cfg.max_memory_gb`` -- the more restrictive of
-    the two applies when both are set (a fixed GB ceiling doesn't relax the
-    percent-of-RAM default, and vice versa).
+def available_system_memory_bytes() -> int:
+    """Memory currently available to new work according to the host OS."""
+    import psutil
 
-    Falls back to ``DEFAULT_AGGREGATE_SAFETY_FRACTION`` of total RAM if neither
-    config field is set (e.g. a bare/legacy config, or ``cfg`` not an
-    ``ExperimentConfig`` at all) -- matches this module's pre-existing default
-    before these fields existed.
-    """
-    total = total_system_memory_bytes()
-    candidates: list[float] = []
+    return int(psutil.virtual_memory().available)
+
+
+def resolve_resource_envelope(
+    cfg,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> ResourceEnvelope:
+    """Resolve one portable run-level CPU and memory ceiling."""
+    logical_cpus = max(1, int(os.cpu_count() or 1))
+    affinity_cpus = affinity_cpu_count()
+    cgroup_cpus = cgroup_cpu_quota_count()
+    scheduler_cpus = scheduler_cpu_count(environ)
+    requested_threads = int(getattr(cfg, "threads", None) or logical_cpus)
+    resolved_threads = _minimum_positive(
+        [requested_threads, logical_cpus, affinity_cpus, cgroup_cpus, scheduler_cpus],
+        fallback=1,
+    )
+
+    total_memory = total_system_memory_bytes()
+    available_memory = available_system_memory_bytes()
+    cgroup_limit, cgroup_current = cgroup_memory_values()
+    scheduler_memory = scheduler_memory_limit_bytes(
+        environ,
+        allocated_cpus=scheduler_cpus,
+    )
+    reserve_bytes = int(float(getattr(cfg, "memory_reserve_gb", 1.0) or 0.0) * (1024**3))
+
+    requested_candidates: list[int] = []
     percent = getattr(cfg, "max_memory_percent", None)
     if percent is not None:
-        candidates.append(total * (float(percent) / 100.0))
-    gb = getattr(cfg, "max_memory_gb", None)
-    if gb is not None:
-        candidates.append(float(gb) * (1024**3))
-    if not candidates:
-        candidates.append(total * DEFAULT_AGGREGATE_SAFETY_FRACTION)
-    return max(1, int(min(candidates)))
+        requested_candidates.append(int(total_memory * float(percent) / 100.0))
+    fixed_gb = getattr(cfg, "max_memory_gb", None)
+    if fixed_gb is not None:
+        requested_candidates.append(int(float(fixed_gb) * (1024**3)))
+    if not requested_candidates:
+        requested_candidates.append(int(total_memory * DEFAULT_AGGREGATE_SAFETY_FRACTION))
+    requested_memory = min(requested_candidates)
+
+    detected_candidates = [max(1, available_memory - reserve_bytes)]
+    if cgroup_limit is not None:
+        current = cgroup_current or 0
+        detected_candidates.append(max(1, cgroup_limit - current - reserve_bytes))
+    if scheduler_memory is not None:
+        detected_candidates.append(max(1, scheduler_memory - reserve_bytes))
+    resolved_memory = max(1, min(requested_memory, *detected_candidates))
+
+    if sys.platform == "linux":
+        capability = "cgroup_v2" if _cgroup_v2_self_path() is not None else "advisory"
+    elif sys.platform in {"darwin", "win32"}:
+        capability = "worker_watchdog"
+    else:
+        capability = "advisory"
+    return ResourceEnvelope(
+        platform=sys.platform,
+        logical_cpu_count=logical_cpus,
+        affinity_cpu_count=affinity_cpus,
+        cgroup_cpu_count=cgroup_cpus,
+        scheduler_cpu_count=scheduler_cpus,
+        requested_threads=requested_threads,
+        resolved_threads=resolved_threads,
+        total_memory_bytes=total_memory,
+        available_memory_bytes=available_memory,
+        cgroup_memory_limit_bytes=cgroup_limit,
+        cgroup_memory_current_bytes=cgroup_current,
+        scheduler_memory_limit_bytes=scheduler_memory,
+        requested_memory_bytes=requested_memory,
+        memory_reserve_bytes=reserve_bytes,
+        resolved_memory_bytes=resolved_memory,
+        enforcement_capability=capability,
+        enforcement_mode="not_activated",
+        enforcement_active=False,
+    )
+
+
+def activate_resource_envelope(envelope: ResourceEnvelope) -> ResourceEnvelope:
+    """Attempt platform enforcement and return the resulting immutable record."""
+    active = enable_aggregate_memory_cap(budget_bytes=envelope.resolved_memory_bytes)
+    if active:
+        mode = "cgroup_v2"
+    elif sys.platform in {"darwin", "win32"}:
+        mode = "worker_watchdog"
+    else:
+        mode = "advisory"
+    return replace(envelope, enforcement_mode=mode, enforcement_active=active)
+
+
+def resource_envelope_for_config(cfg) -> ResourceEnvelope:
+    """Return the attached run envelope or resolve one for a library caller."""
+    envelope = getattr(cfg, "_resource_envelope", None)
+    if isinstance(envelope, ResourceEnvelope):
+        return envelope
+    envelope = resolve_resource_envelope(cfg)
+    try:
+        cfg._resource_envelope = envelope
+    except (AttributeError, TypeError):
+        pass
+    return envelope
+
+
+def resolve_memory_budget_bytes(cfg) -> int:
+    """Return the immutable run budget after user and detected-memory caps."""
+    return resource_envelope_for_config(cfg).resolved_memory_bytes
 
 
 def resolve_max_workers(cfg, n_items: int, *, per_item_memory_mb: float | None = None) -> int:
@@ -85,7 +359,7 @@ def resolve_max_workers(cfg, n_items: int, *, per_item_memory_mb: float | None =
     explicitly (e.g. raw-ingestion extraction buckets, which don't have a
     ``target_task_memory_mb``-shaped estimate of their own).
     """
-    threads = max(1, int(getattr(cfg, "threads", 1) or 1))
+    threads = resource_envelope_for_config(cfg).resolved_threads
     if n_items <= 0:
         return 1
     if per_item_memory_mb is None:
@@ -123,6 +397,10 @@ def enable_aggregate_memory_cap(
     if sys.platform != "linux":
         return False
     try:
+        if _ACTIVE_CGROUP_PATH is not None and _ACTIVE_CGROUP_PATH.is_dir():
+            if budget_bytes is not None:
+                (_ACTIVE_CGROUP_PATH / "memory.max").write_text(str(budget_bytes))
+            return True
         return _try_enable_linux_cgroup_cap(safety_fraction, budget_bytes=budget_bytes)
     except Exception:
         logger.debug("Could not enable aggregate cgroup memory cap", exc_info=True)
@@ -151,10 +429,20 @@ def _cgroup_v2_self_path() -> Path | None:
 def _try_enable_linux_cgroup_cap(
     safety_fraction: float, *, budget_bytes: int | None = None
 ) -> bool:
+    global _ACTIVE_CGROUP_PATH
+    global _UPSTREAM_CGROUP_CPU_COUNT
+    global _UPSTREAM_CGROUP_MEMORY_CURRENT
+    global _UPSTREAM_CGROUP_MEMORY_LIMIT
+
     self_cgroup = _cgroup_v2_self_path()
     if self_cgroup is None or not self_cgroup.is_dir():
         logger.info("cgroup v2 not available; skipping aggregate memory cap")
         return False
+
+    _UPSTREAM_CGROUP_CPU_COUNT = cgroup_cpu_quota_count(self_cgroup)
+    _UPSTREAM_CGROUP_MEMORY_LIMIT, _UPSTREAM_CGROUP_MEMORY_CURRENT = cgroup_memory_values(
+        self_cgroup
+    )
 
     controllers = (self_cgroup / "cgroup.controllers").read_text().split()
     if "memory" not in controllers:
@@ -183,6 +471,7 @@ def _try_enable_linux_cgroup_cap(
 
     (child_cgroup / "memory.max").write_text(str(budget_bytes))
     (child_cgroup / "cgroup.procs").write_text(str(os.getpid()))
+    _ACTIVE_CGROUP_PATH = child_cgroup
 
     def _cleanup() -> None:
         try:
@@ -376,35 +665,6 @@ def start_worker_watchdog(
     return _stop
 
 
-def _limit_blas_threads_in_worker() -> None:
-    """``ProcessPoolExecutor`` initializer: force single-threaded BLAS/OMP/
-    numexpr in this worker process.
-
-    Without this, task-level (process-count) parallelism and BLAS's own
-    internal thread pool (numpy matrix ops, autocorrelation, etc.) compound:
-    each worker independently spins up threads across every physical core
-    for its own numpy calls, so N concurrent task workers can end up
-    scheduling N x (BLAS's own thread count) threads total -- severe CPU
-    oversubscription that makes wall-clock time *worse* than fewer, purely
-    task-parallel workers would give. Confirmed via real-data testing: task
-    workers individually using 200%+ CPU each while running concurrently.
-    Must run before numpy is imported in the worker to take effect (these
-    are read once, at BLAS backend init) -- set as this pool's
-    ``initializer``, which runs first thing in each freshly started worker
-    process, before any of this codebase's own numpy-importing code does.
-    """
-    import os
-
-    for var in (
-        "OMP_NUM_THREADS",
-        "OPENBLAS_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "VECLIB_MAXIMUM_THREADS",
-        "NUMEXPR_NUM_THREADS",
-    ):
-        os.environ[var] = "1"
-
-
 def run_tasks_parallel(
     worker: Callable,
     task_args_list: list[tuple],
@@ -451,7 +711,7 @@ def run_tasks_parallel(
     Apple Silicon) reliably crashed the whole pool (``BrokenProcessPool``)
     when several worker processes each tried to initialize/use the same GPU
     context at once. CPU-bound BLAS oversubscription (the problem
-    ``_limit_blas_threads_in_worker`` solves) and this are different
+    ``parallel_utils.configure_worker_threads`` solves) and this are different
     failure modes -- BLAS threads within one process don't fight over a
     single shared GPU context the way independent *processes* do.
 
@@ -510,6 +770,8 @@ def run_tasks_parallel(
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
 
+    from .parallel_utils import configure_worker_threads
+
     poll_interval = float(getattr(cfg, "perf_log_sample_interval_seconds", 2.0) or 2.0)
     results: list = [None] * len(task_args_list)
     pending_indices = list(range(len(task_args_list)))
@@ -519,7 +781,9 @@ def run_tasks_parallel(
         while pending_indices:
             per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // workers_for_attempt
             with ProcessPoolExecutor(
-                max_workers=workers_for_attempt, initializer=_limit_blas_threads_in_worker
+                max_workers=workers_for_attempt,
+                initializer=configure_worker_threads,
+                initargs=(1,),
             ) as pool:
                 stop_watchdog = start_worker_watchdog(
                     pool,
@@ -586,7 +850,8 @@ def _worker_decision_inputs(cfg, n_items: int) -> dict:
     actionable when the estimate is wrong -- the exact failure mode behind the
     batch OOM (see dev/pipeline_scaling_audit.md).
     """
-    threads = max(1, int(getattr(cfg, "threads", 1) or 1))
+    envelope = resource_envelope_for_config(cfg)
+    threads = envelope.resolved_threads
     per_item_mb = float(getattr(cfg, "target_task_memory_mb", 512) or 512)
     budget_bytes = resolve_memory_budget_bytes(cfg)
     by_memory = max(1, int(budget_bytes // (max(1.0, per_item_mb) * (1024**2))))
@@ -596,4 +861,5 @@ def _worker_decision_inputs(cfg, n_items: int) -> dict:
         "aggregate_budget_gb": round(budget_bytes / (1024**3), 3),
         "target_task_memory_mb": per_item_mb,
         "by_memory_workers": by_memory,
+        "resource_envelope": envelope.as_dict(),
     }

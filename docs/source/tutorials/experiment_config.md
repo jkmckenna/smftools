@@ -51,6 +51,30 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `mod_list`: Modification calls to use for direct-modality workflows.
 - `conversion_types`: Target modification types for conversion workflows.
 
+## Resource limits
+
+Resource settings are requests and ceilings, not guarantees that the requested capacity exists.
+At command start, smftools resolves one resource envelope from the configuration and the local
+machine or job allocation:
+
+- `threads`: Requested CPU-worker ceiling. The resolved value cannot exceed the logical CPU count,
+  process affinity, Linux cgroup CPU quota, or a recognized scheduler allocation (Slurm, PBS, SGE,
+  or LSF).
+- `max_memory_percent`: Maximum workflow memory as a percentage of physical RAM. It must be greater
+  than zero and no more than 100.
+- `max_memory_gb`: Optional fixed workflow-memory ceiling. When both memory settings are present,
+  the more restrictive one applies.
+- `memory_reserve_gb`: Memory retained outside the workflow after startup system, cgroup, and
+  scheduler headroom are detected. The default is 1 GiB.
+- `target_task_memory_mb`: Positive per-task planning estimate used to limit concurrent workers.
+
+Existing configurations do not require migration: omitted settings inherit their defaults. CPU
+utilization and the number of threads currently active elsewhere on a shared machine are
+intentionally not used as hard limits because they are transient. Currently available memory is
+included in the startup envelope. The resolved values and enforcement mode are written to stage
+and performance logs. Linux reports whether a cgroup-v2 cap was activated; macOS and Windows
+report worker-watchdog capability explicitly.
+
 ## Tips
 
 - Keep paths absolute whenever possible to avoid ambiguity.
