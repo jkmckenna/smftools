@@ -412,8 +412,8 @@ def _load_preprocess_x_selection(
     layers: Iterable[str] | None,
     start: int | None,
     end: int | None,
-    lazy: bool | None,
-    query_memory_mb: int,
+    lazy: bool | None = None,
+    query_memory_mb: int = DEFAULT_QUERY_MEMORY_MB,
 ) -> "ad.AnnData | None":
     """Read ``X`` directly from one preprocess task shard that fully covers
     ``selection``, skipping raw ragged/tiled CIGAR reconstruction entirely.
