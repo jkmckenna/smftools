@@ -76,6 +76,48 @@ def test_stage_iterator_yields_full_locus_reference(tmp_path):
     np.testing.assert_array_equal(stage_slice.core().X, stage_slice.adata.X)
 
 
+def test_stage_iterator_inherits_analysis_catalog(tmp_path):
+    paths = write_raw_store(
+        _frame().iloc[[0]],
+        tmp_path / "raw_outputs",
+        reference_lengths={"chr1_top": 20},
+        analysis_mode="genome",
+        genome_tile_size=5,
+        genome_tile_halo=1,
+    )
+    catalog = tmp_path / "analysis.parquet"
+    mapping = tmp_path / "mapping.parquet"
+    pd.DataFrame(
+        {
+            "region_id": ["reg_a"],
+            "original_reference": ["chr1"],
+            "original_start": [2],
+            "original_end": [3],
+        }
+    ).to_parquet(catalog, index=False)
+    pd.DataFrame(
+        {
+            "stored_reference": ["chr1_top"],
+            "stored_start": [0],
+            "stored_end": [20],
+            "original_reference": ["chr1"],
+            "original_start": [0],
+            "original_end": [20],
+            "coordinate_orientation": [1],
+        }
+    ).to_parquet(mapping, index=False)
+    spine, _ = safe_read_h5ad(paths["spine"])
+    spine.uns["region_catalogs"] = {"analysis": str(catalog)}
+    spine.uns["reference_interval_map"] = str(mapping)
+    safe_write_h5ad(spine, paths["spine"], backup=False, verbose=False)
+
+    stage_slice = next(iter(iter_stage_slices(paths["spine"], filter_mask=None)))
+
+    assert (stage_slice.core_start, stage_slice.core_end) == (2, 3)
+    assert stage_slice.analysis_region_ids == ("reg_a",)
+    assert list(stage_slice.core().var_names) == ["2"]
+
+
 def _multi_sample_frame(reads_per_barcode: int) -> pd.DataFrame:
     rows = []
     for barcode in ("bc1", "bc2"):

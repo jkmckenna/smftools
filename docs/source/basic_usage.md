@@ -95,6 +95,8 @@ This legacy `spatial_regions_bed` setting remains spatial-only. The independent
 `alignment_regions_bed`, `analysis_regions_bed`, and `plot_regions_bed` fields always use original
 FASTA coordinates and are persisted as versioned catalogs. `fasta_regions_of_interest` remains a
 deprecated alias for alignment scope; do not use it to express downstream analysis scope.
+Partition-aware preprocess, spatial, HMM, latent, and shared stage-input iteration consume the
+inherited analysis catalog as one non-overlapping core plan while retaining stage-specific halos.
 
 Partitioned spatial analysis also saves read-level ACF and direct-signal Lomb-Scargle results by
 default. Each task directory in the general spatial `store` contains a `read_metrics.zarr` AnnData

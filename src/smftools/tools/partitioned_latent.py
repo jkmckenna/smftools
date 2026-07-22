@@ -27,6 +27,7 @@ from ..cli.stage_artifacts import (
     prepare_analysis_plot_layout,
     register_plot_artifact,
 )
+from ..informatics.analysis_region_plan import plan_analysis_cores
 from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
@@ -53,33 +54,40 @@ def _task_path(output_dir: Path, reference: str, start: int, end: int) -> Path:
     )
 
 
-def _analysis_units(spine, filter_mask: str | None) -> list[dict[str, object]]:
+def _analysis_units(
+    spine,
+    filter_mask: str | None,
+    *,
+    spine_path: str | Path | None = None,
+) -> list[dict[str, object]]:
     """Plan one independent latent space per non-empty reference/core."""
     obs = spine.obs
     if filter_mask is not None:
         obs = obs.loc[obs[filter_mask].astype(bool)]
     units = []
-    for reference, raw_plan in sorted(dict(spine.uns.get("reference_plans", {})).items()):
-        plan = dict(raw_plan)
-        length = int(plan["reference_length"])
-        tile_size = length if plan.get("analysis_mode") == "locus" else int(plan["tile_size"])
+    for core in plan_analysis_cores(spine, spine_path=spine_path):
+        reference = core.reference
         reference_obs = obs.loc[obs[REFERENCE_STRAND].astype(str) == str(reference)]
-        for start in range(0, length, tile_size):
-            end = min(start + tile_size, length)
-            selected = reference_obs.loc[
-                (reference_obs["reference_start"].astype("int64") < end)
-                & (reference_obs["reference_end"].astype("int64") > start)
-            ]
-            if not selected.empty:
-                units.append(
-                    {
-                        "reference": str(reference),
-                        "analysis_mode": str(plan["analysis_mode"]),
-                        "core_start": start,
-                        "core_end": end,
-                        "read_ids": list(map(str, selected.index)),
-                    }
-                )
+        selected = reference_obs.loc[
+            (reference_obs["reference_start"].astype("int64") < core.core_end)
+            & (reference_obs["reference_end"].astype("int64") > core.core_start)
+        ]
+        if not selected.empty:
+            units.append(
+                {
+                    "reference": str(reference),
+                    "analysis_mode": core.analysis_mode,
+                    "core_start": core.core_start,
+                    "core_end": core.core_end,
+                    "read_ids": list(map(str, selected.index)),
+                    "analysis_core_id": core.analysis_core_id,
+                    "analysis_region_ids": core.analysis_region_ids,
+                    "original_reference": core.original_reference,
+                    "original_start": core.original_start,
+                    "original_end": core.original_end,
+                    "analysis_planner_version": core.planner_version,
+                }
+            )
     return units
 
 
@@ -564,6 +572,9 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         "core_start": start,
         "core_end": end,
         "independent_coordinate_system": True,
+        "analysis_core_id": str(unit.get("analysis_core_id", "")),
+        "analysis_region_ids": list(unit.get("analysis_region_ids", ())),
+        "analysis_planner_version": int(unit.get("analysis_planner_version", 1)),
     }
     output_path = _task_path(Path(output_dir), reference, start, end)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -588,6 +599,12 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         "fit_reads": int(len(fit_read_ids)),
         "group_path": output_path.relative_to(output_dir).as_posix(),
         "obsm_keys": list(adata.obsm.keys()),
+        "analysis_core_id": str(unit.get("analysis_core_id", "")),
+        "analysis_region_ids": tuple(unit.get("analysis_region_ids", ())),
+        "original_reference": unit.get("original_reference"),
+        "original_start": unit.get("original_start"),
+        "original_end": unit.get("original_end"),
+        "analysis_planner_version": int(unit.get("analysis_planner_version", 1)),
         "varm_keys": list(adata.varm.keys()),
         "obs_columns": list(adata.obs.columns),
     }
@@ -605,7 +622,7 @@ def execute_partitioned_latent(spine_path, cfg, output_dir) -> dict[str, Path]:
         (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
         None,
     )
-    units = _analysis_units(spine, filter_mask)
+    units = _analysis_units(spine, filter_mask, spine_path=spine_path)
     if not units:
         raise RuntimeError("partitioned latent analysis has no non-empty units")
 

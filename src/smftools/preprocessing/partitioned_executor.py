@@ -113,7 +113,7 @@ def fit_direct_modality_youden_thresholds(
 
     thresholds: dict[str, pd.DataFrame] = {}
     for reference in references:
-        windows = reference_windows(spine, reference)
+        windows = reference_windows(spine, reference, spine_path=spine_path)
         reference_obs = spine.obs.loc[spine.obs[REFERENCE_STRAND].astype(str) == str(reference)]
         window_tables: list[pd.DataFrame] = []
         for window_index, (core_start, core_end, load_start, load_end) in enumerate(windows):
@@ -307,6 +307,9 @@ def _core_skeleton(
             "core_end": task.core_end,
             "load_start": task.load_start,
             "load_end": task.load_end,
+            "analysis_core_id": task.analysis_core_id,
+            "analysis_region_ids": list(task.analysis_region_ids),
+            "analysis_planner_version": task.analysis_planner_version,
         }
     )
     return result
@@ -964,8 +967,11 @@ def execute_partitioned_preprocessing(
         else plan_preprocess_tasks(
             spine,
             target_task_memory_mb=int(getattr(cfg, "target_task_memory_mb", 512)),
+            spine_path=spine_path,
         )
     )
+    if not task_list:
+        raise RuntimeError("partitioned preprocessing has no non-empty analysis tasks")
     task_catalog = write_preprocess_task_catalog(task_list, output_dir / PREPROCESS_TASK_CATALOG)
     obs_sidecar = write_read_qc_sidecar(spine, cfg, output_dir / PREPROCESS_OBS_SIDECAR)
 
