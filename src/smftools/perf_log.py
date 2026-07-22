@@ -79,6 +79,10 @@ class PerfLogger:
             self._max_workers_used = max(self._max_workers_used, max_workers)
         self._emit("pool_start", worker_pool_id=pool_id, **fields)
 
+    def resource_envelope(self, **fields) -> None:
+        """Record the immutable run-level resource resolution."""
+        self._emit("resource_envelope", **fields)
+
     def sample(self, pool_id: int, *, tree_rss_gb: float, **fields) -> None:
         with self._lock:
             self._peak_tree_rss_gb = max(self._peak_tree_rss_gb, tree_rss_gb)

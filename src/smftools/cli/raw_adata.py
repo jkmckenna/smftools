@@ -704,11 +704,8 @@ def _map_references_parallel(
 
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
-    from ..memory_guard import (
-        _limit_blas_threads_in_worker,
-        resolve_memory_budget_bytes,
-        start_worker_watchdog,
-    )
+    from ..memory_guard import resolve_memory_budget_bytes, start_worker_watchdog
+    from ..parallel_utils import configure_worker_threads
     from ..perf_log import get_perf_logger
 
     cfg = worker_kwargs.get("cfg")
@@ -727,7 +724,9 @@ def _map_references_parallel(
         )
     items_iter = iter(items)
     with ProcessPoolExecutor(
-        max_workers=max_workers, initializer=_limit_blas_threads_in_worker
+        max_workers=max_workers,
+        initializer=configure_worker_threads,
+        initargs=(1,),
     ) as pool:
         stop_watchdog = start_worker_watchdog(
             pool,

@@ -41,3 +41,44 @@ def test_latent_partitioned_config_defaults_and_bool_parsing(tmp_path):
     assert cfg.latent_max_fit_reads == 123
     assert cfg.latent_run_cp is False
     assert cfg.latent_n_pcs == 10
+
+
+def test_repeated_stage_loads_reuse_immutable_resource_envelope():
+    from smftools.cli import helpers
+
+    helpers._RESOURCE_ENVELOPE_CACHE.clear()
+    with as_file(csv_resource) as csv_path:
+        first = helpers.load_experiment_config(str(csv_path))
+        second = helpers.load_experiment_config(str(csv_path))
+
+    assert first._resource_envelope is second._resource_envelope
+    assert first.threads == second.threads == first._resource_envelope.resolved_threads
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("threads", "0", "threads must be a positive integer"),
+        ("threads", "1.5", "threads must be an integer"),
+        ("max_memory_percent", "101", "max_memory_percent must be in"),
+        ("max_memory_percent", "invalid", "max_memory_percent must be numeric"),
+        ("max_memory_gb", "-1", "max_memory_gb must be positive"),
+        ("memory_reserve_gb", "-1", "memory_reserve_gb must be non-negative"),
+        ("target_task_memory_mb", "0", "target_task_memory_mb must be positive"),
+    ],
+)
+def test_invalid_resource_values_fail_during_config_loading(tmp_path, key, value, message):
+    from smftools.cli.helpers import load_experiment_config
+
+    with as_file(csv_resource) as csv_path:
+        rows = csv_path.read_text(encoding="utf-8-sig").splitlines()
+    replacement = f"{key},{value},invalid test value,,float"
+    found = any(row.startswith(f"{key},") for row in rows)
+    rows = [replacement if row.startswith(f"{key},") else row for row in rows]
+    if not found:
+        rows.append(replacement)
+    config_path = tmp_path / f"invalid_{key}.csv"
+    config_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        load_experiment_config(str(config_path))

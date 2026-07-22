@@ -86,6 +86,18 @@ def test_explicit_user_env_override_is_respected():
     assert json.loads(result.stdout.strip()) == "4"
 
 
+def test_worker_initializer_does_not_import_heavy_libraries():
+    code = (
+        "import sys; "
+        "from smftools.parallel_utils import configure_worker_threads; "
+        "before = {name for name in ('torch', 'matplotlib') if name in sys.modules}; "
+        "configure_worker_threads(); "
+        "after = {name for name in ('torch', 'matplotlib') if name in sys.modules}; "
+        "assert after == before, (before, after); print('ok')"
+    )
+    assert _run(code) == "ok"
+
+
 @pytest.mark.parametrize("start_method", ["forkserver", "spawn"])
 def test_blas_threads_limited_in_multiprocessing_worker(start_method, tmp_path):
     # Confirms the fix actually propagates into worker processes started by

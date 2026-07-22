@@ -551,6 +551,7 @@ max_full_matrix_gb: 8.0 # Dense-size threshold used by automatic per-reference p
 target_task_memory_mb: 512 # Target memory for future preprocessing work units
 max_memory_percent: 60.0 # Aggregate memory budget for the whole workflow, as a percent of total system RAM (all parallel workers combined, not per-task)
 max_memory_gb: null # Optional fixed aggregate memory budget in GB; the more restrictive of this and max_memory_percent applies when both are set
+memory_reserve_gb: 1.0 # Memory kept outside the workflow budget after detected available/job/cgroup headroom is applied
 emit_perf_log: true # Write a per-command performance log (worker counts + memory, JSONL) next to each stage's log
 perf_log_sample_interval_seconds: 2.0 # How often the perf log samples process/worker memory while a parallel pool runs
 genome_tile_size: 10000 # Core genomic positions per genome-mode work unit

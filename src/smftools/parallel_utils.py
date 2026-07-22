@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 
 def resolve_n_jobs(n_jobs: int) -> int:
@@ -14,9 +15,11 @@ def resolve_n_jobs(n_jobs: int) -> int:
         Number of workers. Negative values map to ``os.cpu_count()``.
         Zero is treated as 1.
     """
-    if n_jobs < 0:
-        return os.cpu_count() or 1
-    return max(1, n_jobs)
+    from .memory_guard import detected_usable_cpu_count
+
+    detected = detected_usable_cpu_count()
+    requested = (os.cpu_count() or 1) if n_jobs < 0 else max(1, n_jobs)
+    return min(requested, detected)
 
 
 def configure_worker_threads(n_threads: int = 1) -> None:
@@ -57,14 +60,15 @@ def configure_worker_threads(n_threads: int = 1) -> None:
     default, recommended on Linux too) no numpy/scipy has been imported yet
     when the worker first runs, so setting envvars here is safe.
 
-    ``torch.set_num_threads`` is called regardless because PyTorch reads it
-    at runtime, not only at import time.
+    Heavy libraries are never imported solely by this initializer. If Torch
+    or Matplotlib is already loaded, its runtime setting is updated too.
     """
     thread_str = str(n_threads)
     os.environ["OMP_NUM_THREADS"] = thread_str
     os.environ["MKL_NUM_THREADS"] = thread_str
     os.environ["OPENBLAS_NUM_THREADS"] = thread_str
     os.environ["BLIS_NUM_THREADS"] = thread_str
+    os.environ["TBB_NUM_THREADS"] = thread_str
     os.environ["NUMEXPR_NUM_THREADS"] = thread_str
     # Apple Accelerate / vecLib (macOS) — does not honour the OpenBLAS/OMP vars
     os.environ["VECLIB_MAXIMUM_THREADS"] = thread_str
@@ -77,17 +81,16 @@ def configure_worker_threads(n_threads: int = 1) -> None:
     # imported, which is guaranteed here because the initializer executes before
     # any task module is imported in a spawn-based worker process.
     os.environ["MPLBACKEND"] = "Agg"
-    try:
-        import matplotlib  # noqa: PLC0415
+    matplotlib = sys.modules.get("matplotlib")
+    if matplotlib is not None:
+        try:
+            matplotlib.use("Agg")
+        except Exception:
+            pass
 
-        matplotlib.use("Agg")
-    except Exception:
-        pass
-
-    # torch reads this at runtime, so it is safe to set even after import.
-    try:
-        import torch  # noqa: PLC0415
-
+    # Importing torch solely from a generic pool initializer adds hundreds of
+    # MiB to every worker. Configure its runtime pool only when the worker has
+    # already imported it; otherwise OMP/MKL caps above apply at later import.
+    torch = sys.modules.get("torch")
+    if torch is not None:
         torch.set_num_threads(n_threads)
-    except ImportError:
-        pass

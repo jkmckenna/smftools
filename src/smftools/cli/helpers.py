@@ -30,18 +30,23 @@ from ..metadata import write_runtime_schema_yaml
 from ..readwrite import safe_write_h5ad
 
 logger = get_logger(__name__)
+_RESOURCE_ENVELOPE_CACHE: dict[tuple[Any, ...], Any] = {}
 
 _NON_SEMANTIC_STAGE_CONFIG_KEYS = {
     "bam_outputs_path",
     "bed_outputs_path",
     "device",
     "emit_log_file",
+    "emit_perf_log",
     "fasta_outputs_path",
     "hmm_device",
     "informatics_outputs_path",
     "log_level",
+    "memory_reserve_gb",
     "output_directory",
     "modkit_outputs_path",
+    "perf_log_sample_interval_seconds",
+    "plot_threads_fraction",
     "split_path",
     "summary_file",
     "threads",
@@ -495,7 +500,7 @@ def load_experiment_config(config_path: str):
     from importlib import resources
 
     from ..config import ExperimentConfig, LoadExperimentConfig
-    from ..memory_guard import enable_aggregate_memory_cap, resolve_memory_budget_bytes
+    from ..memory_guard import activate_resource_envelope, resolve_resource_envelope
 
     date_str = datetime.today().strftime("%y%m%d")
     loader = LoadExperimentConfig(config_path)
@@ -503,13 +508,42 @@ def load_experiment_config(config_path: str):
     cfg, _ = ExperimentConfig.from_var_dict(
         loader.var_dict, date_str=date_str, defaults_dir=defaults_dir
     )
-    # Refine the aggregate memory cap (a no-op generic default until now, set
-    # at CLI startup before any config was available) with this experiment's
-    # actual max_memory_percent/max_memory_gb. Single hook point: every CLI
-    # entry point loads its config through this function. No-op on non-Linux
-    # platforms (see smftools.memory_guard) -- macOS enforcement instead
-    # happens per-worker-pool via resolve_max_workers/start_worker_watchdog.
-    enable_aggregate_memory_cap(budget_bytes=resolve_memory_budget_bytes(cfg))
+    envelope_key = (
+        str(Path(config_path).resolve()),
+        cfg.threads,
+        cfg.max_memory_percent,
+        cfg.max_memory_gb,
+        cfg.memory_reserve_gb,
+        cfg.target_task_memory_mb,
+    )
+    envelope = _RESOURCE_ENVELOPE_CACHE.get(envelope_key)
+    if envelope is None:
+        envelope = activate_resource_envelope(resolve_resource_envelope(cfg))
+        _RESOURCE_ENVELOPE_CACHE[envelope_key] = envelope
+    cfg._resource_envelope = envelope
+    # Every existing Python pool, external tool, and downstream library reads
+    # cfg.threads, so replacing the request with the resolved ceiling applies
+    # affinity/cgroup/scheduler limits without duplicating caps at each caller.
+    cfg.threads = envelope.resolved_threads
+    logger.info(
+        "ResourceEnvelope: cpu requested=%d resolved=%d "
+        "(logical=%d affinity=%s cgroup=%s scheduler=%s); memory requested=%.2f GiB "
+        "resolved=%.2f GiB (total=%.2f available=%.2f reserve=%.2f); "
+        "enforcement=%s active=%s",
+        envelope.requested_threads,
+        envelope.resolved_threads,
+        envelope.logical_cpu_count,
+        envelope.affinity_cpu_count,
+        envelope.cgroup_cpu_count,
+        envelope.scheduler_cpu_count,
+        envelope.requested_memory_bytes / (1024**3),
+        envelope.resolved_memory_bytes / (1024**3),
+        envelope.total_memory_bytes / (1024**3),
+        envelope.available_memory_bytes / (1024**3),
+        envelope.memory_reserve_bytes / (1024**3),
+        envelope.enforcement_mode,
+        envelope.enforcement_active,
+    )
     return cfg
 
 

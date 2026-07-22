@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import warnings
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -101,6 +102,31 @@ def _parse_numeric(v: Any, fallback: Any = None) -> Any:
             return float(s)
         except Exception:
             return fallback
+
+
+def _parse_resource_number(
+    value: Any,
+    *,
+    name: str,
+    default: float | int | None,
+    integral: bool = False,
+) -> float | int | None:
+    """Strictly parse a resource value instead of silently applying a fallback."""
+    if value is None or (isinstance(value, str) and value.strip().lower() in {"", "none", "null"}):
+        return default
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be numeric, not boolean.")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric; got {value!r}.") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be finite; got {value!r}.")
+    if integral:
+        if not parsed.is_integer():
+            raise ValueError(f"{name} must be an integer; got {value!r}.")
+        return int(parsed)
+    return parsed
 
 
 def _parse_max_workers(v: Any) -> Optional[Union[int, str]]:
@@ -1154,8 +1180,9 @@ class ExperimentConfig:
     # memory_guard.resolve_memory_budget_bytes. Enforced via a Linux cgroup v2
     # cap (whole process tree) or, on macOS, a per-worker RSS watchdog plus
     # capping how many workers run concurrently; see smftools.memory_guard.
-    max_memory_percent: float = 60.0
+    max_memory_percent: Optional[float] = 60.0
     max_memory_gb: Optional[float] = None
+    memory_reserve_gb: float = 1.0
     genome_tile_size: int = 10000
     genome_tile_halo: int = 1000
     parquet_start_bin_size: int = 1000000
@@ -1555,8 +1582,12 @@ class ExperimentConfig:
         if "umi_adapter_matcher" in merged:
             merged["umi_adapter_matcher"] = str(merged.get("umi_adapter_matcher", "exact")).lower()
         if "threads" in merged:
-            tval = _parse_numeric(merged.get("threads", None), None)
-            merged["threads"] = None if tval is None else int(tval)
+            merged["threads"] = _parse_resource_number(
+                merged.get("threads"),
+                name="threads",
+                default=None,
+                integral=True,
+            )
         if "umi_adapters" in merged:
             merged["umi_adapters"] = _parse_list(merged.get("umi_adapters"))
 
@@ -2208,14 +2239,26 @@ class ExperimentConfig:
             analysis_mode=str(merged.get("analysis_mode", "auto")),
             load_cache_mode=str(merged.get("load_cache_mode", "auto")),
             max_full_matrix_gb=float(_parse_numeric(merged.get("max_full_matrix_gb", 8.0), 8.0)),
-            target_task_memory_mb=int(
-                _parse_numeric(merged.get("target_task_memory_mb", 512), 512)
+            target_task_memory_mb=_parse_resource_number(
+                merged.get("target_task_memory_mb", 512),
+                name="target_task_memory_mb",
+                default=512,
+                integral=True,
             ),
-            max_memory_percent=float(_parse_numeric(merged.get("max_memory_percent", 60.0), 60.0)),
-            max_memory_gb=(
-                None
-                if _parse_numeric(merged.get("max_memory_gb"), None) is None
-                else float(_parse_numeric(merged.get("max_memory_gb"), None))
+            max_memory_percent=_parse_resource_number(
+                merged.get("max_memory_percent", 60.0),
+                name="max_memory_percent",
+                default=None,
+            ),
+            max_memory_gb=_parse_resource_number(
+                merged.get("max_memory_gb"),
+                name="max_memory_gb",
+                default=None,
+            ),
+            memory_reserve_gb=_parse_resource_number(
+                merged.get("memory_reserve_gb", 1.0),
+                name="memory_reserve_gb",
+                default=1.0,
             ),
             genome_tile_size=int(_parse_numeric(merged.get("genome_tile_size", 10000), 10000)),
             genome_tile_halo=int(_parse_numeric(merged.get("genome_tile_halo", 1000), 1000)),
@@ -2369,6 +2412,7 @@ class ExperimentConfig:
             config_source=config_source or "<var_dict>",
         )
 
+        instance.validate_resources()
         report = {
             "modality": modality,
             "defaults_source_chain": defaults_source_chain,
@@ -2411,6 +2455,31 @@ class ExperimentConfig:
     # -------------------------
     # validation & serialization
     # -------------------------
+    def validate_resources(self, *, raise_on_error: bool = True) -> List[str]:
+        """Validate CPU, memory, and resource-observability configuration."""
+        errors: List[str] = []
+        if self.threads is not None and (isinstance(self.threads, bool) or self.threads <= 0):
+            errors.append("threads must be a positive integer or null.")
+        if self.max_memory_percent is not None and not (
+            0.0 < float(self.max_memory_percent) <= 100.0
+        ):
+            errors.append("max_memory_percent must be in (0,100] or null.")
+        if self.max_memory_gb is not None and float(self.max_memory_gb) <= 0.0:
+            errors.append("max_memory_gb must be positive or null.")
+        if float(self.memory_reserve_gb) < 0.0:
+            errors.append("memory_reserve_gb must be non-negative.")
+        if int(self.target_task_memory_mb) <= 0:
+            errors.append("target_task_memory_mb must be positive.")
+        if float(self.perf_log_sample_interval_seconds) <= 0.0:
+            errors.append("perf_log_sample_interval_seconds must be positive.")
+        if not (0.0 < float(self.plot_threads_fraction) <= 1.0):
+            errors.append("plot_threads_fraction must be in (0,1].")
+        if raise_on_error and errors:
+            raise ValueError(
+                "ExperimentConfig resource validation failed:\n  " + "\n  ".join(errors)
+            )
+        return errors
+
     @staticmethod
     def _validate_hmm_features_structure(hfs: dict) -> List[str]:
         errs = []
@@ -2445,6 +2514,7 @@ class ExperimentConfig:
         Returns a list of error messages (empty if none). Raises ValueError if raise_on_error True.
         """
         errors: List[str] = []
+        errors.extend(self.validate_resources(raise_on_error=False))
         if not self.input_data_path:
             errors.append("input_data_path is required but missing.")
         if not self.output_directory:

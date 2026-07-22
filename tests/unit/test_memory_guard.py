@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import smftools.memory_guard as memory_guard_module
 from smftools.memory_guard import (
     _cgroup_v2_self_path,
     _live_worker_pids,
@@ -27,6 +28,25 @@ def _cfg(**overrides):
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
+
+
+@pytest.fixture(autouse=True)
+def _stable_detected_resources(monkeypatch):
+    """Keep legacy resolver tests independent of CI container/job limits."""
+    monkeypatch.setattr(memory_guard_module, "affinity_cpu_count", lambda: None)
+    monkeypatch.setattr(memory_guard_module, "cgroup_cpu_quota_count", lambda: None)
+    monkeypatch.setattr(memory_guard_module, "scheduler_cpu_count", lambda environ=None: None)
+    monkeypatch.setattr(memory_guard_module, "cgroup_memory_values", lambda: (None, None))
+    monkeypatch.setattr(
+        memory_guard_module,
+        "scheduler_memory_limit_bytes",
+        lambda environ=None, allocated_cpus=None: None,
+    )
+    monkeypatch.setattr(
+        memory_guard_module,
+        "available_system_memory_bytes",
+        lambda: memory_guard_module.total_system_memory_bytes(),
+    )
 
 
 def _square(x: int) -> int:

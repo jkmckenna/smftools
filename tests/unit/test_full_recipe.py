@@ -110,7 +110,11 @@ def test_stage_config_hash_ignores_machine_resources_but_not_analysis_config():
     cfg.output_directory = "/machine-b/run"
     cfg.threads = 2
     cfg.max_memory_gb = 8
+    cfg.max_memory_percent = 40
+    cfg.memory_reserve_gb = 2
     cfg.target_task_memory_mb = 128
+    cfg.emit_perf_log = False
+    cfg.perf_log_sample_interval_seconds = 5
     cfg.informatics_outputs_path = "/machine-b/run/raw_outputs"
     cfg.bam_outputs_path = "/machine-b/run/raw_outputs/bam_outputs"
     cfg.device = "cpu"
