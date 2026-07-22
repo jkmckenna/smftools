@@ -61,6 +61,7 @@ def _embedding_definition(
     *, layer, start, end, feature_kind, leiden_resolution, n_neighbors, min_reads, random_state
 ) -> dict:
     return {
+        "identity_schema_version": 1,
         "layer": layer,
         "start": start,
         "end": end,

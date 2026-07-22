@@ -1,6 +1,10 @@
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
+from smftools.informatics.derived_read_index import write_derived_read_index
+from smftools.informatics.molecule_identity import split_pooled_obs_name
 from smftools.informatics.raw_store import write_raw_store
 from smftools.informatics.reference_identity import reference_uid
 from smftools.project import registry as reg
@@ -74,6 +78,108 @@ def test_project_adata_concats_across_experiments(project_with_two_experiments):
     assert set(combined.obs["experiment"]) == {"expA", "expB"}
     # the base layers materialized from ragged
     assert "sequence_integer_encoding" in combined.layers
+    assert combined.obs_names.is_unique
+    assert set(combined.obs["read_id"]) == {
+        split_pooled_obs_name(name)[1] for name in combined.obs_names
+    }
+
+
+def test_same_instrument_read_id_is_independently_addressable(tmp_path):
+    uid = reference_uid(SEQUENCE, 12)
+    rows = pd.DataFrame(
+        [
+            {
+                "read_id": "shared-read",
+                "reference": "gene",
+                "Reference_strand": "gene_top",
+                "sample": "bc01",
+                "barcode": "bc01",
+                "strand": "top",
+                "mapping_direction": "fwd",
+                "reference_start": 0,
+                "cigar": "12M",
+                "aligned_length": 12,
+                "sequence": [0] * 12,
+                "quality": [30] * 12,
+                "mismatch": [4] * 12,
+                "modification_signal": [0.0] * 12,
+            }
+        ]
+    )
+    for experiment in ("expA", "expB"):
+        write_raw_store(
+            rows,
+            tmp_path / experiment / "raw_outputs",
+            reference_lengths={"gene_top": 12},
+            extra_uns={
+                "reference_uids": {"gene_top": uid},
+                "modality": "direct",
+                "experiment": experiment,
+            },
+        )
+    project = tmp_path / "project"
+    reg.init_project(project)
+    reg.add_experiment(project, tmp_path / "expA", experiment_id="expA")
+    reg.add_experiment(project, tmp_path / "expB", experiment_id="expB")
+
+    combined = project_adata(project, uid)
+    assert combined.n_obs == 2
+    assert combined.obs_names.is_unique
+    assert set(combined.obs["read_id"]) == {"shared-read"}
+    assert combined.obs["experiment_uid"].nunique() == 2
+    assert combined.obs["molecule_uid"].nunique() == 2
+
+    catalog = ProjectCatalog.open(project)
+    for experiment_uid in combined.obs["experiment_uid"]:
+        trace = catalog.lookup_molecule(experiment_uid=str(experiment_uid), read_id="shared-read")
+        assert set(trace["stage"]) == {"raw"}
+        assert trace.iloc[0]["group_path"].endswith(".parquet")
+
+
+def test_molecule_lookup_traces_all_indexed_stages_without_task_stores(tmp_path):
+    from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
+
+    uid = reference_uid(SEQUENCE, 12)
+    run_root = tmp_path / "experiment"
+    _make_raw_experiment(run_root / "raw_outputs", reference_strand="gene_top", uid=uid, n=1)
+    raw_spine, _ = safe_read_h5ad(run_root / "raw_outputs" / "spine.h5ad", verbose=False)
+    task = SimpleNamespace(
+        task_id="gene_top|bc01|0-12|00000",
+        reference="gene_top",
+        barcode="bc01",
+        chunk_index=0,
+        core_start=0,
+        core_end=12,
+        load_start=0,
+        load_end=12,
+    )
+    for stage in ("preprocess", "spatial", "hmm"):
+        stage_dir = run_root / f"{stage}_adata_outputs"
+        stage_dir.mkdir(parents=True)
+        safe_write_h5ad(raw_spine, stage_dir / "spine.h5ad", backup=False, verbose=False)
+        write_derived_read_index(
+            stage_dir,
+            stage=stage,
+            task=task,
+            obs=raw_spine.obs,
+            group_path=f"store/{stage}.zarr",
+            stage_schema_version=1,
+            model_artifacts=(
+                [{"model_id": "model-1", "model_checksum": "abc"}] if stage == "hmm" else []
+            ),
+        )
+
+    project = tmp_path / "project"
+    reg.init_project(project)
+    reg.add_experiment(project, run_root, experiment_id="experiment")
+    experiment_uid = str(raw_spine.uns["experiment_uid"])
+    read_id = str(raw_spine.obs["read_id"].iloc[0])
+
+    trace = ProjectCatalog.open(project).lookup_molecule(
+        experiment_uid=experiment_uid, read_id=read_id
+    )
+    assert set(trace["stage"]) == {"raw", "preprocess", "spatial", "hmm"}
+    assert trace.loc[trace["stage"] == "hmm", "model_id"].iloc[0] == "model-1"
 
 
 def test_project_adata_guardrail_refuses_oversized_pool(project_with_two_experiments):
@@ -134,7 +240,7 @@ def test_project_adata_concat_handles_mismatched_obs_index_names(tmp_path):
     # (expA's, from write_raw_store, is left unnamed -- the legacy shape).
     spine_path = tmp_path / "expB" / "spine.h5ad"
     spine, _ = safe_read_h5ad(spine_path, verbose=False)
-    spine.obs.index.name = "read_id"
+    spine.obs.index.name = "legacy_read_index"
     safe_write_h5ad(spine, spine_path, backup=False, verbose=False)
 
     proj = tmp_path / "project"

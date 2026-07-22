@@ -86,6 +86,7 @@ def write_experiment_spine(run_root: str | Path) -> Path | None:
         extra = read_stage_obs(preprocess_dir, filename=_PREPROCESS_STAGE_OBS_FILENAME)
         overlap = [column for column in extra.columns if column in obs.columns]
         obs = obs.join(extra.drop(columns=overlap), how="inner")
+    obs.index.name = None
 
     uns: dict[str, object] = {}
     for _stage, stage_dir in _STAGE_DIRS_IN_UNION_ORDER:

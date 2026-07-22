@@ -876,7 +876,7 @@ def hmm_adata(config_path: str):
                 lifecycle,
                 outputs,
                 required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["hmm"],
-                schema_versions={"hmm": 1},
+                schema_versions={"hmm": 2, "derived_read_index": 1},
                 nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["hmm"],
             )
         return None, outputs["spine"]

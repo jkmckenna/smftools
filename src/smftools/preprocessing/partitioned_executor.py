@@ -381,12 +381,23 @@ def execute_preprocess_task(
     consolidate_zarr_store(path)
 
     derived_layers = sorted(written_layers)
+    from ..informatics.derived_read_index import write_derived_read_index
+
+    read_index_path = write_derived_read_index(
+        output_dir,
+        stage="preprocess",
+        task=task,
+        obs=result.obs,
+        group_path=path.relative_to(output_dir).as_posix(),
+        stage_schema_version=2,
+    )
     return {
         **task.to_dict(include_read_ids=False),
         "group_path": path.relative_to(output_dir).as_posix(),
         "n_positions": result.n_vars,
         "layers": derived_layers,
         "has_x": True,
+        "read_index_path": read_index_path.relative_to(output_dir).as_posix(),
     }
 
 
@@ -534,7 +545,8 @@ def write_read_qc_sidecar(spine, cfg, output_path: str | Path) -> Path:
             out=np.full(len(output), np.nan, dtype=float),
             where=reference.to_numpy() != 0,
         )
-    output.insert(0, "read_id", output.index.astype(str))
+    if "read_id" not in output:
+        output.insert(0, "read_id", output.index.astype(str))
     output["passes_read_qc"] = output["read_id"].isin(filtered.obs_names)
 
     if str(getattr(cfg, "smf_modality", "conversion")) == "deaminase" and not bool(
@@ -583,7 +595,8 @@ def reduce_read_modification_stats(
         columns = [column for column in result.obs if column.endswith("_partial")]
         partial = result.obs[columns].copy()
         partial.insert(0, "reference", str(record["reference"]))
-        partial.insert(0, "read_id", partial.index.astype(str))
+        if "read_id" not in partial:
+            partial.insert(0, "read_id", partial.index.astype(str))
         partials.append(partial)
     obs = pd.read_parquet(obs_path)
     if not partials:
@@ -934,6 +947,9 @@ def execute_partitioned_preprocessing(
     spine_path = Path(spine_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    from ..informatics.derived_read_index import prepare_derived_read_index
+
+    prepare_derived_read_index(output_dir)
     from ..cli.stage_artifacts import prepare_analysis_plot_layout
 
     plot_layout = prepare_analysis_plot_layout(
@@ -1013,6 +1029,11 @@ def execute_partitioned_preprocessing(
     derived_spine.uns["source_base_dir"] = relative_uns_path(spine_path.parent, run_root)
     derived_spine.uns["preprocess_var"] = relative_uns_path(var_catalog, run_root)
     derived_spine.uns["preprocess_obs"] = relative_uns_path(obs_sidecar, run_root)
+    from ..informatics.derived_read_index import DERIVED_READ_INDEX_DIRNAME
+
+    read_index_dir = output_dir / DERIVED_READ_INDEX_DIRNAME
+    derived_spine.uns["preprocess_read_index"] = relative_uns_path(read_index_dir, run_root)
+    derived_spine.uns["preprocess_schema_version"] = 2
     published_layers = sorted({layer for record in records for layer in record.get("layers", [])})
     derived_spine.uns["preprocess_layer_absent_fill"] = {
         layer: float(DERIVED_LAYER_ABSENT_FILL.get(layer, np.nan)) for layer in published_layers
@@ -1060,6 +1081,7 @@ def execute_partitioned_preprocessing(
     register_sidecar(manifest, "preprocess_store", output_dir / PREPROCESS_STORE_SUBDIR)
     register_sidecar(manifest, "preprocess_catalog", catalog_path)
     register_sidecar(manifest, "preprocess_task_catalog", task_catalog)
+    register_sidecar(manifest, "preprocess_read_index", read_index_dir)
     register_sidecar(manifest, "preprocess_var", var_catalog)
     register_sidecar(manifest, "preprocess_obs", obs_sidecar)
     register_sidecar(manifest, "preprocess_stage_obs", stage_obs_path)
@@ -1072,6 +1094,7 @@ def execute_partitioned_preprocessing(
         "spine": output_spine,
         "catalog": catalog_path,
         "task_catalog": task_catalog,
+        "read_index": read_index_dir,
         "var": var_catalog,
         "obs": obs_sidecar,
         "stage_obs": stage_obs_path,

@@ -190,7 +190,7 @@ def test_experiment_spine_resolves_sibling_branch_layers_together(tmp_path, monk
     spatial_cfg.autocorr_normalization_method = "pearson"
     execute_partitioned_spatial(preprocess["spine"], spatial_cfg, tmp_path / SPATIAL_DIR)
 
-    def annotate(adata, task, cfg, models_dir):
+    def annotate(adata, task, cfg, models_dir, model_assignments):
         adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
         adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
         return ["GpC_test_feature"]

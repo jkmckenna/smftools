@@ -108,7 +108,7 @@ def preprocess_adata(
                 lifecycle,
                 outputs,
                 required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["preprocess"],
-                schema_versions={"preprocess": 1},
+                schema_versions={"preprocess": 2, "derived_read_index": 1},
                 nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["preprocess"],
             )
         return outputs["spine"], None

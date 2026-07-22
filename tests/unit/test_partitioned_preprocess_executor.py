@@ -250,6 +250,12 @@ def test_materialize_derived_layers_across_multiple_reference_strands(tmp_path):
     output_dir = tmp_path / "preprocess_outputs"
 
     outputs = execute_partitioned_preprocessing(raw["spine"], _cfg(), output_dir)
+    read_index = pd.concat(
+        [pd.read_parquet(path) for path in outputs["read_index"].glob("*.parquet")],
+        ignore_index=True,
+    )
+    assert set(read_index["stage"]) == {"preprocess"}
+    assert set(read_index["read_id"]) == set(_multi_reference_strand_frame()["read_id"])
 
     # A single materialize() call spanning both strands of the same locus must not
     # raise -- _overlay_preprocess_layers previously hard-required exactly one
@@ -657,6 +663,11 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
     )
     spatial_tasks = pd.read_parquet(spatial["task_catalog"])
     assert spatial_tasks["n_reads"].sum() == 1
+    spatial_read_index = pd.concat(
+        [pd.read_parquet(path) for path in spatial["read_index"].glob("*.parquet")],
+        ignore_index=True,
+    )
+    assert set(spatial_read_index["stage"]) == {"spatial"}
     # group_path/obsm_keys: same store-per-task addressing convention as
     # preprocess/hmm's catalogs, replacing the old bespoke read_metrics_path
     # column now that read_obsm was actually computed for this task. Only "C"/

@@ -97,11 +97,19 @@ VARIANT_DIR: Final[str] = "variant_adata_outputs"
 CHIMERIC_DIR: Final[str] = "chimeric_adata_outputs"
 
 _private_partitioned_stage_required_artifacts = {
-    "raw": ("spine", "ragged_store", "interval_catalog", "molecules", "manifest"),
+    "raw": (
+        "spine",
+        "ragged_store",
+        "interval_catalog",
+        "molecules",
+        "molecule_index",
+        "manifest",
+    ),
     "preprocess": (
         "spine",
         "store",
         "task_catalog",
+        "read_index",
         "catalog",
         "var",
         "obs",
@@ -112,6 +120,7 @@ _private_partitioned_stage_required_artifacts = {
     "spatial": (
         "spine",
         "task_catalog",
+        "read_index",
         "metrics",
         "autocorrelation",
         "task_store",
@@ -119,7 +128,15 @@ _private_partitioned_stage_required_artifacts = {
         "plot_catalog",
         "manifest",
     ),
-    "hmm": ("spine", "task_catalog", "store", "models", "plot_catalog", "manifest"),
+    "hmm": (
+        "spine",
+        "task_catalog",
+        "read_index",
+        "store",
+        "models",
+        "plot_catalog",
+        "manifest",
+    ),
 }
 PARTITIONED_STAGE_REQUIRED_ARTIFACTS: Final[Mapping[str, tuple[str, ...]]] = _deep_freeze(
     _private_partitioned_stage_required_artifacts

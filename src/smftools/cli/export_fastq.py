@@ -16,6 +16,16 @@ logger = get_logger(__name__)
 _QC_PASS_COLUMNS = ("passes_dedup", "passes_qc", "passes_read_qc")
 
 
+def _obs_by_read_id(obs):
+    """Return scalar observations explicitly keyed by instrument read ID."""
+    keyed = obs.copy()
+    read_ids = keyed["read_id"].astype(str) if "read_id" in keyed else keyed.index.astype(str)
+    if read_ids.duplicated().any():
+        raise ValueError("FASTQ export source contains duplicate instrument read IDs")
+    keyed.index = read_ids
+    return keyed
+
+
 def _resolve_qc_obs(paths, *, allow_unfiltered: bool):
     """Return ``(label_obs, accepted_read_ids_or_None, source_description)``.
 
@@ -32,8 +42,9 @@ def _resolve_qc_obs(paths, *, allow_unfiltered: bool):
         spine = load_spine(paths.preprocess_spine)
         for column in _QC_PASS_COLUMNS:
             if column in spine.obs.columns:
-                accepted = set(spine.obs.index[spine.obs[column].astype(bool)].astype(str))
-                return spine.obs, accepted, f"{column}@{paths.preprocess_spine}"
+                keyed = _obs_by_read_id(spine.obs)
+                accepted = set(keyed.index[keyed[column].astype(bool)].astype(str))
+                return keyed, accepted, f"{column}@{paths.preprocess_spine}"
         logger.warning(
             "preprocess spine at %s has no QC columns; falling through", paths.preprocess_spine
         )
@@ -47,7 +58,7 @@ def _resolve_qc_obs(paths, *, allow_unfiltered: bool):
                 accepted = set(backed.obs_names.astype(str))
             finally:
                 backed.file.close()
-            return obs, accepted, f"{label}@{candidate}"
+            return _obs_by_read_id(obs), accepted, f"{label}@{candidate}"
 
     if not allow_unfiltered:
         raise ValueError(
@@ -58,7 +69,7 @@ def _resolve_qc_obs(paths, *, allow_unfiltered: bool):
     from ..informatics.partition_read import load_spine as _load_spine
 
     raw_spine = _load_spine(paths.raw_spine)
-    return raw_spine.obs, None, f"raw_spine@{paths.raw_spine} (unfiltered)"
+    return _obs_by_read_id(raw_spine.obs), None, f"raw_spine@{paths.raw_spine} (unfiltered)"
 
 
 def _resolve_group_by(label_obs, group_by: str | None, cfg) -> str:
@@ -129,7 +140,8 @@ def export_fastq_for_experiment(
 
     label_obs, accepted_ids, source = _resolve_qc_obs(paths, allow_unfiltered=allow_unfiltered)
     resolved_group_by = _resolve_group_by(label_obs, group_by, cfg)
-    labels = label_obs[resolved_group_by].reindex(raw_spine.obs.index)
+    raw_obs = _obs_by_read_id(raw_spine.obs)
+    labels = label_obs[resolved_group_by].reindex(raw_obs.index)
 
     logger.info(
         "Exporting FASTQ: %d QC-passed read(s) from %s, grouped by %r",
@@ -140,7 +152,7 @@ def export_fastq_for_experiment(
 
     outdir = Path(outdir)
     manifest = write_fastq_per_barcode(
-        raw_spine.obs,
+        raw_obs,
         base_dir,
         outdir,
         read_ids=accepted_ids,
@@ -215,18 +227,19 @@ def export_fastq_for_project(
         if preprocess_spine_path is not None:
             spine = load_spine(Path(preprocess_spine_path))
             accepted = None
+            label_obs = _obs_by_read_id(spine.obs)
             for column in _QC_PASS_COLUMNS:
-                if column in spine.obs.columns:
-                    accepted = set(spine.obs.index[spine.obs[column].astype(bool)].astype(str))
+                if column in label_obs.columns:
+                    accepted = set(label_obs.index[label_obs[column].astype(bool)].astype(str))
                     break
-            label_obs = spine.obs
         else:
             logger.warning("exporting %r unfiltered (no preprocess spine found)", exp_id)
             accepted = None
-            label_obs = raw_spine.obs
+            label_obs = _obs_by_read_id(raw_spine.obs)
 
         group_by = "Sample" if "Sample" in label_obs.columns else "Barcode"
-        labels = label_obs[group_by].reindex(raw_spine.obs.index).astype(str)
+        raw_obs = _obs_by_read_id(raw_spine.obs)
+        labels = label_obs[group_by].reindex(raw_obs.index).astype(str)
         labels = f"{exp_id}__" + labels
 
         logger.info(
@@ -236,7 +249,7 @@ def export_fastq_for_project(
         )
 
         manifest = write_fastq_per_barcode(
-            raw_spine.obs,
+            raw_obs,
             base_dir,
             outdir,
             read_ids=accepted,

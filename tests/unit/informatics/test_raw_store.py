@@ -80,7 +80,10 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     assert all("/start_bin=" in str(path) for path in spine.obs["ragged_shard"])
     assert set(spine.obs["Barcode"].astype(str)) == {"bc01", "bc02"}
     assert list(spine.obs["reference_end"]) == [4, 4, 6, 6]
-    assert spine.uns["raw_schema_version"] == 2
+    assert spine.uns["raw_schema_version"] == 3
+    assert spine.obs["read_id"].astype(str).tolist() == list(spine.obs_names)
+    assert spine.obs["experiment_uid"].nunique() == 1
+    assert spine.obs["molecule_uid"].is_unique
     catalog = pd.read_parquet(paths["interval_catalog"])
     assert set(catalog["reference"]) == {"ref1_top", "ref2_top"}
     assert catalog["n_reads"].sum() == 4
@@ -105,6 +108,14 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     assert list(molecules["Reference_strand"]) == ["ref1_top", "ref1_top", "ref2_top", "ref2_top"]
     assert list(molecules["Sample"]) == ["bc01", "bc02", "bc01", "bc02"]
     assert spine.uns["molecules_catalog"] == relative_uns_path(paths["molecules"], run_root)
+    assert paths["molecule_index"].is_dir()
+    molecule_index = pd.concat(
+        [pd.read_parquet(path) for path in paths["molecule_index"].rglob("*.parquet")],
+        ignore_index=True,
+    )
+    assert set(molecule_index["read_id"]) == {"read1", "read2", "read3", "read4"}
+    assert set(molecule_index["group_path"]) == set(spine.obs["ragged_shard"])
+    assert set(molecule_index["group_row"]) == {0, 1}
 
     # barcode_index.parquet: contiguous (start_row, end_row) per sample within each
     # reference's shard -- a direct row-slice instead of a scan + boolean mask.
@@ -137,6 +148,21 @@ def test_write_raw_store_skips_barcode_artifacts_without_sample_column(tmp_path)
     assert set(molecules["read_id"]) == {"read1", "read2", "read3", "read4"}
     spine, _ = safe_read_h5ad(paths["spine"])
     assert "barcode_index" not in spine.uns
+
+
+def test_raw_store_reuses_persisted_experiment_identity(tmp_path):
+    first = write_raw_store(
+        _frame(), tmp_path / "raw_outputs", reference_lengths={"ref1_top": 4, "ref2_top": 6}
+    )
+    first_spine, _ = safe_read_h5ad(first["spine"], verbose=False)
+
+    second = write_raw_store(
+        _frame(), tmp_path / "raw_outputs", reference_lengths={"ref1_top": 4, "ref2_top": 6}
+    )
+    second_spine, _ = safe_read_h5ad(second["spine"], verbose=False)
+
+    assert second_spine.uns["experiment_uid"] == first_spine.uns["experiment_uid"]
+    assert list(second_spine.obs["molecule_uid"]) == list(first_spine.obs["molecule_uid"])
 
 
 def test_write_raw_store_streaming_matches_whole_frame_writer(tmp_path):
@@ -283,12 +309,24 @@ def test_write_raw_store_streaming_handles_reference_split_across_multiple_group
         "read1",
         "read2",
     }
-
     spine, _ = safe_read_h5ad(paths["spine"])
     assert spine.n_obs == 4
     # plan_references saw ref1_top's true total (2 reads across both
     # groups), not just the last group's (1 read).
     assert set(spine.uns["reference_plans"]) == {"ref1_top", "ref2_top"}
+
+
+def test_streaming_raw_store_rejects_duplicate_ids_across_flushes(tmp_path):
+    normalized = validate_ragged_frame(_frame()).reset_index(drop=True)
+    first = normalized.iloc[[0]].copy()
+    repeated = normalized.iloc[[0]].copy()
+
+    with pytest.raises(ValueError, match="experiment-global unique"):
+        write_raw_store_streaming(
+            [("ref1_top", first, False), ("ref1_top", repeated, True)],
+            tmp_path / "raw_outputs",
+            reference_lengths={"ref1_top": 4},
+        )
 
 
 def test_dense_cache_matches_ragged_and_records_barcode_ranges(tmp_path):

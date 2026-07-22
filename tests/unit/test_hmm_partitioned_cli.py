@@ -137,8 +137,10 @@ def test_hmm_wrapper_dispatches_partitioned_spatial_spine(tmp_path, monkeypatch)
         task_catalog = output_dir / "task_catalog.parquet"
         pd.DataFrame({"task_id": ["task-1"]}).to_parquet(task_catalog, index=False)
         store = output_dir / "store"
+        read_index = output_dir / "read_index"
         models = output_dir / "models"
         store.mkdir()
+        read_index.mkdir()
         models.mkdir()
         (store / "task-1").touch()
         (models / "model-1.json").write_text("{}\n", encoding="utf-8")
@@ -150,6 +152,7 @@ def test_hmm_wrapper_dispatches_partitioned_spatial_spine(tmp_path, monkeypatch)
         return {
             "spine": paths.hmm_spine,
             "task_catalog": task_catalog,
+            "read_index": read_index,
             "store": store,
             "models": models,
             "plot_catalog": plot_catalog,
@@ -282,6 +285,12 @@ def test_partitioned_hmm_writes_task_store_and_rematerializes_layers(tmp_path, m
     assert task.uns["hmm_layer_model_map"] == {"GpC_test_feature": "hmm-0123456789abcdef"}
     assert catalog.iloc[0]["hmm_model_ids"][0] == "hmm-0123456789abcdef"
     assert catalog.iloc[0]["hmm_model_checksums"][0] == "a" * 64
+    read_index = pd.concat(
+        [pd.read_parquet(path) for path in outputs["read_index"].glob("*.parquet")],
+        ignore_index=True,
+    )
+    assert set(read_index["model_id"]) == {"hmm-0123456789abcdef"}
+    assert set(read_index["read_id"]) == {"read1", "read2"}
     spine, _ = safe_read_h5ad(outputs["spine"])
     assert spine.uns["hmm_catalog"] == relative_uns_path(outputs["task_catalog"], tmp_path)
     assert spine.uns["hmm_source_spine"] == relative_uns_path(preprocess["spine"], tmp_path)

@@ -34,7 +34,7 @@ logger = get_logger(__name__)
 
 REGISTRY_FILENAME = "registry.json"
 SETS_SUBDIR = "sets"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SPINE_FILENAME = "spine.h5ad"
 _CATALOG_NAMES = ("interval_catalog.parquet", "catalog.parquet")
 
@@ -186,6 +186,16 @@ def _discover_catalogs(spines: dict[str, Path], project_dir: Path) -> dict[str, 
             path = raw_dir / name
             if path.exists():
                 found[name] = _relative_registry_path(path, project_dir)
+        molecule_index = raw_dir.parent / "molecule_index"
+        if molecule_index.exists():
+            found["molecule_index"] = _relative_registry_path(molecule_index, project_dir)
+    for stage in ("preprocess", "spatial", "hmm"):
+        spine = spines.get(stage)
+        if spine is None:
+            continue
+        read_index = spine.parent / "read_index"
+        if read_index.exists():
+            found[f"{stage}_read_index"] = _relative_registry_path(read_index, project_dir)
     return found
 
 
@@ -271,6 +281,7 @@ def _read_spine_metadata(spine_path: Path) -> dict:
         "modality": str(uns.get("modality", "unknown")),
         "reference_uids": _legacy_reference_uids(spine),
         "experiment": uns.get("experiment"),
+        "experiment_uid": uns.get("experiment_uid"),
         "schema_version": int(uns.get("raw_schema_version", 0) or 0),
         "n_reads": int(spine.n_obs),
     }
@@ -332,6 +343,14 @@ def add_experiment(
     exp_id = str(experiment_id or meta.get("experiment") or run_root.name)
 
     existing = registry["experiments"].get(exp_id)
+    from ..informatics.molecule_identity import new_experiment_uid, validate_experiment_uid
+
+    stored_uid = existing.get("experiment_uid") if existing else None
+    artifact_uid = meta.get("experiment_uid")
+    if stored_uid is not None and artifact_uid is not None:
+        if validate_experiment_uid(stored_uid) != validate_experiment_uid(artifact_uid):
+            raise ValueError(f"experiment id '{exp_id}' conflicts with its registered identity")
+    experiment_uid = validate_experiment_uid(artifact_uid or stored_uid or new_experiment_uid())
     if existing and "spines" in existing and not is_legacy_call:
         # Directory-discovered entries are anchored at run_root, so a mismatch
         # means this id is already used by a different run -- refuse to merge.
@@ -358,6 +377,7 @@ def add_experiment(
     entry = {
         "path": _relative_registry_path(run_root, project_dir),
         "name": name or (existing["name"] if existing else exp_id),
+        "experiment_uid": experiment_uid,
         "modality": meta["modality"],
         "schema_version": meta["schema_version"],
         "spines": merged_spines,
@@ -401,11 +421,15 @@ def list_experiments(project_dir: str | Path, *, active_only: bool = True) -> li
     """
     project_dir = Path(project_dir)
     registry = load_registry(project_dir)
+    from ..informatics.molecule_identity import legacy_experiment_uid
+
+    project_identity = registry.get("created_at", "registry-v1")
     results = []
     for exp_id, entry in registry["experiments"].items():
         if active_only and entry.get("status") != "active":
             continue
         resolved = dict(entry)
+        resolved.setdefault("experiment_uid", legacy_experiment_uid(project_identity, exp_id))
         resolved["path"] = str(_resolve_registry_path(entry["path"], project_dir))
         if "spines" in entry:
             resolved["spines"] = {

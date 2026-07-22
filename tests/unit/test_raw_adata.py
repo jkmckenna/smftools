@@ -42,12 +42,14 @@ def _fake_preprocess_outputs(output_spine):
         ad.AnnData().write_h5ad(output_spine)
     task_catalog = output_spine.parent / "task_catalog.parquet"
     store = output_spine.parent / "store"
+    read_index = output_spine.parent / "read_index"
     catalog = output_spine.parent / "catalog.parquet"
     var = output_spine.parent / "var.parquet"
     obs = output_spine.parent / "obs.parquet"
     stage_obs = output_spine.parent / "stage_obs.parquet"
     plot_catalog = output_spine.parent / "plots" / "catalog.parquet"
     store.mkdir(exist_ok=True)
+    read_index.mkdir(exist_ok=True)
     (store / "task-1").touch()
     pd.DataFrame({"task_id": ["task-1"]}).to_parquet(task_catalog, index=False)
     pd.DataFrame().to_parquet(catalog, index=False)
@@ -62,6 +64,7 @@ def _fake_preprocess_outputs(output_spine):
         "spine": output_spine,
         "store": store,
         "task_catalog": task_catalog,
+        "read_index": read_index,
         "catalog": catalog,
         "var": var,
         "obs": obs,
@@ -819,6 +822,7 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
         (ragged_store / "part-00000.parquet").touch()
         pd.DataFrame().to_parquet(paths.raw_spine.parent / "interval_catalog.parquet", index=False)
         pd.DataFrame().to_parquet(tmp_path / "molecules.parquet", index=False)
+        (tmp_path / "molecule_index").mkdir()
         (paths.raw_spine.parent / "sidecar_manifest.json").write_text("{}\n", encoding="utf-8")
         return SimpleNamespace(n_obs=1), paths.raw_spine, core_cfg
 
@@ -836,6 +840,7 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
         "ragged_store",
         "interval_catalog",
         "molecules",
+        "molecule_index",
         "manifest",
     }
     monkeypatch.setattr(
@@ -999,7 +1004,7 @@ def test_preprocess_wrapper_returns_existing_partitioned_spine(tmp_path, monkeyp
             lifecycle,
             _fake_preprocess_outputs(output_spine),
             required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["preprocess"],
-            schema_versions={"preprocess": 1},
+            schema_versions={"preprocess": 2, "derived_read_index": 1},
             nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["preprocess"],
         )
 

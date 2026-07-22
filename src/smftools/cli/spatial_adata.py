@@ -120,7 +120,7 @@ def spatial_adata(
                 lifecycle,
                 outputs,
                 required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["spatial"],
-                schema_versions={"spatial": 2},
+                schema_versions={"spatial": 3, "derived_read_index": 1},
                 nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["spatial"],
             )
         return None, outputs["spine"]
