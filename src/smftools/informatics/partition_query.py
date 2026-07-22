@@ -223,8 +223,10 @@ def read_zarr_subset(
                 return parts[0]
             return ad.concat(parts, join="outer", merge="first", uns_merge="first")
         except Exception:
-            if lazy is True:
-                raise
+            # Lazy dataframe support requires the optional xarray dependency.
+            # Preserve materialize()'s historical contract: requesting lazy I/O
+            # prefers it when available but still works in minimal installs.
+            pass
 
     from ..readwrite import safe_read_zarr
 

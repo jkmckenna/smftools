@@ -882,8 +882,8 @@ def materialize(
             axis than genomic position (obs/obsm, not layers) and opening every
             matching task's ``read_metrics.zarr`` isn't free.
         lazy: Use ``anndata.experimental.read_lazy`` and slice before loading.
-            ``None`` (default) selects it automatically with eager fallback;
-            ``True`` requires it; ``False`` explicitly uses the eager reader.
+            ``None`` (default) or ``True`` prefers it with eager fallback;
+            ``False`` explicitly uses the eager reader.
         start: Optional zero-based inclusive genomic start.
         end: Optional zero-based exclusive genomic end. Must accompany ``start``.
         query_memory_mb: Approximate memory budget for each projected Zarr batch.

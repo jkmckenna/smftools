@@ -118,6 +118,31 @@ def test_read_zarr_subset_projects_before_each_to_memory(tmp_path, monkeypatch):
     assert materialized_shapes == [((2, 4), ("keep",))]
 
 
+def test_read_zarr_subset_lazy_request_falls_back_without_xarray(tmp_path, monkeypatch):
+    path = tmp_path / "part.zarr"
+    source = ad.AnnData(
+        X=np.arange(20, dtype=np.float32).reshape(4, 5),
+        obs=pd.DataFrame(index=[f"r{i}" for i in range(4)]),
+    )
+    source.var_names = list(map(str, range(5)))
+    source.write_zarr(path)
+
+    def missing_xarray(*args, **kwargs):
+        raise ImportError("xarray is required to read dataframes lazily")
+
+    monkeypatch.setattr(ad.experimental, "read_lazy", missing_xarray)
+    result = read_zarr_subset(
+        path,
+        read_ids=["r1", "r3"],
+        start=1,
+        end=4,
+        lazy=True,
+    )
+
+    assert list(result.obs_names) == ["r1", "r3"]
+    assert list(result.var_names) == ["1", "2", "3"]
+
+
 def test_query_batch_rows_respects_projection_width():
     assert query_batch_rows(1_000, n_arrays=2, memory_mb=1) == 65
     assert query_batch_rows(1_000_000, n_arrays=10, memory_mb=1) == 1
