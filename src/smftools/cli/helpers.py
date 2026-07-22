@@ -300,16 +300,15 @@ def read_artifact_manifest(path: str | Path) -> dict[str, Any]:
 
 
 def write_artifact_manifest(path: str | Path, manifest: dict[str, Any]) -> Path:
-    """Write artifact manifest JSON atomically-ish via parent mkdir + overwrite."""
+    """Write the load artifact manifest atomically."""
+    from ..readwrite import atomic_write_json
+
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
     manifest = dict(manifest)
     manifest["updated_at"] = _utc_now_iso()
     if "created_at" not in manifest:
         manifest["created_at"] = manifest["updated_at"]
-    with p.open("w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, indent=2, sort_keys=True)
-    return p
+    return atomic_write_json(p, manifest)
 
 
 def register_artifact(

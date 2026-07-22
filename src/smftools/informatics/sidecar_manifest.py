@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..readwrite import atomic_write_json
+
 MANIFEST_FILENAME = "sidecar_manifest.json"
+SCHEMA_VERSION = 2
 
 
 def sidecar_manifest_path(output_dir: str | Path) -> Path:
@@ -15,11 +19,11 @@ def sidecar_manifest_path(output_dir: str | Path) -> Path:
 
 def _load_manifest(path: Path) -> Dict[str, Any]:
     if not path.exists():
-        return {"version": 1, "sidecars": {}}
+        return {"version": SCHEMA_VERSION, "sidecars": {}}
     with path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
     if not isinstance(data, dict):
-        return {"version": 1, "sidecars": {}}
+        return {"version": SCHEMA_VERSION, "sidecars": {}}
     data.setdefault("version", 1)
     sidecars = data.get("sidecars")
     if not isinstance(sidecars, dict):
@@ -38,15 +42,32 @@ def register_sidecar(
     mpath = Path(manifest_path)
     mpath.parent.mkdir(parents=True, exist_ok=True)
     manifest = _load_manifest(mpath)
+    sidecar_path = Path(sidecar_path)
+    try:
+        stored_path = Path(
+            os.path.relpath(sidecar_path.resolve(), start=mpath.parent.resolve())
+        ).as_posix()
+        path_kind = "relative"
+        anchor = "manifest_parent"
+    except ValueError:
+        # Windows cannot express a relative path across drives.
+        stored_path = str(sidecar_path.resolve())
+        path_kind = "absolute"
+        anchor = None
     payload: Dict[str, Any] = {
-        "path": str(Path(sidecar_path)),
+        "path": stored_path,
+        "path_kind": path_kind,
+        "anchor": anchor,
         "updated_at_utc": datetime.now(timezone.utc).isoformat(),
     }
     if metadata:
+        reserved = {"path", "path_kind", "anchor", "updated_at_utc"}.intersection(metadata)
+        if reserved:
+            raise ValueError(f"sidecar metadata cannot replace reserved fields: {sorted(reserved)}")
         payload.update(metadata)
     manifest["sidecars"][key] = payload
-    with mpath.open("w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2, sort_keys=True)
+    manifest["version"] = SCHEMA_VERSION
+    atomic_write_json(mpath, manifest)
     return mpath
 
 
@@ -63,4 +84,12 @@ def resolve_sidecar(manifest_path: str | Path, key: str) -> Optional[Path]:
     if not isinstance(raw_path, str):
         return None
     p = Path(raw_path)
+    path_kind = entry.get("path_kind")
+    if path_kind == "relative":
+        if entry.get("anchor") != "manifest_parent":
+            return None
+        p = mpath.parent / p
+    elif path_kind != "absolute" and not p.is_absolute():
+        # Backward-compatible read for version-1 relative entries.
+        p = mpath.parent / p
     return p if p.exists() else None
