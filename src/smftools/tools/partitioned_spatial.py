@@ -1477,16 +1477,23 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     tasks, bed_regions = _region_tasks(spine, cfg, filter_mask)
     if not tasks:
         raise RuntimeError("partitioned spatial analysis has no non-empty tasks")
-    from ..memory_guard import run_tasks_parallel
+    from ..memory_guard import require_memory_headroom, run_tasks_parallel
 
     records = run_tasks_parallel(
         execute_spatial_task,
         [(spine_path, task, cfg, output_dir) for task in tasks],
         cfg=cfg,
         pool_label=f"spatial task pool ({len(tasks)} tasks)",
+        per_item_memory_mb=max(task.estimated_memory_bytes for task in tasks) / (1024**2),
+        estimator="spatial_task_plan_peak",
     )
     task_catalog = output_dir / SPATIAL_TASK_CATALOG
     pd.DataFrame(records).to_parquet(task_catalog, index=False)
+    require_memory_headroom(
+        cfg,
+        operation_label="spatial reducers",
+        estimator="spatial_reducer_peak",
+    )
     read_autocorrelation_axis, read_periodogram_axis = _write_read_metric_axes(output_dir, cfg)
     metrics_path, autocorrelation_path = _reduce_metrics(records, output_dir)
     dense_regions = _dense_product_regions(spine, bed_regions)
@@ -1499,6 +1506,11 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
         source_spine=spine_path,
     )
     pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
+    require_memory_headroom(
+        cfg,
+        operation_label="spatial plots",
+        estimator="spatial_plot_peak",
+    )
     autocorrelation = pd.read_parquet(autocorrelation_path)
     _plot_autocorrelation(autocorrelation, layout)
     _plot_read_periodicity(records, output_dir, layout, cfg)

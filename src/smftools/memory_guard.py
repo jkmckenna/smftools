@@ -11,19 +11,14 @@ platforms smftools runs on:
   internally, and regardless of what else on the machine is also using memory. This
   is called once, at CLI startup, before any worker pool exists.
 
-- macOS (and any platform without a usable process-tree memory cap): there is no
-  per-process-tree ceiling available to an unprivileged process, so protection
-  instead happens per worker: `start_worker_watchdog()` polls each of a
-  multiprocessing.Pool's worker RSS values via psutil and kills any worker that
-  exceeds its estimated per-worker budget. This is a narrower guarantee than the
-  Linux cgroup (it only sees smftools' own workers, not overall machine pressure),
-  which is why it's a fallback rather than the primary mechanism where cgroups are
-  available.
+- macOS, Windows, and Linux when cgroup activation fails: `PoolBudget` snapshots
+  combine current system/cgroup headroom with recursive smftools process-tree use
+  before pool creation and while bounded work is admitted. A watchdog samples
+  worker process trees and terminates sustained over-budget workers. Sequential,
+  reducer, plotting, and external-tool entry points use the same live preflight.
 
-Both are best-effort and fail open: if setup fails for any reason (missing
-permissions, unsupported kernel, missing psutil, cgroup v2 not mounted), a warning
-is logged and the pipeline proceeds without the protection rather than being
-blocked by it.
+OS enforcement remains best-effort, but admission fails clearly when the live
+headroom cannot fit even one estimated task.
 """
 
 from __future__ import annotations
@@ -43,6 +38,7 @@ logger = get_logger(__name__)
 
 DEFAULT_AGGREGATE_SAFETY_FRACTION = 0.9
 DEFAULT_WORKER_POLL_INTERVAL_SECONDS = 2.0
+POOL_BUDGET_ESTIMATOR_VERSION = "1"
 _ACTIVE_CGROUP_PATH: Path | None = None
 _UPSTREAM_CGROUP_CPU_COUNT: int | None = None
 _UPSTREAM_CGROUP_MEMORY_LIMIT: int | None = None
@@ -75,6 +71,32 @@ class ResourceEnvelope:
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable resource provenance record."""
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class PoolBudget:
+    """Point-in-time resource budget resolved immediately before pool use."""
+
+    estimator: str
+    estimator_version: str
+    n_items: int
+    per_item_memory_bytes: int
+    process_tree_rss_bytes: int
+    process_tree_private_bytes: int
+    system_available_bytes: int
+    cgroup_headroom_bytes: int | None
+    run_headroom_bytes: int
+    usable_headroom_bytes: int
+    max_workers: int
+    max_in_flight: int
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable pool decision record."""
+        return asdict(self)
+
+
+class PoolBudgetError(MemoryError):
+    """Raised when even one estimated task cannot fit the live memory headroom."""
 
 
 def _minimum_positive(values: list[int | None], *, fallback: int) -> int:
@@ -348,6 +370,180 @@ def resolve_memory_budget_bytes(cfg) -> int:
     return resource_envelope_for_config(cfg).resolved_memory_bytes
 
 
+def process_tree_rss_bytes(pid: int | None = None) -> int:
+    """Return RSS for a process and all currently reachable descendants."""
+    import psutil
+
+    try:
+        parent = psutil.Process(os.getpid() if pid is None else pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return 0
+    try:
+        processes = [parent, *parent.children(recursive=True)]
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        # Restricted macOS sandboxes can expose the current process RSS while
+        # denying the system-wide PID enumeration psutil uses for descendants.
+        processes = [parent]
+    total = 0
+    seen: set[int] = set()
+    for process in processes:
+        if process.pid in seen:
+            continue
+        seen.add(process.pid)
+        try:
+            if process.status() in {psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE}:
+                continue
+            total += int(process.memory_info().rss)
+        except (AttributeError, psutil.NoSuchProcess, psutil.AccessDenied):
+            try:
+                total += int(process.memory_info().rss)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        except OSError:
+            continue
+    return total
+
+
+def process_tree_private_bytes(pid: int | None = None) -> int:
+    """Return unique memory for a process tree without fork-shared double counting."""
+    import psutil
+
+    try:
+        parent = psutil.Process(os.getpid() if pid is None else pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return 0
+    try:
+        processes = [parent, *parent.children(recursive=True)]
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        processes = [parent]
+    total = 0
+    seen: set[int] = set()
+    for process in processes:
+        if process.pid in seen:
+            continue
+        seen.add(process.pid)
+        try:
+            if process.status() in {psutil.STATUS_DEAD, psutil.STATUS_ZOMBIE}:
+                continue
+            info = process.memory_full_info()
+            total += int(getattr(info, "uss", info.rss))
+        except (AttributeError, psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            try:
+                total += int(process.memory_info().rss)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                continue
+    return total
+
+
+def current_cgroup_memory_headroom_bytes() -> int | None:
+    """Return live cgroup memory headroom, when a finite limit is visible."""
+    if _ACTIVE_CGROUP_PATH is not None:
+        limit, current = cgroup_memory_values(_ACTIVE_CGROUP_PATH)
+    else:
+        limit, current = cgroup_memory_values()
+    if limit is None:
+        return None
+    return max(0, int(limit) - int(current or 0))
+
+
+def resolve_pool_budget(
+    cfg,
+    n_items: int,
+    *,
+    per_item_memory_mb: float | None = None,
+    estimator: str = "target_task_memory_mb",
+) -> PoolBudget:
+    """Resolve workers and admission depth from a fresh live-memory snapshot.
+
+    The run envelope remains immutable and portable. This pool-level decision
+    is deliberately ephemeral: it accounts for memory consumed since command
+    startup and is recalculated at every pool allocation and admission refill.
+    """
+    envelope = resource_envelope_for_config(cfg)
+    if per_item_memory_mb is None:
+        per_item_memory_mb = float(getattr(cfg, "target_task_memory_mb", 512) or 512)
+    per_item_bytes = max(1, math.ceil(max(1.0, per_item_memory_mb) * (1024**2)))
+    tree_rss = process_tree_rss_bytes()
+    tree_private = process_tree_private_bytes()
+    system_available = available_system_memory_bytes()
+    reserve = max(0, envelope.memory_reserve_bytes)
+    # RSS double-counts copy-on-write pages shared by forked workers. Unique
+    # set size gives a stable admission signal while RSS remains logged for
+    # conventional peak reporting and estimator calibration.
+    run_headroom = max(0, envelope.resolved_memory_bytes - tree_private)
+    system_headroom = max(0, system_available - reserve)
+    cgroup_headroom = current_cgroup_memory_headroom_bytes()
+    candidates = [run_headroom, system_headroom]
+    if cgroup_headroom is not None:
+        # A dedicated smftools cgroup's memory.max is already the resolved
+        # post-reserve run ceiling. An upstream/shared cgroup still needs the
+        # reserve held back from its currently free allocation.
+        cgroup_reserve = 0 if _ACTIVE_CGROUP_PATH is not None else reserve
+        candidates.append(max(0, cgroup_headroom - cgroup_reserve))
+    usable_headroom = min(candidates)
+    by_memory = usable_headroom // per_item_bytes
+    max_workers = min(
+        envelope.resolved_threads,
+        max(0, int(n_items)),
+        max(0, int(by_memory)),
+    )
+    return PoolBudget(
+        estimator=str(estimator),
+        estimator_version=POOL_BUDGET_ESTIMATOR_VERSION,
+        n_items=max(0, int(n_items)),
+        per_item_memory_bytes=per_item_bytes,
+        process_tree_rss_bytes=tree_rss,
+        process_tree_private_bytes=tree_private,
+        system_available_bytes=system_available,
+        cgroup_headroom_bytes=cgroup_headroom,
+        run_headroom_bytes=run_headroom,
+        usable_headroom_bytes=usable_headroom,
+        max_workers=max_workers,
+        max_in_flight=max_workers,
+    )
+
+
+def require_task_admission(budget: PoolBudget, *, pool_label: str | None = None) -> None:
+    """Raise a clear error when a live budget cannot admit one task."""
+    if budget.n_items <= 0 or budget.max_in_flight > 0:
+        return
+    label = f" for {pool_label}" if pool_label else ""
+    raise PoolBudgetError(
+        f"Cannot admit one task{label}: estimated task memory "
+        f"({budget.per_item_memory_bytes / (1024**2):.1f} MiB) exceeds live usable "
+        f"headroom ({budget.usable_headroom_bytes / (1024**2):.1f} MiB). Close other "
+        "memory-intensive processes, reduce task/partition size, or increase the configured "
+        "memory ceiling."
+    )
+
+
+def require_memory_headroom(
+    cfg,
+    *,
+    n_items: int = 1,
+    estimated_memory_mb: float | None = None,
+    operation_label: str | None = None,
+    estimator: str = "target_task_memory_mb",
+) -> PoolBudget:
+    """Preflight one sequential, reducer, plotting, or external-tool operation."""
+    budget = resolve_pool_budget(
+        cfg,
+        n_items,
+        per_item_memory_mb=estimated_memory_mb,
+        estimator=estimator,
+    )
+    from .perf_log import get_perf_logger
+
+    perf = get_perf_logger()
+    if perf is not None:
+        perf.operation_budget(
+            operation_label=operation_label,
+            pool_budget=budget.as_dict(),
+        )
+    require_task_admission(budget, pool_label=operation_label)
+    return budget
+
+
 def resolve_max_workers(cfg, n_items: int, *, per_item_memory_mb: float | None = None) -> int:
     """How many workers to run concurrently for a pool of ``n_items`` tasks.
 
@@ -368,6 +564,45 @@ def resolve_max_workers(cfg, n_items: int, *, per_item_memory_mb: float | None =
     budget_bytes = resolve_memory_budget_bytes(cfg)
     by_memory = max(1, int(budget_bytes // per_item_bytes))
     return max(1, min(threads, n_items, by_memory))
+
+
+def bounded_executor_map(
+    executor,
+    worker: Callable,
+    items,
+    *,
+    cfg,
+    max_workers: int,
+    pool_label: str | None = None,
+    per_item_memory_mb: float | None = None,
+    estimator: str = "target_task_memory_mb",
+) -> list:
+    """Map a lazy iterable with live, bounded admission and ordered results."""
+    from concurrent.futures import FIRST_COMPLETED, wait
+
+    iterator = enumerate(items)
+    exhausted = object()
+    next_item = next(iterator, exhausted)
+    futures = {}
+    results: dict[int, Any] = {}
+    while futures or next_item is not exhausted:
+        budget = resolve_pool_budget(
+            cfg,
+            max_workers,
+            per_item_memory_mb=per_item_memory_mb,
+            estimator=estimator,
+        )
+        target_in_flight = min(max_workers, budget.max_in_flight)
+        while next_item is not exhausted and len(futures) < target_in_flight:
+            index, item = next_item
+            futures[executor.submit(worker, item)] = index
+            next_item = next(iterator, exhausted)
+        if not futures:
+            require_task_admission(budget, pool_label=pool_label)
+        done, _ = wait(futures, return_when=FIRST_COMPLETED)
+        for future in done:
+            results[futures.pop(future)] = future.result()
+    return [results[index] for index in sorted(results)]
 
 
 def enable_aggregate_memory_cap(
@@ -531,11 +766,10 @@ def start_worker_watchdog(
     `pool` may be a `multiprocessing.pool.Pool` or a
     `concurrent.futures.ProcessPoolExecutor` -- see `_live_worker_pids`.
 
-    No-op on Linux (returns a no-op stop callable): the aggregate cgroup cap from
-    `enable_aggregate_memory_cap()` already covers the whole process tree there,
-    and running both mechanisms at once would just mean two different things can
-    kill a worker for the same reason. This is the fallback for platforms (macOS)
-    where no process-tree memory cap is available.
+    Worker termination is disabled only when this process successfully entered
+    its dedicated Linux cgroup. If cgroup activation failed, Linux uses the same
+    watchdog fallback as macOS and Windows. With a performance logger attached,
+    sampling remains active even under cgroup enforcement.
 
     `per_worker_budget_bytes` is `resolve_memory_budget_bytes(cfg) // max_workers`
     -- an even split of the aggregate budget, not a measured per-task estimate
@@ -558,7 +792,10 @@ def start_worker_watchdog(
     Returns a `stop()` callable that must be called (typically in a `finally`)
     once the pool's work is done, to stop the polling thread.
     """
-    if sys.platform == "linux":
+    cgroup_enforced = bool(
+        sys.platform == "linux" and _ACTIVE_CGROUP_PATH is not None and _ACTIVE_CGROUP_PATH.is_dir()
+    )
+    if cgroup_enforced and perf_logger is None:
         return lambda: None
 
     try:
@@ -566,6 +803,7 @@ def start_worker_watchdog(
     except ImportError:
         logger.warning("psutil not installed; per-worker memory watchdog disabled")
         return lambda: None
+    access_denied = getattr(psutil, "AccessDenied", PermissionError)
 
     if per_worker_budget_bytes <= 0:
         logger.debug("No positive per-worker memory budget provided; watchdog disabled")
@@ -578,6 +816,33 @@ def start_worker_watchdog(
 
     parent_process = psutil.Process() if perf_logger is not None else None
 
+    def _worker_tree_rss(pid: int) -> int:
+        process = psutil.Process(pid)
+        rss = int(process.memory_info().rss)
+        try:
+            descendants = process.children(recursive=True)
+        except (AttributeError, access_denied, OSError):
+            descendants = []
+        for descendant in descendants:
+            try:
+                rss += int(descendant.memory_info().rss)
+            except (psutil.NoSuchProcess, access_denied, OSError):
+                continue
+        return rss
+
+    def _kill_worker_tree(pid: int) -> None:
+        process = psutil.Process(pid)
+        try:
+            descendants = process.children(recursive=True)
+        except (AttributeError, access_denied, OSError):
+            descendants = []
+        for descendant in reversed(descendants):
+            try:
+                descendant.kill()
+            except (psutil.NoSuchProcess, access_denied, OSError):
+                continue
+        process.kill()
+
     def _emit_perf_sample(live_pids, workers_rss_bytes) -> None:
         if perf_logger is None or parent_process is None:
             return
@@ -589,6 +854,9 @@ def start_worker_watchdog(
                 tree_rss_gb=(parent_rss + workers_rss_bytes) / (1024**3),
                 parent_rss_gb=round(parent_rss / (1024**3), 3),
                 workers_rss_gb=round(workers_rss_bytes / (1024**3), 3),
+                predicted_workers_peak_gb=round(
+                    len(live_pids) * per_worker_budget_bytes / (1024**3), 3
+                ),
                 n_live_workers=len(live_pids),
                 system_used_gb=round(virtual.used / (1024**3), 3),
                 system_available_gb=round(virtual.available / (1024**3), 3),
@@ -606,11 +874,13 @@ def start_worker_watchdog(
             workers_rss_bytes = 0
             for pid in live_pids:
                 try:
-                    rss = psutil.Process(pid).memory_info().rss
+                    rss = _worker_tree_rss(pid)
                 except psutil.NoSuchProcess:
                     consecutive_over.pop(pid, None)
                     continue
                 workers_rss_bytes += rss
+                if cgroup_enforced:
+                    continue
                 if rss <= kill_threshold_bytes:
                     consecutive_over.pop(pid, None)
                     continue
@@ -639,9 +909,11 @@ def start_worker_watchdog(
                     grace_polls,
                 )
                 try:
-                    psutil.Process(pid).kill()
-                except psutil.NoSuchProcess:
-                    pass
+                    _kill_worker_tree(pid)
+                except (psutil.NoSuchProcess, access_denied):
+                    logger.warning(
+                        "%sMemoryGuard could not terminate worker pid=%d", label_prefix, pid
+                    )
                 consecutive_over.pop(pid, None)
             _emit_perf_sample(live_pids, workers_rss_bytes)
             stop_event.wait(poll_interval)
@@ -649,9 +921,10 @@ def start_worker_watchdog(
     thread = threading.Thread(target=_poll_loop, name="smftools-memory-watchdog", daemon=True)
     thread.start()
     logger.info(
-        "%sPer-worker memory watchdog enabled: %.2f GiB budget/worker (+%.0f%% tolerance, "
+        "%sMemory watchdog enabled (%s): %.2f GiB budget/worker (+%.0f%% tolerance, "
         "%d-poll grace period), polling every %.1fs",
         label_prefix,
+        "cgroup sampling" if cgroup_enforced else "worker enforcement",
         per_worker_budget_bytes / (1024**3),
         tolerance_fraction * 100,
         grace_polls,
@@ -672,6 +945,8 @@ def run_tasks_parallel(
     cfg,
     force_sequential: bool = False,
     pool_label: str | None = None,
+    per_item_memory_mb: float | None = None,
+    estimator: str = "target_task_memory_mb",
 ) -> list:
     """Run ``worker(*args)`` once per item in ``task_args_list``, in a
     memory-aware ``ProcessPoolExecutor`` pool.
@@ -688,13 +963,10 @@ def run_tasks_parallel(
     "Per-worker memory watchdog enabled"/"MemoryGuard: worker pid=..." with
     no indication of what task was actually running.
 
-    Shared orchestration for every parallel task-execution loop in this
-    codebase (preprocess/spatial/hmm task dispatch, raw-ingestion extraction
-    buckets): sizes the pool via ``resolve_max_workers`` (bounded by
-    ``cfg.threads``, item count, and the aggregate memory budget divided by a
-    per-task estimate) and wires ``start_worker_watchdog`` around it (a no-op
-    on Linux, where the aggregate cgroup cap from ``enable_aggregate_memory_
-    cap`` already covers the whole process tree).
+    Shared orchestration for partitioned preprocess/spatial/HMM and duplicate
+    detection dispatch: resolves a fresh ``PoolBudget`` before allocation,
+    bounds workers and submitted futures, refreshes live headroom after each
+    completion, and wires ``start_worker_watchdog`` around the executor.
 
     Falls back to a plain sequential loop when ``resolve_max_workers`` decides
     only one worker is warranted (small task counts, or a tight memory
@@ -716,10 +988,8 @@ def run_tasks_parallel(
     single shared GPU context the way independent *processes* do.
 
     Returns results in the same order as ``task_args_list`` regardless of
-    actual completion order (each future is still submitted concurrently;
-    only the order results are *collected* in is preserved), so callers don't
-    need to handle reordering the way completion-order APIs (e.g.
-    ``as_completed``) would require.
+    completion order. No more than the live ``max_in_flight`` futures are
+    submitted, so completed results cannot accumulate in an unbounded queue.
 
     If the watchdog kills a worker, every other future still pending in that
     same pool also raises ``BrokenProcessPool`` (the whole executor is
@@ -739,17 +1009,33 @@ def run_tasks_parallel(
     """
     from .perf_log import get_perf_logger
 
+    if not task_args_list:
+        return []
+
     perf = get_perf_logger()
     pool_id = perf.next_pool_id() if perf is not None else None
-
-    max_workers = 1 if force_sequential else resolve_max_workers(cfg, len(task_args_list))
+    initial_budget = resolve_pool_budget(
+        cfg,
+        len(task_args_list),
+        per_item_memory_mb=per_item_memory_mb,
+        estimator=estimator,
+    )
+    require_task_admission(initial_budget, pool_label=pool_label)
+    max_workers = 1 if force_sequential else initial_budget.max_workers
+    predicted_peak_bytes = (
+        initial_budget.process_tree_rss_bytes + max_workers * initial_budget.per_item_memory_bytes
+    )
     if perf is not None:
         perf.pool_start(
             pool_id,
             n_tasks=len(task_args_list),
             max_workers=max_workers,
             force_sequential=bool(force_sequential),
-            **_worker_decision_inputs(cfg, len(task_args_list)),
+            predicted_peak_gb=round(predicted_peak_bytes / (1024**3), 3),
+            pool_budget=initial_budget.as_dict(),
+            **_worker_decision_inputs(
+                cfg, len(task_args_list), per_item_memory_mb=per_item_memory_mb
+            ),
         )
     if max_workers <= 1:
         # The parallel branch below always logs something (the watchdog's
@@ -762,12 +1048,34 @@ def run_tasks_parallel(
         if pool_label:
             logger.info("[%s] running %d task(s) sequentially", pool_label, len(task_args_list))
         try:
-            return [worker(*args) for args in task_args_list]
+            results = []
+            for args in task_args_list:
+                require_memory_headroom(
+                    cfg,
+                    estimated_memory_mb=per_item_memory_mb,
+                    operation_label=pool_label,
+                    estimator=estimator,
+                )
+                results.append(worker(*args))
+                if perf is not None:
+                    measured_rss = process_tree_rss_bytes()
+                    perf.sample(
+                        pool_id,
+                        tree_rss_gb=measured_rss / (1024**3),
+                        predicted_peak_gb=round(predicted_peak_bytes / (1024**3), 3),
+                        n_live_workers=0,
+                    )
+            return results
         finally:
             if perf is not None:
-                perf.pool_end(pool_id, final_max_workers=1, n_retries=0)
+                perf.pool_end(
+                    pool_id,
+                    final_max_workers=1,
+                    n_retries=0,
+                    predicted_peak_gb=round(predicted_peak_bytes / (1024**3), 3),
+                )
 
-    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
     from concurrent.futures.process import BrokenProcessPool
 
     from .parallel_utils import configure_worker_threads
@@ -779,6 +1087,14 @@ def run_tasks_parallel(
     n_retries = 0
     try:
         while pending_indices:
+            attempt_budget = resolve_pool_budget(
+                cfg,
+                len(pending_indices),
+                per_item_memory_mb=per_item_memory_mb,
+                estimator=estimator,
+            )
+            require_task_admission(attempt_budget, pool_label=pool_label)
+            workers_for_attempt = min(workers_for_attempt, attempt_budget.max_workers)
             per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // workers_for_attempt
             with ProcessPoolExecutor(
                 max_workers=workers_for_attempt,
@@ -794,21 +1110,44 @@ def run_tasks_parallel(
                     pool_label=pool_label,
                 )
                 try:
-                    future_to_index = {
-                        pool.submit(worker, *task_args_list[i]): i for i in pending_indices
-                    }
+                    from collections import deque
+
+                    queued_indices = deque(pending_indices)
+                    future_to_index = {}
                     broke = False
                     still_pending: list[int] = []
-                    for future, index in future_to_index.items():
-                        try:
-                            results[index] = future.result()
-                        except BrokenProcessPool:
-                            broke = True
-                            still_pending.append(index)
-                    if broke:
-                        for future, index in future_to_index.items():
-                            if index not in still_pending and not future.done():
+                    while queued_indices or future_to_index:
+                        refill_budget = resolve_pool_budget(
+                            cfg,
+                            len(queued_indices) + len(future_to_index),
+                            per_item_memory_mb=per_item_memory_mb,
+                            estimator=estimator,
+                        )
+                        target_in_flight = min(
+                            workers_for_attempt,
+                            refill_budget.max_in_flight,
+                        )
+                        while queued_indices and len(future_to_index) < target_in_flight:
+                            index = queued_indices.popleft()
+                            future_to_index[pool.submit(worker, *task_args_list[index])] = index
+                        if not future_to_index:
+                            require_task_admission(refill_budget, pool_label=pool_label)
+                        done, _ = wait(future_to_index, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            index = future_to_index.pop(future)
+                            try:
+                                results[index] = future.result()
+                            except BrokenProcessPool:
+                                broke = True
                                 still_pending.append(index)
+                        if broke:
+                            still_pending.extend(queued_indices)
+                            still_pending.extend(future_to_index.values())
+                            for future in future_to_index:
+                                future.cancel()
+                            break
+                    if broke:
+                        still_pending = list(dict.fromkeys(still_pending))
                     pending_indices = sorted(still_pending)
                 finally:
                     stop_watchdog()
@@ -838,11 +1177,16 @@ def run_tasks_parallel(
                 )
     finally:
         if perf is not None:
-            perf.pool_end(pool_id, final_max_workers=workers_for_attempt, n_retries=n_retries)
+            perf.pool_end(
+                pool_id,
+                final_max_workers=workers_for_attempt,
+                n_retries=n_retries,
+                predicted_peak_gb=round(predicted_peak_bytes / (1024**3), 3),
+            )
     return results
 
 
-def _worker_decision_inputs(cfg, n_items: int) -> dict:
+def _worker_decision_inputs(cfg, n_items: int, *, per_item_memory_mb: float | None = None) -> dict:
     """The inputs ``resolve_max_workers`` used, for the perf log's ``pool_start``.
 
     Surfacing *why* a worker count was chosen (threads vs. item count vs. the
@@ -852,7 +1196,11 @@ def _worker_decision_inputs(cfg, n_items: int) -> dict:
     """
     envelope = resource_envelope_for_config(cfg)
     threads = envelope.resolved_threads
-    per_item_mb = float(getattr(cfg, "target_task_memory_mb", 512) or 512)
+    per_item_mb = (
+        float(per_item_memory_mb)
+        if per_item_memory_mb is not None
+        else float(getattr(cfg, "target_task_memory_mb", 512) or 512)
+    )
     budget_bytes = resolve_memory_budget_bytes(cfg)
     by_memory = max(1, int(budget_bytes // (max(1.0, per_item_mb) * (1024**2))))
     return {

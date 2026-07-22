@@ -83,6 +83,10 @@ class PerfLogger:
         """Record the immutable run-level resource resolution."""
         self._emit("resource_envelope", **fields)
 
+    def operation_budget(self, **fields) -> None:
+        """Record a point-in-time preflight for non-pool work."""
+        self._emit("operation_budget", **fields)
+
     def sample(self, pool_id: int, *, tree_rss_gb: float, **fields) -> None:
         with self._lock:
             self._peak_tree_rss_gb = max(self._peak_tree_rss_gb, tree_rss_gb)
@@ -133,6 +137,7 @@ def summarize_perf_logs(root: str | Path) -> "list[dict]":
     rows: list[dict] = []
     for path in sorted(root.rglob("*_perf.jsonl")):
         peak = 0.0
+        predicted_peak = 0.0
         max_workers = 0
         n_pools = 0
         n_retries = 0
@@ -154,6 +159,9 @@ def summarize_perf_logs(root: str | Path) -> "list[dict]":
                     if event == "pool_start":
                         n_pools += 1
                         max_workers = max(max_workers, int(record.get("max_workers") or 0))
+                        predicted_peak = max(
+                            predicted_peak, float(record.get("predicted_peak_gb") or 0.0)
+                        )
                     elif event == "sample":
                         n_samples += 1
                         peak = max(peak, float(record.get("tree_rss_gb") or 0.0))
@@ -173,6 +181,10 @@ def summarize_perf_logs(root: str | Path) -> "list[dict]":
                 "path": str(path),
                 "stage": stage,
                 "peak_tree_rss_gb": round(peak, 3),
+                "max_predicted_peak_gb": round(predicted_peak, 3),
+                "peak_to_predicted_ratio": (
+                    round(peak / predicted_peak, 3) if predicted_peak > 0 else None
+                ),
                 "max_workers_used": max_workers,
                 "n_pools": n_pools,
                 "n_retries_total": n_retries,

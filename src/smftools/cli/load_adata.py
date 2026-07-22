@@ -246,6 +246,7 @@ def load_adata_core(
         resolve_sidecar,
         sidecar_manifest_path,
     )
+    from ..memory_guard import require_memory_headroom
     from ..metadata import record_smftools_metadata
     from ..readwrite import add_or_update_column_in_csv, make_dirs
     from .helpers import write_gz_h5ad
@@ -504,6 +505,11 @@ def load_adata_core(
         elif unaligned_output.exists():
             logger.info(f"{unaligned_output} already exists. Using existing basecalled BAM.")
         elif cfg.smf_modality != "direct":
+            require_memory_headroom(
+                cfg,
+                operation_label="dorado canonical basecalling",
+                estimator="external_basecalling_peak",
+            )
             logger.info("Running canonical basecalling using dorado")
             dorado_kit_name = cfg.barcode_kit if cfg.barcode_kit != "custom" else None
             canoncall(
@@ -519,6 +525,11 @@ def load_adata_core(
                 cfg.emit_moves,
             )
         else:
+            require_memory_headroom(
+                cfg,
+                operation_label="dorado modified basecalling",
+                estimator="external_basecalling_peak",
+            )
             logger.info("Running modified basecalling using dorado")
             dorado_kit_name = cfg.barcode_kit if cfg.barcode_kit != "custom" else None
             modcall(
@@ -546,6 +557,11 @@ def load_adata_core(
     if aligned_sorted_output.exists():
         logger.debug(f"{aligned_sorted_output} already exists. Using existing aligned/sorted BAM.")
     else:
+        require_memory_headroom(
+            cfg,
+            operation_label=f"{cfg.aligner} alignment and sorting",
+            estimator="external_alignment_peak",
+        )
         logger.info(f"Aligning and sorting reads")
         align_and_sort_BAM(fasta, unaligned_output, aligned_output, cfg)
         # Deleted the unsorted aligned output
@@ -605,6 +621,11 @@ def load_adata_core(
                 f"{bed_dir} already exists. Skipping BAM -> BED conversion for {aligned_sorted_output}"
             )
         else:
+            require_memory_headroom(
+                cfg,
+                operation_label="BAM to BED conversion",
+                estimator="external_bam_to_bed_peak",
+            )
             logger.info("Making bed files from the aligned and sorted BAM file")
             aligned_BAM_to_bed(
                 aligned_sorted_output,
@@ -1141,6 +1162,11 @@ def load_adata_core(
         if direct_uses_modkit:
             from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
 
+            require_memory_headroom(
+                cfg,
+                operation_label="modkit raw extraction",
+                estimator="external_modkit_peak",
+            )
             if not mod_bed_dir.is_dir():
                 make_dirs([mod_bed_dir])
                 modQC(aligned_sorted_output, cfg.thresholds)
@@ -1256,6 +1282,11 @@ def load_adata_core(
         if skip_bam_qc:
             logger.info("skip_bam_qc=True: skipping multiqc")
         elif not mqc_dir.is_dir():
+            require_memory_headroom(
+                cfg,
+                operation_label="MultiQC",
+                estimator="external_multiqc_peak",
+            )
             run_multiqc(bam_qc_dir, mqc_dir)
         return spine, raw_paths["spine"], cfg
 
@@ -1290,6 +1321,11 @@ def load_adata_core(
             barcode_sidecar=barcode_sidecar,
         )
     else:
+        require_memory_headroom(
+            cfg,
+            operation_label="modkit dense extraction",
+            estimator="external_modkit_peak",
+        )
         if mod_bed_dir.is_dir():
             logger.debug(f"{mod_bed_dir} already exists, skipping making modbeds")
         else:
@@ -1509,6 +1545,11 @@ def load_adata_core(
     elif mqc_dir.is_dir():
         logger.info(f"{mqc_dir} already exists, skipping multiqc")
     else:
+        require_memory_headroom(
+            cfg,
+            operation_label="MultiQC",
+            estimator="external_multiqc_peak",
+        )
         logger.info("Running multiqc")
         run_multiqc(bam_qc_dir, mqc_dir)
     ########################################################################################################################

@@ -251,7 +251,12 @@ def _dispatch_and_fold(
 
     task_args = [(spine_path, task, cfg, group_obs.loc[list(task.read_ids)]) for task in tasks]
     results = run_tasks_parallel(
-        execute_duplicate_detection_chunk_task, task_args, cfg=cfg, pool_label=pool_label
+        execute_duplicate_detection_chunk_task,
+        task_args,
+        cfg=cfg,
+        pool_label=pool_label,
+        per_item_memory_mb=max(task.estimated_memory_bytes for task in tasks) / (1024**2),
+        estimator="duplicate_detection_chunk_peak",
     )
 
     survivors: list[str] = []

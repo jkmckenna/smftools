@@ -1270,6 +1270,16 @@ def combined_raw_clustermap(
     # Dispatch — parallel only when saving to disk
     # ------------------------------------------------------------------
     n_workers = _resolve_n_jobs(n_jobs) if save_path is not None else 1
+    if cfg is not None:
+        from smftools.memory_guard import bounded_executor_map, require_memory_headroom
+
+        plot_budget = require_memory_headroom(
+            cfg,
+            n_items=n_workers,
+            operation_label="spatial clustermap pool",
+            estimator="spatial_clustermap_peak",
+        )
+        n_workers = min(n_workers, plot_budget.max_workers)
 
     if n_workers <= 1:
         raw_results = [_combined_raw_clustermap_one_group(a) for a in _iter_group_args()]
@@ -1293,9 +1303,20 @@ def combined_raw_clustermap(
                 per_worker_budget_bytes = resolve_memory_budget_bytes(cfg) // n_workers
                 stop_watchdog = start_worker_watchdog(executor, per_worker_budget_bytes)
             try:
-                raw_results = list(
-                    executor.map(_combined_raw_clustermap_one_group, _iter_group_args())
-                )
+                if cfg is None:
+                    raw_results = list(
+                        executor.map(_combined_raw_clustermap_one_group, _iter_group_args())
+                    )
+                else:
+                    raw_results = bounded_executor_map(
+                        executor,
+                        _combined_raw_clustermap_one_group,
+                        _iter_group_args(),
+                        cfg=cfg,
+                        max_workers=n_workers,
+                        pool_label="spatial clustermap pool",
+                        estimator="spatial_clustermap_peak",
+                    )
             finally:
                 if stop_watchdog is not None:
                     stop_watchdog()
