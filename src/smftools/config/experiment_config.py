@@ -168,6 +168,44 @@ def _try_json_or_literal(s: Any) -> Any:
     return s
 
 
+def resolve_alignment_regions_bed(
+    alignment_regions_bed: Any,
+    fasta_regions_of_interest: Any,
+) -> Optional[str]:
+    """Resolve the alignment BED and its deprecated legacy alias.
+
+    Args:
+        alignment_regions_bed: New alignment-scope BED configuration value.
+        fasta_regions_of_interest: Deprecated alignment-scope alias.
+
+    Returns:
+        The resolved BED path, or ``None`` when neither value is configured.
+
+    Raises:
+        ValueError: If both fields identify different paths.
+    """
+    current = None if alignment_regions_bed in (None, "") else str(alignment_regions_bed)
+    legacy = None if fasta_regions_of_interest in (None, "") else str(fasta_regions_of_interest)
+    if legacy is not None:
+        warnings.warn(
+            "fasta_regions_of_interest is deprecated; use alignment_regions_bed instead.",
+            FutureWarning,
+            stacklevel=3,
+        )
+    if current is None:
+        return legacy
+    if legacy is None:
+        return current
+    current_path = Path(current).expanduser().resolve(strict=False)
+    legacy_path = Path(legacy).expanduser().resolve(strict=False)
+    if current_path != legacy_path:
+        raise ValueError(
+            "alignment_regions_bed and deprecated fasta_regions_of_interest conflict; "
+            "configure only alignment_regions_bed or give both fields the same path."
+        )
+    return current
+
+
 def resolve_aligner_args(
     merged: dict,
     default_by_aligner: Optional[Dict[str, List[str]]] = None,
@@ -740,6 +778,9 @@ class ExperimentConfig:
     split_path: Optional[str] = None
     strands: List[str] = field(default_factory=lambda: STRANDS)
     conversions: List[str] = field(default_factory=lambda: CONVERSIONS)
+    alignment_regions_bed: Optional[str] = None
+    analysis_regions_bed: Optional[str] = None
+    plot_regions_bed: Optional[str] = None
     fasta_regions_of_interest: Optional[str] = None
     sample_sheet_path: Optional[str] = None
     sample_sheet_mapping_column: Optional[str] = "Experiment_name_and_barcode"
@@ -1517,6 +1558,10 @@ class ExperimentConfig:
         split_path = bam_outputs_path / split_dir if bam_outputs_path else None
 
         # final normalization
+        merged["alignment_regions_bed"] = resolve_alignment_regions_bed(
+            merged.get("alignment_regions_bed"),
+            merged.get("fasta_regions_of_interest"),
+        )
         if "strands" in merged:
             merged["strands"] = _parse_list(merged["strands"])
         if "conversions" in merged:
@@ -1840,6 +1885,9 @@ class ExperimentConfig:
             split_path=split_path,
             strands=merged.get("strands", STRANDS),
             conversions=merged.get("conversions", CONVERSIONS),
+            alignment_regions_bed=merged.get("alignment_regions_bed"),
+            analysis_regions_bed=merged.get("analysis_regions_bed"),
+            plot_regions_bed=merged.get("plot_regions_bed"),
             fasta_regions_of_interest=merged.get("fasta_regions_of_interest"),
             mapping_threshold=float(merged.get("mapping_threshold", 0.01)),
             experiment_name=merged.get("experiment_name"),
@@ -2533,6 +2581,14 @@ class ExperimentConfig:
                 errors.append(f"input_data_path does not exist: {self.input_data_path}")
             if self.fasta and not Path(self.fasta).exists():
                 errors.append(f"fasta does not exist: {self.fasta}")
+            for field_name in (
+                "alignment_regions_bed",
+                "analysis_regions_bed",
+                "plot_regions_bed",
+            ):
+                configured_path = getattr(self, field_name)
+                if configured_path and not Path(configured_path).exists():
+                    errors.append(f"{field_name} does not exist: {configured_path}")
             outp = Path(self.output_directory) if self.output_directory else None
             if outp and not outp.exists():
                 try:

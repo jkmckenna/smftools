@@ -31,6 +31,7 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.ragged_store
    smftools.informatics.raw_store
    smftools.informatics.reference_identity
+   smftools.informatics.region_catalog
    smftools.informatics.run_multiqc
    smftools.informatics.sequence_encoding
    smftools.informatics.sidecar_manifest
@@ -44,6 +45,8 @@ molecule-index `spine.h5ad`, and on-demand dense-slice materialization. `molecul
 `derived_read_index` provide project-wide molecule keys and searchable raw-to-derived task
 lineage. `fastq_export` and `sequence_encoding` build on the ragged store to reconstruct literal
 read sequence/quality for FASTQ export.
+`region_catalog` validates the three original-coordinate BED scopes and publishes the mapping from
+alignment/reduced/conversion records and stored strand references back to the original FASTA.
 
 ```{eval-rst}
 .. automodule:: smftools.informatics

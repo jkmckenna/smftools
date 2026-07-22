@@ -159,6 +159,31 @@ def test_add_experiment_records_every_available_stage(tmp_path):
     )
 
 
+def test_registry_discovers_region_catalogs_and_reference_map(tmp_path):
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    run_dir = _make_run(
+        tmp_path / "expA",
+        stages=["raw"],
+        name="expA",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    pd.DataFrame({"stored_reference": ["chr1_top"]}).to_parquet(
+        run_dir / "reference_interval_map.parquet", index=False
+    )
+    region_dir = run_dir / "region_catalogs"
+    region_dir.mkdir()
+    pd.DataFrame({"region_id": ["reg_a"]}).to_parquet(
+        region_dir / "analysis_regions.parquet", index=False
+    )
+
+    _, entry = reg.add_experiment(proj, run_dir)
+
+    assert set(entry["catalogs"]).issuperset({"reference_interval_map", "analysis_regions"})
+    assert not Path(entry["catalogs"]["reference_interval_map"]).is_absolute()
+
+
 def test_resolve_experiment_spine_prefers_most_derived_stage(tmp_path):
     proj = tmp_path / "project"
     reg.init_project(proj)

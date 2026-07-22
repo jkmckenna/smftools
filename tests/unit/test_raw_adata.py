@@ -822,6 +822,7 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
         (ragged_store / "part-00000.parquet").touch()
         pd.DataFrame().to_parquet(paths.raw_spine.parent / "interval_catalog.parquet", index=False)
         pd.DataFrame().to_parquet(tmp_path / "molecules.parquet", index=False)
+        pd.DataFrame().to_parquet(tmp_path / "reference_interval_map.parquet", index=False)
         (tmp_path / "molecule_index").mkdir()
         (paths.raw_spine.parent / "sidecar_manifest.json").write_text("{}\n", encoding="utf-8")
         return SimpleNamespace(n_obs=1), paths.raw_spine, core_cfg
@@ -841,6 +842,7 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
         "interval_catalog",
         "molecules",
         "molecule_index",
+        "reference_interval_map",
         "manifest",
     }
     monkeypatch.setattr(

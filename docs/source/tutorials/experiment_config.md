@@ -36,7 +36,13 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
   preprocessing and HMM feature handling.
 - `input_data_path`: Location of raw input data (fast5/pod5/fastq/bam).
 - `fasta`: Reference FASTA for alignment and positional context.
-- `fasta_regions_of_interest`: Optional BED file to subset the FASTA.
+- `alignment_regions_bed`: Optional original-FASTA BED file that restricts the alignment
+  reference universe.
+- `analysis_regions_bed`: Optional original-FASTA BED file defining shared downstream analysis
+  scope. The catalog is published now; shared task planning consumes it in the next pipeline
+  planning update.
+- `plot_regions_bed`: Optional original-FASTA BED file defining presentation-only intervals. The
+  catalog is published independently of compute scope.
 - `output_directory`: Root output folder for all generated AnnData files and plots.
 - `experiment_name`: Base name used for output AnnData files.
 - `model_dir` / `model`: Dorado basecalling model configuration (nanopore runs).
@@ -50,6 +56,38 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `mapping_threshold`: Minimum mapping proportion per reference required for downstream steps.
 - `mod_list`: Modification calls to use for direct-modality workflows.
 - `conversion_types`: Target modification types for conversion workflows.
+
+## Genome region scopes and migration
+
+The three region fields are independent. Each accepts BED3 through BED6 using original FASTA,
+0-based, half-open coordinates. smftools validates reference names and bounds, preserves optional
+name, score, and strand fields, and writes versioned catalogs under `region_catalogs/`. Overlapping
+and adjacent records remain separate and receive deterministic annotations and stable region IDs.
+The raw stage also writes `reference_interval_map.parquet`, which maps reduced, conversion-state,
+and stored strand references back to original FASTA coordinates.
+
+Catalog normalization is deterministic:
+
+| Input condition | Behavior |
+| --- | --- |
+| Blank lines, comments, `track`, or `browser` lines | Ignored |
+| Overlapping records | Preserved separately and marked with `overlaps_previous` |
+| Exactly adjacent records | Preserved separately and marked with `adjacent_previous` |
+| BED name | Optional, but non-empty names must be unique within one catalog |
+| BED score | Optional `.` or a finite number from 0 through 1000 |
+| BED strand | Optional `.`, `+`, or `-`; it does not reverse coordinates |
+| Empty analysis or plot BED | Published as a typed zero-row catalog |
+| Empty alignment BED | Rejected because it would create an empty alignment reference |
+| Invalid/missing reference, bounds, interval, name, score, or strand | Rejected with file and row context |
+
+Records are sorted by original reference and coordinates without merging. Region IDs are derived
+from normalized record content and therefore do not change when source rows are reordered. The
+source-file SHA-256 remains available in Parquet metadata even for a zero-row catalog.
+
+`fasta_regions_of_interest` is a deprecated alias for `alignment_regions_bed`. Existing configs
+continue to work with a warning. If both are supplied, they must identify the same path.
+`spatial_regions_bed` remains a legacy spatial-only setting: it is not promoted to analysis or
+plotting scope. Migrate it only when pipeline-wide analysis scope is actually intended.
 
 ## Resource limits
 

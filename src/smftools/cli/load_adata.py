@@ -239,7 +239,15 @@ def load_adata_core(
     )
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
+    from ..informatics.partition_read import relative_uns_path
     from ..informatics.pod5_functions import fast5_to_pod5, subsample_pod5_for_basecalling
+    from ..informatics.region_catalog import (
+        REFERENCE_INTERVAL_MAP_SCHEMA_VERSION,
+        REGION_CATALOG_SCHEMA_VERSION,
+        write_normalized_alignment_bed,
+        write_reference_interval_map,
+        write_region_catalogs,
+    )
     from ..informatics.run_multiqc import run_multiqc
     from ..informatics.sidecar_manifest import (
         register_sidecar,
@@ -420,16 +428,36 @@ def load_adata_core(
     except Exception:
         logger.warning("Need to provide an input FASTA path to proceed with smftools load")
 
-    # If fasta_regions_of_interest bed is passed, subsample the input FASTA on regions of interest and use the subsampled FASTA.
-    if cfg.fasta_regions_of_interest and ".bed" in cfg.fasta_regions_of_interest:
+    original_fasta = Path(cfg.fasta)
+    run_root = load_directory.parent
+    region_catalog_paths = write_region_catalogs(
+        cfg,
+        original_fasta=original_fasta,
+        run_root=run_root,
+    )
+    alignment_catalog = None
+    if "alignment" in region_catalog_paths:
+        alignment_catalog = pd.read_parquet(region_catalog_paths["alignment"])
+
+    # Alignment BEDs always use original FASTA coordinates. The deprecated
+    # fasta_regions_of_interest alias has already been resolved into this field
+    # by ExperimentConfig.
+    if cfg.alignment_regions_bed:
         fasta_stem = cfg.fasta.stem
-        bed_stem = Path(cfg.fasta_regions_of_interest).stem
-        output_FASTA = fasta_outputs_directory / f"{fasta_stem}_subsampled_by_{bed_stem}.fasta"
+        bed_stem = Path(cfg.alignment_regions_bed).stem
+        source_sha = str(alignment_catalog["source_sha256"].iloc[0])
+        output_FASTA = (
+            fasta_outputs_directory
+            / f"{fasta_stem}_subsampled_by_{bed_stem}_{source_sha[:12]}.fasta"
+        )
+        normalized_bed = write_normalized_alignment_bed(
+            alignment_catalog,
+            fasta_outputs_directory / f"{output_FASTA.stem}.bed",
+        )
 
         logger.info("Subsampling FASTA records using the provided BED file")
-        subsample_fasta_from_bed(
-            cfg.fasta, cfg.fasta_regions_of_interest, load_directory, output_FASTA
-        )
+        if not output_FASTA.exists():
+            subsample_fasta_from_bed(cfg.fasta, normalized_bed, load_directory, output_FASTA)
         fasta = output_FASTA
     else:
         logger.info("Using the full FASTA file")
@@ -450,6 +478,32 @@ def load_adata_core(
             logger.info(f"Converting FASTA base sequences")
             generate_converted_FASTA(fasta, cfg.conversion_types, cfg.strands, converted_FASTA)
         fasta = converted_FASTA
+
+    reference_interval_map = write_reference_interval_map(
+        run_root=run_root,
+        original_fasta=original_fasta,
+        alignment_fasta=fasta,
+        modality=str(cfg.smf_modality),
+        conversions=cfg.conversion_types,
+        strands=cfg.strands,
+        alignment_catalog=alignment_catalog,
+    )
+    register_sidecar(
+        sidecar_manifest,
+        "reference_interval_map",
+        reference_interval_map,
+        metadata={"schema_version": REFERENCE_INTERVAL_MAP_SCHEMA_VERSION},
+    )
+    for scope, catalog_path in region_catalog_paths.items():
+        register_sidecar(
+            sidecar_manifest,
+            f"{scope}_regions",
+            catalog_path,
+            metadata={
+                "schema_version": REGION_CATALOG_SCHEMA_VERSION,
+                "coordinate_system": "0-based-half-open-original-fasta",
+            },
+        )
 
     # Make a FAI and .chrom.names file for the fasta
     get_chromosome_lengths(fasta)
@@ -1206,6 +1260,13 @@ def load_adata_core(
             umi_sidecar=umi_sidecar,
             mod_tsv_paths=mod_tsv_paths,
         )
+        extra_uns["reference_interval_map"] = relative_uns_path(reference_interval_map, run_root)
+        extra_uns["region_catalogs"] = {
+            scope: relative_uns_path(path, run_root)
+            for scope, path in sorted(region_catalog_paths.items())
+        }
+        extra_uns["region_catalog_schema_version"] = REGION_CATALOG_SCHEMA_VERSION
+        extra_uns["reference_interval_map_schema_version"] = REFERENCE_INTERVAL_MAP_SCHEMA_VERSION
         raw_paths = write_raw_store_streaming(
             reference_frames,
             load_directory,
@@ -1236,20 +1297,25 @@ def load_adata_core(
         from ..informatics.experiment_manifest import (
             update_experiment_manifest,
         )
-        from ..informatics.partition_read import relative_uns_path as _relative_uns_path
 
-        run_root = load_directory.parent
         resolved_config = cfg.to_dict()
         update_experiment_manifest(
             run_root,
             experiment=extra_uns.get("experiment") or cfg.experiment_name or run_root.name,
             modality=extra_uns.get("modality"),
             input_data_path=(
-                _relative_uns_path(cfg.input_data_path, run_root) if cfg.input_data_path else None
+                relative_uns_path(cfg.input_data_path, run_root) if cfg.input_data_path else None
             ),
-            fasta_path=_relative_uns_path(fasta, run_root) if fasta else None,
+            fasta_path=relative_uns_path(fasta, run_root) if fasta else None,
             reference_uids=extra_uns.get("reference_uids"),
             reference_lengths={str(k): int(v) for k, v in reference_lengths.items()},
+            reference_interval_map=relative_uns_path(reference_interval_map, run_root),
+            region_catalogs={
+                scope: relative_uns_path(path, run_root)
+                for scope, path in sorted(region_catalog_paths.items())
+            },
+            region_catalog_schema_version=REGION_CATALOG_SCHEMA_VERSION,
+            reference_interval_map_schema_version=REFERENCE_INTERVAL_MAP_SCHEMA_VERSION,
             config=resolved_config,
         )
         spine, _ = safe_read_h5ad(raw_paths["spine"])

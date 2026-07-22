@@ -166,6 +166,10 @@ The spatial command runs downstream spatial analyses on the preprocessed data. I
   reference strand.
 - In genome mode, `spatial_regions_bed` selects the 0-based, half-open regions used for dense
   clustermap and position-matrix products; native chromosome names apply to both strands.
+- `alignment_regions_bed`, `analysis_regions_bed`, and `plot_regions_bed` are separate
+  original-FASTA coordinate scopes. The raw stage normalizes configured BED3-BED6 files into
+  versioned catalogs and publishes `reference_interval_map.parquet`. In this release,
+  `spatial_regions_bed` retains its existing spatial-only execution behavior.
 - Saves per-read ACF arrays and lag-pair counts in `read_metrics.zarr` `obsm` entries inside each
   general spatial task-store partition.
 - Runs direct-signal Lomb-Scargle per read and site type, saving the normalized periodogram,
