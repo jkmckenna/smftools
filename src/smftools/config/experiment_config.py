@@ -1135,6 +1135,8 @@ class ExperimentConfig:
     hmm_adapt_startprobs: bool = True
     hmm_emission_adapt_iters: int = 5
     hmm_emission_adapt_tol: float = 1e-4
+    hmm_max_fit_reads: int = 1000
+    hmm_fit_selection_seed: int = 0
     footprints: Optional[bool] = True
     accessible_patches: Optional[bool] = True
     cpg: Optional[bool] = False
@@ -2064,6 +2066,8 @@ class ExperimentConfig:
             hmm_adapt_startprobs=hmm_adapt_startprobs,
             hmm_emission_adapt_iters=hmm_emission_adapt_iters,
             hmm_emission_adapt_tol=hmm_emission_adapt_tol,
+            hmm_max_fit_reads=int(_parse_numeric(merged.get("hmm_max_fit_reads", 1000), 1000)),
+            hmm_fit_selection_seed=int(_parse_numeric(merged.get("hmm_fit_selection_seed", 0), 0)),
             hmm_dtype=merged.get("hmm_dtype", "float64"),
             hmm_feature_sets=hmm_feature_sets,
             hmm_feature_colormaps=hmm_feature_colormaps,
@@ -2470,6 +2474,8 @@ class ExperimentConfig:
             errors.append("memory_reserve_gb must be non-negative.")
         if int(self.target_task_memory_mb) <= 0:
             errors.append("target_task_memory_mb must be positive.")
+        if int(self.hmm_max_fit_reads) <= 0:
+            errors.append("hmm_max_fit_reads must be positive.")
         if float(self.perf_log_sample_interval_seconds) <= 0.0:
             errors.append("perf_log_sample_interval_seconds must be positive.")
         if not (0.0 < float(self.plot_threads_fraction) <= 1.0):

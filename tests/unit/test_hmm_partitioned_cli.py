@@ -254,7 +254,7 @@ def test_partitioned_hmm_writes_task_store_and_rematerializes_layers(tmp_path, m
         raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
     )
 
-    def annotate(adata, task, cfg, models_dir):
+    def annotate(adata, task, cfg, models_dir, model_assignments):
         adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
         adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
         adata.uns["hmm_model_artifacts"] = [
@@ -352,6 +352,158 @@ def test_partitioned_hmm_masks_read_span_for_single_channel_signals(tmp_path, mo
     assert set(layer_model_map.values()) == {model_id}
 
 
+def test_partitioned_hmm_fits_once_before_chunk_apply_and_is_order_invariant(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from smftools import memory_guard
+    from smftools.preprocessing.dispatch_plan import plan_preprocess_tasks as real_plan
+    from smftools.tools import partitioned_hmm
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+
+    def split_plan(spine, **kwargs):
+        original = real_plan(spine, **kwargs)
+        assert len(original) == 1 and len(original[0].read_ids) == 2
+        task = original[0]
+        return [
+            replace(
+                task,
+                task_id=f"{task.reference}|{task.barcode}|0-12|{index:05d}",
+                chunk_index=index,
+                n_reads=1,
+                estimated_memory_bytes=max(1, task.estimated_memory_bytes // 2),
+                read_ids=(read_id,),
+            )
+            for index, read_id in enumerate(task.read_ids)
+        ]
+
+    def ordered_dispatch(worker, task_args_list, *, cfg, **kwargs):
+        order = list(range(len(task_args_list)))
+        if bool(getattr(cfg, "reverse_dispatch", False)):
+            order.reverse()
+        results = [None] * len(task_args_list)
+        for index in order:
+            results[index] = worker(*task_args_list[index])
+        return results
+
+    monkeypatch.setattr(partitioned_hmm, "plan_preprocess_tasks", split_plan)
+    monkeypatch.setattr(memory_guard, "run_tasks_parallel", ordered_dispatch)
+    monkeypatch.setattr(partitioned_hmm, "_plot_feature_fractions", lambda *args: None)
+    monkeypatch.setattr(partitioned_hmm, "_plot_feature_count_size_histograms", lambda *args: None)
+    monkeypatch.setattr(partitioned_hmm, "_plot_hmm_parameters_across_barcodes", lambda *args: None)
+    monkeypatch.setattr(partitioned_hmm, "_plot_hmm_fit_history", lambda *args: None)
+    monkeypatch.setattr(partitioned_hmm, "_plot_feature_clustermaps", lambda *args: None)
+
+    cfg_forward = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_max_iter=2,
+        hmm_max_fit_reads=1,
+        hmm_fit_selection_seed=7,
+        target_task_memory_mb=1,
+        reverse_dispatch=False,
+    )
+    cfg_reverse = _hmm_cfg(**vars(cfg_forward))
+    cfg_reverse.reverse_dispatch = True
+    forward = execute_partitioned_hmm(preprocess["spine"], cfg_forward, tmp_path / "hmm_forward")
+    reverse = execute_partitioned_hmm(preprocess["spine"], cfg_reverse, tmp_path / "hmm_reverse")
+    cfg_forced = _hmm_cfg(**vars(cfg_forward))
+    cfg_forced.force_redo_hmm_fit = True
+    forced = execute_partitioned_hmm(preprocess["spine"], cfg_forced, tmp_path / "hmm_forced")
+
+    forward_fits = pd.read_parquet(forward["fit_catalog"])
+    reverse_fits = pd.read_parquet(reverse["fit_catalog"])
+    forced_fits = pd.read_parquet(forced["fit_catalog"])
+    assert list(forward_fits["fit_state"]) == ["complete"]
+    assert list(forward_fits["candidate_n_reads"]) == [2]
+    assert list(forward_fits["selected_n_reads"]) == [1]
+    assert list(forward_fits["model_id"]) == list(reverse_fits["model_id"])
+    assert list(forward_fits["model_checksum"]) == list(reverse_fits["model_checksum"])
+    assert list(forward_fits["model_id"]) != list(forced_fits["model_id"])
+    assert len(pd.read_parquet(forward["fit_selection"])) == 1
+    assert len(list(forward["models"].rglob("*.pt"))) == 1
+
+    forward_tasks = pd.read_parquet(forward["task_catalog"]).sort_values("task_id")
+    reverse_tasks = pd.read_parquet(reverse["task_catalog"]).sort_values("task_id")
+    assert forward_tasks["hmm_model_ids"].tolist() == reverse_tasks["hmm_model_ids"].tolist()
+    for forward_record, reverse_record in zip(
+        forward_tasks.to_dict("records"), reverse_tasks.to_dict("records"), strict=True
+    ):
+        forward_task, _ = safe_read_zarr(
+            forward["task_catalog"].parent / forward_record["group_path"]
+        )
+        reverse_task, _ = safe_read_zarr(
+            reverse["task_catalog"].parent / reverse_record["group_path"]
+        )
+        assert set(forward_task.layers) == set(reverse_task.layers)
+        for layer in forward_task.layers:
+            np.testing.assert_array_equal(
+                np.asarray(forward_task.layers[layer]),
+                np.asarray(reverse_task.layers[layer]),
+            )
+
+
+def test_partitioned_hmm_shared_transitions_fit_before_barcode_adaptation(tmp_path, monkeypatch):
+    from smftools import memory_guard
+    from smftools.tools import partitioned_hmm
+
+    monkeypatch.setattr(
+        memory_guard,
+        "run_tasks_parallel",
+        lambda worker, task_args_list, **kwargs: [worker(*args) for args in task_args_list],
+    )
+    frame = _frame()
+    frame.loc[frame["read_id"] == "read2", ["barcode", "sample"]] = "bc2"
+    raw = write_raw_store(
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    monkeypatch.setattr(partitioned_hmm, "_plot_feature_fractions", lambda *args: None)
+    monkeypatch.setattr(partitioned_hmm, "_plot_feature_count_size_histograms", lambda *args: None)
+    monkeypatch.setattr(partitioned_hmm, "_plot_hmm_parameters_across_barcodes", lambda *args: None)
+    monkeypatch.setattr(partitioned_hmm, "_plot_hmm_fit_history", lambda *args: None)
+    monkeypatch.setattr(partitioned_hmm, "_plot_feature_clustermaps", lambda *args: None)
+
+    result = execute_partitioned_hmm(
+        preprocess["spine"],
+        _hmm_cfg(
+            hmm_methbases=["C"],
+            hmm_fit_strategy="shared_transitions",
+            hmm_max_iter=2,
+            hmm_emission_adapt_iters=1,
+            target_task_memory_mb=1,
+        ),
+        tmp_path / "hmm_outputs",
+    )
+
+    fits = pd.read_parquet(result["fit_catalog"])
+    base = fits.loc[fits["fit_kind"] == "GLOBAL"].iloc[0]
+    adaptations = fits.loc[fits["fit_kind"] == "ADAPT"]
+    assert base["fit_state"] == "complete"
+    assert len(adaptations) == 2
+    assert set(adaptations["barcode"]) == {"bc1", "bc2"}
+    assert set(adaptations["parent_fit_id"]) == {base["fit_id"]}
+
+    tasks = pd.read_parquet(result["task_catalog"])
+    assigned_ids = {ids[0] for ids in tasks["hmm_model_ids"]}
+    assert assigned_ids == set(adaptations["model_id"])
+    assert base["model_id"] not in assigned_ids
+
+
 def test_partitioned_hmm_excludes_reads_failing_qc(tmp_path, monkeypatch):
     # End-to-end regression test for the passes_dedup/passes_qc gate: a read
     # that fails read QC (here, read2's length is below read_len_filter_thresholds)
@@ -375,7 +527,7 @@ def test_partitioned_hmm_excludes_reads_failing_qc(tmp_path, monkeypatch):
     preprocess_obs = pd.read_parquet(preprocess["obs"]).set_index("read_id")
     assert preprocess_obs["passes_dedup"].to_dict() == {"read1": True, "read2": False}
 
-    def annotate(adata, task, cfg, models_dir):
+    def annotate(adata, task, cfg, models_dir, model_assignments):
         adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
         adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
         return ["GpC_test_feature"]
@@ -413,7 +565,7 @@ def test_partitioned_hmm_clustermaps_parallelize_using_cfg_threads(tmp_path, mon
         raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
     )
 
-    def annotate(adata, task, cfg, models_dir):
+    def annotate(adata, task, cfg, models_dir, model_assignments):
         adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
         adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
         return ["GpC_test_feature"]
@@ -458,7 +610,7 @@ def test_partitioned_hmm_clustermaps_apply_reindexing_offsets(tmp_path, monkeypa
         raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
     )
 
-    def annotate(adata, task, cfg, models_dir):
+    def annotate(adata, task, cfg, models_dir, model_assignments):
         adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
         adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
         return ["GpC_test_feature"]
@@ -515,7 +667,7 @@ def test_partitioned_hmm_prefers_hmm_device_over_device(tmp_path, monkeypatch):
 
     monkeypatch.setattr(partitioned_hmm, "resolve_torch_device", spy_resolve)
 
-    def annotate(adata, task, cfg, models_dir):
+    def annotate(adata, task, cfg, models_dir, model_assignments):
         adata.uns["hmm_appended_layers"] = []
         return []
 
@@ -548,7 +700,7 @@ def test_partitioned_hmm_forces_sequential_execution_on_gpu_device(tmp_path, mon
         raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
     )
 
-    def annotate(adata, task, cfg, models_dir):
+    def annotate(adata, task, cfg, models_dir, model_assignments):
         adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
         adata.uns["hmm_appended_layers"] = ["GpC_test_feature"]
         return ["GpC_test_feature"]

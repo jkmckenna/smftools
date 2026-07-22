@@ -26,8 +26,8 @@ from ..cli.stage_artifacts import (
     prepare_analysis_plot_layout,
     register_plot_artifact,
 )
+from ..hmm.fit_plan import HMMFitPlan, HMMModelSpec, build_hmm_fit_plan
 from ..hmm.HMM import mask_layers_outside_read_span, normalize_hmm_feature_sets
-from ..hmm.model_artifacts import training_selection_metadata
 from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
@@ -38,6 +38,8 @@ logger = get_logger(__name__)
 
 HMM_SPINE_FILENAME = "spine.h5ad"
 HMM_TASK_CATALOG = "task_catalog.parquet"
+HMM_FIT_CATALOG = "fit_catalog.parquet"
+HMM_FIT_SELECTION_CATALOG = "fit_selection.parquet"
 HMM_PARTIAL_SUBDIR = "store"
 HMM_MODEL_SUBDIR = "models"
 
@@ -92,8 +94,73 @@ def _apply_merges(adata, model, prefix: str, feature_sets: dict, cfg) -> None:
         )
 
 
-def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
-    """Apply configured HMM task definitions to one bounded materialization."""
+def _configured_model_specs(cfg) -> list[HMMModelSpec]:
+    """Expand configured HMM definitions into deterministic model specs."""
+    feature_sets = normalize_hmm_feature_sets(getattr(cfg, "hmm_feature_sets", None))
+    specs = []
+    for task in build_hmm_tasks(cfg):
+        if not any(group in feature_sets for group in task.feature_groups):
+            continue
+        multichannel = len(task.signals) > 1
+        label = str(task.output_prefix or ("Combined" if multichannel else task.signals[0]))
+        architecture = (
+            "multi"
+            if multichannel
+            else (
+                "single_distance_binned"
+                if bool(getattr(cfg, "hmm_distance_aware", False))
+                else "single"
+            )
+        )
+        specs.append(
+            HMMModelSpec(
+                name=str(task.name),
+                label=label,
+                signals=tuple(map(str, task.signals)),
+                feature_groups=tuple(map(str, task.feature_groups)),
+                architecture=architecture,
+            )
+        )
+    return specs
+
+
+def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
+    """Materialize one configured HMM signal matrix and its position mask."""
+    smf_modality = str(getattr(cfg, "smf_modality", "conversion"))
+    if len(spec.signals) == 1:
+        signal = spec.signals[0]
+        values, coordinates = build_single_channel(
+            adata,
+            ref=reference,
+            methbase=signal,
+            smf_modality=smf_modality,
+            cfg=cfg,
+        )
+        position_mask = _resolve_pos_mask_for_methbase(adata, reference, signal)
+        return values, coordinates, position_mask
+
+    values, coordinates, used_signals = build_multi_channel_union(
+        adata,
+        ref=reference,
+        methbases=spec.signals,
+        smf_modality=smf_modality,
+        cfg=cfg,
+    )
+    position_mask = None
+    for signal in used_signals:
+        signal_mask = _resolve_pos_mask_for_methbase(adata, reference, signal)
+        position_mask = signal_mask if position_mask is None else position_mask | signal_mask
+    return values, coordinates, position_mask
+
+
+def _annotate_task(
+    adata,
+    task,
+    cfg,
+    models_dir: Path,
+    model_assignments: dict[str, dict[str, object]],
+) -> list[str]:
+    """Apply only pre-fitted immutable HMM artifacts to one materialization."""
     trainer = HMMTrainer(cfg=cfg, models_dir=models_dir)
     # hmm_device (default "cpu") overrides the general device setting for HMM
     # specifically -- see its definition in config/experiment_config.py for why.
@@ -106,20 +173,9 @@ def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
     write_posterior = bool(getattr(cfg, "hmm_write_posterior", True))
     posterior_state = getattr(cfg, "hmm_posterior_state", "Modified")
     force_apply = bool(getattr(cfg, "force_redo_hmm_apply", False))
-    smf_modality = str(getattr(cfg, "smf_modality", "conversion"))
     uns_key = "hmm_appended_layers"
     adata.uns[uns_key] = []
     adata.uns["hmm_model_artifacts"] = []
-    selection = training_selection_metadata(
-        task.read_ids,
-        n_reads=len(task.read_ids),
-        reference=str(task.reference),
-        barcode=str(task.barcode),
-        core_start=int(task.core_start),
-        core_end=int(task.core_end),
-        load_start=int(task.load_start),
-        load_end=int(task.load_end),
-    )
 
     def record_model_artifact(layers: list[str]) -> None:
         if trainer.last_artifact is None:
@@ -130,66 +186,35 @@ def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
         artifact["layers"] = list(layers)
         adata.uns["hmm_model_artifacts"].append(artifact)
 
-    for hmm_task in build_hmm_tasks(cfg):
+    for spec in _configured_model_specs(cfg):
         feature_sets = {
-            name: feature_sets_all[name]
-            for name in hmm_task.feature_groups
-            if name in feature_sets_all
+            name: feature_sets_all[name] for name in spec.feature_groups if name in feature_sets_all
         }
-        if not feature_sets:
+        try:
+            values, coordinates, position_mask = _prepare_model_input(
+                adata, str(task.reference), spec, cfg
+            )
+        except (KeyError, ValueError) as exc:
+            logger.warning("Skipping HMM signal %s for %s: %s", spec.label, task.task_id, exc)
             continue
-        signals = list(hmm_task.signals)
-        if len(signals) == 1:
-            signal = str(signals[0])
-            try:
-                values, coordinates = build_single_channel(
-                    adata,
-                    ref=task.reference,
-                    methbase=signal,
-                    smf_modality=smf_modality,
-                    cfg=cfg,
-                )
-                position_mask = _resolve_pos_mask_for_methbase(adata, task.reference, signal)
-            except (KeyError, ValueError) as exc:
-                logger.warning("Skipping HMM signal %s for %s: %s", signal, task.task_id, exc)
-                continue
-            prefix = str(hmm_task.output_prefix or signal)
-            architecture = trainer.choose_arch(multichannel=False)
-        else:
-            try:
-                values, coordinates, used_signals = build_multi_channel_union(
-                    adata,
-                    ref=task.reference,
-                    methbases=signals,
-                    smf_modality=smf_modality,
-                    cfg=cfg,
-                )
-            except (KeyError, ValueError) as exc:
-                logger.warning("Skipping multi-channel HMM for %s: %s", task.task_id, exc)
-                continue
-            position_mask = None
-            for signal in used_signals:
-                signal_mask = _resolve_pos_mask_for_methbase(adata, task.reference, signal)
-                position_mask = (
-                    signal_mask if position_mask is None else position_mask | signal_mask
-                )
-            prefix = str(hmm_task.output_prefix or "Combined")
-            architecture = trainer.choose_arch(multichannel=True)
+
+        assignment = model_assignments.get(spec.label)
+        if assignment is None:
+            raise RuntimeError(
+                f"HMM apply task {task.task_id} has no planned model for {spec.label!r}"
+            )
+        if bool(assignment.get("skipped", False)):
+            logger.warning(
+                "Skipping HMM signal %s for %s because its fit was skipped: %s",
+                spec.label,
+                task.task_id,
+                assignment.get("reason", "unknown fit error"),
+            )
+            continue
 
         layers_before = set(adata.uns.get(uns_key, []))
-        model = trainer.fit_or_load(
-            sample=task.barcode,
-            ref=task.reference,
-            label=prefix,
-            arch=architecture,
-            X=values,
-            coords=coordinates,
-            device=device,
-            reference=task.reference,
-            core_start=task.core_start,
-            core_end=task.core_end,
-            training_selection=selection,
-        )
+        model = trainer.load_artifact(assignment, device=device)
+        prefix = spec.label
         if bool(getattr(cfg, "bypass_hmm_apply", False)):
             record_model_artifact([])
             continue
@@ -228,7 +253,92 @@ def _annotate_task(adata, task, cfg, models_dir: Path) -> list[str]:
     return [name for name in adata.uns.get(uns_key, []) if name in adata.layers]
 
 
-def execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) -> dict[str, object]:
+def execute_hmm_fit_task(
+    spine_path,
+    plan: HMMFitPlan,
+    cfg,
+    models_dir,
+    parent_artifact: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Fit exactly one planned immutable model before apply workers start."""
+    adata = materialize(
+        spine_path,
+        references=plan.reference,
+        read_ids=plan.selected_read_ids,
+        start=plan.load_start,
+        end=plan.load_end,
+    )
+    for column in (REFERENCE_STRAND, "Barcode", "Sample"):
+        if column in adata.obs and isinstance(adata.obs[column].dtype, pd.CategoricalDtype):
+            adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
+    try:
+        values, coordinates, _ = _prepare_model_input(adata, plan.reference, plan.model_spec, cfg)
+    except (KeyError, ValueError) as exc:
+        return {
+            "fit_id": plan.fit_id,
+            "skipped": True,
+            "reason": str(exc),
+        }
+
+    trainer = HMMTrainer(cfg=cfg, models_dir=Path(models_dir))
+    device = resolve_torch_device(
+        getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
+    )
+    if plan.fit_kind == "ADAPT":
+        if parent_artifact is None or bool(parent_artifact.get("skipped", False)):
+            return {
+                "fit_id": plan.fit_id,
+                "skipped": True,
+                "reason": "shared parent HMM fit was unavailable",
+            }
+        base_model = trainer.load_artifact(parent_artifact, device=device)
+        trainer.adapt_or_load(
+            base_model=base_model,
+            sample=plan.barcode,
+            reference=plan.reference,
+            label=plan.model_spec.label,
+            arch=plan.model_spec.architecture,
+            X=values,
+            coords=coordinates,
+            device=device,
+            core_start=plan.core_start,
+            core_end=plan.core_end,
+            training_selection=plan.training_metadata(),
+        )
+    else:
+        trainer.fit_or_load(
+            sample=plan.barcode,
+            ref=plan.reference,
+            label=plan.model_spec.label,
+            arch=plan.model_spec.architecture,
+            X=values,
+            coords=coordinates,
+            device=device,
+            reference=plan.reference,
+            core_start=plan.core_start,
+            core_end=plan.core_end,
+            training_selection=plan.training_metadata(),
+            fit_kind=plan.fit_kind,
+        )
+    artifact = dict(trainer.last_artifact or {})
+    artifact.update(
+        {
+            "fit_id": plan.fit_id,
+            "parent_fit_id": plan.parent_fit_id,
+            "skipped": False,
+        }
+    )
+    return artifact
+
+
+def execute_hmm_task(
+    spine_path,
+    task,
+    cfg,
+    output_dir,
+    models_dir,
+    model_assignments: dict[str, dict[str, object]],
+) -> dict[str, object]:
     """Materialize, annotate, core-crop, and persist one HMM task.
 
     Layers are streamed to disk (``incremental_zarr.append_zarr_layer``) one
@@ -253,7 +363,13 @@ def execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) -> dict[str,
     for column in (REFERENCE_STRAND, "Barcode", "Sample"):
         if column in adata.obs and isinstance(adata.obs[column].dtype, pd.CategoricalDtype):
             adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
-    appended_layers = _annotate_task(adata, task, cfg, Path(models_dir))
+    appended_layers = _annotate_task(
+        adata,
+        task,
+        cfg,
+        Path(models_dir),
+        model_assignments,
+    )
     model_artifacts = list(adata.uns.get("hmm_model_artifacts", []))
     layer_model_map: dict[str, str] = {}
     for artifact in model_artifacts:
@@ -316,7 +432,9 @@ def execute_hmm_task(spine_path, task, cfg, output_dir, models_dir) -> dict[str,
         "n_positions": n_positions,
         "layers": appended_layers,
         "hmm_model_ids": [str(item["model_id"]) for item in model_artifacts],
-        "hmm_model_checksums": [str(item["checkpoint_sha256"]) for item in model_artifacts],
+        "hmm_model_checksums": [
+            str(item.get("model_checksum", item["checkpoint_sha256"])) for item in model_artifacts
+        ],
         "hmm_model_artifact_refs": [str(item["checkpoint"]) for item in model_artifacts],
         "hmm_model_artifacts_json": json.dumps(
             model_artifacts, sort_keys=True, separators=(",", ":")
@@ -941,6 +1059,87 @@ def _plot_feature_clustermaps(
                 )
 
 
+def _fit_catalog_frame(plans, artifacts: dict[str, dict[str, object]] | None = None):
+    """Return a scalar, portable catalog for planned or completed HMM fits."""
+    artifacts = artifacts or {}
+    rows = []
+    for plan in plans:
+        record = plan.to_dict(include_read_ids=False)
+        spec = record.pop("model_spec")
+        record.update(
+            {
+                "model_name": spec["name"],
+                "model_label": spec["label"],
+                "model_architecture": spec["architecture"],
+                "signals": spec["signals"],
+                "feature_groups": spec["feature_groups"],
+            }
+        )
+        artifact = artifacts.get(plan.fit_id)
+        if artifact is None:
+            record.update(
+                {
+                    "fit_state": "planned",
+                    "model_id": None,
+                    "model_checksum": None,
+                    "checkpoint_sha256": None,
+                    "artifact_ref": None,
+                    "artifact_json": None,
+                }
+            )
+        elif bool(artifact.get("skipped", False)):
+            record.update(
+                {
+                    "fit_state": "skipped",
+                    "model_id": None,
+                    "model_checksum": None,
+                    "checkpoint_sha256": None,
+                    "artifact_ref": None,
+                    "artifact_json": json.dumps(artifact, sort_keys=True, separators=(",", ":")),
+                }
+            )
+        else:
+            portable = dict(artifact)
+            portable["checkpoint"] = (
+                Path(HMM_MODEL_SUBDIR) / str(portable["checkpoint"])
+            ).as_posix()
+            portable["metadata"] = (Path(HMM_MODEL_SUBDIR) / str(portable["metadata"])).as_posix()
+            record.update(
+                {
+                    "fit_state": "complete",
+                    "model_id": portable["model_id"],
+                    "model_checksum": portable["model_checksum"],
+                    "checkpoint_sha256": portable["checkpoint_sha256"],
+                    "artifact_ref": portable["checkpoint"],
+                    "artifact_json": json.dumps(portable, sort_keys=True, separators=(",", ":")),
+                }
+            )
+        rows.append(record)
+    return pd.DataFrame(rows)
+
+
+def _fit_selection_frame(plans) -> pd.DataFrame:
+    """Return selected fit membership as one scalar row per molecule/model."""
+    return pd.DataFrame(
+        [
+            {
+                "fit_id": plan.fit_id,
+                "fit_kind": plan.fit_kind,
+                "reference": plan.reference,
+                "barcode": plan.barcode,
+                "core_start": plan.core_start,
+                "core_end": plan.core_end,
+                "model_label": plan.model_spec.label,
+                "read_id": read_id,
+                "selection_rank": rank,
+                "selection_sha256": plan.selection_sha256,
+            }
+            for plan in plans
+            for rank, read_id in enumerate(plan.selected_read_ids)
+        ]
+    )
+
+
 def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     """Run bounded HMM tasks and publish a linked thin spine."""
     spine_path = Path(spine_path)
@@ -978,9 +1177,84 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     device = resolve_torch_device(
         getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
     )
+
+    model_specs = _configured_model_specs(cfg)
+    fit_planning = build_hmm_fit_plan(tasks, model_specs, cfg)
+    fit_catalog_path = output_dir / HMM_FIT_CATALOG
+    fit_selection_path = output_dir / HMM_FIT_SELECTION_CATALOG
+    _fit_catalog_frame(fit_planning.all_plans).to_parquet(fit_catalog_path, index=False)
+    _fit_selection_frame(fit_planning.all_plans).to_parquet(fit_selection_path, index=False)
+
+    base_results = run_tasks_parallel(
+        execute_hmm_fit_task,
+        [(spine_path, plan, cfg, models_dir, None) for plan in fit_planning.base_plans],
+        cfg=cfg,
+        force_sequential=str(device) != "cpu",
+        pool_label=f"hmm fit pool ({len(fit_planning.base_plans)} models, device={device})",
+        per_item_memory_mb=max(
+            (plan.estimated_memory_bytes for plan in fit_planning.base_plans),
+            default=1,
+        )
+        / (1024**2),
+        estimator="hmm_fit_plan_peak",
+    )
+    artifacts_by_fit = {
+        plan.fit_id: artifact
+        for plan, artifact in zip(fit_planning.base_plans, base_results, strict=True)
+    }
+    adaptation_results = run_tasks_parallel(
+        execute_hmm_fit_task,
+        [
+            (
+                spine_path,
+                plan,
+                cfg,
+                models_dir,
+                artifacts_by_fit.get(str(plan.parent_fit_id)),
+            )
+            for plan in fit_planning.adaptation_plans
+        ],
+        cfg=cfg,
+        force_sequential=str(device) != "cpu",
+        pool_label=(
+            f"hmm adaptation pool ({len(fit_planning.adaptation_plans)} models, device={device})"
+        ),
+        per_item_memory_mb=max(
+            (plan.estimated_memory_bytes for plan in fit_planning.adaptation_plans),
+            default=1,
+        )
+        / (1024**2),
+        estimator="hmm_adaptation_plan_peak",
+    )
+    artifacts_by_fit.update(
+        {
+            plan.fit_id: artifact
+            for plan, artifact in zip(
+                fit_planning.adaptation_plans, adaptation_results, strict=True
+            )
+        }
+    )
+    _fit_catalog_frame(fit_planning.all_plans, artifacts_by_fit).to_parquet(
+        fit_catalog_path, index=False
+    )
+
+    apply_artifacts = {
+        task_id: {label: artifacts_by_fit[fit_id] for label, fit_id in assignments.items()}
+        for task_id, assignments in fit_planning.apply_assignments.items()
+    }
     records = run_tasks_parallel(
         execute_hmm_task,
-        [(spine_path, task, cfg, output_dir, models_dir) for task in tasks],
+        [
+            (
+                spine_path,
+                task,
+                cfg,
+                output_dir,
+                models_dir,
+                apply_artifacts[task.task_id],
+            )
+            for task in tasks
+        ],
         cfg=cfg,
         force_sequential=str(device) != "cpu",
         pool_label=f"hmm task pool ({len(tasks)} tasks, device={device})",
@@ -1011,6 +1285,8 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     hmm_spine.uns["hmm_catalog"] = relative_uns_path(catalog_path, run_root)
     hmm_spine.uns["hmm_store"] = relative_uns_path(output_dir / HMM_PARTIAL_SUBDIR, run_root)
     hmm_spine.uns["hmm_model_store"] = relative_uns_path(models_dir, run_root)
+    hmm_spine.uns["hmm_fit_catalog"] = relative_uns_path(fit_catalog_path, run_root)
+    hmm_spine.uns["hmm_fit_selection"] = relative_uns_path(fit_selection_path, run_root)
     hmm_spine.uns["hmm_filter_mask"] = filter_mask or ""
     hmm_spine.uns["hmm_layer_absent_fill"] = {
         layer: 0.0 for record in records for layer in record["layers"]
@@ -1026,6 +1302,8 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     register_sidecar(manifest, "hmm_task_catalog", catalog_path)
     register_sidecar(manifest, "hmm_store", output_dir / HMM_PARTIAL_SUBDIR)
     register_sidecar(manifest, "hmm_model_store", models_dir)
+    register_sidecar(manifest, "hmm_fit_catalog", fit_catalog_path)
+    register_sidecar(manifest, "hmm_fit_selection", fit_selection_path)
     register_sidecar(manifest, "hmm_plot_catalog", layout.catalog)
     logger.info("Wrote partitioned HMM stage with %d task(s)", len(tasks))
     return {
@@ -1033,6 +1311,8 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         "task_catalog": catalog_path,
         "store": output_dir / HMM_PARTIAL_SUBDIR,
         "models": models_dir,
+        "fit_catalog": fit_catalog_path,
+        "fit_selection": fit_selection_path,
         "plots": layout.root,
         "plot_catalog": layout.catalog,
         "manifest": manifest,

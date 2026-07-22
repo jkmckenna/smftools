@@ -555,6 +555,70 @@ class HMMTrainer:
         self.last_artifact = portable_artifact_record(record, self.models_dir)
         return model
 
+    def load_artifact(self, artifact: dict[str, Any], *, device):
+        """Load and checksum-validate a previously planned immutable artifact."""
+        relative = Path(str(artifact["checkpoint"]))
+        if relative.parts and relative.parts[0] == self.models_dir.name:
+            relative = Path(*relative.parts[1:])
+        path = self.models_dir / relative
+        record = load_artifact_record(path)
+        if str(record["model_id"]) != str(artifact["model_id"]):
+            raise RuntimeError(
+                f"Planned HMM model {artifact['model_id']} resolved to {record['model_id']}"
+            )
+        arch = str(record["model_key"]["architecture"])
+        self.last_artifact = portable_artifact_record(record, self.models_dir)
+        return self._load(path, arch=arch, device=device)
+
+    def adapt_or_load(
+        self,
+        *,
+        base_model,
+        sample: str,
+        reference: str,
+        label: str,
+        arch: str,
+        X,
+        coords: Optional[np.ndarray],
+        device,
+        core_start: Optional[int],
+        core_end: Optional[int],
+        training_selection: Optional[dict[str, Any]],
+    ):
+        """Publish or load a planned per-group adaptation of a shared model."""
+        key = self._key(
+            kind="ADAPT",
+            sample=sample,
+            reference=reference,
+            label=label,
+            arch=arch,
+            core_start=core_start,
+            core_end=core_end,
+        )
+
+        def fit_adapted():
+            adapted = copy.deepcopy(base_model).to(device)
+            history = adapted.fit(
+                X,
+                coords,
+                device=device,
+                max_iter=int(getattr(self.cfg, "hmm_emission_adapt_iters", 5)),
+                tol=float(getattr(self.cfg, "hmm_emission_adapt_tol", 1e-4)),
+                update_start=bool(getattr(self.cfg, "hmm_adapt_startprobs", True)),
+                update_trans=False,
+                update_emission=bool(getattr(self.cfg, "hmm_adapt_emissions", True)),
+                verbose=bool(getattr(self.cfg, "hmm_verbose", False)),
+            )
+            return adapted, history
+
+        return self._load_or_fit_artifact(
+            key=key,
+            arch=arch,
+            device=device,
+            fit_model=fit_adapted,
+            training_selection=training_selection,
+        )
+
     def fit_or_load(
         self,
         *,
@@ -569,6 +633,7 @@ class HMMTrainer:
         core_start: Optional[int] = None,
         core_end: Optional[int] = None,
         training_selection: Optional[dict[str, Any]] = None,
+        fit_kind: Optional[str] = None,
     ):
         scope = self._fit_scope()
         configured_reference = str(reference if reference is not None else ref)
@@ -593,6 +658,27 @@ class HMMTrainer:
                     X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose
                 )
             return model, history
+
+        if fit_kind is not None:
+            kind = str(fit_kind).upper()
+            if kind not in {"PER", "GLOBAL"}:
+                raise ValueError(f"Unsupported planned HMM fit kind: {fit_kind!r}")
+            key = self._key(
+                kind=kind,
+                sample="ALL" if kind == "GLOBAL" else sample,
+                reference=configured_reference,
+                label=label,
+                arch=arch,
+                core_start=core_start,
+                core_end=core_end,
+            )
+            return self._load_or_fit_artifact(
+                key=key,
+                arch=arch,
+                device=device,
+                fit_model=fit_new,
+                training_selection=training_selection,
+            )
 
         # ---- global then adapt ----
         if scope == "global_then_adapt":

@@ -82,6 +82,7 @@ def test_checkpoint_publication_rejects_different_content(tmp_path):
         publish_checkpoint(second, path, key)
 
     assert load_artifact_record(path)["checkpoint_sha256"] == record["checkpoint_sha256"]
+    assert record["model_checksum"] == record["checkpoint_content_sha256"]
     payload = torch.load(path, map_location="cpu")
     assert payload["artifact_schema_version"] == 1
     assert payload["model_id"] == key.model_id
