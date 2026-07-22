@@ -351,7 +351,11 @@ def execute_hmm_task(
     before returning, so this doesn't lower the peak during annotation, but
     it removes the double-materialization that followed it.
     """
-    from ..informatics.incremental_zarr import append_zarr_layer, consolidate_zarr_store
+    from ..informatics.incremental_zarr import (
+        append_zarr_layer,
+        consolidate_zarr_store,
+    )
+    from ..informatics.physical_layout import portable_matrix_chunks
 
     adata = materialize(
         spine_path,
@@ -419,12 +423,19 @@ def execute_hmm_task(
     )
     path = _task_path(Path(output_dir), task)
     path.parent.mkdir(parents=True, exist_ok=True)
-    safe_write_zarr(skeleton, path, backup=False, verbose=False, zarr_format=3)
+    chunks = portable_matrix_chunks(skeleton.shape, np.float32)
+    safe_write_zarr(skeleton, path, backup=False, verbose=False, zarr_format=3, chunks=chunks)
 
     for index, name in enumerate(appended_layers):
         cropped = np.asarray(adata.layers[name])[:, core_mask]
         del adata.layers[name]
-        append_zarr_layer(path, name, cropped, consolidate=(index == len(appended_layers) - 1))
+        append_zarr_layer(
+            path,
+            name,
+            cropped,
+            chunks=portable_matrix_chunks(cropped.shape, cropped.dtype),
+            consolidate=(index == len(appended_layers) - 1),
+        )
         del cropped
     if not appended_layers:
         consolidate_zarr_store(path)

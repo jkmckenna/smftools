@@ -112,7 +112,7 @@ def iter_set_parts(
     start: int | None = None,
     end: int | None = None,
     read_metrics: bool = False,
-    lazy: bool = False,
+    lazy: bool | None = None,
 ):
     """Stream one projected AnnData slice per member experiment of a set.
 

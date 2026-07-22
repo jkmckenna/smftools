@@ -14,8 +14,12 @@ from smftools.constants import REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 
 from ..informatics.experiment_spine import write_experiment_spine
-from ..informatics.incremental_zarr import append_zarr_layer, consolidate_zarr_store
+from ..informatics.incremental_zarr import (
+    append_zarr_layer,
+    consolidate_zarr_store,
+)
 from ..informatics.partition_read import load_spine, materialize, relative_uns_path
+from ..informatics.physical_layout import portable_matrix_chunks
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
 from ..informatics.stage_obs import write_stage_obs
 from ..readwrite import safe_write_h5ad, safe_write_zarr
@@ -356,7 +360,7 @@ def execute_preprocess_task(
 
     result = _core_skeleton(adata, task, core_mask, derived_var, nan_source)
     path = _task_path(output_dir, task)
-    chunks = (max(1, min(result.n_obs, 10_000)), max(1, result.n_vars))
+    chunks = portable_matrix_chunks(result.shape, result.X.dtype)
     safe_write_zarr(result, path, backup=True, verbose=False, zarr_format=3, chunks=chunks)
 
     written_layers: list[str] = []

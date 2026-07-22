@@ -116,6 +116,7 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     assert set(molecule_index["read_id"]) == {"read1", "read2", "read3", "read4"}
     assert set(molecule_index["group_path"]) == set(spine.obs["ragged_shard"])
     assert set(molecule_index["group_row"]) == {0, 1}
+    assert set(molecule_index["Barcode"]) == {"bc01", "bc02"}
 
     # barcode_index.parquet: contiguous (start_row, end_row) per sample within each
     # reference's shard -- a direct row-slice instead of a scan + boolean mask.
@@ -163,6 +164,22 @@ def test_raw_store_reuses_persisted_experiment_identity(tmp_path):
 
     assert second_spine.uns["experiment_uid"] == first_spine.uns["experiment_uid"]
     assert list(second_spine.obs["molecule_uid"]) == list(first_spine.obs["molecule_uid"])
+
+
+def test_materialize_filters_canonical_raw_index_by_barcode_and_molecule_uid(tmp_path):
+    paths = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref1_top": 4, "ref2_top": 6},
+    )
+    spine, _ = safe_read_h5ad(paths["spine"], verbose=False)
+    molecule_uid = str(spine.obs.loc["read2", "molecule_uid"])
+
+    by_barcode = materialize(paths["spine"], barcodes="bc01")
+    by_molecule = materialize(paths["spine"], molecule_uids=[molecule_uid])
+
+    assert set(by_barcode.obs_names) == {"read2", "read4"}
+    assert list(by_molecule.obs_names) == ["read2"]
 
 
 def test_write_raw_store_streaming_matches_whole_frame_writer(tmp_path):
@@ -361,7 +378,7 @@ def test_dense_cache_matches_ragged_and_records_barcode_ranges(tmp_path):
     assert "partition" in spine.obs
     assert "partition_row" in spine.obs
     assert list(spine.uns["ragged_store"]) == [
-        str(path.resolve()) for path in raw_paths["ragged_store"]
+        relative_uns_path(path, cache_paths["spine"].parent) for path in raw_paths["ragged_store"]
     ]
     assert all(path.exists() for path in raw_paths["ragged_store"])
 
@@ -369,6 +386,27 @@ def test_dense_cache_matches_ragged_and_records_barcode_ranges(tmp_path):
     fallback = materialize(cache_paths["spine"], references="ref2_top")
     fallback = fallback[list(ragged.obs_names)]
     np.testing.assert_array_equal(fallback.X, ragged.X)
+
+
+def test_copied_dense_and_raw_dataset_has_no_original_path_dependency(tmp_path):
+    original = tmp_path / "original"
+    raw_paths = write_raw_store(
+        _frame(),
+        original / "raw_outputs",
+        reference_lengths={"ref1_top": 4, "ref2_top": 6},
+        shard_size=2,
+    )
+    write_dense_cache_from_spine(raw_paths["spine"], output_dir=original / "load_adata_outputs")
+    moved = tmp_path / "moved"
+    shutil.copytree(original, moved)
+    shutil.rmtree(original)
+
+    result = materialize(
+        moved / "load_adata_outputs" / "spine.h5ad",
+        references="ref1_top",
+    )
+
+    assert set(result.obs_names) == {"read1", "read2"}
 
 
 def test_interval_materialization_selects_overlaps_and_genomic_positions(tmp_path):

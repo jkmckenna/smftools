@@ -34,6 +34,7 @@ from .molecule_identity import (
     validate_experiment_uid,
 )
 from .partition_read import relative_uns_path
+from .physical_layout import portable_parquet_row_group_rows
 from .ragged_store import (
     RAGGED_ARRAY_COLUMNS,
     READ_ID,
@@ -174,7 +175,12 @@ def _write_molecule_index(rows: list[dict[str, object]], output_dir: Path) -> Pa
         bin_dir = reference_dir / f"start-bin-{int(first['start_bin']):012d}"
         bin_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{Path(str(group_path)).name}.index.parquet"
-        group.sort_values("group_row", kind="stable").to_parquet(bin_dir / filename, index=False)
+        group = group.sort_values("group_row", kind="stable")
+        group.to_parquet(
+            bin_dir / filename,
+            index=False,
+            row_group_size=portable_parquet_row_group_rows(group),
+        )
     return index_dir
 
 
@@ -261,6 +267,7 @@ def _write_raw_shards_streaming(
     shard_by_read: dict[str, str] = {}
     row_by_read: dict[str, int] = {}
     sample_column: str | None = None
+    barcode_column: str | None = None
     canonical_row = 0
     n_reads_total = 0
     references_seen: set[str] = set()
@@ -293,6 +300,11 @@ def _write_raw_shards_streaming(
         if sample_column is None:
             sample_column = next(
                 (column for column in _OBS_COLUMN_ALIASES[SAMPLE] if column in group.columns),
+                None,
+            )
+        if barcode_column is None:
+            barcode_column = next(
+                (column for column in _OBS_COLUMN_ALIASES[BARCODE] if column in group.columns),
                 None,
             )
         sort_keys = ["start_bin"]
@@ -335,6 +347,11 @@ def _write_raw_shards_streaming(
                             **(
                                 {SAMPLE: str(shard[sample_column].iloc[row_number])}
                                 if sample_column is not None and sample_column in shard.columns
+                                else {}
+                            ),
+                            **(
+                                {BARCODE: str(shard[barcode_column].iloc[row_number])}
+                                if barcode_column is not None and barcode_column in shard.columns
                                 else {}
                             ),
                         }

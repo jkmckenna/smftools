@@ -460,7 +460,11 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
         # rationale as ``tools.partitioned_hmm.execute_hmm_task``.
         import anndata as ad
 
-        from ..informatics.incremental_zarr import append_zarr_obsm, consolidate_zarr_store
+        from ..informatics.incremental_zarr import (
+            append_zarr_obsm,
+            consolidate_zarr_store,
+        )
+        from ..informatics.physical_layout import portable_matrix_chunks
 
         read_metrics_path = task_dir / "read_metrics.zarr"
         skeleton = ad.AnnData(obs=read_obs, uns=read_uns)
@@ -468,7 +472,11 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
         for index, name in enumerate(obsm_keys):
             array = read_obsm.pop(name)
             append_zarr_obsm(
-                read_metrics_path, name, array, consolidate=(index == len(obsm_keys) - 1)
+                read_metrics_path,
+                name,
+                array,
+                chunks=portable_matrix_chunks(array.shape, array.dtype),
+                consolidate=(index == len(obsm_keys) - 1),
             )
             del array
         group_path = read_metrics_path.relative_to(output_dir).as_posix()

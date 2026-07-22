@@ -45,6 +45,8 @@ from smftools.constants import (
 )
 from smftools.logging_utils import get_logger
 
+from .artifact_paths import serialize_artifact_path
+from .physical_layout import portable_matrix_chunks
 from .sidecar_manifest import register_sidecar, sidecar_manifest_path
 
 if TYPE_CHECKING:
@@ -167,7 +169,7 @@ def write_partitioned_store(
 
         part_path = output_dir / rel_dir
         part_path.parent.mkdir(parents=True, exist_ok=True)
-        chunks = (min(obs_chunk, n_reads), part.n_vars)
+        chunks = portable_matrix_chunks(part.shape, part.X.dtype, max_rows=obs_chunk)
         safe_write_zarr(
             part,
             part_path,
@@ -454,19 +456,28 @@ def write_dense_cache_from_spine(
     ragged_paths: list[Path] = []
     if output_dir != spine_path.parent and "ragged_store" in spine.uns:
         ragged_paths = _resolve_ragged_paths(spine, spine_path.parent)
-        spine.uns["ragged_store"] = [str(path.resolve()) for path in ragged_paths]
+        spine.uns["ragged_store"] = [
+            serialize_artifact_path(path, output_dir) for path in ragged_paths
+        ]
         if "ragged_shard" in spine.obs:
             spine.obs["ragged_shard"] = [
-                str((spine_path.parent / str(path)).resolve())
-                if not Path(str(path)).is_absolute()
-                else str(path)
+                serialize_artifact_path(
+                    (
+                        spine_path.parent / str(path)
+                        if not Path(str(path)).is_absolute()
+                        else Path(str(path))
+                    ),
+                    output_dir,
+                )
                 for path in spine.obs["ragged_shard"]
             ]
         interval_catalog = spine.uns.get("interval_catalog")
-        if interval_catalog and not Path(str(interval_catalog)).is_absolute():
-            spine.uns["interval_catalog"] = str(
-                (spine_path.parent / str(interval_catalog)).resolve()
-            )
+        if interval_catalog:
+            source_catalog = Path(str(interval_catalog))
+            if not source_catalog.is_absolute():
+                source_catalog = spine_path.parent / source_catalog
+            spine.uns["interval_catalog"] = serialize_artifact_path(source_catalog, output_dir)
+        spine.uns["source_base_dir"] = serialize_artifact_path(output_dir, output_dir.parent)
 
     store_root = output_dir / STORE_SUBDIR
     store_root.mkdir(parents=True, exist_ok=True)
@@ -518,7 +529,7 @@ def write_dense_cache_from_spine(
                     / f"{core_start:012d}-{core_end:012d}"
                 )
                 partition_path = output_dir / rel_path
-                chunks = (min(obs_chunk, dense.n_obs), dense.n_vars)
+                chunks = portable_matrix_chunks(dense.shape, dense.X.dtype, max_rows=obs_chunk)
                 safe_write_zarr(
                     dense,
                     partition_path,
@@ -562,7 +573,7 @@ def write_dense_cache_from_spine(
             suffix += 1
         used_paths.add(rel_path.as_posix())
         partition_path = output_dir / rel_path
-        chunks = (min(obs_chunk, dense.n_obs), dense.n_vars)
+        chunks = portable_matrix_chunks(dense.shape, dense.X.dtype, max_rows=obs_chunk)
         safe_write_zarr(
             dense,
             partition_path,

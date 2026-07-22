@@ -27,6 +27,14 @@ import pandas as pd
 
 from smftools.logging_utils import get_logger
 
+from .artifact_paths import resolve_artifact_path, serialize_artifact_path
+from .partition_query import (
+    DEFAULT_QUERY_MEMORY_MB,
+    query_derived_index,
+    query_molecule_index,
+    read_zarr_subset,
+)
+
 if TYPE_CHECKING:
     import anndata as ad
 
@@ -70,9 +78,7 @@ def relative_uns_path(path: str | Path, anchor: str | Path) -> str:
     anchor tied to "wherever this spine currently lives" would resolve correctly
     there but not once copied elsewhere.
     """
-    import os
-
-    return Path(os.path.relpath(Path(path).resolve(), start=Path(anchor).resolve())).as_posix()
+    return serialize_artifact_path(path, anchor)
 
 
 def resolve_relative_path(value: object, anchor: Path | None) -> Path | None:
@@ -83,14 +89,7 @@ def resolve_relative_path(value: object, anchor: Path | None) -> Path | None:
     this fix), so already-written spines keep working without being regenerated.
     Returns ``None`` if ``value`` is absent, or relative with no ``anchor`` available.
     """
-    if not value:
-        return None
-    candidate = Path(str(value))
-    if candidate.is_absolute():
-        return candidate
-    if anchor is None:
-        return None
-    return (anchor / candidate).resolve()
+    return resolve_artifact_path(value, anchor)
 
 
 def _run_root_from_spine_path(spine_path: Path) -> Path:
@@ -164,10 +163,13 @@ def _select_spine_obs(
     spine: "ad.AnnData",
     references,
     samples,
+    barcodes,
     read_ids,
+    molecule_uids,
     obs_mask,
     start,
     end,
+    candidate_read_ids: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     """Filter the spine obs to the selected molecules, preserving spine order."""
     obs = spine.obs
@@ -190,6 +192,15 @@ def _select_spine_obs(
     samps = _as_set(samples)
     if samps is not None:
         mask &= obs["Sample"].astype(str).isin(samps).to_numpy()
+    barcode_values = _as_set(barcodes)
+    if barcode_values is not None:
+        mask &= obs["Barcode"].astype(str).isin(barcode_values).to_numpy()
+    molecule_values = _as_set(molecule_uids)
+    if molecule_values is not None:
+        mask &= obs["molecule_uid"].astype(str).isin(molecule_values).to_numpy()
+    candidate_values = _as_set(candidate_read_ids)
+    if candidate_values is not None:
+        mask &= obs.index.astype(str).isin(candidate_values)
     sel = obs.loc[mask]
     rids = _as_set(read_ids)
     if rids is not None:
@@ -201,43 +212,21 @@ def _load_partition(
     path: Path,
     read_ids: list[str],
     layers: Iterable[str] | None,
-    lazy: bool,
+    lazy: bool | None,
     start: int | None,
     end: int | None,
+    query_memory_mb: int = DEFAULT_QUERY_MEMORY_MB,
 ) -> "ad.AnnData":
     """Load one partition, subset to ``read_ids`` (in order), keep ``layers``."""
-    keep = None if layers is None else set(layers)
-
-    if lazy:
-        try:
-            from anndata.experimental import read_lazy
-
-            sub = read_lazy(path)[read_ids].to_memory()
-        except Exception as e:  # xarray/read_lazy unavailable, or lazy read failed
-            logger.debug("read_lazy failed for %s (%s); using eager read", path, e)
-            sub = None
-        if sub is not None:
-            if keep is not None:
-                for k in list(sub.layers):
-                    if k not in keep:
-                        del sub.layers[k]
-            if start is not None:
-                positions = np.asarray(sub.var_names, dtype="int64")
-                sub = sub[:, (positions >= start) & (positions < end)].copy()
-            return sub
-
-    from ..readwrite import safe_read_zarr
-
-    obj, _ = safe_read_zarr(path)
-    sub = obj[list(read_ids)].copy()
-    if start is not None:
-        positions = np.asarray(sub.var_names, dtype="int64")
-        sub = sub[:, (positions >= start) & (positions < end)].copy()
-    if keep is not None:
-        for k in list(sub.layers):
-            if k not in keep:
-                del sub.layers[k]
-    return sub
+    return read_zarr_subset(
+        path,
+        read_ids=read_ids,
+        start=start,
+        end=end,
+        layers=layers,
+        lazy=lazy,
+        memory_mb=query_memory_mb,
+    )
 
 
 def _dense_cache_available(selection: pd.DataFrame, base: Path) -> bool:
@@ -359,9 +348,10 @@ def _load_tiled_cache_selection(
     selection: pd.DataFrame,
     base: Path,
     layers: Iterable[str] | None,
-    lazy: bool,
+    lazy: bool | None,
     start: int | None,
     end: int | None,
+    query_memory_mb: int = DEFAULT_QUERY_MEMORY_MB,
 ) -> "ad.AnnData | None":
     """Load one cached genome tile when it fully covers the requested interval."""
     if start is None or end is None:
@@ -404,7 +394,15 @@ def _load_tiled_cache_selection(
         path = base / path
     if not path.exists():
         return None
-    return _load_partition(path, list(selection.index), layers, lazy, start, end)
+    return _load_partition(
+        path,
+        list(selection.index),
+        layers,
+        lazy,
+        start,
+        end,
+        query_memory_mb,
+    )
 
 
 def _load_preprocess_x_selection(
@@ -414,6 +412,8 @@ def _load_preprocess_x_selection(
     layers: Iterable[str] | None,
     start: int | None,
     end: int | None,
+    lazy: bool | None,
+    query_memory_mb: int,
 ) -> "ad.AnnData | None":
     """Read ``X`` directly from one preprocess task shard that fully covers
     ``selection``, skipping raw ragged/tiled CIGAR reconstruction entirely.
@@ -463,28 +463,56 @@ def _load_preprocess_x_selection(
     if candidates.empty:
         return None
 
-    from ..readwrite import safe_read_zarr
-
     required = set(selection.index.astype(str))
+    index_path = resolve_relative_path(spine.uns.get("preprocess_read_index"), run_root)
+    indexed_by_path: dict[str, pd.DataFrame] = {}
+    if index_path is not None and index_path.exists():
+        indexed = query_derived_index(
+            index_path,
+            references=references,
+            read_ids=required,
+            start=start,
+            end=end,
+        )
+        indexed_by_path = {
+            str(group_path): group
+            for group_path, group in indexed.groupby("group_path", sort=False, observed=True)
+        }
     for record in candidates.to_dict("records"):
         path = catalog_path.parent / str(record["group_path"])
         if not path.exists():
             continue
-        part, _ = safe_read_zarr(path, verbose=False)
+        index_rows = indexed_by_path.get(str(record["group_path"]))
+        if index_rows is not None:
+            if set(index_rows["read_id"].astype(str)) != required:
+                continue
+            part = read_zarr_subset(
+                path,
+                row_indices=index_rows["group_row"].astype(int),
+                start=start,
+                end=end,
+                layers=layers,
+                lazy=lazy,
+                memory_mb=query_memory_mb,
+            )
+        else:
+            try:
+                part = read_zarr_subset(
+                    path,
+                    read_ids=required,
+                    start=start,
+                    end=end,
+                    layers=layers,
+                    lazy=lazy,
+                    memory_mb=query_memory_mb,
+                )
+            except KeyError:
+                continue
         if part.X is None:
             continue
         if not required.issubset(set(map(str, part.obs_names))):
             continue
-        sub = part[list(selection.index)].copy()
-        if start is not None:
-            positions = np.asarray(sub.var_names, dtype="int64")
-            sub = sub[:, (positions >= start) & (positions < end)].copy()
-        if layers is not None:
-            keep = set(layers)
-            for name in list(sub.layers):
-                if name not in keep:
-                    del sub.layers[name]
-        return sub
+        return part[list(selection.index)].copy()
     return None
 
 
@@ -509,6 +537,8 @@ def _overlay_preprocess_layers(
     result: "ad.AnnData",
     requested_layers: set[str],
     run_root: Path | None,
+    lazy: bool | None,
+    query_memory_mb: int,
 ) -> None:
     """Stitch task-partitioned derived layers onto a materialized slice.
 
@@ -521,8 +551,6 @@ def _overlay_preprocess_layers(
     position axis) -- that's the common multi-reference case this needs to support,
     not a set of unrelated loci with incompatible coordinates.
     """
-    from ..readwrite import safe_read_zarr
-
     if not requested_layers:
         return
     references = result.obs["Reference_strand"].astype(str).unique()
@@ -549,7 +577,8 @@ def _overlay_preprocess_layers(
         }
         if not result_rows:
             continue
-        for catalog_key in ("preprocess_catalog", "hmm_catalog"):
+        for stage in ("preprocess", "hmm"):
+            catalog_key = f"{stage}_catalog"
             catalog_path = resolve_relative_path(spine.uns.get(catalog_key), run_root)
             if catalog_path is None:
                 continue
@@ -559,9 +588,41 @@ def _overlay_preprocess_layers(
                 & (catalog["core_start"] < positions.max() + 1)
                 & (catalog["core_end"] > positions.min())
             ]
+            index_path = resolve_relative_path(spine.uns.get(f"{stage}_read_index"), run_root)
+            index_active = index_path is not None and index_path.exists()
+            indexed_groups: dict[str, pd.DataFrame] = {}
+            if index_active:
+                indexed = query_derived_index(
+                    index_path,
+                    references=reference,
+                    read_ids=result_rows,
+                    start=int(positions.min()),
+                    end=int(positions.max()) + 1,
+                )
+                indexed_groups = {
+                    str(group_path): group
+                    for group_path, group in indexed.groupby(
+                        "group_path", sort=False, observed=True
+                    )
+                }
             for record in catalog.to_dict("records"):
-                path = catalog_path.parent / str(record["group_path"])
-                part, _ = safe_read_zarr(path, verbose=False)
+                group_path = str(record["group_path"])
+                index_rows = indexed_groups.get(group_path)
+                if index_active and index_rows is None:
+                    continue
+                path = catalog_path.parent / group_path
+                part = read_zarr_subset(
+                    path,
+                    row_indices=(
+                        index_rows["group_row"].astype(int) if index_rows is not None else None
+                    ),
+                    read_ids=None,
+                    start=int(positions.min()),
+                    end=int(positions.max()) + 1,
+                    layers=requested_layers,
+                    lazy=lazy,
+                    memory_mb=query_memory_mb,
+                )
                 shared_reads = [
                     read_id for read_id in map(str, part.obs_names) if read_id in result_rows
                 ]
@@ -627,6 +688,8 @@ def _overlay_spatial_read_metrics(
     result: "ad.AnnData",
     requested: bool | set[str],
     run_root: Path | None,
+    lazy: bool | None,
+    query_memory_mb: int,
 ) -> None:
     """Attach spatial-stage per-read outputs (autocorrelation, Lomb-Scargle, ...).
 
@@ -637,8 +700,6 @@ def _overlay_spatial_read_metrics(
     loaded whenever available, unlike layers): opening every matching task's
     ``read_metrics.zarr`` isn't free, and most callers don't need it.
     """
-    from ..readwrite import safe_read_zarr
-
     if not requested:
         return
     catalog_path = resolve_relative_path(spine.uns.get("spatial_task_catalog"), run_root)
@@ -662,9 +723,31 @@ def _overlay_spatial_read_metrics(
     task_specific_uns = {"task_id", "reference", "barcode", "core_start", "core_end"}
     catalog_dir = catalog_path.parent
     want_all = requested is True
+    index_path = resolve_relative_path(spine.uns.get("spatial_read_index"), run_root)
+    index_active = index_path is not None and index_path.exists()
+    indexed_groups: dict[str, pd.DataFrame] = {}
+    if index_active:
+        indexed = query_derived_index(
+            index_path,
+            references=references,
+            read_ids=result_rows,
+        )
+        indexed_groups = {
+            str(group_path): group
+            for group_path, group in indexed.groupby("group_path", sort=False, observed=True)
+        }
 
     for record in catalog.to_dict("records"):
-        part, _ = safe_read_zarr(catalog_dir / str(record[path_column]), verbose=False)
+        group_path = str(record[path_column])
+        index_rows = indexed_groups.get(group_path)
+        if index_active and index_rows is None:
+            continue
+        part = read_zarr_subset(
+            catalog_dir / group_path,
+            row_indices=(index_rows["group_row"].astype(int) if index_rows is not None else None),
+            lazy=lazy,
+            memory_mb=query_memory_mb,
+        )
         shared_reads = [read_id for read_id in map(str, part.obs_names) if read_id in result_rows]
         if not shared_reads:
             continue
@@ -713,7 +796,9 @@ def _materialize_legacy(
     *,
     references,
     samples,
+    barcodes,
     read_ids,
+    molecule_uids,
     obs_mask,
     layers,
     start,
@@ -729,7 +814,17 @@ def _materialize_legacy(
     (a legacy file has no task catalog to pull them from), so callers just get
     back whatever was already in the source file.
     """
-    sel = _select_spine_obs(spine, references, samples, read_ids, obs_mask, start, end)
+    sel = _select_spine_obs(
+        spine,
+        references,
+        samples,
+        barcodes,
+        read_ids,
+        molecule_uids,
+        obs_mask,
+        start,
+        end,
+    )
     if sel.shape[0] == 0:
         raise ValueError("materialize: selection matched no molecules")
     result = spine[list(sel.index)].copy()
@@ -752,13 +847,16 @@ def materialize(
     base_dir: str | Path | None = None,
     references=None,
     samples=None,
+    barcodes=None,
     read_ids=None,
+    molecule_uids=None,
     obs_mask=None,
     layers: Iterable[str] | None = None,
     read_metrics: bool | Iterable[str] = False,
-    lazy: bool = False,
+    lazy: bool | None = None,
     start: int | None = None,
     end: int | None = None,
+    query_memory_mb: int = DEFAULT_QUERY_MEMORY_MB,
 ) -> "ad.AnnData":
     """Assemble a concrete AnnData for a molecule selection from the partitions.
 
@@ -772,7 +870,9 @@ def materialize(
             parent (in-memory spine).
         references: Optional ``Reference_strand`` value(s) to include.
         samples: Optional ``Sample`` value(s) to include.
+        barcodes: Optional ``Barcode`` value(s) to include.
         read_ids: Optional explicit read id(s) to include.
+        molecule_uids: Optional experiment-global molecule identity value(s).
         obs_mask: Optional boolean array aligned to ``spine.obs`` rows.
         layers: Optional subset of layers to load (default: all).
         read_metrics: Attach spatial-stage per-read outputs (autocorrelation,
@@ -781,10 +881,12 @@ def materialize(
             (default) to skip. Unlike ``layers``, off by default: it's a different
             axis than genomic position (obs/obsm, not layers) and opening every
             matching task's ``read_metrics.zarr`` isn't free.
-        lazy: Use ``anndata.experimental.read_lazy`` (needs ``xarray``); falls back
-            to eager ``safe_read_zarr`` if unavailable.
+        lazy: Use ``anndata.experimental.read_lazy`` and slice before loading.
+            ``None`` (default) selects it automatically with eager fallback;
+            ``True`` requires it; ``False`` explicitly uses the eager reader.
         start: Optional zero-based inclusive genomic start.
         end: Optional zero-based exclusive genomic end. Must accompany ``start``.
+        query_memory_mb: Approximate memory budget for each projected Zarr batch.
 
     Returns:
         anndata.AnnData: The materialized selection, ordered as in the spine, with
@@ -796,6 +898,38 @@ def materialize(
     """
     import anndata as ad
 
+    candidate_read_ids = None
+    if (
+        isinstance(spine, (str, Path))
+        and Path(spine).parent.name.endswith("_outputs")
+        and obs_mask is None
+        and any(
+            value is not None
+            for value in (references, samples, barcodes, read_ids, molecule_uids, start, end)
+        )
+    ):
+        spine_path = Path(spine)
+        index_path = _run_root_from_spine_path(spine_path) / "molecule_index"
+        if index_path.exists():
+            try:
+                indexed = query_molecule_index(
+                    index_path,
+                    references=references,
+                    samples=samples,
+                    barcodes=barcodes,
+                    read_ids=read_ids,
+                    molecule_uids=molecule_uids,
+                    start=start,
+                    end=end,
+                    columns=["read_id"],
+                )
+            except (ImportError, KeyError) as error:
+                logger.debug("molecule-index query unavailable (%s); filtering spine", error)
+            else:
+                candidate_read_ids = indexed["read_id"].astype(str).tolist()
+                if not candidate_read_ids:
+                    raise ValueError("materialize: selection matched no molecules")
+
     spine_obj, base = _resolve_spine(spine, base_dir)
     if not bool(spine_obj.uns.get("is_spine", False)):
         # Legacy monolithic AnnData (pre-partitioned-store pipeline): already
@@ -804,7 +938,9 @@ def materialize(
             spine_obj,
             references=references,
             samples=samples,
+            barcodes=barcodes,
             read_ids=read_ids,
+            molecule_uids=molecule_uids,
             obs_mask=obs_mask,
             layers=layers,
             start=start,
@@ -829,7 +965,18 @@ def materialize(
     source_layers = (
         None if requested_layer_set is None else requested_layer_set.difference(derived_available)
     )
-    sel = _select_spine_obs(spine_obj, references, samples, read_ids, obs_mask, start, end)
+    sel = _select_spine_obs(
+        spine_obj,
+        references,
+        samples,
+        barcodes,
+        read_ids,
+        molecule_uids,
+        obs_mask,
+        start,
+        end,
+        candidate_read_ids,
+    )
     if sel.shape[0] == 0:
         raise ValueError("materialize: selection matched no molecules")
     if start is None:
@@ -843,25 +990,55 @@ def materialize(
                 "materialize: genome-mode references require start/end intervals: "
                 f"{sorted(genome_references)}"
             )
-    fast = _load_preprocess_x_selection(spine_obj, sel, run_root, source_layers, start, end)
+    fast = _load_preprocess_x_selection(
+        spine_obj,
+        sel,
+        run_root,
+        source_layers,
+        start,
+        end,
+        lazy,
+        query_memory_mb,
+    )
     if fast is not None:
-        _overlay_preprocess_layers(spine_obj, fast, requested_derived, run_root)
+        _overlay_preprocess_layers(
+            spine_obj, fast, requested_derived, run_root, lazy, query_memory_mb
+        )
         _overlay_preprocess_var(spine_obj, fast, run_root)
-        _overlay_spatial_read_metrics(spine_obj, fast, requested_read_metrics, run_root)
+        _overlay_spatial_read_metrics(
+            spine_obj, fast, requested_read_metrics, run_root, lazy, query_memory_mb
+        )
         logger.debug("materialized %d molecules from preprocess-owned X", fast.n_obs)
         return fast
     if not _dense_cache_available(sel, base):
-        tiled = _load_tiled_cache_selection(spine_obj, sel, base, source_layers, lazy, start, end)
+        tiled = _load_tiled_cache_selection(
+            spine_obj,
+            sel,
+            base,
+            source_layers,
+            lazy,
+            start,
+            end,
+            query_memory_mb,
+        )
         if tiled is not None:
-            _overlay_preprocess_layers(spine_obj, tiled, requested_derived, run_root)
+            _overlay_preprocess_layers(
+                spine_obj, tiled, requested_derived, run_root, lazy, query_memory_mb
+            )
             _overlay_preprocess_var(spine_obj, tiled, run_root)
-            _overlay_spatial_read_metrics(spine_obj, tiled, requested_read_metrics, run_root)
+            _overlay_spatial_read_metrics(
+                spine_obj, tiled, requested_read_metrics, run_root, lazy, query_memory_mb
+            )
             logger.debug("materialized %d molecules from tiled dense cache", tiled.n_obs)
             return tiled
         result = _load_ragged_selection(spine_obj, sel, base, source_layers, start, end)
-        _overlay_preprocess_layers(spine_obj, result, requested_derived, run_root)
+        _overlay_preprocess_layers(
+            spine_obj, result, requested_derived, run_root, lazy, query_memory_mb
+        )
         _overlay_preprocess_var(spine_obj, result, run_root)
-        _overlay_spatial_read_metrics(spine_obj, result, requested_read_metrics, run_root)
+        _overlay_spatial_read_metrics(
+            spine_obj, result, requested_read_metrics, run_root, lazy, query_memory_mb
+        )
         logger.debug("materialized %d molecules from ragged parquet", result.n_obs)
         return result
 
@@ -875,6 +1052,7 @@ def materialize(
                 lazy,
                 start,
                 end,
+                query_memory_mb,
             )
         )
 
@@ -891,9 +1069,13 @@ def materialize(
         if key == "References" or key.endswith("_map"):
             result.uns.setdefault(key, value)
 
-    _overlay_preprocess_layers(spine_obj, result, requested_derived, run_root)
+    _overlay_preprocess_layers(
+        spine_obj, result, requested_derived, run_root, lazy, query_memory_mb
+    )
     _overlay_preprocess_var(spine_obj, result, run_root)
-    _overlay_spatial_read_metrics(spine_obj, result, requested_read_metrics, run_root)
+    _overlay_spatial_read_metrics(
+        spine_obj, result, requested_read_metrics, run_root, lazy, query_memory_mb
+    )
 
     logger.debug("materialized %d molecules from %d partition(s)", result.n_obs, len(parts))
     return result
