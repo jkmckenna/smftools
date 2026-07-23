@@ -157,7 +157,11 @@ This command performs batch processing of any of the above commands across multi
 smftools experiment batch preprocess "/Path_to_experiment_config_path_list.csv"
 ```
 
-- Nice when analyzing multiple experiments
+- The batch continues after individual failures but exits nonzero if any config fails.
+- A machine-readable `<list>.<task>.batch-summary.json` records completed, skipped, and failed
+  configs; pass `--summary /path/to/result.json` to choose its location.
+- Each stage writes human and performance logs. A full workflow additionally writes
+  `full_summary.json`, which links the raw, preprocess, spatial, and HMM outcomes and logs.
 
 ## Project Usage
 

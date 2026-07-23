@@ -13,8 +13,9 @@ from smftools.constants import (
     PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
     PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
 )
-from smftools.logging_utils import get_logger
+from smftools.logging_utils import get_logger, mark_stage_outcome, stage_logging_lifecycle
 from smftools.optional_imports import require
+from smftools.perf_log import measured_substep
 
 # FIX: import _to_dense_np to avoid NameError
 from ..hmm.HMM import (
@@ -777,6 +778,7 @@ def _feature_ranges_for_merged_layer(core_layer: str, feature_sets: dict) -> dic
     return {}
 
 
+@stage_logging_lifecycle
 def hmm_adata(config_path: str):
     """
     CLI-facing wrapper for HMM analysis.
@@ -833,6 +835,7 @@ def hmm_adata(config_path: str):
         )
     ):
         logger.info("Skipping HMM. Partitioned HMM spine found: %s", partitioned_output)
+        mark_stage_outcome("skipped", reason="compatible partitioned HMM stage is already complete")
         return None, Path(partitioned_output)
     if (
         execution_mode != "legacy"
@@ -847,6 +850,7 @@ def hmm_adata(config_path: str):
         )
     if execution_mode != "partitioned" and paths.hmm.exists() and not force_redo:
         logger.info(f"Skipping hmm. HMM AnnData found: {paths.hmm}")
+        mark_stage_outcome("skipped", reason="legacy HMM output already exists")
         return None
 
     partitioned_source = None
@@ -864,14 +868,16 @@ def hmm_adata(config_path: str):
             "preprocess_adata_outputs/spine.h5ad"
         )
     if partitioned_source is not None:
+        from ..perf_log import perf_substep
         from ..tools.partitioned_hmm import execute_partitioned_hmm
 
         with stage_lifecycle(cfg, "hmm", partitioned_source) as lifecycle:
-            outputs = execute_partitioned_hmm(
-                partitioned_source,
-                cfg,
-                Path(cfg.output_directory) / HMM_DIR,
-            )
+            with perf_substep("partitioned_hmm"):
+                outputs = execute_partitioned_hmm(
+                    partitioned_source,
+                    cfg,
+                    Path(cfg.output_directory) / HMM_DIR,
+                )
             publish_stage_outputs(
                 lifecycle,
                 outputs,
@@ -900,6 +906,7 @@ def hmm_adata(config_path: str):
     return adata, hmm_adata_path
 
 
+@measured_substep("legacy_hmm")
 def hmm_adata_core(
     cfg,
     adata,

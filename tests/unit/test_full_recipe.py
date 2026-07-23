@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -38,7 +39,17 @@ def test_full_flow_runs_raw_preprocess_spatial_hmm_in_order(tmp_path, monkeypatc
         ("hmm", "experiment.csv"),
     ]
     assert result == ("adata", "hmm-output")
-    assert read_experiment_manifest(tmp_path)["stages"]["full"]["state"] == "complete"
+    full_entry = read_experiment_manifest(tmp_path)["stages"]["full"]
+    assert full_entry["state"] == "complete"
+    assert full_entry["artifacts"]["summary"]["path"] == "full_summary.json"
+    summary = json.loads((tmp_path / "full_summary.json").read_text())
+    assert summary["outcome"] == "completed"
+    assert [item["stage"] for item in summary["stages"]] == [
+        "raw",
+        "preprocess",
+        "spatial",
+        "hmm",
+    ]
 
 
 def test_full_cli_invokes_four_stage_recipe(tmp_path, monkeypatch):
@@ -51,6 +62,53 @@ def test_full_cli_invokes_four_stage_recipe(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert calls == [str(config)]
+
+
+def test_full_summary_links_stage_logs_and_outcomes(tmp_path, monkeypatch):
+    cfg = SimpleNamespace(output_directory=tmp_path)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    monkeypatch.setattr(
+        helpers,
+        "get_adata_paths",
+        lambda _cfg: SimpleNamespace(hmm_spine=None),
+    )
+    directory_names = {
+        "raw": "raw_outputs",
+        "preprocess": "preprocess_adata_outputs",
+        "spatial": "spatial_adata_outputs",
+        "hmm": "hmm_adata_outputs",
+    }
+
+    def stage_runner(stage, outcome):
+        def run(_path):
+            logs = tmp_path / directory_names[stage] / "logs"
+            logs.mkdir(parents=True)
+            (logs / "run_log.log").write_text(f"{stage}\n")
+            (logs / "run_perf.jsonl").write_text(
+                json.dumps({"stage": stage, "event": "stage_summary", "outcome": outcome}) + "\n"
+            )
+            return (None, None) if stage == "hmm" else None
+
+        return run
+
+    monkeypatch.setattr(recipes, "raw_adata", stage_runner("raw", "completed"))
+    monkeypatch.setattr(recipes, "preprocess_adata", stage_runner("preprocess", "skipped"))
+    monkeypatch.setattr(recipes, "spatial_adata", stage_runner("spatial", "completed"))
+    monkeypatch.setattr(recipes, "hmm_adata", stage_runner("hmm", "completed"))
+
+    recipes.full_flow("experiment.csv")
+
+    summary = json.loads((tmp_path / "full_summary.json").read_text())
+    assert [item["outcome"] for item in summary["stages"]] == [
+        "completed",
+        "skipped",
+        "completed",
+        "completed",
+    ]
+    assert summary["stages"][0]["human_log"] == "raw_outputs/logs/run_log.log"
+    assert summary["stages"][1]["performance_log"] == (
+        "preprocess_adata_outputs/logs/run_perf.jsonl"
+    )
 
 
 def test_full_flow_records_failure_when_child_stage_raises(tmp_path, monkeypatch):
@@ -68,6 +126,12 @@ def test_full_flow_records_failure_when_child_stage_raises(tmp_path, monkeypatch
     entry = read_experiment_manifest(tmp_path)["stages"]["full"]
     assert entry["state"] == "failed"
     assert "simulated raw failure" in entry["outcome"]
+    summary = json.loads((tmp_path / "full_summary.json").read_text())
+    assert summary["outcome"] == "failed"
+    assert summary["exception"] == {
+        "type": "RuntimeError",
+        "message": "simulated raw failure",
+    }
 
 
 def test_full_flow_rejects_partitioned_result_without_child_completion_records(
@@ -92,6 +156,9 @@ def test_full_flow_rejects_partitioned_result_without_child_completion_records(
         recipes.full_flow("experiment.csv")
 
     assert read_experiment_manifest(tmp_path)["stages"]["full"]["state"] == "failed"
+    summary = json.loads((tmp_path / "full_summary.json").read_text())
+    assert summary["outcome"] == "failed"
+    assert summary["exception"]["type"] == "RuntimeError"
 
 
 def test_stage_config_hash_ignores_machine_resources_but_not_analysis_config():

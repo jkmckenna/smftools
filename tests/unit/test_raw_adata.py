@@ -1,4 +1,5 @@
 import gzip
+import json
 from types import SimpleNamespace
 
 import anndata as ad
@@ -815,7 +816,7 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
             config_path=config_path,
             raw_only=raw_only,
         )
-        paths.raw_spine.parent.mkdir(parents=True)
+        paths.raw_spine.parent.mkdir(parents=True, exist_ok=True)
         ad.AnnData().write_h5ad(paths.raw_spine)
         ragged_store = paths.raw_spine.parent / "raw"
         ragged_store.mkdir()
@@ -851,6 +852,14 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected rerun")),
     )
     assert raw_adata("experiment.csv")[1:] == (paths.raw_spine, cfg)
+    summaries = []
+    for perf_path in sorted((tmp_path / "raw_outputs" / "logs").glob("*_perf.jsonl")):
+        summaries.extend(
+            json.loads(line)
+            for line in perf_path.read_text().splitlines()
+            if '"event": "stage_summary"' in line
+        )
+    assert [summary["outcome"] for summary in summaries] == ["completed", "skipped"]
 
 
 def test_load_dense_cache_runs_raw_then_cache_builder(tmp_path, monkeypatch):

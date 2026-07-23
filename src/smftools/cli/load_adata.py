@@ -284,13 +284,19 @@ def load_adata_core(
         ]
     )
 
-    if cfg.emit_log_file:
+    if cfg.emit_log_file and not raw_only:
         log_file = logging_directory / f"{date_str}_{time_str}_log.log"
         make_dirs([logging_directory])
     else:
         log_file = None
 
-    setup_logging(level=log_level, log_file=log_file, reconfigure=log_file is not None)
+    # ``raw_adata`` owns raw's lifecycle-scoped human/performance log. Do not
+    # rotate to a second legacy load log after that wrapper has configured it.
+    setup_logging(
+        level=log_level,
+        log_file=log_file,
+        reconfigure=log_file is not None and not raw_only,
+    )
 
     raw_adata_path = paths.raw
     pp_adata_path = paths.pp
