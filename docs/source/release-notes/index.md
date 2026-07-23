@@ -2,6 +2,11 @@
 
 # Release notes
 
+### Version 2.16.0
+
+```{include} /release-notes/2.16.0.md
+```
+
 ### Version 2.15.0
 
 ```{include} /release-notes/2.15.0.md

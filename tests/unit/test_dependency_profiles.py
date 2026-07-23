@@ -66,5 +66,8 @@ def test_compatibility_tooling_extras_match_dependency_groups() -> None:
     extras = configuration["project"]["optional-dependencies"]
     groups = configuration["dependency-groups"]
 
-    assert _requirement_names(extras["dev"]) == _requirement_names(groups["test"] + groups["lint"])
+    expected_dev = _requirement_names(groups["test"] + groups["lint"] + groups["release"])
+
+    assert _requirement_names(extras["dev"]) == expected_dev
+    assert {"build", "hatch", "hatch-vcs", "twine"} <= expected_dev
     assert _requirement_names(extras["docs"]) == _requirement_names(groups["docs"])
