@@ -17,6 +17,13 @@ REFERENCE_LENGTHS = {
     "fixture_ref_b_top": 20,
 }
 
+ACCEPTANCE_REFERENCE_LENGTHS = {
+    "fixture_ref_a_top": 16,
+    "fixture_ref_a_bottom": 16,
+    "fixture_ref_b_top": 20,
+    "fixture_ref_b_bottom": 20,
+}
+
 
 @dataclass(frozen=True)
 class PartitionedPipelineFixture:
@@ -38,10 +45,15 @@ class PartitionedPipelineFixture:
 
 def make_partitioned_ragged_frame(
     modality: FixtureModality = "conversion",
+    *,
+    reads_per_stratum: int = 2,
+    include_strand_derivatives: bool = False,
 ) -> pd.DataFrame:
-    """Return eight reads spanning two references and two barcode strata."""
+    """Return deterministic reads spanning reference, strand, and barcode strata."""
     if modality not in {"conversion", "deaminase", "direct"}:
         raise ValueError(f"unsupported fixture modality: {modality!r}")
+    if reads_per_stratum < 1:
+        raise ValueError("reads_per_stratum must be positive")
 
     signal_templates = {
         "conversion": [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
@@ -49,11 +61,19 @@ def make_partitioned_ragged_frame(
         "direct": [0.1, 0.9, 0.2, 0.8, 0.3, 0.7, 0.4, 0.6],
     }
     rows: list[dict[str, object]] = []
-    for reference_index, reference in enumerate(REFERENCE_LENGTHS):
-        reference_name = reference.removesuffix("_top")
+    reference_lengths = (
+        ACCEPTANCE_REFERENCE_LENGTHS if include_strand_derivatives else REFERENCE_LENGTHS
+    )
+    for reference_index, reference in enumerate(reference_lengths):
+        strand = "bottom" if reference.endswith("_bottom") else "top"
+        reference_name = reference.removesuffix(f"_{strand}")
         for barcode_index, barcode in enumerate(("barcode01", "barcode02")):
-            for replicate in range(2):
-                offset = (reference_index * 4) + (barcode_index * 2) + replicate
+            for replicate in range(reads_per_stratum):
+                offset = (
+                    reference_index * 2 * reads_per_stratum
+                    + barcode_index * reads_per_stratum
+                    + replicate
+                )
                 signal = signal_templates[modality]
                 rows.append(
                     {
@@ -62,8 +82,8 @@ def make_partitioned_ragged_frame(
                         "Reference_strand": reference,
                         "sample": barcode,
                         "barcode": barcode,
-                        "strand": "top",
-                        "mapping_direction": "fwd",
+                        "strand": strand,
+                        "mapping_direction": "rev" if strand == "bottom" else "fwd",
                         "Dataset": modality,
                         "Experiment_name": "partitioned_pipeline_fixture",
                         "reference_start": replicate * 4,
@@ -83,6 +103,8 @@ def build_partitioned_pipeline_fixture(
     *,
     modality: FixtureModality = "conversion",
     analysis_mode: str = "locus",
+    reads_per_stratum: int = 2,
+    include_strand_derivatives: bool = False,
 ) -> PartitionedPipelineFixture:
     """Write and return a portable raw-store fixture rooted below ``root``."""
     root = Path(root)
@@ -92,16 +114,23 @@ def build_partitioned_pipeline_fixture(
     basecalled_bam.parent.mkdir(parents=True, exist_ok=True)
     basecalled_bam.touch()
 
-    frame = make_partitioned_ragged_frame(modality)
+    frame = make_partitioned_ragged_frame(
+        modality,
+        reads_per_stratum=reads_per_stratum,
+        include_strand_derivatives=include_strand_derivatives,
+    )
+    reference_lengths = (
+        ACCEPTANCE_REFERENCE_LENGTHS if include_strand_derivatives else REFERENCE_LENGTHS
+    )
     paths = write_raw_store(
         frame,
         raw_store_dir,
-        reference_lengths=REFERENCE_LENGTHS,
+        reference_lengths=reference_lengths,
         shard_size=2,
         start_bin_size=8,
         analysis_mode=analysis_mode,
         bam_path=basecalled_bam,
-        extra_uns={"fixture_modality": modality},
+        extra_uns={"fixture_modality": modality, "analysis_mode": analysis_mode},
     )
     return PartitionedPipelineFixture(
         root=root,
