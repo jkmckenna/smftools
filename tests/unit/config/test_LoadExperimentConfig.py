@@ -179,6 +179,16 @@ def test_repeated_stage_loads_reuse_immutable_resource_envelope():
         ("max_memory_gb", "-1", "max_memory_gb must be positive"),
         ("memory_reserve_gb", "-1", "memory_reserve_gb must be non-negative"),
         ("target_task_memory_mb", "0", "target_task_memory_mb must be positive"),
+        (
+            "spatial_position_matrix_max_width",
+            "0",
+            "spatial_position_matrix_max_width must be positive",
+        ),
+        (
+            "spatial_position_matrix_max_mb",
+            "0",
+            "spatial_position_matrix_max_mb must be positive",
+        ),
         ("hmm_max_fit_reads", "0", "hmm_max_fit_reads must be positive"),
     ],
 )

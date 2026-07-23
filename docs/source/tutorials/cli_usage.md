@@ -283,11 +283,12 @@ experiments called it something different.
   (HMM > spatial > preprocess > raw), since a later stage's spine already carries forward
   everything earlier stages produced. `--read-metrics` additionally attaches spatial's per-read
   outputs (autocorrelation, Lomb-Scargle) where available. Supports `--set`/`--modality` filters
-  and `--start`/`--end` genomic windows. Results are cached under `project_outputs/sets/` keyed by
-  the query's *resolved* composition (which experiments/stages/spines it currently resolves to) --
-  a repeat of the same query is a cache read, and registering or re-registering an experiment
-  automatically invalidates any cache whose resolved membership that changes. `--force-recompute`
-  skips a cache hit outright (still refreshes the cache afterward).
+  and `--start`/`--end` genomic windows. Selection size is estimated from project indexes before
+  any matrix is allocated. `--max-memory-gb` and `--max-memory-percent` set hard ceilings;
+  `--allow-large` acknowledges the 8-GiB pooled-object warning but never bypasses those ceilings.
+  For larger selections, pass `--partitioned` and make `--output` a new directory. This writes
+  independently readable experiment/barcode/read-chunk Zarr parts, `catalog.parquet`, and a
+  completion manifest without constructing a final pooled AnnData.
 - `project remove PROJECT_DIR EXPERIMENT_ID` marks an experiment inactive (soft delete; the
   registry is append-only).
 - `project sample-store-list PROJECT_DIR [--experiment-id ID]` lists the per-sample store's

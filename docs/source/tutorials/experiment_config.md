@@ -121,6 +121,11 @@ machine or job allocation:
 - `memory_reserve_gb`: Memory retained outside the workflow after startup system, cgroup, and
   scheduler headroom are detected. The default is 1 GiB.
 - `target_task_memory_mb`: Positive per-task planning estimate used to limit concurrent workers.
+- `spatial_position_matrix_max_width`: Hard position-count limit for a dense position-by-position
+  spatial product. The default is 5,000 positions.
+- `spatial_position_matrix_max_mb`: Hard estimated-memory limit for all position matrices retained
+  for one spatial plot region. The default is 1,024 MiB. This limit is checked together with the
+  live workflow ceiling before matrix allocation.
 
 Existing configurations do not require migration: omitted settings inherit their defaults. CPU
 utilization and the number of threads currently active elsewhere on a shared machine are

@@ -143,13 +143,16 @@ ln -s ../../../runs/<run_name>/<date>_outputs <run_name>
    smftools project list analyses/projects/<project_name>
    smftools project materialize analyses/projects/<project_name> my_canonical_reference \
        -o analyses/projects/<project_name>/outputs/my_canonical_reference.h5ad.gz
+   smftools project materialize analyses/projects/<project_name> my_canonical_reference \
+       -o analyses/projects/<project_name>/outputs/my_canonical_reference_parts --partitioned
    ```
 
    By default this pulls each experiment's most-derived available stage (HMM >
    spatial > preprocess > raw); pass `--stage preprocess` (or any other stage
    name) to pin all experiments to one specific stage instead, skipping any
    that haven't reached it yet. `--read-metrics` additionally attaches
-   spatial's per-read outputs (autocorrelation, Lomb-Scargle) where available.
+   spatial's per-read outputs (autocorrelation, Lomb-Scargle) where available. Use the partitioned
+   form for selections that should remain independently readable without a final pooled AnnData.
 
 4. **Export raw reads across a project**, e.g. for a re-analysis pipeline outside
    smftools, the same way you would for one experiment:
