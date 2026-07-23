@@ -70,10 +70,14 @@ smftools = "smftools.cli_entry:cli"
 # Compatibility extras for existing development and documentation installs.
 # New contributor installs should use the dependency groups below.
 dev = [
+    "build",
+    "hatch",
+    "hatch-vcs",
     "ruff==0.15.0",
     "pre-commit",
     "pytest",
     "pytest-cov",
+    "twine",
 ]
 
 docs = [
@@ -285,6 +289,13 @@ lint = [
     "ruff==0.15.0",
 ]
 
+release = [
+    "build",
+    "hatch",
+    "hatch-vcs",
+    "twine",
+]
+
 docs = [
     "sphinx>=7,<8",
     "sphinx-book-theme>=1.1,<2",
@@ -307,6 +318,7 @@ docs = [
 dev = [
     {include-group = "test"},
     {include-group = "lint"},
+    {include-group = "release"},
 ]
 
 [tool.hatch.build]
