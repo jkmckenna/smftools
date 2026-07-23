@@ -565,9 +565,6 @@ def _reduce_metrics(records, output_dir: Path) -> tuple[Path, Path]:
         )
     )
     if not autocorrelation.empty:
-        autocorrelation["weighted_autocorrelation"] = (
-            autocorrelation["autocorrelation"] * autocorrelation["pair_count"]
-        )
         autocorrelation["autocorrelation"] = autocorrelation["weighted_autocorrelation"].div(
             autocorrelation["pair_count"].replace(0, np.nan)
         )
