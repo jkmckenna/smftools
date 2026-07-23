@@ -16,6 +16,8 @@ from smftools.readwrite import safe_read_h5ad, safe_read_zarr
 from smftools.tools.partitioned_spatial import (
     _cap_clustermap_rows,
     _compute_read_spatial_statistics,
+    _position_matrix_estimated_bytes,
+    _validate_position_matrix_budget,
     execute_partitioned_spatial,
 )
 
@@ -1117,6 +1119,32 @@ def test_cap_clustermap_rows_bounds_hierarchical_clustering_input():
     assert _cap_clustermap_rows(matrix, max_rows=0) is matrix
 
 
+def test_position_matrix_estimate_accounts_for_methods_barcodes_and_transients():
+    assert _position_matrix_estimated_bytes(100, n_methods=2, n_barcodes=3) == (
+        100 * 100 * 8 * 2 * 3 * 3
+    )
+    with pytest.raises(ValueError, match="max_width"):
+        _validate_position_matrix_budget(
+            "ref",
+            0,
+            101,
+            n_methods=1,
+            n_barcodes=1,
+            max_width=100,
+            max_bytes=1024**3,
+        )
+    with pytest.raises(ValueError, match="max_mb"):
+        _validate_position_matrix_budget(
+            "ref",
+            0,
+            100,
+            n_methods=2,
+            n_barcodes=3,
+            max_width=100,
+            max_bytes=1,
+        )
+
+
 def test_partitioned_spatial_task_keeps_site_values_float32(tmp_path, monkeypatch):
     # Regression test: execute_spatial_task used to build
     # np.asarray(core.X, dtype=float)[:, site_mask] -- upcasting the *entire*
@@ -1198,6 +1226,7 @@ def test_partitioned_spatial_plot_read_metric_clustermaps_caps_rows(tmp_path, mo
     # _plot_read_profile_clustermap (and therefore into _clustered_row_order's
     # hierarchical linkage), not just that the helper function works in isolation.
     import smftools.tools.partitioned_spatial as partitioned_spatial_module
+    from smftools.informatics import partition_query
 
     raw = write_raw_store(
         _many_reads_frame(40),
@@ -1221,18 +1250,27 @@ def test_partitioned_spatial_plot_read_metric_clustermaps_caps_rows(tmp_path, mo
     cfg.clustermap_max_reads_per_plot = 3
 
     seen_row_counts = []
+    loaded_row_counts = []
     real_plot = partitioned_spatial_module._plot_read_profile_clustermap
+    real_subset = partition_query.read_zarr_subset
 
     def spy_plot(values, *args, **kwargs):
         seen_row_counts.append(values.shape[0])
         return real_plot(values, *args, **kwargs)
 
+    def spy_subset(*args, row_indices=None, **kwargs):
+        loaded_row_counts.append(len(row_indices))
+        return real_subset(*args, row_indices=row_indices, **kwargs)
+
     monkeypatch.setattr(partitioned_spatial_module, "_plot_read_profile_clustermap", spy_plot)
+    monkeypatch.setattr(partition_query, "read_zarr_subset", spy_subset)
 
     execute_partitioned_spatial(preprocess["spine"], cfg, tmp_path / "spatial_outputs")
 
     assert seen_row_counts
     assert all(count <= 3 for count in seen_row_counts)
+    assert loaded_row_counts
+    assert all(count <= 3 for count in loaded_row_counts)
 
 
 def test_partitioned_spatial_clustermaps_apply_reindexing_offsets(tmp_path, monkeypatch):

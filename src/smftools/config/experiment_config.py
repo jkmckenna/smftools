@@ -1082,6 +1082,8 @@ class ExperimentConfig:
     spatial_clustermap_sortby: Optional[str] = "gpc"
     spatial_clustermap_restrict_to_read_span: bool = False
     clustermap_max_reads_per_plot: Optional[int] = 5000
+    spatial_position_matrix_max_width: int = 5000
+    spatial_position_matrix_max_mb: int = 1024
     omit_chimeric_reads: bool = True
     overlay_variant_calls: bool = False
     variant_overlay_seq1_color: str = "white"
@@ -2034,6 +2036,12 @@ class ExperimentConfig:
             clustermap_max_reads_per_plot=_parse_numeric(
                 merged.get("clustermap_max_reads_per_plot", 5000), None
             ),
+            spatial_position_matrix_max_width=int(
+                _parse_numeric(merged.get("spatial_position_matrix_max_width", 5000), 5000)
+            ),
+            spatial_position_matrix_max_mb=int(
+                _parse_numeric(merged.get("spatial_position_matrix_max_mb", 1024), 1024)
+            ),
             omit_chimeric_reads=_parse_bool(merged.get("omit_chimeric_reads", True)),
             overlay_variant_calls=_parse_bool(merged.get("overlay_variant_calls", False)),
             variant_overlay_seq1_color=merged.get("variant_overlay_seq1_color", "white"),
@@ -2526,6 +2534,10 @@ class ExperimentConfig:
             errors.append("memory_reserve_gb must be non-negative.")
         if int(self.target_task_memory_mb) <= 0:
             errors.append("target_task_memory_mb must be positive.")
+        if int(self.spatial_position_matrix_max_width) <= 0:
+            errors.append("spatial_position_matrix_max_width must be positive.")
+        if int(self.spatial_position_matrix_max_mb) <= 0:
+            errors.append("spatial_position_matrix_max_mb must be positive.")
         if int(self.hmm_max_fit_reads) <= 0:
             errors.append("hmm_max_fit_reads must be positive.")
         if float(self.perf_log_sample_interval_seconds) <= 0.0:

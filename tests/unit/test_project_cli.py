@@ -163,6 +163,41 @@ def test_project_materialize_cli_guardrail_refuses_oversized_pool(tmp_path):
     assert len(combined.layers) == 0  # --layers '' => X only
 
 
+def test_project_materialize_cli_writes_partitioned_export(tmp_path):
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    proj = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]
+        ).exit_code
+        == 0
+    )
+
+    output = tmp_path / "partitioned_export"
+    result = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "materialize",
+            str(proj),
+            uid,
+            "-o",
+            str(output),
+            "--layers",
+            "",
+            "--partitioned",
+            "--max-memory-percent",
+            "50",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (output / "manifest.json").is_file()
+    assert (output / "catalog.parquet").is_file()
+
+
 def test_project_sample_store_list_cli(tmp_path):
     uid = reference_uid(SEQUENCE, 12)
     _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)

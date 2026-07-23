@@ -656,9 +656,27 @@ def project_list_cmd(project_dir: Path):
     "--allow-large",
     is_flag=True,
     help=(
-        "Bypass the ~8 GiB pooled-object size guardrail. Without it, a pool that would "
-        "exceed the limit is refused with guidance to narrow it (--layers/--start/--end)."
+        "Acknowledge the ~8 GiB pooled-object warning. This never bypasses the resolved "
+        "hard memory ceiling."
     ),
+)
+@click.option(
+    "--partitioned",
+    is_flag=True,
+    help="Write a cataloged directory of bounded Zarr parts instead of one pooled H5AD.",
+)
+@click.option(
+    "--max-memory-gb",
+    type=click.FloatRange(min=0.001),
+    default=None,
+    help="Optional hard project-materialization memory ceiling in GiB.",
+)
+@click.option(
+    "--max-memory-percent",
+    type=click.FloatRange(min=0.001, max=100.0),
+    default=60.0,
+    show_default=True,
+    help="Hard project-materialization ceiling as a percentage of physical memory.",
 )
 def project_materialize_cmd(
     project_dir,
@@ -672,11 +690,15 @@ def project_materialize_cmd(
     layers,
     read_metrics,
     allow_large,
+    partitioned,
+    max_memory_gb,
+    max_memory_percent,
 ):
     """Pool CANONICAL_REFERENCE across matching experiments into one AnnData.
 
-    Prefer --layers and/or --start/--end: pooling all layers at full locus across many
-    experiments builds very large objects. Refused over ~8 GiB unless --allow-large.
+    Prefer --layers and/or --start/--end. Pooled output is preflighted before allocation;
+    --allow-large acknowledges its warning threshold but not the hard memory ceiling.
+    Use --partitioned for a cataloged directory of bounded Zarr parts.
     """
     from .cli.project_cmd import project_materialize
 
@@ -693,6 +715,9 @@ def project_materialize_cmd(
         layers=layer_list,
         read_metrics=read_metrics,
         allow_large=allow_large,
+        partitioned=partitioned,
+        max_memory_gb=max_memory_gb,
+        max_memory_percent=max_memory_percent,
     )
     click.echo(f"Wrote {out}")
 

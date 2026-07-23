@@ -574,7 +574,7 @@ def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> No
             return False
         return "_all_footprint_features" in name or "_all_accessible_features" in name
 
-    rows = []
+    histograms: dict[tuple[str, int, int, str, str], dict[str, dict[int, int]]] = {}
     for record in records:
         layer_names = [name for name in record.get("layers", []) if _is_group_feature_layer(name)]
         if not layer_names:
@@ -582,57 +582,47 @@ def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> No
         result, _ = safe_read_zarr(output_dir / record["group_path"], verbose=False)
         for layer in layer_names:
             arr = np.asarray(result.layers[layer], dtype=float)
+            key = (
+                str(record["reference"]),
+                int(record["core_start"]),
+                int(record["core_end"]),
+                str(layer),
+                str(record["barcode"]),
+            )
+            bucket = histograms.setdefault(key, {"count": {}, "size": {}})
             for read_row in arr:
                 sizes = _feature_run_lengths(read_row)
-                rows.append(
-                    {
-                        "reference": record["reference"],
-                        "core_start": record["core_start"],
-                        "core_end": record["core_end"],
-                        "barcode": str(record["barcode"]),
-                        "layer": str(layer),
-                        "n_features": int(sizes.size),
-                        "sizes": sizes,
-                    }
-                )
-    if not rows:
+                count = int(sizes.size)
+                bucket["count"][count] = bucket["count"].get(count, 0) + 1
+                for size in sizes:
+                    value = int(size)
+                    bucket["size"][value] = bucket["size"].get(value, 0) + 1
+    if not histograms:
         return
-
-    frame = pd.DataFrame(rows)
-    keys = ["reference", "core_start", "core_end", "layer"]
+    windows: dict[tuple[str, int, int, str], dict[str, dict[str, dict[int, int]]]] = {}
+    for (reference, core_start, core_end, layer, barcode), values in histograms.items():
+        windows.setdefault((reference, core_start, core_end, layer), {})[barcode] = values
     metrics = (
-        (
-            "count",
-            lambda sub: sub["n_features"].to_numpy(),
-            "Features per read",
-            "hmm_feature_count_histogram",
-        ),
-        (
-            "size",
-            lambda sub: np.concatenate(sub["sizes"].to_numpy()) if len(sub) else np.array([]),
-            "Feature size (positions)",
-            "hmm_feature_size_histogram",
-        ),
+        ("count", "Features per read", "hmm_feature_count_histogram"),
+        ("size", "Feature size (positions)", "hmm_feature_size_histogram"),
     )
-    for (reference, core_start, core_end, layer), window in frame.groupby(keys, sort=True):
-        barcodes = sorted(window["barcode"].unique())
+    for (reference, core_start, core_end, layer), by_barcode in sorted(windows.items()):
+        barcodes = sorted(by_barcode)
         n_cols = min(4, len(barcodes))
         n_rows = -(-len(barcodes) // n_cols)  # ceil division
 
-        for metric, values_fn, xlabel, plot_type in metrics:
+        for metric, xlabel, plot_type in metrics:
             figure, axes = plt.subplots(
                 n_rows, n_cols, figsize=(3.0 * n_cols, 2.4 * n_rows), squeeze=False
             )
             for i, barcode in enumerate(barcodes):
                 axis = axes[i // n_cols][i % n_cols]
-                values = values_fn(window.loc[window["barcode"] == barcode])
-                if values.size:
-                    if metric == "count":
-                        lo, hi = int(values.min()), int(values.max())
-                        bins = np.arange(lo, hi + 2) - 0.5
-                    else:
-                        bins = 20
-                    axis.hist(values, bins=bins, color="tab:blue")
+                counts = by_barcode[barcode][metric]
+                if counts:
+                    values = np.asarray(sorted(counts), dtype=int)
+                    weights = np.asarray([counts[value] for value in values], dtype=int)
+                    bins = np.arange(values.min(), values.max() + 2) - 0.5
+                    axis.hist(values, bins=bins, weights=weights, color="tab:blue")
                 axis.set_title(str(barcode), fontsize=8)
                 axis.tick_params(labelsize=6)
             for i in range(len(barcodes), n_rows * n_cols):

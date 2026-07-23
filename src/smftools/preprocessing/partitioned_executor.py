@@ -424,55 +424,51 @@ def reduce_partial_coverage(
     output_path = Path(output_path)
     catalog = pd.read_parquet(catalog_path)
     plans = spine.uns.get("reference_plans", {})
-    partials: list[pd.DataFrame] = []
-    context_partials: list[pd.DataFrame] = []
+    valid_counts: dict[tuple[str, int], int] = {}
+    context_rows: dict[tuple[str, int], dict[str, object]] = {}
     for record in catalog.to_dict("records"):
         group_path = catalog_path.parent / str(record["group_path"])
         result, _ = safe_read_zarr(group_path)
-        partials.append(
-            pd.DataFrame(
-                {
-                    "reference": str(record["reference"]),
-                    "position": np.asarray(result.var_names, dtype=np.int64),
-                    "valid_count_partial": result.var["valid_count_partial"].to_numpy(
-                        dtype=np.int64
-                    ),
-                }
-            )
-        )
+        reference = str(record["reference"])
+        positions = np.asarray(result.var_names, dtype=np.int64)
+        counts = result.var["valid_count_partial"].to_numpy(dtype=np.int64)
+        for position, count in zip(positions, counts, strict=True):
+            key = (reference, int(position))
+            valid_counts[key] = valid_counts.get(key, 0) + int(count)
         context_columns = [
             column
             for column in result.var.columns
             if column not in {"valid_count_partial", "n_reads_partial"}
         ]
         if context_columns:
-            context = result.var[context_columns].copy()
-            context.insert(0, "position", np.asarray(result.var_names, dtype=np.int64))
-            context.insert(0, "reference", str(record["reference"]))
-            context_partials.append(context)
+            for row_index, position in enumerate(positions):
+                key = (reference, int(position))
+                if key not in context_rows:
+                    context_rows[key] = {
+                        column: result.var.iloc[row_index][column] for column in context_columns
+                    }
     columns = ["reference", "position", "valid_count", "valid_fraction", "position_valid"]
-    if not partials:
+    if not valid_counts:
         reduced = pd.DataFrame(columns=columns)
     else:
-        reduced = (
-            pd.concat(partials, ignore_index=True)
-            .groupby(["reference", "position"], as_index=False, sort=True)["valid_count_partial"]
-            .sum()
-            .rename(columns={"valid_count_partial": "valid_count"})
+        reduced = pd.DataFrame(
+            (
+                {
+                    "reference": reference,
+                    "position": position,
+                    "valid_count": count,
+                    **context_rows.get((reference, position), {}),
+                }
+                for (reference, position), count in sorted(valid_counts.items())
+            )
         )
         denominators = {
             str(reference): int(dict(plan)["n_reads"]) for reference, plan in dict(plans).items()
         }
         reduced["valid_fraction"] = reduced["valid_count"] / reduced["reference"].map(denominators)
         reduced["position_valid"] = reduced["valid_fraction"] >= minimum_valid_fraction
-        reduced = reduced[columns]
-        if context_partials:
-            context = pd.concat(context_partials, ignore_index=True).drop_duplicates(
-                ["reference", "position"]
-            )
-            reduced = reduced.merge(
-                context, on=["reference", "position"], how="left", validate="one_to_one"
-            )
+        context_columns = [column for column in reduced if column not in columns]
+        reduced = reduced[[*columns, *context_columns]]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     reduced.to_parquet(output_path, index=False)
     return output_path
@@ -596,21 +592,41 @@ def reduce_read_modification_stats(
 
     catalog_path = Path(catalog_path)
     var_frame = pd.read_parquet(var_path)
-    partials: list[pd.DataFrame] = []
+    obs = pd.read_parquet(obs_path)
+    if "read_id" not in obs:
+        raise ValueError("preprocess obs sidecar is missing required read_id column")
+    row_by_read = pd.Series(np.arange(len(obs), dtype=np.int64), index=obs["read_id"].astype(str))
+    accumulators: dict[str, np.ndarray] = {}
+    references = np.full(len(obs), None, dtype=object)
+    saw_partial = False
     for record in pd.read_parquet(catalog_path).to_dict("records"):
         result, _ = safe_read_zarr(catalog_path.parent / str(record["group_path"]), verbose=False)
         columns = [column for column in result.obs if column.endswith("_partial")]
-        partial = result.obs[columns].copy()
-        partial.insert(0, "reference", str(record["reference"]))
-        if "read_id" not in partial:
-            partial.insert(0, "read_id", partial.index.astype(str))
-        partials.append(partial)
-    obs = pd.read_parquet(obs_path)
-    if not partials:
+        if not columns:
+            continue
+        read_ids = result.obs.get("read_id", result.obs.index.to_series()).astype(str)
+        row_indices = row_by_read.reindex(read_ids).to_numpy()
+        if pd.isna(row_indices).any():
+            missing = read_ids[pd.isna(row_indices)].tolist()[:5]
+            raise ValueError(f"preprocess partial contains unknown read IDs: {missing}")
+        row_indices = row_indices.astype(np.int64)
+        references[row_indices] = str(record["reference"])
+        for column in columns:
+            values = pd.to_numeric(result.obs[column], errors="coerce").fillna(0).to_numpy()
+            target = accumulators.setdefault(column, np.zeros(len(obs), dtype=np.float64))
+            np.add.at(target, row_indices, values)
+        saw_partial = True
+    if not saw_partial:
         return Path(obs_path)
-    reduced = pd.concat(partials, ignore_index=True)
-    partial_columns = [column for column in reduced if column.endswith("_partial")]
-    reduced = reduced.groupby(["read_id", "reference"], as_index=False)[partial_columns].sum()
+    reduced = pd.DataFrame(
+        {
+            "read_id": obs["read_id"].astype(str).to_numpy(),
+            "reference": references,
+            **accumulators,
+        }
+    )
+    reduced = reduced.loc[reduced["reference"].notna()].reset_index(drop=True)
+    partial_columns = list(accumulators)
     reduced = reduced.rename(
         columns={
             "Raw_modification_signal_partial": "Raw_modification_signal",
@@ -1010,9 +1026,20 @@ def execute_partitioned_preprocessing(
         estimator="preprocess_task_plan_peak",
     )
     catalog_path = output_dir / PREPROCESS_PARTITION_CATALOG
-    pd.DataFrame(records).to_parquet(catalog_path, index=False)
+    record_frame = pd.DataFrame(records)
+    record_frame.to_parquet(catalog_path, index=False)
+    core_columns = [
+        column for column in ("reference", "core_start", "core_end") if column in record_frame
+    ]
+    reduced_positions = (
+        int(record_frame.groupby(core_columns, observed=True)["n_positions"].max().sum())
+        if core_columns and not record_frame.empty
+        else 0
+    )
+    estimated_reducer_bytes = len(spine.obs) * 4096 + reduced_positions * 2048
     require_memory_headroom(
         cfg,
+        estimated_memory_mb=max(1, estimated_reducer_bytes) / 1024**2,
         operation_label="preprocess reducers",
         estimator="preprocess_reducer_peak",
     )

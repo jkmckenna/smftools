@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -8,7 +9,12 @@ from smftools.informatics.molecule_identity import split_pooled_obs_name
 from smftools.informatics.raw_store import write_raw_store
 from smftools.informatics.reference_identity import reference_uid
 from smftools.project import registry as reg
-from smftools.project.catalog import ProjectCatalog, project_adata
+from smftools.project.catalog import (
+    ProjectCatalog,
+    estimate_project_selection,
+    export_project_partitions,
+    project_adata,
+)
 
 SEQUENCE = "ACGTACGTACGT"  # length 12
 
@@ -226,6 +232,81 @@ def test_project_adata_guardrail_bypassed_by_allow_large(project_with_two_experi
     proj, uid = project_with_two_experiments
     combined = project_adata(proj, uid, max_bytes=1, allow_large=True)
     assert combined.n_obs == 7
+
+
+def test_project_selection_is_estimated_before_materialization(
+    project_with_two_experiments, monkeypatch
+):
+    proj, uid = project_with_two_experiments
+    estimate = estimate_project_selection(proj, uid, layers=[])
+    assert estimate.n_reads == 7
+    assert estimate.n_positions == 12
+    assert estimate.total_bytes > 0
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("materialization must not start before the warning preflight")
+
+    monkeypatch.setattr("smftools.project.set_store.iter_set_parts", _unexpected)
+    with pytest.raises(ValueError, match="estimated"):
+        project_adata(proj, uid, layers=[], max_bytes=1)
+
+
+def test_allow_large_does_not_bypass_hard_memory_preflight(
+    project_with_two_experiments, monkeypatch
+):
+    proj, uid = project_with_two_experiments
+
+    def _hard_limit(*args, **kwargs):
+        raise MemoryError("hard ceiling")
+
+    monkeypatch.setattr("smftools.memory_guard.require_memory_headroom", _hard_limit)
+    with pytest.raises(MemoryError, match="hard ceiling"):
+        project_adata(proj, uid, layers=[], max_bytes=1, allow_large=True)
+
+
+def test_partitioned_project_export_writes_catalog_without_pooled_concat(
+    project_with_two_experiments, tmp_path, monkeypatch
+):
+    proj, uid = project_with_two_experiments
+
+    def _unexpected_concat(*args, **kwargs):
+        raise AssertionError("partitioned export must not call ad.concat")
+
+    monkeypatch.setattr("anndata.concat", _unexpected_concat)
+    output = export_project_partitions(proj, uid, tmp_path / "export", layers=[])
+
+    manifest = pd.read_json(output / "manifest.json", typ="series")
+    catalog = pd.read_parquet(output / "catalog.parquet")
+    assert manifest["status"] == "complete"
+    assert manifest["n_reads"] == 7
+    assert manifest["n_parts"] == len(catalog)
+    assert manifest["catalog"] == "catalog.parquet"
+    assert len(manifest["catalog_sha256"]) == 64
+    assert catalog["part_id"].is_unique
+    assert catalog["path"].is_unique
+    assert set(catalog["artifact_format"]) == {"anndata-zarr-v3"}
+    assert set(catalog["schema_version"]) == {manifest["catalog_schema_version"]}
+    assert catalog["n_reads"].sum() == manifest["n_reads"]
+    assert set(catalog["experiment"]) == {"expA", "expB"}
+    assert catalog["path"].map(lambda value: not Path(value).is_absolute()).all()
+    assert all((output / value).is_dir() for value in catalog["path"])
+
+
+def test_partitioned_project_export_failure_never_publishes_completion(
+    project_with_two_experiments, tmp_path, monkeypatch
+):
+    proj, uid = project_with_two_experiments
+    output = tmp_path / "failed_export"
+
+    def _fail_write(*args, **kwargs):
+        raise RuntimeError("injected export failure")
+
+    monkeypatch.setattr("smftools.readwrite.safe_write_zarr", _fail_write)
+    with pytest.raises(RuntimeError, match="injected export failure"):
+        export_project_partitions(proj, uid, output, layers=[])
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(".failed_export.*"))
 
 
 def test_project_adata_layer_projection_limits_layers(project_with_two_experiments):

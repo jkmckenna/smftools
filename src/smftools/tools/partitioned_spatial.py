@@ -513,51 +513,60 @@ def execute_spatial_task(spine_path, task, cfg, output_dir) -> dict[str, object]
 
 
 def _reduce_metrics(records, output_dir: Path) -> tuple[Path, Path]:
-    metric_frames = [pd.read_parquet(output_dir / record["metrics_path"]) for record in records]
-    metrics = pd.concat(metric_frames, ignore_index=True) if metric_frames else pd.DataFrame()
-    if not metrics.empty:
-        keys = ["reference", "barcode", "core_start", "core_end", "site_type"]
-        metrics = (
-            metrics.groupby(keys, sort=True, observed=True)
-            .agg(
-                n_reads=("n_reads", "sum"),
-                n_site_positions=("n_site_positions", "max"),
-                n_valid_calls=("n_valid_calls", "sum"),
-                modified_sum=("modified_sum", "sum"),
+    metric_keys = ["reference", "barcode", "core_start", "core_end", "site_type"]
+    metric_totals: dict[tuple, dict[str, float]] = {}
+    for record in records:
+        frame = pd.read_parquet(output_dir / record["metrics_path"])
+        for row in frame.itertuples(index=False):
+            key = tuple(getattr(row, column) for column in metric_keys)
+            total = metric_totals.setdefault(
+                key,
+                {"n_reads": 0, "n_site_positions": 0, "n_valid_calls": 0, "modified_sum": 0.0},
             )
-            .reset_index()
+            total["n_reads"] += int(row.n_reads)
+            total["n_site_positions"] = max(total["n_site_positions"], int(row.n_site_positions))
+            total["n_valid_calls"] += int(row.n_valid_calls)
+            modified_sum = float(row.modified_sum)
+            total["modified_sum"] += modified_sum if np.isfinite(modified_sum) else 0.0
+    metrics = pd.DataFrame(
+        (
+            {**dict(zip(metric_keys, key, strict=True)), **values}
+            for key, values in sorted(metric_totals.items())
         )
+    )
+    if not metrics.empty:
         metrics["mean_modification"] = metrics["modified_sum"].div(
             metrics["n_valid_calls"].replace(0, np.nan)
         )
     metrics_path = output_dir / SPATIAL_METRICS
     metrics.to_parquet(metrics_path, index=False)
 
-    autocorr_frames = [
-        pd.read_parquet(output_dir / record["autocorrelation_path"]) for record in records
-    ]
-    autocorrelation = (
-        pd.concat(autocorr_frames, ignore_index=True) if autocorr_frames else pd.DataFrame()
+    autocorr_keys = ["reference", "barcode", "core_start", "core_end", "site_type", "lag"]
+    autocorr_totals: dict[tuple, tuple[float, int]] = {}
+    for record in records:
+        frame = pd.read_parquet(output_dir / record["autocorrelation_path"])
+        for row in frame.itertuples(index=False):
+            key = tuple(getattr(row, column) for column in autocorr_keys)
+            weighted, count = autocorr_totals.get(key, (0.0, 0))
+            pair_count = int(row.pair_count)
+            autocorrelation = float(row.autocorrelation)
+            autocorr_totals[key] = (
+                weighted + (autocorrelation * pair_count if np.isfinite(autocorrelation) else 0.0),
+                count + pair_count,
+            )
+    autocorrelation = pd.DataFrame(
+        (
+            {
+                **dict(zip(autocorr_keys, key, strict=True)),
+                "weighted_autocorrelation": weighted,
+                "pair_count": count,
+            }
+            for key, (weighted, count) in sorted(autocorr_totals.items())
+        )
     )
     if not autocorrelation.empty:
         autocorrelation["weighted_autocorrelation"] = (
             autocorrelation["autocorrelation"] * autocorrelation["pair_count"]
-        )
-        keys = [
-            "reference",
-            "barcode",
-            "core_start",
-            "core_end",
-            "site_type",
-            "lag",
-        ]
-        autocorrelation = (
-            autocorrelation.groupby(keys, sort=True, observed=True)
-            .agg(
-                weighted_autocorrelation=("weighted_autocorrelation", "sum"),
-                pair_count=("pair_count", "sum"),
-            )
-            .reset_index()
         )
         autocorrelation["autocorrelation"] = autocorrelation["weighted_autocorrelation"].div(
             autocorrelation["pair_count"].replace(0, np.nan)
@@ -760,12 +769,35 @@ def _plot_read_metric_clustermaps(records, output_dir: Path, layout, cfg) -> Non
     """Plot per-read ACF and Lomb-Scargle heatmaps for each barcode region."""
     if not bool(getattr(cfg, "spatial_plot_read_metric_clustermaps", True)):
         return
+    from ..informatics.partition_query import query_derived_index, read_zarr_subset
+
+    max_reads_per_plot = getattr(cfg, "clustermap_max_reads_per_plot", 5000)
+    selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
+    indexed = query_derived_index(output_dir / "read_index")
+    selected_rows: dict[str, list[int]] = {}
+    if not indexed.empty:
+        group_columns = ["reference", "core_start", "core_end", "barcode"]
+        identity = "molecule_uid" if "molecule_uid" in indexed else "read_id"
+        for _, group in indexed.groupby(group_columns, sort=True, observed=True):
+            group = group.sort_values(identity, kind="stable").drop_duplicates(identity)
+            if (
+                max_reads_per_plot is not None
+                and int(max_reads_per_plot) > 0
+                and len(group) > int(max_reads_per_plot)
+            ):
+                rng = np.random.default_rng(selection_seed)
+                group = group.iloc[
+                    np.sort(rng.choice(len(group), size=int(max_reads_per_plot), replace=False))
+                ]
+            for group_path, rows in group.groupby("group_path", sort=True, observed=True):
+                selected_rows[str(group_path)] = rows["group_row"].astype(int).tolist()
     groups = {}
     for record in records:
         relative_path = record.get("group_path")
-        if not relative_path:
+        rows = selected_rows.get(str(relative_path), [])
+        if not relative_path or not rows:
             continue
-        read_metrics, _ = safe_read_zarr(output_dir / relative_path, verbose=False)
+        read_metrics = read_zarr_subset(output_dir / relative_path, row_indices=rows)
         for key in read_metrics.obsm:
             suffix = "_spatial_autocorr"
             if not str(key).endswith(suffix):
@@ -797,7 +829,6 @@ def _plot_read_metric_clustermaps(records, output_dir: Path, layout, cfg) -> Non
                 )
 
     peak_range = _config_range(cfg, "spatial_lomb_scargle_peak_range_bp", (150.0, 250.0))
-    max_reads_per_plot = getattr(cfg, "clustermap_max_reads_per_plot", 5000)
     for (reference, core_start, core_end, barcode, site_type), bucket in sorted(groups.items()):
         region_label = f"{_component(reference)}__{core_start}_{core_end}__{_component(site_type)}"
         acf = np.vstack(bucket["acf"])
@@ -900,12 +931,31 @@ def _plot_read_periodicity(records, output_dir: Path, layout, cfg) -> None:
         getattr(cfg, "spatial_plot_read_lomb_scargle", True)
     ):
         return
+    from ..informatics.partition_query import query_derived_index, read_zarr_subset
+
+    max_reads = getattr(cfg, "clustermap_max_reads_per_plot", 5000)
+    selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
+    indexed = query_derived_index(output_dir / "read_index")
+    selected_rows: dict[str, list[int]] = {}
+    if not indexed.empty:
+        group_columns = ["reference", "core_start", "core_end", "barcode"]
+        identity = "molecule_uid" if "molecule_uid" in indexed else "read_id"
+        for _, group in indexed.groupby(group_columns, sort=True, observed=True):
+            group = group.sort_values(identity, kind="stable").drop_duplicates(identity)
+            if max_reads is not None and int(max_reads) > 0 and len(group) > int(max_reads):
+                rng = np.random.default_rng(selection_seed)
+                group = group.iloc[
+                    np.sort(rng.choice(len(group), size=int(max_reads), replace=False))
+                ]
+            for group_path, rows in group.groupby("group_path", sort=True, observed=True):
+                selected_rows[str(group_path)] = rows["group_row"].astype(int).tolist()
     windows = {}
     for record in records:
         relative_path = record.get("group_path")
-        if not relative_path:
+        rows = selected_rows.get(str(relative_path), [])
+        if not relative_path or not rows:
             continue
-        read_metrics, _ = safe_read_zarr(output_dir / relative_path, verbose=False)
+        read_metrics = read_zarr_subset(output_dir / relative_path, row_indices=rows)
         for key in read_metrics.obsm:
             suffix = "_lomb_scargle_power"
             if not str(key).endswith(suffix):
@@ -1248,6 +1298,49 @@ def _dense_product_regions(spine, bed_regions: pd.DataFrame) -> pd.DataFrame:
     return regions.sort_values(["reference", "start", "end"]).reset_index(drop=True)
 
 
+def _position_matrix_estimated_bytes(width: int, *, n_methods: int, n_barcodes: int) -> int:
+    """Estimate retained result and transient buffers for dense P-by-P products."""
+    return int(
+        max(1, width) ** 2
+        * np.dtype(np.float64).itemsize
+        * max(1, n_methods)
+        * max(1, n_barcodes)
+        * 3
+    )
+
+
+def _validate_position_matrix_budget(
+    reference: str,
+    start: int,
+    end: int,
+    *,
+    n_methods: int,
+    n_barcodes: int,
+    max_width: int,
+    max_bytes: int,
+) -> int:
+    """Return the dense-product estimate or reject an indivisible oversized region."""
+    width = int(end) - int(start)
+    estimated_bytes = _position_matrix_estimated_bytes(
+        width, n_methods=n_methods, n_barcodes=n_barcodes
+    )
+    if width > int(max_width):
+        raise ValueError(
+            f"position matrix region {reference}:{start}-{end} has width {width:,}, "
+            f"exceeding spatial_position_matrix_max_width={int(max_width):,}; "
+            "narrow the plot region or disable spatial_generate_position_matrices"
+        )
+    if estimated_bytes > int(max_bytes):
+        raise ValueError(
+            f"position matrices for {reference}:{start}-{end} are estimated at "
+            f"{estimated_bytes / 1024**2:.1f} MiB, exceeding "
+            f"spatial_position_matrix_max_mb={int(max_bytes) / 1024**2:.1f}; "
+            "narrow the plot region, request fewer methods/barcodes, or disable "
+            "spatial_generate_position_matrices"
+        )
+    return estimated_bytes
+
+
 def _write_position_matrix_sidecars(adata, output_dir: Path, region, output_key: str) -> list[Path]:
     paths = []
     reference = str(region["reference"])
@@ -1365,6 +1458,8 @@ def _generate_dense_region_products(
     minimum_reads = int(getattr(cfg, "spatial_matrix_min_reads", 2))
     requested_layer = str(getattr(cfg, "layer_for_clustermap_plotting", "nan0_0minus1"))
     selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
+    matrix_max_width = int(getattr(cfg, "spatial_position_matrix_max_width", 5000))
+    matrix_max_bytes = int(getattr(cfg, "spatial_position_matrix_max_mb", 1024)) * 1024**2
     for plan in plans:
         reference, start, end = plan.reference, plan.start, plan.end
         region = {
@@ -1395,6 +1490,28 @@ def _generate_dense_region_products(
         )
         if not selection.read_ids:
             continue
+        if bool(getattr(cfg, "spatial_generate_position_matrices", True)):
+            methods = list(getattr(cfg, "correlation_matrix_types", ["pearson"]))
+            # compute_positionwise_statistics retains every method/barcode DataFrame
+            # in adata.uns until sidecars are published. Count three float64-sized
+            # buffers per matrix for the result plus correlation/covariance work arrays.
+            estimated_matrix_bytes = _validate_position_matrix_budget(
+                reference,
+                start,
+                end,
+                n_methods=len(methods),
+                n_barcodes=len(keep_samples),
+                max_width=matrix_max_width,
+                max_bytes=matrix_max_bytes,
+            )
+            from ..memory_guard import require_memory_headroom
+
+            require_memory_headroom(
+                cfg,
+                estimated_memory_mb=estimated_matrix_bytes / 1024**2,
+                operation_label=f"spatial position matrices {reference}:{start}-{end}",
+                estimator="spatial_position_matrix_peak",
+            )
         layers = sorted({"nan0_0minus1", requested_layer})
         adata = materialize(
             spine_path,
@@ -1597,9 +1714,23 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
         estimator="spatial_task_plan_peak",
     )
     task_catalog = output_dir / SPATIAL_TASK_CATALOG
-    pd.DataFrame(records).to_parquet(task_catalog, index=False)
+    record_frame = pd.DataFrame(records)
+    record_frame.to_parquet(task_catalog, index=False)
+    max_lag = int(getattr(cfg, "autocorr_max_lag", 800)) + 1
+    max_periods = int(
+        _config_range(cfg, "spatial_lomb_scargle_period_range_bp", (80.0, 400.0))[1]
+        - _config_range(cfg, "spatial_lomb_scargle_period_range_bp", (80.0, 400.0))[0]
+        + 1
+    )
+    site_type_count = max((len(record.get("site_types", [])) for record in records), default=1)
+    plot_group_columns = ["reference", "core_start", "core_end", "barcode"]
+    plot_group_count = (
+        len(record_frame.drop_duplicates(plot_group_columns)) if not record_frame.empty else 0
+    )
+    estimated_reducer_bytes = len(records) * site_type_count * max_lag * 128
     require_memory_headroom(
         cfg,
+        estimated_memory_mb=max(1, estimated_reducer_bytes) / 1024**2,
         operation_label="spatial reducers",
         estimator="spatial_reducer_peak",
     )
@@ -1608,7 +1739,7 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     legacy_dense_regions = _dense_product_regions(spine, bed_regions)
     plot_plans = resolve_plot_region_plans(
         spine,
-        pd.DataFrame(records),
+        record_frame,
         spine_path=spine_path,
         allow_gaps=bool(getattr(cfg, "plot_allow_unanalyzed_gaps", False)),
         fallback_regions=legacy_dense_regions,
@@ -1640,6 +1771,15 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
     require_memory_headroom(
         cfg,
+        estimated_memory_mb=(
+            max(1, int(getattr(cfg, "clustermap_max_reads_per_plot", 5000) or 5000))
+            * max(1, plot_group_count)
+            * site_type_count
+            * (max_lag + max_periods)
+            * np.dtype(np.float64).itemsize
+            * 2
+            / 1024**2
+        ),
         operation_label="spatial plots",
         estimator="spatial_plot_peak",
     )

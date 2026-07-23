@@ -185,6 +185,10 @@ smftools project list "/Path_to_project_directory"
 smftools project materialize "/Path_to_project_directory" my_canonical_reference \
     -o "/Path_to_output.h5ad.gz"
 
+# Export a large selection as bounded, independently readable Zarr parts.
+smftools project materialize "/Path_to_project_directory" my_canonical_reference \
+    -o "/Path_to_partitioned_output" --partitioned --layers C_site_binary
+
 # Mark an experiment inactive (soft delete; registry entries are append-only).
 smftools project remove "/Path_to_project_directory" experiment_id
 ```
@@ -197,7 +201,9 @@ smftools project remove "/Path_to_project_directory" experiment_id
   with an added `obs["experiment"]` column -- there is never a global merge across experiments.
   Each experiment's spine is picked independently, defaulting to the most-derived stage available
   (`--stage` pins all experiments to one specific stage instead); `--read-metrics` additionally
-  attaches spatial's per-read outputs where available.
+  attaches spatial's per-read outputs where available. The pooled path is preflighted before
+  allocation. `--partitioned` writes bounded Zarr parts plus a catalog and completion manifest,
+  avoiding the final in-memory concatenation.
 - `smftools project export-fastq ...` (below) and other cross-experiment tooling build on the
   same registry.
 

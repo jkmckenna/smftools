@@ -100,6 +100,9 @@ def project_materialize(
     layers: list[str] | None = None,
     read_metrics: bool = False,
     allow_large: bool = False,
+    partitioned: bool = False,
+    max_memory_gb: float | None = None,
+    max_memory_percent: float | None = 60.0,
 ) -> Path:
     """Pool a canonical reference across matching experiments into one AnnData and write it.
 
@@ -108,14 +111,31 @@ def project_materialize(
     ``spatial``, ``hmm``, ...); the default falls back through the most-derived stage
     available per experiment.
 
-    Prefer a narrow ``layers`` subset and/or a ``start``/``end`` window: pooling *all*
-    layers at full locus across many experiments builds enormous objects (a real
-    project produced >200 GB). A size guardrail refuses a pool over ~8 GiB unless
-    ``allow_large=True``; for larger streamed access use ``set_store.iter_set_parts``.
+    Prefer a narrow ``layers`` subset and/or a ``start``/``end`` window. Pooled output
+    is preflighted before allocation. ``allow_large`` acknowledges the soft 8-GiB
+    warning but never bypasses the resolved hard memory ceiling. ``partitioned`` writes
+    independently readable Zarr parts and avoids a final in-memory concatenation.
     """
-    from ..project.catalog import project_adata
+    from ..project.catalog import export_project_partitions, project_adata
     from ..readwrite import safe_write_h5ad
 
+    if partitioned:
+        output_path = export_project_partitions(
+            project_dir,
+            canonical_reference,
+            output_path,
+            set_name=set_name,
+            modality=modality,
+            stage=stage,
+            start=start,
+            end=end,
+            layers=layers,
+            read_metrics=read_metrics,
+            max_memory_gb=max_memory_gb,
+            max_memory_percent=max_memory_percent,
+        )
+        logger.info("Wrote partitioned project materialization -> %s", output_path)
+        return output_path
     adata = project_adata(
         project_dir,
         canonical_reference,
@@ -127,6 +147,8 @@ def project_materialize(
         layers=layers,
         read_metrics=read_metrics,
         allow_large=allow_large,
+        max_memory_gb=max_memory_gb,
+        max_memory_percent=max_memory_percent,
     )
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
