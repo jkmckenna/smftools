@@ -40,6 +40,7 @@ One directory per sequencing run, holding the experiment config and everything
 │                                 # output_directory -> ./<date>_outputs/
 ├── <ref>.fasta                  # Reference FASTA used for this run
 ├── <date>_outputs/
+│   ├── full_summary.json          # Linked outcomes/logs from experiment full
 │   ├── raw_outputs/             # smftools experiment raw
 │   ├── preprocess_adata_outputs/  # smftools experiment preprocess
 │   ├── spatial_adata_outputs/     # smftools experiment spatial
@@ -49,6 +50,11 @@ One directory per sequencing run, holding the experiment config and everything
 │                                   # chimeric_adata_outputs/ if those stages run
 └── README.md                     # What this run is, who ran it, what it found
 ```
+
+Each of the four standard stage directories contains a `logs/` directory with a human log and a
+JSONL performance log for every invocation, including explicit skipped and failed outcomes. The
+top-level `full_summary.json` uses paths relative to `<date>_outputs/`, so those links remain valid
+when a completed experiment tree is moved.
 
 Every stage directory under `<date>_outputs/` is a sibling of the others — that's
 not just cosmetic, it's what lets a later stage's spine find an earlier stage's

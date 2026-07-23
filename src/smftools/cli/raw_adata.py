@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +33,7 @@ from smftools.constants import (
     REGION_CATALOG_FILENAMES,
     SPLIT_DIR,
 )
-from smftools.logging_utils import get_logger
+from smftools.logging_utils import get_logger, mark_stage_outcome, stage_logging_lifecycle
 
 logger = get_logger(__name__)
 
@@ -704,6 +705,7 @@ def _map_references_parallel(
         resolve_pool_budget,
         start_worker_watchdog,
     )
+    from ..perf_log import get_perf_logger
 
     cfg = worker_kwargs.get("cfg")
     n_items = len(items) if hasattr(items, "__len__") else max_workers
@@ -717,39 +719,55 @@ def _map_references_parallel(
         max_workers = min(max_workers, pool_budget.max_workers)
     else:
         pool_budget = None
+    perf = get_perf_logger()
+    pool_id = perf.next_pool_id() if perf is not None else None
+    if perf is not None:
+        perf.pool_start(
+            pool_id,
+            n_tasks=n_items,
+            max_workers=max_workers,
+            stage_component="raw_extraction",
+            pool_budget=pool_budget.as_dict() if pool_budget is not None else None,
+        )
     if max_workers <= 1:
         if pool_label:
             logger.info("[%s] running sequentially", pool_label)
-        for args in items:
-            if cfg is not None:
-                require_memory_headroom(
-                    cfg,
-                    operation_label=pool_label,
-                    estimator="raw_extraction_bucket_peak",
-                )
-            yield args, worker(*args, **worker_kwargs)
+        try:
+            for index, args in enumerate(items):
+                if cfg is not None:
+                    require_memory_headroom(
+                        cfg,
+                        operation_label=pool_label,
+                        estimator="raw_extraction_bucket_peak",
+                    )
+                started = time.monotonic()
+                result = worker(*args, **worker_kwargs)
+                if perf is not None:
+                    rows, bases = _raw_result_work_counts(result)
+                    perf.task_complete(
+                        pool_id,
+                        task_index=index,
+                        completed=index + 1,
+                        total=n_items,
+                        duration_seconds=time.monotonic() - started,
+                        rows=rows,
+                        bases=bases,
+                    )
+                yield args, result
+        finally:
+            if perf is not None:
+                perf.pool_end(pool_id, final_max_workers=1, n_retries=0)
         return
 
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
     from ..parallel_utils import configure_worker_threads
-    from ..perf_log import get_perf_logger
 
     per_worker_budget_bytes = (
         resolve_memory_budget_bytes(cfg) // max_workers if cfg is not None else 0
     )
-    perf = get_perf_logger()
-    pool_id = perf.next_pool_id() if perf is not None else None
     poll_interval = float(getattr(cfg, "perf_log_sample_interval_seconds", 2.0) or 2.0)
-    if perf is not None:
-        perf.pool_start(
-            pool_id,
-            n_tasks=len(items) if hasattr(items, "__len__") else None,
-            max_workers=max_workers,
-            stage_component="raw_extraction",
-            pool_budget=pool_budget.as_dict() if pool_budget is not None else None,
-        )
-    items_iter = iter(items)
+    items_iter = iter(enumerate(items))
     with ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=configure_worker_threads,
@@ -766,15 +784,23 @@ def _map_references_parallel(
         try:
             future_to_args = {}
             exhausted = object()
-            next_args = next(items_iter, exhausted)
-            while next_args is not exhausted and len(future_to_args) < max_workers:
-                future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
-                next_args = next(items_iter, exhausted)
-            while future_to_args or next_args is not exhausted:
+            next_item = next(items_iter, exhausted)
+            submitted_at = {}
+            completed = 0
+            while next_item is not exhausted and len(future_to_args) < max_workers:
+                index, args = next_item
+                future = pool.submit(worker, *args, **worker_kwargs)
+                future_to_args[future] = (index, args)
+                submitted_at[future] = time.monotonic()
+                next_item = next(items_iter, exhausted)
+            while future_to_args or next_item is not exhausted:
                 if not future_to_args:
                     if cfg is None:
-                        future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
-                        next_args = next(items_iter, exhausted)
+                        index, args = next_item
+                        future = pool.submit(worker, *args, **worker_kwargs)
+                        future_to_args[future] = (index, args)
+                        submitted_at[future] = time.monotonic()
+                        next_item = next(items_iter, exhausted)
                         continue
                     blocked_budget = resolve_pool_budget(
                         cfg,
@@ -784,8 +810,21 @@ def _map_references_parallel(
                     require_task_admission(blocked_budget, pool_label=pool_label)
                 done, _pending = wait(future_to_args, return_when=FIRST_COMPLETED)
                 for future in done:
-                    args = future_to_args.pop(future)
-                    yield args, future.result()
+                    index, args = future_to_args.pop(future)
+                    result = future.result()
+                    completed += 1
+                    if perf is not None:
+                        rows, bases = _raw_result_work_counts(result)
+                        perf.task_complete(
+                            pool_id,
+                            task_index=index,
+                            completed=completed,
+                            total=n_items,
+                            duration_seconds=time.monotonic() - submitted_at.pop(future),
+                            rows=rows,
+                            bases=bases,
+                        )
+                    yield args, result
                 if cfg is None:
                     target_in_flight = max_workers
                 else:
@@ -795,13 +834,28 @@ def _map_references_parallel(
                         estimator="raw_extraction_bucket_peak",
                     )
                     target_in_flight = min(max_workers, refill_budget.max_in_flight)
-                while next_args is not exhausted and len(future_to_args) < target_in_flight:
-                    future_to_args[pool.submit(worker, *next_args, **worker_kwargs)] = next_args
-                    next_args = next(items_iter, exhausted)
+                while next_item is not exhausted and len(future_to_args) < target_in_flight:
+                    index, args = next_item
+                    future = pool.submit(worker, *args, **worker_kwargs)
+                    future_to_args[future] = (index, args)
+                    submitted_at[future] = time.monotonic()
+                    next_item = next(items_iter, exhausted)
         finally:
             stop_watchdog()
             if perf is not None:
                 perf.pool_end(pool_id, final_max_workers=max_workers, n_retries=0)
+
+
+def _raw_result_work_counts(result) -> tuple[int, int]:
+    """Return rows and sequence bases from a raw extraction worker result."""
+    frame = result[0] if isinstance(result, tuple) and result else result
+    if not isinstance(frame, pd.DataFrame):
+        return 0, 0
+    rows = len(frame)
+    if "sequence" not in frame:
+        return rows, 0
+    bases = sum(len(value) for value in frame["sequence"] if hasattr(value, "__len__"))
+    return rows, bases
 
 
 def _read_ids_for_reference(aligned_bam: Path, record: str) -> list[str]:
@@ -1518,8 +1572,11 @@ def build_ragged_records_streaming(
     raise ValueError(f"build_ragged_records_streaming does not support modality {modality!r}")
 
 
+@stage_logging_lifecycle
 def raw_adata(config_path: str):
     """Run BAM preparation through section 6 and emit ragged raw artifacts."""
+    from ..logging_utils import setup_stage_logging
+    from ..perf_log import perf_substep
     from ..readwrite import safe_read_h5ad
     from .helpers import (
         get_adata_paths,
@@ -1532,6 +1589,7 @@ def raw_adata(config_path: str):
 
     cfg = load_experiment_config(config_path)
     raw_root = Path(cfg.output_directory) / RAW_DIR
+    setup_stage_logging(cfg, raw_root)
     cfg.informatics_outputs_path = raw_root
     cfg.bam_outputs_path = raw_root / BAM_OUTPUTS_DIR
     cfg.fasta_outputs_path = raw_root / FASTA_OUTPUTS_DIR
@@ -1544,6 +1602,7 @@ def raw_adata(config_path: str):
         if partitioned_stage_is_complete(cfg, "raw", required=required):
             spine, _ = safe_read_h5ad(paths.raw_spine)
             logger.info("Raw ragged store already exists: %s", paths.raw_spine)
+            mark_stage_outcome("skipped", reason="compatible raw stage is already complete")
             return spine, paths.raw_spine, cfg
         logger.warning(
             "Raw spine exists without a compatible complete stage record; re-running raw: %s",
@@ -1558,7 +1617,8 @@ def raw_adata(config_path: str):
     from ..informatics.sidecar_manifest import sidecar_manifest_path
 
     with stage_lifecycle(cfg, "raw") as lifecycle:
-        result = load_adata_core(cfg, paths, config_path=config_path, raw_only=True)
+        with perf_substep("raw_pipeline"):
+            result = load_adata_core(cfg, paths, config_path=config_path, raw_only=True)
         raw_root = Path(cfg.output_directory) / RAW_DIR
         outputs = {
             "spine": Path(result[1]),

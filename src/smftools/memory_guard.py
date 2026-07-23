@@ -28,6 +28,7 @@ import math
 import os
 import sys
 import threading
+import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -1049,14 +1050,16 @@ def run_tasks_parallel(
             logger.info("[%s] running %d task(s) sequentially", pool_label, len(task_args_list))
         try:
             results = []
-            for args in task_args_list:
+            for index, args in enumerate(task_args_list):
                 require_memory_headroom(
                     cfg,
                     estimated_memory_mb=per_item_memory_mb,
                     operation_label=pool_label,
                     estimator=estimator,
                 )
-                results.append(worker(*args))
+                task_started = time.monotonic()
+                result = worker(*args)
+                results.append(result)
                 if perf is not None:
                     measured_rss = process_tree_rss_bytes()
                     perf.sample(
@@ -1064,6 +1067,16 @@ def run_tasks_parallel(
                         tree_rss_gb=measured_rss / (1024**3),
                         predicted_peak_gb=round(predicted_peak_bytes / (1024**3), 3),
                         n_live_workers=0,
+                    )
+                    rows, bases = _task_work_counts(args, result)
+                    perf.task_complete(
+                        pool_id,
+                        task_index=index,
+                        completed=index + 1,
+                        total=len(task_args_list),
+                        duration_seconds=time.monotonic() - task_started,
+                        rows=rows,
+                        bases=bases,
                     )
             return results
         finally:
@@ -1083,6 +1096,8 @@ def run_tasks_parallel(
     poll_interval = float(getattr(cfg, "perf_log_sample_interval_seconds", 2.0) or 2.0)
     results: list = [None] * len(task_args_list)
     pending_indices = list(range(len(task_args_list)))
+    completed_count = 0
+    retry_counts = [0] * len(task_args_list)
     workers_for_attempt = max_workers
     n_retries = 0
     try:
@@ -1114,6 +1129,7 @@ def run_tasks_parallel(
 
                     queued_indices = deque(pending_indices)
                     future_to_index = {}
+                    submitted_at: dict = {}
                     broke = False
                     still_pending: list[int] = []
                     while queued_indices or future_to_index:
@@ -1129,14 +1145,32 @@ def run_tasks_parallel(
                         )
                         while queued_indices and len(future_to_index) < target_in_flight:
                             index = queued_indices.popleft()
-                            future_to_index[pool.submit(worker, *task_args_list[index])] = index
+                            future = pool.submit(worker, *task_args_list[index])
+                            future_to_index[future] = index
+                            submitted_at[future] = time.monotonic()
                         if not future_to_index:
                             require_task_admission(refill_budget, pool_label=pool_label)
                         done, _ = wait(future_to_index, return_when=FIRST_COMPLETED)
                         for future in done:
                             index = future_to_index.pop(future)
                             try:
-                                results[index] = future.result()
+                                result = future.result()
+                                results[index] = result
+                                completed_count += 1
+                                if perf is not None:
+                                    rows, bases = _task_work_counts(task_args_list[index], result)
+                                    perf.task_complete(
+                                        pool_id,
+                                        task_index=index,
+                                        completed=completed_count,
+                                        total=len(task_args_list),
+                                        duration_seconds=(
+                                            time.monotonic() - submitted_at.pop(future)
+                                        ),
+                                        retry_count=retry_counts[index],
+                                        rows=rows,
+                                        bases=bases,
+                                    )
                             except BrokenProcessPool:
                                 broke = True
                                 still_pending.append(index)
@@ -1152,6 +1186,8 @@ def run_tasks_parallel(
                 finally:
                     stop_watchdog()
             if pending_indices:
+                for index in pending_indices:
+                    retry_counts[index] += 1
                 if workers_for_attempt <= 1:
                     raise RuntimeError(
                         f"{len(pending_indices)} task(s) still failing after retrying down to a "
@@ -1184,6 +1220,32 @@ def run_tasks_parallel(
                 predicted_peak_gb=round(predicted_peak_bytes / (1024**3), 3),
             )
     return results
+
+
+def _task_work_counts(task_args: tuple, result: Any) -> tuple[int, int]:
+    """Extract portable row/base progress counts from common stage task records."""
+    rows = 0
+    positions = 0
+    if isinstance(result, Mapping):
+        rows = int(result.get("n_reads", result.get("n_rows", 0)) or 0)
+        positions = int(result.get("n_positions", 0) or 0)
+    for value in task_args:
+        if rows <= 0:
+            candidate = getattr(value, "n_reads", None)
+            if candidate is not None:
+                rows = int(candidate)
+            else:
+                read_ids = getattr(value, "selected_read_ids", None)
+                if read_ids is None:
+                    read_ids = getattr(value, "read_ids", None)
+                if read_ids is not None:
+                    rows = len(read_ids)
+        if positions <= 0:
+            start = getattr(value, "core_start", None)
+            end = getattr(value, "core_end", None)
+            if start is not None and end is not None:
+                positions = max(0, int(end) - int(start))
+    return max(0, rows), max(0, rows * positions)
 
 
 def _worker_decision_inputs(cfg, n_items: int, *, per_item_memory_mb: float | None = None) -> dict:

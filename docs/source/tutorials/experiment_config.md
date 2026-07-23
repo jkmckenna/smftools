@@ -132,7 +132,9 @@ utilization and the number of threads currently active elsewhere on a shared mac
 intentionally not used as hard limits because they are transient. Currently available memory is
 included in the startup envelope. The resolved values and enforcement mode are written to stage
 and performance logs. Linux reports whether a cgroup-v2 cap was activated; macOS and Windows
-report worker-watchdog capability explicitly.
+report worker-watchdog capability explicitly. Performance logging samples the complete process
+tree independently of that enforcement mechanism, so sequential work and every supported OS emit
+current/peak RSS and cumulative OS read/write byte counters as well as pool/task progress.
 
 ## Tips
 

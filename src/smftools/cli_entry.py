@@ -208,7 +208,20 @@ def full(config_path):
     default=None,
     help="Field separator: default auto-detect (.tsv -> '\\t', .csv -> ',', others treated as TXT).",
 )
-def batch(task, config_table: Path, column: str, sep: str | None):
+@click.option(
+    "--summary",
+    "summary_path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Machine-readable result path (default: beside CONFIG_TABLE).",
+)
+def batch(
+    task,
+    config_table: Path,
+    column: str,
+    sep: str | None,
+    summary_path: Path | None,
+):
     """
     Run a TASK (raw, load, preprocess, spatial, variant, hmm, latent, full) on multiple CONFIG_PATHs
     listed in a CSV/TSV or plain TXT file.
@@ -345,21 +358,24 @@ def batch(task, config_table: Path, column: str, sep: str | None):
 
     click.echo(f"Running task '{task}' on {len(config_paths)} config paths from {config_table}")
 
-    # ----------------------------
-    # Loop over paths
-    # ----------------------------
-    for i, cfg in enumerate(config_paths, start=1):
-        if not cfg.exists():
-            click.echo(f"[{i}/{len(config_paths)}] SKIP (missing): {cfg}")
-            continue
+    if summary_path is None:
+        summary_path = config_table.with_name(f"{config_table.stem}.{task}.batch-summary.json")
 
-        click.echo(f"[{i}/{len(config_paths)}] {task} → {cfg}")
+    from .cli.batch import run_batch
 
-        try:
-            func(str(cfg))  # underlying functions take a string path
-        except Exception as e:
-            click.echo(f"  ERROR on {cfg}: {e}")
-
+    summary = run_batch(
+        task,
+        config_paths,
+        func,
+        config_table=config_table,
+        summary_path=summary_path,
+        emit=click.echo,
+    )
+    click.echo(f"Batch summary: {summary_path}")
+    if summary["failed"]:
+        raise click.ClickException(
+            f"Batch completed with {summary['failed']} failure(s) out of {summary['total']} configs"
+        )
     click.echo("Batch processing complete.")
 
 

@@ -10,11 +10,13 @@ from smftools.constants import (
     PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
     SPATIAL_DIR,
 )
-from smftools.logging_utils import get_logger
+from smftools.logging_utils import get_logger, mark_stage_outcome, stage_logging_lifecycle
+from smftools.perf_log import measured_substep
 
 logger = get_logger(__name__)
 
 
+@stage_logging_lifecycle
 def spatial_adata(
     config_path: str,
 ) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
@@ -82,6 +84,9 @@ def spatial_adata(
                 "Partitioned spatial spine found: %s\nSkipping smftools spatial",
                 partitioned_spatial_path,
             )
+            mark_stage_outcome(
+                "skipped", reason="compatible partitioned spatial stage is already complete"
+            )
             return None, partitioned_spatial_path
         if (
             execution_mode != "legacy"
@@ -96,6 +101,7 @@ def spatial_adata(
         # If spatial exists, we consider spatial analyses already done.
         if execution_mode != "partitioned" and spatial_path.exists():
             logger.info(f"Spatial AnnData found: {spatial_path}\nSkipping smftools spatial")
+            mark_stage_outcome("skipped", reason="legacy spatial output already exists")
             return None, spatial_path
 
     use_partitioned = execution_mode == "partitioned" or (
@@ -108,14 +114,16 @@ def spatial_adata(
             raise FileNotFoundError(
                 "partitioned spatial analysis requires preprocess_adata_outputs/spine.h5ad"
             )
+        from ..perf_log import perf_substep
         from ..tools.partitioned_spatial import execute_partitioned_spatial
 
         with stage_lifecycle(cfg, "spatial", partitioned_source_path) as lifecycle:
-            outputs = execute_partitioned_spatial(
-                partitioned_source_path,
-                cfg,
-                Path(cfg.output_directory) / SPATIAL_DIR,
-            )
+            with perf_substep("partitioned_spatial"):
+                outputs = execute_partitioned_spatial(
+                    partitioned_source_path,
+                    cfg,
+                    Path(cfg.output_directory) / SPATIAL_DIR,
+                )
             publish_stage_outputs(
                 lifecycle,
                 outputs,
@@ -131,6 +139,7 @@ def spatial_adata(
         logger.warning(
             "No suitable AnnData found for spatial analyses (need at least preprocessed)."
         )
+        mark_stage_outcome("failed", reason="no preprocessed AnnData available")
         return None, None
 
     start_adata, _ = safe_read_h5ad(source_path)
@@ -148,6 +157,7 @@ def spatial_adata(
     return adata_spatial, spatial_path
 
 
+@measured_substep("legacy_spatial")
 def spatial_adata_core(
     adata: ad.AnnData,
     cfg,

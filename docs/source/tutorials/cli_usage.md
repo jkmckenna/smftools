@@ -344,5 +344,15 @@ You can override the column name or delimiter if needed:
 smftools experiment batch spatial /path/to/configs.tsv --column my_config --sep $'\t'
 ```
 
-Each path is validated; missing configs are skipped with a message, while valid configs run the
-requested task in sequence.
+Each path is validated and valid configs run in sequence. The command writes a JSON summary beside
+the input list by default (for example, `configs.spatial.batch-summary.json`); use `--summary` to
+choose another path. Every config is reported as `completed`, `skipped`, or `failed`, with its
+exception, output directory, and discovered human/performance logs. Missing configs and stage
+failures are recorded, remaining configs still run, and the command exits nonzero if any failed.
+
+Raw, preprocess, spatial, and HMM each write lifecycle-scoped human and JSONL performance logs in
+their stage's `logs/` directory. Performance records include completion-order task progress,
+throughput, ETA, task duration/retries, processed rows/bases, cumulative OS read/write bytes, and
+current/peak process-tree RSS; named substep records time sequential parent work such as reducers
+and stage-core writes. `smftools experiment full` also writes `full_summary.json` at the experiment
+output root, linking all four stage logs and their terminal outcomes.

@@ -16,11 +16,13 @@ from smftools.constants import (
     READ_SPAN_MASK,
     SEQUENCE_INTEGER_ENCODING,
 )
-from smftools.logging_utils import get_logger
+from smftools.logging_utils import get_logger, mark_stage_outcome, stage_logging_lifecycle
+from smftools.perf_log import measured_substep
 
 logger = get_logger(__name__)
 
 
+@stage_logging_lifecycle
 def preprocess_adata(
     config_path: str,
 ) -> Tuple[Optional[Path], Optional[Path]]:
@@ -97,13 +99,15 @@ def preprocess_adata(
         return bool(dict(plans))
 
     def _run_partitioned(source_path: Path):
+        from ..perf_log import perf_substep
         from ..preprocessing.partitioned_executor import (
             execute_partitioned_preprocessing,
         )
 
         output_dir = Path(cfg.output_directory) / PREPROCESS_DIR
         with stage_lifecycle(cfg, "preprocess", source_path) as lifecycle:
-            outputs = execute_partitioned_preprocessing(source_path, cfg, output_dir)
+            with perf_substep("partitioned_preprocess"):
+                outputs = execute_partitioned_preprocessing(source_path, cfg, output_dir)
             publish_stage_outputs(
                 lifecycle,
                 outputs,
@@ -145,6 +149,7 @@ def preprocess_adata(
             adata = _load(source_path)
         else:
             logger.error("Cannot redo preprocessing: no AnnData available at any stage.")
+            mark_stage_outcome("failed", reason="no AnnData available for preprocessing")
             return (None, None)
 
         return preprocess_adata_core(
@@ -179,6 +184,7 @@ def preprocess_adata(
                 "Cannot redo duplicate detection: no compatible AnnData available "
                 "(need at least raw or preprocessed)."
             )
+            mark_stage_outcome("failed", reason="no AnnData available for duplicate detection")
             return (None, None)
 
         return preprocess_adata_core(
@@ -210,6 +216,9 @@ def preprocess_adata(
                 "Skipping preprocessing. Partitioned preprocessing spine found: %s",
                 partitioned_pp_path,
             )
+            mark_stage_outcome(
+                "skipped", reason="compatible partitioned preprocess stage is already complete"
+            )
             return partitioned_pp_path, None
 
     # If pp_dedup exists, just return paths (no recomputation)
@@ -217,6 +226,7 @@ def preprocess_adata(
         logger.info(
             f"Skipping preprocessing. Preprocessed deduplicated AnnData found: {pp_dedup_path}"
         )
+        mark_stage_outcome("skipped", reason="legacy preprocess output already exists")
         return (pp_path, pp_dedup_path)
 
     # If pp exists but pp_dedup does not, load pp and run core
@@ -248,9 +258,11 @@ def preprocess_adata(
         )
 
     logger.error("No AnnData available at any stage for preprocessing.")
+    mark_stage_outcome("failed", reason="no AnnData available for preprocessing")
     return (None, None)
 
 
+@measured_substep("legacy_preprocess")
 def preprocess_adata_core(
     adata: ad.AnnData,
     cfg,

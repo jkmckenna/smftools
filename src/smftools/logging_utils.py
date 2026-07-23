@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from typing import Optional, Union
 
@@ -90,7 +91,7 @@ def setup_stage_logging(cfg, stage_directory: Union[str, Path]) -> Optional[Path
 
     logging_directory = stage_directory / STAGE_LOGGING_SUBDIR
     now = datetime.now()
-    stem = f"{now.strftime('%y%m%d')}_{now.strftime('%H%M%S')}"
+    stem = now.strftime("%y%m%d_%H%M%S_%f")
 
     log_file: Optional[Path] = None
     if getattr(cfg, "emit_log_file", True):
@@ -103,6 +104,52 @@ def setup_stage_logging(cfg, stage_directory: Union[str, Path]) -> Optional[Path
     _setup_stage_perf_logging(cfg, logging_directory, stem, stage_directory.name)
     _log_resource_envelope(cfg)
     return log_file
+
+
+def stage_logging_lifecycle(function):
+    """Close the logger configured by a stage wrapper on every exit path."""
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        try:
+            result = function(*args, **kwargs)
+        except BaseException as exc:
+            close_stage_logging(
+                outcome="failed",
+                exception_type=type(exc).__name__,
+                exception=str(exc),
+            )
+            raise
+        close_stage_logging()
+        return result
+
+    return wrapped
+
+
+def mark_stage_outcome(outcome: str, **fields) -> None:
+    """Set the semantic outcome for the active stage performance log."""
+    from .perf_log import get_perf_logger
+
+    logger = get_perf_logger()
+    if logger is not None:
+        logger.mark_outcome(outcome, **fields)
+
+
+def close_stage_logging(*, outcome: str | None = None, **fields) -> None:
+    """Close and clear the active human/performance stage logs immediately."""
+    from .perf_log import get_perf_logger, set_perf_logger
+
+    logger = get_perf_logger()
+    if logger is not None:
+        try:
+            logger.close(outcome=outcome, **fields)
+        finally:
+            set_perf_logger(None)
+    package_logger = logging.getLogger("smftools")
+    for handler in list(package_logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            package_logger.removeHandler(handler)
+            handler.close()
 
 
 def _log_resource_envelope(cfg) -> None:

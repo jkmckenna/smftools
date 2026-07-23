@@ -288,6 +288,11 @@ def test_run_tasks_parallel_emits_perf_pool_events(tmp_path, monkeypatch) -> Non
     assert start["pool_budget"]["estimator_version"] == "1"
     assert start["pool_budget"]["max_in_flight"] == start["max_workers"]
     assert start["pool_budget"]["process_tree_rss_bytes"] > 0
+    progress = [record for record in records if record["event"] == "task_progress"]
+    assert [record["completed"] for record in progress] == [1, 2, 3, 4]
+    assert {record["task_index"] for record in progress} == {0, 1, 2, 3}
+    assert all(record["total"] == 4 for record in progress)
+    assert all("bytes_read" in record and "bytes_written" in record for record in progress)
     summary = summarize_perf_logs(tmp_path)
     assert len(summary) == 1 and summary[0]["stage"] == "preprocess"
     assert summary[0]["max_predicted_peak_gb"] > 0
