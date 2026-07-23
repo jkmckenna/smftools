@@ -297,6 +297,12 @@ def resolve_plot_region_plans(
         coverage = [
             (int(row.core_start), int(row.core_end)) for row in contributing.itertuples(index=False)
         ]
+        if not coverage:
+            # No task ever touched this reference/window (e.g. a reference with
+            # zero passing reads in this experiment) -- nothing to stitch, so skip
+            # it rather than treating "never analyzed" the same as "partially
+            # analyzed", which is the actual data-integrity signal below.
+            continue
         gaps = _coverage_gaps(start, end, coverage)
         if gaps and not allow_gaps:
             formatted = ", ".join(f"{gap_start}-{gap_end}" for gap_start, gap_end in gaps)
