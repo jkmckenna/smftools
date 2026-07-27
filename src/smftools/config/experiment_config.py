@@ -2477,6 +2477,7 @@ class ExperimentConfig:
         )
 
         instance.validate_resources()
+        instance.validate_latent()
         report = {
             "modality": modality,
             "defaults_source_chain": defaults_source_chain,
@@ -2550,6 +2551,67 @@ class ExperimentConfig:
             )
         return errors
 
+    def validate_latent(self, *, raise_on_error: bool = True) -> List[str]:
+        """Validate latent execution mode and enabled representation settings."""
+        errors: List[str] = []
+        execution_mode = str(self.latent_execution_mode).strip().lower()
+        if execution_mode not in {"auto", "legacy", "partitioned"}:
+            errors.append("latent_execution_mode must be auto, legacy, or partitioned.")
+
+        any_algorithm_enabled = (
+            self.latent_run_pca_umap or self.latent_run_nmf or self.latent_run_cp
+        )
+        if any_algorithm_enabled:
+            if int(self.latent_min_reads) < 2:
+                errors.append("latent_min_reads must be at least 2.")
+            if int(self.latent_max_fit_reads) < int(self.latent_min_reads):
+                errors.append(
+                    "latent_max_fit_reads must be greater than or equal to latent_min_reads."
+                )
+
+        if self.latent_run_pca_umap:
+            if int(self.latent_n_pcs) < 1:
+                errors.append(
+                    "latent_n_pcs must be at least 1 when latent_run_pca_umap is enabled."
+                )
+            if int(self.latent_knn_neighbors) < 2:
+                errors.append(
+                    "latent_knn_neighbors must be at least 2 when latent_run_pca_umap is enabled."
+                )
+            if not float(self.latent_leiden_resolution) > 0.0:
+                errors.append(
+                    "latent_leiden_resolution must be positive when latent_run_pca_umap is enabled."
+                )
+
+        if self.latent_run_nmf:
+            if int(self.latent_nmf_components) < 1:
+                errors.append(
+                    "latent_nmf_components must be at least 1 when latent_run_nmf is enabled."
+                )
+            if int(self.latent_nmf_max_iter) < 1:
+                errors.append(
+                    "latent_nmf_max_iter must be at least 1 when latent_run_nmf is enabled."
+                )
+
+        if (self.latent_run_pca_umap or self.latent_run_nmf) and (
+            int(self.latent_transform_chunk_reads) < 1
+        ):
+            errors.append(
+                "latent_transform_chunk_reads must be at least 1 when PCA/UMAP or NMF is enabled."
+            )
+
+        if self.latent_run_cp:
+            if int(self.latent_cp_rank) < 1:
+                errors.append("latent_cp_rank must be at least 1 when latent_run_cp is enabled.")
+            if int(self.latent_cp_iterations) < 1:
+                errors.append(
+                    "latent_cp_iterations must be at least 1 when latent_run_cp is enabled."
+                )
+
+        if raise_on_error and errors:
+            raise ValueError("ExperimentConfig latent validation failed:\n  " + "\n  ".join(errors))
+        return errors
+
     @staticmethod
     def _validate_hmm_features_structure(hfs: dict) -> List[str]:
         errs = []
@@ -2585,6 +2647,7 @@ class ExperimentConfig:
         """
         errors: List[str] = []
         errors.extend(self.validate_resources(raise_on_error=False))
+        errors.extend(self.validate_latent(raise_on_error=False))
         if not self.input_data_path:
             errors.append("input_data_path is required but missing.")
         if not self.output_directory:

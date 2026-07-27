@@ -15,6 +15,86 @@ if TYPE_CHECKING:
     from .helpers import AdataPaths
 
 
+_PARTITIONED_LATENT_SOURCE_ATTRS = {
+    "preprocess": "preprocess_spine",
+    "spatial": "spatial_spine",
+    "hmm": "hmm_spine",
+}
+_PARTITIONED_LATENT_SOURCE_ALIASES = {
+    "pp": "preprocess",
+    "pp_dedup": "preprocess",
+    "preprocess_dedup": "preprocess",
+}
+_PARTITIONED_LATENT_SOURCE_PRIORITY = ("hmm", "spatial", "preprocess")
+
+
+def _resolve_latent_source(
+    cfg,
+    paths: "AdataPaths",
+) -> tuple[Optional[Path], str, Optional[str]]:
+    """Resolve one latent input artifact according to the configured execution mode.
+
+    Returns:
+        A tuple containing the source path, source kind (``partitioned`` or
+        ``legacy``), and canonical source stage. The path and stage are ``None``
+        only when legacy fallback finds no suitable monolithic artifact.
+
+    Raises:
+        FileNotFoundError: If a requested source artifact does not exist, or no
+            partitioned source exists.
+        ValueError: If the execution mode or requested partitioned stage is not
+            supported.
+    """
+    from .helpers import STAGE_MAP, resolve_adata_stage
+
+    execution_mode = str(getattr(cfg, "latent_execution_mode", "auto")).strip().lower()
+    if execution_mode not in {"auto", "legacy", "partitioned"}:
+        raise ValueError("latent_execution_mode must be auto, legacy, or partitioned")
+
+    requested_stage = getattr(cfg, "from_adata_stage", None)
+    if requested_stage is not None:
+        requested_stage = str(requested_stage).strip().lower()
+
+    if execution_mode == "legacy":
+        source_path, source_stage = resolve_adata_stage(cfg, paths, min_stage="pp")
+        if source_path is None and requested_stage is not None:
+            path_attr = STAGE_MAP.get(requested_stage)
+            requested_path = getattr(paths, path_attr) if path_attr is not None else None
+            raise FileNotFoundError(
+                f"Requested legacy latent source stage '{requested_stage}' "
+                f"was not found at {requested_path}."
+            )
+        return source_path, "legacy", source_stage
+
+    if requested_stage is not None:
+        canonical_stage = _PARTITIONED_LATENT_SOURCE_ALIASES.get(requested_stage, requested_stage)
+        path_attr = _PARTITIONED_LATENT_SOURCE_ATTRS.get(canonical_stage)
+        if path_attr is None:
+            allowed = ", ".join(_PARTITIONED_LATENT_SOURCE_ATTRS)
+            raise ValueError(
+                f"from_adata_stage='{requested_stage}' is not supported for partitioned "
+                f"latent analysis. Allowed stages: {allowed}."
+            )
+        source_path = getattr(paths, path_attr)
+        if source_path is None or not Path(source_path).exists():
+            raise FileNotFoundError(
+                f"Requested partitioned latent source stage '{canonical_stage}' "
+                f"was not found at {source_path}."
+            )
+        return Path(source_path), "partitioned", canonical_stage
+
+    for canonical_stage in _PARTITIONED_LATENT_SOURCE_PRIORITY:
+        source_path = getattr(paths, _PARTITIONED_LATENT_SOURCE_ATTRS[canonical_stage])
+        if source_path is not None and Path(source_path).exists():
+            return Path(source_path), "partitioned", canonical_stage
+
+    checked = ", ".join(_PARTITIONED_LATENT_SOURCE_PRIORITY)
+    raise FileNotFoundError(
+        "Partitioned latent analysis requires an available partitioned source spine; "
+        f"checked stages: {checked}."
+    )
+
+
 def _build_mod_sites_var_filter_mask(
     adata: ad.AnnData,
     references: Sequence[str],
@@ -139,7 +219,7 @@ def latent_adata(
     """
     from ..logging_utils import setup_stage_logging
     from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
+    from .helpers import get_adata_paths, load_experiment_config
 
     # 1) Ensure config + basic paths via load_adata
     cfg = load_experiment_config(config_path)
@@ -151,7 +231,7 @@ def latent_adata(
 
     latent_path = paths.latent
     partitioned_latent_path = paths.latent_spine
-    execution_mode = str(getattr(cfg, "latent_execution_mode", "auto")).lower()
+    execution_mode = str(getattr(cfg, "latent_execution_mode", "auto")).strip().lower()
     if execution_mode not in {"auto", "legacy", "partitioned"}:
         raise ValueError("latent_execution_mode must be auto, legacy, or partitioned")
 
@@ -167,32 +247,22 @@ def latent_adata(
                 partitioned_latent_path,
             )
             return None, partitioned_latent_path
-        if execution_mode != "partitioned" and latent_path.exists():
+        if execution_mode == "legacy" and latent_path.exists():
             logger.info(f"Latent AnnData found: {latent_path}\nSkipping smftools latent")
             return None, latent_path
 
-    partitioned_source = None
-    if getattr(cfg, "from_adata_stage", None) is None and execution_mode != "legacy":
-        for candidate in (paths.hmm_spine, paths.spatial_spine, paths.preprocess_spine):
-            if candidate is not None and Path(candidate).exists():
-                partitioned_source = Path(candidate)
-                break
-    if execution_mode == "partitioned" and partitioned_source is None:
-        raise FileNotFoundError(
-            "partitioned latent analysis requires an HMM, spatial, or preprocessing spine"
-        )
-    if partitioned_source is not None:
+    source_path, source_kind, _source_stage = _resolve_latent_source(cfg, paths)
+    if source_kind == "partitioned":
         from ..tools.partitioned_latent import execute_partitioned_latent
 
+        assert source_path is not None
         outputs = execute_partitioned_latent(
-            partitioned_source,
+            source_path,
             cfg,
             Path(cfg.output_directory) / LATENT_DIR,
         )
         return None, outputs["spine"]
 
-    # Decide which AnnData to use as the *starting point* for latent analyses
-    source_path, _stage = resolve_adata_stage(cfg, paths, min_stage="pp")
     if source_path is None:
         logger.warning(
             "No suitable AnnData found for latent analyses (need at least preprocessed)."

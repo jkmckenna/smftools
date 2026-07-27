@@ -5,10 +5,11 @@ from types import SimpleNamespace
 import anndata as ad
 import numpy as np
 import pandas as pd
+import pytest
 from click.testing import CliRunner
 
 from smftools.cli import helpers
-from smftools.cli.latent_adata import latent_adata
+from smftools.cli.latent_adata import _resolve_latent_source, latent_adata
 from smftools.cli_entry import cli
 from smftools.constants import REFERENCE_STRAND
 from smftools.informatics.raw_store import write_raw_store
@@ -72,6 +73,149 @@ def test_latent_cli_partitioned_mode_ignores_legacy_latent_file(tmp_path, monkey
     _, output_path = latent_adata("config.csv")
 
     assert output_path == paths.latent_spine
+
+
+def test_latent_cli_auto_mode_ignores_legacy_latent_file(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    paths = helpers.get_adata_paths(cfg)
+    paths.preprocess_spine.parent.mkdir(parents=True)
+    paths.preprocess_spine.touch()
+    paths.latent.parent.mkdir(parents=True)
+    paths.latent.touch()
+    captured = {}
+
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+
+    def fake_execute(source, passed_cfg, output):
+        captured.update(source=source, cfg=passed_cfg, output=output)
+        return {"spine": Path(output) / "spine.h5ad"}
+
+    monkeypatch.setattr(partitioned_latent, "execute_partitioned_latent", fake_execute)
+
+    _, output_path = latent_adata("config.csv")
+
+    assert captured["source"] == paths.preprocess_spine
+    assert output_path == paths.latent_spine
+
+
+@pytest.mark.parametrize(
+    ("stage", "path_attr"),
+    [
+        ("preprocess", "preprocess_spine"),
+        ("spatial", "spatial_spine"),
+        ("hmm", "hmm_spine"),
+    ],
+)
+def test_partitioned_latent_explicit_stage_selects_named_spine(tmp_path, stage, path_attr):
+    cfg = _cfg(tmp_path, mode="partitioned")
+    cfg.from_adata_stage = stage
+    paths = helpers.get_adata_paths(cfg)
+    source = getattr(paths, path_attr)
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.touch()
+
+    resolved, source_kind, resolved_stage = _resolve_latent_source(cfg, paths)
+
+    assert resolved == source
+    assert source_kind == "partitioned"
+    assert resolved_stage == stage
+
+
+def test_auto_latent_explicit_stage_precedes_partitioned_priority(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.from_adata_stage = "spatial"
+    paths = helpers.get_adata_paths(cfg)
+    for source in (paths.spatial_spine, paths.hmm_spine):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.touch()
+
+    resolved, source_kind, resolved_stage = _resolve_latent_source(cfg, paths)
+
+    assert resolved == paths.spatial_spine
+    assert source_kind == "partitioned"
+    assert resolved_stage == "spatial"
+
+
+def test_partitioned_latent_missing_requested_stage_is_precise(tmp_path):
+    cfg = _cfg(tmp_path, mode="partitioned")
+    cfg.from_adata_stage = "hmm"
+    paths = helpers.get_adata_paths(cfg)
+
+    with pytest.raises(FileNotFoundError, match=r"stage 'hmm'.*hmm_adata_outputs/spine.h5ad"):
+        _resolve_latent_source(cfg, paths)
+
+
+def test_partitioned_latent_rejects_unsupported_requested_stage(tmp_path):
+    cfg = _cfg(tmp_path, mode="partitioned")
+    cfg.from_adata_stage = "variant"
+    paths = helpers.get_adata_paths(cfg)
+
+    with pytest.raises(
+        ValueError,
+        match="Allowed stages: preprocess, spatial, hmm",
+    ):
+        _resolve_latent_source(cfg, paths)
+
+
+def test_partitioned_latent_never_falls_back_to_legacy_source(tmp_path):
+    cfg = _cfg(tmp_path, mode="partitioned")
+    paths = helpers.get_adata_paths(cfg)
+    paths.hmm.parent.mkdir(parents=True, exist_ok=True)
+    paths.hmm.touch()
+
+    with pytest.raises(FileNotFoundError, match="partitioned source spine"):
+        _resolve_latent_source(cfg, paths)
+
+
+def test_auto_latent_never_falls_back_to_legacy_source(tmp_path):
+    cfg = _cfg(tmp_path)
+    paths = helpers.get_adata_paths(cfg)
+    paths.hmm.parent.mkdir(parents=True, exist_ok=True)
+    paths.hmm.touch()
+
+    with pytest.raises(FileNotFoundError, match="partitioned source spine"):
+        _resolve_latent_source(cfg, paths)
+
+
+def test_legacy_latent_never_selects_partitioned_spine(tmp_path):
+    cfg = _cfg(tmp_path, mode="legacy")
+    paths = helpers.get_adata_paths(cfg)
+    paths.hmm_spine.parent.mkdir(parents=True, exist_ok=True)
+    paths.hmm_spine.touch()
+
+    resolved, source_kind, resolved_stage = _resolve_latent_source(cfg, paths)
+
+    assert resolved is None
+    assert source_kind == "legacy"
+    assert resolved_stage is None
+
+
+def test_legacy_latent_explicit_stage_selects_monolithic_artifact(tmp_path):
+    cfg = _cfg(tmp_path, mode="legacy")
+    cfg.from_adata_stage = "hmm"
+    paths = helpers.get_adata_paths(cfg)
+    paths.hmm.parent.mkdir(parents=True, exist_ok=True)
+    paths.hmm.touch()
+    paths.hmm_spine.parent.mkdir(parents=True, exist_ok=True)
+    paths.hmm_spine.touch()
+
+    resolved, source_kind, resolved_stage = _resolve_latent_source(cfg, paths)
+
+    assert resolved == paths.hmm
+    assert source_kind == "legacy"
+    assert resolved_stage == "hmm"
+
+
+def test_legacy_latent_missing_requested_stage_is_precise(tmp_path):
+    cfg = _cfg(tmp_path, mode="legacy")
+    cfg.from_adata_stage = "spatial"
+    paths = helpers.get_adata_paths(cfg)
+
+    with pytest.raises(
+        FileNotFoundError,
+        match=r"stage 'spatial'.*spatial_adata_outputs/.+_spatial.h5ad.gz",
+    ):
+        _resolve_latent_source(cfg, paths)
 
 
 def test_analysis_units_are_reference_or_core_local():
