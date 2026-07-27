@@ -23,6 +23,20 @@ from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+LATENT_STAGE_GUIDANCE = (
+    "stage='latent' cannot be used for generic genomic project materialization because "
+    "latent task owners have independent coordinate systems. Use "
+    "ProjectCatalog.iter_latent_parts() or `smftools project export-latent` for "
+    "experiment-local latent results, or use the project embedding API/command for one "
+    "shared project coordinate system."
+)
+
+
+def reject_generic_latent_stage(stage: str | None) -> None:
+    """Reject latent task coordinates at the shared genomic-materialization boundary."""
+    if str(stage).strip().lower() == "latent":
+        raise ValueError(LATENT_STAGE_GUIDANCE)
+
 
 def _load_duckdb():
     try:
@@ -205,6 +219,31 @@ class ProjectCatalog:
             return pd.DataFrame()
         return pd.concat(frames, ignore_index=True, sort=False)
 
+    def iter_latent_parts(
+        self,
+        *,
+        canonical_reference=None,
+        experiments=None,
+        set_name=None,
+        molecule_uids=None,
+        analysis_core_ids=None,
+        representations=None,
+        labels=None,
+    ):
+        """Yield projected task-local latent results without pooling owners."""
+        from .latent_store import iter_latent_parts
+
+        return iter_latent_parts(
+            self,
+            canonical_reference=canonical_reference,
+            experiments=experiments,
+            set_name=set_name,
+            molecule_uids=molecule_uids,
+            analysis_core_ids=analysis_core_ids,
+            representations=representations,
+            labels=labels,
+        )
+
     def query(self, sql: str) -> pd.DataFrame:
         """Run SQL over the ``refs`` (harmonized references) and ``intervals`` tables.
 
@@ -249,6 +288,7 @@ def resolve_set_members(
     """
     from .registry import resolve_experiment_spine
 
+    reject_generic_latent_stage(stage)
     selection = catalog.select(
         canonical_reference=canonical_reference,
         modality=modality,
@@ -498,6 +538,7 @@ def estimate_project_selection(
 ) -> ProjectSelectionEstimate:
     """Estimate selected arrays and metadata before any AnnData part is allocated."""
 
+    reject_generic_latent_stage(stage)
     catalog = ProjectCatalog.open(project_dir)
     members = resolve_set_members(
         catalog,
@@ -600,6 +641,7 @@ def project_adata(
     from ..memory_guard import require_memory_headroom
     from .set_store import iter_set_parts
 
+    reject_generic_latent_stage(stage)
     estimate = estimate_project_selection(
         project_dir,
         canonical_reference,
@@ -685,6 +727,7 @@ def export_project_partitions(
     from ..readwrite import atomic_write_json, safe_write_zarr
     from .set_store import normalize_part, slug
 
+    reject_generic_latent_stage(stage)
     output_dir = Path(output_dir)
     if output_dir.exists():
         raise FileExistsError(f"partitioned project output already exists: {output_dir}")
