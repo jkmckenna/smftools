@@ -203,46 +203,46 @@ def plot_read_score_heatmap(
     score, in the same molecule x position layout used by the project's
     dimensionality-reduction clustermaps.
 
-    Parameters
-    ----------
-    matrix : (n_reads, n_positions) input feature matrix (e.g. C_site_binary),
-        aligned row-for-row with ``y_true``/``y_score``/``y_logit``.
-    coords : optional 1-D array of x-axis tick coordinates, length ``n_positions``.
-    position_scores : optional (n_reads, n_positions) per-read, per-position
-        attribution/contribution matrix (e.g. SHAP values, NB log-odds
-        contributions, or CNN integrated-gradients attributions), aligned
-        row-for-row and column-for-column with ``matrix``. When given, a
-        second heatmap panel is drawn to the right of the True-label strip,
-        with its own diverging colorbar (centered at 0).
-    position_score_range : optional explicit (vmin, vmax) for the diverging
-        colorbar; default is symmetric around the 99th percentile absolute
-        value of ``position_scores``.
-    sort_by : ``"logit"`` (default) sorts rows by ascending classifier logit —
-        unaffected by ``cluster_labels``. ``"cluster"`` instead
-        hierarchically clusters rows on ``position_scores``: with
-        ``cluster_labels`` given, rows are first binned by Leiden cluster,
-        then by true label within each cluster, then hierarchically
-        clustered within each (cluster, label) leaf (via
-        ``smftools.analysis.compute.clustering.cluster_row_order_by_labels``);
-        without ``cluster_labels``, plain hierarchical clustering with no
-        binning (``cluster_block_order``). Requires ``position_scores``.
-    mean_smooth_window : optional rolling-average window (in positions) applied
-        to the per-label mean lines above the heatmaps. ``None`` (default)
-        plots the raw per-position mean; pass e.g. ``3`` for a 3-position
-        centered rolling average — a reasonable default window when
-        smoothing is wanted. NaN positions (no observed reads) are skipped
-        rather than propagating NaN through the window.
-    cluster_labels : optional per-read cluster assignment (e.g. Leiden cluster
-        id from clustering the attribution matrix), aligned row-for-row with
-        ``matrix``/``y_true``. Only meaningful alongside ``position_scores``;
-        when given, a categorical strip is drawn to the right of the
-        position-score heatmap, colored with the same tab10 cycling used by
-        ``smftools.analysis.plot.embeddings.plot_embedding_scatter``.
+    Args:
+        matrix: (n_reads, n_positions) input feature matrix (e.g. C_site_binary),
+            aligned row-for-row with ``y_true``/``y_score``/``y_logit``.
+        coords: Optional 1-D array of x-axis tick coordinates, length ``n_positions``.
+        position_scores: Optional (n_reads, n_positions) per-read, per-position
+            attribution/contribution matrix (e.g. SHAP values, NB log-odds
+            contributions, or CNN integrated-gradients attributions), aligned
+            row-for-row and column-for-column with ``matrix``. When given, a
+            second heatmap panel is drawn to the right of the True-label strip,
+            with its own diverging colorbar (centered at 0).
+        position_score_range: Optional explicit (vmin, vmax) for the diverging
+            colorbar; default is symmetric around the 99th percentile absolute
+            value of ``position_scores``.
+        sort_by: ``"logit"`` (default) sorts rows by ascending classifier logit —
+            unaffected by ``cluster_labels``. ``"cluster"`` instead
+            hierarchically clusters rows on ``position_scores``: with
+            ``cluster_labels`` given, rows are first binned by Leiden cluster,
+            then by true label within each cluster, then hierarchically
+            clustered within each (cluster, label) leaf (via
+            ``smftools.analysis.compute.clustering.cluster_row_order_by_labels``);
+            without ``cluster_labels``, plain hierarchical clustering with no
+            binning (``cluster_block_order``). Requires ``position_scores``.
+        mean_smooth_window: Optional rolling-average window (in positions) applied
+            to the per-label mean lines above the heatmaps. ``None`` (default)
+            plots the raw per-position mean; pass e.g. ``3`` for a 3-position
+            centered rolling average — a reasonable default window when
+            smoothing is wanted. NaN positions (no observed reads) are skipped
+            rather than propagating NaN through the window.
+        cluster_labels: Optional per-read cluster assignment (e.g. Leiden cluster
+            id from clustering the attribution matrix), aligned row-for-row with
+            ``matrix``/``y_true``. Only meaningful alongside ``position_scores``;
+            when given, a categorical strip is drawn to the right of the
+            position-score heatmap, colored with the same tab10 cycling used by
+            ``smftools.analysis.plot.embeddings.plot_embedding_scatter``.
 
-    Above both the input heatmap and (when given) the position-score
-    heatmap, a line-plot panel shows each panel's per-position mean, one
-    line per true-class label (using ``label_colors``) — the same summary
-    already drawn atop this project's other clustermaps, split by label.
+    Notes:
+        Above both the input heatmap and (when given) the position-score
+        heatmap, a line-plot panel shows each panel's per-position mean, one
+        line per true-class label (using ``label_colors``) — the same summary
+        already drawn atop this project's other clustermaps, split by label.
     """
     matrix = np.asarray(matrix, dtype=float)
     y_true = np.asarray(y_true, dtype=int)
