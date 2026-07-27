@@ -590,19 +590,31 @@ def plot_explained_variance(
     figsize: tuple[float, float] = (6.0, 4.0),
     title: str = "",
     dpi: int = 300,
+    component_label: str = "principal component",
+    value_label: str = "explained variance ratio",
+    cumulative_label: str = "cumulative explained variance",
+    cumulative_ylim: tuple[float, float] | None = (0.0, 1.0),
 ) -> None:
     """
-    Scree plot: bar chart of per-PC explained variance ratio, with cumulative
-    explained variance overlaid on a secondary y-axis.
+    Scree plot: bar chart of a per-component importance metric, with its
+    cumulative sum overlaid on a secondary y-axis.
 
     Parameters
     ----------
     explained_variance_ratio : np.ndarray
-        1D array from sklearn ``PCA.explained_variance_ratio_``.
+        1D array of per-component values, descending — sklearn
+        ``PCA.explained_variance_ratio_`` by default, but any similarly
+        descending-importance array works (e.g. diffusion-map eigenvalues;
+        pass ``cumulative_ylim=None`` for those since they don't sum to 1).
     output_path : Path
         PNG output path.
     n_pcs_show : int
-        number of leading PCs to plot.
+        number of leading components to plot.
+    component_label, value_label, cumulative_label : axis/legend text —
+        override for non-PCA reductions (e.g. "diffusion component",
+        "eigenvalue", "cumulative eigenvalue").
+    cumulative_ylim : fixed range for the cumulative secondary axis; ``None``
+        auto-scales (needed when values aren't variance ratios summing to 1).
     """
     evr = np.asarray(explained_variance_ratio)
     n_show = min(n_pcs_show, len(evr))
@@ -611,16 +623,17 @@ def plot_explained_variance(
     x = np.arange(1, n_show + 1)
 
     fig, ax = plt.subplots(figsize=figsize)
-    ax.bar(x, evr_show, color="#1f77b4", label="per-PC")
-    ax.set_xlabel("principal component", fontsize=9)
-    ax.set_ylabel("explained variance ratio", fontsize=9)
+    ax.bar(x, evr_show, color="#1f77b4", label="per-component")
+    ax.set_xlabel(component_label, fontsize=9)
+    ax.set_ylabel(value_label, fontsize=9)
     ax.set_xticks(x)
     ax.tick_params(axis="both", labelsize=8)
 
     ax2 = ax.twinx()
     ax2.plot(x, cumvar, color="#d62728", marker="o", markersize=3, label="cumulative")
-    ax2.set_ylabel("cumulative explained variance", fontsize=9)
-    ax2.set_ylim(0, 1.0)
+    ax2.set_ylabel(cumulative_label, fontsize=9)
+    if cumulative_ylim is not None:
+        ax2.set_ylim(*cumulative_ylim)
     ax2.tick_params(axis="y", labelsize=8)
 
     if title:

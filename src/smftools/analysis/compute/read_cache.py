@@ -235,6 +235,40 @@ def load_zarr_layer(
     return arr
 
 
+def load_zarr_read_ids(
+    z,
+    index: dict,
+    barcode: str,
+    ref_strand: str,
+) -> np.ndarray:
+    """
+    Load obs_names (read IDs) for a barcode × ref_strand pair directly from
+    the Zarr store's ``obs/_index`` array.
+
+    This avoids the full anndata decode used by :func:`load_zarr_obs` and is
+    cheap enough to call once per sample on the read-loading path.
+
+    Parameters
+    ----------
+    z : zarr.Group
+        Open Zarr root group (from :func:`open_zarr_cache`).
+    index : dict
+        Barcode index from :func:`load_barcode_index`.
+    barcode : str
+        e.g. ``"NB01"``.
+    ref_strand : str
+        e.g. ``"6B6_top"``.
+
+    Returns
+    -------
+    np.ndarray
+        Array of read ID strings, one per read, in the same row order as
+        :func:`load_zarr_layer`.
+    """
+    start, end = _get_slice(index, barcode, ref_strand)
+    return z["obs"]["_index"][start:end].astype(str)
+
+
 def load_zarr_obs(
     zarr_path: Path,
     index: dict,

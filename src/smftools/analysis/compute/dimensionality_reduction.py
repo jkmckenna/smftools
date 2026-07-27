@@ -1,14 +1,15 @@
 """
-dimensionality_reduction.py — PCA → UMAP → KNN → Leiden pipeline for per-read matrices.
+dimensionality_reduction.py — reduction → UMAP → KNN → Leiden pipeline for per-read matrices.
 
-Functions
----------
-coverage_filter       Drop low-coverage columns and rows from a reads × positions matrix.
-make_features_raw     NaN → 0.5 imputation for direct use of modification matrix.
-make_features_acf     Per-read ACF features with optional rolling smoothing.
-umap_from_pca         UMAP embedding from a cached PCA-space matrix; returns (X_umap, fitted model).
-cluster_from_pca      KNN graph + Leiden clustering from a cached PCA-space matrix.
-run_pipeline          PCA → UMAP → KNN graph → Leiden clustering (composes the above); returns (X_pca, X_umap, clusters, explained_variance_ratio, fitted PCA model, fitted UMAP model).
+Functions:
+
+- ``coverage_filter``: Drop low-coverage columns and rows from a reads × positions matrix.
+- ``make_features_raw``: NaN → 0.5 imputation for direct use of modification matrix.
+- ``make_features_acf``: Per-read ACF features with optional rolling smoothing.
+- ``diffusion_map_embedding``: Diffusion-map latent space from a Gaussian-kernel KNN affinity graph.
+- ``umap_from_pca``: UMAP embedding from a cached latent-space matrix.
+- ``cluster_from_pca``: KNN graph + Leiden clustering from a cached latent-space matrix.
+- ``run_pipeline``: Reduction → UMAP → KNN graph → Leiden clustering.
 """
 
 from __future__ import annotations
@@ -171,56 +172,160 @@ def cluster_from_pca(
     return np.array(partition.membership)
 
 
+def diffusion_map_embedding(
+    feat: np.ndarray,
+    n_components: int = 16,
+    n_neighbors: int = 15,
+    diffusion_time: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Diffusion-map latent space from a Gaussian-kernel KNN affinity graph.
+
+    Builds a symmetrized k-nearest-neighbor affinity graph (Gaussian kernel,
+    bandwidth = median KNN distance), row/column-normalizes it into the
+    symmetric-normalized graph Laplacian, and takes its leading eigenvectors
+    (dropping the trivial constant eigenvector), each scaled by its
+    eigenvalue raised to ``diffusion_time`` — the standard diffusion-map
+    construction (Coifman & Lafon 2006).
+
+    An alternative to PCA as the ``method`` in :func:`run_pipeline`: PCA
+    captures directions of maximal linear variance, while a diffusion map
+    captures the manifold's diffusion/random-walk geometry — better suited
+    when the read population lies on a curved or branching manifold rather
+    than varying along a few linear axes.
+
+    Returns
+    -------
+    (latent, eigenvalues) : latent has shape (n_reads, n_components);
+    eigenvalues are the corresponding non-trivial eigenvalues (descending),
+    already folded into ``latent`` via the ``diffusion_time`` scaling —
+    kept separate mainly for a scree-style diagnostic plot.
+    """
+    from scipy import sparse
+    from scipy.sparse.linalg import eigsh
+    from sklearn.neighbors import NearestNeighbors
+
+    n_reads = feat.shape[0]
+    if n_reads < 3:
+        raise ValueError("diffusion_map_embedding requires at least 3 reads")
+
+    k = min(n_neighbors, n_reads - 1)
+    nn = NearestNeighbors(n_neighbors=k + 1)
+    nn.fit(feat)
+    distances, indices = nn.kneighbors(feat)
+
+    nz = distances[:, 1:].ravel()
+    nz = nz[np.isfinite(nz) & (nz > 0)]
+    sigma = float(np.median(nz)) if nz.size else 1.0
+    sigma = max(sigma, 1e-6)
+
+    rows = np.repeat(np.arange(n_reads), k)
+    cols = indices[:, 1:].ravel()
+    vals = np.exp(-(distances[:, 1:].ravel() ** 2) / (2.0 * sigma * sigma))
+    affinity = sparse.csr_matrix((vals, (rows, cols)), shape=(n_reads, n_reads))
+    affinity = 0.5 * (affinity + affinity.T)
+
+    degree = np.asarray(affinity.sum(axis=1)).ravel()
+    degree[degree <= 0] = 1e-12
+    d_inv_sqrt = sparse.diags(1.0 / np.sqrt(degree))
+    normalized = d_inv_sqrt @ affinity @ d_inv_sqrt
+
+    n_wanted = min(max(2, n_components) + 1, n_reads - 1)
+    if n_wanted >= n_reads - 1:
+        evals, evecs = np.linalg.eigh(normalized.toarray())
+    else:
+        try:
+            evals, evecs = eigsh(normalized, k=n_wanted, which="LA")
+        except Exception:
+            evals, evecs = np.linalg.eigh(normalized.toarray())
+    order = np.argsort(evals)[::-1]
+    evals = evals[order]
+    evecs = evecs[:, order]
+
+    evals_nontrivial = evals[1:n_wanted]
+    evecs_nontrivial = evecs[:, 1:n_wanted]
+    scaled = np.power(np.clip(evals_nontrivial, 1e-12, None), diffusion_time)
+    latent = evecs_nontrivial * scaled[np.newaxis, :]
+    return latent, evals_nontrivial
+
+
 def run_pipeline(
     feat: np.ndarray,
     leiden_resolution: float = 0.5,
     min_reads: int = _DEFAULT_MIN_READS,
     n_neighbors: int = 15,
     random_state: int = 42,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, "PCA", "umap.UMAP"] | None:
+    method: str = "pca",
+    diffusion_time: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, "PCA | None", "umap.UMAP"] | None:
     """
-    PCA → UMAP → KNN → Leiden clustering.
+    Dimensionality reduction → UMAP → KNN → Leiden clustering.
 
-    Parameters
-    ----------
-    feat              : (n_reads × n_features) float feature matrix.
-    leiden_resolution : resolution parameter for Leiden community detection.
-    min_reads         : return None if fewer reads than this.
-    n_neighbors       : number of KNN neighbours for graph construction and UMAP.
-    random_state      : seed for reproducibility.
+    Args:
+        feat: (n_reads × n_features) float feature matrix.
+        leiden_resolution: Resolution parameter for Leiden community detection.
+        min_reads: Return None if fewer reads than this.
+        n_neighbors: Number of KNN neighbours for graph construction and UMAP.
+        random_state: Seed for reproducibility.
+        method: ``"pca"`` (default) or ``"diffusion_map"`` — which
+            technique produces the latent space that UMAP/Leiden are built from.
+            PCA captures directions of maximal linear variance; a diffusion map
+            (see :func:`diffusion_map_embedding`) instead captures the
+            population's diffusion/random-walk geometry, which can better
+            resolve a curved or branching manifold.
+        diffusion_time: Only used when ``method="diffusion_map"`` — passed
+            through to :func:`diffusion_map_embedding`.
 
-    Returns
-    -------
-    (X_pca, X_umap, clusters, explained_variance_ratio, pca_model, umap_model) or
-    None if too few reads. X_pca contains all computed PCs (up to 50) -- cache it to
-    re-derive X_umap/clusters via umap_from_pca()/cluster_from_pca() without
-    recomputing PCA. ``pca_model``/``umap_model`` are the fitted transformers: call
-    ``pca_model.transform(new_feat)`` then ``umap_model.transform(new_X_pca)`` to
-    embed additional reads into this exact space later without refitting (see
-    ``smftools.project.embedding_store`` for the project-layer wrapper that does
-    this by default when a set grows). Leiden clustering has no equivalent
-    incremental transform -- assign new points to the nearest existing point's
-    cluster instead (also handled there).
+    Returns:
+        (X_latent, X_umap, clusters, variance_info, reduction_model, umap_model) or
+        None if too few reads. X_latent contains the full computed latent space (up to
+        50 dims for PCA) -- cache it to re-derive X_umap/clusters via
+        umap_from_pca()/cluster_from_pca() without recomputing the reduction.
+        ``variance_info`` is ``pca.explained_variance_ratio_`` for
+        ``method="pca"``, or the diffusion map's non-trivial eigenvalues for
+        ``method="diffusion_map"`` (same descending-importance shape, different
+        units — see :func:`diffusion_map_embedding`).
+        ``reduction_model`` is the fitted PCA transformer for ``method="pca"``
+        (call ``reduction_model.transform(new_feat)`` to embed additional reads
+        into this exact space later without refitting — see
+        ``smftools.project.embedding_store`` for the project-layer wrapper that
+        does this by default when a set grows) or ``None`` for
+        ``method="diffusion_map"``, which has no incremental transform. Leiden
+        clustering also has no incremental transform for either method -- assign
+        new points to the nearest existing point's cluster instead.
     """
-    try:
-        from sklearn.decomposition import PCA
-    except ImportError as e:
-        raise ImportError(f"dimensionality_reduction.run_pipeline requires sklearn: {e}")
-
     n_reads = feat.shape[0]
     if n_reads < min_reads:
         return None
 
-    n_pcs = min(50, n_reads - 1, feat.shape[1])
+    if method == "pca":
+        try:
+            from sklearn.decomposition import PCA
+        except ImportError as e:
+            raise ImportError(f"dimensionality_reduction.run_pipeline requires sklearn: {e}")
 
-    pca = PCA(n_components=n_pcs, random_state=random_state)
-    X_pca = pca.fit_transform(feat)
-    X_umap, umap_model = umap_from_pca(X_pca, n_neighbors=n_neighbors, random_state=random_state)
+        n_pcs = min(50, n_reads - 1, feat.shape[1])
+        pca = PCA(n_components=n_pcs, random_state=random_state)
+        X_latent = pca.fit_transform(feat)
+        variance_info = pca.explained_variance_ratio_
+        reduction_model = pca
+    elif method == "diffusion_map":
+        X_latent, variance_info = diffusion_map_embedding(
+            feat,
+            n_components=min(50, n_reads - 2),
+            n_neighbors=n_neighbors,
+            diffusion_time=diffusion_time,
+        )
+        reduction_model = None
+    else:
+        raise ValueError(f"Unsupported method {method!r}; expected 'pca' or 'diffusion_map'")
+
+    X_umap, umap_model = umap_from_pca(X_latent, n_neighbors=n_neighbors, random_state=random_state)
     clusters = cluster_from_pca(
-        X_pca,
+        X_latent,
         leiden_resolution=leiden_resolution,
         n_neighbors=n_neighbors,
         random_state=random_state,
     )
 
-    return X_pca, X_umap, clusters, pca.explained_variance_ratio_, pca, umap_model
+    return X_latent, X_umap, clusters, variance_info, reduction_model, umap_model
