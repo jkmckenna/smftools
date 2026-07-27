@@ -255,6 +255,8 @@ def _task_groups(
             "loading_keys",
             "label_keys",
             "task_checksum",
+            "model_id",
+            "model_checksum",
         }
         missing = sorted(required.difference(dataset.schema.names))
         if missing:
@@ -294,6 +296,8 @@ def _task_groups(
                 "reference_uid",
                 "core_start",
                 "core_end",
+                "model_id",
+                "model_checksum",
             ):
                 if owner_rows[column].astype(str).nunique(dropna=False) != 1:
                     raise RuntimeError(

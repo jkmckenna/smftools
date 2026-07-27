@@ -96,6 +96,8 @@ def _project_with_latent_owners(tmp_path):
                 "core_end": end,
                 "analysis_core_id": core_id,
                 "group_sha256": checksum,
+                "model_id": f"model-{core_id}",
+                "model_checksum": str(owner_index) * 64,
                 "obsm_keys": list(result.obsm),
                 "varm_keys": list(result.varm),
                 "obs_columns": list(result.obs),

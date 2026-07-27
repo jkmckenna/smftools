@@ -79,6 +79,8 @@ def test_latent_read_index_preserves_scope_and_prunes_molecule_buckets(tmp_path)
         "core_end": 10,
         "analysis_core_id": "core-a",
         "group_sha256": "a" * 64,
+        "model_id": "model-a",
+        "model_checksum": "b" * 64,
         "obsm_keys": ["X_pca_signal"],
         "varm_keys": ["PCs_signal"],
         "obs_columns": ["sample", "leiden_signal"],
