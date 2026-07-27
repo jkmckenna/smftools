@@ -213,6 +213,17 @@ def _discover_catalogs(spines: dict[str, Path], project_dir: Path) -> dict[str, 
         read_index = spine.parent / "read_index"
         if read_index.exists():
             found[f"{stage}_read_index"] = _relative_registry_path(read_index, project_dir)
+    latent_spine = spines.get("latent")
+    if latent_spine is not None:
+        from ..informatics.partition_read import load_spine, resolve_relative_path
+
+        latent = load_spine(latent_spine, verbose=False)
+        read_index = resolve_relative_path(
+            latent.uns.get("latent_read_index"),
+            latent_spine.parent.parent,
+        )
+        if read_index is not None and read_index.exists():
+            found["latent_read_index"] = _relative_registry_path(read_index, project_dir)
     return found
 
 

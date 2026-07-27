@@ -262,12 +262,14 @@ def latent_adata(
             "generation_manifest",
             "resource_plan",
             "task_catalog",
+            "read_index",
             "store",
         )
         required_complete = (
             "spine",
             "generation_spine",
             "task_catalog",
+            "read_index",
             "store",
             "plot_catalog",
             "manifest",
@@ -320,6 +322,7 @@ def latent_adata(
                     "spine",
                     "generation_spine",
                     "task_catalog",
+                    "read_index",
                     "store",
                     "plot_catalog",
                     "manifest",
@@ -331,6 +334,7 @@ def latent_adata(
                     "generation_manifest": 1,
                     "resource_plan": 1,
                     "task_catalog": 3,
+                    "read_index": 2,
                 },
                 task_count=int(outputs["task_count"]),
                 extra={
@@ -340,7 +344,7 @@ def latent_adata(
                         reuse_generation.name if reuse_generation is not None else None
                     ),
                 },
-                nonempty_directory_keys=("generation", "store"),
+                nonempty_directory_keys=("generation", "read_index", "store"),
             )
             write_experiment_spine(cfg.output_directory)
         return None, outputs["spine"]

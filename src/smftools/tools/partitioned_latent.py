@@ -38,7 +38,18 @@ from ..cli.stage_artifacts import (
     register_plot_artifact,
 )
 from ..informatics.analysis_region_plan import plan_analysis_cores
+from ..informatics.derived_read_index import (
+    DERIVED_READ_INDEX_DIRNAME,
+    LATENT_READ_INDEX_SCHEMA_VERSION,
+    molecule_index_bucket,
+    prepare_derived_read_index,
+    write_latent_read_index,
+)
 from ..informatics.experiment_manifest import artifact_record, read_experiment_manifest
+from ..informatics.molecule_identity import (
+    EXPERIMENT_UID_COLUMN,
+    MOLECULE_UID_COLUMN,
+)
 from ..informatics.partition_read import (
     load_spine,
     materialize,
@@ -74,6 +85,7 @@ _LATENT_SOURCE_ESTIMATE_DTYPE = "float64"
 _LATENT_TASK_REQUIRED_COLUMNS = {
     "reference",
     "analysis_mode",
+    "analysis_core_id",
     "core_start",
     "core_end",
     "n_reads",
@@ -97,6 +109,26 @@ _LATENT_TASK_REQUIRED_COLUMNS = {
     "limiting_operation",
     "cp_skip_reason",
     "resource_decisions",
+}
+_LATENT_INDEX_REQUIRED_COLUMNS = {
+    EXPERIMENT_UID_COLUMN,
+    "read_id",
+    MOLECULE_UID_COLUMN,
+    "molecule_bucket",
+    "stage",
+    "reference",
+    "reference_uid",
+    "analysis_core_id",
+    "core_start",
+    "core_end",
+    "latent_generation_id",
+    "group_path",
+    "group_row",
+    "representation_keys",
+    "loading_keys",
+    "label_keys",
+    "task_checksum",
+    "index_schema_version",
 }
 
 
@@ -142,7 +174,11 @@ def _resource_record_defaults(
         )
     )
     record.setdefault("n_positions", n_positions)
-    record.setdefault("analysis_core_id", "")
+    if not str(record.get("analysis_core_id", "")):
+        record["analysis_core_id"] = (
+            f"{record.get('reference', '')}:"
+            f"{int(record.get('core_start', 0))}-{int(record.get('core_end', 0))}"
+        )
     record.setdefault("resource_estimator_version", LATENT_RESOURCE_ESTIMATOR_VERSION)
     record.setdefault("resource_envelope_id", envelope_id)
     record.setdefault("requested_fit_reads", fit_reads)
@@ -281,6 +317,67 @@ def _source_provenance(spine, spine_path: Path, run_root: Path) -> dict[str, obj
     }
 
 
+def _group_obs(group_path: Path) -> pd.DataFrame:
+    """Read only observation metadata from one latent task group."""
+    import anndata as ad
+
+    lazy = ad.experimental.read_lazy(group_path)
+    obs = lazy.obs.to_memory() if hasattr(lazy.obs, "to_memory") else lazy.obs
+    return pd.DataFrame(obs)
+
+
+def _write_latent_indexes(
+    generation_dir: Path,
+    *,
+    final_dir: Path,
+    run_root: Path,
+    generation_id: str,
+    spine,
+    records: list[dict[str, object]],
+) -> Path:
+    """Create one generation-scoped, partition-prunable latent read index."""
+    index_root = prepare_derived_read_index(generation_dir)
+    reference_uids = spine.uns.get("reference_uids", {})
+    if not isinstance(reference_uids, dict):
+        reference_uids = {}
+    source_obs = spine.obs.copy()
+    source_obs.index = source_obs.index.astype(str)
+
+    for record in records:
+        stored_obs = _group_obs(generation_dir / str(record["group_path"]))
+        read_names = stored_obs.index.astype(str)
+        if not read_names.is_unique:
+            raise RuntimeError(
+                f"latent task {record.get('analysis_core_id', '')!r} has duplicate read IDs"
+            )
+        missing = read_names.difference(source_obs.index)
+        if not missing.empty:
+            raise RuntimeError(
+                f"latent task {record.get('analysis_core_id', '')!r} contains unknown reads: "
+                f"{missing[:3].tolist()}"
+            )
+        index_obs = source_obs.loc[read_names].copy()
+        for column in ("read_id", EXPERIMENT_UID_COLUMN, MOLECULE_UID_COLUMN):
+            if column in stored_obs:
+                index_obs[column] = stored_obs[column].to_numpy()
+
+        final_group = final_dir / str(record["group_path"])
+        write_latent_read_index(
+            generation_dir,
+            obs=index_obs,
+            record=record,
+            generation_id=generation_id,
+            group_path=relative_uns_path(final_group, run_root),
+            reference_uid=(
+                str(reference_uids[str(record["reference"])])
+                if str(record["reference"]) in reference_uids
+                else None
+            ),
+            stage_schema_version=LATENT_TASK_CATALOG_SCHEMA_VERSION,
+        )
+    return index_root
+
+
 def _validate_latent_generation(
     generation_dir: Path,
     *,
@@ -362,11 +459,82 @@ def _validate_latent_generation(
     expected_pointers = {
         "latent_task_catalog": relative_uns_path(final_dir / LATENT_TASK_CATALOG, run_root),
         "latent_store": relative_uns_path(final_dir / LATENT_STORE_SUBDIR, run_root),
+        "latent_read_index": relative_uns_path(final_dir / DERIVED_READ_INDEX_DIRNAME, run_root),
         "latent_resource_plan": relative_uns_path(final_dir / LATENT_RESOURCE_PLAN, run_root),
     }
     for key, expected_value in expected_pointers.items():
         if latent_spine.uns.get(key) != expected_value:
             raise RuntimeError(f"latent spine pointer {key!r} is not publication-safe")
+
+    import pyarrow.dataset as ds
+
+    index_root = generation_dir / DERIVED_READ_INDEX_DIRNAME
+    if not index_root.is_dir():
+        raise RuntimeError("latent read index is missing")
+    index_dataset = ds.dataset(index_root, format="parquet", partitioning="hive")
+    missing_index_columns = sorted(
+        _LATENT_INDEX_REQUIRED_COLUMNS.difference(index_dataset.schema.names)
+    )
+    if missing_index_columns:
+        raise RuntimeError(
+            f"latent read index is missing required columns: {missing_index_columns}"
+        )
+    catalog_core_ids = catalog["analysis_core_id"].astype(str)
+    if catalog_core_ids.duplicated().any():
+        raise RuntimeError("latent task catalog contains duplicate analysis_core_id values")
+    source_obs = latent_spine.obs.copy()
+    source_obs.index = source_obs.index.astype(str)
+    for record in catalog.to_dict("records"):
+        core_id = str(record["analysis_core_id"])
+        task_rows = index_dataset.to_table(
+            filter=ds.field("analysis_core_id") == core_id
+        ).to_pandas()
+        if task_rows.empty:
+            raise RuntimeError(f"latent read index contains no rows for core {core_id!r}")
+        if set(task_rows["index_schema_version"].astype(int)) != {LATENT_READ_INDEX_SCHEMA_VERSION}:
+            raise RuntimeError(f"latent read index schema mismatch for core {core_id!r}")
+        if set(task_rows["stage"].astype(str)) != {"latent"}:
+            raise RuntimeError(f"latent read index stage mismatch for core {core_id!r}")
+        for column in ("reference", "core_start", "core_end"):
+            expected_value = record[column]
+            if set(task_rows[column]) != {expected_value}:
+                raise RuntimeError(f"latent read index {column} mismatch for core {core_id!r}")
+        expected_buckets = task_rows[MOLECULE_UID_COLUMN].map(molecule_index_bucket)
+        if task_rows["molecule_bucket"].astype(str).tolist() != expected_buckets.tolist():
+            raise RuntimeError(f"latent read index molecule bucket mismatch for core {core_id!r}")
+        group_rows = task_rows["group_row"]
+        if group_rows.isna().any():
+            raise RuntimeError(f"latent read index has missing group_row for core {core_id!r}")
+        normalized_rows = group_rows.astype(int)
+        if normalized_rows.duplicated().any():
+            raise RuntimeError(f"latent read index has duplicate group_row for core {core_id!r}")
+        expected_rows = set(range(int(record["n_reads"])))
+        if set(normalized_rows) != expected_rows:
+            raise RuntimeError(f"latent read index has out-of-range group_row for core {core_id!r}")
+        if len(task_rows) != int(record["n_reads"]):
+            raise RuntimeError(f"latent read index row count mismatch for core {core_id!r}")
+        if set(task_rows["latent_generation_id"].astype(str)) != {final_dir.name}:
+            raise RuntimeError(f"latent read index generation mismatch for core {core_id!r}")
+        expected_group = relative_uns_path(final_dir / str(record["group_path"]), run_root)
+        if set(task_rows["group_path"].astype(str)) != {expected_group}:
+            raise RuntimeError(f"latent read index group path mismatch for core {core_id!r}")
+        if set(task_rows["task_checksum"].astype(str)) != {str(record["group_sha256"])}:
+            raise RuntimeError(f"latent read index checksum mismatch for core {core_id!r}")
+        if task_rows[MOLECULE_UID_COLUMN].astype(str).duplicated().any():
+            raise RuntimeError("latent read index contains duplicate molecule/core/generation rows")
+
+        stored_obs = _group_obs(generation_dir / str(record["group_path"]))
+        stored_names = stored_obs.index.astype(str)
+        ordered = task_rows.assign(_group_row=normalized_rows).sort_values("_group_row")
+        if ordered["read_id"].astype(str).tolist() != stored_names.tolist():
+            raise RuntimeError(f"latent read index read order mismatch for core {core_id!r}")
+        expected_identity = source_obs.loc[stored_names]
+        for column in (EXPERIMENT_UID_COLUMN, MOLECULE_UID_COLUMN):
+            if (
+                ordered[column].astype(str).tolist()
+                != expected_identity[column].astype(str).tolist()
+            ):
+                raise RuntimeError(f"latent read index {column} mismatch for core {core_id!r}")
 
     manifest = sidecar_manifest_path(generation_dir)
     for key in (
@@ -374,6 +542,7 @@ def _validate_latent_generation(
         "latent_source_spine",
         "latent_task_catalog",
         "latent_store",
+        "latent_read_index",
         "latent_plot_catalog",
         "latent_resource_plan",
     ):
@@ -1156,6 +1325,9 @@ def execute_partitioned_latent(
                 if record is not None:
                     group_path = staging_dir / str(record["group_path"])
                     record.setdefault("group_sha256", _content_sha256(group_path))
+                    record["analysis_core_id"] = str(
+                        record.get("analysis_core_id") or unit.get("analysis_core_id") or ""
+                    )
                     record.setdefault("analysis_planner_version", 1)
                     _resource_record_defaults(
                         record,
@@ -1209,6 +1381,14 @@ def execute_partitioned_latent(
                 f"plot_complete:{record['reference']}:{record['core_start']}-{record['core_end']}"
             )
         pd.DataFrame(records).to_parquet(staging_dir / LATENT_TASK_CATALOG, index=False)
+        read_index = _write_latent_indexes(
+            staging_dir,
+            final_dir=final_dir,
+            run_root=run_root,
+            generation_id=generation_id,
+            spine=spine,
+            records=records,
+        )
 
         resource_plan = staging_dir / LATENT_RESOURCE_PLAN
         atomic_write_json(
@@ -1259,6 +1439,9 @@ def execute_partitioned_latent(
         latent_spine.uns["latent_store"] = relative_uns_path(
             final_dir / LATENT_STORE_SUBDIR, run_root
         )
+        latent_spine.uns["latent_read_index"] = relative_uns_path(
+            final_dir / DERIVED_READ_INDEX_DIRNAME, run_root
+        )
         latent_spine.uns["latent_resource_plan"] = relative_uns_path(
             final_dir / LATENT_RESOURCE_PLAN, run_root
         )
@@ -1273,6 +1456,7 @@ def execute_partitioned_latent(
         register_sidecar(manifest, "latent_source_spine", spine_path)
         register_sidecar(manifest, "latent_task_catalog", staging_dir / LATENT_TASK_CATALOG)
         register_sidecar(manifest, "latent_store", staging_dir / LATENT_STORE_SUBDIR)
+        register_sidecar(manifest, "latent_read_index", read_index)
         register_sidecar(manifest, "latent_plot_catalog", layout.catalog)
         register_sidecar(manifest, "latent_resource_plan", resource_plan)
 
@@ -1289,6 +1473,7 @@ def execute_partitioned_latent(
                     {int(record.get("analysis_planner_version", 1)) for record in records}
                 ),
                 "task_catalog_schema_version": LATENT_TASK_CATALOG_SCHEMA_VERSION,
+                "read_index_schema_version": LATENT_READ_INDEX_SCHEMA_VERSION,
                 "task_count": len(records),
                 "resource_estimator_version": LATENT_RESOURCE_ESTIMATOR_VERSION,
                 "resource_envelope_id": envelope_identity,
@@ -1357,6 +1542,7 @@ def execute_partitioned_latent(
         "spine": canonical_spine,
         "generation_spine": final_dir / LATENT_SPINE_FILENAME,
         "task_catalog": final_dir / LATENT_TASK_CATALOG,
+        "read_index": final_dir / DERIVED_READ_INDEX_DIRNAME,
         "store": final_dir / LATENT_STORE_SUBDIR,
         "plots": final_dir / "plots",
         "plot_catalog": final_dir / "plots" / "catalog.parquet",
