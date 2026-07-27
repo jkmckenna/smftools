@@ -7,9 +7,13 @@ component axes were shared.
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import warnings
 from pathlib import Path
 from urllib.parse import quote
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -28,17 +32,50 @@ from ..cli.stage_artifacts import (
     register_plot_artifact,
 )
 from ..informatics.analysis_region_plan import plan_analysis_cores
-from ..informatics.experiment_spine import write_experiment_spine
-from ..informatics.partition_read import load_spine, materialize, relative_uns_path
-from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
+from ..informatics.experiment_manifest import artifact_record, read_experiment_manifest
+from ..informatics.partition_read import (
+    load_spine,
+    materialize,
+    relative_uns_path,
+    resolve_relative_path,
+)
+from ..informatics.sidecar_manifest import (
+    register_sidecar,
+    resolve_sidecar,
+    sidecar_manifest_path,
+)
 from ..optional_imports import require
-from ..readwrite import safe_write_h5ad, safe_write_zarr
+from ..readwrite import (
+    atomic_write_json,
+    safe_read_h5ad,
+    safe_read_zarr,
+    safe_write_h5ad,
+    safe_write_zarr,
+)
 
 logger = get_logger(__name__)
 
 LATENT_SPINE_FILENAME = "spine.h5ad"
 LATENT_TASK_CATALOG = "task_catalog.parquet"
 LATENT_STORE_SUBDIR = "store"
+LATENT_GENERATIONS_SUBDIR = "generations"
+LATENT_CURRENT_FILENAME = "current.json"
+LATENT_GENERATION_MANIFEST = "generation_manifest.json"
+LATENT_TASK_CATALOG_SCHEMA_VERSION = 2
+LATENT_GENERATION_SCHEMA_VERSION = 1
+_LATENT_TASK_REQUIRED_COLUMNS = {
+    "reference",
+    "analysis_mode",
+    "core_start",
+    "core_end",
+    "n_reads",
+    "fit_reads",
+    "group_path",
+    "group_sha256",
+    "obsm_keys",
+    "varm_keys",
+    "obs_columns",
+}
 
 
 def _component(value: object) -> str:
@@ -52,6 +89,142 @@ def _task_path(output_dir: Path, reference: str, start: int, end: int) -> Path:
         / f"reference={_component(reference)}"
         / f"core={start:012d}-{end:012d}"
     )
+
+
+def _content_sha256(path: Path) -> str:
+    return str(artifact_record(path, path.parent, checksum=True)["sha256"])
+
+
+def _atomic_publish_spine(adata, path: Path) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp.h5ad")
+    try:
+        safe_write_h5ad(adata, temporary, backup=False, verbose=False)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _source_provenance(spine, spine_path: Path, run_root: Path) -> dict[str, object]:
+    source_stage = {
+        "preprocess_adata_outputs": "preprocess",
+        "spatial_adata_outputs": "spatial",
+        "hmm_adata_outputs": "hmm",
+    }.get(spine_path.parent.name)
+    stage_entry = (
+        read_experiment_manifest(run_root).get("stages", {}).get(source_stage, {})
+        if source_stage is not None
+        else {}
+    )
+    region_catalogs = {}
+    configured_catalogs = spine.uns.get("region_catalogs", {})
+    if isinstance(configured_catalogs, dict):
+        for scope, value in sorted(configured_catalogs.items()):
+            path = resolve_relative_path(value, run_root)
+            if path is not None and path.is_file():
+                region_catalogs[str(scope)] = artifact_record(path, run_root, checksum=True)
+    return {
+        "source_spine": artifact_record(spine_path, run_root, checksum=True),
+        "source_stage": source_stage,
+        "source_stage_config_hash": (
+            stage_entry.get("config_hash") if isinstance(stage_entry, dict) else None
+        ),
+        "source_stage_generation_id": (
+            stage_entry.get("generation_id") if isinstance(stage_entry, dict) else None
+        ),
+        "source_stage_completed_at": (
+            stage_entry.get("completed_at") if isinstance(stage_entry, dict) else None
+        ),
+        "region_catalogs": region_catalogs,
+    }
+
+
+def _validate_latent_generation(
+    generation_dir: Path,
+    *,
+    final_dir: Path,
+    run_root: Path,
+) -> int:
+    catalog_path = generation_dir / LATENT_TASK_CATALOG
+    catalog = pd.read_parquet(catalog_path)
+    missing = sorted(_LATENT_TASK_REQUIRED_COLUMNS.difference(catalog.columns))
+    if missing:
+        raise RuntimeError(f"latent task catalog is missing required columns: {missing}")
+    if catalog.empty:
+        raise RuntimeError("latent task catalog contains no successful tasks")
+
+    for record in catalog.to_dict("records"):
+        relative_group = Path(str(record["group_path"]))
+        if relative_group.is_absolute() or ".." in relative_group.parts:
+            raise RuntimeError(f"invalid latent task group path: {relative_group}")
+        group_path = generation_dir / relative_group
+        if not group_path.is_dir():
+            raise RuntimeError(f"latent task group is missing: {group_path}")
+        result, _ = safe_read_zarr(group_path, verbose=False)
+        if int(record["n_reads"]) != int(result.n_obs):
+            raise RuntimeError(f"latent task row count mismatch for {relative_group}")
+        expected = {
+            "obsm_keys": sorted(map(str, record["obsm_keys"])),
+            "varm_keys": sorted(map(str, record["varm_keys"])),
+            "obs_columns": sorted(map(str, record["obs_columns"])),
+        }
+        observed = {
+            "obsm_keys": sorted(map(str, result.obsm.keys())),
+            "varm_keys": sorted(map(str, result.varm.keys())),
+            "obs_columns": sorted(map(str, result.obs.columns)),
+        }
+        if expected != observed:
+            raise RuntimeError(f"latent task schema mismatch for {relative_group}")
+        if str(record["group_sha256"]) != _content_sha256(group_path):
+            raise RuntimeError(f"latent task checksum mismatch for {relative_group}")
+
+    plot_catalog = pd.read_parquet(generation_dir / "plots" / "catalog.parquet")
+    missing_plot_columns = sorted(set(PLOT_CATALOG_COLUMNS).difference(plot_catalog.columns))
+    if missing_plot_columns:
+        raise RuntimeError(
+            f"latent plot catalog is missing required columns: {missing_plot_columns}"
+        )
+    for record in plot_catalog.to_dict("records"):
+        relative_plot = Path(str(record["path"]))
+        if relative_plot.is_absolute() or ".." in relative_plot.parts:
+            raise RuntimeError(f"invalid latent plot path: {relative_plot}")
+        plot_path = generation_dir / relative_plot
+        if not plot_path.is_file():
+            raise RuntimeError(f"latent plot artifact is missing: {plot_path}")
+        source_manifest = record.get("source_manifest")
+        if pd.notna(source_manifest):
+            relative_manifest = Path(str(source_manifest))
+            if relative_manifest.is_absolute() or ".." in relative_manifest.parts:
+                raise RuntimeError(f"invalid latent plot source manifest path: {relative_manifest}")
+            if not (generation_dir / relative_manifest).is_file():
+                raise RuntimeError(f"latent plot source manifest is missing: {source_manifest}")
+
+    spine_path = generation_dir / LATENT_SPINE_FILENAME
+    latent_spine, _ = safe_read_h5ad(spine_path)
+    expected_pointers = {
+        "latent_task_catalog": relative_uns_path(final_dir / LATENT_TASK_CATALOG, run_root),
+        "latent_store": relative_uns_path(final_dir / LATENT_STORE_SUBDIR, run_root),
+    }
+    for key, expected_value in expected_pointers.items():
+        if latent_spine.uns.get(key) != expected_value:
+            raise RuntimeError(f"latent spine pointer {key!r} is not publication-safe")
+
+    manifest = sidecar_manifest_path(generation_dir)
+    for key in (
+        "latent_spine",
+        "latent_source_spine",
+        "latent_task_catalog",
+        "latent_store",
+        "latent_plot_catalog",
+    ):
+        if resolve_sidecar(manifest, key) is None:
+            raise RuntimeError(f"latent sidecar manifest cannot resolve {key!r}")
+    with (generation_dir / LATENT_GENERATION_MANIFEST).open("r", encoding="utf-8") as handle:
+        generation_manifest = json.load(handle)
+    if generation_manifest.get("generation_id") != final_dir.name:
+        raise RuntimeError("latent generation manifest ID does not match publication path")
+    if int(generation_manifest.get("task_count", -1)) != len(catalog):
+        raise RuntimeError("latent generation manifest task count does not match catalog")
+    return len(catalog)
 
 
 def _analysis_units(
@@ -598,6 +771,7 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         "n_reads": adata.n_obs,
         "fit_reads": int(len(fit_read_ids)),
         "group_path": output_path.relative_to(output_dir).as_posix(),
+        "group_sha256": _content_sha256(output_path),
         "obsm_keys": list(adata.obsm.keys()),
         "analysis_core_id": str(unit.get("analysis_core_id", "")),
         "analysis_region_ids": tuple(unit.get("analysis_region_ids", ())),
@@ -610,73 +784,155 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
     }
 
 
-def execute_partitioned_latent(spine_path, cfg, output_dir) -> dict[str, Path]:
-    """Run bounded latent units and publish a linked thin spine."""
+def execute_partitioned_latent(
+    spine_path,
+    cfg,
+    output_dir,
+    *,
+    reuse_generation: str | Path | None = None,
+) -> dict[str, Path | str | int]:
+    """Build, validate, and atomically publish one immutable latent generation."""
+    from ..cli.helpers import stage_config_hash, stage_plot_config_hash
+
     spine_path = Path(spine_path)
     output_dir = Path(output_dir)
     if output_dir.name != LATENT_DIR:
         logger.debug("Using non-canonical latent output directory: %s", output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    spine = load_spine(spine_path)
-    filter_mask = next(
-        (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
-        None,
-    )
-    units = _analysis_units(spine, filter_mask, spine_path=spine_path)
-    if not units:
-        raise RuntimeError("partitioned latent analysis has no non-empty units")
-
-    records = []
-    _record_memory_sample("executor_start")
-    # Latent fits allocate model state in addition to their materialized matrix. Run
-    # units sequentially so independently fitted spaces cannot multiply peak memory.
-    for unit in units:
-        record = execute_latent_unit(spine_path, unit, cfg, output_dir)
-        if record is not None:
-            records.append(record)
-        _record_memory_sample(
-            f"unit_complete:{unit['reference']}:{unit['core_start']}-{unit['core_end']}"
-        )
-    if not records:
-        raise RuntimeError("partitioned latent analysis has no units meeting latent_min_reads")
-
-    catalog_path = output_dir / LATENT_TASK_CATALOG
-    pd.DataFrame(records).to_parquet(catalog_path, index=False)
-    layout = prepare_analysis_plot_layout(output_dir, stage="latent", source_spine=spine_path)
-    pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
-    from ..readwrite import safe_read_zarr
-
-    for record in records:
-        result, _ = safe_read_zarr(output_dir / str(record["group_path"]), verbose=False)
-        _plot_task(result, record, cfg, layout)
-        _record_memory_sample(
-            f"plot_complete:{record['reference']}:{record['core_start']}-{record['core_end']}"
-        )
-
     run_root = output_dir.parent
-    output_spine = output_dir / LATENT_SPINE_FILENAME
-    latent_spine = spine.copy()
-    latent_spine.uns["latent_source_spine"] = relative_uns_path(spine_path, run_root)
-    latent_spine.uns["latent_task_catalog"] = relative_uns_path(catalog_path, run_root)
-    latent_spine.uns["latent_store"] = relative_uns_path(output_dir / LATENT_STORE_SUBDIR, run_root)
-    latent_spine.uns["latent_filter_mask"] = filter_mask or ""
-    latent_spine.uns["latent_schema_version"] = 1
-    latent_spine.uns["latent_coordinate_scope"] = "reference_core"
-    safe_write_h5ad(latent_spine, output_spine, backup=False, verbose=False)
-    write_experiment_spine(run_root)
+    generation_id = uuid4().hex
+    staging_dir = output_dir / ".staging" / generation_id
+    final_dir = output_dir / LATENT_GENERATIONS_SUBDIR / generation_id
+    staging_dir.mkdir(parents=True)
+    final_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    manifest = sidecar_manifest_path(output_dir)
-    register_sidecar(manifest, "latent_spine", output_spine)
-    register_sidecar(manifest, "latent_source_spine", spine_path)
-    register_sidecar(manifest, "latent_task_catalog", catalog_path)
-    register_sidecar(manifest, "latent_store", output_dir / LATENT_STORE_SUBDIR)
-    register_sidecar(manifest, "latent_plot_catalog", layout.catalog)
-    logger.info("Wrote partitioned latent stage with %d unit(s)", len(records))
+    try:
+        spine = load_spine(spine_path)
+        filter_mask = next(
+            (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
+            None,
+        )
+        records: list[dict[str, object]]
+        if reuse_generation is not None:
+            reuse_generation = Path(reuse_generation)
+            reuse_catalog = pd.read_parquet(reuse_generation / LATENT_TASK_CATALOG)
+            records = reuse_catalog.to_dict("records")
+            shutil.copytree(
+                reuse_generation / LATENT_STORE_SUBDIR,
+                staging_dir / LATENT_STORE_SUBDIR,
+                copy_function=shutil.copy2,
+            )
+            pd.DataFrame(records).to_parquet(staging_dir / LATENT_TASK_CATALOG, index=False)
+        else:
+            units = _analysis_units(spine, filter_mask, spine_path=spine_path)
+            if not units:
+                raise RuntimeError("partitioned latent analysis has no non-empty units")
+            records = []
+            _record_memory_sample("executor_start")
+            # Independently fitted units execute sequentially to avoid multiplying
+            # model and materialization memory.
+            for unit in units:
+                record = execute_latent_unit(spine_path, unit, cfg, staging_dir)
+                if record is not None:
+                    group_path = staging_dir / str(record["group_path"])
+                    record.setdefault("group_sha256", _content_sha256(group_path))
+                    record.setdefault("analysis_planner_version", 1)
+                    records.append(record)
+                _record_memory_sample(
+                    f"unit_complete:{unit['reference']}:{unit['core_start']}-{unit['core_end']}"
+                )
+            if not records:
+                raise RuntimeError(
+                    "partitioned latent analysis has no units meeting latent_min_reads"
+                )
+            pd.DataFrame(records).to_parquet(staging_dir / LATENT_TASK_CATALOG, index=False)
+
+        layout = prepare_analysis_plot_layout(staging_dir, stage="latent", source_spine=spine_path)
+        pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
+        for record in records:
+            result, _ = safe_read_zarr(staging_dir / str(record["group_path"]), verbose=False)
+            _plot_task(result, record, cfg, layout)
+            _record_memory_sample(
+                f"plot_complete:{record['reference']}:{record['core_start']}-{record['core_end']}"
+            )
+
+        generation_spine = staging_dir / LATENT_SPINE_FILENAME
+        latent_spine = spine.copy()
+        latent_spine.uns["latent_source_spine"] = relative_uns_path(spine_path, run_root)
+        latent_spine.uns["latent_task_catalog"] = relative_uns_path(
+            final_dir / LATENT_TASK_CATALOG, run_root
+        )
+        latent_spine.uns["latent_store"] = relative_uns_path(
+            final_dir / LATENT_STORE_SUBDIR, run_root
+        )
+        latent_spine.uns["latent_filter_mask"] = filter_mask or ""
+        latent_spine.uns["latent_schema_version"] = LATENT_TASK_CATALOG_SCHEMA_VERSION
+        latent_spine.uns["latent_generation_id"] = generation_id
+        latent_spine.uns["latent_coordinate_scope"] = "reference_core"
+        safe_write_h5ad(latent_spine, generation_spine, backup=False, verbose=False)
+
+        manifest = sidecar_manifest_path(staging_dir)
+        register_sidecar(manifest, "latent_spine", generation_spine)
+        register_sidecar(manifest, "latent_source_spine", spine_path)
+        register_sidecar(manifest, "latent_task_catalog", staging_dir / LATENT_TASK_CATALOG)
+        register_sidecar(manifest, "latent_store", staging_dir / LATENT_STORE_SUBDIR)
+        register_sidecar(manifest, "latent_plot_catalog", layout.catalog)
+
+        generation_manifest = staging_dir / LATENT_GENERATION_MANIFEST
+        atomic_write_json(
+            generation_manifest,
+            {
+                "schema_version": LATENT_GENERATION_SCHEMA_VERSION,
+                "generation_id": generation_id,
+                "compute_config_hash": stage_config_hash(cfg, "latent"),
+                "plot_config_hash": stage_plot_config_hash(cfg, "latent"),
+                "source": _source_provenance(spine, spine_path, run_root),
+                "analysis_planner_versions": sorted(
+                    {int(record.get("analysis_planner_version", 1)) for record in records}
+                ),
+                "task_catalog_schema_version": LATENT_TASK_CATALOG_SCHEMA_VERSION,
+                "task_count": len(records),
+                "reused_compute_generation": (
+                    Path(reuse_generation).name if reuse_generation is not None else None
+                ),
+            },
+        )
+        task_count = _validate_latent_generation(
+            staging_dir, final_dir=final_dir, run_root=run_root
+        )
+
+        os.replace(staging_dir, final_dir)
+        canonical_spine = output_dir / LATENT_SPINE_FILENAME
+        _atomic_publish_spine(latent_spine, canonical_spine)
+        current = output_dir / LATENT_CURRENT_FILENAME
+        atomic_write_json(
+            current,
+            {
+                "schema_version": 1,
+                "generation_id": generation_id,
+                "generation_path": final_dir.relative_to(output_dir).as_posix(),
+            },
+        )
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+    logger.info(
+        "Published partitioned latent generation %s with %d unit(s)",
+        generation_id,
+        task_count,
+    )
     return {
-        "spine": output_spine,
-        "task_catalog": catalog_path,
-        "store": output_dir / LATENT_STORE_SUBDIR,
-        "plots": layout.root,
-        "plot_catalog": layout.catalog,
-        "manifest": manifest,
+        "spine": canonical_spine,
+        "generation_spine": final_dir / LATENT_SPINE_FILENAME,
+        "task_catalog": final_dir / LATENT_TASK_CATALOG,
+        "store": final_dir / LATENT_STORE_SUBDIR,
+        "plots": final_dir / "plots",
+        "plot_catalog": final_dir / "plots" / "catalog.parquet",
+        "manifest": sidecar_manifest_path(final_dir),
+        "generation_manifest": final_dir / LATENT_GENERATION_MANIFEST,
+        "generation": final_dir,
+        "current": current,
+        "generation_id": generation_id,
+        "task_count": task_count,
     }

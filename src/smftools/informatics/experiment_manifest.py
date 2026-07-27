@@ -83,6 +83,14 @@ def _artifact_path(run_root: Path, artifact: dict[str, Any]) -> Path | None:
     return run_root / path
 
 
+def resolve_artifact_record(
+    run_root: str | Path,
+    artifact: dict[str, Any],
+) -> Path | None:
+    """Resolve one experiment-manifest artifact record to its filesystem path."""
+    return _artifact_path(Path(run_root), artifact)
+
+
 def artifact_record(
     path: str | Path,
     run_root: str | Path,
@@ -113,14 +121,22 @@ def artifact_record(
     payload["kind"] = "directory" if path.is_dir() else "file"
     if path.is_file():
         payload["size_bytes"] = path.stat().st_size
-        if checksum:
-            payload["sha256"] = _sha256(path)
+    if checksum:
+        payload["sha256"] = _sha256(path)
     payload.update(metadata)
     return payload
 
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
+    if path.is_dir():
+        for child in sorted(item for item in path.rglob("*") if item.is_file()):
+            digest.update(child.relative_to(path).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            with child.open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
+        return digest.hexdigest()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
@@ -177,7 +193,12 @@ def record_stage_state(
     allowed = _ALLOWED_STAGE_TRANSITIONS.get(previous_state, frozenset())
     if state not in allowed:
         raise ValueError(f"invalid stage transition for {stage!r}: {previous_state!r} -> {state!r}")
-    entry = {} if state == "planned" else dict(previous)
+    if state == "planned":
+        entry = {}
+        if previous_state == "complete":
+            entry["previous_complete"] = previous
+    else:
+        entry = dict(previous)
     entry["state"] = state
     entry["updated_at"] = _now()
     timestamp_key = {
@@ -209,7 +230,9 @@ def stage_is_complete(
     stage: str,
     *,
     config_hash: str | None = None,
+    input_artifact_ids: list[str] | None = None,
     required_artifacts: tuple[str, ...] = (),
+    extra_matches: dict[str, Any] | None = None,
 ) -> bool:
     """Return whether a compatible stage record and its required artifacts are valid."""
     run_root = Path(run_root)
@@ -222,6 +245,12 @@ def stage_is_complete(
     if state != "complete":
         return False
     if config_hash is not None and entry.get("config_hash") != config_hash:
+        return False
+    if input_artifact_ids is not None and entry.get("input_artifact_ids", []) != input_artifact_ids:
+        return False
+    if extra_matches is not None and any(
+        entry.get(key) != value for key, value in extra_matches.items()
+    ):
         return False
     expected_tasks = entry.get("expected_tasks")
     successful_tasks = entry.get("successful_tasks")
@@ -256,7 +285,7 @@ def stage_is_complete(
         ):
             return False
         expected_sha256 = artifact.get("sha256")
-        if expected_sha256 is not None and path.is_file() and _sha256(path) != expected_sha256:
+        if expected_sha256 is not None and _sha256(path) != expected_sha256:
             return False
         if path.is_file() and not _artifact_is_readable(path):
             return False
