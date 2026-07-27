@@ -1,10 +1,14 @@
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
-from smftools.informatics.derived_read_index import write_derived_read_index
+from smftools.informatics.derived_read_index import (
+    write_derived_read_index,
+    write_latent_read_index,
+)
 from smftools.informatics.molecule_identity import split_pooled_obs_name
 from smftools.informatics.raw_store import write_raw_store
 from smftools.informatics.reference_identity import reference_uid
@@ -146,15 +150,50 @@ def test_same_instrument_read_id_is_independently_addressable(tmp_path):
         ]
     )
     for experiment in ("expA", "expB"):
-        write_raw_store(
+        run_root = tmp_path / experiment
+        raw = write_raw_store(
             rows,
-            tmp_path / experiment / "raw_outputs",
+            run_root / "raw_outputs",
             reference_lengths={"gene_top": 12},
             extra_uns={
                 "reference_uids": {"gene_top": uid},
                 "modality": "direct",
                 "experiment": experiment,
             },
+        )
+        from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
+
+        raw_spine, _ = safe_read_h5ad(raw["spine"], verbose=False)
+        generation_id = f"{experiment}-generation"
+        generation = run_root / "latent_adata_outputs" / "generations" / generation_id
+        write_latent_read_index(
+            generation,
+            obs=raw_spine.obs,
+            record={
+                "reference": "gene_top",
+                "core_start": 0,
+                "core_end": 12,
+                "analysis_core_id": "core-a",
+                "group_sha256": experiment * 16,
+                "obsm_keys": [],
+                "varm_keys": [],
+                "obs_columns": [],
+            },
+            generation_id=generation_id,
+            group_path=(f"latent_adata_outputs/generations/{generation_id}/store/core-a.zarr"),
+            reference_uid=uid,
+            stage_schema_version=3,
+        )
+        raw_spine.uns["latent_read_index"] = (
+            f"latent_adata_outputs/generations/{generation_id}/read_index"
+        )
+        latent_dir = run_root / "latent_adata_outputs"
+        latent_dir.mkdir(parents=True, exist_ok=True)
+        safe_write_h5ad(
+            raw_spine,
+            latent_dir / "spine.h5ad",
+            backup=False,
+            verbose=False,
         )
     project = tmp_path / "project"
     reg.init_project(project)
@@ -171,11 +210,12 @@ def test_same_instrument_read_id_is_independently_addressable(tmp_path):
     catalog = ProjectCatalog.open(project)
     for experiment_uid in combined.obs["experiment_uid"]:
         trace = catalog.lookup_molecule(experiment_uid=str(experiment_uid), read_id="shared-read")
-        assert set(trace["stage"]) == {"raw"}
-        assert trace.iloc[0]["group_path"].endswith(".parquet")
+        assert set(trace["stage"]) == {"raw", "latent"}
+        assert trace.loc[trace["stage"] == "raw", "group_path"].iloc[0].endswith(".parquet")
+        assert trace.loc[trace["stage"] == "latent", "molecule_uid"].nunique() == 1
 
 
-def test_molecule_lookup_traces_all_indexed_stages_without_task_stores(tmp_path):
+def test_molecule_lookup_traces_all_indexed_stages_without_task_stores(tmp_path, monkeypatch):
     from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
 
     uid = reference_uid(SEQUENCE, 12)
@@ -208,17 +248,74 @@ def test_molecule_lookup_traces_all_indexed_stages_without_task_stores(tmp_path)
             ),
         )
 
+    generation_id = "generation-a"
+    generation = run_root / "latent_adata_outputs" / "generations" / generation_id
+    for core_id, core_start, core_end in (("core-a", 0, 8), ("core-b", 4, 12)):
+        write_latent_read_index(
+            generation,
+            obs=raw_spine.obs,
+            record={
+                "reference": "gene_top",
+                "core_start": core_start,
+                "core_end": core_end,
+                "analysis_core_id": core_id,
+                "group_sha256": core_id * 8,
+                "obsm_keys": ["X_pca_signal"],
+                "varm_keys": ["PCs_signal"],
+                "obs_columns": ["leiden_signal"],
+            },
+            generation_id=generation_id,
+            group_path=(f"latent_adata_outputs/generations/{generation_id}/store/{core_id}.zarr"),
+            reference_uid=uid,
+            stage_schema_version=3,
+        )
+    latent_spine = raw_spine.copy()
+    latent_spine.uns["latent_read_index"] = (
+        f"latent_adata_outputs/generations/{generation_id}/read_index"
+    )
+    latent_dir = run_root / "latent_adata_outputs"
+    latent_dir.mkdir(parents=True, exist_ok=True)
+    safe_write_h5ad(latent_spine, latent_dir / "spine.h5ad", backup=False, verbose=False)
+    from smftools.informatics.experiment_spine import write_experiment_spine
+
+    consolidated_path = write_experiment_spine(run_root)
+    consolidated, _ = safe_read_h5ad(consolidated_path, verbose=False)
+    assert consolidated.uns["latent_read_index"] == latent_spine.uns["latent_read_index"]
+
     project = tmp_path / "project"
     reg.init_project(project)
-    reg.add_experiment(project, run_root, experiment_id="experiment")
+    _, entry = reg.add_experiment(project, run_root, experiment_id="experiment")
+    _, refreshed = reg.add_experiment(project, run_root, experiment_id="experiment")
+    assert "latent_read_index" in entry["catalogs"]
+    assert refreshed["catalogs"]["latent_read_index"] == entry["catalogs"]["latent_read_index"]
     experiment_uid = str(raw_spine.uns["experiment_uid"])
     read_id = str(raw_spine.obs["read_id"].iloc[0])
+    monkeypatch.setattr(
+        "anndata.experimental.read_lazy",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lookup must not open latent task stores")
+        ),
+    )
 
     trace = ProjectCatalog.open(project).lookup_molecule(
         experiment_uid=experiment_uid, read_id=read_id
     )
-    assert set(trace["stage"]) == {"raw", "preprocess", "spatial", "hmm"}
+    assert set(trace["stage"]) == {"raw", "preprocess", "spatial", "hmm", "latent"}
     assert trace.loc[trace["stage"] == "hmm", "model_id"].iloc[0] == "model-1"
+    latent_rows = trace.loc[trace["stage"] == "latent"]
+    assert sorted(latent_rows["analysis_core_id"]) == ["core-a", "core-b"]
+    assert latent_rows["latent_generation_id"].nunique() == 1
+
+    relocated = tmp_path / "relocated"
+    relocated.mkdir()
+    shutil.move(run_root, relocated / run_root.name)
+    shutil.move(project, relocated / project.name)
+    moved_trace = ProjectCatalog.open(relocated / project.name).lookup_molecule(
+        experiment_uid=experiment_uid,
+        read_id=read_id,
+    )
+    moved_latent = moved_trace.loc[moved_trace["stage"] == "latent"]
+    assert sorted(moved_latent["analysis_core_id"]) == ["core-a", "core-b"]
 
 
 def test_project_adata_guardrail_refuses_oversized_pool(project_with_two_experiments):

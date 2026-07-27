@@ -491,8 +491,58 @@ def test_partitioned_latent_publishes_catalog_and_thin_spine(tmp_path, monkeypat
         latent_spine.uns["latent_resource_plan"]
         == Path(outputs["resource_plan"]).relative_to(tmp_path).as_posix()
     )
+    assert (
+        latent_spine.uns["latent_read_index"]
+        == Path(outputs["read_index"]).relative_to(tmp_path).as_posix()
+    )
+    assert pd.read_parquet(outputs["read_index"])["stage"].tolist() == ["latent"]
     assert latent_spine.uns["latent_coordinate_scope"] == "reference_core"
     assert Path(outputs["generation"]).parent.name == "generations"
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("missing", "missing group_row"),
+        ("duplicate", "duplicate group_row"),
+        ("out_of_range", "out-of-range group_row"),
+    ],
+)
+def test_latent_publication_validation_rejects_invalid_group_rows(
+    tmp_path, monkeypatch, damage, message
+):
+    source_path = _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    _install_fake_latent_unit(monkeypatch, [])
+    outputs = partitioned_latent.execute_partitioned_latent(
+        source_path,
+        cfg,
+        tmp_path / LATENT_DIR,
+    )
+    index_root = Path(outputs["read_index"])
+    index = pd.read_parquet(index_root)
+    if damage == "missing":
+        index.loc[0, "group_row"] = pd.NA
+    elif damage == "duplicate":
+        index = pd.concat([index, index.iloc[[0]]], ignore_index=True)
+    else:
+        index.loc[0, "group_row"] = 99
+
+    shutil.rmtree(index_root)
+    for bucket, frame in index.groupby("molecule_bucket", dropna=False, observed=True):
+        bucket_dir = index_root / f"molecule_bucket={bucket}"
+        bucket_dir.mkdir(parents=True)
+        frame.drop(columns=["molecule_bucket"]).to_parquet(
+            bucket_dir / "damaged.parquet",
+            index=False,
+        )
+
+    with pytest.raises(RuntimeError, match=message):
+        partitioned_latent._validate_latent_generation(
+            Path(outputs["generation"]),
+            final_dir=Path(outputs["generation"]),
+            run_root=tmp_path,
+        )
 
 
 def test_latent_cli_skips_only_compatible_complete_generation(tmp_path, monkeypatch):

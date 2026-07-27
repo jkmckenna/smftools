@@ -167,10 +167,18 @@ class ProjectCatalog:
         """
         import pyarrow.dataset as ds
 
+        from ..informatics.derived_read_index import molecule_index_bucket
+        from ..informatics.molecule_identity import molecule_uid as build_molecule_uid
+
         if molecule_uid is None and (experiment_uid is None or read_id is None):
             raise ValueError("supply molecule_uid or both experiment_uid and read_id")
         if molecule_uid is not None and (experiment_uid is not None or read_id is not None):
             raise ValueError("molecule_uid cannot be combined with experiment_uid/read_id")
+        lookup_uid = (
+            str(molecule_uid)
+            if molecule_uid is not None
+            else build_molecule_uid(str(experiment_uid), str(read_id))
+        )
 
         frames: list[pd.DataFrame] = []
         for entry in self.experiments():
@@ -182,13 +190,10 @@ class ProjectCatalog:
                 path = Path(path_value)
                 if not path.exists():
                     continue
-                dataset = ds.dataset(path, format="parquet")
-                expression = (
-                    ds.field("molecule_uid") == str(molecule_uid)
-                    if molecule_uid is not None
-                    else (ds.field("experiment_uid") == str(experiment_uid))
-                    & (ds.field("read_id") == str(read_id))
-                )
+                dataset = ds.dataset(path, format="parquet", partitioning="hive")
+                expression = ds.field("molecule_uid") == lookup_uid
+                if "molecule_bucket" in dataset.schema.names:
+                    expression &= ds.field("molecule_bucket") == molecule_index_bucket(lookup_uid)
                 frame = dataset.to_table(filter=expression).to_pandas()
                 if frame.empty:
                     continue
