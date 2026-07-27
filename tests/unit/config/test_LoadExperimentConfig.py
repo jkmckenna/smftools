@@ -43,6 +43,57 @@ def test_latent_partitioned_config_defaults_and_bool_parsing(tmp_path):
     assert cfg.latent_n_pcs == 10
 
 
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"latent_execution_mode": "invalid"}, "latent_execution_mode"),
+        ({"latent_n_pcs": 0}, "latent_n_pcs"),
+        ({"latent_nmf_components": 0}, "latent_nmf_components"),
+        ({"latent_nmf_max_iter": 0}, "latent_nmf_max_iter"),
+        ({"latent_knn_neighbors": 1}, "latent_knn_neighbors"),
+        ({"latent_leiden_resolution": 0}, "latent_leiden_resolution"),
+        ({"latent_min_reads": 1}, "latent_min_reads"),
+        (
+            {"latent_min_reads": 3, "latent_max_fit_reads": 2},
+            "latent_max_fit_reads",
+        ),
+        ({"latent_transform_chunk_reads": 0}, "latent_transform_chunk_reads"),
+        ({"latent_cp_rank": 0}, "latent_cp_rank"),
+        ({"latent_cp_iterations": 0}, "latent_cp_iterations"),
+    ],
+)
+def test_invalid_latent_values_fail_during_config_loading(overrides, message):
+    from smftools.config import ExperimentConfig
+
+    with pytest.raises(ValueError, match=message):
+        ExperimentConfig.from_var_dict(overrides, defaults_map={})
+
+
+def test_disabled_latent_algorithms_ignore_unused_settings():
+    from smftools.config import ExperimentConfig
+
+    config, _ = ExperimentConfig.from_var_dict(
+        {
+            "latent_run_pca_umap": False,
+            "latent_n_pcs": 0,
+            "latent_knn_neighbors": 0,
+            "latent_leiden_resolution": 0,
+            "latent_min_reads": 0,
+            "latent_max_fit_reads": -1,
+            "latent_run_nmf": False,
+            "latent_nmf_components": 0,
+            "latent_nmf_max_iter": 0,
+            "latent_transform_chunk_reads": 0,
+            "latent_run_cp": False,
+            "latent_cp_rank": 0,
+            "latent_cp_iterations": 0,
+        },
+        defaults_map={},
+    )
+
+    assert config.validate_latent() == []
+
+
 def test_partitioned_hmm_fit_selection_defaults():
     from smftools.cli.helpers import load_experiment_config
 
