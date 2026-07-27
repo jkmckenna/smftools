@@ -20,7 +20,7 @@ from .physical_layout import portable_parquet_row_group_rows
 
 DERIVED_READ_INDEX_DIRNAME = "read_index"
 DERIVED_READ_INDEX_SCHEMA_VERSION = 1
-LATENT_READ_INDEX_SCHEMA_VERSION = 2
+LATENT_READ_INDEX_SCHEMA_VERSION = 3
 _LATENT_MOLECULE_BUCKET_LENGTH = 2
 
 
@@ -181,6 +181,10 @@ def write_latent_read_index(
     task_checksum = str(record.get("group_sha256", ""))
     if not task_checksum:
         raise ValueError(f"latent task {analysis_core_id!r} lacks a task checksum")
+    model_id = str(record.get("model_id", ""))
+    model_checksum = str(record.get("model_checksum", ""))
+    if not model_id or not model_checksum:
+        raise ValueError(f"latent task {analysis_core_id!r} lacks model provenance")
 
     rows = []
     for group_row, (read_id, this_molecule_uid) in enumerate(
@@ -206,8 +210,8 @@ def write_latent_read_index(
                 "loading_keys": loading_keys,
                 "label_keys": label_keys,
                 "task_checksum": task_checksum,
-                "model_id": None,
-                "model_checksum": None,
+                "model_id": model_id,
+                "model_checksum": model_checksum,
                 "stage_schema_version": int(stage_schema_version),
                 "index_schema_version": LATENT_READ_INDEX_SCHEMA_VERSION,
             }

@@ -64,6 +64,8 @@ PLOT_CATALOG_COLUMNS = (
     "sample",
     "core_start",
     "core_end",
+    "model_id",
+    "model_checksum",
     "source_manifest",
     "path",
     "created_at",
@@ -146,6 +148,8 @@ def register_plot_artifact(
     sample: str | None = None,
     core_start: int | None = None,
     core_end: int | None = None,
+    model_id: str | None = None,
+    model_checksum: str | None = None,
     source_manifest: str | Path | None = None,
 ) -> Path:
     """Append one generated plot to the stage plot catalog."""
@@ -178,6 +182,8 @@ def register_plot_artifact(
                 "sample": sample,
                 "core_start": core_start,
                 "core_end": core_end,
+                "model_id": model_id,
+                "model_checksum": model_checksum,
                 "source_manifest": (
                     relative_manifest.as_posix() if relative_manifest is not None else None
                 ),

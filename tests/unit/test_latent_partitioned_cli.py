@@ -1140,3 +1140,167 @@ def test_latent_sequential_memory_sample_updates_perf_summary(tmp_path):
     assert sample["sample_label"] == "unit_complete:ref:0-4"
     assert sample["tree_rss_gb"] > 0
     assert records[-1]["peak_tree_rss_gb"] > 0
+
+
+def test_latent_growth_reuses_model_and_transforms_only_new_rows(tmp_path, monkeypatch):
+    initial_ids = [f"read-{index}" for index in range(5)]
+    selection_obs = pd.DataFrame(
+        {"experiment_uid": "injected", "molecule_uid": initial_ids},
+        index=initial_ids,
+    )
+    _, initial_fit = partitioned_latent.deterministic_fit_membership(
+        selection_obs,
+        initial_ids,
+        limit=3,
+        random_state=0,
+        coordinate_owner="core-a",
+    )
+    new_id = None
+    for index in range(100, 200):
+        candidate = f"read-{index}"
+        expanded_ids = [*initial_ids, candidate]
+        expanded_obs = pd.DataFrame(
+            {"experiment_uid": "injected", "molecule_uid": expanded_ids},
+            index=expanded_ids,
+        )
+        _, expanded_fit = partitioned_latent.deterministic_fit_membership(
+            expanded_obs,
+            expanded_ids,
+            limit=3,
+            random_state=0,
+            coordinate_owner="core-a",
+        )
+        if expanded_fit == initial_fit:
+            new_id = candidate
+            break
+    assert new_id is not None
+
+    def fake_materialize(_spine_path, *, read_ids, **_kwargs):
+        read_ids = list(read_ids)
+        result = ad.AnnData(
+            obs=pd.DataFrame(
+                {"experiment_uid": "injected", "molecule_uid": read_ids},
+                index=read_ids,
+            ),
+            var=pd.DataFrame(index=["0", "1", "2", "3"]),
+        )
+        values = np.asarray(
+            [[float(read_id.split("-")[-1])] * 4 for read_id in read_ids],
+            dtype=np.float32,
+        )
+        result.layers["nan_half"] = values
+        result.layers["sequence_integer_encoding"] = values
+        return result
+
+    monkeypatch.setattr(partitioned_latent, "materialize", fake_materialize)
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_build_mod_sites_var_filter_mask",
+        lambda *_args, **_kwargs: np.ones(4, dtype=bool),
+    )
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_build_shared_valid_non_mod_sites_mask",
+        lambda *_args, **_kwargs: np.ones(4, dtype=bool),
+    )
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_build_reference_position_mask",
+        lambda *_args, **_kwargs: np.ones(4, dtype=bool),
+    )
+    fit_calls = []
+
+    def fake_fit(adata, *, layer, mask, suffix, **_kwargs):
+        fit_calls.append(suffix)
+        adata.obsm[f"X_pca_{suffix}"] = np.zeros((adata.n_obs, 2), dtype=np.float32)
+        return {"suffix": suffix, "layer": layer, "mask": mask, "pca": "fitted"}
+
+    transform_calls = []
+
+    def fake_transform(chunk, fitted):
+        transform_calls.extend(chunk.obs_names.astype(str).tolist())
+        return {f"X_pca_{fitted['suffix']}": np.ones((chunk.n_obs, 2), dtype=np.float32)}
+
+    monkeypatch.setattr(partitioned_latent, "_fit_matrix_representations", fake_fit)
+    monkeypatch.setattr(partitioned_latent, "_transform_matrix_representations", fake_transform)
+
+    def fake_decision(
+        _cfg,
+        operation,
+        *,
+        requested_reads,
+        n_positions,
+        minimum_reads,
+        **_kwargs,
+    ):
+        effective = 3 if operation == "fit" else requested_reads
+        return LatentResourceDecision(
+            operation=operation,
+            estimator_version="1",
+            requested_reads=requested_reads,
+            effective_reads=effective,
+            minimum_reads=minimum_reads,
+            n_positions=n_positions,
+            usable_headroom_bytes=1024,
+            predicted_peak_bytes=512,
+            limiting_operation=None,
+            pool_budget={},
+            estimate={},
+        )
+
+    monkeypatch.setattr(partitioned_latent, "resolve_latent_operation", fake_decision)
+    cfg = SimpleNamespace(
+        latent_min_reads=3,
+        latent_max_fit_reads=3,
+        latent_transform_chunk_reads=2,
+        latent_random_state=0,
+        latent_run_pca_umap=True,
+        latent_run_nmf=False,
+        latent_run_cp=False,
+        latent_plot_max_reads=10,
+        layer_for_umap_plotting="nan_half",
+        smf_modality="conversion",
+    )
+    first_dir = tmp_path / "first"
+    first_unit = {
+        "reference": "ref_top",
+        "analysis_mode": "locus",
+        "analysis_core_id": "core-a",
+        "core_start": 0,
+        "core_end": 4,
+        "read_ids": initial_ids,
+        "_source_identity": {"source_stage_generation_id": "source-a"},
+    }
+    first = partitioned_latent.execute_latent_unit(
+        "injected-spine.h5ad", first_unit, cfg, first_dir
+    )
+    first_result, _ = partitioned_latent.safe_read_zarr(
+        first_dir / first["group_path"], verbose=False
+    )
+    old_coordinates = {key: np.asarray(value).copy() for key, value in first_result.obsm.items()}
+
+    fit_calls.clear()
+    transform_calls.clear()
+    second_dir = tmp_path / "second"
+    second_unit = {
+        **first_unit,
+        "read_ids": [*initial_ids, new_id],
+        "_source_identity": {"source_stage_generation_id": "source-b"},
+        "_prior_generation": first_dir.as_posix(),
+        "_prior_record": first,
+    }
+    second = partitioned_latent.execute_latent_unit(
+        "injected-spine.h5ad", second_unit, cfg, second_dir
+    )
+    second_result, _ = partitioned_latent.safe_read_zarr(
+        second_dir / second["group_path"], verbose=False
+    )
+
+    assert second["model_id"] == first["model_id"]
+    assert second["model_checksum"] == first["model_checksum"]
+    assert not fit_calls
+    assert transform_calls == [new_id, new_id]
+    for key, values in old_coordinates.items():
+        np.testing.assert_array_equal(
+            np.asarray(second_result.obsm[key])[: len(initial_ids)], values
+        )

@@ -7,6 +7,7 @@ component axes were shared.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -19,6 +20,16 @@ import numpy as np
 import pandas as pd
 
 from smftools.constants import LATENT_DIR, REFERENCE_STRAND, SEQUENCE_INTEGER_ENCODING
+from smftools.latent_model_artifacts import (
+    LATENT_MODEL_SCHEMA_VERSION,
+    deterministic_fit_membership,
+    fit_membership_digest,
+    latent_model_key,
+    load_latent_model_state,
+    mask_identity,
+    validate_latent_model_artifact,
+    write_latent_model_artifact,
+)
 from smftools.latent_resource import (
     LATENT_RESOURCE_ESTIMATOR_VERSION,
     LatentResourceError,
@@ -66,6 +77,7 @@ from ..optional_imports import require
 from ..readwrite import (
     atomic_write_json,
     safe_read_h5ad,
+    safe_read_zarr,
     safe_write_h5ad,
     safe_write_zarr,
 )
@@ -79,8 +91,9 @@ LATENT_GENERATIONS_SUBDIR = "generations"
 LATENT_CURRENT_FILENAME = "current.json"
 LATENT_GENERATION_MANIFEST = "generation_manifest.json"
 LATENT_RESOURCE_PLAN = "resource_plan.json"
-LATENT_TASK_CATALOG_SCHEMA_VERSION = 3
-LATENT_GENERATION_SCHEMA_VERSION = 1
+LATENT_MODELS_SUBDIR = "models"
+LATENT_TASK_CATALOG_SCHEMA_VERSION = 4
+LATENT_GENERATION_SCHEMA_VERSION = 2
 _LATENT_SOURCE_ESTIMATE_DTYPE = "float64"
 _LATENT_TASK_REQUIRED_COLUMNS = {
     "reference",
@@ -109,6 +122,10 @@ _LATENT_TASK_REQUIRED_COLUMNS = {
     "limiting_operation",
     "cp_skip_reason",
     "resource_decisions",
+    "model_id",
+    "model_checksum",
+    "model_path",
+    "fit_membership_digest",
 }
 _LATENT_INDEX_REQUIRED_COLUMNS = {
     EXPERIMENT_UID_COLUMN,
@@ -128,6 +145,8 @@ _LATENT_INDEX_REQUIRED_COLUMNS = {
     "loading_keys",
     "label_keys",
     "task_checksum",
+    "model_id",
+    "model_checksum",
     "index_schema_version",
 }
 
@@ -208,6 +227,50 @@ def _resource_record_defaults(
         ),
     )
     return record
+
+
+def _ensure_task_model_provenance(
+    record: dict[str, object],
+    *,
+    unit: dict[str, object],
+    spine,
+    output_dir: Path,
+    cfg,
+) -> None:
+    """Backfill a metadata-only model bundle for injected/empty task executors."""
+    group_path = output_dir / str(record["group_path"])
+    result, _ = safe_read_zarr(group_path, verbose=False)
+    existing = dict(result.uns.get("latent_model", {}))
+    required = ("model_id", "model_checksum", "model_path", "fit_membership_digest")
+    if all(str(record.get(key, "")) for key in required) and existing:
+        return
+    names = result.obs_names.astype(str).tolist()
+    source_obs = spine.obs.loc[names]
+    fit_molecule_uids = source_obs[MOLECULE_UID_COLUMN].astype(str).tolist()
+    key = latent_model_key(
+        source_identity=dict(unit.get("_source_identity", {})),
+        analysis_core_id=str(record.get("analysis_core_id", unit.get("analysis_core_id", ""))),
+        representation_specs=[],
+        algorithm_parameters=_model_algorithm_parameters(cfg),
+        fit_molecule_uids=fit_molecule_uids,
+        forced_fit_revision=unit.get("_forced_fit_revision"),
+    )
+    artifact = write_latent_model_artifact(
+        output_dir / LATENT_MODELS_SUBDIR,
+        key=key,
+        state={"matrix_representations": [], "cp_factors": {}, "cp_fit_metadata": {}},
+        fit_molecule_uids=fit_molecule_uids,
+        cp_provenance=[],
+    )
+    payload = {
+        "model_id": artifact.model_id,
+        "model_checksum": artifact.model_checksum,
+        "model_path": artifact.path.relative_to(output_dir).as_posix(),
+        "fit_membership_digest": fit_membership_digest(fit_molecule_uids),
+    }
+    record.update(payload)
+    result.uns["latent_model"] = payload
+    safe_write_zarr(result, group_path, backup=False, verbose=False, zarr_format=3)
 
 
 def _append_resource_decision(
@@ -418,6 +481,21 @@ def _validate_latent_generation(
             raise RuntimeError(f"latent task schema mismatch for {relative_group}")
         if str(record["group_sha256"]) != _content_sha256(group_path):
             raise RuntimeError(f"latent task checksum mismatch for {relative_group}")
+        relative_model = Path(str(record["model_path"]))
+        if relative_model.is_absolute() or ".." in relative_model.parts:
+            raise RuntimeError(f"invalid latent model path: {relative_model}")
+        model = validate_latent_model_artifact(
+            generation_dir / relative_model,
+            expected_model_id=str(record["model_id"]),
+        )
+        if model.model_checksum != str(record["model_checksum"]):
+            raise RuntimeError(f"latent model checksum mismatch for {relative_group}")
+        result_model = dict(result.uns.get("latent_model", {}))
+        if (
+            str(result_model.get("model_id", "")) != model.model_id
+            or str(result_model.get("model_checksum", "")) != model.model_checksum
+        ):
+            raise RuntimeError(f"latent task result model provenance mismatch for {relative_group}")
         try:
             decisions = json.loads(str(record["resource_decisions"]))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -439,6 +517,14 @@ def _validate_latent_generation(
         raise RuntimeError(
             f"latent plot catalog is missing required columns: {missing_plot_columns}"
         )
+    task_models = {
+        (
+            str(record["reference"]),
+            int(record["core_start"]),
+            int(record["core_end"]),
+        ): (str(record["model_id"]), str(record["model_checksum"]))
+        for record in catalog.to_dict("records")
+    }
     for record in plot_catalog.to_dict("records"):
         relative_plot = Path(str(record["path"]))
         if relative_plot.is_absolute() or ".." in relative_plot.parts:
@@ -453,6 +539,22 @@ def _validate_latent_generation(
                 raise RuntimeError(f"invalid latent plot source manifest path: {relative_manifest}")
             if not (generation_dir / relative_manifest).is_file():
                 raise RuntimeError(f"latent plot source manifest is missing: {source_manifest}")
+        expected_model = task_models.get(
+            (
+                str(record["reference"]),
+                int(record["core_start"]),
+                int(record["core_end"]),
+            )
+        )
+        if (
+            expected_model is None
+            or (
+                str(record.get("model_id", "")),
+                str(record.get("model_checksum", "")),
+            )
+            != expected_model
+        ):
+            raise RuntimeError("latent plot model provenance does not match its task")
 
     spine_path = generation_dir / LATENT_SPINE_FILENAME
     latent_spine, _ = safe_read_h5ad(spine_path)
@@ -461,6 +563,7 @@ def _validate_latent_generation(
         "latent_store": relative_uns_path(final_dir / LATENT_STORE_SUBDIR, run_root),
         "latent_read_index": relative_uns_path(final_dir / DERIVED_READ_INDEX_DIRNAME, run_root),
         "latent_resource_plan": relative_uns_path(final_dir / LATENT_RESOURCE_PLAN, run_root),
+        "latent_models": relative_uns_path(final_dir / LATENT_MODELS_SUBDIR, run_root),
     }
     for key, expected_value in expected_pointers.items():
         if latent_spine.uns.get(key) != expected_value:
@@ -520,6 +623,10 @@ def _validate_latent_generation(
             raise RuntimeError(f"latent read index group path mismatch for core {core_id!r}")
         if set(task_rows["task_checksum"].astype(str)) != {str(record["group_sha256"])}:
             raise RuntimeError(f"latent read index checksum mismatch for core {core_id!r}")
+        if set(task_rows["model_id"].astype(str)) != {str(record["model_id"])}:
+            raise RuntimeError(f"latent read index model ID mismatch for core {core_id!r}")
+        if set(task_rows["model_checksum"].astype(str)) != {str(record["model_checksum"])}:
+            raise RuntimeError(f"latent read index model checksum mismatch for core {core_id!r}")
         if task_rows[MOLECULE_UID_COLUMN].astype(str).duplicated().any():
             raise RuntimeError("latent read index contains duplicate molecule/core/generation rows")
 
@@ -545,6 +652,7 @@ def _validate_latent_generation(
         "latent_read_index",
         "latent_plot_catalog",
         "latent_resource_plan",
+        "latent_models",
     ):
         if resolve_sidecar(manifest, key) is None:
             raise RuntimeError(f"latent sidecar manifest cannot resolve {key!r}")
@@ -552,6 +660,18 @@ def _validate_latent_generation(
         generation_manifest = json.load(handle)
     if generation_manifest.get("generation_id") != final_dir.name:
         raise RuntimeError("latent generation manifest ID does not match publication path")
+    if int(generation_manifest.get("schema_version", -1)) != LATENT_GENERATION_SCHEMA_VERSION:
+        raise RuntimeError("latent generation manifest schema version does not match")
+    if (
+        int(generation_manifest.get("task_catalog_schema_version", -1))
+        != LATENT_TASK_CATALOG_SCHEMA_VERSION
+    ):
+        raise RuntimeError("latent task catalog schema version does not match generation")
+    if (
+        int(generation_manifest.get("read_index_schema_version", -1))
+        != LATENT_READ_INDEX_SCHEMA_VERSION
+    ):
+        raise RuntimeError("latent read index schema version does not match generation")
     if int(generation_manifest.get("task_count", -1)) != len(catalog):
         raise RuntimeError("latent generation manifest task count does not match catalog")
     with (generation_dir / LATENT_RESOURCE_PLAN).open("r", encoding="utf-8") as handle:
@@ -562,6 +682,8 @@ def _validate_latent_generation(
         raise RuntimeError("latent resource plan task count does not match catalog")
     if generation_manifest.get("resource_envelope_id") != resource_plan.get("resource_envelope_id"):
         raise RuntimeError("latent resource plan envelope ID does not match generation")
+    if generation_manifest.get("model_schema_version") != LATENT_MODEL_SCHEMA_VERSION:
+        raise RuntimeError("latent model schema version does not match generation")
     resource_units = resource_plan.get("units")
     if not isinstance(resource_units, list) or len(resource_units) != len(catalog):
         raise RuntimeError("latent resource plan unit records do not match task catalog")
@@ -637,10 +759,179 @@ def _matrix(adata, layer: str, mask: np.ndarray, *, non_negative: bool) -> np.nd
 
 
 def _fit_indices(n_reads: int, limit: int, seed: int) -> np.ndarray:
+    """Legacy positional sampler retained for compatibility tests.
+
+    Partitioned execution uses identity-ranked
+    :func:`deterministic_fit_membership` instead.
+    """
     if n_reads <= limit:
         return np.arange(n_reads, dtype=np.int64)
     rng = np.random.default_rng(seed)
     return np.sort(rng.choice(n_reads, size=limit, replace=False))
+
+
+def _model_algorithm_parameters(cfg) -> dict[str, object]:
+    """Return output-affecting parameters for the latent model key."""
+    return {
+        "random_state": int(getattr(cfg, "latent_random_state", 0)),
+        "run_pca_umap": bool(getattr(cfg, "latent_run_pca_umap", True)),
+        "n_pcs": int(getattr(cfg, "latent_n_pcs", 10)),
+        "knn_neighbors": int(getattr(cfg, "latent_knn_neighbors", 15)),
+        "leiden_resolution": float(getattr(cfg, "latent_leiden_resolution", 0.1)),
+        "run_nmf": bool(getattr(cfg, "latent_run_nmf", True)),
+        "nmf_components": int(getattr(cfg, "latent_nmf_components", 2)),
+        "nmf_max_iter": int(getattr(cfg, "latent_nmf_max_iter", 500)),
+        "run_cp": bool(getattr(cfg, "latent_run_cp", True)),
+        "cp_rank": int(getattr(cfg, "latent_cp_rank", 2)),
+        "cp_iterations": int(getattr(cfg, "latent_cp_iterations", 100)),
+        "signal_layer": str(getattr(cfg, "layer_for_umap_plotting", "nan_half")),
+    }
+
+
+def _representation_specs(
+    fitted: list[dict[str, object]],
+    result,
+    *,
+    cp_masks: dict[str, np.ndarray],
+) -> list[dict[str, object]]:
+    """Describe representation types and selected-feature identities."""
+    specs = []
+    for model in fitted:
+        suffix = str(model["suffix"])
+        available = []
+        if "pca" in model or f"X_pca_{suffix}" in result.obsm:
+            available.append("pca")
+        if "umap" in model or f"X_umap_{suffix}" in result.obsm:
+            available.append("umap")
+        if "nmf" in model or f"X_nmf_{suffix}" in result.obsm:
+            available.append("nmf")
+        default_layer = (
+            SEQUENCE_INTEGER_ENCODING
+            if suffix == "shared_valid_ref_sites_integer_sequence_encodings"
+            else "nan_half"
+        )
+        default_mask = (
+            cp_masks["full_ohe_sequence_N_masked"]
+            if suffix == "shared_valid_ref_sites_integer_sequence_encodings"
+            else cp_masks["shared_valid_mod_sites_ohe_sequence_N_masked"]
+        )
+        specs.append(
+            {
+                "suffix": suffix,
+                "types": available,
+                "layer": str(model.get("layer", default_layer)),
+                "feature_mask_identity": mask_identity(
+                    np.asarray(model.get("mask", default_mask), dtype=bool)
+                ),
+            }
+        )
+    for key in sorted(str(value) for value in result.obsm if str(value).startswith("X_cp_")):
+        suffix = key.removeprefix("X_cp_")
+        mask = cp_masks.get(suffix)
+        specs.append(
+            {
+                "suffix": suffix,
+                "types": ["cp"],
+                "layer": SEQUENCE_INTEGER_ENCODING,
+                "feature_mask_identity": mask_identity(mask) if mask is not None else None,
+                "incremental_transform_supported": False,
+            }
+        )
+    return specs
+
+
+def _input_row_digests(
+    adata,
+    *,
+    signal_layer: str,
+    mod_mask: np.ndarray,
+    non_mod_mask: np.ndarray,
+    valid_mask: np.ndarray,
+) -> dict[str, str]:
+    """Hash the model-visible source values for each materialized molecule."""
+    inputs = (
+        (signal_layer, mod_mask),
+        (SEQUENCE_INTEGER_ENCODING, mod_mask),
+        (SEQUENCE_INTEGER_ENCODING, non_mod_mask),
+        (SEQUENCE_INTEGER_ENCODING, valid_mask),
+    )
+    matrices = [
+        _matrix(adata, layer, np.asarray(mask, dtype=bool), non_negative=False)
+        for layer, mask in inputs
+    ]
+    molecule_values = adata.obs.get(MOLECULE_UID_COLUMN)
+    if molecule_values is None:
+        molecule_values = pd.Series(adata.obs_names.astype(str), index=adata.obs_names)
+    digests = {}
+    for row, molecule_uid in enumerate(molecule_values.astype(str)):
+        digest = hashlib.sha256()
+        for matrix in matrices:
+            values = np.ascontiguousarray(matrix[row], dtype=np.float32)
+            digest.update(str(values.shape).encode())
+            digest.update(values.tobytes())
+        digests[str(molecule_uid)] = digest.hexdigest()
+    return digests
+
+
+def _collect_input_row_digests(
+    spine_path: Path,
+    *,
+    reference: str,
+    start: int,
+    end: int,
+    read_ids: list[str],
+    layers: list[str],
+    signal_layer: str,
+    mod_mask: np.ndarray,
+    non_mod_mask: np.ndarray,
+    valid_mask: np.ndarray,
+    chunk_size: int,
+) -> dict[str, str]:
+    """Materialize bounded chunks and hash every model-visible input row."""
+    result: dict[str, str] = {}
+    for chunk_start in range(0, len(read_ids), max(1, int(chunk_size))):
+        chunk = materialize(
+            spine_path,
+            references=reference,
+            read_ids=read_ids[chunk_start : chunk_start + max(1, int(chunk_size))],
+            start=start,
+            end=end,
+            layers=layers,
+        )
+        result.update(
+            _input_row_digests(
+                chunk,
+                signal_layer=signal_layer,
+                mod_mask=mod_mask,
+                non_mod_mask=non_mod_mask,
+                valid_mask=valid_mask,
+            )
+        )
+    return result
+
+
+def _cp_provenance(result) -> list[dict[str, object]]:
+    """Capture CP factors and fit metadata even though CP is not transformable."""
+    records = []
+    for key in sorted(str(value) for value in result.obsm if str(value).startswith("X_cp_")):
+        suffix = key.removeprefix("X_cp_")
+        components_key = f"H_cp_{suffix}"
+        uns_key = f"cp_{suffix}"
+        records.append(
+            {
+                "representation": key,
+                "components": components_key,
+                "fit_metadata": dict(result.uns.get(uns_key, {})),
+                "n_components": int(np.asarray(result.obsm[key]).shape[1]),
+                "n_positions": (
+                    int(np.asarray(result.varm[components_key]).shape[0])
+                    if components_key in result.varm
+                    else 0
+                ),
+                "incremental_transform_supported": False,
+            }
+        )
+    return records
 
 
 def _nearest_labels(points, reference_points, reference_labels) -> np.ndarray:
@@ -932,6 +1223,8 @@ def _plot_task(result, record, cfg, layout) -> None:
                 reference=str(record["reference"]),
                 core_start=int(record["core_start"]),
                 core_end=int(record["core_end"]),
+                model_id=str(record["model_id"]),
+                model_checksum=str(record["model_checksum"]),
             )
     for key in list(result.varm.keys()):
         output = layout.categories["loadings"] / task_label / _component(key)
@@ -958,6 +1251,8 @@ def _plot_task(result, record, cfg, layout) -> None:
                 reference=str(record["reference"]),
                 core_start=int(record["core_start"]),
                 core_end=int(record["core_end"]),
+                model_id=str(record["model_id"]),
+                model_checksum=str(record["model_checksum"]),
             )
 
 
@@ -971,6 +1266,184 @@ def _read_plot_subset(group_path: Path, *, max_reads: int, seed: int):
     rng = np.random.default_rng(seed)
     chosen = np.sort(rng.choice(lazy.n_obs, size=max_reads, replace=False))
     return lazy[chosen, :].to_memory()
+
+
+def _reuse_growth_model(
+    *,
+    spine_path: Path,
+    spine_obs: pd.DataFrame,
+    unit: dict[str, object],
+    cfg,
+    output_dir: Path,
+    fit_adata,
+    fit_molecule_uids: list[str],
+    layers: list[str],
+    signal_layer: str,
+    mod_mask: np.ndarray,
+    non_mod_mask: np.ndarray,
+    valid_mask: np.ndarray,
+) -> tuple[object, list[dict[str, object]], object, list[object], int, dict[str, str]] | None:
+    """Reuse an immutable prior model for verified append-only experiment growth."""
+    prior_record = unit.get("_prior_record")
+    prior_generation = unit.get("_prior_generation")
+    if not isinstance(prior_record, dict) or not prior_generation:
+        return None
+    prior_generation = Path(str(prior_generation))
+    prior_group = prior_generation / str(prior_record["group_path"])
+    prior_result, _ = safe_read_zarr(prior_group, verbose=False)
+    prior_model_path = prior_generation / str(prior_record["model_path"])
+    state, prior_artifact = load_latent_model_state(
+        prior_model_path,
+        expected_model_id=str(prior_record["model_id"]),
+        expected_model_checksum=str(prior_record["model_checksum"]),
+        trusted_local=True,
+    )
+    fitted = list(state.get("matrix_representations", ()))
+    prior_key = dict(prior_artifact.manifest["model_key"])
+    cp_masks = {
+        "shared_valid_mod_sites_ohe_sequence_N_masked": mod_mask,
+        "shared_valid_mod_sites_ohe_sequence_N_masked_non_negative": mod_mask,
+        "non_mod_site_ohe_sequence_N_masked": non_mod_mask,
+        "non_mod_site_ohe_sequence_N_masked_non_negative": non_mod_mask,
+        "full_ohe_sequence_N_masked": valid_mask,
+        "full_ohe_sequence_N_masked_non_negative": valid_mask,
+    }
+    current_models = []
+    for model in fitted:
+        suffix = str(model["suffix"])
+        current_mask = (
+            valid_mask
+            if suffix == "shared_valid_ref_sites_integer_sequence_encodings"
+            else mod_mask
+        )
+        current_models.append(
+            {
+                **model,
+                "layer": (
+                    SEQUENCE_INTEGER_ENCODING
+                    if suffix == "shared_valid_ref_sites_integer_sequence_encodings"
+                    else signal_layer
+                ),
+                "mask": current_mask,
+            }
+        )
+    current_specs = _representation_specs(current_models, prior_result, cp_masks=cp_masks)
+    compatible = (
+        str(prior_key.get("analysis_core_id", "")) == str(unit.get("analysis_core_id", ""))
+        and prior_key.get("algorithm_parameters") == _model_algorithm_parameters(cfg)
+        and prior_key.get("representations") == current_specs
+        and prior_key.get("fit_membership_digest") == fit_membership_digest(fit_molecule_uids)
+        and list(map(str, prior_artifact.manifest.get("fit_molecule_uids", ())))
+        == list(map(str, fit_molecule_uids))
+    )
+    if not compatible:
+        return None
+
+    read_ids = list(map(str, unit["read_ids"]))
+    prior_ids = prior_result.obs_names.astype(str).tolist()
+    prior_set = set(prior_ids)
+    if not prior_set.issubset(read_ids) or len(prior_ids) >= len(read_ids):
+        return None
+    chunk_size = max(1, int(getattr(cfg, "latent_transform_chunk_reads", 2000)))
+    current_digests = _collect_input_row_digests(
+        spine_path,
+        reference=str(unit["reference"]),
+        start=int(unit["core_start"]),
+        end=int(unit["core_end"]),
+        read_ids=read_ids,
+        layers=layers,
+        signal_layer=signal_layer,
+        mod_mask=mod_mask,
+        non_mod_mask=non_mod_mask,
+        valid_mask=valid_mask,
+        chunk_size=chunk_size,
+    )
+    try:
+        prior_digests = json.loads(str(prior_result.uns["latent_input_row_digests"]))
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return None
+    if any(current_digests.get(uid) != digest for uid, digest in prior_digests.items()):
+        return None
+
+    import anndata as ad
+
+    result_decision = resolve_latent_operation(
+        cfg,
+        "result",
+        requested_reads=len(read_ids),
+        n_positions=fit_adata.n_vars,
+        minimum_reads=len(read_ids),
+    )
+    new_ids = [read_id for read_id in read_ids if read_id not in prior_set]
+    transform_decision = resolve_latent_operation(
+        cfg,
+        "transform",
+        requested_reads=min(len(new_ids), chunk_size),
+        n_positions=fit_adata.n_vars,
+        minimum_reads=1,
+        source_dtype=_LATENT_SOURCE_ESTIMATE_DTYPE,
+    )
+    adata = ad.AnnData(obs=spine_obs.loc[read_ids].copy(), var=fit_adata.var.copy())
+    adata.uns.update(dict(prior_result.uns))
+    for key, value in prior_result.varm.items():
+        adata.varm[key] = np.asarray(value)
+    row_lookup = {read_id: index for index, read_id in enumerate(read_ids)}
+    prior_rows = np.asarray([row_lookup[read_id] for read_id in prior_ids])
+    for key, value in prior_result.obsm.items():
+        prior_values = np.asarray(value)
+        adata.obsm[key] = np.full(
+            (len(read_ids), prior_values.shape[1]),
+            np.nan,
+            dtype=prior_values.dtype,
+        )
+        adata.obsm[key][prior_rows] = prior_values
+    label_keys = [key for key in prior_result.obs if str(key).startswith("leiden_")]
+    label_values = {key: np.full(len(read_ids), None, dtype=object) for key in label_keys}
+    for key in label_keys:
+        label_values[key][prior_rows] = prior_result.obs[key].astype(str).to_numpy()
+
+    transform_chunk = transform_decision.effective_reads
+    for chunk_start in range(0, len(new_ids), transform_chunk):
+        chunk_ids = new_ids[chunk_start : chunk_start + transform_chunk]
+        chunk = materialize(
+            spine_path,
+            references=str(unit["reference"]),
+            read_ids=chunk_ids,
+            start=int(unit["core_start"]),
+            end=int(unit["core_end"]),
+            layers=layers,
+        )
+        target_rows = np.asarray([row_lookup[str(name)] for name in chunk.obs_names])
+        for model in fitted:
+            transformed = _transform_matrix_representations(chunk, model)
+            for key, values in transformed.items():
+                if key.startswith("leiden_"):
+                    label_values[key][target_rows] = values
+                else:
+                    adata.obsm[key][target_rows] = values
+    for key, values in label_values.items():
+        adata.obs[key] = pd.Categorical(values)
+
+    destination = output_dir / str(prior_record["model_path"])
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(prior_artifact.path, destination)
+    copied_artifact = validate_latent_model_artifact(
+        destination, expected_model_id=prior_artifact.model_id
+    )
+    logger.info(
+        "Reused latent model %s and transformed %d new molecule(s) for %s",
+        copied_artifact.model_id,
+        len(new_ids),
+        unit.get("analysis_core_id", ""),
+    )
+    return (
+        adata,
+        fitted,
+        copied_artifact,
+        [result_decision, transform_decision],
+        transform_chunk,
+        current_digests,
+    )
 
 
 def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] | None:
@@ -1013,12 +1486,26 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
             [str(getattr(cfg, "layer_for_umap_plotting", "nan_half")), SEQUENCE_INTEGER_ENCODING]
         )
     )
-    fit_positions = _fit_indices(
-        len(read_ids),
-        fit_decision.effective_reads,
-        int(getattr(cfg, "latent_random_state", 0)),
+    if Path(spine_path).is_file():
+        spine_obs = load_spine(spine_path, verbose=False).obs
+    else:
+        # Direct unit-executor callers may inject ``materialize`` without creating
+        # a persisted spine. Keep that test seam deterministic; published stage
+        # execution always takes the validated persisted-spine branch above.
+        spine_obs = pd.DataFrame(
+            {
+                EXPERIMENT_UID_COLUMN: ["injected"] * len(read_ids),
+                MOLECULE_UID_COLUMN: read_ids,
+            },
+            index=read_ids,
+        )
+    fit_read_ids, fit_molecule_uids = deterministic_fit_membership(
+        spine_obs,
+        read_ids,
+        limit=fit_decision.effective_reads,
+        random_state=int(getattr(cfg, "latent_random_state", 0)),
+        coordinate_owner=str(unit.get("analysis_core_id", f"{reference}:{start}-{end}")),
     )
-    fit_read_ids = [read_ids[index] for index in fit_positions]
     fit_adata = materialize(
         spine_path,
         references=reference,
@@ -1027,6 +1514,8 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         end=end,
         layers=layers,
     )
+    if fit_adata.obs_names.astype(str).tolist() != fit_read_ids:
+        fit_adata = fit_adata[fit_read_ids, :].copy()
     measured_peak = max(measured_peak, _memory_sample_bytes())
     references = [reference]
     modality = str(getattr(cfg, "smf_modality", "conversion"))
@@ -1038,27 +1527,52 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
     valid_mask = _build_reference_position_mask(fit_adata, references)
     fit_indices = np.arange(fit_adata.n_obs, dtype=np.int64)
     signal_layer = str(getattr(cfg, "layer_for_umap_plotting", "nan_half"))
-    fitted = [
-        _fit_matrix_representations(
-            fit_adata,
-            layer=signal_layer,
-            mask=mod_mask,
-            suffix="shared_valid_mod_sites_binary_mod_arrays",
-            cfg=cfg,
-            fit_indices=fit_indices,
-        ),
-        _fit_matrix_representations(
-            fit_adata,
-            layer=SEQUENCE_INTEGER_ENCODING,
-            mask=valid_mask,
-            suffix="shared_valid_ref_sites_integer_sequence_encodings",
-            cfg=cfg,
-            fit_indices=fit_indices,
-        ),
-    ]
+    cp_masks = {
+        "shared_valid_mod_sites_ohe_sequence_N_masked": mod_mask,
+        "shared_valid_mod_sites_ohe_sequence_N_masked_non_negative": mod_mask,
+        "non_mod_site_ohe_sequence_N_masked": non_mod_mask,
+        "non_mod_site_ohe_sequence_N_masked_non_negative": non_mod_mask,
+        "full_ohe_sequence_N_masked": valid_mask,
+        "full_ohe_sequence_N_masked_non_negative": valid_mask,
+    }
+    growth = _reuse_growth_model(
+        spine_path=Path(spine_path),
+        spine_obs=spine_obs,
+        unit=unit,
+        cfg=cfg,
+        output_dir=Path(output_dir),
+        fit_adata=fit_adata,
+        fit_molecule_uids=fit_molecule_uids,
+        layers=layers,
+        signal_layer=signal_layer,
+        mod_mask=mod_mask,
+        non_mod_mask=non_mod_mask,
+        valid_mask=valid_mask,
+    )
+    if growth is None:
+        fitted = [
+            _fit_matrix_representations(
+                fit_adata,
+                layer=signal_layer,
+                mask=mod_mask,
+                suffix="shared_valid_mod_sites_binary_mod_arrays",
+                cfg=cfg,
+                fit_indices=fit_indices,
+            ),
+            _fit_matrix_representations(
+                fit_adata,
+                layer=SEQUENCE_INTEGER_ENCODING,
+                mask=valid_mask,
+                suffix="shared_valid_ref_sites_integer_sequence_encodings",
+                cfg=cfg,
+                fit_indices=fit_indices,
+            ),
+        ]
+    else:
+        fitted = []
     measured_peak = max(measured_peak, _memory_sample_bytes())
     cp_skip_reason = ""
-    if bool(getattr(cfg, "latent_run_cp", True)):
+    if growth is None and bool(getattr(cfg, "latent_run_cp", True)):
         if len(read_ids) > int(getattr(cfg, "latent_max_fit_reads", 5000)):
             cp_skip_reason = "unit_exceeds_fit_ceiling"
         elif len(fit_read_ids) != len(read_ids):
@@ -1096,7 +1610,7 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
                 raise LatentResourceError(message)
             logger.warning(message)
 
-    if not fit_adata.obsm:
+    if growth is None and not fit_adata.obsm:
         logger.warning(
             "Skipping latent unit %s:%d-%d: no latent representations could be computed",
             reference,
@@ -1105,7 +1619,19 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         )
         return None
 
-    if len(read_ids) == len(fit_read_ids):
+    if growth is not None:
+        (
+            adata,
+            fitted,
+            model_artifact,
+            growth_decisions,
+            effective_transform_chunk_reads,
+            input_row_digests,
+        ) = growth
+        decisions.extend(growth_decisions)
+        if any(str(key).startswith("X_cp_") for key in adata.obsm):
+            cp_skip_reason = "incremental_transform_unsupported"
+    elif len(read_ids) == len(fit_read_ids):
         adata = fit_adata
         effective_transform_chunk_reads = 0
     else:
@@ -1119,9 +1645,8 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
             minimum_reads=len(read_ids),
         )
         decisions.append(result_decision)
-        spine = load_spine(spine_path, verbose=False)
         adata = ad.AnnData(
-            obs=spine.obs.loc[read_ids].copy(),
+            obs=spine_obs.loc[read_ids].copy(),
             var=fit_adata.var.copy(),
         )
         for key, value in fit_adata.varm.items():
@@ -1188,6 +1713,81 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         "analysis_core_id": str(unit.get("analysis_core_id", "")),
         "analysis_region_ids": list(unit.get("analysis_region_ids", ())),
         "analysis_planner_version": int(unit.get("analysis_planner_version", 1)),
+    }
+    representation_specs = _representation_specs(
+        fitted,
+        adata,
+        cp_masks=cp_masks,
+    )
+    source_identity = dict(unit.get("_source_identity", {}))
+    if not source_identity:
+        source_identity = {
+            "source_spine_sha256": (
+                _content_sha256(Path(spine_path))
+                if Path(spine_path).is_file()
+                else "injected-unit-executor"
+            )
+        }
+    model_key = latent_model_key(
+        source_identity=source_identity,
+        analysis_core_id=str(unit.get("analysis_core_id", "")),
+        representation_specs=representation_specs,
+        algorithm_parameters=_model_algorithm_parameters(cfg),
+        fit_molecule_uids=fit_molecule_uids,
+        forced_fit_revision=unit.get("_forced_fit_revision"),
+    )
+    cp_state = {
+        key: np.asarray(value) for key, value in adata.obsm.items() if str(key).startswith("X_cp_")
+    }
+    cp_state.update(
+        {
+            key: np.asarray(value)
+            for key, value in adata.varm.items()
+            if str(key).startswith("H_cp_")
+        }
+    )
+    if growth is None:
+        model_artifact = write_latent_model_artifact(
+            Path(output_dir) / LATENT_MODELS_SUBDIR,
+            key=model_key,
+            state={
+                "matrix_representations": fitted,
+                "cp_factors": cp_state,
+                "cp_fit_metadata": {
+                    key: dict(value)
+                    for key, value in adata.uns.items()
+                    if str(key).startswith("cp_") and isinstance(value, dict)
+                },
+            },
+            fit_molecule_uids=fit_molecule_uids,
+            cp_provenance=_cp_provenance(adata),
+        )
+        digest_chunk_size = max(
+            1,
+            int(
+                effective_transform_chunk_reads
+                or getattr(cfg, "latent_transform_chunk_reads", 2000)
+            ),
+        )
+        input_row_digests = _collect_input_row_digests(
+            Path(spine_path),
+            reference=reference,
+            start=start,
+            end=end,
+            read_ids=read_ids,
+            layers=layers,
+            signal_layer=signal_layer,
+            mod_mask=mod_mask,
+            non_mod_mask=non_mod_mask,
+            valid_mask=valid_mask,
+            chunk_size=digest_chunk_size,
+        )
+    adata.uns["latent_input_row_digests"] = json.dumps(input_row_digests, sort_keys=True)
+    adata.uns["latent_model"] = {
+        "model_id": model_artifact.model_id,
+        "model_checksum": model_artifact.model_checksum,
+        "model_path": model_artifact.path.relative_to(output_dir).as_posix(),
+        "fit_membership_digest": fit_membership_digest(fit_molecule_uids),
     }
     write_decision = resolve_latent_operation(
         cfg,
@@ -1266,6 +1866,10 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
             },
             sort_keys=True,
         ),
+        "model_id": model_artifact.model_id,
+        "model_checksum": model_artifact.model_checksum,
+        "model_path": model_artifact.path.relative_to(output_dir).as_posix(),
+        "fit_membership_digest": fit_membership_digest(fit_molecule_uids),
     }
 
 
@@ -1293,6 +1897,16 @@ def execute_partitioned_latent(
 
     try:
         spine = load_spine(spine_path)
+        source_provenance = _source_provenance(spine, spine_path, run_root)
+        source_identity = {
+            "source_stage": source_provenance.get("source_stage"),
+            "source_stage_generation_id": source_provenance.get("source_stage_generation_id"),
+            "source_stage_config_hash": source_provenance.get("source_stage_config_hash"),
+            "source_spine_sha256": source_provenance["source_spine"].get("sha256"),
+        }
+        forced_fit_revision = (
+            generation_id if bool(getattr(cfg, "force_redo_latent_analyses", False)) else None
+        )
         envelope = resource_envelope_for_config(cfg)
         envelope_identity = resource_envelope_id(envelope)
         filter_mask = next(
@@ -1311,20 +1925,61 @@ def execute_partitioned_latent(
                 staging_dir / LATENT_STORE_SUBDIR,
                 copy_function=shutil.copy2,
             )
+            shutil.copytree(
+                reuse_generation / LATENT_MODELS_SUBDIR,
+                staging_dir / LATENT_MODELS_SUBDIR,
+                copy_function=shutil.copy2,
+            )
             pd.DataFrame(records).to_parquet(staging_dir / LATENT_TASK_CATALOG, index=False)
         else:
             units = _analysis_units(spine, filter_mask, spine_path=spine_path)
             if not units:
                 raise RuntimeError("partitioned latent analysis has no non-empty units")
+            prior_generation = None
+            prior_records: dict[str, dict[str, object]] = {}
+            current_path = output_dir / LATENT_CURRENT_FILENAME
+            if forced_fit_revision is None and current_path.is_file():
+                with current_path.open(encoding="utf-8") as handle:
+                    current_payload = json.load(handle)
+                candidate = output_dir / str(current_payload.get("generation_path", ""))
+                candidate_catalog = candidate / LATENT_TASK_CATALOG
+                if candidate.is_dir() and candidate_catalog.is_file():
+                    prior_generation = candidate
+                    prior_records = {
+                        str(record.get("analysis_core_id", "")): record
+                        for record in pd.read_parquet(candidate_catalog).to_dict("records")
+                        if all(
+                            str(record.get(key, ""))
+                            for key in (
+                                "analysis_core_id",
+                                "model_id",
+                                "model_checksum",
+                                "model_path",
+                            )
+                        )
+                    }
             records = []
             _record_memory_sample("executor_start")
             # Independently fitted units execute sequentially to avoid multiplying
             # model and materialization memory.
             for unit in units:
+                unit["_source_identity"] = source_identity
+                unit["_forced_fit_revision"] = forced_fit_revision
+                prior_record = prior_records.get(str(unit.get("analysis_core_id", "")))
+                if prior_generation is not None and prior_record is not None:
+                    unit["_prior_generation"] = prior_generation.as_posix()
+                    unit["_prior_record"] = prior_record
                 record = execute_latent_unit(spine_path, unit, cfg, staging_dir)
                 if record is not None:
+                    _ensure_task_model_provenance(
+                        record,
+                        unit=unit,
+                        spine=spine,
+                        output_dir=staging_dir,
+                        cfg=cfg,
+                    )
                     group_path = staging_dir / str(record["group_path"])
-                    record.setdefault("group_sha256", _content_sha256(group_path))
+                    record["group_sha256"] = _content_sha256(group_path)
                     record["analysis_core_id"] = str(
                         record.get("analysis_core_id") or unit.get("analysis_core_id") or ""
                     )
@@ -1445,6 +2100,9 @@ def execute_partitioned_latent(
         latent_spine.uns["latent_resource_plan"] = relative_uns_path(
             final_dir / LATENT_RESOURCE_PLAN, run_root
         )
+        latent_spine.uns["latent_models"] = relative_uns_path(
+            final_dir / LATENT_MODELS_SUBDIR, run_root
+        )
         latent_spine.uns["latent_filter_mask"] = filter_mask or ""
         latent_spine.uns["latent_schema_version"] = LATENT_TASK_CATALOG_SCHEMA_VERSION
         latent_spine.uns["latent_generation_id"] = generation_id
@@ -1459,6 +2117,7 @@ def execute_partitioned_latent(
         register_sidecar(manifest, "latent_read_index", read_index)
         register_sidecar(manifest, "latent_plot_catalog", layout.catalog)
         register_sidecar(manifest, "latent_resource_plan", resource_plan)
+        register_sidecar(manifest, "latent_models", staging_dir / LATENT_MODELS_SUBDIR)
 
         generation_manifest = staging_dir / LATENT_GENERATION_MANIFEST
         atomic_write_json(
@@ -1468,12 +2127,13 @@ def execute_partitioned_latent(
                 "generation_id": generation_id,
                 "compute_config_hash": stage_config_hash(cfg, "latent"),
                 "plot_config_hash": stage_plot_config_hash(cfg, "latent"),
-                "source": _source_provenance(spine, spine_path, run_root),
+                "source": source_provenance,
                 "analysis_planner_versions": sorted(
                     {int(record.get("analysis_planner_version", 1)) for record in records}
                 ),
                 "task_catalog_schema_version": LATENT_TASK_CATALOG_SCHEMA_VERSION,
                 "read_index_schema_version": LATENT_READ_INDEX_SCHEMA_VERSION,
+                "model_schema_version": LATENT_MODEL_SCHEMA_VERSION,
                 "task_count": len(records),
                 "resource_estimator_version": LATENT_RESOURCE_ESTIMATOR_VERSION,
                 "resource_envelope_id": envelope_identity,
@@ -1549,6 +2209,7 @@ def execute_partitioned_latent(
         "manifest": sidecar_manifest_path(final_dir),
         "generation_manifest": final_dir / LATENT_GENERATION_MANIFEST,
         "resource_plan": final_dir / LATENT_RESOURCE_PLAN,
+        "models": final_dir / LATENT_MODELS_SUBDIR,
         "generation": final_dir,
         "current": current,
         "generation_id": generation_id,

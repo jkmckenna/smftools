@@ -264,6 +264,7 @@ def latent_adata(
             "task_catalog",
             "read_index",
             "store",
+            "models",
         )
         required_complete = (
             "spine",
@@ -277,6 +278,7 @@ def latent_adata(
             "resource_plan",
             "generation",
             "current",
+            "models",
         )
         plot_hash = stage_plot_config_hash(cfg, "latent")
         if not force_redo and partitioned_stage_is_complete(
@@ -329,12 +331,14 @@ def latent_adata(
                     "generation_manifest",
                     "resource_plan",
                     "current",
+                    "models",
                 ),
                 schema_versions={
-                    "generation_manifest": 1,
+                    "generation_manifest": 2,
                     "resource_plan": 1,
-                    "task_catalog": 3,
-                    "read_index": 2,
+                    "task_catalog": 4,
+                    "read_index": 3,
+                    "models": 1,
                 },
                 task_count=int(outputs["task_count"]),
                 extra={
@@ -344,7 +348,7 @@ def latent_adata(
                         reuse_generation.name if reuse_generation is not None else None
                     ),
                 },
-                nonempty_directory_keys=("generation", "read_index", "store"),
+                nonempty_directory_keys=("generation", "read_index", "store", "models"),
             )
             write_experiment_spine(cfg.output_directory)
         return None, outputs["spine"]
