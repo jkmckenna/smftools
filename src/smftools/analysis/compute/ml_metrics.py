@@ -110,6 +110,18 @@ def predict_binary_scores(model, X: np.ndarray) -> np.ndarray:
     raise ValueError("Model does not expose predict_proba or decision_function")
 
 
+def logit_from_probability(p: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    """
+    Convert positive-class probabilities to log-odds (logit) scores.
+
+    Probabilities are clipped to ``[eps, 1 - eps]`` before the transform so
+    that scores of exactly 0 or 1 (common for tree ensembles and CNNs) don't
+    map to +/-inf.
+    """
+    p = np.clip(np.asarray(p, dtype=float), eps, 1.0 - eps)
+    return np.log(p / (1.0 - p))
+
+
 def normalize_pr_auc(pr_auc: float, pos_freq: float) -> float:
     """
     Express PR AUC as fold improvement over the baseline positive frequency.

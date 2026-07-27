@@ -505,3 +505,79 @@ def predict_cnn_scores(
             probs = torch.sigmoid(logits).squeeze(1)
             outs.append(probs.detach().cpu().numpy())
     return np.concatenate(outs).astype(float)
+
+
+class _LogitWrapper(nn.Module):
+    """Strips the final sigmoid so attribution methods explain the raw logit."""
+
+    def __init__(self, inner: nn.Module):
+        super().__init__()
+        self.inner = inner
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.inner(x).squeeze(-1)
+
+
+def integrated_gradients_attributions(
+    trained_model: TrainedCNNModel,
+    X_input: np.ndarray,
+    method: str = "ig",
+    n_steps: int = 32,
+    internal_batch_size: int = 128,
+    example_batch_size: int = 128,
+) -> np.ndarray:
+    """
+    Per-position attribution for a trained CNN, in logit (pre-sigmoid) space.
+
+    ``X_input`` is the already channel-encoded CNN input (see
+    :func:`build_cnn_input`); the attribution baseline is built via
+    :func:`build_cnn_baseline` using ``trained_model.baseline_mode``. Requires
+    the optional ``captum`` dependency.
+
+    Chunks over the example axis in groups of ``example_batch_size``. Captum's own
+    ``internal_batch_size`` only batches across IG's interpolation steps, not across
+    input examples — it cannot go below the number of examples in a single call — so
+    passing a large N in one call allocates roughly N * n_steps worth of activations
+    at once, which can exhaust GPU memory (confirmed via an MPS OOM at N ~74k). This
+    keeps peak memory bounded regardless of how many rows are passed in, and is a
+    no-op (single chunk) for the small N this previously ran fine with.
+
+    Returns an ``(n_reads, n_positions)`` matrix — per-channel attributions
+    summed across channels back onto the position axis.
+    """
+    from captum.attr import DeepLift, IntegratedGradients
+
+    device = trained_model.device
+    wrapped = _LogitWrapper(trained_model.model).to(device)
+    wrapped.eval()
+    if method == "ig":
+        explainer = IntegratedGradients(wrapped)
+    elif method == "deeplift":
+        explainer = DeepLift(wrapped)
+    else:
+        raise ValueError(f"Unsupported attribution method {method!r}")
+
+    n = X_input.shape[0]
+    chunks = []
+    for start in range(0, n, example_batch_size):
+        X_chunk = X_input[start : start + example_batch_size]
+        X_t = torch.tensor(X_chunk, dtype=torch.float32, device=device)
+        baseline = build_cnn_baseline(
+            X_chunk,
+            include_positional=trained_model.include_positional,
+            include_spacing=trained_model.include_spacing,
+            include_design_mask=trained_model.include_design_mask,
+            baseline_mode=trained_model.baseline_mode,
+        )
+        baseline_t = torch.tensor(baseline, dtype=torch.float32, device=device)
+        if method == "ig":
+            attrs = explainer.attribute(
+                X_t,
+                baselines=baseline_t,
+                n_steps=n_steps,
+                internal_batch_size=min(internal_batch_size, max(1, X_chunk.shape[0])),
+            )
+        else:
+            attrs = explainer.attribute(X_t, baselines=baseline_t)
+        chunks.append(attrs.detach().cpu().numpy().sum(axis=1))
+    return np.concatenate(chunks, axis=0)
