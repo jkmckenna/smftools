@@ -126,14 +126,37 @@ def plot_score_distributions(
     fig, axes = plt.subplots(2, 2, figsize=(6.4, 5.2))
 
     panels = [
-        (axes[0, 0], y_score, (0.0, 1.0), "Predicted probability", "Probability distribution", False),
+        (
+            axes[0, 0],
+            y_score,
+            (0.0, 1.0),
+            "Predicted probability",
+            "Probability distribution",
+            False,
+        ),
         (axes[0, 1], y_logit, logit_range, "Logit (log-odds)", "Logit distribution", False),
         (axes[1, 0], y_score, (0.0, 1.0), "Predicted probability", "Probability density", True),
         (axes[1, 1], y_logit, logit_range, "Logit (log-odds)", "Logit density", True),
     ]
     for ax, values, x_range, xlabel, panel_title, density in panels:
-        ax.hist(values[neg_mask], bins=bins, range=x_range, density=density, alpha=0.55, color="#1f77b4", label="label=0")
-        ax.hist(values[pos_mask], bins=bins, range=x_range, density=density, alpha=0.55, color="#d62728", label="label=1")
+        ax.hist(
+            values[neg_mask],
+            bins=bins,
+            range=x_range,
+            density=density,
+            alpha=0.55,
+            color="#1f77b4",
+            label="label=0",
+        )
+        ax.hist(
+            values[pos_mask],
+            bins=bins,
+            range=x_range,
+            density=density,
+            alpha=0.55,
+            color="#d62728",
+            label="label=1",
+        )
         ax.set_xlabel(xlabel, fontsize=9)
         ax.set_ylabel("Density" if density else "Read count", fontsize=9)
         ax.set_title(panel_title, fontsize=9)
@@ -295,7 +318,12 @@ def plot_read_score_heatmap(
     fig_h = max(3.5, min(14.0, 0.015 * n_rows + 2.0))
     fig = plt.figure(figsize=(8.9 + extra_width, fig_h + 1.4), dpi=dpi)
     gs = fig.add_gridspec(
-        2, len(width_ratios), width_ratios=width_ratios, height_ratios=[1.3, fig_h], wspace=0.12, hspace=0.15
+        2,
+        len(width_ratios),
+        width_ratios=width_ratios,
+        height_ratios=[1.3, fig_h],
+        wspace=0.12,
+        hspace=0.15,
     )
     ax_heat = fig.add_subplot(gs[1, 0])
     ax_input_mean = fig.add_subplot(gs[0, 0], sharex=ax_heat)
@@ -322,7 +350,9 @@ def plot_read_score_heatmap(
             n_ticks = min(10, n_pos)
             tick_idx = np.linspace(0, n_pos - 1, n_ticks, dtype=int)
             ax.set_xticks(tick_idx)
-            ax.set_xticklabels([f"{coords[i]:.0f}" for i in tick_idx], rotation=45, ha="right", fontsize=7)
+            ax.set_xticklabels(
+                [f"{coords[i]:.0f}" for i in tick_idx], rotation=45, ha="right", fontsize=7
+            )
         else:
             ax.set_xticks([])
         ax.set_xlabel(x_label, fontsize=9)
@@ -346,7 +376,13 @@ def plot_read_score_heatmap(
                     .mean()
                     .to_numpy()
                 )
-            ax.plot(x, means, color=label_colors[key], linewidth=1.0, label=label_names.get(key, str(key)))
+            ax.plot(
+                x,
+                means,
+                color=label_colors[key],
+                linewidth=1.0,
+                label=label_names.get(key, str(key)),
+            )
             all_vals.append(means)
         if zero_line:
             ax.axhline(0.0, color="#777777", linewidth=0.8, linestyle="--")
@@ -376,36 +412,82 @@ def plot_read_score_heatmap(
     _plot_mean_by_label(ax_input_mean, matrix_ord, "Input mean (by label)", zero_line=False)
 
     prob_im = ax_prob.imshow(
-        y_score_ord[:, np.newaxis], aspect="auto", cmap="viridis", vmin=0.0, vmax=1.0, interpolation="none"
+        y_score_ord[:, np.newaxis],
+        aspect="auto",
+        cmap="viridis",
+        vmin=0.0,
+        vmax=1.0,
+        interpolation="none",
     )
     ax_prob.set_xticks([])
     ax_prob.tick_params(axis="y", left=False, labelleft=False)
-    ax_prob.text(0.5, 1.01, "Prob.", transform=ax_prob.transAxes, fontsize=7, rotation=45, ha="left", va="bottom")
+    ax_prob.text(
+        0.5,
+        1.01,
+        "Prob.",
+        transform=ax_prob.transAxes,
+        fontsize=7,
+        rotation=45,
+        ha="left",
+        va="bottom",
+    )
 
     logit_abs = float(np.nanmax(np.abs(y_logit_ord))) if y_logit_ord.size else 1.0
     logit_abs = logit_abs if logit_abs > 0 else 1.0
     logit_im = ax_logit.imshow(
-        y_logit_ord[:, np.newaxis], aspect="auto", cmap="coolwarm", vmin=-logit_abs, vmax=logit_abs, interpolation="none"
+        y_logit_ord[:, np.newaxis],
+        aspect="auto",
+        cmap="coolwarm",
+        vmin=-logit_abs,
+        vmax=logit_abs,
+        interpolation="none",
     )
     ax_logit.set_xticks([])
     ax_logit.tick_params(axis="y", left=False, labelleft=False)
-    ax_logit.text(0.5, 1.01, "Logit", transform=ax_logit.transAxes, fontsize=7, rotation=45, ha="left", va="bottom")
+    ax_logit.text(
+        0.5,
+        1.01,
+        "Logit",
+        transform=ax_logit.transAxes,
+        fontsize=7,
+        rotation=45,
+        ha="left",
+        va="bottom",
+    )
 
     label_cmap = mcolors.ListedColormap([label_colors[k] for k in label_keys])
     label_code = np.asarray([label_keys.index(v) for v in y_true_ord], dtype=float)
     ax_label.imshow(
-        label_code[:, np.newaxis], aspect="auto", cmap=label_cmap, vmin=0, vmax=max(len(label_keys) - 1, 1), interpolation="none"
+        label_code[:, np.newaxis],
+        aspect="auto",
+        cmap=label_cmap,
+        vmin=0,
+        vmax=max(len(label_keys) - 1, 1),
+        interpolation="none",
     )
     ax_label.set_xticks([])
     ax_label.tick_params(axis="y", left=False, labelleft=False)
-    ax_label.text(0.5, 1.01, "True", transform=ax_label.transAxes, fontsize=7, rotation=45, ha="left", va="bottom")
+    ax_label.text(
+        0.5,
+        1.01,
+        "True",
+        transform=ax_label.transAxes,
+        fontsize=7,
+        rotation=45,
+        ha="left",
+        va="bottom",
+    )
 
     scores_im = None
     if has_scores:
         if position_score_range is not None:
             score_vmin, score_vmax = position_score_range
         else:
-            score_abs = float(np.nanpercentile(np.abs(scores_ord), 99)) if np.isfinite(scores_ord).any() else 1.0
+            score_abs = (
+                float(np.nanpercentile(np.abs(scores_ord), 99))
+                if np.isfinite(scores_ord).any()
+                else 1.0
+            )
             score_abs = score_abs if score_abs > 0 else 1.0
             score_vmin, score_vmax = -score_abs, score_abs
         scores_im = ax_scores.imshow(
@@ -418,13 +500,17 @@ def plot_read_score_heatmap(
         )
         ax_scores.tick_params(axis="y", left=False, labelleft=False)
         _apply_position_ticks(ax_scores)
-        _plot_mean_by_label(ax_scores_mean, scores_ord, f"{position_score_label} mean (by label)", zero_line=True)
+        _plot_mean_by_label(
+            ax_scores_mean, scores_ord, f"{position_score_label} mean (by label)", zero_line=True
+        )
 
     if has_clusters:
         from smftools.analysis.plot.embeddings import _TAB10
 
         cluster_keys = sorted({str(c) for c in cluster_labels_ord})
-        cluster_cmap = mcolors.ListedColormap([_TAB10[i % len(_TAB10)] for i in range(len(cluster_keys))])
+        cluster_cmap = mcolors.ListedColormap(
+            [_TAB10[i % len(_TAB10)] for i in range(len(cluster_keys))]
+        )
         cluster_index = {name: i for i, name in enumerate(cluster_keys)}
         cluster_code = np.asarray([cluster_index[str(c)] for c in cluster_labels_ord], dtype=float)
         ax_cluster.imshow(
@@ -438,7 +524,14 @@ def plot_read_score_heatmap(
         ax_cluster.set_xticks([])
         ax_cluster.tick_params(axis="y", left=False, labelleft=False)
         ax_cluster.text(
-            0.5, 1.01, cluster_label_name, transform=ax_cluster.transAxes, fontsize=7, rotation=45, ha="left", va="bottom"
+            0.5,
+            1.01,
+            cluster_label_name,
+            transform=ax_cluster.transAxes,
+            fontsize=7,
+            rotation=45,
+            ha="left",
+            va="bottom",
         )
 
     # ax_cbar_col is a gridspec cell reserved purely to host the prob/logit
@@ -464,7 +557,9 @@ def plot_read_score_heatmap(
         cbar_scores.set_label(position_score_label, fontsize=7)
 
     handles = [
-        matplotlib.patches.Patch(facecolor=label_colors[k], edgecolor=label_colors[k], label=label_names.get(k, str(k)))
+        matplotlib.patches.Patch(
+            facecolor=label_colors[k], edgecolor=label_colors[k], label=label_names.get(k, str(k))
+        )
         for k in label_keys
     ]
     fig.legend(

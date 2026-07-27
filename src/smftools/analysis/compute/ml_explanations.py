@@ -52,7 +52,9 @@ def bernoulli_nb_logodds_contributions(pipeline, X: np.ndarray) -> tuple[np.ndar
         feature_log_prob[idx_neg] - neg_log_prob[idx_neg]
     )
     intercept = neg_log_prob[idx_pos] - neg_log_prob[idx_neg]
-    prior_logodds = float(classifier.class_log_prior_[idx_pos] - classifier.class_log_prior_[idx_neg])
+    prior_logodds = float(
+        classifier.class_log_prior_[idx_pos] - classifier.class_log_prior_[idx_neg]
+    )
 
     contributions = X_imp * slope[np.newaxis, :] + intercept[np.newaxis, :]
     return contributions, prior_logodds

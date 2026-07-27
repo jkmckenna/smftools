@@ -64,7 +64,9 @@ def cluster_row_order_by_labels(
 
     def _recurse(indices: np.ndarray, depth: int) -> np.ndarray:
         if depth == len(label_arrays):
-            local_order = cluster_block_order(matrix[indices], method=method, metric=metric, nan_fill=nan_fill)
+            local_order = cluster_block_order(
+                matrix[indices], method=method, metric=metric, nan_fill=nan_fill
+            )
             return indices[local_order]
         arr = label_arrays[depth]
         order = label_orders[depth]

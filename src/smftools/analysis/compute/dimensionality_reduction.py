@@ -244,7 +244,7 @@ def diffusion_map_embedding(
     evals = evals[order]
     evecs = evecs[:, order]
 
-    evals_nontrivial = evals[1 : n_wanted]
+    evals_nontrivial = evals[1:n_wanted]
     evecs_nontrivial = evecs[:, 1:n_wanted]
     scaled = np.power(np.clip(evals_nontrivial, 1e-12, None), diffusion_time)
     latent = evecs_nontrivial * scaled[np.newaxis, :]
@@ -315,7 +315,10 @@ def run_pipeline(
         reduction_model = pca
     elif method == "diffusion_map":
         X_latent, variance_info = diffusion_map_embedding(
-            feat, n_components=min(50, n_reads - 2), n_neighbors=n_neighbors, diffusion_time=diffusion_time
+            feat,
+            n_components=min(50, n_reads - 2),
+            n_neighbors=n_neighbors,
+            diffusion_time=diffusion_time,
         )
         reduction_model = None
     else:
