@@ -1,81 +1,168 @@
-"""Set-level embedding store: PCA -> UMAP -> Leiden over a materialized set, with the
-fitted PCA/UMAP models persisted so a set that *grows* gets its new molecules
-transformed into the existing embedding by default (cheap; existing points' coordinates
-never move) instead of a full refit. Leiden clustering has no equivalent incremental
-transform (a KNN-graph community recompute over a bigger graph can shift boundaries for
-every point, not just new ones), so new points instead get a nearest-neighbor cluster
-assignment against the fixed embedding.
+"""Transactional project-wide embeddings with explicit provenance.
 
-Deliberately keyed independently of ``set_store``'s composition-hash base cache: that
-cache recomputes automatically on *any* resolved-membership change (by design, for
-correctness), but an embedding needs to survive across membership growth in order to be
-extendable at all -- so it lives at ``<set>/embeddings/<embedding_hash>/``, hashed only
-over the parameters that define the embedding itself (feature choice, window, Leiden
-resolution, ...), never over resolved membership.
+An embedding definition identifies the semantic query and algorithm, but never
+its currently resolved membership. Each fit or extension is published as an
+immutable generation beneath that definition. A small atomic ``current.json``
+selects the only generation readers may consume.
 
-Wraps ``smftools.analysis.compute.dimensionality_reduction`` directly (Tier 2, reused
-as-is -- ``run_pipeline``/``umap_from_pca`` were extended to also return their fitted
-PCA/UMAP models specifically to support this). An explicit full refit
-(``force_recompute=True``) archives the previous embedding under ``versions/<timestamp>/``
-first rather than silently overwriting it, since analyses/figures built on stable
-coordinates shouldn't shift underneath them without it being an explicit, visible act.
-
-Final piece of Phase 4, ``dev/project_sample_and_set_stores.md``.
+PCA and UMAP estimators are Python pickle files. They are project-local trusted
+artifacts, not a stable interchange format. Coordinate-only cache reads do not
+unpickle them; extending an existing embedding requires the caller to cross the
+trust boundary explicitly with ``trust_local_models=True``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pickle
+import platform
 import shutil
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 
+from ..readwrite import atomic_write_json
 from .catalog import project_adata
-from .set_store import set_label, sets_root
+from .set_store import resolve_set_members, set_label, sets_root
 
 EMBEDDINGS_DIRNAME = "embeddings"
-VERSIONS_DIRNAME = "versions"
+GENERATIONS_DIRNAME = "generations"
+STAGING_DIRNAME = ".staging"
+CURRENT_FILENAME = "current.json"
+GENERATION_MANIFEST_FILENAME = "generation_manifest.json"
 PCA_MODEL_FILENAME = "pca_model.pkl"
 UMAP_MODEL_FILENAME = "umap_model.pkl"
 PCA_SPACE_FILENAME = "pca_space.npy"
 COORDS_FILENAME = "coords.npy"
 CLUSTERS_FILENAME = "clusters.npy"
 OBS_NAMES_FILENAME = "obs_names.json"
-META_FILENAME = "meta.json"
+ROW_DIGESTS_FILENAME = "feature_row_digests.json"
+
+IDENTITY_SCHEMA_VERSION = 2
+SOURCE_SCHEMA_VERSION = 1
+GENERATION_SCHEMA_VERSION = 1
+EMBEDDING_IMPLEMENTATION_VERSION = 1
+_ARTIFACT_FILENAMES = (
+    PCA_MODEL_FILENAME,
+    UMAP_MODEL_FILENAME,
+    PCA_SPACE_FILENAME,
+    COORDS_FILENAME,
+    CLUSTERS_FILENAME,
+    OBS_NAMES_FILENAME,
+    ROW_DIGESTS_FILENAME,
+)
+_MODEL_DEPENDENCIES = (
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "umap-learn",
+    "pynndescent",
+    "numba",
+)
 
 
 class EmbeddingCompositionError(ValueError):
-    """Raised when the current set no longer contains every previously-embedded read.
+    """Raised when membership shrank or existing feature values changed."""
 
-    Growth (new reads added) is handled automatically; anything else (a read
-    disappeared -- re-registration, removal, ...) needs an explicit
-    ``force_recompute=True`` rather than silently reinterpreting the embedding.
-    """
+
+class EmbeddingCompatibilityError(RuntimeError):
+    """Raised when a stored generation is incompatible or invalid."""
+
+
+class EmbeddingTrustError(RuntimeError):
+    """Raised when an extension would unpickle models without explicit trust."""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _values(value) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(sorted({str(item) for item in value}))
+
+
+def _stable_hash(payload: object, *, length: int | None = None) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    digest = hashlib.sha256(encoded).hexdigest()
+    return digest if length is None else digest[:length]
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _embedding_definition(
-    *, layer, start, end, feature_kind, leiden_resolution, n_neighbors, min_reads, random_state
-) -> dict:
+    *,
+    canonical_reference,
+    set_name,
+    modality,
+    experiments,
+    stage,
+    layer,
+    start,
+    end,
+    feature_kind,
+    leiden_resolution,
+    n_neighbors,
+    min_reads,
+    random_state,
+) -> dict[str, object]:
     return {
-        "identity_schema_version": 1,
-        "layer": layer,
-        "start": start,
-        "end": end,
-        "feature_kind": feature_kind,
-        "leiden_resolution": leiden_resolution,
-        "n_neighbors": n_neighbors,
-        "min_reads": min_reads,
-        "random_state": random_state,
+        "identity_schema_version": IDENTITY_SCHEMA_VERSION,
+        "implementation_version": EMBEDDING_IMPLEMENTATION_VERSION,
+        "canonical_reference": str(canonical_reference),
+        "selection": {
+            "set_name": None if set_name is None else str(set_name),
+            "experiments": list(_values(experiments)),
+            "mode": (
+                "named_set_intersection"
+                if set_name is not None and experiments is not None
+                else "named_set"
+                if set_name is not None
+                else "explicit_experiments"
+                if experiments is not None
+                else "all_active"
+            ),
+        },
+        "modality": list(_values(modality)),
+        "stage": None if stage is None else str(stage),
+        "feature": {
+            "kind": str(feature_kind),
+            "layer": None if layer is None else str(layer),
+            "start": start,
+            "end": end,
+            "coverage_filter_version": 1,
+            "acf_parameters": {"rolling_window": 5, "max_lag": 1000},
+        },
+        "pipeline": {
+            "reduction": "pca",
+            "pca_max_components": 50,
+            "umap_components": 2,
+            "umap_min_dist": 0.3,
+            "leiden_resolution": float(leiden_resolution),
+            "n_neighbors": int(n_neighbors),
+            "min_reads": int(min_reads),
+            "random_state": int(random_state),
+        },
+        "molecule_identity_schema_version": 1,
     }
 
 
-def _definition_hash(definition: dict) -> str:
-    encoded = json.dumps(definition, sort_keys=True, default=str).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()[:16]
+def _definition_hash(definition: dict[str, object]) -> str:
+    return _stable_hash(definition, length=16)
 
 
 def embedding_dir(
@@ -83,6 +170,9 @@ def embedding_dir(
     canonical_reference: str,
     *,
     set_name: str | None = None,
+    modality=None,
+    experiments=None,
+    stage: str | None = None,
     layer: str | None = None,
     start: int | None = None,
     end: int | None = None,
@@ -92,9 +182,13 @@ def embedding_dir(
     min_reads: int = 10,
     random_state: int = 42,
 ) -> Path:
-    """Return the directory a :func:`fit_or_extend_embedding` call with these exact
-    embedding-defining parameters would use -- cheap, does not touch anything."""
+    """Return the stable definition root without reading or creating artifacts."""
     definition = _embedding_definition(
+        canonical_reference=canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
         layer=layer,
         start=start,
         end=end,
@@ -124,93 +218,398 @@ def _make_features(adata, *, feature_kind: str, layer, start, end):
             window &= positions < int(end)
         adata = adata[:, window]
         positions = positions[window]
-
     matrix_source = adata.layers[layer] if layer is not None else adata.X
-    mat = np.asarray(matrix_source, dtype=np.float64)
-    obs_names = list(adata.obs_names)
-
-    mat, positions, obs_names, _ = coverage_filter(mat, positions, obs_names)
+    matrix = np.asarray(matrix_source, dtype=np.float64)
+    obs_names = list(map(str, adata.obs_names))
+    matrix, positions, obs_names, _ = coverage_filter(matrix, positions, obs_names)
     if feature_kind == "acf":
-        feat, valid = make_features_acf(mat, positions)
-        obs_names = [name for name, keep in zip(obs_names, valid) if keep]
+        features, valid = make_features_acf(matrix, positions)
+        obs_names = [name for name, keep in zip(obs_names, valid, strict=True) if keep]
     elif feature_kind == "raw":
-        feat = make_features_raw(mat)
+        features = make_features_raw(matrix)
     else:
         raise ValueError(f"feature_kind must be 'raw' or 'acf', got {feature_kind!r}")
-    return feat, obs_names
+    if len(obs_names) != len(set(obs_names)):
+        raise RuntimeError("project embedding selection contains duplicate molecule identities")
+    return np.ascontiguousarray(features), obs_names
 
 
-def _read_artifacts(directory: Path) -> dict:
-    with (directory / PCA_MODEL_FILENAME).open("rb") as handle:
-        pca_model = pickle.load(handle)
-    with (directory / UMAP_MODEL_FILENAME).open("rb") as handle:
-        umap_model = pickle.load(handle)
+def _feature_digests(features: np.ndarray, obs_names: list[str]) -> tuple[dict[str, str], str]:
+    rows = {}
+    for name, row in zip(obs_names, features, strict=True):
+        contiguous = np.ascontiguousarray(row)
+        digest = hashlib.sha256()
+        digest.update(contiguous.dtype.str.encode())
+        digest.update(str(contiguous.shape).encode())
+        digest.update(contiguous.tobytes())
+        rows[name] = digest.hexdigest()
+    return rows, _stable_hash([[name, rows[name]] for name in obs_names])
+
+
+def _membership_digest(obs_names: list[str]) -> str:
+    return _stable_hash(obs_names)
+
+
+def _portable_path(path: Path, anchor: Path) -> str:
+    return Path(os.path.relpath(path.resolve(), anchor.resolve())).as_posix()
+
+
+def _source_members(project_dir: Path, members: list[dict]) -> list[dict[str, object]]:
+    from ..informatics.experiment_manifest import read_experiment_manifest
+    from .catalog import ProjectCatalog
+
+    entries = {entry["id"]: entry for entry in ProjectCatalog.open(project_dir).experiments()}
+    records = []
+    for member in members:
+        entry = entries[member["experiment"]]
+        stage_record = (
+            read_experiment_manifest(entry["path"]).get("stages", {}).get(member["stage"], {})
+        )
+        if not isinstance(stage_record, dict):
+            stage_record = {}
+        stage_identity = {
+            key: stage_record.get(key)
+            for key in ("generation_id", "config_hash", "schema_versions", "input_artifact_ids")
+            if stage_record.get(key) is not None
+        }
+        spine_path = Path(member["spine_path"])
+        records.append(
+            {
+                "experiment": member["experiment"],
+                "experiment_uid": member["experiment_uid"],
+                "stage": member["stage"],
+                "reference_strands": list(member["reference_strands"]),
+                "spine_path": _portable_path(spine_path, project_dir),
+                "spine_sha256": _file_sha256(spine_path),
+                "stage_generation_id": stage_record.get("generation_id"),
+                "stage_config_hash": stage_record.get("config_hash"),
+                "stage_fingerprint": _stable_hash(stage_identity),
+            }
+        )
+    return records
+
+
+def _dependencies() -> dict[str, str]:
+    values = {"python": platform.python_version()}
+    for package in ("smftools", *_MODEL_DEPENDENCIES):
+        try:
+            values[package] = version(package)
+        except PackageNotFoundError:
+            values[package] = "unknown"
+    return values
+
+
+def _source_snapshot(
+    project_dir: Path,
+    members: list[dict],
+    features: np.ndarray,
+    obs_names: list[str],
+) -> tuple[dict[str, object], dict[str, str]]:
+    row_digests, feature_digest = _feature_digests(features, obs_names)
+    source = {
+        "schema_version": SOURCE_SCHEMA_VERSION,
+        "members": _source_members(project_dir, members),
+        "ordered_molecule_membership_digest": _membership_digest(obs_names),
+        "feature_input_digest": feature_digest,
+        "n_molecules": len(obs_names),
+        "n_features": int(features.shape[1]),
+    }
+    return source, row_digests
+
+
+def _fit_from_scratch(
+    features, obs_names, *, leiden_resolution, min_reads, n_neighbors, random_state
+) -> dict:
+    from ..analysis.compute.dimensionality_reduction import run_pipeline
+
+    result = run_pipeline(
+        features,
+        leiden_resolution=leiden_resolution,
+        min_reads=min_reads,
+        n_neighbors=n_neighbors,
+        random_state=random_state,
+    )
+    if result is None:
+        raise ValueError(f"fewer than min_reads={min_reads} reads survived feature preparation")
+    X_pca, X_umap, clusters, variance, pca_model, umap_model = result
     return {
-        "X_pca": np.load(directory / PCA_SPACE_FILENAME),
-        "X_umap": np.load(directory / COORDS_FILENAME),
-        "clusters": np.load(directory / CLUSTERS_FILENAME),
-        "obs_names": json.loads((directory / OBS_NAMES_FILENAME).read_text()),
+        "X_pca": X_pca,
+        "X_umap": X_umap,
+        "clusters": clusters,
         "pca_model": pca_model,
         "umap_model": umap_model,
-        "meta": json.loads((directory / META_FILENAME).read_text()),
+        "obs_names": obs_names,
+        "explained_variance_ratio": variance.tolist(),
     }
 
 
-def _write_artifacts(
-    directory: Path, *, X_pca, X_umap, clusters, obs_names, pca_model, umap_model, meta
-):
-    directory.mkdir(parents=True, exist_ok=True)
-    np.save(directory / PCA_SPACE_FILENAME, X_pca)
-    np.save(directory / COORDS_FILENAME, X_umap)
-    np.save(directory / CLUSTERS_FILENAME, clusters)
-    (directory / OBS_NAMES_FILENAME).write_text(json.dumps(list(obs_names)))
-    with (directory / PCA_MODEL_FILENAME).open("wb") as handle:
-        pickle.dump(pca_model, handle)
-    with (directory / UMAP_MODEL_FILENAME).open("wb") as handle:
-        pickle.dump(umap_model, handle)
-    (directory / META_FILENAME).write_text(json.dumps(meta, indent=2, sort_keys=True, default=str))
-
-
-def _archive_existing(directory: Path) -> None:
-    """Move an existing embedding's artifacts under versions/<timestamp>/ before a
-    full refit overwrites them -- so a stable coordinate space anyone built figures
-    against never just silently disappears."""
-    artifact_names = [
-        PCA_MODEL_FILENAME,
-        UMAP_MODEL_FILENAME,
-        PCA_SPACE_FILENAME,
-        COORDS_FILENAME,
-        CLUSTERS_FILENAME,
-        OBS_NAMES_FILENAME,
-        META_FILENAME,
-    ]
-    if not any((directory / name).exists() for name in artifact_names):
-        return
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-    archive_dir = directory / VERSIONS_DIRNAME / timestamp
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    for name in artifact_names:
-        path = directory / name
-        if path.exists():
-            shutil.move(str(path), str(archive_dir / name))
-
-
-def _assign_nearest_cluster(
-    new_points: np.ndarray, reference_points: np.ndarray, reference_clusters: np.ndarray
-) -> np.ndarray:
-    """Nearest-neighbor cluster assignment for points added to a fixed embedding.
-
-    Not a Leiden recompute -- Leiden has no clean incremental equivalent (a bigger
-    graph can reshuffle every community, not just the new points), so this simply
-    inherits the label of each new point's single nearest already-embedded neighbor
-    in PCA space.
-    """
+def _assign_nearest_cluster(new_points, reference_points, reference_clusters):
     from sklearn.neighbors import NearestNeighbors
 
-    nn = NearestNeighbors(n_neighbors=1)
-    nn.fit(reference_points)
-    _, indices = nn.kneighbors(new_points)
+    model = NearestNeighbors(n_neighbors=1).fit(reference_points)
+    _, indices = model.kneighbors(new_points)
     return reference_clusters[indices[:, 0]]
+
+
+def _write_generation_artifacts(directory: Path, result: dict, row_digests: dict[str, str]) -> None:
+    np.save(directory / PCA_SPACE_FILENAME, result["X_pca"], allow_pickle=False)
+    np.save(directory / COORDS_FILENAME, result["X_umap"], allow_pickle=False)
+    np.save(directory / CLUSTERS_FILENAME, result["clusters"], allow_pickle=False)
+    atomic_write_json(directory / OBS_NAMES_FILENAME, result["obs_names"])
+    atomic_write_json(directory / ROW_DIGESTS_FILENAME, row_digests)
+    with (directory / PCA_MODEL_FILENAME).open("wb") as handle:
+        pickle.dump(result["pca_model"], handle, protocol=pickle.HIGHEST_PROTOCOL)
+    with (directory / UMAP_MODEL_FILENAME).open("wb") as handle:
+        pickle.dump(result["umap_model"], handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _artifact_checksums(directory: Path) -> dict[str, str]:
+    return {name: _file_sha256(directory / name) for name in _ARTIFACT_FILENAMES}
+
+
+def _validate_generation(
+    directory: Path,
+    *,
+    definition: dict[str, object],
+    expected_generation_id: str | None = None,
+) -> dict[str, object]:
+    manifest_path = directory / GENERATION_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        raise EmbeddingCompatibilityError(f"embedding generation manifest is missing: {directory}")
+    with manifest_path.open(encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    if int(manifest.get("schema_version", -1)) != GENERATION_SCHEMA_VERSION:
+        raise EmbeddingCompatibilityError(
+            "embedding generation schema is incompatible; pass force_recompute=True"
+        )
+    if manifest.get("status") != "complete":
+        raise EmbeddingCompatibilityError("embedding generation is not complete")
+    if manifest.get("definition") != definition:
+        raise EmbeddingCompatibilityError("embedding generation definition does not match its path")
+    if (
+        expected_generation_id is not None
+        and manifest.get("generation_id") != expected_generation_id
+    ):
+        raise EmbeddingCompatibilityError("embedding generation ID does not match current pointer")
+    checksums = manifest.get("artifacts", {})
+    for name in _ARTIFACT_FILENAMES:
+        path = directory / name
+        if not path.is_file() or checksums.get(name) != _file_sha256(path):
+            raise EmbeddingCompatibilityError(f"embedding artifact is missing or corrupt: {name}")
+    obs_names = json.loads((directory / OBS_NAMES_FILENAME).read_text())
+    row_digests = json.loads((directory / ROW_DIGESTS_FILENAME).read_text())
+    X_pca = np.load(directory / PCA_SPACE_FILENAME, allow_pickle=False)
+    X_umap = np.load(directory / COORDS_FILENAME, allow_pickle=False)
+    clusters = np.load(directory / CLUSTERS_FILENAME, allow_pickle=False)
+    n_obs = len(obs_names)
+    if (
+        len(set(obs_names)) != n_obs
+        or set(row_digests) != set(obs_names)
+        or X_pca.ndim != 2
+        or X_umap.shape != (n_obs, 2)
+        or X_pca.shape[0] != n_obs
+        or clusters.shape != (n_obs,)
+        or int(manifest.get("source", {}).get("n_molecules", -1)) != n_obs
+    ):
+        raise EmbeddingCompatibilityError("embedding generation arrays or identities are invalid")
+    return manifest
+
+
+def _resolve_current(root: Path, definition: dict[str, object]) -> tuple[Path, dict] | None:
+    pointer_path = root / CURRENT_FILENAME
+    if not pointer_path.exists():
+        legacy = root / "meta.json"
+        if legacy.exists():
+            raise EmbeddingCompatibilityError(
+                "legacy in-place project embedding requires force_recompute=True migration"
+            )
+        return None
+    with pointer_path.open(encoding="utf-8") as handle:
+        pointer = json.load(handle)
+    if int(pointer.get("schema_version", -1)) != 1:
+        raise EmbeddingCompatibilityError("embedding current-pointer schema is incompatible")
+    relative = Path(str(pointer.get("generation_path", "")))
+    generation = (root / relative).resolve()
+    if relative.is_absolute() or not generation.is_relative_to(root.resolve()):
+        raise EmbeddingCompatibilityError("embedding current pointer is not portable")
+    manifest_path = generation / GENERATION_MANIFEST_FILENAME
+    if (
+        pointer.get("manifest_sha256") != _file_sha256(manifest_path)
+        if manifest_path.is_file()
+        else True
+    ):
+        raise EmbeddingCompatibilityError("embedding current manifest checksum does not match")
+    manifest = _validate_generation(
+        generation,
+        definition=definition,
+        expected_generation_id=str(pointer.get("generation_id")),
+    )
+    return generation, manifest
+
+
+def _check_dependencies(manifest: dict[str, object]) -> None:
+    stored = manifest.get("dependencies", {})
+    current = _dependencies()
+    incompatible = {
+        name: (stored.get(name), current.get(name))
+        for name in _MODEL_DEPENDENCIES
+        if stored.get(name) != current.get(name)
+    }
+    if incompatible:
+        raise EmbeddingCompatibilityError(
+            f"embedding model dependencies changed: {incompatible}; pass force_recompute=True"
+        )
+
+
+def _read_generation(
+    directory: Path,
+    manifest: dict,
+    *,
+    load_models: bool,
+) -> dict:
+    result = {
+        "X_pca": np.load(directory / PCA_SPACE_FILENAME, allow_pickle=False),
+        "X_umap": np.load(directory / COORDS_FILENAME, allow_pickle=False),
+        "clusters": np.load(directory / CLUSTERS_FILENAME, allow_pickle=False),
+        "obs_names": json.loads((directory / OBS_NAMES_FILENAME).read_text()),
+        "feature_row_digests": json.loads((directory / ROW_DIGESTS_FILENAME).read_text()),
+        "pca_model": None,
+        "umap_model": None,
+        "explained_variance_ratio": manifest.get("explained_variance_ratio"),
+        "meta": manifest,
+    }
+    if load_models:
+        _check_dependencies(manifest)
+        with (directory / PCA_MODEL_FILENAME).open("rb") as handle:
+            result["pca_model"] = pickle.load(handle)
+        with (directory / UMAP_MODEL_FILENAME).open("rb") as handle:
+            result["umap_model"] = pickle.load(handle)
+    return result
+
+
+def read_embedding(
+    project_dir: str | Path,
+    canonical_reference: str,
+    *,
+    set_name: str | None = None,
+    modality=None,
+    experiments=None,
+    stage: str | None = None,
+    layer: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    feature_kind: str = "raw",
+    leiden_resolution: float = 0.5,
+    n_neighbors: int = 15,
+    min_reads: int = 10,
+    random_state: int = 42,
+    trust_local_models: bool = False,
+) -> dict:
+    """Read the validated current generation without resolving source experiments.
+
+    This is relocation-safe because the current pointer and all generation
+    artifacts are definition-root-relative. Models remain unloaded unless the
+    caller explicitly trusts the local project tree.
+    """
+    definition = _embedding_definition(
+        canonical_reference=canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+        layer=layer,
+        start=start,
+        end=end,
+        feature_kind=feature_kind,
+        leiden_resolution=leiden_resolution,
+        n_neighbors=n_neighbors,
+        min_reads=min_reads,
+        random_state=random_state,
+    )
+    root = embedding_dir(
+        project_dir,
+        canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+        layer=layer,
+        start=start,
+        end=end,
+        feature_kind=feature_kind,
+        leiden_resolution=leiden_resolution,
+        n_neighbors=n_neighbors,
+        min_reads=min_reads,
+        random_state=random_state,
+    )
+    current = _resolve_current(root, definition)
+    if current is None:
+        raise FileNotFoundError(f"no current project embedding for definition: {root}")
+    return _read_generation(*current, load_models=trust_local_models)
+
+
+def _publish_generation(
+    root: Path,
+    *,
+    definition: dict[str, object],
+    source: dict[str, object],
+    row_digests: dict[str, str],
+    result: dict,
+    fit_kind: str,
+    prior_generation_id: str | None,
+    prior_fit_at: str | None,
+) -> tuple[Path, dict]:
+    generation_id = uuid4().hex
+    staging = root / STAGING_DIRNAME / generation_id
+    final = root / GENERATIONS_DIRNAME / generation_id
+    staging.mkdir(parents=True)
+    final.parent.mkdir(parents=True, exist_ok=True)
+    moved_to_final = False
+    try:
+        _write_generation_artifacts(staging, result, row_digests)
+        timestamp = _now()
+        manifest = {
+            "schema_version": GENERATION_SCHEMA_VERSION,
+            "status": "complete",
+            "generation_id": generation_id,
+            "definition_hash": _definition_hash(definition),
+            "definition": definition,
+            "source": source,
+            "dependencies": _dependencies(),
+            "fit_kind": fit_kind,
+            "fit_at": prior_fit_at or timestamp,
+            "extended_at": timestamp if fit_kind == "extended" else None,
+            "refit_at": timestamp if fit_kind == "full" and prior_generation_id else None,
+            "prior_generation_id": prior_generation_id,
+            "n_reads": len(result["obs_names"]),
+            "n_new_reads": (
+                len(result["obs_names"]) - int(result.get("prior_n_reads", 0))
+                if fit_kind == "extended"
+                else 0
+            ),
+            "explained_variance_ratio": result.get("explained_variance_ratio"),
+            "artifacts": _artifact_checksums(staging),
+        }
+        atomic_write_json(staging / GENERATION_MANIFEST_FILENAME, manifest)
+        _validate_generation(staging, definition=definition, expected_generation_id=generation_id)
+        os.replace(staging, final)
+        moved_to_final = True
+        manifest_path = final / GENERATION_MANIFEST_FILENAME
+        atomic_write_json(
+            root / CURRENT_FILENAME,
+            {
+                "schema_version": 1,
+                "generation_id": generation_id,
+                "generation_path": final.relative_to(root).as_posix(),
+                "manifest_sha256": _file_sha256(manifest_path),
+            },
+        )
+        return final, manifest
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        if moved_to_final:
+            shutil.rmtree(final, ignore_errors=True)
+        raise
 
 
 def fit_or_extend_embedding(
@@ -230,32 +629,56 @@ def fit_or_extend_embedding(
     min_reads: int = 10,
     random_state: int = 42,
     force_recompute: bool = False,
+    trust_local_models: bool = False,
 ) -> dict:
-    """Fit, extend, or refit a set's PCA/UMAP/Leiden embedding.
+    """Fit, safely read, extend, or explicitly refit a project embedding.
 
-    - **No existing embedding for this definition, or ``force_recompute=True``**: a
-      full fit via ``analysis.compute.dimensionality_reduction.run_pipeline``. A
-      ``force_recompute`` first archives whatever was there under
-      ``versions/<timestamp>/``.
-    - **Existing embedding, and every previously-embedded read is still present in
-      the current materialization (pure growth)**: only the *new* reads' features are
-      ``.transform()``ed through the persisted PCA/UMAP models -- existing
-      coordinates are untouched -- and each new point gets a cluster label by
-      nearest-neighbor lookup against the existing embedding, not a Leiden recompute.
-    - **Existing embedding, but a previously-embedded read is now missing** (the set
-      shrank or changed in some way other than pure growth): raises
-      :class:`EmbeddingCompositionError` unless ``force_recompute=True``, rather than
-      silently reinterpreting what the embedding means.
-
-    Returns a dict: ``{"X_pca", "X_umap", "clusters", "obs_names", "pca_model",
-    "umap_model", "meta"}`` -- the same shape :func:`analysis.compute.
-    dimensionality_reduction.run_pipeline` produces, plus the read-id ordering and a
-    small provenance record.
+    Exact cache hits read validated arrays without unpickling models. Pure
+    membership growth preserves old coordinates and transforms only new
+    molecules, but requires ``trust_local_models=True`` because persisted
+    sklearn/UMAP estimators are pickle files. Removal or changed feature values
+    for an existing molecule requires ``force_recompute=True``.
     """
-    # Pool only the single feature layer (or X, via layers=[]) over the requested
-    # window -- never all ~25 layers at full locus. Feature extraction (PCA/UMAP) needs
-    # exactly one matrix, so projecting to it is what keeps this bounded; allow_large
-    # since embedding legitimately wants the pooled feature matrix in memory.
+    project_dir = Path(project_dir)
+    definition = _embedding_definition(
+        canonical_reference=canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+        layer=layer,
+        start=start,
+        end=end,
+        feature_kind=feature_kind,
+        leiden_resolution=leiden_resolution,
+        n_neighbors=n_neighbors,
+        min_reads=min_reads,
+        random_state=random_state,
+    )
+    root = embedding_dir(
+        project_dir,
+        canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+        layer=layer,
+        start=start,
+        end=end,
+        feature_kind=feature_kind,
+        leiden_resolution=leiden_resolution,
+        n_neighbors=n_neighbors,
+        min_reads=min_reads,
+        random_state=random_state,
+    )
+    members = resolve_set_members(
+        project_dir,
+        canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+    )
     adata = project_adata(
         project_dir,
         canonical_reference,
@@ -268,139 +691,127 @@ def fit_or_extend_embedding(
         end=end,
         allow_large=True,
     )
-    feat, obs_names = _make_features(
+    features, obs_names = _make_features(
         adata, feature_kind=feature_kind, layer=layer, start=start, end=end
     )
+    source, row_digests = _source_snapshot(project_dir, members, features, obs_names)
 
-    directory = embedding_dir(
-        project_dir,
-        canonical_reference,
-        set_name=set_name,
-        layer=layer,
-        start=start,
-        end=end,
-        feature_kind=feature_kind,
-        leiden_resolution=leiden_resolution,
-        n_neighbors=n_neighbors,
-        min_reads=min_reads,
-        random_state=random_state,
-    )
-    existing = None
-    if not force_recompute and (directory / META_FILENAME).exists():
-        existing = _read_artifacts(directory)
-        previous_names = existing["obs_names"]
-        if set(previous_names) - set(obs_names):
+    current = None if force_recompute else _resolve_current(root, definition)
+    if current is not None:
+        generation, manifest = current
+        existing = _read_generation(generation, manifest, load_models=False)
+        old_names = existing["obs_names"]
+        removed = set(old_names).difference(obs_names)
+        if removed:
             raise EmbeddingCompositionError(
-                f"{len(set(previous_names) - set(obs_names))} previously-embedded read(s) are "
-                "no longer present in this set's current materialization -- pass "
-                "force_recompute=True to refit from scratch (the previous embedding "
-                "is archived, not lost)."
+                f"{len(removed)} previously embedded molecule(s) are absent; "
+                "pass force_recompute=True"
             )
-
-    if existing is not None and set(obs_names) == set(existing["obs_names"]):
-        return existing
-
-    if existing is None:
-        result = _fit_from_scratch(
-            feat,
-            obs_names,
-            leiden_resolution=leiden_resolution,
-            min_reads=min_reads,
-            n_neighbors=n_neighbors,
-            random_state=random_state,
+        changed = [
+            name
+            for name in old_names
+            if existing["feature_row_digests"].get(name) != row_digests.get(name)
+        ]
+        if changed:
+            raise EmbeddingCompositionError(
+                f"{len(changed)} existing molecule(s) have changed feature values; "
+                "pass force_recompute=True"
+            )
+        previous_members = {
+            (item["experiment"], item["experiment_uid"]): item
+            for item in manifest["source"]["members"]
+        }
+        current_members = {
+            (item["experiment"], item["experiment_uid"]): item for item in source["members"]
+        }
+        changed_sources = [
+            owner
+            for owner, record in previous_members.items()
+            if current_members.get(owner) != record
+        ]
+        if changed_sources:
+            raise EmbeddingCompositionError(
+                f"{len(changed_sources)} existing experiment source(s) changed; "
+                "pass force_recompute=True"
+            )
+        if set(old_names) == set(obs_names) and old_names != obs_names:
+            raise EmbeddingCompositionError(
+                "existing molecule order changed; pass force_recompute=True"
+            )
+        if (
+            old_names == obs_names
+            and manifest["source"]["feature_input_digest"] == source["feature_input_digest"]
+        ):
+            return existing
+        if not trust_local_models:
+            raise EmbeddingTrustError(
+                "embedding growth requires trusted local pickle models; rerun with "
+                "trust_local_models=True only for a trusted project tree"
+            )
+        existing = _read_generation(generation, manifest, load_models=True)
+        obs_index = {name: index for index, name in enumerate(obs_names)}
+        new_names = [name for name in obs_names if name not in set(old_names)]
+        new_features = features[[obs_index[name] for name in new_names]]
+        new_X_pca = existing["pca_model"].transform(new_features)
+        new_X_umap = existing["umap_model"].transform(new_X_pca)
+        new_clusters = _assign_nearest_cluster(new_X_pca, existing["X_pca"], existing["clusters"])
+        result = {
+            "X_pca": np.vstack((existing["X_pca"], new_X_pca)),
+            "X_umap": np.vstack((existing["X_umap"], new_X_umap)),
+            "clusters": np.concatenate((existing["clusters"], new_clusters)),
+            "obs_names": old_names + new_names,
+            "pca_model": existing["pca_model"],
+            "umap_model": existing["umap_model"],
+            "explained_variance_ratio": manifest.get("explained_variance_ratio"),
+            "prior_n_reads": len(old_names),
+        }
+        ordered_digests = {name: row_digests[name] for name in result["obs_names"]}
+        final, published = _publish_generation(
+            root,
+            definition=definition,
+            source={
+                **source,
+                "ordered_molecule_membership_digest": _membership_digest(result["obs_names"]),
+                "feature_input_digest": _stable_hash(
+                    [[name, ordered_digests[name]] for name in result["obs_names"]]
+                ),
+            },
+            row_digests=ordered_digests,
+            result=result,
+            fit_kind="extended",
+            prior_generation_id=manifest["generation_id"],
+            prior_fit_at=manifest["fit_at"],
         )
-        explained_variance_ratio = result.pop("explained_variance_ratio")
-        meta = {
-            "canonical_reference": canonical_reference,
-            "set_name": set_name,
-            "definition": _embedding_definition(
-                layer=layer,
-                start=start,
-                end=end,
-                feature_kind=feature_kind,
-                leiden_resolution=leiden_resolution,
-                n_neighbors=n_neighbors,
-                min_reads=min_reads,
-                random_state=random_state,
-            ),
-            "n_reads": len(obs_names),
-            "fit_kind": "full",
-            "fit_at": datetime.now(timezone.utc).isoformat(),
-            "explained_variance_ratio": explained_variance_ratio,
-        }
-        if force_recompute:
-            _archive_existing(directory)
-        _write_artifacts(directory, obs_names=obs_names, meta=meta, **result)
-        return {
-            **result,
-            "obs_names": obs_names,
-            "meta": meta,
-            "explained_variance_ratio": explained_variance_ratio,
-        }
+        return _read_generation(final, published, load_models=True)
 
-    # Pure growth: transform the new reads only.
-    obs_index = {name: i for i, name in enumerate(obs_names)}
-    new_names = [name for name in obs_names if name not in set(existing["obs_names"])]
-    new_rows = np.asarray([obs_index[name] for name in new_names], dtype=np.int64)
-    new_feat = feat[new_rows]
-
-    new_X_pca = existing["pca_model"].transform(new_feat)
-    new_X_umap = existing["umap_model"].transform(new_X_pca)
-    new_clusters = _assign_nearest_cluster(new_X_pca, existing["X_pca"], existing["clusters"])
-
-    combined_obs_names = existing["obs_names"] + new_names
-    combined_X_pca = np.vstack([existing["X_pca"], new_X_pca])
-    combined_X_umap = np.vstack([existing["X_umap"], new_X_umap])
-    combined_clusters = np.concatenate([existing["clusters"], new_clusters])
-
-    meta = {
-        **existing["meta"],
-        "n_reads": len(combined_obs_names),
-        "fit_kind": "extended",
-        "extended_at": datetime.now(timezone.utc).isoformat(),
-        "n_new_reads": len(new_names),
-    }
-    _write_artifacts(
-        directory,
-        X_pca=combined_X_pca,
-        X_umap=combined_X_umap,
-        clusters=combined_clusters,
-        obs_names=combined_obs_names,
-        pca_model=existing["pca_model"],
-        umap_model=existing["umap_model"],
-        meta=meta,
-    )
-    return {
-        "X_pca": combined_X_pca,
-        "X_umap": combined_X_umap,
-        "clusters": combined_clusters,
-        "obs_names": combined_obs_names,
-        "pca_model": existing["pca_model"],
-        "umap_model": existing["umap_model"],
-        "meta": meta,
-    }
-
-
-def _fit_from_scratch(
-    feat, obs_names, *, leiden_resolution, min_reads, n_neighbors, random_state
-) -> dict:
-    from ..analysis.compute.dimensionality_reduction import run_pipeline
-
-    result = run_pipeline(
-        feat,
+    result = _fit_from_scratch(
+        features,
+        obs_names,
         leiden_resolution=leiden_resolution,
         min_reads=min_reads,
         n_neighbors=n_neighbors,
         random_state=random_state,
     )
-    if result is None:
-        raise ValueError(f"fewer than min_reads={min_reads} reads survived feature preparation")
-    X_pca, X_umap, clusters, explained_variance_ratio, pca_model, umap_model = result
-    return {
-        "X_pca": X_pca,
-        "X_umap": X_umap,
-        "clusters": clusters,
-        "pca_model": pca_model,
-        "umap_model": umap_model,
-        "explained_variance_ratio": explained_variance_ratio.tolist(),
-    }
+    prior = None
+    if force_recompute and (root / CURRENT_FILENAME).exists():
+        try:
+            prior = _resolve_current(root, definition)
+        except EmbeddingCompatibilityError:
+            # A forced refit may repair a corrupt/incompatible pointer. Immutable
+            # generation directories are retained even when they cannot be trusted
+            # enough to name as the new generation's validated predecessor.
+            prior = None
+    prior_manifest = prior[1] if prior is not None else None
+    final, published = _publish_generation(
+        root,
+        definition=definition,
+        source=source,
+        row_digests=row_digests,
+        result=result,
+        fit_kind="full",
+        prior_generation_id=(
+            str(prior_manifest["generation_id"]) if prior_manifest is not None else None
+        ),
+        prior_fit_at=None,
+    )
+    return _read_generation(final, published, load_models=True)

@@ -1,3 +1,7 @@
+import json
+import shutil
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -5,11 +9,15 @@ import pytest
 from smftools.informatics.raw_store import write_raw_store
 from smftools.informatics.reference_identity import reference_uid
 from smftools.project.embedding_store import (
+    CURRENT_FILENAME,
+    EmbeddingCompatibilityError,
     EmbeddingCompositionError,
+    EmbeddingTrustError,
     embedding_dir,
     fit_or_extend_embedding,
+    read_embedding,
 )
-from smftools.project.registry import add_experiment, init_project
+from smftools.project.registry import add_experiment, add_set, init_project, remove_experiment
 
 SEQUENCE = "ACGTACGTACGT"
 NPOS = 12
@@ -86,25 +94,36 @@ def test_fit_or_extend_embedding_full_fit(tmp_path):
     assert result["meta"]["fit_kind"] == "full"
 
     directory = embedding_dir(proj, uid, min_reads=5, n_neighbors=5)
-    for filename in (
-        "pca_model.pkl",
-        "umap_model.pkl",
-        "pca_space.npy",
-        "coords.npy",
-        "clusters.npy",
-        "meta.json",
-    ):
-        assert (directory / filename).exists()
+    pointer = json.loads((directory / CURRENT_FILENAME).read_text())
+    generation = directory / pointer["generation_path"]
+    assert generation.is_dir()
+    assert pointer["generation_id"] == result["meta"]["generation_id"]
+    assert result["meta"]["source"]["feature_input_digest"]
+    assert result["meta"]["source"]["ordered_molecule_membership_digest"]
+    assert result["meta"]["dependencies"]["scikit-learn"]
+    source_member = result["meta"]["source"]["members"][0]
+    assert source_member["stage"] == "raw"
+    assert source_member["spine_sha256"]
+    assert not Path(source_member["spine_path"]).is_absolute()
+    for filename in ("pca_model.pkl", "umap_model.pkl", "pca_space.npy", "coords.npy"):
+        assert (generation / filename).exists()
 
 
-def test_fit_or_extend_embedding_second_call_is_a_cache_hit(tmp_path):
+def test_exact_cache_hit_does_not_unpickle_models(tmp_path, monkeypatch):
     proj, uid = _make_project(tmp_path)
     first = fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+
+    def refuse_pickle(*args, **kwargs):
+        raise AssertionError("exact cache hit must not unpickle models")
+
+    monkeypatch.setattr("smftools.project.embedding_store.pickle.load", refuse_pickle)
     second = fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
 
     assert second["obs_names"] == first["obs_names"]
     assert np.array_equal(second["X_pca"], first["X_pca"])
     assert np.array_equal(second["X_umap"], first["X_umap"])
+    assert second["pca_model"] is None
+    assert second["umap_model"] is None
 
 
 def test_fit_or_extend_embedding_extends_on_growth_without_moving_existing_points(tmp_path):
@@ -119,7 +138,15 @@ def test_fit_or_extend_embedding_extends_on_growth_without_moving_existing_point
     )
     add_experiment(proj, tmp_path / "expB")
 
-    extended = fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+    with pytest.raises(EmbeddingTrustError, match="trust_local_models=True"):
+        fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+    extended = fit_or_extend_embedding(
+        proj,
+        uid,
+        min_reads=5,
+        n_neighbors=5,
+        trust_local_models=True,
+    )
 
     assert len(extended["obs_names"]) == 30
     assert extended["meta"]["fit_kind"] == "extended"
@@ -135,9 +162,12 @@ def test_fit_or_extend_embedding_extends_on_growth_without_moving_existing_point
     # Same fitted models are reused, not refit.
     assert extended["pca_model"] is not None
     assert extended["meta"]["fit_at"] == first["meta"]["fit_at"]
+    assert extended["meta"]["prior_generation_id"] == first["meta"]["generation_id"]
+    directory = embedding_dir(proj, uid, min_reads=5, n_neighbors=5)
+    assert len(list((directory / "generations").iterdir())) == 2
 
 
-def test_fit_or_extend_embedding_raises_without_force_recompute_when_reads_disappear(tmp_path):
+def test_removal_requires_force_recompute(tmp_path):
     proj, uid = _make_project(tmp_path, n_blob_a=10, n_blob_b=10, seed=1)
     fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
 
@@ -146,38 +176,157 @@ def test_fit_or_extend_embedding_raises_without_force_recompute_when_reads_disap
         tmp_path / "expB", reference_strand="geneB_top", uid=uid2, n_blob_a=5, n_blob_b=5, seed=2
     )
     add_experiment(proj, tmp_path / "expB")
+    fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5, trust_local_models=True)
+    remove_experiment(proj, "expA")
 
-    # Filtering to only expB excludes every previously-embedded read from expA.
-    with pytest.raises(EmbeddingCompositionError):
-        fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5, experiments=["expB"])
+    with pytest.raises(EmbeddingCompositionError, match="absent"):
+        fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
 
 
-def test_fit_or_extend_embedding_force_recompute_archives_previous_version(tmp_path):
+def test_force_recompute_preserves_previous_generation(tmp_path):
     proj, uid = _make_project(tmp_path, n_blob_a=10, n_blob_b=10, seed=1)
-    fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+    first = fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
 
-    uid2 = reference_uid(SEQUENCE, NPOS)
-    _make_clustered_raw_experiment(
-        tmp_path / "expB", reference_strand="geneB_top", uid=uid2, n_blob_a=5, n_blob_b=5, seed=2
-    )
-    add_experiment(proj, tmp_path / "expB")
-
-    refit = fit_or_extend_embedding(
-        proj, uid, min_reads=5, n_neighbors=5, experiments=["expB"], force_recompute=True
-    )
+    refit = fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5, force_recompute=True)
 
     assert refit["meta"]["fit_kind"] == "full"
-    assert len(refit["obs_names"]) == 10
-
+    assert refit["meta"]["prior_generation_id"] == first["meta"]["generation_id"]
     directory = embedding_dir(proj, uid, min_reads=5, n_neighbors=5)
-    versions_dir = directory / "versions"
-    assert versions_dir.is_dir()
-    archived = list(versions_dir.iterdir())
-    assert len(archived) == 1
-    assert (archived[0] / "meta.json").exists()
+    generations = list((directory / "generations").iterdir())
+    assert len(generations) == 2
+    assert (directory / "generations" / first["meta"]["generation_id"]).is_dir()
 
 
 def test_embedding_dir_is_cheap_and_does_not_create_anything(tmp_path):
     proj, uid = _make_project(tmp_path)
     directory = embedding_dir(proj, uid)
     assert not directory.exists()
+
+
+def test_embedding_definition_has_no_semantic_selection_collisions(tmp_path):
+    proj, uid = _make_project(tmp_path)
+    add_set(proj, "selected", experiments=["expA"])
+    paths = {
+        embedding_dir(proj, uid),
+        embedding_dir(proj, uid, set_name="selected"),
+        embedding_dir(proj, uid, experiments=["expA"]),
+        embedding_dir(proj, uid, modality="direct"),
+        embedding_dir(proj, uid, stage="raw"),
+        embedding_dir(proj, "different-reference"),
+    }
+    assert len(paths) == 6
+
+
+def test_changed_existing_features_require_force_recompute(tmp_path, monkeypatch):
+    proj, uid = _make_project(tmp_path)
+    fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+    from smftools.project import embedding_store
+
+    original = embedding_store._make_features
+
+    def changed_features(*args, **kwargs):
+        features, names = original(*args, **kwargs)
+        features[0, 0] += 0.25
+        return features, names
+
+    monkeypatch.setattr(embedding_store, "_make_features", changed_features)
+    with pytest.raises(EmbeddingCompositionError, match="changed feature values"):
+        fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+
+
+def test_dependency_incompatibility_blocks_extension(tmp_path, monkeypatch):
+    proj, uid = _make_project(tmp_path, n_blob_a=10, n_blob_b=10)
+    fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+    _make_clustered_raw_experiment(
+        tmp_path / "expB",
+        reference_strand="geneB_top",
+        uid=uid,
+        n_blob_a=5,
+        n_blob_b=5,
+        seed=2,
+    )
+    add_experiment(proj, tmp_path / "expB")
+    from smftools.project import embedding_store
+
+    current = embedding_store._dependencies()
+    monkeypatch.setattr(
+        embedding_store,
+        "_dependencies",
+        lambda: {**current, "scikit-learn": "incompatible"},
+    )
+    with pytest.raises(EmbeddingCompatibilityError, match="dependencies changed"):
+        fit_or_extend_embedding(
+            proj,
+            uid,
+            min_reads=5,
+            n_neighbors=5,
+            trust_local_models=True,
+        )
+
+
+def test_interrupted_initial_fit_publishes_no_current_generation(tmp_path, monkeypatch):
+    proj, uid = _make_project(tmp_path)
+    from smftools.project import embedding_store
+
+    original_write = embedding_store.atomic_write_json
+
+    def fail_current(path, *args, **kwargs):
+        if path.name == CURRENT_FILENAME:
+            raise RuntimeError("injected initial publication failure")
+        return original_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(embedding_store, "atomic_write_json", fail_current)
+    with pytest.raises(RuntimeError, match="injected"):
+        fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+    directory = embedding_dir(proj, uid, min_reads=5, n_neighbors=5)
+    assert not (directory / CURRENT_FILENAME).exists()
+    assert not list((directory / "generations").glob("*"))
+
+
+def test_interrupted_extension_keeps_prior_generation_current(tmp_path, monkeypatch):
+    proj, uid = _make_project(tmp_path, n_blob_a=10, n_blob_b=10)
+    first = fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+    _make_clustered_raw_experiment(
+        tmp_path / "expB",
+        reference_strand="geneB_top",
+        uid=uid,
+        n_blob_a=5,
+        n_blob_b=5,
+        seed=2,
+    )
+    add_experiment(proj, tmp_path / "expB")
+    from smftools.project import embedding_store
+
+    original_write = embedding_store.atomic_write_json
+
+    def fail_current(path, *args, **kwargs):
+        if path.name == CURRENT_FILENAME:
+            raise RuntimeError("injected extension failure")
+        return original_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(embedding_store, "atomic_write_json", fail_current)
+    with pytest.raises(RuntimeError, match="injected"):
+        fit_or_extend_embedding(
+            proj,
+            uid,
+            min_reads=5,
+            n_neighbors=5,
+            trust_local_models=True,
+        )
+    directory = embedding_dir(proj, uid, min_reads=5, n_neighbors=5)
+    pointer = json.loads((directory / CURRENT_FILENAME).read_text())
+    assert pointer["generation_id"] == first["meta"]["generation_id"]
+    assert len(list((directory / "generations").iterdir())) == 1
+
+
+def test_relocated_project_embedding_reads_relative_current_generation(tmp_path):
+    proj, uid = _make_project(tmp_path)
+    first = fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+    relocated = tmp_path / "relocated-project"
+    shutil.copytree(proj, relocated)
+
+    moved = read_embedding(relocated, uid, min_reads=5, n_neighbors=5)
+
+    assert moved["meta"]["generation_id"] == first["meta"]["generation_id"]
+    assert np.array_equal(moved["X_umap"], first["X_umap"])
+    assert moved["pca_model"] is None

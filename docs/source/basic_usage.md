@@ -220,6 +220,13 @@ smftools project remove "/Path_to_project_directory" experiment_id
   `project export-latent` to write one independently readable Zarr artifact per coordinate owner,
   with ownership and source checksums in `catalog.parquet`. Use the project embedding API for one
   coordinate system fitted across experiments.
+- Project embeddings are stored as immutable, checksummed generations selected by an atomic
+  `current.json` pointer. Exact cache hits validate and read coordinate arrays without loading
+  estimator pickles. Extending a growing selection requires
+  `fit_or_extend_embedding(..., trust_local_models=True)` and should only be used for a trusted
+  local project tree; pickle models are not a portable or trusted interchange format. Removal,
+  changed values for an existing molecule, or changed source artifacts require an explicit
+  `force_recompute=True`, which preserves prior generations.
 - `smftools project export-fastq ...` (below) and other cross-experiment tooling build on the
   same registry.
 
