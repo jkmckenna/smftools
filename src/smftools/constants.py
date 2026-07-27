@@ -147,6 +147,20 @@ _private_partitioned_stage_required_artifacts = {
         "plot_catalog",
         "manifest",
     ),
+    "latent": (
+        "spine",
+        "generation_spine",
+        "task_catalog",
+        "read_index",
+        "store",
+        "plot_catalog",
+        "manifest",
+        "generation_manifest",
+        "resource_plan",
+        "generation",
+        "current",
+        "models",
+    ),
 }
 PARTITIONED_STAGE_REQUIRED_ARTIFACTS: Final[Mapping[str, tuple[str, ...]]] = _deep_freeze(
     _private_partitioned_stage_required_artifacts
@@ -157,6 +171,7 @@ _private_partitioned_stage_nonempty_directories = {
     "preprocess": ("store",),
     "spatial": ("task_store",),
     "hmm": ("store", "models"),
+    "latent": ("store", "models"),
 }
 PARTITIONED_STAGE_NONEMPTY_DIRECTORIES: Final[Mapping[str, tuple[str, ...]]] = _deep_freeze(
     _private_partitioned_stage_nonempty_directories

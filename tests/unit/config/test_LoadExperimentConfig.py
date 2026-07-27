@@ -44,6 +44,18 @@ def test_latent_partitioned_config_defaults_and_bool_parsing(tmp_path):
     assert cfg.latent_cp_memory_policy == "skip"
     assert cfg.latent_plot_max_reads == 456
     assert cfg.latent_n_pcs == 10
+    assert cfg.full_run_latent is True
+
+
+def test_full_run_latent_can_be_disabled():
+    from smftools.config import ExperimentConfig
+
+    cfg, _ = ExperimentConfig.from_var_dict(
+        {"full_run_latent": "False"},
+        defaults_map={},
+    )
+
+    assert cfg.full_run_latent is False
 
 
 @pytest.mark.parametrize(

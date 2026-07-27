@@ -2,6 +2,13 @@
 
 # Contributing
 
+```{toctree}
+:hidden:
+:maxdepth: 1
+
+project_latent_acceptance
+```
+
 ## Development environment
 
 Install runtime features and contributor tooling separately:
@@ -35,6 +42,9 @@ request. Python 3.11 and 3.12 are the currently tested interpreter versions.
 E2E tests remain local because they require tools such as Dorado, minimap2, and
 modkit and write outputs specified by their experiment configurations. Run them
 only in a disposable or explicitly selected output directory.
+
+The [project and latent acceptance matrix](project_latent_acceptance.md) maps
+the cross-component audit contracts to their focused automated coverage.
 
 ## Local checks
 

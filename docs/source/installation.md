@@ -12,7 +12,8 @@ python -m pip install smftools
 
 The default install supports `smftools experiment full` from a basecalled BAM.
 It includes the portable pysam BAM backend and the dependencies used by
-preprocessing, spatial analysis, HMM analysis, and pipeline plotting.
+preprocessing, spatial analysis, HMM analysis, latent analysis, and pipeline
+plotting.
 
 ## Optional feature profiles
 

@@ -230,11 +230,18 @@ The latent command constructs latent representations of the data. It:
 - Writes a task catalog, versioned resource plan, per-unit Zarr outputs, plot catalog, and thin
   latent spine under `latent_adata_outputs`.
 
-`latent_execution_mode` accepts `auto`, `partitioned`, or `legacy`. The latent command remains a
-standalone stage and is not run by `smftools experiment full`.
+`latent_execution_mode` accepts `auto`, `partitioned`, or `legacy`. The latent command remains
+independently invokable, and `smftools experiment full` runs it after HMM by default. Set
+`full_run_latent,false` in a CSV config (or `full_run_latent: false` in YAML) to stop the full
+workflow after HMM.
 
-Migration note: existing configs require no new rows. `latent_cp_memory_policy` defaults to
-`skip`, and `latent_plot_max_reads` defaults to 10,000. Set
+See [Pipeline lifecycle, latent spaces, and migration](pipeline_lifecycle.md) for the complete
+`from_adata_stage` compatibility table, restart and force-redo rules, immutable model provenance,
+and migration guidance.
+
+Migration note: existing configs require no new rows. Full workflows now continue into latent
+analysis by default; set `full_run_latent,false` to preserve the previous stop-after-HMM behavior.
+`latent_cp_memory_policy` defaults to `skip`, and `latent_plot_max_reads` defaults to 10,000. Set
 `latent_cp_memory_policy,fail` to make an inadmissible enabled CP fit fail the stage. Set
 `latent_execution_mode,legacy` explicitly to retain monolithic output selection when both legacy
 AnnData files and partitioned spines are present.
@@ -247,11 +254,13 @@ The full command is a workflow wrapper. It runs the following sequentially:
 - `preprocess`
 - `spatial`
 - `hmm`
+- `latent` (default; disable with `full_run_latent: false`)
 
 Each stage uses its normal output discovery and force-redo settings. With `hmm_execution_mode:
 auto`, a partitioned spatial or preprocessing spine dispatches bounded HMM tasks by reference,
 genomic core/halo, barcode, and read chunk. HMM layers are stored in task Zarr groups and linked by
 a thin HMM spine rather than materializing the full experiment.
+The latent stage then uses that HMM spine by default and publishes its own restartable generation.
 
 ### `smftools project`
 
@@ -286,9 +295,9 @@ canonical name even if experiments called it something different.
   experiment's slice independently, and concatenates them (adding an `obs["experiment"]` column) --
   there is never a global merge across experiments. Each experiment's spine is picked
   independently: `--stage` requests a specific pipeline stage (skipping experiments that haven't
-  reached it); the default falls back through the most-derived stage available per experiment
-  (HMM > spatial > preprocess > raw), since a later stage's spine already carries forward
-  everything earlier stages produced. `--read-metrics` additionally attaches spatial's per-read
+  reached it); the default prefers the consolidated `experiment_spine.h5ad`, then falls back
+  through the most-derived registered genomic stage (HMM > spatial > preprocess > raw).
+  `--read-metrics` additionally attaches spatial's per-read
   outputs (autocorrelation, Lomb-Scargle) where available. Supports `--set`/`--modality` filters
   and `--start`/`--end` genomic windows. Selection size is estimated from project indexes before
   any matrix is allocated. `--max-memory-gb` and `--max-memory-percent` set hard ceilings;

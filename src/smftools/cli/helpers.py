@@ -80,7 +80,7 @@ _STAGE_SEMANTIC_CONFIG_KEYS = {
         "layer_for_umap_plotting",
         "mod_target_bases",
         "smf_modality",
-    }
+    },
 }
 _STAGE_PLOT_CONFIG_KEYS = {
     "latent": {

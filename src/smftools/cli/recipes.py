@@ -4,15 +4,16 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..constants import HMM_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
+from ..constants import HMM_DIR, LATENT_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
 
 FULL_SUMMARY_FILENAME = "full_summary.json"
-FULL_SUMMARY_SCHEMA_VERSION = 1
+FULL_SUMMARY_SCHEMA_VERSION = 2
 FULL_STAGE_DIRECTORIES = {
     "raw": RAW_DIR,
     "preprocess": PREPROCESS_DIR,
     "spatial": SPATIAL_DIR,
     "hmm": HMM_DIR,
+    "latent": LATENT_DIR,
 }
 
 
@@ -60,12 +61,17 @@ def _write_full_summary(cfg, *, outcome: str, error: BaseException | None = None
         human_log = _latest_log(logs, "*_log.log")
         perf_log = _latest_log(logs, "*_perf.jsonl")
         manifest_entry = manifest_stages.get(stage, {})
+        stage_outcome = (
+            "disabled"
+            if stage == "latent" and not getattr(cfg, "full_run_latent", True)
+            else _perf_outcome(perf_log)
+            or (manifest_entry.get("state") if isinstance(manifest_entry, dict) else None)
+            or "not_started"
+        )
         stages.append(
             {
                 "stage": stage,
-                "outcome": _perf_outcome(perf_log)
-                or (manifest_entry.get("state") if isinstance(manifest_entry, dict) else None)
-                or "not_started",
+                "outcome": stage_outcome,
                 "manifest_state": (
                     manifest_entry.get("state") if isinstance(manifest_entry, dict) else None
                 ),
@@ -108,8 +114,14 @@ def hmm_adata(config_path: str):
     return _hmm_adata(config_path)
 
 
+def latent_adata(config_path: str):
+    from ..cli.latent_adata import latent_adata as _latent_adata
+
+    return _latent_adata(config_path)
+
+
 def full_flow(config_path: str):
-    """Run the standard raw-to-HMM workflow with stage-level restart semantics."""
+    """Run the standard raw-to-latent workflow with stage-level restart semantics."""
     from smftools.constants import PARTITIONED_STAGE_REQUIRED_ARTIFACTS
 
     from .helpers import (
@@ -121,26 +133,32 @@ def full_flow(config_path: str):
     )
 
     cfg = load_experiment_config(config_path)
+    run_latent = bool(getattr(cfg, "full_run_latent", True))
     with stage_lifecycle(cfg, "full") as lifecycle:
         try:
             raw_adata(config_path)
             preprocess_adata(config_path)
             spatial_adata(config_path)
-            result = hmm_adata(config_path)
+            hmm_result = hmm_adata(config_path)
+            result = latent_adata(config_path) if run_latent else hmm_result
             outputs = {}
             required = ()
             paths = get_adata_paths(cfg)
             result_path = result[1] if isinstance(result, tuple) and len(result) > 1 else None
-            if result_path is not None and paths.hmm_spine is not None:
+            final_spine = paths.latent_spine if run_latent else paths.hmm_spine
+            if result_path is not None and final_spine is not None:
                 result_path = Path(result_path)
-                if result_path == Path(paths.hmm_spine):
+                if result_path == Path(final_spine):
+                    required_stages = ("raw", "preprocess", "spatial", "hmm")
+                    if run_latent:
+                        required_stages = (*required_stages, "latent")
                     incomplete = [
                         stage
-                        for stage, stage_required in PARTITIONED_STAGE_REQUIRED_ARTIFACTS.items()
+                        for stage in required_stages
                         if not partitioned_stage_is_complete(
                             cfg,
                             stage,
-                            required=stage_required,
+                            required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS[stage],
                         )
                     ]
                     if incomplete:
@@ -148,8 +166,9 @@ def full_flow(config_path: str):
                             "full workflow cannot publish completion; incomplete stage record(s): "
                             f"{incomplete}"
                         )
-                    outputs["hmm_spine"] = result_path
-                    required = ("hmm_spine",)
+                    spine_key = "latent_spine" if run_latent else "hmm_spine"
+                    outputs[spine_key] = result_path
+                    required = (spine_key,)
             summary_path = _write_full_summary(cfg, outcome="completed")
             outputs["summary"] = summary_path
             required = (*required, "summary")
@@ -160,7 +179,7 @@ def full_flow(config_path: str):
                 task_catalog_key=None,
                 checksum_keys=("summary",),
                 schema_versions={"full_workflow": FULL_SUMMARY_SCHEMA_VERSION},
-                task_count=4,
+                task_count=5 if run_latent else 4,
             )
         except BaseException as exc:
             _write_full_summary(cfg, outcome="failed", error=exc)

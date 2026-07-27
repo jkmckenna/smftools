@@ -176,7 +176,7 @@ def chimeric(config_path):
 @experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def full(config_path):
-    """Workflow: raw preprocess spatial hmm."""
+    """Workflow: raw preprocess spatial hmm, then latent by default."""
     full_flow(config_path)
 
 
