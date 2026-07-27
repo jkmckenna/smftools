@@ -30,6 +30,7 @@ def test_latent_partitioned_config_defaults_and_bool_parsing(tmp_path):
             "latent_execution_mode,partitioned,,,str",
             "latent_max_fit_reads,123,,,int",
             "latent_run_cp,False,,,bool",
+            "latent_plot_max_reads,456,,,int",
         ]
     )
     config_path = tmp_path / "latent_config.csv"
@@ -40,6 +41,8 @@ def test_latent_partitioned_config_defaults_and_bool_parsing(tmp_path):
     assert cfg.latent_execution_mode == "partitioned"
     assert cfg.latent_max_fit_reads == 123
     assert cfg.latent_run_cp is False
+    assert cfg.latent_cp_memory_policy == "skip"
+    assert cfg.latent_plot_max_reads == 456
     assert cfg.latent_n_pcs == 10
 
 
@@ -60,6 +63,9 @@ def test_latent_partitioned_config_defaults_and_bool_parsing(tmp_path):
         ({"latent_transform_chunk_reads": 0}, "latent_transform_chunk_reads"),
         ({"latent_cp_rank": 0}, "latent_cp_rank"),
         ({"latent_cp_iterations": 0}, "latent_cp_iterations"),
+        ({"latent_cp_memory_policy": "invalid"}, "latent_cp_memory_policy"),
+        ({"latent_plot_max_reads": 0}, "latent_plot_max_reads"),
+        ({"latent_plot_max_reads": "invalid"}, "latent_plot_max_reads must be numeric"),
     ],
 )
 def test_invalid_latent_values_fail_during_config_loading(overrides, message):
@@ -87,6 +93,7 @@ def test_disabled_latent_algorithms_ignore_unused_settings():
             "latent_run_cp": False,
             "latent_cp_rank": 0,
             "latent_cp_iterations": 0,
+            "latent_cp_memory_policy": "invalid",
         },
         defaults_map={},
     )

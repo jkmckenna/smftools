@@ -4,13 +4,43 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import pytest
 
+from smftools.latent_resource import resolve_latent_operation
 from smftools.memory_guard import process_tree_rss_bytes
 
 pytestmark = pytest.mark.integration
+
+
+def test_latent_resource_decision_uses_live_runtime_headroom():
+    cfg = SimpleNamespace(
+        threads=1,
+        max_memory_percent=None,
+        max_memory_gb=1.0,
+        memory_reserve_gb=0.0,
+        latent_run_pca_umap=True,
+        latent_run_nmf=True,
+        latent_run_cp=False,
+        latent_n_pcs=2,
+        latent_nmf_components=1,
+        latent_knn_neighbors=2,
+    )
+
+    decision = resolve_latent_operation(
+        cfg,
+        "fit",
+        requested_reads=3,
+        n_positions=10,
+        minimum_reads=3,
+    )
+
+    assert decision.effective_reads == 3
+    assert decision.pool_budget["process_tree_rss_bytes"] > 0
+    assert decision.pool_budget["usable_headroom_bytes"] > 0
+    assert decision.predicted_peak_bytes > 0
 
 
 def test_process_tree_rss_includes_a_live_child():

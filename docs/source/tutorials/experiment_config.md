@@ -121,13 +121,23 @@ machine or job allocation:
 - `memory_reserve_gb`: Memory retained outside the workflow after startup system, cgroup, and
   scheduler headroom are detected. The default is 1 GiB.
 - `target_task_memory_mb`: Positive per-task planning estimate used to limit concurrent workers.
+- `latent_max_fit_reads`: User ceiling for reads used to fit each partitioned latent unit. The
+  effective count is the smaller of this value and the estimator's live-memory-safe count, but
+  never below `latent_min_reads`.
+- `latent_transform_chunk_reads`: User ceiling for each out-of-sample latent transform chunk. The
+  executor recalculates its effective count from live headroom before the transform sequence.
+- `latent_cp_memory_policy`: `skip` (default) records a structured reason and continues other
+  enabled representations when complete-unit CP cannot fit; `fail` raises a resource error.
+- `latent_plot_max_reads`: Positive plot-only ceiling for deterministic lazy row materialization.
+  It does not reduce or change stored model outputs.
 - `spatial_position_matrix_max_width`: Hard position-count limit for a dense position-by-position
   spatial product. The default is 5,000 positions.
 - `spatial_position_matrix_max_mb`: Hard estimated-memory limit for all position matrices retained
   for one spatial plot region. The default is 1,024 MiB. This limit is checked together with the
   live workflow ceiling before matrix allocation.
 
-Existing configurations do not require migration: omitted settings inherit their defaults. CPU
+Existing configurations do not require migration: omitted settings inherit their defaults,
+including `latent_cp_memory_policy=skip` and `latent_plot_max_reads=10000`. CPU
 utilization and the number of threads currently active elsewhere on a shared machine are
 intentionally not used as hard limits because they are transient. Currently available memory is
 included in the startup envelope. The resolved values and enforcement mode are written to stage
@@ -135,6 +145,9 @@ and performance logs. Linux reports whether a cgroup-v2 cap was activated; macOS
 report worker-watchdog capability explicitly. Performance logging samples the complete process
 tree independently of that enforcement mechanism, so sequential work and every supported OS emit
 current/peak RSS and cumulative OS read/write byte counters as well as pool/task progress.
+Partitioned latent generations additionally write `resource_plan.json` and task-catalog fields
+containing estimator version, resource-envelope ID, requested and effective read counts, limiting
+operation, CP skip reason, predicted peak, and measured process-tree peak.
 
 ## Tips
 

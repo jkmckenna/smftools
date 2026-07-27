@@ -260,6 +260,7 @@ def latent_adata(
         required_compute = (
             "generation",
             "generation_manifest",
+            "resource_plan",
             "task_catalog",
             "store",
         )
@@ -271,6 +272,7 @@ def latent_adata(
             "plot_catalog",
             "manifest",
             "generation_manifest",
+            "resource_plan",
             "generation",
             "current",
         )
@@ -322,11 +324,13 @@ def latent_adata(
                     "plot_catalog",
                     "manifest",
                     "generation_manifest",
+                    "resource_plan",
                     "current",
                 ),
                 schema_versions={
                     "generation_manifest": 1,
-                    "task_catalog": 2,
+                    "resource_plan": 1,
+                    "task_catalog": 3,
                 },
                 task_count=int(outputs["task_count"]),
                 extra={

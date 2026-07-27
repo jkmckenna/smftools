@@ -19,6 +19,7 @@ from smftools.informatics.experiment_manifest import (
 )
 from smftools.informatics.experiment_spine import experiment_spine_path
 from smftools.informatics.raw_store import write_raw_store
+from smftools.latent_resource import LatentResourceDecision, LatentResourceError
 from smftools.perf_log import PerfLogger, set_perf_logger
 from smftools.readwrite import safe_read_h5ad, safe_write_zarr
 from smftools.tools import partitioned_latent
@@ -468,11 +469,27 @@ def test_partitioned_latent_publishes_catalog_and_thin_spine(tmp_path, monkeypat
     )
 
     catalog = pd.read_parquet(outputs["task_catalog"])
+    resource_plan = json.loads(Path(outputs["resource_plan"]).read_text(encoding="utf-8"))
+    generation_manifest = json.loads(
+        Path(outputs["generation_manifest"]).read_text(encoding="utf-8")
+    )
     latent_spine, _ = safe_read_h5ad(outputs["spine"])
     assert len(catalog) == 1
+    assert catalog.loc[0, "resource_estimator_version"] == "1"
+    assert catalog.loc[0, "effective_fit_reads"] == catalog.loc[0, "fit_reads"]
+    assert resource_plan["task_count"] == 1
+    assert resource_plan["estimator_version"] == "1"
+    assert resource_plan["units"][0]["resource_envelope_id"]
+    assert resource_plan["units"][0]["decisions"][0]["operation"] == "plot"
+    assert generation_manifest["resource_plan"] == "resource_plan.json"
+    assert generation_manifest["resource_summary"]["requested_fit_reads_ceiling"] == 5000
     assert (
         latent_spine.uns["latent_task_catalog"]
         == Path(outputs["task_catalog"]).relative_to(tmp_path).as_posix()
+    )
+    assert (
+        latent_spine.uns["latent_resource_plan"]
+        == Path(outputs["resource_plan"]).relative_to(tmp_path).as_posix()
     )
     assert latent_spine.uns["latent_coordinate_scope"] == "reference_core"
     assert Path(outputs["generation"]).parent.name == "generations"
@@ -832,6 +849,230 @@ def test_latent_plot_colors_drop_constants_and_include_matching_leiden():
     colors = partitioned_latent._plot_colors(result, "umap_signal", cfg)
 
     assert colors == ["Sample", "mapped_length", "leiden_signal"]
+
+
+def test_latent_plot_subset_is_deterministic_and_bounded(tmp_path):
+    result = ad.AnnData(
+        obs=pd.DataFrame(index=[f"read{index}" for index in range(20)]),
+        var=pd.DataFrame(index=["0", "1"]),
+    )
+    path = tmp_path / "result.zarr"
+    safe_write_zarr(result, path, backup=False, verbose=False, zarr_format=3)
+
+    first = partitioned_latent._read_plot_subset(path, max_reads=5, seed=17)
+    second = partitioned_latent._read_plot_subset(path, max_reads=5, seed=17)
+
+    assert first.n_obs == 5
+    assert list(first.obs_names) == list(second.obs_names)
+
+
+@pytest.mark.parametrize(
+    ("policy", "raises"),
+    [("skip", False), ("fail", True)],
+)
+def test_latent_cp_memory_policy_is_deterministic(tmp_path, monkeypatch, policy, raises):
+    materialized = ad.AnnData(
+        obs=pd.DataFrame(index=["read1", "read2", "read3"]),
+        var=pd.DataFrame(index=["0", "1", "2", "3"]),
+    )
+    materialized.layers["nan_half"] = np.zeros((3, 4), dtype=np.float32)
+    materialized.layers["sequence_integer_encoding"] = np.zeros((3, 4), dtype=np.float32)
+    monkeypatch.setattr(
+        partitioned_latent,
+        "materialize",
+        lambda *_args, **_kwargs: materialized.copy(),
+    )
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_build_mod_sites_var_filter_mask",
+        lambda *_args, **_kwargs: np.ones(4, dtype=bool),
+    )
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_build_shared_valid_non_mod_sites_mask",
+        lambda *_args, **_kwargs: np.ones(4, dtype=bool),
+    )
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_build_reference_position_mask",
+        lambda *_args, **_kwargs: np.ones(4, dtype=bool),
+    )
+
+    def fake_fit(adata, *, suffix, **_kwargs):
+        adata.obsm[f"X_pca_{suffix}"] = np.zeros((adata.n_obs, 2), dtype=np.float32)
+        return {"suffix": suffix}
+
+    monkeypatch.setattr(partitioned_latent, "_fit_matrix_representations", fake_fit)
+    cp_calls = []
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_fit_cp_representations",
+        lambda *_args, **_kwargs: cp_calls.append(True),
+    )
+
+    def fake_decision(
+        _cfg,
+        operation,
+        *,
+        requested_reads,
+        n_positions,
+        minimum_reads,
+        **_kwargs,
+    ):
+        effective = 1 if operation == "cp" else requested_reads
+        return LatentResourceDecision(
+            operation=operation,
+            estimator_version="1",
+            requested_reads=requested_reads,
+            effective_reads=effective,
+            minimum_reads=minimum_reads,
+            n_positions=n_positions,
+            usable_headroom_bytes=1024,
+            predicted_peak_bytes=512,
+            limiting_operation=operation if effective < requested_reads else None,
+            pool_budget={},
+            estimate={},
+        )
+
+    monkeypatch.setattr(partitioned_latent, "resolve_latent_operation", fake_decision)
+    cfg = SimpleNamespace(
+        latent_min_reads=3,
+        latent_max_fit_reads=3,
+        latent_transform_chunk_reads=2,
+        latent_random_state=0,
+        latent_run_pca_umap=True,
+        latent_run_nmf=False,
+        latent_run_cp=True,
+        latent_cp_memory_policy=policy,
+        latent_plot_max_reads=10,
+        layer_for_umap_plotting="nan_half",
+        smf_modality="conversion",
+    )
+    unit = {
+        "reference": "ref_top",
+        "analysis_mode": "locus",
+        "core_start": 0,
+        "core_end": 4,
+        "read_ids": ["read1", "read2", "read3"],
+    }
+
+    if raises:
+        with pytest.raises(LatentResourceError, match="minimum_unit_exceeds_memory"):
+            partitioned_latent.execute_latent_unit("spine.h5ad", unit, cfg, tmp_path)
+    else:
+        record = partitioned_latent.execute_latent_unit("spine.h5ad", unit, cfg, tmp_path)
+        assert record["cp_skip_reason"] == "minimum_unit_exceeds_memory"
+        assert cp_calls == []
+
+
+def test_latent_unit_applies_effective_fit_and_transform_counts(tmp_path, monkeypatch):
+    read_ids = [f"read{index}" for index in range(6)]
+
+    def fake_materialize(
+        _spine_path,
+        *,
+        read_ids,
+        **_kwargs,
+    ):
+        result = ad.AnnData(
+            obs=pd.DataFrame(index=list(read_ids)),
+            var=pd.DataFrame(index=["0", "1", "2", "3"]),
+        )
+        result.layers["nan_half"] = np.zeros((len(read_ids), 4), dtype=np.float32)
+        result.layers["sequence_integer_encoding"] = np.zeros((len(read_ids), 4), dtype=np.float32)
+        return result
+
+    monkeypatch.setattr(partitioned_latent, "materialize", fake_materialize)
+    monkeypatch.setattr(
+        partitioned_latent,
+        "load_spine",
+        lambda *_args, **_kwargs: ad.AnnData(obs=pd.DataFrame(index=read_ids)),
+    )
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_build_mod_sites_var_filter_mask",
+        lambda *_args, **_kwargs: np.ones(4, dtype=bool),
+    )
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_build_shared_valid_non_mod_sites_mask",
+        lambda *_args, **_kwargs: np.ones(4, dtype=bool),
+    )
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_build_reference_position_mask",
+        lambda *_args, **_kwargs: np.ones(4, dtype=bool),
+    )
+
+    def fake_fit(adata, *, suffix, **_kwargs):
+        key = f"X_pca_{suffix}"
+        adata.obsm[key] = np.zeros((adata.n_obs, 2), dtype=np.float32)
+        return {"suffix": suffix}
+
+    monkeypatch.setattr(partitioned_latent, "_fit_matrix_representations", fake_fit)
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_transform_matrix_representations",
+        lambda chunk, fitted: {
+            f"X_pca_{fitted['suffix']}": np.ones((chunk.n_obs, 2), dtype=np.float32)
+        },
+    )
+    operations = []
+
+    def fake_decision(
+        _cfg,
+        operation,
+        *,
+        requested_reads,
+        n_positions,
+        minimum_reads,
+        **_kwargs,
+    ):
+        operations.append(operation)
+        effective = {"fit": 3, "transform": 2}.get(operation, requested_reads)
+        return LatentResourceDecision(
+            operation=operation,
+            estimator_version="1",
+            requested_reads=requested_reads,
+            effective_reads=effective,
+            minimum_reads=minimum_reads,
+            n_positions=n_positions,
+            usable_headroom_bytes=1024,
+            predicted_peak_bytes=512,
+            limiting_operation=operation if effective < requested_reads else None,
+            pool_budget={},
+            estimate={},
+        )
+
+    monkeypatch.setattr(partitioned_latent, "resolve_latent_operation", fake_decision)
+    cfg = SimpleNamespace(
+        latent_min_reads=3,
+        latent_max_fit_reads=5,
+        latent_transform_chunk_reads=4,
+        latent_random_state=0,
+        latent_run_pca_umap=True,
+        latent_run_nmf=False,
+        latent_run_cp=False,
+        latent_plot_max_reads=10,
+        layer_for_umap_plotting="nan_half",
+        smf_modality="conversion",
+    )
+    unit = {
+        "reference": "ref_top",
+        "analysis_mode": "locus",
+        "core_start": 0,
+        "core_end": 4,
+        "read_ids": read_ids,
+    }
+
+    record = partitioned_latent.execute_latent_unit("spine.h5ad", unit, cfg, tmp_path)
+
+    assert record["n_reads"] == 6
+    assert record["requested_fit_reads"] == 5
+    assert record["effective_fit_reads"] == 3
+    assert record["requested_transform_chunk_reads"] == 4
+    assert record["effective_transform_chunk_reads"] == 2
+    assert operations == ["fit", "result", "transform", "write"]
 
 
 def test_latent_sequential_memory_sample_updates_perf_summary(tmp_path):

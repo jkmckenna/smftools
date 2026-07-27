@@ -1251,6 +1251,8 @@ class ExperimentConfig:
     latent_run_cp: bool = True
     latent_cp_rank: int = 2
     latent_cp_iterations: int = 100
+    latent_cp_memory_policy: str = "skip"
+    latent_plot_max_reads: int = 10000
     spatial_regions_bed: Optional[str] = None
     spatial_generate_clustermaps: bool = True
     spatial_generate_position_matrices: bool = True
@@ -2353,6 +2355,13 @@ class ExperimentConfig:
             latent_run_cp=_parse_bool(merged.get("latent_run_cp", True)),
             latent_cp_rank=int(_parse_numeric(merged.get("latent_cp_rank", 2), 2)),
             latent_cp_iterations=int(_parse_numeric(merged.get("latent_cp_iterations", 100), 100)),
+            latent_cp_memory_policy=str(merged.get("latent_cp_memory_policy", "skip")),
+            latent_plot_max_reads=_parse_resource_number(
+                merged.get("latent_plot_max_reads", 10000),
+                name="latent_plot_max_reads",
+                default=10000,
+                integral=True,
+            ),
             spatial_regions_bed=merged.get("spatial_regions_bed"),
             spatial_generate_clustermaps=_parse_bool(
                 merged.get("spatial_generate_clustermaps", True)
@@ -2607,6 +2616,13 @@ class ExperimentConfig:
                 errors.append(
                     "latent_cp_iterations must be at least 1 when latent_run_cp is enabled."
                 )
+            if str(self.latent_cp_memory_policy).strip().lower() not in {"skip", "fail"}:
+                errors.append(
+                    "latent_cp_memory_policy must be skip or fail when latent_run_cp is enabled."
+                )
+
+        if isinstance(self.latent_plot_max_reads, bool) or int(self.latent_plot_max_reads) < 1:
+            errors.append("latent_plot_max_reads must be at least 1.")
 
         if raise_on_error and errors:
             raise ValueError("ExperimentConfig latent validation failed:\n  " + "\n  ".join(errors))
