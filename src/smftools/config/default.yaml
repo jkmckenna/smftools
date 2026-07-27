@@ -585,6 +585,8 @@ latent_run_nmf: True # Fit NMF representations
 latent_run_cp: True # Fit legacy CP representations when the complete unit is within latent_max_fit_reads
 latent_cp_rank: 2 # Rank for each CP representation
 latent_cp_iterations: 100 # Maximum iterations for each CP fit
+latent_cp_memory_policy: skip # skip or fail when an enabled CP fit exceeds live memory headroom
+latent_plot_max_reads: 10000 # Maximum deterministically selected reads materialized for each latent task's plots
 spatial_regions_bed: null # Optional 0-based half-open BED regions for genome matrix/clustermap analyses
 spatial_generate_clustermaps: True # Generate bounded barcode clustermaps per locus/BED region
 spatial_generate_position_matrices: True # Generate bounded position matrices per locus/BED region

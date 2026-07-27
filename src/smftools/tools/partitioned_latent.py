@@ -19,6 +19,12 @@ import numpy as np
 import pandas as pd
 
 from smftools.constants import LATENT_DIR, REFERENCE_STRAND, SEQUENCE_INTEGER_ENCODING
+from smftools.latent_resource import (
+    LATENT_RESOURCE_ESTIMATOR_VERSION,
+    LatentResourceError,
+    resolve_latent_operation,
+    resource_envelope_id,
+)
 from smftools.logging_utils import get_logger
 
 from ..cli.latent_adata import (
@@ -44,11 +50,11 @@ from ..informatics.sidecar_manifest import (
     resolve_sidecar,
     sidecar_manifest_path,
 )
+from ..memory_guard import process_tree_rss_bytes, resource_envelope_for_config
 from ..optional_imports import require
 from ..readwrite import (
     atomic_write_json,
     safe_read_h5ad,
-    safe_read_zarr,
     safe_write_h5ad,
     safe_write_zarr,
 )
@@ -61,8 +67,10 @@ LATENT_STORE_SUBDIR = "store"
 LATENT_GENERATIONS_SUBDIR = "generations"
 LATENT_CURRENT_FILENAME = "current.json"
 LATENT_GENERATION_MANIFEST = "generation_manifest.json"
-LATENT_TASK_CATALOG_SCHEMA_VERSION = 2
+LATENT_RESOURCE_PLAN = "resource_plan.json"
+LATENT_TASK_CATALOG_SCHEMA_VERSION = 3
 LATENT_GENERATION_SCHEMA_VERSION = 1
+_LATENT_SOURCE_ESTIMATE_DTYPE = "float64"
 _LATENT_TASK_REQUIRED_COLUMNS = {
     "reference",
     "analysis_mode",
@@ -75,6 +83,20 @@ _LATENT_TASK_REQUIRED_COLUMNS = {
     "obsm_keys",
     "varm_keys",
     "obs_columns",
+    "n_positions",
+    "resource_estimator_version",
+    "resource_envelope_id",
+    "requested_fit_reads",
+    "effective_fit_reads",
+    "requested_transform_chunk_reads",
+    "effective_transform_chunk_reads",
+    "requested_plot_reads",
+    "effective_plot_reads",
+    "predicted_peak_bytes",
+    "measured_peak_bytes",
+    "limiting_operation",
+    "cp_skip_reason",
+    "resource_decisions",
 }
 
 
@@ -93,6 +115,127 @@ def _task_path(output_dir: Path, reference: str, start: int, end: int) -> Path:
 
 def _content_sha256(path: Path) -> str:
     return str(artifact_record(path, path.parent, checksum=True)["sha256"])
+
+
+def _memory_sample_bytes() -> int:
+    """Return best-effort process-tree RSS for persisted peak calibration."""
+    try:
+        return max(0, int(process_tree_rss_bytes()))
+    except Exception:
+        logger.debug("Could not sample latent process-tree RSS", exc_info=True)
+        return 0
+
+
+def _resource_record_defaults(
+    record: dict[str, object],
+    *,
+    cfg,
+    envelope_id: str,
+) -> dict[str, object]:
+    """Fill resource fields for reused or injected task records."""
+    n_reads = int(record.get("n_reads", 0))
+    fit_reads = int(record.get("fit_reads", n_reads))
+    n_positions = int(
+        record.get(
+            "n_positions",
+            max(1, int(record.get("core_end", 1)) - int(record.get("core_start", 0))),
+        )
+    )
+    record.setdefault("n_positions", n_positions)
+    record.setdefault("analysis_core_id", "")
+    record.setdefault("resource_estimator_version", LATENT_RESOURCE_ESTIMATOR_VERSION)
+    record.setdefault("resource_envelope_id", envelope_id)
+    record.setdefault("requested_fit_reads", fit_reads)
+    record.setdefault("effective_fit_reads", fit_reads)
+    record.setdefault(
+        "requested_transform_chunk_reads",
+        int(getattr(cfg, "latent_transform_chunk_reads", 2000)),
+    )
+    record.setdefault("effective_transform_chunk_reads", 0)
+    record.setdefault(
+        "requested_plot_reads",
+        min(n_reads, max(1, int(getattr(cfg, "latent_plot_max_reads", 10000)))),
+    )
+    record.setdefault("effective_plot_reads", 0)
+    record.setdefault("predicted_peak_bytes", 0)
+    record.setdefault("measured_peak_bytes", 0)
+    record.setdefault("limiting_operation", "")
+    record.setdefault("cp_skip_reason", "")
+    record.setdefault(
+        "resource_decisions",
+        json.dumps(
+            {
+                "estimator_version": LATENT_RESOURCE_ESTIMATOR_VERSION,
+                "decisions": [],
+            },
+            sort_keys=True,
+        ),
+    )
+    return record
+
+
+def _append_resource_decision(
+    record: dict[str, object],
+    decision,
+) -> None:
+    """Append a decision to one task's portable JSON resource record."""
+    try:
+        payload = json.loads(str(record.get("resource_decisions", "")))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    decisions = list(payload.get("decisions", []))
+    decisions.append(decision.as_dict())
+    record["resource_decisions"] = json.dumps(
+        {
+            "estimator_version": LATENT_RESOURCE_ESTIMATOR_VERSION,
+            "decisions": decisions,
+        },
+        sort_keys=True,
+    )
+    record["predicted_peak_bytes"] = max(
+        int(record.get("predicted_peak_bytes", 0)),
+        int(decision.predicted_peak_bytes),
+    )
+    if decision.limiting_operation:
+        record["limiting_operation"] = str(decision.limiting_operation)
+    elif not str(record.get("limiting_operation", "")):
+        record["limiting_operation"] = str(
+            max(
+                decisions,
+                key=lambda item: int(item.get("predicted_peak_bytes", 0)),
+            ).get("operation", "")
+        )
+
+
+def _reset_plot_resource_decisions(record: dict[str, object]) -> None:
+    """Drop plot decisions copied from a reused compute generation."""
+    try:
+        payload = json.loads(str(record.get("resource_decisions", "")))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return
+    decisions = [
+        decision for decision in payload.get("decisions", []) if decision.get("operation") != "plot"
+    ]
+    record["resource_decisions"] = json.dumps(
+        {
+            "estimator_version": LATENT_RESOURCE_ESTIMATOR_VERSION,
+            "decisions": decisions,
+        },
+        sort_keys=True,
+    )
+    record["predicted_peak_bytes"] = max(
+        (int(decision.get("predicted_peak_bytes", 0)) for decision in decisions),
+        default=0,
+    )
+    limited = next(
+        (
+            str(decision["limiting_operation"])
+            for decision in decisions
+            if decision.get("limiting_operation")
+        ),
+        "",
+    )
+    record["limiting_operation"] = limited
 
 
 def _atomic_publish_spine(adata, path: Path) -> None:
@@ -159,7 +302,9 @@ def _validate_latent_generation(
         group_path = generation_dir / relative_group
         if not group_path.is_dir():
             raise RuntimeError(f"latent task group is missing: {group_path}")
-        result, _ = safe_read_zarr(group_path, verbose=False)
+        import anndata as ad
+
+        result = ad.experimental.read_lazy(group_path)
         if int(record["n_reads"]) != int(result.n_obs):
             raise RuntimeError(f"latent task row count mismatch for {relative_group}")
         expected = {
@@ -176,6 +321,20 @@ def _validate_latent_generation(
             raise RuntimeError(f"latent task schema mismatch for {relative_group}")
         if str(record["group_sha256"]) != _content_sha256(group_path):
             raise RuntimeError(f"latent task checksum mismatch for {relative_group}")
+        try:
+            decisions = json.loads(str(record["resource_decisions"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"latent task resource decisions are invalid for {relative_group}"
+            ) from exc
+        if decisions.get("estimator_version") != LATENT_RESOURCE_ESTIMATOR_VERSION:
+            raise RuntimeError(
+                f"latent task resource estimator version mismatch for {relative_group}"
+            )
+        if int(record["effective_fit_reads"]) != int(record["fit_reads"]):
+            raise RuntimeError(f"latent task effective fit count mismatch for {relative_group}")
+        if int(record["predicted_peak_bytes"]) < 0 or int(record["measured_peak_bytes"]) < 0:
+            raise RuntimeError(f"latent task resource peaks are invalid for {relative_group}")
 
     plot_catalog = pd.read_parquet(generation_dir / "plots" / "catalog.parquet")
     missing_plot_columns = sorted(set(PLOT_CATALOG_COLUMNS).difference(plot_catalog.columns))
@@ -203,6 +362,7 @@ def _validate_latent_generation(
     expected_pointers = {
         "latent_task_catalog": relative_uns_path(final_dir / LATENT_TASK_CATALOG, run_root),
         "latent_store": relative_uns_path(final_dir / LATENT_STORE_SUBDIR, run_root),
+        "latent_resource_plan": relative_uns_path(final_dir / LATENT_RESOURCE_PLAN, run_root),
     }
     for key, expected_value in expected_pointers.items():
         if latent_spine.uns.get(key) != expected_value:
@@ -215,6 +375,7 @@ def _validate_latent_generation(
         "latent_task_catalog",
         "latent_store",
         "latent_plot_catalog",
+        "latent_resource_plan",
     ):
         if resolve_sidecar(manifest, key) is None:
             raise RuntimeError(f"latent sidecar manifest cannot resolve {key!r}")
@@ -224,6 +385,38 @@ def _validate_latent_generation(
         raise RuntimeError("latent generation manifest ID does not match publication path")
     if int(generation_manifest.get("task_count", -1)) != len(catalog):
         raise RuntimeError("latent generation manifest task count does not match catalog")
+    with (generation_dir / LATENT_RESOURCE_PLAN).open("r", encoding="utf-8") as handle:
+        resource_plan = json.load(handle)
+    if resource_plan.get("estimator_version") != LATENT_RESOURCE_ESTIMATOR_VERSION:
+        raise RuntimeError("latent resource plan estimator version does not match")
+    if int(resource_plan.get("task_count", -1)) != len(catalog):
+        raise RuntimeError("latent resource plan task count does not match catalog")
+    if generation_manifest.get("resource_envelope_id") != resource_plan.get("resource_envelope_id"):
+        raise RuntimeError("latent resource plan envelope ID does not match generation")
+    resource_units = resource_plan.get("units")
+    if not isinstance(resource_units, list) or len(resource_units) != len(catalog):
+        raise RuntimeError("latent resource plan unit records do not match task catalog")
+    for record, resource_unit in zip(
+        catalog.to_dict("records"),
+        resource_units,
+        strict=True,
+    ):
+        for key in (
+            "reference",
+            "core_start",
+            "core_end",
+            "effective_fit_reads",
+            "effective_transform_chunk_reads",
+            "effective_plot_reads",
+            "predicted_peak_bytes",
+            "measured_peak_bytes",
+            "limiting_operation",
+            "cp_skip_reason",
+        ):
+            if resource_unit.get(key) != record[key]:
+                raise RuntimeError(
+                    f"latent resource plan field {key!r} does not match task catalog"
+                )
     return len(catalog)
 
 
@@ -599,6 +792,18 @@ def _plot_task(result, record, cfg, layout) -> None:
             )
 
 
+def _read_plot_subset(group_path: Path, *, max_reads: int, seed: int):
+    """Lazily materialize only the deterministic rows admitted for plotting."""
+    import anndata as ad
+
+    lazy = ad.experimental.read_lazy(group_path)
+    if lazy.n_obs <= max_reads:
+        return lazy.to_memory()
+    rng = np.random.default_rng(seed)
+    chosen = np.sort(rng.choice(lazy.n_obs, size=max_reads, replace=False))
+    return lazy[chosen, :].to_memory()
+
+
 def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] | None:
     """Fit and persist one reference/core-local latent space."""
     reference = str(unit["reference"])
@@ -616,6 +821,24 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         )
         return None
 
+    envelope = resource_envelope_for_config(cfg)
+    envelope_identity = resource_envelope_id(envelope)
+    measured_peak = _memory_sample_bytes()
+    estimated_positions = max(1, end - start)
+    requested_fit_reads = min(
+        len(read_ids),
+        max(min_reads, int(getattr(cfg, "latent_max_fit_reads", 5000))),
+    )
+    fit_decision = resolve_latent_operation(
+        cfg,
+        "fit",
+        requested_reads=requested_fit_reads,
+        n_positions=estimated_positions,
+        minimum_reads=min_reads,
+        source_dtype=_LATENT_SOURCE_ESTIMATE_DTYPE,
+    )
+    decisions = [fit_decision]
+
     layers = list(
         dict.fromkeys(
             [str(getattr(cfg, "layer_for_umap_plotting", "nan_half")), SEQUENCE_INTEGER_ENCODING]
@@ -623,7 +846,7 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
     )
     fit_positions = _fit_indices(
         len(read_ids),
-        max(min_reads, int(getattr(cfg, "latent_max_fit_reads", 5000))),
+        fit_decision.effective_reads,
         int(getattr(cfg, "latent_random_state", 0)),
     )
     fit_read_ids = [read_ids[index] for index in fit_positions]
@@ -635,6 +858,7 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         end=end,
         layers=layers,
     )
+    measured_peak = max(measured_peak, _memory_sample_bytes())
     references = [reference]
     modality = str(getattr(cfg, "smf_modality", "conversion"))
     deaminase = modality != "conversion"
@@ -663,22 +887,45 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
             fit_indices=fit_indices,
         ),
     ]
-    if len(read_ids) <= int(getattr(cfg, "latent_max_fit_reads", 5000)):
-        _fit_cp_representations(
-            fit_adata,
-            mod_mask=mod_mask,
-            non_mod_mask=non_mod_mask,
-            valid_mask=valid_mask,
-            cfg=cfg,
-        )
-    elif bool(getattr(cfg, "latent_run_cp", True)):
-        logger.warning(
-            "Skipping CP for %s:%d-%d: %d reads exceeds latent_max_fit_reads",
-            reference,
-            start,
-            end,
-            len(read_ids),
-        )
+    measured_peak = max(measured_peak, _memory_sample_bytes())
+    cp_skip_reason = ""
+    if bool(getattr(cfg, "latent_run_cp", True)):
+        if len(read_ids) > int(getattr(cfg, "latent_max_fit_reads", 5000)):
+            cp_skip_reason = "unit_exceeds_fit_ceiling"
+        elif len(fit_read_ids) != len(read_ids):
+            cp_skip_reason = "fit_reduced_by_memory"
+        else:
+            cp_decision = resolve_latent_operation(
+                cfg,
+                "cp",
+                requested_reads=len(read_ids),
+                n_positions=fit_adata.n_vars,
+                minimum_reads=0,
+            )
+            decisions.append(cp_decision)
+            if cp_decision.effective_reads < len(read_ids):
+                cp_skip_reason = (
+                    "minimum_unit_exceeds_memory"
+                    if cp_decision.effective_reads < min_reads
+                    else "complete_unit_exceeds_memory"
+                )
+            else:
+                _fit_cp_representations(
+                    fit_adata,
+                    mod_mask=mod_mask,
+                    non_mod_mask=non_mod_mask,
+                    valid_mask=valid_mask,
+                    cfg=cfg,
+                )
+                measured_peak = max(measured_peak, _memory_sample_bytes())
+        if cp_skip_reason:
+            message = (
+                f"Skipping CP for {reference}:{start}-{end}: {cp_skip_reason} "
+                f"(policy={getattr(cfg, 'latent_cp_memory_policy', 'skip')})"
+            )
+            if str(getattr(cfg, "latent_cp_memory_policy", "skip")).strip().lower() == "fail":
+                raise LatentResourceError(message)
+            logger.warning(message)
 
     if not fit_adata.obsm:
         logger.warning(
@@ -691,9 +938,18 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
 
     if len(read_ids) == len(fit_read_ids):
         adata = fit_adata
+        effective_transform_chunk_reads = 0
     else:
         import anndata as ad
 
+        result_decision = resolve_latent_operation(
+            cfg,
+            "result",
+            requested_reads=len(read_ids),
+            n_positions=fit_adata.n_vars,
+            minimum_reads=len(read_ids),
+        )
+        decisions.append(result_decision)
         spine = load_spine(spine_path, verbose=False)
         adata = ad.AnnData(
             obs=spine.obs.loc[read_ids].copy(),
@@ -710,7 +966,21 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         label_keys = [key for key in fit_adata.obs if str(key).startswith("leiden_")]
         label_values = {key: np.full(len(read_ids), None, dtype=object) for key in label_keys}
         row_lookup = {read_id: index for index, read_id in enumerate(read_ids)}
-        chunk_size = max(1, int(getattr(cfg, "latent_transform_chunk_reads", 2000)))
+        requested_transform_chunk_reads = min(
+            len(read_ids),
+            max(1, int(getattr(cfg, "latent_transform_chunk_reads", 2000))),
+        )
+        transform_decision = resolve_latent_operation(
+            cfg,
+            "transform",
+            requested_reads=requested_transform_chunk_reads,
+            n_positions=fit_adata.n_vars,
+            minimum_reads=1,
+            source_dtype=_LATENT_SOURCE_ESTIMATE_DTYPE,
+        )
+        decisions.append(transform_decision)
+        chunk_size = transform_decision.effective_reads
+        effective_transform_chunk_reads = chunk_size
         for chunk_start in range(0, len(read_ids), chunk_size):
             chunk_ids = read_ids[chunk_start : chunk_start + chunk_size]
             chunk = materialize(
@@ -729,6 +999,7 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
                         label_values[key][target_rows] = values
                     else:
                         adata.obsm[key][target_rows] = values
+            measured_peak = max(measured_peak, _memory_sample_bytes())
         for key, values in label_values.items():
             adata.obs[key] = pd.Categorical(values)
 
@@ -749,6 +1020,15 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         "analysis_region_ids": list(unit.get("analysis_region_ids", ())),
         "analysis_planner_version": int(unit.get("analysis_planner_version", 1)),
     }
+    write_decision = resolve_latent_operation(
+        cfg,
+        "write",
+        requested_reads=adata.n_obs,
+        n_positions=adata.n_vars,
+        minimum_reads=adata.n_obs,
+        source_dtype=_LATENT_SOURCE_ESTIMATE_DTYPE,
+    )
+    decisions.append(write_decision)
     output_path = _task_path(Path(output_dir), reference, start, end)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with warnings.catch_warnings():
@@ -763,6 +1043,19 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
             category=UserWarning,
         )
         safe_write_zarr(adata, output_path, backup=False, verbose=False, zarr_format=3)
+    measured_peak = max(measured_peak, _memory_sample_bytes())
+    limiting_operation = next(
+        (
+            str(decision.limiting_operation)
+            for decision in decisions
+            if decision.limiting_operation is not None
+        ),
+        "",
+    )
+    if not limiting_operation:
+        limiting_operation = str(
+            max(decisions, key=lambda decision: decision.predicted_peak_bytes).operation
+        )
     return {
         "reference": reference,
         "analysis_mode": str(unit["analysis_mode"]),
@@ -770,6 +1063,7 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         "core_end": end,
         "n_reads": adata.n_obs,
         "fit_reads": int(len(fit_read_ids)),
+        "n_positions": int(adata.n_vars),
         "group_path": output_path.relative_to(output_dir).as_posix(),
         "group_sha256": _content_sha256(output_path),
         "obsm_keys": list(adata.obsm.keys()),
@@ -781,6 +1075,28 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         "analysis_planner_version": int(unit.get("analysis_planner_version", 1)),
         "varm_keys": list(adata.varm.keys()),
         "obs_columns": list(adata.obs.columns),
+        "resource_estimator_version": LATENT_RESOURCE_ESTIMATOR_VERSION,
+        "resource_envelope_id": envelope_identity,
+        "requested_fit_reads": requested_fit_reads,
+        "effective_fit_reads": int(len(fit_read_ids)),
+        "requested_transform_chunk_reads": int(getattr(cfg, "latent_transform_chunk_reads", 2000)),
+        "effective_transform_chunk_reads": effective_transform_chunk_reads,
+        "requested_plot_reads": min(
+            adata.n_obs,
+            max(1, int(getattr(cfg, "latent_plot_max_reads", 10000))),
+        ),
+        "effective_plot_reads": 0,
+        "predicted_peak_bytes": max(int(decision.predicted_peak_bytes) for decision in decisions),
+        "measured_peak_bytes": measured_peak,
+        "limiting_operation": limiting_operation,
+        "cp_skip_reason": cp_skip_reason,
+        "resource_decisions": json.dumps(
+            {
+                "estimator_version": LATENT_RESOURCE_ESTIMATOR_VERSION,
+                "decisions": [decision.as_dict() for decision in decisions],
+            },
+            sort_keys=True,
+        ),
     }
 
 
@@ -808,6 +1124,8 @@ def execute_partitioned_latent(
 
     try:
         spine = load_spine(spine_path)
+        envelope = resource_envelope_for_config(cfg)
+        envelope_identity = resource_envelope_id(envelope)
         filter_mask = next(
             (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
             None,
@@ -817,6 +1135,8 @@ def execute_partitioned_latent(
             reuse_generation = Path(reuse_generation)
             reuse_catalog = pd.read_parquet(reuse_generation / LATENT_TASK_CATALOG)
             records = reuse_catalog.to_dict("records")
+            for record in records:
+                _reset_plot_resource_decisions(record)
             shutil.copytree(
                 reuse_generation / LATENT_STORE_SUBDIR,
                 staging_dir / LATENT_STORE_SUBDIR,
@@ -837,6 +1157,11 @@ def execute_partitioned_latent(
                     group_path = staging_dir / str(record["group_path"])
                     record.setdefault("group_sha256", _content_sha256(group_path))
                     record.setdefault("analysis_planner_version", 1)
+                    _resource_record_defaults(
+                        record,
+                        cfg=cfg,
+                        envelope_id=envelope_identity,
+                    )
                     records.append(record)
                 _record_memory_sample(
                     f"unit_complete:{unit['reference']}:{unit['core_start']}-{unit['core_end']}"
@@ -847,14 +1172,83 @@ def execute_partitioned_latent(
                 )
             pd.DataFrame(records).to_parquet(staging_dir / LATENT_TASK_CATALOG, index=False)
 
+        for record in records:
+            _resource_record_defaults(
+                record,
+                cfg=cfg,
+                envelope_id=envelope_identity,
+            )
         layout = prepare_analysis_plot_layout(staging_dir, stage="latent", source_spine=spine_path)
         pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
         for record in records:
-            result, _ = safe_read_zarr(staging_dir / str(record["group_path"]), verbose=False)
+            requested_plot_reads = min(
+                int(record["n_reads"]),
+                max(1, int(getattr(cfg, "latent_plot_max_reads", 10000))),
+            )
+            plot_decision = resolve_latent_operation(
+                cfg,
+                "plot",
+                requested_reads=requested_plot_reads,
+                n_positions=int(record["n_positions"]),
+                minimum_reads=1,
+            )
+            _append_resource_decision(record, plot_decision)
+            record["requested_plot_reads"] = requested_plot_reads
+            record["effective_plot_reads"] = plot_decision.effective_reads
+            result = _read_plot_subset(
+                staging_dir / str(record["group_path"]),
+                max_reads=plot_decision.effective_reads,
+                seed=int(getattr(cfg, "plot_subsample_seed", 0)),
+            )
             _plot_task(result, record, cfg, layout)
+            record["measured_peak_bytes"] = max(
+                int(record["measured_peak_bytes"]),
+                _memory_sample_bytes(),
+            )
             _record_memory_sample(
                 f"plot_complete:{record['reference']}:{record['core_start']}-{record['core_end']}"
             )
+        pd.DataFrame(records).to_parquet(staging_dir / LATENT_TASK_CATALOG, index=False)
+
+        resource_plan = staging_dir / LATENT_RESOURCE_PLAN
+        atomic_write_json(
+            resource_plan,
+            {
+                "schema_version": 1,
+                "estimator_version": LATENT_RESOURCE_ESTIMATOR_VERSION,
+                "resource_envelope_id": envelope_identity,
+                "resource_envelope": envelope.as_dict(),
+                "task_count": len(records),
+                "units": [
+                    {
+                        **{
+                            key: record[key]
+                            for key in (
+                                "reference",
+                                "core_start",
+                                "core_end",
+                                "analysis_core_id",
+                                "n_positions",
+                                "resource_estimator_version",
+                                "resource_envelope_id",
+                                "requested_fit_reads",
+                                "effective_fit_reads",
+                                "requested_transform_chunk_reads",
+                                "effective_transform_chunk_reads",
+                                "requested_plot_reads",
+                                "effective_plot_reads",
+                                "predicted_peak_bytes",
+                                "measured_peak_bytes",
+                                "limiting_operation",
+                                "cp_skip_reason",
+                            )
+                        },
+                        "decisions": json.loads(str(record["resource_decisions"]))["decisions"],
+                    }
+                    for record in records
+                ],
+            },
+        )
 
         generation_spine = staging_dir / LATENT_SPINE_FILENAME
         latent_spine = spine.copy()
@@ -864,6 +1258,9 @@ def execute_partitioned_latent(
         )
         latent_spine.uns["latent_store"] = relative_uns_path(
             final_dir / LATENT_STORE_SUBDIR, run_root
+        )
+        latent_spine.uns["latent_resource_plan"] = relative_uns_path(
+            final_dir / LATENT_RESOURCE_PLAN, run_root
         )
         latent_spine.uns["latent_filter_mask"] = filter_mask or ""
         latent_spine.uns["latent_schema_version"] = LATENT_TASK_CATALOG_SCHEMA_VERSION
@@ -877,6 +1274,7 @@ def execute_partitioned_latent(
         register_sidecar(manifest, "latent_task_catalog", staging_dir / LATENT_TASK_CATALOG)
         register_sidecar(manifest, "latent_store", staging_dir / LATENT_STORE_SUBDIR)
         register_sidecar(manifest, "latent_plot_catalog", layout.catalog)
+        register_sidecar(manifest, "latent_resource_plan", resource_plan)
 
         generation_manifest = staging_dir / LATENT_GENERATION_MANIFEST
         atomic_write_json(
@@ -892,6 +1290,39 @@ def execute_partitioned_latent(
                 ),
                 "task_catalog_schema_version": LATENT_TASK_CATALOG_SCHEMA_VERSION,
                 "task_count": len(records),
+                "resource_estimator_version": LATENT_RESOURCE_ESTIMATOR_VERSION,
+                "resource_envelope_id": envelope_identity,
+                "resource_envelope": envelope.as_dict(),
+                "resource_plan": LATENT_RESOURCE_PLAN,
+                "resource_summary": {
+                    "requested_fit_reads_ceiling": int(getattr(cfg, "latent_max_fit_reads", 5000)),
+                    "requested_transform_chunk_reads_ceiling": int(
+                        getattr(cfg, "latent_transform_chunk_reads", 2000)
+                    ),
+                    "requested_plot_reads_ceiling": int(
+                        getattr(cfg, "latent_plot_max_reads", 10000)
+                    ),
+                    "predicted_peak_bytes": max(
+                        int(record["predicted_peak_bytes"]) for record in records
+                    ),
+                    "measured_peak_bytes": max(
+                        int(record["measured_peak_bytes"]) for record in records
+                    ),
+                    "limiting_operations": sorted(
+                        {
+                            str(record["limiting_operation"])
+                            for record in records
+                            if str(record["limiting_operation"])
+                        }
+                    ),
+                    "cp_skip_reasons": sorted(
+                        {
+                            str(record["cp_skip_reason"])
+                            for record in records
+                            if str(record["cp_skip_reason"])
+                        }
+                    ),
+                },
                 "reused_compute_generation": (
                     Path(reuse_generation).name if reuse_generation is not None else None
                 ),
@@ -931,6 +1362,7 @@ def execute_partitioned_latent(
         "plot_catalog": final_dir / "plots" / "catalog.parquet",
         "manifest": sidecar_manifest_path(final_dir),
         "generation_manifest": final_dir / LATENT_GENERATION_MANIFEST,
+        "resource_plan": final_dir / LATENT_RESOURCE_PLAN,
         "generation": final_dir,
         "current": current,
         "generation_id": generation_id,

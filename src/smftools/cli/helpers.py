@@ -62,6 +62,7 @@ _STAGE_SEMANTIC_CONFIG_KEYS = {
     "latent": {
         "from_adata_stage",
         "latent_cp_iterations",
+        "latent_cp_memory_policy",
         "latent_cp_rank",
         "latent_execution_mode",
         "latent_knn_neighbors",
@@ -84,6 +85,7 @@ _STAGE_SEMANTIC_CONFIG_KEYS = {
 _STAGE_PLOT_CONFIG_KEYS = {
     "latent": {
         "sample_name_col_for_plotting",
+        "latent_plot_max_reads",
         "umap_layers_to_plot",
     }
 }

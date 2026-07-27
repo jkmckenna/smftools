@@ -137,8 +137,11 @@ reference/core-local coordinate systems under `latent_adata_outputs`. It is not 
 smftools experiment latent "/Path_to_experiment_config.csv"
 ```
 
-Use `latent_max_fit_reads` and `latent_transform_chunk_reads` to bound fitting and projection.
-CP decomposition runs only for units whose complete read set fits `latent_max_fit_reads`.
+Use `latent_max_fit_reads` and `latent_transform_chunk_reads` as fitting and projection ceilings;
+the partitioned executor reduces them against current memory headroom before allocation. CP
+decomposition requires the complete unit and follows `latent_cp_memory_policy` (`skip` or `fail`)
+when memory is insufficient. `latent_plot_max_reads` bounds deterministic plot-only
+materialization while full model outputs remain unchanged.
 
 ## Full Usage
 
