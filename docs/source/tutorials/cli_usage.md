@@ -304,6 +304,13 @@ canonical name even if experiments called it something different.
   Generic `project materialize --stage latent` is rejected because independently fitted task
   coordinates cannot be pooled safely; use the project embedding API for a shared cross-experiment
   coordinate system.
+- The project embedding API keys coordinate spaces by reference, named set or explicit experiment
+  selection, modality, stage, feature/window, and PCA/UMAP/Leiden settings. It publishes immutable
+  generations and atomically selects only a fully validated generation. Exact cache reads do not
+  unpickle models; incremental growth requires the explicit trusted-local boundary
+  `trust_local_models=True`. Source changes or removals require `force_recompute=True`, and prior
+  generations remain available for provenance. Estimator pickle files are local runtime artifacts,
+  not a stable interchange format.
 - `project remove PROJECT_DIR EXPERIMENT_ID` marks an experiment inactive (soft delete; the
   registry is append-only).
 - `project sample-store-list PROJECT_DIR [--experiment-id ID]` lists the per-sample store's
