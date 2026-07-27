@@ -58,6 +58,35 @@ _STAGE_NON_SEMANTIC_CONFIG_KEYS = {
     stage: {"plot_regions_bed", "plot_allow_unanalyzed_gaps", "plot_subsample_seed"}
     for stage in ("preprocess", "spatial", "hmm", "latent", "full")
 }
+_STAGE_SEMANTIC_CONFIG_KEYS = {
+    "latent": {
+        "from_adata_stage",
+        "latent_cp_iterations",
+        "latent_cp_rank",
+        "latent_execution_mode",
+        "latent_knn_neighbors",
+        "latent_leiden_resolution",
+        "latent_max_fit_reads",
+        "latent_min_reads",
+        "latent_n_pcs",
+        "latent_nmf_components",
+        "latent_nmf_max_iter",
+        "latent_random_state",
+        "latent_run_cp",
+        "latent_run_nmf",
+        "latent_run_pca_umap",
+        "latent_transform_chunk_reads",
+        "layer_for_umap_plotting",
+        "mod_target_bases",
+        "smf_modality",
+    }
+}
+_STAGE_PLOT_CONFIG_KEYS = {
+    "latent": {
+        "sample_name_col_for_plotting",
+        "umap_layers_to_plot",
+    }
+}
 
 # Canonical mapping from user-facing stage aliases to AdataPaths attribute names
 STAGE_MAP = {
@@ -148,13 +177,27 @@ def resolved_stage_config(cfg, stage: str | None = None) -> dict[str, Any]:
     ignored = _NON_SEMANTIC_STAGE_CONFIG_KEYS | _STAGE_NON_SEMANTIC_CONFIG_KEYS.get(
         str(stage), set()
     )
-    return {
+    resolved = {
         key: value
         for key, value in values.items()
         if key not in ignored
         and not key.startswith("force_redo_")
         and not key.endswith("_max_workers")
     }
+    selected = _STAGE_SEMANTIC_CONFIG_KEYS.get(str(stage))
+    if selected is not None:
+        return {key: resolved[key] for key in sorted(selected) if key in resolved}
+    return resolved
+
+
+def resolved_stage_plot_config(cfg, stage: str) -> dict[str, Any]:
+    """Return plot-only config values that do not invalidate stage computation."""
+    if hasattr(cfg, "to_dict"):
+        values = dict(cfg.to_dict())
+    else:
+        values = dict(vars(cfg))
+    selected = _STAGE_PLOT_CONFIG_KEYS.get(str(stage), set())
+    return {key: values[key] for key in sorted(selected) if key in values}
 
 
 def stage_config_hash(cfg, stage: str | None = None) -> str:
@@ -164,20 +207,84 @@ def stage_config_hash(cfg, stage: str | None = None) -> str:
     return config_hash(resolved_stage_config(cfg, stage))
 
 
+def stage_plot_config_hash(cfg, stage: str) -> str:
+    """Hash plot-only stage configuration independently from compute settings."""
+    from ..informatics.experiment_manifest import config_hash
+
+    return config_hash(resolved_stage_plot_config(cfg, stage))
+
+
+def stage_input_artifact_ids(
+    run_root: str | Path,
+    source_path: str | Path | None,
+    *,
+    include_region_catalogs: bool = False,
+) -> list[str]:
+    """Return stable source-file and upstream-stage identities for compatibility."""
+    if source_path is None:
+        return []
+    from ..informatics.experiment_manifest import (
+        artifact_record,
+        config_hash,
+        read_experiment_manifest,
+    )
+
+    run_root = Path(run_root)
+    source_path = Path(source_path)
+    source = artifact_record(source_path, run_root, checksum=True)
+    identities = [f"path:{config_hash(source)}"]
+    if include_region_catalogs and source_path.suffix == ".h5ad":
+        from ..informatics.partition_read import resolve_relative_path
+        from ..readwrite import safe_read_h5ad
+
+        spine, _ = safe_read_h5ad(source_path)
+        configured_catalogs = spine.uns.get("region_catalogs", {})
+        if isinstance(configured_catalogs, dict):
+            identities.append(f"region-config:{config_hash(dict(configured_catalogs))}")
+            for scope, value in sorted(configured_catalogs.items()):
+                path = resolve_relative_path(value, run_root)
+                if path is not None and path.is_file():
+                    record = artifact_record(path, run_root, checksum=True)
+                    identities.append(f"region:{scope}:{config_hash(record)}")
+    stage_by_dir = {
+        RAW_DIR: "raw",
+        PREPROCESS_DIR: "preprocess",
+        SPATIAL_DIR: "spatial",
+        HMM_DIR: "hmm",
+        LATENT_DIR: "latent",
+    }
+    source_stage = stage_by_dir.get(source_path.parent.name)
+    if source_stage is not None:
+        entry = read_experiment_manifest(run_root).get("stages", {}).get(source_stage)
+        if isinstance(entry, dict):
+            provenance = {
+                key: entry.get(key)
+                for key in (
+                    "config_hash",
+                    "completed_at",
+                    "generation_id",
+                    "input_artifact_ids",
+                    "schema_versions",
+                )
+            }
+            identities.append(f"stage:{source_stage}:{config_hash(provenance)}")
+    return identities
+
+
 def stage_lifecycle(cfg, stage: str, source_path: str | Path | None = None):
     """Create a lifecycle context for one partitioned CLI stage."""
-    from ..informatics.experiment_manifest import StageLifecycle, artifact_record, config_hash
+    from ..informatics.experiment_manifest import StageLifecycle
 
     run_root = Path(cfg.output_directory)
-    input_artifact_ids = []
-    if source_path is not None:
-        source = artifact_record(source_path, run_root)
-        input_artifact_ids.append(f"path:{config_hash(source)}")
     return StageLifecycle(
         run_root,
         str(stage),
         config_hash=stage_config_hash(cfg, stage),
-        input_artifact_ids=input_artifact_ids,
+        input_artifact_ids=stage_input_artifact_ids(
+            run_root,
+            source_path,
+            include_region_catalogs=str(stage) == "latent",
+        ),
     )
 
 
@@ -237,15 +344,28 @@ def partitioned_stage_is_complete(
     stage: str,
     *,
     required: tuple[str, ...],
+    source_path: str | Path | None = None,
+    extra_matches: dict[str, Any] | None = None,
 ) -> bool:
     """Check the compatible completion record used by partitioned CLI skips."""
     from ..informatics.experiment_manifest import stage_is_complete
 
+    input_artifact_ids = (
+        stage_input_artifact_ids(
+            cfg.output_directory,
+            source_path,
+            include_region_catalogs=str(stage) == "latent",
+        )
+        if source_path is not None
+        else None
+    )
     return stage_is_complete(
         cfg.output_directory,
         stage,
         config_hash=stage_config_hash(cfg, stage),
+        input_artifact_ids=input_artifact_ids,
         required_artifacts=required,
+        extra_matches=extra_matches,
     )
 
 

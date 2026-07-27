@@ -1,6 +1,7 @@
 import hashlib
 
 import anndata as ad
+import pytest
 
 from smftools.informatics.experiment_manifest import (
     MANIFEST_SCHEMA_VERSION,
@@ -179,6 +180,69 @@ def test_stage_lifecycle_records_failure_without_masking_exception(tmp_path):
     assert entry["state"] == "failed"
     assert entry["outcome"] == "RuntimeError: simulated task failure"
     assert not stage_is_complete(tmp_path, "spatial")
+
+
+def test_failed_replacement_preserves_previous_complete_record(tmp_path):
+    artifact = tmp_path / "spine.h5ad"
+    ad.AnnData().write_h5ad(artifact)
+    with StageLifecycle(tmp_path, "latent", config_hash="first") as lifecycle:
+        lifecycle.complete(
+            artifacts={"spine": artifact_record(artifact, tmp_path)},
+            generation_id="generation-one",
+        )
+
+    with pytest.raises(RuntimeError, match="replacement failed"):
+        with StageLifecycle(tmp_path, "latent", config_hash="second"):
+            raise RuntimeError("replacement failed")
+
+    entry = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    assert entry["state"] == "failed"
+    assert entry["previous_complete"]["state"] == "complete"
+    assert entry["previous_complete"]["generation_id"] == "generation-one"
+
+
+def test_stage_completion_validates_directory_checksum_and_extra_fields(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "data.bin").write_bytes(b"stable")
+    with StageLifecycle(
+        tmp_path,
+        "latent",
+        config_hash="compute",
+        input_artifact_ids=["source:one"],
+    ) as lifecycle:
+        lifecycle.complete(
+            artifacts={"store": artifact_record(store, tmp_path, checksum=True)},
+            plot_config_hash="plots",
+        )
+
+    assert stage_is_complete(
+        tmp_path,
+        "latent",
+        config_hash="compute",
+        input_artifact_ids=["source:one"],
+        required_artifacts=("store",),
+        extra_matches={"plot_config_hash": "plots"},
+    )
+    assert not stage_is_complete(
+        tmp_path,
+        "latent",
+        input_artifact_ids=["source:two"],
+        required_artifacts=("store",),
+    )
+    assert not stage_is_complete(
+        tmp_path,
+        "latent",
+        required_artifacts=("store",),
+        extra_matches={"plot_config_hash": "changed"},
+    )
+
+    (store / "data.bin").write_bytes(b"changed")
+    assert not stage_is_complete(
+        tmp_path,
+        "latent",
+        required_artifacts=("store",),
+    )
 
 
 def test_stage_lifecycle_requires_explicit_completion(tmp_path):

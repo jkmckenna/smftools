@@ -235,32 +235,110 @@ def latent_adata(
     if execution_mode not in {"auto", "legacy", "partitioned"}:
         raise ValueError("latent_execution_mode must be auto, legacy, or partitioned")
 
-    # Stage-skipping logic for latent
-    if not getattr(cfg, "force_redo_latent_analyses", False):
-        if (
-            execution_mode != "legacy"
-            and partitioned_latent_path is not None
-            and partitioned_latent_path.exists()
-        ):
-            logger.info(
-                "Partitioned latent spine found: %s\nSkipping smftools latent",
-                partitioned_latent_path,
-            )
-            return None, partitioned_latent_path
-        if execution_mode == "legacy" and latent_path.exists():
+    force_redo = bool(getattr(cfg, "force_redo_latent_analyses", False))
+    if not force_redo and execution_mode == "legacy":
+        if latent_path.exists():
             logger.info(f"Latent AnnData found: {latent_path}\nSkipping smftools latent")
             return None, latent_path
 
     source_path, source_kind, _source_stage = _resolve_latent_source(cfg, paths)
     if source_kind == "partitioned":
+        from ..informatics.experiment_manifest import (
+            read_experiment_manifest,
+            resolve_artifact_record,
+        )
+        from ..informatics.experiment_spine import write_experiment_spine
         from ..tools.partitioned_latent import execute_partitioned_latent
+        from .helpers import (
+            partitioned_stage_is_complete,
+            publish_stage_outputs,
+            stage_lifecycle,
+            stage_plot_config_hash,
+        )
 
         assert source_path is not None
-        outputs = execute_partitioned_latent(
-            source_path,
-            cfg,
-            Path(cfg.output_directory) / LATENT_DIR,
+        required_compute = (
+            "generation",
+            "generation_manifest",
+            "task_catalog",
+            "store",
         )
+        required_complete = (
+            "spine",
+            "generation_spine",
+            "task_catalog",
+            "store",
+            "plot_catalog",
+            "manifest",
+            "generation_manifest",
+            "generation",
+            "current",
+        )
+        plot_hash = stage_plot_config_hash(cfg, "latent")
+        if not force_redo and partitioned_stage_is_complete(
+            cfg,
+            "latent",
+            required=required_complete,
+            source_path=source_path,
+            extra_matches={"plot_config_hash": plot_hash},
+        ):
+            logger.info(
+                "Compatible partitioned latent generation found: %s\nSkipping smftools latent",
+                partitioned_latent_path,
+            )
+            return None, partitioned_latent_path
+
+        reuse_generation = None
+        if not force_redo and partitioned_stage_is_complete(
+            cfg,
+            "latent",
+            required=required_compute,
+            source_path=source_path,
+        ):
+            entry = (
+                read_experiment_manifest(cfg.output_directory).get("stages", {}).get("latent", {})
+            )
+            artifact = entry.get("artifacts", {}).get("generation")
+            if isinstance(artifact, dict):
+                reuse_generation = resolve_artifact_record(cfg.output_directory, artifact)
+
+        with stage_lifecycle(cfg, "latent", source_path=source_path) as lifecycle:
+            outputs = execute_partitioned_latent(
+                source_path,
+                cfg,
+                Path(cfg.output_directory) / LATENT_DIR,
+                reuse_generation=reuse_generation,
+            )
+            path_outputs = {key: value for key, value in outputs.items() if isinstance(value, Path)}
+            publish_stage_outputs(
+                lifecycle,
+                path_outputs,
+                required=required_complete,
+                checksum_keys=(
+                    "spine",
+                    "generation_spine",
+                    "task_catalog",
+                    "store",
+                    "plot_catalog",
+                    "manifest",
+                    "generation_manifest",
+                    "current",
+                ),
+                schema_versions={
+                    "generation_manifest": 1,
+                    "task_catalog": 2,
+                },
+                task_count=int(outputs["task_count"]),
+                extra={
+                    "generation_id": str(outputs["generation_id"]),
+                    "plot_config_hash": plot_hash,
+                    "reused_compute_generation": (
+                        reuse_generation.name if reuse_generation is not None else None
+                    ),
+                },
+                nonempty_directory_keys=("generation", "store"),
+            )
+            write_experiment_spine(cfg.output_directory)
         return None, outputs["spine"]
 
     if source_path is None:

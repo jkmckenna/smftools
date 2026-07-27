@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +12,12 @@ from click.testing import CliRunner
 from smftools.cli import helpers
 from smftools.cli.latent_adata import _resolve_latent_source, latent_adata
 from smftools.cli_entry import cli
-from smftools.constants import REFERENCE_STRAND
+from smftools.constants import LATENT_DIR, PREPROCESS_DIR, REFERENCE_STRAND
+from smftools.informatics.experiment_manifest import (
+    read_experiment_manifest,
+    stage_is_complete,
+)
+from smftools.informatics.experiment_spine import experiment_spine_path
 from smftools.informatics.raw_store import write_raw_store
 from smftools.perf_log import PerfLogger, set_perf_logger
 from smftools.readwrite import safe_read_h5ad, safe_write_zarr
@@ -28,7 +34,73 @@ def _cfg(tmp_path, *, mode="auto", force=False):
         from_adata_stage=None,
         emit_log_file=False,
         emit_perf_log=False,
+        sample_name_col_for_plotting="Sample",
+        umap_layers_to_plot=[],
     )
+
+
+def _partitioned_source(tmp_path):
+    frame = pd.DataFrame(
+        [
+            {
+                "read_id": "read1",
+                "reference": "ref",
+                REFERENCE_STRAND: "ref_top",
+                "barcode": "bc1",
+                "sample": "bc1",
+                "reference_start": 0,
+                "cigar": "4M",
+                "aligned_length": 4,
+                "sequence": [0, 1, 2, 3],
+                "quality": [30, 30, 30, 30],
+                "mismatch": [4, 4, 4, 4],
+                "modification_signal": [0.0, 1.0, 0.0, 1.0],
+            }
+        ]
+    )
+    raw = write_raw_store(
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 4},
+        analysis_mode="locus",
+    )
+    source, _ = safe_read_h5ad(raw["spine"])
+    source_path = tmp_path / PREPROCESS_DIR / "spine.h5ad"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    from smftools.readwrite import safe_write_h5ad
+
+    safe_write_h5ad(source, source_path, backup=False, verbose=False)
+    return source_path
+
+
+def _install_fake_latent_unit(monkeypatch, calls):
+    def fake_unit(spine_path, unit, cfg, output_dir):
+        calls.append(str(unit["analysis_core_id"]))
+        path = partitioned_latent._task_path(
+            Path(output_dir), unit["reference"], unit["core_start"], unit["core_end"]
+        )
+        result = ad.AnnData(
+            obs=pd.DataFrame(index=list(unit["read_ids"])),
+            var=pd.DataFrame(index=["0", "1", "2", "3"]),
+        )
+        safe_write_zarr(result, path, backup=False, verbose=False, zarr_format=3)
+        return {
+            "reference": str(unit["reference"]),
+            "analysis_mode": str(unit["analysis_mode"]),
+            "core_start": int(unit["core_start"]),
+            "core_end": int(unit["core_end"]),
+            "n_reads": result.n_obs,
+            "fit_reads": result.n_obs,
+            "group_path": path.relative_to(output_dir).as_posix(),
+            "obsm_keys": [],
+            "varm_keys": [],
+            "obs_columns": [],
+            "analysis_core_id": str(unit["analysis_core_id"]),
+            "analysis_region_ids": tuple(unit["analysis_region_ids"]),
+            "analysis_planner_version": int(unit["analysis_planner_version"]),
+        }
+
+    monkeypatch.setattr(partitioned_latent, "execute_latent_unit", fake_unit)
 
 
 def test_latent_cli_prefers_partitioned_hmm_spine(tmp_path, monkeypatch):
@@ -36,16 +108,25 @@ def test_latent_cli_prefers_partitioned_hmm_spine(tmp_path, monkeypatch):
     paths = helpers.get_adata_paths(cfg)
     for path in (paths.preprocess_spine, paths.spatial_spine, paths.hmm_spine):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
+        ad.AnnData().write_h5ad(path)
     captured = {}
 
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
 
-    def fake_execute(source, passed_cfg, output):
+    def fake_execute(source, passed_cfg, output, **_kwargs):
         captured.update(source=source, cfg=passed_cfg, output=output)
-        return {"spine": Path(output) / "spine.h5ad"}
+        return {
+            "spine": Path(output) / "spine.h5ad",
+            "generation_id": "test-generation",
+            "task_count": 1,
+        }
 
     monkeypatch.setattr(partitioned_latent, "execute_partitioned_latent", fake_execute)
+    monkeypatch.setattr(
+        helpers,
+        "publish_stage_outputs",
+        lambda lifecycle, *_args, **_kwargs: lifecycle.complete(),
+    )
 
     adata, output_path = latent_adata("config.csv")
 
@@ -59,7 +140,7 @@ def test_latent_cli_partitioned_mode_ignores_legacy_latent_file(tmp_path, monkey
     cfg = _cfg(tmp_path, mode="partitioned")
     paths = helpers.get_adata_paths(cfg)
     paths.preprocess_spine.parent.mkdir(parents=True)
-    paths.preprocess_spine.touch()
+    ad.AnnData().write_h5ad(paths.preprocess_spine)
     paths.latent.parent.mkdir(parents=True)
     paths.latent.touch()
 
@@ -67,7 +148,16 @@ def test_latent_cli_partitioned_mode_ignores_legacy_latent_file(tmp_path, monkey
     monkeypatch.setattr(
         partitioned_latent,
         "execute_partitioned_latent",
-        lambda source, passed_cfg, output: {"spine": Path(output) / "spine.h5ad"},
+        lambda source, passed_cfg, output, **_kwargs: {
+            "spine": Path(output) / "spine.h5ad",
+            "generation_id": "test-generation",
+            "task_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        helpers,
+        "publish_stage_outputs",
+        lambda lifecycle, *_args, **_kwargs: lifecycle.complete(),
     )
 
     _, output_path = latent_adata("config.csv")
@@ -79,18 +169,27 @@ def test_latent_cli_auto_mode_ignores_legacy_latent_file(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     paths = helpers.get_adata_paths(cfg)
     paths.preprocess_spine.parent.mkdir(parents=True)
-    paths.preprocess_spine.touch()
+    ad.AnnData().write_h5ad(paths.preprocess_spine)
     paths.latent.parent.mkdir(parents=True)
     paths.latent.touch()
     captured = {}
 
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
 
-    def fake_execute(source, passed_cfg, output):
+    def fake_execute(source, passed_cfg, output, **_kwargs):
         captured.update(source=source, cfg=passed_cfg, output=output)
-        return {"spine": Path(output) / "spine.h5ad"}
+        return {
+            "spine": Path(output) / "spine.h5ad",
+            "generation_id": "test-generation",
+            "task_count": 1,
+        }
 
     monkeypatch.setattr(partitioned_latent, "execute_partitioned_latent", fake_execute)
+    monkeypatch.setattr(
+        helpers,
+        "publish_stage_outputs",
+        lambda lifecycle, *_args, **_kwargs: lifecycle.complete(),
+    )
 
     _, output_path = latent_adata("config.csv")
 
@@ -371,8 +470,298 @@ def test_partitioned_latent_publishes_catalog_and_thin_spine(tmp_path, monkeypat
     catalog = pd.read_parquet(outputs["task_catalog"])
     latent_spine, _ = safe_read_h5ad(outputs["spine"])
     assert len(catalog) == 1
-    assert latent_spine.uns["latent_task_catalog"] == ("latent_adata_outputs/task_catalog.parquet")
+    assert (
+        latent_spine.uns["latent_task_catalog"]
+        == Path(outputs["task_catalog"]).relative_to(tmp_path).as_posix()
+    )
     assert latent_spine.uns["latent_coordinate_scope"] == "reference_core"
+    assert Path(outputs["generation"]).parent.name == "generations"
+
+
+def test_latent_cli_skips_only_compatible_complete_generation(tmp_path, monkeypatch):
+    _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    calls = []
+    _install_fake_latent_unit(monkeypatch, calls)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+
+    _, first_spine = latent_adata("config.csv")
+    first = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    _, second_spine = latent_adata("config.csv")
+
+    assert first_spine == second_spine == tmp_path / LATENT_DIR / "spine.h5ad"
+    assert len(calls) == 1
+    assert first["state"] == "complete"
+    assert (
+        read_experiment_manifest(tmp_path)["stages"]["latent"]["generation_id"]
+        == first["generation_id"]
+    )
+
+
+def test_latent_cli_does_not_trust_unmanifested_canonical_spine(tmp_path, monkeypatch):
+    _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    calls = []
+    _install_fake_latent_unit(monkeypatch, calls)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    canonical = tmp_path / LATENT_DIR / "spine.h5ad"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    ad.AnnData().write_h5ad(canonical)
+
+    latent_adata("config.csv")
+
+    assert len(calls) == 1
+    assert read_experiment_manifest(tmp_path)["stages"]["latent"]["state"] == "complete"
+
+
+def test_latent_cli_plot_only_change_reuses_compute_generation(tmp_path, monkeypatch):
+    _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    calls = []
+    _install_fake_latent_unit(monkeypatch, calls)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+
+    latent_adata("config.csv")
+    first = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    cfg.umap_layers_to_plot = ["mapped_length"]
+    latent_adata("config.csv")
+    second = read_experiment_manifest(tmp_path)["stages"]["latent"]
+
+    assert len(calls) == 1
+    assert second["generation_id"] != first["generation_id"]
+    assert second["reused_compute_generation"] == first["generation_id"]
+
+
+def test_latent_cli_compute_or_source_change_creates_fresh_generation(tmp_path, monkeypatch):
+    source_path = _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    cfg.latent_n_pcs = 3
+    calls = []
+    _install_fake_latent_unit(monkeypatch, calls)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+
+    latent_adata("config.csv")
+    first = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    cfg.latent_n_pcs = 4
+    latent_adata("config.csv")
+    second = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    source, _ = safe_read_h5ad(source_path)
+    source.uns["source_revision"] = "changed"
+    from smftools.readwrite import safe_write_h5ad
+
+    safe_write_h5ad(source, source_path, backup=False, verbose=False)
+    latent_adata("config.csv")
+    third = read_experiment_manifest(tmp_path)["stages"]["latent"]
+
+    assert len(calls) == 3
+    assert len({first["generation_id"], second["generation_id"], third["generation_id"]}) == 3
+    assert second["reused_compute_generation"] is None
+    assert third["reused_compute_generation"] is None
+
+
+def test_latent_cli_force_redo_creates_clean_generation(tmp_path, monkeypatch):
+    _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    calls = []
+    _install_fake_latent_unit(monkeypatch, calls)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+
+    latent_adata("config.csv")
+    first = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    cfg.force_redo_latent_analyses = True
+    latent_adata("config.csv")
+    second = read_experiment_manifest(tmp_path)["stages"]["latent"]
+
+    assert len(calls) == 2
+    assert second["generation_id"] != first["generation_id"]
+    assert second["reused_compute_generation"] is None
+    generations = list((tmp_path / LATENT_DIR / "generations").iterdir())
+    assert {path.name for path in generations} == {
+        first["generation_id"],
+        second["generation_id"],
+    }
+
+
+def test_latent_stage_completion_rejects_task_store_checksum_change(tmp_path, monkeypatch):
+    source_path = _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    calls = []
+    _install_fake_latent_unit(monkeypatch, calls)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+
+    latent_adata("config.csv")
+    entry = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    store = tmp_path / entry["artifacts"]["store"]["path"]
+    victim = next(path for path in store.rglob("*") if path.is_file())
+    victim.write_bytes(victim.read_bytes() + b"corrupt")
+
+    assert not stage_is_complete(
+        tmp_path,
+        "latent",
+        config_hash=entry["config_hash"],
+        required_artifacts=("store",),
+    )
+    latent_adata("config.csv")
+    assert len(calls) == 2
+
+
+def test_failed_replacement_preserves_prior_complete_generation(tmp_path, monkeypatch):
+    _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    calls = []
+    _install_fake_latent_unit(monkeypatch, calls)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+
+    latent_adata("config.csv")
+    first = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    first_generation = tmp_path / first["artifacts"]["generation"]["path"]
+    first_spine, _ = safe_read_h5ad(first_generation / "spine.h5ad")
+    cfg.force_redo_latent_analyses = True
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_plot_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("plot failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="plot failure"):
+        latent_adata("config.csv")
+
+    failed = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    restored, _ = safe_read_h5ad(first_generation / "spine.h5ad")
+    assert failed["state"] == "failed"
+    assert failed["previous_complete"]["generation_id"] == first["generation_id"]
+    assert first_generation.is_dir()
+    assert restored.uns["latent_generation_id"] == first_spine.uns["latent_generation_id"]
+    assert not any((tmp_path / LATENT_DIR / ".staging").iterdir())
+
+
+@pytest.mark.parametrize("failure_task", [1, 2])
+def test_latent_task_failure_never_publishes_partial_generation(
+    tmp_path, monkeypatch, failure_task
+):
+    source_path = _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    source, _ = safe_read_h5ad(source_path)
+    unit = partitioned_latent._analysis_units(source, None, spine_path=source_path)[0]
+    units = [dict(unit), dict(unit)]
+    units[1]["analysis_core_id"] = "second-core"
+    units[1]["core_start"] = 1
+    units[1]["core_end"] = 4
+    monkeypatch.setattr(
+        partitioned_latent,
+        "_analysis_units",
+        lambda *_args, **_kwargs: units,
+    )
+    calls = []
+
+    def fail_unit(spine_path, current, passed_cfg, output_dir):
+        calls.append(current["analysis_core_id"])
+        if len(calls) == failure_task:
+            raise RuntimeError(f"task {failure_task} failure")
+        path = partitioned_latent._task_path(
+            Path(output_dir),
+            current["reference"],
+            current["core_start"],
+            current["core_end"],
+        )
+        result = ad.AnnData(
+            obs=pd.DataFrame(index=current["read_ids"]),
+            var=pd.DataFrame(index=["0", "1", "2", "3"]),
+        )
+        safe_write_zarr(result, path, backup=False, verbose=False, zarr_format=3)
+        return {
+            "reference": current["reference"],
+            "analysis_mode": current["analysis_mode"],
+            "core_start": current["core_start"],
+            "core_end": current["core_end"],
+            "n_reads": result.n_obs,
+            "fit_reads": result.n_obs,
+            "group_path": path.relative_to(output_dir).as_posix(),
+            "obsm_keys": [],
+            "varm_keys": [],
+            "obs_columns": [],
+            "analysis_core_id": current["analysis_core_id"],
+            "analysis_region_ids": (),
+            "analysis_planner_version": 1,
+        }
+
+    monkeypatch.setattr(partitioned_latent, "execute_latent_unit", fail_unit)
+
+    with pytest.raises(RuntimeError, match=f"task {failure_task} failure"):
+        partitioned_latent.execute_partitioned_latent(source_path, cfg, tmp_path / LATENT_DIR)
+
+    assert not (tmp_path / LATENT_DIR / "spine.h5ad").exists()
+    assert not list((tmp_path / LATENT_DIR / "generations").iterdir())
+    assert not any((tmp_path / LATENT_DIR / ".staging").iterdir())
+    experiment_spine, _ = safe_read_h5ad(experiment_spine_path(tmp_path))
+    assert "latent_task_catalog" not in experiment_spine.uns
+
+
+@pytest.mark.parametrize(
+    ("failure_target", "message"),
+    [
+        ("catalog", "after catalog"),
+        ("plot", "during plot"),
+        ("validation", "before publication"),
+    ],
+)
+def test_latent_post_compute_failure_never_publishes_generation(
+    tmp_path, monkeypatch, failure_target, message
+):
+    source_path = _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    _install_fake_latent_unit(monkeypatch, [])
+    if failure_target == "catalog":
+        monkeypatch.setattr(
+            partitioned_latent,
+            "prepare_analysis_plot_layout",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(message)),
+        )
+    elif failure_target == "plot":
+        monkeypatch.setattr(
+            partitioned_latent,
+            "_plot_task",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(message)),
+        )
+    else:
+        monkeypatch.setattr(
+            partitioned_latent,
+            "_validate_latent_generation",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(message)),
+        )
+
+    with pytest.raises(RuntimeError, match=message):
+        partitioned_latent.execute_partitioned_latent(source_path, cfg, tmp_path / LATENT_DIR)
+
+    assert not (tmp_path / LATENT_DIR / "spine.h5ad").exists()
+    assert not list((tmp_path / LATENT_DIR / "generations").iterdir())
+    assert not any((tmp_path / LATENT_DIR / ".staging").iterdir())
+
+
+@pytest.mark.parametrize("damage", ["missing", "unreadable", "checksum"])
+def test_latent_completion_rejects_damaged_task_store(tmp_path, monkeypatch, damage):
+    _partitioned_source(tmp_path)
+    cfg = _cfg(tmp_path)
+    _install_fake_latent_unit(monkeypatch, [])
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    latent_adata("config.csv")
+    entry = read_experiment_manifest(tmp_path)["stages"]["latent"]
+    store = tmp_path / entry["artifacts"]["store"]["path"]
+    group = next(path for path in store.rglob("core=*") if path.is_dir())
+
+    if damage == "missing":
+        shutil.rmtree(group)
+    elif damage == "unreadable":
+        (group / "zarr.json").write_text("{", encoding="utf-8")
+    else:
+        (group / "unexpected.bin").write_bytes(b"checksum mismatch")
+
+    assert not stage_is_complete(
+        tmp_path,
+        "latent",
+        config_hash=entry["config_hash"],
+        required_artifacts=("store",),
+    )
 
 
 def test_latent_unit_without_representations_is_skipped(tmp_path, monkeypatch):
