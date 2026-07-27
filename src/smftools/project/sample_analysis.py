@@ -11,7 +11,7 @@ LS parameters) so a different read-span definition never collides with -- or get
 silently served by -- a stale one.
 
 ``join_periodicity`` is the read side: it attaches an already-computed analysis
-(never computes one itself) onto a materialized selection by read_id, the mechanism
+(never computes one itself) onto a materialized selection by molecule UID, the mechanism
 ``dev/project_sample_and_set_stores.md`` calls the set store's per-sample catalog
 join. It's a separate, explicit step after pooling a set (e.g. via
 ``catalog.project_adata`` or streaming ``set_store.iter_set_parts``) rather than
@@ -30,12 +30,26 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..informatics.molecule_identity import (
+    EXPERIMENT_UID_COLUMN,
+    MOLECULE_UID_COLUMN,
+    READ_ID_COLUMN,
+    molecule_uid,
+)
 from .sample_store import list_per_sample_partitions, load_per_sample_partition, partition_dir_for
 
 ANALYSES_DIRNAME = "analyses"
 RESULT_FILENAME = "result.parquet"
 DEFINITION_FILENAME = "definition.json"
 PERIODICITY_ANALYSIS_NAME = "periodicity"
+PERIODICITY_CACHE_SCHEMA_VERSION = 2
+SCHEMA_VERSION_COLUMN = "schema_version"
+_CACHE_IDENTITY_COLUMNS = (
+    SCHEMA_VERSION_COLUMN,
+    EXPERIMENT_UID_COLUMN,
+    MOLECULE_UID_COLUMN,
+    READ_ID_COLUMN,
+)
 # Array-valued columns compute_single_molecule_periodicity_direct returns -- not
 # parquet-safe as raw object-dtype numpy arrays, and not useful in a cached summary
 # table; see that function's own docstring ("drop before saving").
@@ -72,6 +86,112 @@ def _periodicity_definition(*, layer, start, end, method, kwargs) -> dict:
         "method": method,
         **kwargs,
     }
+
+
+def _registered_experiment_uid(project_dir: str | Path, experiment_id: str) -> str:
+    """Return the persistent identity for one registered experiment."""
+    from .registry import list_experiments
+
+    entry = next(
+        (entry for entry in list_experiments(project_dir) if entry["id"] == experiment_id),
+        None,
+    )
+    if entry is None:
+        raise FileNotFoundError(
+            f"experiment {experiment_id!r} is not registered in this project; "
+            "run project add before computing project analyses"
+        )
+    return str(entry[EXPERIMENT_UID_COLUMN])
+
+
+def _read_ids(adata) -> np.ndarray:
+    """Return explicit instrument read IDs for one experiment-local AnnData."""
+    values = (
+        adata.obs[READ_ID_COLUMN].astype(str)
+        if READ_ID_COLUMN in adata.obs
+        else adata.obs.index.to_series().astype(str)
+    )
+    if values.duplicated().any():
+        raise ValueError("periodicity input contains duplicate instrument read IDs")
+    return values.to_numpy()
+
+
+def _load_cached_result(
+    result_path: Path,
+    *,
+    experiment_uid: str,
+    migrate_legacy: bool = True,
+) -> pd.DataFrame:
+    """Load and validate one cache, migrating an unambiguously owned v1 result."""
+    result = pd.read_parquet(result_path)
+    if READ_ID_COLUMN not in result:
+        raise ValueError(
+            f"periodicity cache {result_path} has no {READ_ID_COLUMN!r} column; "
+            "rerun with force_recompute=True"
+        )
+
+    result[READ_ID_COLUMN] = result[READ_ID_COLUMN].astype(str)
+    if result[READ_ID_COLUMN].duplicated().any():
+        raise ValueError(
+            f"periodicity cache {result_path} contains duplicate instrument read IDs; "
+            "rerun with force_recompute=True"
+        )
+    has_complete_identity = all(column in result for column in _CACHE_IDENTITY_COLUMNS)
+    if not has_complete_identity:
+        identity_columns_present = [
+            column
+            for column in _CACHE_IDENTITY_COLUMNS
+            if column != READ_ID_COLUMN and column in result
+        ]
+        if identity_columns_present:
+            raise ValueError(
+                f"periodicity cache {result_path} has incomplete project identity columns "
+                f"{identity_columns_present}; rerun with force_recompute=True"
+            )
+        if not migrate_legacy:
+            raise ValueError(
+                f"periodicity cache {result_path} predates project molecule identity; "
+                "rerun with force_recompute=True"
+            )
+        # The cache directory belongs to exactly one registered experiment, so its
+        # legacy read IDs can be stamped without inferring ownership from pooled names.
+        result[SCHEMA_VERSION_COLUMN] = PERIODICITY_CACHE_SCHEMA_VERSION
+        result[EXPERIMENT_UID_COLUMN] = experiment_uid
+        result[MOLECULE_UID_COLUMN] = [
+            molecule_uid(experiment_uid, read_id) for read_id in result[READ_ID_COLUMN]
+        ]
+        result.to_parquet(result_path, index=False)
+        definition_path = result_path.with_name(DEFINITION_FILENAME)
+        if definition_path.exists():
+            definition = json.loads(definition_path.read_text(encoding="utf-8"))
+            definition["cache_schema_version"] = PERIODICITY_CACHE_SCHEMA_VERSION
+            definition_path.write_text(
+                json.dumps(definition, indent=2, sort_keys=True, default=str),
+                encoding="utf-8",
+            )
+        return result
+
+    versions = set(result[SCHEMA_VERSION_COLUMN].dropna().astype(int))
+    if not result.empty and versions != {PERIODICITY_CACHE_SCHEMA_VERSION}:
+        raise ValueError(
+            f"periodicity cache {result_path} has unsupported schema version(s) "
+            f"{sorted(versions)}; rerun with force_recompute=True"
+        )
+    owners = set(result[EXPERIMENT_UID_COLUMN].dropna().astype(str))
+    if not result.empty and owners != {experiment_uid}:
+        raise ValueError(
+            f"periodicity cache {result_path} belongs to experiment UID(s) "
+            f"{sorted(owners)}, not {experiment_uid!r}; rerun with force_recompute=True"
+        )
+    expected_molecule_uids = [
+        molecule_uid(experiment_uid, read_id) for read_id in result[READ_ID_COLUMN]
+    ]
+    if result[MOLECULE_UID_COLUMN].astype(str).tolist() != expected_molecule_uids:
+        raise ValueError(
+            f"periodicity cache {result_path} contains inconsistent molecule identities; "
+            "rerun with force_recompute=True"
+        )
+    return result
 
 
 def _load_partition_adata(project_dir, experiment_id: str, reference_strand: str, sample: str):
@@ -137,9 +257,10 @@ def compute_periodicity(
     by every parameter that changes the result, so a different read-span/analysis
     definition never collides with -- or is silently served by -- an old cache entry.
 
-    Returns a DataFrame with one row per surviving read, indexed by ``read_id`` (not
-    the positional ``row_index`` the underlying compute function returns), ready to
-    join onto a materialized selection by read_id -- see :func:`join_periodicity`.
+    Returns a DataFrame with one row per surviving read, indexed by ``molecule_uid``
+    (not the positional ``row_index`` the underlying compute function returns).
+    ``experiment_uid`` and the original instrument ``read_id`` remain explicit
+    columns for traceability.
     """
     from ..analysis.compute import autocorrelation
 
@@ -156,8 +277,12 @@ def compute_periodicity(
         definition_hash,
     )
     result_path = analysis_dir / RESULT_FILENAME
+    experiment_uid = _registered_experiment_uid(project_dir, experiment_id)
     if not force_recompute and result_path.exists():
-        return pd.read_parquet(result_path).set_index("read_id")
+        return _load_cached_result(
+            result_path,
+            experiment_uid=experiment_uid,
+        ).set_index(MOLECULE_UID_COLUMN)
 
     adata = _load_partition_adata(project_dir, experiment_id, reference_strand, sample)
     positions = np.asarray(adata.var_names, dtype=np.int64)
@@ -179,17 +304,30 @@ def compute_periodicity(
         else autocorrelation.compute_single_molecule_periodicity
     )
     result = compute_fn(mat, positions, **kwargs)
-    read_ids = np.asarray(adata.obs_names)[result["row_index"].to_numpy()]
+    input_read_ids = _read_ids(adata)
+    read_ids = input_read_ids[result["row_index"].to_numpy()]
     result = result.drop(columns=[c for c in _DROP_BEFORE_CACHE if c in result.columns])
     result = result.drop(columns="row_index")
-    result.insert(0, "read_id", read_ids)
+    result.insert(0, READ_ID_COLUMN, read_ids)
+    result.insert(
+        0,
+        MOLECULE_UID_COLUMN,
+        [molecule_uid(experiment_uid, read_id) for read_id in read_ids],
+    )
+    result.insert(0, EXPERIMENT_UID_COLUMN, experiment_uid)
+    result.insert(0, SCHEMA_VERSION_COLUMN, PERIODICITY_CACHE_SCHEMA_VERSION)
 
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    result.to_parquet(result_path)
+    result.to_parquet(result_path, index=False)
+    persisted_definition = {
+        "cache_schema_version": PERIODICITY_CACHE_SCHEMA_VERSION,
+        **definition,
+    }
     (analysis_dir / DEFINITION_FILENAME).write_text(
-        json.dumps(definition, indent=2, sort_keys=True, default=str)
+        json.dumps(persisted_definition, indent=2, sort_keys=True, default=str),
+        encoding="utf-8",
     )
-    return result.set_index("read_id")
+    return result.set_index(MOLECULE_UID_COLUMN)
 
 
 def join_periodicity(
@@ -204,7 +342,7 @@ def join_periodicity(
     sample_column: str = "Sample",
     **kwargs,
 ):
-    """Attach an already-computed periodicity result onto ``adata`` by read_id.
+    """Attach an already-computed periodicity result onto ``adata`` by molecule UID.
 
     Never computes anything -- looks up, for every ``(experiment, Reference_strand,
     sample)`` combination present in ``adata.obs``, the per-sample analysis cache for
@@ -214,6 +352,9 @@ def join_periodicity(
     that analysis's coverage filtering) get NaN. Adds one ``periodicity_<column>`` obs
     column per result column; returns ``adata`` unchanged if it lacks ``experiment``/
     ``Reference_strand``/``Sample`` obs columns (nothing to key the join on).
+    ``molecule_uid`` must be present explicitly, or derivable from explicit
+    ``experiment_uid`` and ``read_id`` columns; pooled observation names are never
+    decoded to infer identity.
     """
     if (
         "experiment" not in adata.obs
@@ -221,7 +362,6 @@ def join_periodicity(
         or sample_column not in adata.obs
     ):
         return adata
-
     definition = _periodicity_definition(
         layer=layer, start=start, end=end, method=method, kwargs=kwargs
     )
@@ -240,14 +380,51 @@ def join_periodicity(
         )
         result_path = analysis_dir / RESULT_FILENAME
         if result_path.exists():
-            frames.append(pd.read_parquet(result_path))
+            experiment_uid = _registered_experiment_uid(project_dir, str(row["experiment"]))
+            frames.append(
+                _load_cached_result(
+                    result_path,
+                    experiment_uid=experiment_uid,
+                )
+            )
 
     if not frames:
         return adata
 
-    combined = pd.concat(frames, ignore_index=True).drop_duplicates(subset="read_id", keep="first")
-    combined = combined.set_index("read_id")
-    aligned = combined.reindex(adata.obs_names)
-    for column in aligned.columns:
+    if MOLECULE_UID_COLUMN in adata.obs:
+        target_molecule_uids = adata.obs[MOLECULE_UID_COLUMN].astype(str).to_numpy()
+    elif EXPERIMENT_UID_COLUMN in adata.obs and READ_ID_COLUMN in adata.obs:
+        target_molecule_uids = np.asarray(
+            [
+                molecule_uid(experiment_uid, read_id)
+                for experiment_uid, read_id in zip(
+                    adata.obs[EXPERIMENT_UID_COLUMN],
+                    adata.obs[READ_ID_COLUMN],
+                )
+            ],
+            dtype=object,
+        )
+    else:
+        raise ValueError(
+            "join_periodicity requires obs['molecule_uid'] or both "
+            "obs['experiment_uid'] and obs['read_id']; pooled observation names "
+            "are not an identity source"
+        )
+
+    combined = pd.concat(frames, ignore_index=True)
+    if combined[MOLECULE_UID_COLUMN].duplicated().any():
+        duplicates = sorted(
+            combined.loc[
+                combined[MOLECULE_UID_COLUMN].duplicated(keep=False),
+                MOLECULE_UID_COLUMN,
+            ]
+            .astype(str)
+            .unique()
+        )
+        raise ValueError(f"periodicity caches contain duplicate molecule UIDs: {duplicates[:5]}")
+    combined = combined.set_index(MOLECULE_UID_COLUMN)
+    aligned = combined.reindex(target_molecule_uids)
+    result_columns = [column for column in aligned.columns if column not in _CACHE_IDENTITY_COLUMNS]
+    for column in result_columns:
         adata.obs[f"periodicity_{column}"] = aligned[column].to_numpy()
     return adata
