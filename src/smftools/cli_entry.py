@@ -648,7 +648,8 @@ def project_list_cmd(project_dir: Path):
     default=None,
     help=(
         "Pipeline stage to materialize per experiment (raw/preprocess/spatial/hmm/"
-        "latent/variant/chimeric). Default: most-derived stage available per "
+        "variant/chimeric). Latent is available only through export-latent or the "
+        "scoped project API. Default: most-derived stage available per "
         "experiment, since a later stage already carries forward earlier stages' data."
     ),
 )
@@ -736,6 +737,77 @@ def project_materialize_cmd(
         max_memory_percent=max_memory_percent,
     )
     click.echo(f"Wrote {out}")
+
+
+@project_group.command("export-latent")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("output_dir", type=click.Path(path_type=Path))
+@click.option(
+    "--canonical-reference",
+    default=None,
+    help="Restrict to one canonical reference UID.",
+)
+@click.option(
+    "--experiment",
+    "experiments",
+    multiple=True,
+    help="Restrict to an experiment ID; repeat for multiple experiments.",
+)
+@click.option("--set", "set_name", default=None, help="Restrict to a named experiment set.")
+@click.option(
+    "--molecule-uid",
+    "molecule_uids",
+    multiple=True,
+    help="Restrict to a molecule UID; repeat for multiple molecules.",
+)
+@click.option(
+    "--analysis-core-id",
+    "analysis_core_ids",
+    multiple=True,
+    help="Restrict to an analysis-core owner; repeat for multiple cores.",
+)
+@click.option(
+    "--representations",
+    default=None,
+    help="Comma-separated task-local obsm/varm keys to export.",
+)
+@click.option(
+    "--labels",
+    default=None,
+    help="Comma-separated task-local observation labels to export.",
+)
+def project_export_latent_cmd(
+    project_dir,
+    output_dir,
+    canonical_reference,
+    experiments,
+    set_name,
+    molecule_uids,
+    analysis_core_ids,
+    representations,
+    labels,
+):
+    """Export task-local latent results without pooling coordinate owners."""
+    from .cli.project_cmd import project_export_latent
+
+    representation_list = (
+        None
+        if representations is None
+        else [value for value in representations.split(",") if value]
+    )
+    label_list = None if labels is None else [value for value in labels.split(",") if value]
+    output = project_export_latent(
+        project_dir,
+        output_dir,
+        canonical_reference=canonical_reference,
+        experiments=experiments or None,
+        set_name=set_name,
+        molecule_uids=molecule_uids or None,
+        analysis_core_ids=analysis_core_ids or None,
+        representations=representation_list,
+        labels=label_list,
+    )
+    click.echo(f"Wrote {output}")
 
 
 @project_group.command("sample-store-list")

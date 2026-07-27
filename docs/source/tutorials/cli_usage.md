@@ -256,10 +256,10 @@ a thin HMM spine rather than materializing the full experiment.
 ### `smftools project`
 
 The project command group manages a lightweight cross-experiment registry (`init`/`add`/`remove`/
-`list`/`materialize`/`sample-store-list`). A project never copies or merges experiment data -- it
-keeps pointers to each experiment's run directory plus a table harmonizing reference names across
-experiments by sequence identity, so the same locus can be addressed by one canonical name even if
-experiments called it something different.
+`list`/`materialize`/`export-latent`/`sample-store-list`). A project never copies or merges
+experiment data -- it keeps pointers to each experiment's run directory plus a table harmonizing
+reference names across experiments by sequence identity, so the same locus can be addressed by one
+canonical name even if experiments called it something different.
 
 - `project init PROJECT_DIR` creates the registry (`registry.json`) and a `sets/` directory for
   named experiment sets, plus starter working directories (`project_scripts/`, `project_outputs/`)
@@ -296,6 +296,14 @@ experiments called it something different.
   For larger selections, pass `--partitioned` and make `--output` a new directory. This writes
   independently readable experiment/barcode/read-chunk Zarr parts, `catalog.parquet`, and a
   completion manifest without constructing a final pooled AnnData.
+- `project export-latent PROJECT_DIR OUTPUT_DIR` exports one Zarr artifact per experiment/core
+  latent coordinate owner plus a portable catalog and completion manifest. Filters include
+  `--canonical-reference`, repeatable `--experiment`, `--molecule-uid`, and
+  `--analysis-core-id`, plus comma-separated `--representations` and `--labels`. Row and field
+  filters are applied through the latent molecule index before task arrays are materialized.
+  Generic `project materialize --stage latent` is rejected because independently fitted task
+  coordinates cannot be pooled safely; use the project embedding API for a shared cross-experiment
+  coordinate system.
 - `project remove PROJECT_DIR EXPERIMENT_ID` marks an experiment inactive (soft delete; the
   registry is append-only).
 - `project sample-store-list PROJECT_DIR [--experiment-id ID]` lists the per-sample store's

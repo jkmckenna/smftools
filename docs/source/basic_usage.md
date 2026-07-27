@@ -196,6 +196,10 @@ smftools project materialize "/Path_to_project_directory" my_canonical_reference
 smftools project materialize "/Path_to_project_directory" my_canonical_reference \
     -o "/Path_to_partitioned_output" --partitioned --layers C_site_binary
 
+# Export experiment/core-local latent coordinates as separate scoped artifacts.
+smftools project export-latent "/Path_to_project_directory" "/Path_to_latent_output" \
+    --canonical-reference my_canonical_reference --representations X_pca_signal
+
 # Mark an experiment inactive (soft delete; registry entries are append-only).
 smftools project remove "/Path_to_project_directory" experiment_id
 ```
@@ -211,6 +215,11 @@ smftools project remove "/Path_to_project_directory" experiment_id
   attaches spatial's per-read outputs where available. The pooled path is preflighted before
   allocation. `--partitioned` writes bounded Zarr parts plus a catalog and completion manifest,
   avoiding the final in-memory concatenation.
+- Latent task coordinates are experiment/core-local and are never attached to or pooled by
+  `project materialize`; explicit `--stage latent` requests fail with guidance. Use
+  `project export-latent` to write one independently readable Zarr artifact per coordinate owner,
+  with ownership and source checksums in `catalog.parquet`. Use the project embedding API for one
+  coordinate system fitted across experiments.
 - `smftools project export-fastq ...` (below) and other cross-experiment tooling build on the
   same registry.
 

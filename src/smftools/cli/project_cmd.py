@@ -107,9 +107,10 @@ def project_materialize(
     """Pool a canonical reference across matching experiments into one AnnData and write it.
 
     This is the explicit "give me one pooled object" path (``project.catalog.project_adata``).
-    ``stage`` picks a specific pipeline stage per experiment (``raw``, ``preprocess``,
-    ``spatial``, ``hmm``, ...); the default falls back through the most-derived stage
-    available per experiment.
+    ``stage`` picks a genomic pipeline stage per experiment (``raw``,
+    ``preprocess``, ``spatial``, ``hmm``, ...); the default falls back through
+    the most-derived stage available per experiment. Latent task coordinates
+    require :func:`project_export_latent` because their owners cannot be pooled.
 
     Prefer a narrow ``layers`` subset and/or a ``start``/``end`` window. Pooled output
     is preflighted before allocation. ``allow_large`` acknowledges the soft 8-GiB
@@ -160,6 +161,38 @@ def project_materialize(
         output_path,
     )
     return output_path
+
+
+def project_export_latent(
+    project_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    canonical_reference: str | None = None,
+    experiments=None,
+    set_name: str | None = None,
+    molecule_uids=None,
+    analysis_core_ids=None,
+    representations=None,
+    labels=None,
+) -> Path:
+    """Export one portable task-local artifact per latent coordinate owner."""
+    from ..project.catalog import ProjectCatalog
+    from ..project.latent_store import export_latent_parts
+
+    catalog = ProjectCatalog.open(project_dir)
+    output = export_latent_parts(
+        catalog,
+        output_dir,
+        canonical_reference=canonical_reference,
+        experiments=experiments,
+        set_name=set_name,
+        molecule_uids=molecule_uids,
+        analysis_core_ids=analysis_core_ids,
+        representations=representations,
+        labels=labels,
+    )
+    logger.info("Wrote scoped latent project export -> %s", output)
+    return output
 
 
 def project_sample_store_list(
