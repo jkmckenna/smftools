@@ -9,7 +9,7 @@ from smftools.cli import helpers, recipes
 from smftools.informatics.experiment_manifest import read_experiment_manifest
 
 
-def test_full_flow_runs_raw_preprocess_spatial_hmm_in_order(tmp_path, monkeypatch):
+def test_full_flow_runs_raw_preprocess_spatial_hmm_latent_in_order(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(recipes, "raw_adata", lambda path: calls.append(("raw", path)))
     monkeypatch.setattr(
@@ -22,12 +22,20 @@ def test_full_flow_runs_raw_preprocess_spatial_hmm_in_order(tmp_path, monkeypatc
         return "adata", "hmm-output"
 
     monkeypatch.setattr(recipes, "hmm_adata", run_hmm)
+    monkeypatch.setattr(
+        recipes,
+        "latent_adata",
+        lambda path: calls.append(("latent", path)) or ("adata", "latent-output"),
+    )
     cfg = SimpleNamespace(output_directory=tmp_path)
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
     monkeypatch.setattr(
         helpers,
         "get_adata_paths",
-        lambda _cfg: SimpleNamespace(hmm_spine=tmp_path / "hmm_adata_outputs" / "spine.h5ad"),
+        lambda _cfg: SimpleNamespace(
+            hmm_spine=tmp_path / "hmm_adata_outputs" / "spine.h5ad",
+            latent_spine=tmp_path / "latent_adata_outputs" / "spine.h5ad",
+        ),
     )
 
     result = recipes.full_flow("experiment.csv")
@@ -37,8 +45,9 @@ def test_full_flow_runs_raw_preprocess_spatial_hmm_in_order(tmp_path, monkeypatc
         ("preprocess", "experiment.csv"),
         ("spatial", "experiment.csv"),
         ("hmm", "experiment.csv"),
+        ("latent", "experiment.csv"),
     ]
-    assert result == ("adata", "hmm-output")
+    assert result == ("adata", "latent-output")
     full_entry = read_experiment_manifest(tmp_path)["stages"]["full"]
     assert full_entry["state"] == "complete"
     assert full_entry["artifacts"]["summary"]["path"] == "full_summary.json"
@@ -49,10 +58,11 @@ def test_full_flow_runs_raw_preprocess_spatial_hmm_in_order(tmp_path, monkeypatc
         "preprocess",
         "spatial",
         "hmm",
+        "latent",
     ]
 
 
-def test_full_cli_invokes_four_stage_recipe(tmp_path, monkeypatch):
+def test_full_cli_invokes_recipe(tmp_path, monkeypatch):
     config = tmp_path / "experiment.csv"
     config.write_text("variable,value\n", encoding="utf-8")
     calls = []
@@ -70,13 +80,14 @@ def test_full_summary_links_stage_logs_and_outcomes(tmp_path, monkeypatch):
     monkeypatch.setattr(
         helpers,
         "get_adata_paths",
-        lambda _cfg: SimpleNamespace(hmm_spine=None),
+        lambda _cfg: SimpleNamespace(hmm_spine=None, latent_spine=None),
     )
     directory_names = {
         "raw": "raw_outputs",
         "preprocess": "preprocess_adata_outputs",
         "spatial": "spatial_adata_outputs",
         "hmm": "hmm_adata_outputs",
+        "latent": "latent_adata_outputs",
     }
 
     def stage_runner(stage, outcome):
@@ -87,7 +98,7 @@ def test_full_summary_links_stage_logs_and_outcomes(tmp_path, monkeypatch):
             (logs / "run_perf.jsonl").write_text(
                 json.dumps({"stage": stage, "event": "stage_summary", "outcome": outcome}) + "\n"
             )
-            return (None, None) if stage == "hmm" else None
+            return (None, None) if stage in {"hmm", "latent"} else None
 
         return run
 
@@ -95,6 +106,7 @@ def test_full_summary_links_stage_logs_and_outcomes(tmp_path, monkeypatch):
     monkeypatch.setattr(recipes, "preprocess_adata", stage_runner("preprocess", "skipped"))
     monkeypatch.setattr(recipes, "spatial_adata", stage_runner("spatial", "completed"))
     monkeypatch.setattr(recipes, "hmm_adata", stage_runner("hmm", "completed"))
+    monkeypatch.setattr(recipes, "latent_adata", stage_runner("latent", "completed"))
 
     recipes.full_flow("experiment.csv")
 
@@ -102,6 +114,7 @@ def test_full_summary_links_stage_logs_and_outcomes(tmp_path, monkeypatch):
     assert [item["outcome"] for item in summary["stages"]] == [
         "completed",
         "skipped",
+        "completed",
         "completed",
         "completed",
     ]
@@ -137,7 +150,7 @@ def test_full_flow_records_failure_when_child_stage_raises(tmp_path, monkeypatch
 def test_full_flow_rejects_partitioned_result_without_child_completion_records(
     tmp_path, monkeypatch
 ):
-    cfg = SimpleNamespace(output_directory=tmp_path)
+    cfg = SimpleNamespace(output_directory=tmp_path, full_run_latent=False)
     hmm_spine = tmp_path / "hmm_adata_outputs" / "spine.h5ad"
     hmm_spine.parent.mkdir()
     hmm_spine.touch()
@@ -145,7 +158,7 @@ def test_full_flow_rejects_partitioned_result_without_child_completion_records(
     monkeypatch.setattr(
         helpers,
         "get_adata_paths",
-        lambda _cfg: SimpleNamespace(hmm_spine=hmm_spine),
+        lambda _cfg: SimpleNamespace(hmm_spine=hmm_spine, latent_spine=None),
     )
     monkeypatch.setattr(recipes, "raw_adata", lambda path: None)
     monkeypatch.setattr(recipes, "preprocess_adata", lambda path: None)
@@ -159,6 +172,58 @@ def test_full_flow_rejects_partitioned_result_without_child_completion_records(
     summary = json.loads((tmp_path / "full_summary.json").read_text())
     assert summary["outcome"] == "failed"
     assert summary["exception"]["type"] == "RuntimeError"
+
+
+def test_full_flow_can_disable_latent(tmp_path, monkeypatch):
+    calls = []
+    cfg = SimpleNamespace(output_directory=tmp_path, full_run_latent=False)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    monkeypatch.setattr(
+        helpers,
+        "get_adata_paths",
+        lambda _cfg: SimpleNamespace(hmm_spine=None, latent_spine=None),
+    )
+    monkeypatch.setattr(recipes, "raw_adata", lambda path: calls.append("raw"))
+    monkeypatch.setattr(recipes, "preprocess_adata", lambda path: calls.append("preprocess"))
+    monkeypatch.setattr(recipes, "spatial_adata", lambda path: calls.append("spatial"))
+    monkeypatch.setattr(
+        recipes,
+        "hmm_adata",
+        lambda path: calls.append("hmm") or ("adata", "hmm-output"),
+    )
+    monkeypatch.setattr(recipes, "latent_adata", lambda path: calls.append("latent"))
+
+    result = recipes.full_flow("experiment.csv")
+
+    assert calls == ["raw", "preprocess", "spatial", "hmm"]
+    assert result == ("adata", "hmm-output")
+    summary = json.loads((tmp_path / "full_summary.json").read_text())
+    assert summary["schema_version"] == 2
+    assert summary["stages"][-1]["outcome"] == "disabled"
+
+
+def test_full_flow_records_latent_failure(tmp_path, monkeypatch):
+    cfg = SimpleNamespace(output_directory=tmp_path, full_run_latent=True)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    monkeypatch.setattr(recipes, "raw_adata", lambda path: None)
+    monkeypatch.setattr(recipes, "preprocess_adata", lambda path: None)
+    monkeypatch.setattr(recipes, "spatial_adata", lambda path: None)
+    monkeypatch.setattr(recipes, "hmm_adata", lambda path: ("adata", "hmm-output"))
+
+    def fail_latent(path):
+        raise RuntimeError("simulated latent failure")
+
+    monkeypatch.setattr(recipes, "latent_adata", fail_latent)
+
+    with pytest.raises(RuntimeError, match="simulated latent failure"):
+        recipes.full_flow("experiment.csv")
+
+    summary = json.loads((tmp_path / "full_summary.json").read_text())
+    assert summary["outcome"] == "failed"
+    assert summary["exception"] == {
+        "type": "RuntimeError",
+        "message": "simulated latent failure",
+    }
 
 
 def test_stage_config_hash_ignores_machine_resources_but_not_analysis_config():

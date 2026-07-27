@@ -6,7 +6,13 @@ from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
 import anndata as ad
 
-from smftools.constants import LATENT_DIR, LOGGING_DIR, REFERENCE_STRAND, SEQUENCE_INTEGER_ENCODING
+from smftools.constants import (
+    LATENT_DIR,
+    LOGGING_DIR,
+    PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
+    REFERENCE_STRAND,
+    SEQUENCE_INTEGER_ENCODING,
+)
 from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -266,20 +272,7 @@ def latent_adata(
             "store",
             "models",
         )
-        required_complete = (
-            "spine",
-            "generation_spine",
-            "task_catalog",
-            "read_index",
-            "store",
-            "plot_catalog",
-            "manifest",
-            "generation_manifest",
-            "resource_plan",
-            "generation",
-            "current",
-            "models",
-        )
+        required_complete = PARTITIONED_STAGE_REQUIRED_ARTIFACTS["latent"]
         plot_hash = stage_plot_config_hash(cfg, "latent")
         if not force_redo and partitioned_stage_is_complete(
             cfg,

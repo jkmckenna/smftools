@@ -1237,6 +1237,7 @@ class ExperimentConfig:
     spatial_execution_mode: str = "auto"
     hmm_execution_mode: str = "auto"
     latent_execution_mode: str = "auto"
+    full_run_latent: bool = True
     latent_n_pcs: int = 10
     latent_nmf_components: int = 2
     latent_nmf_max_iter: int = 500
@@ -2335,6 +2336,7 @@ class ExperimentConfig:
             spatial_execution_mode=str(merged.get("spatial_execution_mode", "auto")),
             hmm_execution_mode=str(merged.get("hmm_execution_mode", "auto")),
             latent_execution_mode=str(merged.get("latent_execution_mode", "auto")),
+            full_run_latent=_parse_bool(merged.get("full_run_latent", True)),
             latent_n_pcs=int(_parse_numeric(merged.get("latent_n_pcs", 10), 10)),
             latent_nmf_components=int(_parse_numeric(merged.get("latent_nmf_components", 2), 2)),
             latent_nmf_max_iter=int(_parse_numeric(merged.get("latent_nmf_max_iter", 500), 500)),

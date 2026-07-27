@@ -42,7 +42,9 @@ dependencies = [
     "biopython>=1.79",
     "click",
     "dask[array]",
+    "igraph",
     "joblib",
+    "leidenalg",
     "matplotlib>=3.6.2",
     "numpy>=1.22.0,<2",
     "pandas>=2.1,<3",
@@ -52,8 +54,10 @@ dependencies = [
     "scikit-learn>=1.2",
     "seaborn>=0.11",
     "scipy>=1.7.3",
+    "tensorly",
     "torch>=2.0",
     "tqdm",
+    "umap-learn>=0.5.5",
     "zarr>=3.1,<4",
 ]
 dynamic = ["version"]

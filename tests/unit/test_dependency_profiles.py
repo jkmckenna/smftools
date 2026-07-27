@@ -28,11 +28,15 @@ def test_default_install_contains_experiment_full_dependencies() -> None:
 
     assert {
         "joblib",
+        "igraph",
+        "leidenalg",
         "matplotlib",
         "pysam",
         "scikit-learn",
         "seaborn",
+        "tensorly",
         "torch",
+        "umap-learn",
     } <= dependencies
 
 

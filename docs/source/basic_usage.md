@@ -128,10 +128,10 @@ task catalog, model store, plot catalog, and linked thin spine under `hmm_adata_
 
 ## Latent Usage
 
-This standalone command constructs latent representations. In the default `auto` mode it prefers
-an HMM spine, then a spatial spine, then a preprocessing spine, and writes independent
-reference/core-local coordinate systems under `latent_adata_outputs`. It is not part of the
-`experiment full` recipe.
+This command constructs latent representations. In the default `auto` mode it prefers an HMM
+spine, then a spatial spine, then a preprocessing spine, and writes independent
+reference/core-local coordinate systems under `latent_adata_outputs`. Run it directly to execute
+only the latent stage; `experiment full` also runs it after HMM by default.
 
 ```shell
 smftools experiment latent "/Path_to_experiment_config.csv"
@@ -143,11 +143,16 @@ decomposition requires the complete unit and follows `latent_cp_memory_policy` (
 when memory is insufficient. `latent_plot_max_reads` bounds deterministic plot-only
 materialization while full model outputs remain unchanged.
 
+For input-mode compatibility, immutable generation restart behavior, model trust boundaries, and
+legacy-artifact migration, see
+[Pipeline lifecycle, latent spaces, and migration](tutorials/pipeline_lifecycle.md).
+
 ## Full Usage
 
 This command runs the standard workflow in order: raw store creation, preprocessing, spatial
-analysis, and HMM annotation. Each stage retains its normal restart/skip behavior, so an existing
-valid stage output is reused unless its force-redo configuration is enabled.
+analysis, HMM annotation, and latent analysis. Each stage retains its normal restart/skip behavior,
+so an existing valid stage output is reused unless its force-redo configuration is enabled. Set
+`full_run_latent: false` to stop after HMM.
 
 ```shell
 smftools experiment full "/Path_to_experiment_config.csv"
@@ -164,7 +169,7 @@ smftools experiment batch preprocess "/Path_to_experiment_config_path_list.csv"
 - A machine-readable `<list>.<task>.batch-summary.json` records completed, skipped, and failed
   configs; pass `--summary /path/to/result.json` to choose its location.
 - Each stage writes human and performance logs. A full workflow additionally writes
-  `full_summary.json`, which links the raw, preprocess, spatial, and HMM outcomes and logs.
+  `full_summary.json`, which links the raw, preprocess, spatial, HMM, and latent outcomes and logs.
 
 ## Project Usage
 
@@ -210,7 +215,8 @@ smftools project remove "/Path_to_project_directory" experiment_id
 - `project materialize` resolves the canonical reference name back to each matching experiment's
   own reference name(s), materializes each experiment's slice independently, and concatenates them
   with an added `obs["experiment"]` column -- there is never a global merge across experiments.
-  Each experiment's spine is picked independently, defaulting to the most-derived stage available
+  Each experiment's spine is picked independently, preferring its consolidated
+  `experiment_spine.h5ad` and otherwise falling back to the most-derived registered genomic stage
   (`--stage` pins all experiments to one specific stage instead); `--read-metrics` additionally
   attaches spatial's per-read outputs where available. The pooled path is preflighted before
   allocation. `--partitioned` writes bounded Zarr parts plus a catalog and completion manifest,

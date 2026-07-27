@@ -25,8 +25,14 @@ from smftools.readwrite import safe_read_h5ad, safe_read_zarr, safe_write_h5ad, 
 SEQUENCE = "ACGTAC"
 
 
-def _project_with_latent_owners(tmp_path):
-    run_root = tmp_path / "experiment"
+def _project_with_latent_owners(
+    tmp_path,
+    *,
+    project=None,
+    experiment_id="experiment",
+    run_name="experiment",
+):
+    run_root = tmp_path / run_name
     rows = pd.DataFrame(
         [
             {
@@ -56,7 +62,7 @@ def _project_with_latent_owners(tmp_path):
         extra_uns={
             "reference_uids": {"gene_top": reference_identity},
             "modality": "direct",
-            "experiment": "experiment",
+            "experiment": experiment_id,
         },
     )
     raw_spine, _ = safe_read_h5ad(raw["spine"], verbose=False)
@@ -116,9 +122,9 @@ def _project_with_latent_owners(tmp_path):
     safe_write_h5ad(latent_spine, latent_dir / "spine.h5ad", backup=False, verbose=False)
     write_experiment_spine(run_root)
 
-    project = tmp_path / "project"
+    project = Path(project) if project is not None else tmp_path / "project"
     reg.init_project(project)
-    reg.add_experiment(project, run_root, experiment_id="experiment")
+    reg.add_experiment(project, run_root, experiment_id=experiment_id)
     molecule_uids = dict(
         zip(
             raw_spine.obs["read_id"].astype(str),
@@ -322,3 +328,48 @@ def test_legacy_latent_requires_partitioned_migration(tmp_path):
 
     with pytest.raises(RuntimeError, match="Re-run latent analysis in partitioned mode"):
         list(ProjectCatalog.open(project).iter_latent_parts())
+
+
+def test_relocated_multi_experiment_latent_access_keeps_duplicate_read_identity(
+    tmp_path,
+):
+    original = tmp_path / "original"
+    project = original / "project"
+    _, reference_identity, first_molecules = _project_with_latent_owners(
+        original,
+        project=project,
+        experiment_id="experiment-a",
+        run_name="experiment-a",
+    )
+    _, _, second_molecules = _project_with_latent_owners(
+        original,
+        project=project,
+        experiment_id="experiment-b",
+        run_name="experiment-b",
+    )
+    assert first_molecules["read-1"] != second_molecules["read-1"]
+
+    relocated = tmp_path / "relocated"
+    shutil.copytree(original, relocated)
+    shutil.rmtree(original)
+    parts = list(
+        ProjectCatalog.open(relocated / "project").iter_latent_parts(
+            canonical_reference=reference_identity,
+            molecule_uids=[
+                first_molecules["read-1"],
+                second_molecules["read-1"],
+            ],
+            representations=["X_pca_signal"],
+        )
+    )
+
+    assert len(parts) == 4
+    assert {part.scope.experiment for part in parts} == {
+        "experiment-a",
+        "experiment-b",
+    }
+    assert {str(part.adata.obs_names[0]) for part in parts} == {"read-1"}
+    assert {str(part.adata.obs["molecule_uid"].iloc[0]) for part in parts} == {
+        first_molecules["read-1"],
+        second_molecules["read-1"],
+    }
