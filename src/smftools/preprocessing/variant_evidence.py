@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -63,6 +63,165 @@ class VariantSegmentationResult:
     other_base_count: int
     segment_cigar: str
     schema_version: int = VARIANT_CALL_SCHEMA_VERSION
+
+
+@dataclass(frozen=True)
+class SparseVariantCall:
+    """One informative-site observation in aligned-member coordinates."""
+
+    site_id: str
+    position: int
+    call: int
+    observed_base: str | None
+
+
+@dataclass(frozen=True)
+class SparseVariantSegment:
+    """One half-open classified or transition interval."""
+
+    start: int
+    end: int
+    state: int
+
+
+@dataclass(frozen=True)
+class SparseVariantSegmentationResult:
+    """Sparse segmentation without allocating a reference-length dense row."""
+
+    segments: tuple[SparseVariantSegment, ...]
+    breakpoints: tuple[float | int, ...]
+    has_breakpoint: bool
+    has_other_reference_segment: bool
+    other_reference_segment_type: str
+    self_base_count: int
+    other_base_count: int
+    segment_cigar: str
+    schema_version: int = VARIANT_CALL_SCHEMA_VERSION
+
+
+def call_observed_variant_sites(
+    observed_bases: Mapping[int, str],
+    *,
+    aligned_member_index: int,
+    catalog: VariantInformativeSiteCatalog,
+) -> tuple[tuple[SparseVariantCall, ...], ReadVariantCalls]:
+    """Call sites from a sparse reference-position-to-base mapping."""
+    if aligned_member_index not in (0, 1):
+        raise ValueError("aligned_member_index must be 0 or 1")
+    calls: list[SparseVariantCall] = []
+    member_counts = [0, 0]
+    no_call_count = 0
+    for site in catalog.informative_sites:
+        position = site.member_positions[aligned_member_index]
+        observed = observed_bases.get(position)
+        call = NO_CALL
+        if observed is not None:
+            base = str(observed).upper()
+            matches = [
+                member_index
+                for member_index, accepted in enumerate(site.accepted_bases)
+                if base in accepted
+            ]
+            if len(matches) == 1:
+                call = matches[0] + 1
+                member_counts[matches[0]] += 1
+        if call == NO_CALL:
+            no_call_count += 1
+        calls.append(
+            SparseVariantCall(
+                site_id=site.site_id,
+                position=position,
+                call=call,
+                observed_base=None if observed is None else str(observed).upper(),
+            )
+        )
+    summary = ReadVariantCalls(
+        calls=np.asarray([call.call for call in calls], dtype=np.int8),
+        informative_site_count=len(calls),
+        callable_site_count=sum(member_counts),
+        no_call_count=no_call_count,
+        member_call_counts=(member_counts[0], member_counts[1]),
+    )
+    return tuple(calls), summary
+
+
+def segment_sparse_variant_calls(
+    calls: Sequence[SparseVariantCall],
+    *,
+    span_start: int,
+    span_end: int,
+    aligned_member_index: int,
+) -> SparseVariantSegmentationResult:
+    """Segment sparse calls across a half-open aligned read span."""
+    if span_start < 0 or span_end < span_start:
+        raise ValueError("read span must be a valid half-open interval")
+    if aligned_member_index not in (0, 1):
+        raise ValueError("aligned_member_index must be 0 or 1")
+    informative = sorted(
+        (
+            (int(call.position), int(call.call))
+            for call in calls
+            if call.call in (1, 2) and span_start <= call.position < span_end
+        ),
+        key=lambda value: value[0],
+    )
+    segments: list[SparseVariantSegment] = []
+    breakpoints: list[float | int] = []
+    if informative:
+        current_start = span_start
+        previous_position, previous_class = informative[0]
+        for position, current_class in informative[1:]:
+            if current_class != previous_class:
+                segments.append(
+                    SparseVariantSegment(current_start, previous_position + 1, previous_class)
+                )
+                if previous_position + 1 < position:
+                    segments.append(
+                        SparseVariantSegment(
+                            previous_position + 1,
+                            position,
+                            TRANSITION_SEGMENT,
+                        )
+                    )
+                midpoint = (previous_position + position) / 2.0
+                breakpoints.append(int(midpoint) if midpoint.is_integer() else float(midpoint))
+                current_start = position
+            previous_position = position
+            previous_class = current_class
+        segments.append(SparseVariantSegment(current_start, span_end, previous_class))
+
+    self_value = aligned_member_index + 1
+    other_value = 2 if self_value == 1 else 1
+    self_count = sum(
+        segment.end - segment.start for segment in segments if segment.state == self_value
+    )
+    other_segments = [segment for segment in segments if segment.state == other_value]
+    other_count = sum(segment.end - segment.start for segment in other_segments)
+    mismatch_type = "no_segment_mismatch"
+    if other_segments:
+        if len(other_segments) >= 2:
+            mismatch_type = "multi_segment_mismatch"
+        elif other_segments[0].start == span_start:
+            mismatch_type = "left_segment_mismatch"
+        elif other_segments[0].end == span_end:
+            mismatch_type = "right_segment_mismatch"
+        else:
+            mismatch_type = "middle_segment_mismatch"
+    cigar = "".join(
+        f"{segment.end - segment.start}{'S' if segment.state == self_value else 'X'}"
+        for segment in segments
+        if segment.state in (self_value, other_value)
+    )
+    return SparseVariantSegmentationResult(
+        segments=tuple(segments),
+        breakpoints=tuple(breakpoints),
+        has_breakpoint=bool(breakpoints),
+        has_other_reference_segment=bool(other_segments),
+        other_reference_segment_type=mismatch_type,
+        self_base_count=self_count,
+        other_base_count=other_count,
+        segment_cigar=cigar,
+    )
 
 
 def call_read_variant_sites(

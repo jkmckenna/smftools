@@ -211,6 +211,7 @@ class VariantReferenceMember:
     def to_dict(self) -> dict[str, Any]:
         payload = {
             **self.identity_dict(),
+            "member_id": self.member_id,
             "sequence": self.sequence,
             "accepted_sequences": list(self.accepted_sequences),
             "aliases": list(self.aliases),
@@ -269,6 +270,22 @@ class VariantReferenceSet:
             if member.member_id == member_id:
                 return index
         raise KeyError(f"unknown variant reference member: {member_id!r}")
+
+    def resolve_member_index(self, reference: str) -> int:
+        """Resolve a canonical member ID or declared source alias."""
+        reference = str(reference)
+        matches = [
+            index
+            for index, member in enumerate(self.members)
+            if reference == member.member_id or reference in member.aliases
+        ]
+        if not matches:
+            raise KeyError(f"reference does not belong to variant reference set: {reference!r}")
+        if len(matches) > 1:
+            raise ValueError(
+                f"reference alias is ambiguous in variant reference set: {reference!r}"
+            )
+        return matches[0]
 
     def identity_dict(self) -> dict[str, Any]:
         return {

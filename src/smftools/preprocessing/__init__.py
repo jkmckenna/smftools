@@ -45,6 +45,10 @@ _LAZY_ATTRS = {
     "variant_reference_set_from_legacy": "smftools.preprocessing.variant_reference",
     "call_read_variant_sites": "smftools.preprocessing.variant_evidence",
     "segment_variant_calls": "smftools.preprocessing.variant_evidence",
+    "execute_partitioned_variant_evidence": "smftools.preprocessing.partitioned_variant",
+    "plan_variant_evidence_tasks": "smftools.preprocessing.partitioned_variant",
+    "query_partitioned_variant_evidence": "smftools.preprocessing.partitioned_variant",
+    "validate_variant_evidence_generation": "smftools.preprocessing.partitioned_variant",
 }
 
 
