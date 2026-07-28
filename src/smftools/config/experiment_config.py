@@ -1069,6 +1069,7 @@ class ExperimentConfig:
     mismatch_frequency_layer: str = "mismatch_integer_encoding"
     mismatch_frequency_read_span_layer: str = "read_span_mask"
     mismatch_base_frequency_exclude_mod_sites: bool = False
+    variant_analysis_mode: str = "off"
     references_to_align_for_variant_annotation: List[Optional[str]] = field(
         default_factory=lambda: [None, None]
     )
@@ -1577,17 +1578,35 @@ class ExperimentConfig:
             merged["mod_target_bases"] = _parse_list(merged["mod_target_bases"])
         if "conversion_types" in merged:
             merged["conversion_types"] = _parse_list(merged["conversion_types"])
-        if "references_to_align_for_variant_annotation" in merged:
-            from smftools.preprocessing.variant_reference import (
-                normalize_legacy_variant_pair,
-            )
+        from smftools.preprocessing.variant_reference import (
+            normalize_legacy_variant_pair,
+        )
 
+        if "references_to_align_for_variant_annotation" in merged:
             variant_pair = normalize_legacy_variant_pair(
                 _parse_list(merged["references_to_align_for_variant_annotation"])
             )
             merged["references_to_align_for_variant_annotation"] = (
                 list(variant_pair) if variant_pair is not None else [None, None]
             )
+        variant_pair_configured = bool(
+            normalize_legacy_variant_pair(
+                merged.get("references_to_align_for_variant_annotation", [None, None])
+            )
+        )
+        requested_variant_mode = str(merged.get("variant_analysis_mode", "auto")).strip().lower()
+        if requested_variant_mode not in {"auto", "off", "report"}:
+            raise ValueError("variant_analysis_mode must be one of: auto, off, report")
+        if requested_variant_mode == "report" and not variant_pair_configured:
+            raise ValueError(
+                "variant_analysis_mode='report' requires references_to_align_for_variant_annotation"
+            )
+        merged["variant_analysis_mode"] = (
+            "report"
+            if requested_variant_mode == "report"
+            or (requested_variant_mode == "auto" and variant_pair_configured)
+            else "off"
+        )
 
         merged["filter_threshold"] = float(_parse_numeric(merged.get("filter_threshold", 0.8), 0.8))
         merged["m6A_threshold"] = float(_parse_numeric(merged.get("m6A_threshold", 0.7), 0.7))
@@ -2476,6 +2495,7 @@ class ExperimentConfig:
             references_to_align_for_variant_annotation=merged.get(
                 "references_to_align_for_variant_annotation", [None, None]
             ),
+            variant_analysis_mode=merged.get("variant_analysis_mode", "off"),
             from_adata_stage=merged.get("from_adata_stage", None),
             plot_current_read_ids=merged.get("plot_current_read_ids", []),
             plot_current_reference_start=merged.get("plot_current_reference_start", None),

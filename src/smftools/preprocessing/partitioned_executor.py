@@ -991,6 +991,29 @@ def execute_partitioned_preprocessing(
         source_spine=spine_path,
     )
     spine = load_spine(spine_path)
+    variant_outputs: dict[str, Path] = {}
+    from .variant_reporting import (
+        VARIANT_REPORTING_SUBDIR,
+        resolve_variant_reference_set,
+        variant_reporting_enabled,
+    )
+
+    if variant_reporting_enabled(cfg):
+        from .partitioned_variant import execute_partitioned_variant_evidence
+
+        reference_set = resolve_variant_reference_set(spine_path, cfg)
+        variant_outputs = execute_partitioned_variant_evidence(
+            spine_path,
+            [reference_set],
+            output_dir / VARIANT_REPORTING_SUBDIR,
+            max_workers=max(1, int(getattr(cfg, "threads", 1) or 1)),
+            memory_budget_mb=max(
+                1,
+                int(getattr(cfg, "target_task_memory_mb", 512))
+                * max(1, int(getattr(cfg, "threads", 1) or 1)),
+            ),
+            cfg=cfg,
+        )
     obs_sidecar = write_read_qc_sidecar(spine, cfg, output_dir / PREPROCESS_OBS_SIDECAR)
     catalog_path = output_dir / PREPROCESS_PARTITION_CATALOG
     task_catalog = output_dir / PREPROCESS_TASK_CATALOG
@@ -1107,6 +1130,13 @@ def execute_partitioned_preprocessing(
     )
     obs_sidecar = reduce_read_modification_stats(catalog_path, var_catalog, obs_sidecar)
     obs_sidecar = append_modification_qc_mask(obs_sidecar, cfg)
+    if variant_outputs:
+        from .variant_reporting import append_variant_reporting_annotations
+
+        obs_sidecar = append_variant_reporting_annotations(
+            obs_sidecar,
+            variant_outputs["obs"],
+        )
 
     derived_spine = spine.copy()
     # Stored relative to the run's output_directory (not output_dir itself), so
@@ -1130,6 +1160,19 @@ def execute_partitioned_preprocessing(
     derived_spine.uns["preprocess_obs"] = relative_uns_path(
         publication_dir / PREPROCESS_OBS_SIDECAR, run_root
     )
+    if variant_outputs:
+        for key, relative in {
+            "preprocess_variant_obs": "variant_obs",
+            "preprocess_variant_read_index": "read_index",
+            "preprocess_variant_reference_catalog": "reference_catalog.json",
+            "preprocess_variant_generation_manifest": "generation_manifest.json",
+            "preprocess_variant_task_catalog": "task_catalog.parquet",
+            "preprocess_variant_task_store": "task_store",
+        }.items():
+            derived_spine.uns[key] = relative_uns_path(
+                publication_dir / VARIANT_REPORTING_SUBDIR / relative,
+                run_root,
+            )
     from ..informatics.derived_read_index import DERIVED_READ_INDEX_DIRNAME
 
     read_index_dir = output_dir / DERIVED_READ_INDEX_DIRNAME
@@ -1203,8 +1246,18 @@ def execute_partitioned_preprocessing(
     register_sidecar(manifest, "preprocess_spine", output_spine)
     register_sidecar(manifest, "preprocess_plots", plot_layout.root)
     register_sidecar(manifest, "preprocess_plot_catalog", plot_layout.catalog)
+    if variant_outputs:
+        for key, path in {
+            "preprocess_variant_obs": variant_outputs["obs"],
+            "preprocess_variant_read_index": variant_outputs["read_index"],
+            "preprocess_variant_reference_catalog": variant_outputs["reference_catalog"],
+            "preprocess_variant_generation_manifest": variant_outputs["generation_manifest"],
+            "preprocess_variant_task_catalog": variant_outputs["task_catalog"],
+            "preprocess_variant_task_store": variant_outputs["task_store"],
+        }.items():
+            register_sidecar(manifest, key, path)
     logger.info("Wrote %d partitioned preprocessing task result(s)", len(records))
-    return {
+    outputs = {
         "store": output_dir / PREPROCESS_STORE_SUBDIR,
         "spine": output_spine,
         "catalog": catalog_path,
@@ -1217,3 +1270,5 @@ def execute_partitioned_preprocessing(
         "plot_catalog": plot_layout.catalog,
         "manifest": manifest,
     }
+    outputs.update({f"variant_{key}": path for key, path in variant_outputs.items()})
+    return outputs

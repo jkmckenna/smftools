@@ -29,6 +29,8 @@ from ..pipeline import (
 )
 
 PREPROCESS_TASKS_NODE = "preprocess.tasks"
+PREPROCESS_VARIANT_REFERENCE_NODE = "preprocess.variant_reference"
+PREPROCESS_VARIANT_EVIDENCE_NODE = "preprocess.variant_evidence"
 PREPROCESS_REDUCERS_NODE = "preprocess.reducers"
 PREPROCESS_PLOTS_NODE = "preprocess.plots"
 
@@ -109,6 +111,13 @@ _REDUCER_CONFIG_KEYS = {
     "sample_name_col_for_plotting",
     "smf_modality",
     "mod_target_bases",
+    "variant_analysis_mode",
+}
+_VARIANT_REFERENCE_CONFIG_KEYS = {
+    "references_to_align_for_variant_annotation",
+}
+_VARIANT_EVIDENCE_CONFIG_KEYS = {
+    "variant_analysis_mode",
 }
 _NON_SEMANTIC_CONFIG_KEYS = {
     "device",
@@ -127,6 +136,14 @@ _NON_SEMANTIC_CONFIG_KEYS = {
 
 _NODE_ARTIFACTS = {
     PREPROCESS_TASKS_NODE: ("store", "task_catalog", "catalog", "read_index"),
+    PREPROCESS_VARIANT_REFERENCE_NODE: ("variant_reference_catalog",),
+    PREPROCESS_VARIANT_EVIDENCE_NODE: (
+        "variant_task_store",
+        "variant_task_catalog",
+        "variant_obs",
+        "variant_read_index",
+        "variant_generation_manifest",
+    ),
     PREPROCESS_REDUCERS_NODE: ("var", "obs", "stage_obs", "spine", "manifest"),
     PREPROCESS_PLOTS_NODE: ("plots", "plot_catalog"),
 }
@@ -154,8 +171,16 @@ def _config_fingerprints(cfg: Any) -> dict[str, str]:
     plots = {key: values[key] for key in sorted(_PLOT_CONFIG_KEYS) if key in values}
     reducers = {key: values[key] for key in sorted(_REDUCER_CONFIG_KEYS) if key in values}
     tasks = {key: values[key] for key in sorted(_TASK_CONFIG_KEYS) if key in values}
+    variant_reference = {
+        key: values[key] for key in sorted(_VARIANT_REFERENCE_CONFIG_KEYS) if key in values
+    }
+    variant_evidence = {
+        key: values[key] for key in sorted(_VARIANT_EVIDENCE_CONFIG_KEYS) if key in values
+    }
     return {
         PREPROCESS_TASKS_NODE: _sha256_payload(tasks),
+        PREPROCESS_VARIANT_REFERENCE_NODE: _sha256_payload(variant_reference),
+        PREPROCESS_VARIANT_EVIDENCE_NODE: _sha256_payload(variant_evidence),
         PREPROCESS_REDUCERS_NODE: _sha256_payload(reducers),
         PREPROCESS_PLOTS_NODE: _sha256_payload(plots),
     }
@@ -172,11 +197,47 @@ def preprocess_stage_compute_config(cfg: Any) -> dict[str, str]:
 
 def preprocess_node_specs(
     *,
+    variant_enabled: bool = False,
     algorithm_versions: Mapping[str, str] | None = None,
     additional_specs: tuple[SemanticNodeSpec, ...] = (),
 ) -> tuple[SemanticNodeSpec, ...]:
     """Return the versioned semantic contracts for partitioned preprocessing."""
     versions = dict(algorithm_versions or {})
+    variant_specs = (
+        SemanticNodeSpec(
+            analysis_id=PREPROCESS_VARIANT_REFERENCE_NODE,
+            scope=AnalysisScope.EXPERIMENT_STAGE,
+            produced_channels=(ChannelSpec("variant_reference_catalog", 1),),
+            semantic_config_keys=("config_fingerprint",),
+            algorithm_version=versions.get(PREPROCESS_VARIANT_REFERENCE_NODE, "1"),
+            output_schema_version=1,
+            validator_id="preprocess.variant_reference",
+        ),
+        SemanticNodeSpec(
+            analysis_id=PREPROCESS_VARIANT_EVIDENCE_NODE,
+            scope=AnalysisScope.EXPERIMENT_STAGE,
+            dependencies=(PREPROCESS_VARIANT_REFERENCE_NODE,),
+            consumed_channels=(
+                ChannelDependency(
+                    PREPROCESS_VARIANT_REFERENCE_NODE,
+                    "variant_reference_catalog",
+                    1,
+                ),
+            ),
+            produced_channels=(ChannelSpec("variant_evidence", 1),),
+            semantic_config_keys=("config_fingerprint",),
+            algorithm_version=versions.get(PREPROCESS_VARIANT_EVIDENCE_NODE, "1"),
+            output_schema_version=1,
+            validator_id="preprocess.variant_evidence",
+        ),
+    )
+    reducer_dependencies = (PREPROCESS_TASKS_NODE,)
+    reducer_channels = (ChannelDependency(PREPROCESS_TASKS_NODE, "derived_partitions", 1),)
+    if variant_enabled:
+        reducer_dependencies += (PREPROCESS_VARIANT_EVIDENCE_NODE,)
+        reducer_channels += (
+            ChannelDependency(PREPROCESS_VARIANT_EVIDENCE_NODE, "variant_evidence", 1),
+        )
     builtins = (
         SemanticNodeSpec(
             analysis_id=PREPROCESS_TASKS_NODE,
@@ -190,8 +251,8 @@ def preprocess_node_specs(
         SemanticNodeSpec(
             analysis_id=PREPROCESS_REDUCERS_NODE,
             scope=AnalysisScope.EXPERIMENT_STAGE,
-            dependencies=(PREPROCESS_TASKS_NODE,),
-            consumed_channels=(ChannelDependency(PREPROCESS_TASKS_NODE, "derived_partitions", 1),),
+            dependencies=reducer_dependencies,
+            consumed_channels=reducer_channels,
             produced_channels=(ChannelSpec("filtered_spine", 1),),
             semantic_config_keys=("config_fingerprint",),
             algorithm_version=versions.get(PREPROCESS_REDUCERS_NODE, "1"),
@@ -210,7 +271,9 @@ def preprocess_node_specs(
             validator_id="preprocess.plots",
         ),
     )
-    return builtins + tuple(additional_specs)
+    return (builtins[:1] + (variant_specs if variant_enabled else ()) + builtins[1:]) + tuple(
+        additional_specs
+    )
 
 
 def preprocess_node_inputs(
@@ -242,23 +305,25 @@ def preprocess_node_inputs(
             "utf-8"
         )
     ).hexdigest()
+    variant_enabled = str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report"
+    analysis_ids = [PREPROCESS_TASKS_NODE]
+    if variant_enabled:
+        analysis_ids.extend([PREPROCESS_VARIANT_REFERENCE_NODE, PREPROCESS_VARIANT_EVIDENCE_NODE])
+    analysis_ids.extend([PREPROCESS_REDUCERS_NODE, PREPROCESS_PLOTS_NODE])
+    source_nodes = {PREPROCESS_TASKS_NODE}
+    if variant_enabled:
+        source_nodes.add(PREPROCESS_VARIANT_REFERENCE_NODE)
     return {
         analysis_id: NodeInputs(
             semantic_config={"config_fingerprint": fingerprints[analysis_id]},
-            input_artifacts=source_artifacts if analysis_id == PREPROCESS_TASKS_NODE else (),
+            input_artifacts=source_artifacts if analysis_id in source_nodes else (),
             logical_scope_identity="preprocess:experiment",
             logical_task_plan_digest=logical_digest,
             unavailable_inputs=(
-                ()
-                if source_available or analysis_id != PREPROCESS_TASKS_NODE
-                else ("source_spine",)
+                () if source_available or analysis_id not in source_nodes else ("source_spine",)
             ),
         )
-        for analysis_id in (
-            PREPROCESS_TASKS_NODE,
-            PREPROCESS_REDUCERS_NODE,
-            PREPROCESS_PLOTS_NODE,
-        )
+        for analysis_id in analysis_ids
     }
 
 
@@ -368,17 +433,25 @@ def preprocess_registry(
     algorithm_versions: Mapping[str, str] | None = None,
     additional_specs: tuple[SemanticNodeSpec, ...] = (),
     additional_validators: Mapping[str, Any] | None = None,
+    variant_enabled: bool = False,
 ) -> AnalysisRegistry:
     """Create the preprocess semantic registry bound to one candidate generation."""
     root = Path(generation_root)
     validators = {
         "preprocess.tasks": _artifact_validator(root, _NODE_ARTIFACTS[PREPROCESS_TASKS_NODE]),
+        "preprocess.variant_reference": _artifact_validator(
+            root, _NODE_ARTIFACTS[PREPROCESS_VARIANT_REFERENCE_NODE]
+        ),
+        "preprocess.variant_evidence": _artifact_validator(
+            root, _NODE_ARTIFACTS[PREPROCESS_VARIANT_EVIDENCE_NODE]
+        ),
         "preprocess.reducers": _artifact_validator(root, _NODE_ARTIFACTS[PREPROCESS_REDUCERS_NODE]),
         "preprocess.plots": _artifact_validator(root, _NODE_ARTIFACTS[PREPROCESS_PLOTS_NODE]),
         **dict(additional_validators or {}),
     }
     return AnalysisRegistry(
         preprocess_node_specs(
+            variant_enabled=variant_enabled,
             algorithm_versions=algorithm_versions,
             additional_specs=additional_specs,
         ),
@@ -413,6 +486,7 @@ def plan_preprocess_upgrade(
     plan = SemanticPlanner(
         preprocess_registry(
             generation_root,
+            variant_enabled=str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report",
             algorithm_versions=algorithm_versions,
             additional_specs=additional_specs,
             additional_validators=additional_validators,
@@ -431,7 +505,11 @@ def plan_preprocess_upgrade(
     forced_closure: set[str] = set()
     decisions = []
     specs = {
-        spec.analysis_id: spec for spec in preprocess_node_specs(additional_specs=additional_specs)
+        spec.analysis_id: spec
+        for spec in preprocess_node_specs(
+            variant_enabled=str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report",
+            additional_specs=additional_specs,
+        )
     }
     for decision in plan.decisions:
         analysis_id = decision.analysis_id
@@ -502,15 +580,18 @@ def build_preprocess_node_results(
     root = Path(generation_root)
     specs = {
         spec.analysis_id: spec
-        for spec in preprocess_node_specs(algorithm_versions=algorithm_versions)
+        for spec in preprocess_node_specs(
+            variant_enabled=str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report",
+            algorithm_versions=algorithm_versions,
+        )
     }
     inputs = preprocess_node_inputs(source_path, cfg, root.parents[2])
     results: dict[str, NodeResult] = {}
-    for analysis_id in (
-        PREPROCESS_TASKS_NODE,
-        PREPROCESS_REDUCERS_NODE,
-        PREPROCESS_PLOTS_NODE,
-    ):
+    analysis_order = [PREPROCESS_TASKS_NODE]
+    if str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report":
+        analysis_order.extend([PREPROCESS_VARIANT_REFERENCE_NODE, PREPROCESS_VARIANT_EVIDENCE_NODE])
+    analysis_order.extend([PREPROCESS_REDUCERS_NODE, PREPROCESS_PLOTS_NODE])
+    for analysis_id in analysis_order:
         spec = specs[analysis_id]
         dependencies = tuple(
             DependencyResultIdentity(
@@ -587,4 +668,10 @@ def _artifact_relative_path(artifact_id: str) -> Path:
         "manifest": Path("sidecar_manifest.json"),
         "plots": Path("plots"),
         "plot_catalog": Path("plots/catalog.parquet"),
+        "variant_reference_catalog": Path("variant/reference_catalog.json"),
+        "variant_task_store": Path("variant/task_store"),
+        "variant_task_catalog": Path("variant/task_catalog.parquet"),
+        "variant_obs": Path("variant/variant_obs"),
+        "variant_read_index": Path("variant/read_index"),
+        "variant_generation_manifest": Path("variant/generation_manifest.json"),
     }[artifact_id]

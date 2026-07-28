@@ -48,6 +48,7 @@ _LAZY_ATTRS = {
     "execute_partitioned_variant_evidence": "smftools.preprocessing.partitioned_variant",
     "plan_variant_evidence_tasks": "smftools.preprocessing.partitioned_variant",
     "query_partitioned_variant_evidence": "smftools.preprocessing.partitioned_variant",
+    "query_preprocess_variant_evidence": "smftools.preprocessing.variant_reporting",
     "validate_variant_evidence_generation": "smftools.preprocessing.partitioned_variant",
 }
 

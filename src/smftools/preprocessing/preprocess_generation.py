@@ -28,6 +28,7 @@ from .partitioned_executor import (
     PREPROCESS_TASK_CATALOG,
     PREPROCESS_VAR_CATALOG,
 )
+from .variant_reporting import VARIANT_REPORTING_SUBDIR
 
 PREPROCESS_GENERATIONS_SUBDIR = "generations"
 PREPROCESS_STAGING_SUBDIR = ".staging"
@@ -52,6 +53,14 @@ _GENERATION_ARTIFACTS = {
     "plot_catalog": "plots/catalog.parquet",
     "manifest": "sidecar_manifest.json",
 }
+_VARIANT_GENERATION_ARTIFACTS = {
+    "variant_task_store": f"{VARIANT_REPORTING_SUBDIR}/task_store",
+    "variant_task_catalog": f"{VARIANT_REPORTING_SUBDIR}/task_catalog.parquet",
+    "variant_obs": f"{VARIANT_REPORTING_SUBDIR}/variant_obs",
+    "variant_read_index": f"{VARIANT_REPORTING_SUBDIR}/read_index",
+    "variant_reference_catalog": f"{VARIANT_REPORTING_SUBDIR}/reference_catalog.json",
+    "variant_generation_manifest": f"{VARIANT_REPORTING_SUBDIR}/generation_manifest.json",
+}
 _REQUIRED_SIDECARS = (
     "preprocess_store",
     "preprocess_catalog",
@@ -63,6 +72,7 @@ _REQUIRED_SIDECARS = (
     "preprocess_spine",
     "preprocess_plot_catalog",
 )
+_VARIANT_REQUIRED_SIDECARS = tuple(f"preprocess_{key}" for key in _VARIANT_GENERATION_ARTIFACTS)
 
 
 class PreprocessGenerationError(RuntimeError):
@@ -149,6 +159,13 @@ def _bind_generation_spine(
         "preprocess_stage_obs": publication_dir / PREPROCESS_STAGE_OBS,
         "preprocess_plot_catalog": publication_dir / "plots" / "catalog.parquet",
     }
+    if (spine_path.parent / VARIANT_REPORTING_SUBDIR).is_dir():
+        pointers.update(
+            {
+                f"preprocess_{key}": publication_dir / relative
+                for key, relative in _VARIANT_GENERATION_ARTIFACTS.items()
+            }
+        )
     for key, path in pointers.items():
         spine.uns[key] = relative_uns_path(path, run_root)
     spine.uns["preprocess_generation_id"] = generation_id
@@ -212,7 +229,13 @@ def validate_preprocess_generation(
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
         raise PreprocessGenerationError("preprocess generation artifact manifest is missing")
-    for key, expected_relative in _GENERATION_ARTIFACTS.items():
+    variant_artifact_keys = set(_VARIANT_GENERATION_ARTIFACTS).intersection(artifacts)
+    if variant_artifact_keys and variant_artifact_keys != set(_VARIANT_GENERATION_ARTIFACTS):
+        raise PreprocessGenerationError("preprocess variant artifacts are incomplete")
+    expected_artifacts = dict(_GENERATION_ARTIFACTS)
+    if variant_artifact_keys:
+        expected_artifacts.update(_VARIANT_GENERATION_ARTIFACTS)
+    for key, expected_relative in expected_artifacts.items():
         record = artifacts.get(key)
         if not isinstance(record, dict):
             raise PreprocessGenerationError(f"preprocess generation artifact is missing: {key}")
@@ -240,6 +263,8 @@ def validate_preprocess_generation(
             PREPROCESS_PLOTS_NODE,
             PREPROCESS_REDUCERS_NODE,
             PREPROCESS_TASKS_NODE,
+            PREPROCESS_VARIANT_EVIDENCE_NODE,
+            PREPROCESS_VARIANT_REFERENCE_NODE,
             load_preprocess_node_results,
             preprocess_registry,
         )
@@ -255,9 +280,14 @@ def validate_preprocess_generation(
             PREPROCESS_REDUCERS_NODE,
             PREPROCESS_PLOTS_NODE,
         }
+        variant_enabled = bool(variant_artifact_keys)
+        if variant_enabled:
+            expected_nodes.update(
+                {PREPROCESS_VARIANT_REFERENCE_NODE, PREPROCESS_VARIANT_EVIDENCE_NODE}
+            )
         if set(node_results) != expected_nodes:
             raise PreprocessGenerationError("preprocess generation node results are incomplete")
-        registry = preprocess_registry(generation_dir)
+        registry = preprocess_registry(generation_dir, variant_enabled=variant_enabled)
         for analysis_id, result in node_results.items():
             validation = registry.validator_for(registry.node(analysis_id))(result)
             if not validation.valid:
@@ -294,6 +324,13 @@ def validate_preprocess_generation(
         "preprocess_task_catalog": final_dir / PREPROCESS_TASK_CATALOG,
         "preprocess_plot_catalog": final_dir / "plots" / "catalog.parquet",
     }
+    if variant_artifact_keys:
+        expected_pointers.update(
+            {
+                f"preprocess_{key}": final_dir / relative
+                for key, relative in _VARIANT_GENERATION_ARTIFACTS.items()
+            }
+        )
     for key, path in expected_pointers.items():
         if spine.uns.get(key) != relative_uns_path(path, run_root):
             raise PreprocessGenerationError(f"preprocess spine pointer is unsafe: {key}")
@@ -302,6 +339,10 @@ def validate_preprocess_generation(
 
     sidecars = sidecar_manifest_path(generation_dir)
     missing_sidecars = [key for key in _REQUIRED_SIDECARS if resolve_sidecar(sidecars, key) is None]
+    if variant_artifact_keys:
+        missing_sidecars.extend(
+            key for key in _VARIANT_REQUIRED_SIDECARS if resolve_sidecar(sidecars, key) is None
+        )
     if missing_sidecars:
         raise PreprocessGenerationError(
             f"preprocess sidecar manifest is incomplete: {missing_sidecars}"
@@ -432,9 +473,12 @@ def publish_preprocess_generation(
             run_root=run_root,
         )
 
+        artifact_paths = dict(_GENERATION_ARTIFACTS)
+        if (staging_dir / VARIANT_REPORTING_SUBDIR).is_dir():
+            artifact_paths.update(_VARIANT_GENERATION_ARTIFACTS)
         artifacts = {
             key: _generation_artifact_record(staging_dir / relative, staging_dir)
-            for key, relative in _GENERATION_ARTIFACTS.items()
+            for key, relative in artifact_paths.items()
         }
         task_count = len(pd.read_parquet(staging_dir / PREPROCESS_TASK_CATALOG))
         reused_nodes = (
@@ -505,6 +549,10 @@ def publish_preprocess_generation(
     outputs: dict[str, Path | str | int] = {
         key: final_dir / relative for key, relative in _GENERATION_ARTIFACTS.items()
     }
+    if (final_dir / VARIANT_REPORTING_SUBDIR).is_dir():
+        outputs.update(
+            {key: final_dir / relative for key, relative in _VARIANT_GENERATION_ARTIFACTS.items()}
+        )
     outputs.update(
         {
             "spine": canonical_spine,
