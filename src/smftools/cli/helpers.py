@@ -39,6 +39,7 @@ _NON_SEMANTIC_STAGE_CONFIG_KEYS = {
     "emit_log_file",
     "emit_perf_log",
     "fasta_outputs_path",
+    "full_run_latent",
     "hmm_device",
     "informatics_outputs_path",
     "log_level",
@@ -325,12 +326,24 @@ def publish_stage_outputs(
         import pandas as pd
 
         expected_tasks = len(pd.read_parquet(outputs[task_catalog_key]))
+    completion_extra = dict(extra or {})
+    from ..pipeline.experiment_graph import experiment_stage_result_metadata
+
+    completion_extra.update(
+        experiment_stage_result_metadata(
+            lifecycle.stage,
+            stage_config_hash=lifecycle.config_hash,
+            input_artifact_ids=lifecycle.input_artifact_ids,
+            artifacts=artifacts,
+            schema_versions=dict(schema_versions or {}),
+        )
+    )
     lifecycle.complete(
         artifacts=artifacts,
         expected_tasks=expected_tasks,
         successful_tasks=expected_tasks,
         schema_versions=dict(schema_versions or {}),
-        **dict(extra or {}),
+        **completion_extra,
     )
     if not stage_is_complete(
         lifecycle.run_root,
