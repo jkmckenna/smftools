@@ -17,6 +17,7 @@ from ..informatics.experiment_manifest import (
 )
 from ..informatics.partition_read import load_spine, relative_uns_path
 from ..informatics.sidecar_manifest import resolve_sidecar, sidecar_manifest_path
+from ..pipeline import PlanState
 from ..readwrite import atomic_write_json, safe_write_h5ad
 from .partitioned_executor import (
     PREPROCESS_OBS_SIDECAR,
@@ -129,6 +130,58 @@ def _atomic_publish_spine(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _bind_generation_spine(
+    spine_path: Path,
+    *,
+    generation_id: str,
+    publication_dir: Path,
+    run_root: Path,
+) -> None:
+    """Bind copied or newly computed spine pointers to a new generation."""
+    spine = load_spine(spine_path, verbose=False)
+    pointers = {
+        "preprocess_store": publication_dir / PREPROCESS_STORE_SUBDIR,
+        "preprocess_catalog": publication_dir / PREPROCESS_PARTITION_CATALOG,
+        "preprocess_task_catalog": publication_dir / PREPROCESS_TASK_CATALOG,
+        "preprocess_read_index": publication_dir / "read_index",
+        "preprocess_var": publication_dir / PREPROCESS_VAR_CATALOG,
+        "preprocess_obs": publication_dir / PREPROCESS_OBS_SIDECAR,
+        "preprocess_stage_obs": publication_dir / PREPROCESS_STAGE_OBS,
+        "preprocess_plot_catalog": publication_dir / "plots" / "catalog.parquet",
+    }
+    for key, path in pointers.items():
+        spine.uns[key] = relative_uns_path(path, run_root)
+    spine.uns["preprocess_generation_id"] = generation_id
+    safe_write_h5ad(spine, spine_path, backup=False, verbose=False)
+
+
+def _regenerate_preprocess_plots(
+    generation_dir: Path,
+    source_spine: Path,
+    cfg: Any,
+) -> None:
+    from ..cli.stage_artifacts import prepare_analysis_plot_layout
+    from .partitioned_plots import generate_preprocess_summary_plots
+
+    plots = generation_dir / "plots"
+    shutil.rmtree(plots, ignore_errors=True)
+    layout = prepare_analysis_plot_layout(
+        generation_dir,
+        stage="preprocess",
+        source_spine=source_spine,
+    )
+    if bool(getattr(cfg, "emit_automated_plots", True)):
+        generate_preprocess_summary_plots(
+            generation_dir / PREPROCESS_OBS_SIDECAR,
+            generation_dir / PREPROCESS_VAR_CATALOG,
+            layout,
+            cfg=cfg,
+            spine_path=generation_dir / PREPROCESS_SPINE_FILENAME,
+            task_catalog=generation_dir / PREPROCESS_TASK_CATALOG,
+            read_index=generation_dir / "read_index",
+        )
+
+
 def validate_preprocess_generation(
     generation_dir: str | Path,
     *,
@@ -181,6 +234,37 @@ def validate_preprocess_generation(
             raise PreprocessGenerationError(
                 f"preprocess generation artifact directory is invalid: {key}"
             )
+
+    if "node_results" in manifest:
+        from .semantic_upgrade import (
+            PREPROCESS_PLOTS_NODE,
+            PREPROCESS_REDUCERS_NODE,
+            PREPROCESS_TASKS_NODE,
+            load_preprocess_node_results,
+            preprocess_registry,
+        )
+
+        try:
+            node_results = load_preprocess_node_results(manifest)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PreprocessGenerationError(
+                "preprocess generation node results are malformed"
+            ) from exc
+        expected_nodes = {
+            PREPROCESS_TASKS_NODE,
+            PREPROCESS_REDUCERS_NODE,
+            PREPROCESS_PLOTS_NODE,
+        }
+        if set(node_results) != expected_nodes:
+            raise PreprocessGenerationError("preprocess generation node results are incomplete")
+        registry = preprocess_registry(generation_dir)
+        for analysis_id, result in node_results.items():
+            validation = registry.validator_for(registry.node(analysis_id))(result)
+            if not validation.valid:
+                raise PreprocessGenerationError(
+                    f"preprocess generation node result is invalid: {analysis_id}: "
+                    f"{validation.reason}"
+                )
 
     task_catalog = pd.read_parquet(generation_dir / PREPROCESS_TASK_CATALOG)
     result_catalog = pd.read_parquet(generation_dir / PREPROCESS_PARTITION_CATALOG)
@@ -271,6 +355,14 @@ def publish_preprocess_generation(
     from ..cli.helpers import stage_config_hash
     from ..informatics.experiment_spine import write_experiment_spine
     from .partitioned_executor import execute_partitioned_preprocessing
+    from .semantic_upgrade import (
+        PREPROCESS_PLOTS_NODE,
+        PREPROCESS_REDUCERS_NODE,
+        PREPROCESS_TASKS_NODE,
+        build_preprocess_node_results,
+        plan_preprocess_upgrade,
+        preprocess_force_targets,
+    )
 
     spine_path = Path(spine_path)
     output_dir = Path(output_dir)
@@ -283,31 +375,81 @@ def publish_preprocess_generation(
     previous_current = (
         json.loads(current_path.read_text(encoding="utf-8")) if current_path.is_file() else None
     )
+    current_generation = resolve_current_preprocess_generation(output_dir)
+    upgrade_plan = plan_preprocess_upgrade(
+        spine_path,
+        cfg,
+        output_dir,
+        current_generation=current_generation,
+        force_targets=preprocess_force_targets(cfg),
+    )
+    decisions = {decision.analysis_id: decision for decision in upgrade_plan.decisions}
+    reusable = {
+        analysis_id
+        for analysis_id, decision in decisions.items()
+        if decision.state is PlanState.COMPATIBLE
+    }
+    previous_generation_id = (
+        str(current_generation[1]["generation_id"]) if current_generation is not None else None
+    )
     staging_dir.mkdir(parents=True)
     final_dir.parent.mkdir(parents=True, exist_ok=True)
     moved_to_final = False
     current_advanced = False
 
     try:
-        execute = executor or execute_partitioned_preprocessing
-        staged_outputs = execute(
-            spine_path,
-            cfg,
-            staging_dir,
+        compute_nodes = {PREPROCESS_TASKS_NODE, PREPROCESS_REDUCERS_NODE}
+        if current_generation is not None and compute_nodes.issubset(reusable):
+            shutil.copytree(current_generation[0], staging_dir, dirs_exist_ok=True)
+            (staging_dir / PREPROCESS_GENERATION_MANIFEST).unlink(missing_ok=True)
+            if PREPROCESS_PLOTS_NODE not in reusable:
+                _regenerate_preprocess_plots(staging_dir, spine_path, cfg)
+            staged_spine = staging_dir / PREPROCESS_SPINE_FILENAME
+        else:
+            execute = executor or execute_partitioned_preprocessing
+            execute_kwargs: dict[str, Any] = {
+                "publication_dir": final_dir,
+                "run_root": run_root,
+                "refresh_experiment_spine": False,
+            }
+            if (
+                current_generation is not None
+                and PREPROCESS_TASKS_NODE in reusable
+                and executor is None
+            ):
+                execute_kwargs["reuse_task_artifacts_from"] = current_generation[0]
+            staged_outputs = execute(
+                spine_path,
+                cfg,
+                staging_dir,
+                **execute_kwargs,
+            )
+            staged_spine = Path(staged_outputs["spine"])
+        _bind_generation_spine(
+            staged_spine,
+            generation_id=generation_id,
             publication_dir=final_dir,
             run_root=run_root,
-            refresh_experiment_spine=False,
         )
-        staged_spine = Path(staged_outputs["spine"])
-        spine = load_spine(staged_spine, verbose=False)
-        spine.uns["preprocess_generation_id"] = generation_id
-        safe_write_h5ad(spine, staged_spine, backup=False, verbose=False)
 
         artifacts = {
             key: _generation_artifact_record(staging_dir / relative, staging_dir)
             for key, relative in _GENERATION_ARTIFACTS.items()
         }
         task_count = len(pd.read_parquet(staging_dir / PREPROCESS_TASK_CATALOG))
+        reused_nodes = (
+            reusable
+            if current_generation is not None and compute_nodes.issubset(reusable)
+            else reusable.intersection({PREPROCESS_TASKS_NODE})
+        )
+        node_results = build_preprocess_node_results(
+            staging_dir,
+            spine_path,
+            cfg,
+            generation_id=generation_id,
+            reused_nodes=reused_nodes,
+            reused_from_generation_id=previous_generation_id,
+        )
         generation_manifest = staging_dir / PREPROCESS_GENERATION_MANIFEST
         atomic_write_json(
             generation_manifest,
@@ -321,6 +463,8 @@ def publish_preprocess_generation(
                 "task_catalog_schema_version": PREPROCESS_TASK_CATALOG_SCHEMA_VERSION,
                 "read_index_schema_version": PREPROCESS_READ_INDEX_SCHEMA_VERSION,
                 "task_count": task_count,
+                "upgrade_plan": upgrade_plan.to_dict(),
+                "node_results": [result.to_dict() for result in node_results],
                 "artifacts": artifacts,
             },
         )

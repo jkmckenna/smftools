@@ -176,10 +176,7 @@ def preprocess_adata(
             source_path = pp_path
         elif (source_path := _raw_source()) is not None:
             if _use_partitioned(source_path):
-                raise ValueError(
-                    "partitioned duplicate detection is not implemented yet; "
-                    "run partitioned preprocessing without force_redo_flag_duplicate_reads"
-                )
+                return _run_partitioned(source_path)
             adata = _load(source_path)
         else:
             logger.error(
@@ -203,18 +200,38 @@ def preprocess_adata(
     # -----------------------------
 
     if partitioned_pp_path is not None and partitioned_pp_path.exists():
+        from ..pipeline import PlanState
         from ..preprocessing.preprocess_generation import (
             resolve_current_preprocess_generation,
         )
+        from ..preprocessing.semantic_upgrade import (
+            plan_preprocess_upgrade,
+            preprocess_force_targets,
+        )
 
         current_generation = resolve_current_preprocess_generation(partitioned_pp_path.parent)
+        source_path = _raw_source()
+        semantic_plan = (
+            plan_preprocess_upgrade(
+                source_path,
+                cfg,
+                partitioned_pp_path.parent,
+                current_generation=current_generation,
+                force_targets=preprocess_force_targets(cfg),
+            )
+            if current_generation is not None and source_path is not None
+            else None
+        )
+        semantic_reuse = semantic_plan is None or all(
+            decision.state is PlanState.COMPATIBLE for decision in semantic_plan.decisions
+        )
         if current_generation is None:
             logger.warning(
                 "Partitioned preprocessing spine uses the legacy in-place schema; "
                 "recomputing it as an immutable generation: %s",
                 partitioned_pp_path,
             )
-        elif not partitioned_stage_is_complete(
+        elif not semantic_reuse or not partitioned_stage_is_complete(
             cfg,
             "preprocess",
             required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["preprocess"],
@@ -222,8 +239,8 @@ def preprocess_adata(
             extra_matches={"generation_id": current_generation[1]["generation_id"]},
         ):
             logger.warning(
-                "Partitioned preprocessing generation exists without a compatible complete "
-                "stage record; re-running preprocessing: %s",
+                "Partitioned preprocessing generation requires a semantic upgrade or lacks a "
+                "compatible complete stage record; re-running preprocessing: %s",
                 current_generation[0],
             )
         else:

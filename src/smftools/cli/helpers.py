@@ -173,6 +173,10 @@ class ArtifactPaths:
 
 def resolved_stage_config(cfg, stage: str | None = None) -> dict[str, Any]:
     """Return semantic config values used for stage compatibility checks."""
+    if str(stage) == "preprocess":
+        from ..preprocessing.semantic_upgrade import preprocess_stage_compute_config
+
+        return preprocess_stage_compute_config(cfg)
     if hasattr(cfg, "to_dict"):
         values = dict(cfg.to_dict())
     else:
