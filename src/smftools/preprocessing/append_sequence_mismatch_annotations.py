@@ -6,7 +6,12 @@ import numpy as np
 import pandas as pd
 
 from smftools.logging_utils import get_logger
-from smftools.tools.sequence_alignment import align_sequences_with_mismatches
+from smftools.preprocessing.variant_reference import (
+    VariantAlignmentScoring,
+    VariantReferenceMember,
+    VariantReferenceSet,
+    calculate_variant_informative_sites,
+)
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -96,14 +101,21 @@ def append_sequence_mismatch_annotations(
     )
 
     # ---- Global alignment ----
-    aligned_seq1, aligned_seq2, mismatches = align_sequences_with_mismatches(
-        full_seq1,
-        full_seq2,
-        match_score=match_score,
-        mismatch_score=mismatch_score,
-        gap_score=gap_score,
-        ignore_n=ignore_n,
+    reference_set = VariantReferenceSet(
+        members=(
+            VariantReferenceMember(member_id=seq1_column, sequence=full_seq1),
+            VariantReferenceMember(member_id=seq2_column, sequence=full_seq2),
+        ),
+        scoring=VariantAlignmentScoring(
+            match=match_score,
+            mismatch=mismatch_score,
+            gap=gap_score,
+            ignore_n=ignore_n,
+        ),
     )
+    catalog = calculate_variant_informative_sites(reference_set)
+    aligned_seq1, aligned_seq2 = catalog.aligned_sequences
+    mismatches = catalog.events
 
     logger.info(
         "Alignment complete. Aligned length: %d, mismatches: %d.",
@@ -125,26 +137,26 @@ def append_sequence_mismatch_annotations(
         # Determine which var index this mismatch maps to.
         # For substitutions and deletions, seq1_pos is defined.
         # For insertions, only seq2_pos is defined (gap in seq1).
-        if mm.seq1_pos is not None:
-            var_idx = int(var_indices_1[mm.seq1_pos])
-        elif mm.seq2_pos is not None:
-            var_idx = int(var_indices_2[mm.seq2_pos])
+        seq1_pos, seq2_pos = mm.member_positions
+        seq1_base, seq2_base = mm.member_bases
+        if seq1_pos is not None:
+            var_idx = int(var_indices_1[seq1_pos])
+        elif seq2_pos is not None:
+            var_idx = int(var_indices_2[seq2_pos])
         else:
             continue
 
         mismatch_type_arr[var_idx] = mm.event
-        mismatch_identity_arr[var_idx] = _format_mismatch_identity(
-            mm.event, mm.seq1_base, mm.seq2_base
-        )
+        mismatch_identity_arr[var_idx] = _format_mismatch_identity(mm.event, seq1_base, seq2_base)
         is_mismatch_arr[var_idx] = True
 
-        if mm.event == "substitution" and mm.seq1_pos is not None and mm.seq2_pos is not None:
+        if mm.event == "substitution" and seq1_pos is not None and seq2_pos is not None:
             substitution_map.append(
                 {
-                    "seq1_var_idx": int(var_indices_1[mm.seq1_pos]),
-                    "seq2_var_idx": int(var_indices_2[mm.seq2_pos]),
-                    "seq1_base": mm.seq1_base,
-                    "seq2_base": mm.seq2_base,
+                    "seq1_var_idx": int(var_indices_1[seq1_pos]),
+                    "seq2_var_idx": int(var_indices_2[seq2_pos]),
+                    "seq1_base": seq1_base,
+                    "seq2_base": seq2_base,
                 }
             )
 

@@ -1578,8 +1578,15 @@ class ExperimentConfig:
         if "conversion_types" in merged:
             merged["conversion_types"] = _parse_list(merged["conversion_types"])
         if "references_to_align_for_variant_annotation" in merged:
-            merged["references_to_align_for_variant_annotation"] = _parse_list(
-                merged["references_to_align_for_variant_annotation"]
+            from smftools.preprocessing.variant_reference import (
+                normalize_legacy_variant_pair,
+            )
+
+            variant_pair = normalize_legacy_variant_pair(
+                _parse_list(merged["references_to_align_for_variant_annotation"])
+            )
+            merged["references_to_align_for_variant_annotation"] = (
+                list(variant_pair) if variant_pair is not None else [None, None]
             )
 
         merged["filter_threshold"] = float(_parse_numeric(merged.get("filter_threshold", 0.8), 0.8))

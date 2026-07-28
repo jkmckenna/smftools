@@ -6,6 +6,10 @@ import numpy as np
 
 from smftools.constants import MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
 from smftools.logging_utils import get_logger
+from smftools.preprocessing.variant_evidence import (
+    classify_variant_bases,
+    segment_variant_calls,
+)
 
 if TYPE_CHECKING:
     import anndata as ad
@@ -247,10 +251,13 @@ def append_variant_call_layer(
             else:
                 covered = np.ones(ref_mask.sum(), dtype=bool)
 
-            calls = np.zeros(ref_mask.sum(), dtype=np.int8)
-            calls[np.isin(read_bases, ref1_arr) & covered] = 1
-            calls[np.isin(read_bases, ref2_arr) & covered] = 2
-            calls[~covered | np.isin(read_bases, list(uninformative))] = 0
+            calls = classify_variant_bases(
+                read_bases,
+                covered,
+                first_member_values=ref1_arr,
+                second_member_values=ref2_arr,
+                no_call_values=tuple(uninformative),
+            )
 
             result[ref_mask, var_idx] = calls
 
@@ -347,73 +354,40 @@ def append_variant_segment_layer(
     span_matrix = np.asarray(adata.layers[read_span_layer])
     n_obs, n_vars = adata.shape
 
+    ref_labels = adata.obs[reference_col].values
+    ref_categories = adata.obs[reference_col].cat.categories
+    suffix = "_strand_FASTA_base"
+    seq1_stem = seq1_column[: -len(suffix)] if seq1_column.endswith(suffix) else seq1_column
+    seq2_stem = seq2_column[: -len(suffix)] if seq2_column.endswith(suffix) else seq2_column
+    ref_to_seq = {
+        ref: 1 if ref == seq1_stem else 2 for ref in ref_categories if ref in {seq1_stem, seq2_stem}
+    }
+
     segment_layer = np.zeros((n_obs, n_vars), dtype=np.int8)
     breakpoint_counts = np.zeros(n_obs, dtype=np.int32)
     breakpoint_positions: list[list[float | int]] = [[] for _ in range(n_obs)]
+    chimeric_flags = np.zeros(n_obs, dtype=bool)
+    chimeric_types: list[str] = ["no_segment_mismatch"] * n_obs
+    self_base_counts = np.zeros(n_obs, dtype=np.int32)
+    other_base_counts = np.zeros(n_obs, dtype=np.int32)
+    segment_cigars: list[str] = [""] * n_obs
 
     for i in range(n_obs):
-        span_row = span_matrix[i]
-        call_row = call_matrix[i]
-
-        # Find read span boundaries
-        covered = np.where(span_row > 0)[0]
-        if len(covered) == 0:
-            continue
-        span_start = int(covered[0])
-        span_end = int(covered[-1])
-
-        # Collect informative positions (call == 1 or 2) within span
-        informative_mask = (call_row == 1) | (call_row == 2)
-        informative_positions = np.where(informative_mask)[0]
-        # Restrict to within span
-        informative_positions = informative_positions[
-            (informative_positions >= span_start) & (informative_positions <= span_end)
-        ]
-
-        if len(informative_positions) == 0:
-            # No informative sites — leave as 0 (no segment info)
-            continue
-
-        # Sort by position (should already be sorted)
-        informative_positions = np.sort(informative_positions)
-        classes = call_row[informative_positions]  # 1 or 2
-
-        n_bp = 0
-        row_breakpoints: list[float | int] = []
-        # Walk through consecutive informative positions and fill segments
-        prev_pos = informative_positions[0]
-        prev_cls = int(classes[0])
-
-        # Extend first class leftward to span start
-        segment_layer[i, span_start:prev_pos] = prev_cls
-
-        for k in range(1, len(informative_positions)):
-            cur_pos = informative_positions[k]
-            cur_cls = int(classes[k])
-
-            if cur_cls == prev_cls:
-                # Same class — fill from prev_pos to cur_pos
-                segment_layer[i, prev_pos:cur_pos] = prev_cls
-            else:
-                # Class transition — fill gap between informative sites with transition value
-                segment_layer[i, prev_pos] = prev_cls
-                segment_layer[i, prev_pos + 1 : cur_pos] = 3
-                n_bp += 1
-                midpoint = (int(prev_pos) + int(cur_pos)) / 2.0
-                row_breakpoints.append(int(midpoint) if midpoint.is_integer() else float(midpoint))
-
-            prev_pos = cur_pos
-            prev_cls = cur_cls
-
-        # Fill the last informative position itself
-        segment_layer[i, prev_pos] = prev_cls
-        # Extend last class rightward to span end (inclusive)
-        segment_layer[i, prev_pos : span_end + 1] = prev_cls
-        # But re-mark breakpoints that may have been overwritten — they weren't,
-        # since we only extend from prev_pos forward and breakpoints are before prev_pos.
-
-        breakpoint_counts[i] = n_bp
-        breakpoint_positions[i] = row_breakpoints
+        seq_id = ref_to_seq.get(ref_labels[i])
+        result = segment_variant_calls(
+            call_matrix[i],
+            span_matrix[i] > 0,
+            aligned_member_index=(seq_id or 1) - 1,
+        )
+        segment_layer[i] = result.segments
+        breakpoint_counts[i] = result.breakpoint_count
+        breakpoint_positions[i] = list(result.breakpoints)
+        if seq_id is not None:
+            chimeric_flags[i] = result.has_other_reference_segment
+            chimeric_types[i] = result.other_reference_segment_type
+            self_base_counts[i] = result.self_base_count
+            other_base_counts[i] = result.other_base_count
+            segment_cigars[i] = result.segment_cigar
 
     layer_name = f"{output_prefix}_variant_segments"
     adata.layers[layer_name] = segment_layer
@@ -430,98 +404,6 @@ def append_variant_segment_layer(
         dtype=object,
     )
     adata.obs[f"{output_prefix}_is_chimeric"] = breakpoint_counts > 0
-
-    # Per-read chimeric flags from mismatch segments relative to each read's own reference.
-    # A mismatch segment is a contiguous run where a seq1-aligned read is labeled as seq2,
-    # or vice versa, within the read span.
-    ref_labels = adata.obs[reference_col].values
-    ref_categories = adata.obs[reference_col].cat.categories
-    suffix = "_strand_FASTA_base"
-    seq1_stem = seq1_column[: -len(suffix)] if seq1_column.endswith(suffix) else seq1_column
-    seq2_stem = seq2_column[: -len(suffix)] if seq2_column.endswith(suffix) else seq2_column
-
-    ref_to_seq: dict[str, int] = {}
-    for ref in ref_categories:
-        if ref == seq1_stem:
-            ref_to_seq[ref] = 1
-        elif ref == seq2_stem:
-            ref_to_seq[ref] = 2
-
-    chimeric_flags = np.zeros(n_obs, dtype=bool)
-    chimeric_types: list[str] = ["no_segment_mismatch"] * n_obs
-    self_base_counts = np.zeros(n_obs, dtype=np.int32)
-    other_base_counts = np.zeros(n_obs, dtype=np.int32)
-    segment_cigars: list[str] = [""] * n_obs
-
-    for i in range(n_obs):
-        covered = np.where(span_matrix[i] > 0)[0]
-        if len(covered) == 0:
-            continue
-
-        span_start = int(covered[0])
-        span_end = int(covered[-1])
-        in_span = segment_layer[i, span_start : span_end + 1]
-
-        seq_id = ref_to_seq.get(ref_labels[i])
-        if seq_id is None:
-            continue
-
-        mismatch_value = 2 if seq_id == 1 else 1
-        self_value = seq_id
-        mismatch_mask = in_span == mismatch_value
-
-        self_base_counts[i] = int(np.sum(in_span == self_value))
-        other_base_counts[i] = int(np.sum(in_span == mismatch_value))
-
-        # Build an S/X run-length string from classified span positions.
-        # Values 0 and 3 are treated as run boundaries and excluded from run lengths.
-        runs: list[str] = []
-        run_symbol: str | None = None
-        run_len = 0
-        for val in in_span:
-            sym: str | None
-            if val == self_value:
-                sym = "S"
-            elif val == mismatch_value:
-                sym = "X"
-            else:
-                sym = None
-            if sym is None:
-                if run_symbol is not None and run_len > 0:
-                    runs.append(f"{run_len}{run_symbol}")
-                    run_symbol = None
-                    run_len = 0
-                continue
-            if sym == run_symbol:
-                run_len += 1
-            else:
-                if run_symbol is not None and run_len > 0:
-                    runs.append(f"{run_len}{run_symbol}")
-                run_symbol = sym
-                run_len = 1
-        if run_symbol is not None and run_len > 0:
-            runs.append(f"{run_len}{run_symbol}")
-        segment_cigars[i] = "".join(runs)
-
-        if not np.any(mismatch_mask):
-            continue
-
-        starts = np.where(mismatch_mask & ~np.r_[False, mismatch_mask[:-1]])[0]
-        ends = np.where(mismatch_mask & ~np.r_[mismatch_mask[1:], False])[0]
-        n_segments = len(starts)
-        chimeric_flags[i] = True
-
-        if n_segments >= 2:
-            chimeric_types[i] = "multi_segment_mismatch"
-        else:
-            start = int(starts[0])
-            end = int(ends[0])
-            if start == 0:
-                chimeric_types[i] = "left_segment_mismatch"
-            elif end == (len(in_span) - 1):
-                chimeric_types[i] = "right_segment_mismatch"
-            else:
-                chimeric_types[i] = "middle_segment_mismatch"
 
     adata.obs["chimeric_variant_sites"] = chimeric_flags
     adata.obs["chimeric_variant_sites_type"] = pd.Categorical(

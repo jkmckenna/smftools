@@ -37,6 +37,14 @@ _LAZY_ATTRS = {
     "reindex_coordinates": "smftools.preprocessing.reindex_references_adata",
     "reindex_references_adata": "smftools.preprocessing.reindex_references_adata",
     "subsample_adata": "smftools.preprocessing.subsample_adata",
+    "VariantAlignmentScoring": "smftools.preprocessing.variant_reference",
+    "VariantReferenceMember": "smftools.preprocessing.variant_reference",
+    "VariantReferenceSet": "smftools.preprocessing.variant_reference",
+    "calculate_variant_informative_sites": "smftools.preprocessing.variant_reference",
+    "normalize_legacy_variant_pair": "smftools.preprocessing.variant_reference",
+    "variant_reference_set_from_legacy": "smftools.preprocessing.variant_reference",
+    "call_read_variant_sites": "smftools.preprocessing.variant_evidence",
+    "segment_variant_calls": "smftools.preprocessing.variant_evidence",
 }
 
 
