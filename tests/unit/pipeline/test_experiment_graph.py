@@ -1,0 +1,409 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from click.testing import CliRunner
+
+from smftools import cli_entry
+from smftools.cli import helpers
+from smftools.informatics.experiment_manifest import (
+    StageLifecycle,
+    read_experiment_manifest,
+    record_stage_state,
+)
+from smftools.pipeline import experiment_graph
+from smftools.pipeline.semantic_graph import PlanState
+
+pytestmark = pytest.mark.unit
+
+_STAGE_SCHEMAS = {
+    "raw": 3,
+    "preprocess": 2,
+    "spatial": 3,
+    "hmm": 2,
+    "latent": 2,
+}
+
+
+def _cfg(tmp_path, *, run_latent: bool = True, **overrides):
+    values = {
+        "output_directory": tmp_path,
+        "experiment_name": "experiment",
+        "smf_modality": "direct",
+        "full_run_latent": run_latent,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _paths(tmp_path):
+    return SimpleNamespace(
+        raw=tmp_path / "legacy-raw.h5ad.gz",
+        pp=tmp_path / "legacy-preprocess.h5ad.gz",
+        pp_dedup=tmp_path / "legacy-preprocess.h5ad.gz",
+        spatial=tmp_path / "legacy-spatial.h5ad.gz",
+        hmm=tmp_path / "legacy-hmm.h5ad.gz",
+        latent=tmp_path / "legacy-latent.h5ad.gz",
+        variant=tmp_path / "legacy-variant.h5ad.gz",
+        chimeric=tmp_path / "legacy-chimeric.h5ad.gz",
+        spine=tmp_path / "load_adata_outputs" / "spine.h5ad",
+        raw_spine=tmp_path / "raw_outputs" / "spine.h5ad",
+        preprocess_spine=tmp_path / "preprocess_adata_outputs" / "spine.h5ad",
+        spatial_spine=tmp_path / "spatial_adata_outputs" / "spine.h5ad",
+        hmm_spine=tmp_path / "hmm_adata_outputs" / "spine.h5ad",
+        latent_spine=tmp_path / "latent_adata_outputs" / "spine.h5ad",
+    )
+
+
+def _record_stage(cfg, stage: str, *, config_value: str | None = None):
+    record_stage_state(
+        cfg.output_directory,
+        stage,
+        "complete",
+        config_hash=config_value or helpers.stage_config_hash(cfg, stage),
+        input_artifact_ids=[],
+        schema_versions={
+            stage: _STAGE_SCHEMAS[stage],
+        },
+    )
+
+
+def _states(plan):
+    return {decision.analysis_id: decision.state for decision in plan.decisions}
+
+
+def test_experiment_graph_is_linear_and_registers_legacy_compatibility_leaves():
+    specs = {spec.analysis_id: spec for spec in experiment_graph.experiment_node_specs()}
+
+    assert set(experiment_graph.EXPERIMENT_NODE_IDS.values()).issubset(specs)
+    assert set(experiment_graph.LEGACY_EXPERIMENT_NODE_IDS.values()).issubset(specs)
+    assert specs[experiment_graph.EXPERIMENT_NODE_IDS["raw"]].dependencies == ()
+    assert specs[experiment_graph.EXPERIMENT_NODE_IDS["latent"]].dependencies == (
+        experiment_graph.EXPERIMENT_NODE_IDS["hmm"],
+    )
+    assert specs[experiment_graph.LEGACY_EXPERIMENT_NODE_IDS["variant"]].dependencies == (
+        experiment_graph.EXPERIMENT_NODE_IDS["preprocess"],
+    )
+
+
+def test_full_target_resolves_latent_by_default_and_hmm_when_disabled(tmp_path):
+    paths = _paths(tmp_path)
+    latent_cfg = _cfg(tmp_path)
+    hmm_cfg = _cfg(tmp_path, run_latent=False)
+
+    latent_plan = experiment_graph.build_experiment_plan(
+        latent_cfg,
+        "full",
+        paths=paths,
+    )
+    hmm_plan = experiment_graph.build_experiment_plan(
+        hmm_cfg,
+        "full",
+        paths=paths,
+    )
+
+    assert latent_plan.requested_target == experiment_graph.EXPERIMENT_NODE_IDS["latent"]
+    assert latent_plan.topological_order == tuple(
+        experiment_graph.EXPERIMENT_NODE_IDS[stage] for stage in experiment_graph.EXPERIMENT_STAGES
+    )
+    assert hmm_plan.requested_target == experiment_graph.EXPERIMENT_NODE_IDS["hmm"]
+    assert experiment_graph.EXPERIMENT_NODE_IDS["latent"] not in hmm_plan.topological_order
+
+
+def test_partial_plan_reuses_compatible_dependencies_and_stops_at_target(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    _record_stage(cfg, "raw")
+    _record_stage(cfg, "preprocess")
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+
+    plan = experiment_graph.build_experiment_plan(cfg, "hmm", paths=paths)
+
+    states = _states(plan)
+    assert plan.topological_order == tuple(
+        experiment_graph.EXPERIMENT_NODE_IDS[stage]
+        for stage in ("raw", "preprocess", "spatial", "hmm")
+    )
+    assert states[experiment_graph.EXPERIMENT_NODE_IDS["raw"]] is PlanState.COMPATIBLE
+    assert states[experiment_graph.EXPERIMENT_NODE_IDS["preprocess"]] is PlanState.COMPATIBLE
+    assert states[experiment_graph.EXPERIMENT_NODE_IDS["spatial"]] is PlanState.MISSING
+    assert states[experiment_graph.EXPERIMENT_NODE_IDS["hmm"]] is PlanState.MISSING
+
+
+def test_stale_config_and_invalid_artifacts_have_explicit_plan_reasons(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    _record_stage(cfg, "raw", config_value="old-config")
+    _record_stage(cfg, "preprocess")
+
+    def validate(_root, stage, **_kwargs):
+        return stage != "preprocess"
+
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", validate)
+    plan = experiment_graph.build_experiment_plan(cfg, "spatial", paths=paths)
+    decisions = {decision.analysis_id: decision for decision in plan.decisions}
+
+    raw = decisions[experiment_graph.EXPERIMENT_NODE_IDS["raw"]]
+    preprocess = decisions[experiment_graph.EXPERIMENT_NODE_IDS["preprocess"]]
+    spatial = decisions[experiment_graph.EXPERIMENT_NODE_IDS["spatial"]]
+    assert raw.state is PlanState.STALE_CONFIG
+    assert raw.reason_code == "semantic_config_changed"
+    assert preprocess.state is PlanState.INVALID_ARTIFACT
+    assert preprocess.reason_code == "stage_artifact_validation_failed"
+    assert spatial.state is PlanState.MISSING
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason_code"),
+    [
+        ("semantic_algorithm_version", "0", "algorithm_version_changed"),
+        ("semantic_output_schema_version", 1, "output_schema_version_changed"),
+    ],
+)
+def test_stored_semantic_versions_drive_stage_compatibility(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+    reason_code,
+):
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    record_stage_state(
+        cfg.output_directory,
+        "raw",
+        "complete",
+        config_hash=helpers.stage_config_hash(cfg, "raw"),
+        input_artifact_ids=[],
+        schema_versions={"raw": 3},
+        **{field: value},
+    )
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+
+    plan = experiment_graph.build_experiment_plan(cfg, "raw", paths=paths)
+
+    assert plan.decisions[0].state is PlanState.STALE_ALGORITHM
+    assert plan.decisions[0].reason_code == reason_code
+
+
+def test_changed_source_artifact_is_reported_as_stale_input(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    paths.raw_spine.parent.mkdir(parents=True)
+    paths.raw_spine.write_bytes(b"raw-source-v2")
+    _record_stage(cfg, "raw")
+    record_stage_state(
+        cfg.output_directory,
+        "preprocess",
+        "complete",
+        config_hash=helpers.stage_config_hash(cfg, "preprocess"),
+        input_artifact_ids=["old-raw-source"],
+        schema_versions={"preprocess": 2},
+    )
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+
+    plan = experiment_graph.build_experiment_plan(cfg, "preprocess", paths=paths)
+    decision = plan.decisions[-1]
+
+    assert decision.state is PlanState.STALE_INPUT
+    assert decision.reason_code == "input_artifacts_changed"
+
+
+def test_force_flag_recomputes_target_and_dependents(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, force_redo_load_adata=True)
+    paths = _paths(tmp_path)
+    for stage in ("raw", "preprocess", "spatial", "hmm"):
+        _record_stage(cfg, stage)
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+
+    plan = experiment_graph.build_experiment_plan(cfg, "hmm", paths=paths)
+    states = _states(plan)
+
+    assert states[experiment_graph.EXPERIMENT_NODE_IDS["raw"]] is PlanState.MISSING
+    assert (
+        states[experiment_graph.EXPERIMENT_NODE_IDS["preprocess"]] is PlanState.DEPENDENT_RECOMPUTE
+    )
+    assert states[experiment_graph.EXPERIMENT_NODE_IDS["spatial"]] is PlanState.DEPENDENT_RECOMPUTE
+    assert states[experiment_graph.EXPERIMENT_NODE_IDS["hmm"]] is PlanState.DEPENDENT_RECOMPUTE
+
+
+def test_execution_invokes_only_missing_or_incompatible_stage_wrappers(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    _record_stage(cfg, "raw")
+    _record_stage(cfg, "preprocess")
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+    calls = []
+    runners = {
+        stage: lambda _config_path, stage=stage: calls.append(stage) or f"{stage}-result"
+        for stage in experiment_graph.EXPERIMENT_STAGES
+    }
+
+    result = experiment_graph.execute_experiment_target(
+        "experiment.csv",
+        "hmm",
+        cfg=cfg,
+        paths=paths,
+        stage_runners=runners,
+    )
+
+    assert calls == ["spatial", "hmm"]
+    assert result.final_result == "hmm-result"
+    assert [stage for stage, _value in result.stage_results] == [
+        "raw",
+        "preprocess",
+        "spatial",
+        "hmm",
+    ]
+
+
+def test_planning_is_read_only_and_json_is_deterministic(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    _record_stage(cfg, "raw")
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+    before = {
+        path.relative_to(tmp_path).as_posix(): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+
+    first = experiment_graph.build_experiment_plan(cfg, "latent", paths=paths)
+    second = experiment_graph.build_experiment_plan(cfg, "latent", paths=paths)
+    after = {
+        path.relative_to(tmp_path).as_posix(): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+
+    assert first.to_json() == second.to_json()
+    assert before == after
+
+
+def test_plan_cli_supports_human_and_machine_readable_output(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path / "run")
+    config_path = tmp_path / "experiment.csv"
+    config_path.touch()
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+
+    human = CliRunner().invoke(
+        cli_entry.cli,
+        ["experiment", "plan", str(config_path), "--target", "hmm"],
+    )
+    machine = CliRunner().invoke(
+        cli_entry.cli,
+        ["experiment", "plan", str(config_path), "--target", "hmm", "--json"],
+    )
+
+    assert human.exit_code == 0, human.output
+    assert "Experiment target: experiment.hmm.complete" in human.output
+    assert "missing" in human.output
+    assert machine.exit_code == 0, machine.output
+    payload = json.loads(machine.output)
+    assert payload["requested_target"] == experiment_graph.EXPERIMENT_NODE_IDS["hmm"]
+    assert payload["topological_order"][-1] == experiment_graph.EXPERIMENT_NODE_IDS["hmm"]
+
+
+@pytest.mark.parametrize("target", ["raw", "preprocess", "spatial", "hmm", "latent"])
+def test_direct_stage_cli_commands_submit_semantic_target_requests(
+    tmp_path,
+    monkeypatch,
+    target,
+):
+    from smftools.cli import recipes
+
+    config_path = tmp_path / "experiment.csv"
+    config_path.touch()
+    requests = []
+    monkeypatch.setattr(
+        recipes,
+        "run_experiment_target",
+        lambda path, requested: requests.append((path, requested)),
+    )
+
+    result = CliRunner().invoke(
+        cli_entry.cli,
+        ["experiment", target, str(config_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert requests == [(str(config_path), target)]
+
+
+def test_stage_result_metadata_is_deterministic_and_versioned():
+    kwargs = {
+        "stage_config_hash": "config-1",
+        "input_artifact_ids": ["raw:one"],
+        "artifacts": {"spine": {"path": "raw_outputs/spine.h5ad", "size_bytes": 10}},
+        "schema_versions": {"raw": 3},
+    }
+
+    first = experiment_graph.experiment_stage_result_metadata("raw", **kwargs)
+    second = experiment_graph.experiment_stage_result_metadata("raw", **kwargs)
+
+    assert first == second
+    assert first["semantic_analysis_id"] == experiment_graph.EXPERIMENT_NODE_IDS["raw"]
+    assert first["semantic_output_schema_version"] == 3
+    assert first["semantic_result_id"].startswith("raw:")
+    assert experiment_graph.experiment_stage_result_metadata("full", **kwargs) == {}
+
+
+def test_stage_publication_records_semantic_result_identity(tmp_path):
+    artifact = tmp_path / "raw_outputs" / "summary.json"
+    artifact.parent.mkdir()
+    artifact.write_text("{}\n", encoding="utf-8")
+
+    with StageLifecycle(tmp_path, "raw", config_hash="config-1") as lifecycle:
+        helpers.publish_stage_outputs(
+            lifecycle,
+            {"summary": artifact},
+            required=("summary",),
+            task_catalog_key=None,
+            checksum_keys=("summary",),
+            schema_versions={"raw": 3},
+        )
+
+    entry = read_experiment_manifest(tmp_path)["stages"]["raw"]
+    assert entry["semantic_analysis_id"] == experiment_graph.EXPERIMENT_NODE_IDS["raw"]
+    assert entry["semantic_algorithm_version"] == "1"
+    assert entry["semantic_output_schema_version"] == 3
+    assert entry["semantic_result_id"].startswith("raw:")
+    assert len(entry["semantic_channel_fingerprint"]) == 64
+
+
+def test_batch_surfaces_target_planning_failures(tmp_path, monkeypatch):
+    from smftools.cli import recipes
+
+    config = tmp_path / "experiment.csv"
+    config.touch()
+    config_table = tmp_path / "configs.txt"
+    config_table.write_text(f"{config}\n", encoding="utf-8")
+
+    def fail_plan(_config_path, _target):
+        raise ValueError("simulated target planning failure")
+
+    monkeypatch.setattr(recipes, "run_experiment_target", fail_plan)
+    result = CliRunner().invoke(
+        cli_entry.cli,
+        ["experiment", "batch", "hmm", str(config_table)],
+    )
+
+    assert result.exit_code != 0
+    summary = json.loads((tmp_path / "configs.hmm.batch-summary.json").read_text())
+    assert summary["failed"] == 1
+    assert summary["results"][0]["exception"] == {
+        "type": "ValueError",
+        "message": "simulated target planning failure",
+    }

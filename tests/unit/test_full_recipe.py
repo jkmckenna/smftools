@@ -27,7 +27,11 @@ def test_full_flow_runs_raw_preprocess_spatial_hmm_latent_in_order(tmp_path, mon
         "latent_adata",
         lambda path: calls.append(("latent", path)) or ("adata", "latent-output"),
     )
-    cfg = SimpleNamespace(output_directory=tmp_path)
+    cfg = SimpleNamespace(
+        output_directory=tmp_path,
+        experiment_name="experiment",
+        smf_modality="direct",
+    )
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
     monkeypatch.setattr(
         helpers,
@@ -125,7 +129,11 @@ def test_full_summary_links_stage_logs_and_outcomes(tmp_path, monkeypatch):
 
 
 def test_full_flow_records_failure_when_child_stage_raises(tmp_path, monkeypatch):
-    cfg = SimpleNamespace(output_directory=tmp_path)
+    cfg = SimpleNamespace(
+        output_directory=tmp_path,
+        experiment_name="experiment",
+        smf_modality="direct",
+    )
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
 
     def fail_raw(path):
@@ -203,7 +211,12 @@ def test_full_flow_can_disable_latent(tmp_path, monkeypatch):
 
 
 def test_full_flow_records_latent_failure(tmp_path, monkeypatch):
-    cfg = SimpleNamespace(output_directory=tmp_path, full_run_latent=True)
+    cfg = SimpleNamespace(
+        output_directory=tmp_path,
+        experiment_name="experiment",
+        smf_modality="direct",
+        full_run_latent=True,
+    )
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
     monkeypatch.setattr(recipes, "raw_adata", lambda path: None)
     monkeypatch.setattr(recipes, "preprocess_adata", lambda path: None)
@@ -270,3 +283,22 @@ def test_plot_regions_do_not_invalidate_compute_stage_hashes():
 
     assert {stage: helpers.stage_config_hash(cfg, stage) for stage in compute_stages} == original
     assert helpers.stage_config_hash(cfg, "raw") != raw_hash
+
+
+def test_latent_opt_out_does_not_invalidate_stage_compute_hashes():
+    cfg = SimpleNamespace(
+        output_directory="/run",
+        full_run_latent=True,
+        autocorr_max_lag=400,
+    )
+    original = {
+        stage: helpers.stage_config_hash(cfg, stage)
+        for stage in ("raw", "preprocess", "spatial", "hmm", "latent")
+    }
+
+    cfg.full_run_latent = False
+
+    assert {
+        stage: helpers.stage_config_hash(cfg, stage)
+        for stage in ("raw", "preprocess", "spatial", "hmm", "latent")
+    } == original

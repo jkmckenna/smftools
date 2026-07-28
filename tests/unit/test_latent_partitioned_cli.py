@@ -352,10 +352,14 @@ def test_analysis_units_are_reference_or_core_local():
 
 
 def test_batch_latent_dispatches_standalone_stage(tmp_path, monkeypatch):
-    import smftools.cli.latent_adata as latent_module
+    import smftools.cli.recipes as recipes_module
 
     captured = []
-    monkeypatch.setattr(latent_module, "latent_adata", captured.append)
+    monkeypatch.setattr(
+        recipes_module,
+        "run_experiment_target",
+        lambda config_path, target: captured.append((config_path, target)),
+    )
     config = tmp_path / "experiment.csv"
     config.touch()
     config_table = tmp_path / "configs.txt"
@@ -364,7 +368,7 @@ def test_batch_latent_dispatches_standalone_stage(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["experiment", "batch", "latent", str(config_table)])
 
     assert result.exit_code == 0, result.output
-    assert captured == [str(config)]
+    assert captured == [(str(config), "latent")]
 
 
 def test_fitted_latent_space_transforms_additional_reads():

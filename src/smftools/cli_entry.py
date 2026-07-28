@@ -77,9 +77,9 @@ def experiment_group():
 @click.argument("config_path", type=click.Path(exists=True))
 def raw(config_path):
     """Prepare BAM artifacts and write the ragged raw store."""
-    from .cli.raw_adata import raw_adata
+    from .cli.recipes import run_experiment_target
 
-    raw_adata(config_path)
+    run_experiment_target(config_path, "raw")
 
 
 @experiment_group.command()
@@ -99,9 +99,9 @@ def load(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def preprocess(config_path):
     """Preprocessing."""
-    from .cli.preprocess_adata import preprocess_adata
+    from .cli.recipes import run_experiment_target
 
-    preprocess_adata(config_path)
+    run_experiment_target(config_path, "preprocess")
 
 
 ##########################################
@@ -112,9 +112,9 @@ def preprocess(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def spatial(config_path):
     """Spatial signal analysis"""
-    from .cli.spatial_adata import spatial_adata
+    from .cli.recipes import run_experiment_target
 
-    spatial_adata(config_path)
+    run_experiment_target(config_path, "spatial")
 
 
 ##########################################
@@ -125,9 +125,9 @@ def spatial(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def hmm(config_path):
     """HMM feature annotations and plotting"""
-    from .cli.hmm_adata import hmm_adata
+    from .cli.recipes import run_experiment_target
 
-    hmm_adata(config_path)
+    run_experiment_target(config_path, "hmm")
 
 
 ##########################################
@@ -138,9 +138,9 @@ def hmm(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 def latent(config_path):
     """Latent representations of signal"""
-    from .cli.latent_adata import latent_adata
+    from .cli.recipes import run_experiment_target
 
-    latent_adata(config_path)
+    run_experiment_target(config_path, "latent")
 
 
 ##########################################
@@ -178,6 +178,33 @@ def chimeric(config_path):
 def full(config_path):
     """Workflow: raw preprocess spatial hmm, then latent by default."""
     full_flow(config_path)
+
+
+##########################################
+
+
+####### Read-only semantic planning ###########
+@experiment_group.command("plan")
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option(
+    "--target",
+    type=click.Choice(["raw", "preprocess", "spatial", "hmm", "latent", "full"]),
+    default="full",
+    show_default=True,
+    help="Experiment target to plan without executing it.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Emit the stable machine-readable plan schema.",
+)
+def experiment_plan(config_path, target: str, as_json: bool):
+    """Explain experiment compatibility and required recomputation without writes."""
+    from .pipeline.experiment_graph import format_experiment_plan, plan_experiment
+
+    plan = plan_experiment(config_path, target)
+    click.echo(plan.to_json() if as_json else format_experiment_plan(plan))
 
 
 ##########################################
@@ -304,9 +331,9 @@ def batch(
     task = task.lower()
 
     def _raw(cfg_path: str):
-        from .cli.raw_adata import raw_adata
+        from .cli.recipes import run_experiment_target
 
-        return raw_adata(cfg_path)
+        return run_experiment_target(cfg_path, "raw")
 
     def _load(cfg_path: str):
         from .cli.load_adata import load_dense_cache
@@ -314,14 +341,14 @@ def batch(
         return load_dense_cache(cfg_path)
 
     def _preprocess(cfg_path: str):
-        from .cli.preprocess_adata import preprocess_adata
+        from .cli.recipes import run_experiment_target
 
-        return preprocess_adata(cfg_path)
+        return run_experiment_target(cfg_path, "preprocess")
 
     def _spatial(cfg_path: str):
-        from .cli.spatial_adata import spatial_adata
+        from .cli.recipes import run_experiment_target
 
-        return spatial_adata(cfg_path)
+        return run_experiment_target(cfg_path, "spatial")
 
     def _variant(cfg_path: str):
         from .cli.variant_adata import variant_adata
@@ -329,14 +356,14 @@ def batch(
         return variant_adata(cfg_path)
 
     def _hmm(cfg_path: str):
-        from .cli.hmm_adata import hmm_adata
+        from .cli.recipes import run_experiment_target
 
-        return hmm_adata(cfg_path)
+        return run_experiment_target(cfg_path, "hmm")
 
     def _latent(cfg_path: str):
-        from .cli.latent_adata import latent_adata
+        from .cli.recipes import run_experiment_target
 
-        return latent_adata(cfg_path)
+        return run_experiment_target(cfg_path, "latent")
 
     def _full(cfg_path: str):
         from .cli.recipes import full_flow

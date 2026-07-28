@@ -2,6 +2,19 @@
 
 from .analysis_registry import AnalysisRegistry, RegistryError
 from .compatibility import SemanticPlanner, compatibility_fingerprint, node_result_from_inputs
+from .experiment_graph import (
+    EXPERIMENT_NODE_IDS,
+    EXPERIMENT_STAGES,
+    EXPERIMENT_TARGETS,
+    ExperimentExecutionResult,
+    build_experiment_plan,
+    execute_experiment_target,
+    experiment_node_specs,
+    experiment_stage_result_metadata,
+    format_experiment_plan,
+    plan_experiment,
+    resolve_experiment_target,
+)
 from .semantic_graph import (
     AnalysisScope,
     ArtifactIdentity,
@@ -31,6 +44,10 @@ __all__ = [
     "ChannelSpec",
     "CompatibilityFingerprint",
     "DependencyResultIdentity",
+    "EXPERIMENT_NODE_IDS",
+    "EXPERIMENT_STAGES",
+    "EXPERIMENT_TARGETS",
+    "ExperimentExecutionResult",
     "NodeInputs",
     "NodeResult",
     "PlanDecision",
@@ -39,6 +56,13 @@ __all__ = [
     "SemanticNodeSpec",
     "SemanticPlan",
     "SemanticPlanner",
+    "build_experiment_plan",
     "compatibility_fingerprint",
+    "execute_experiment_target",
+    "experiment_node_specs",
+    "experiment_stage_result_metadata",
+    "format_experiment_plan",
     "node_result_from_inputs",
+    "plan_experiment",
+    "resolve_experiment_target",
 ]

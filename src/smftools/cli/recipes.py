@@ -120,10 +120,34 @@ def latent_adata(config_path: str):
     return _latent_adata(config_path)
 
 
+def _stage_runners():
+    """Return current wrapper callables so tests and callers can replace them independently."""
+    return {
+        "raw": raw_adata,
+        "preprocess": preprocess_adata,
+        "spatial": spatial_adata,
+        "hmm": hmm_adata,
+        "latent": latent_adata,
+    }
+
+
+def run_experiment_target(config_path: str, target: str):
+    """Execute one public experiment target through the semantic graph."""
+    from ..pipeline.experiment_graph import execute_experiment_target
+
+    execution = execute_experiment_target(
+        config_path,
+        target,
+        stage_runners=_stage_runners(),
+    )
+    return execution.final_result
+
+
 def full_flow(config_path: str):
-    """Run the standard raw-to-latent workflow with stage-level restart semantics."""
+    """Run the configured final experiment target through the semantic graph."""
     from smftools.constants import PARTITIONED_STAGE_REQUIRED_ARTIFACTS
 
+    from ..pipeline.experiment_graph import execute_experiment_target
     from .helpers import (
         get_adata_paths,
         load_experiment_config,
@@ -134,24 +158,27 @@ def full_flow(config_path: str):
 
     cfg = load_experiment_config(config_path)
     run_latent = bool(getattr(cfg, "full_run_latent", True))
+    paths = get_adata_paths(cfg)
     with stage_lifecycle(cfg, "full") as lifecycle:
         try:
-            raw_adata(config_path)
-            preprocess_adata(config_path)
-            spatial_adata(config_path)
-            hmm_result = hmm_adata(config_path)
-            result = latent_adata(config_path) if run_latent else hmm_result
+            execution = execute_experiment_target(
+                config_path,
+                "full",
+                cfg=cfg,
+                paths=paths,
+                stage_runners=_stage_runners(),
+            )
+            result = execution.final_result
             outputs = {}
             required = ()
-            paths = get_adata_paths(cfg)
             result_path = result[1] if isinstance(result, tuple) and len(result) > 1 else None
             final_spine = paths.latent_spine if run_latent else paths.hmm_spine
             if result_path is not None and final_spine is not None:
                 result_path = Path(result_path)
                 if result_path == Path(final_spine):
-                    required_stages = ("raw", "preprocess", "spatial", "hmm")
-                    if run_latent:
-                        required_stages = (*required_stages, "latent")
+                    required_stages = tuple(
+                        decision.analysis_id.split(".")[1] for decision in execution.plan.decisions
+                    )
                     incomplete = [
                         stage
                         for stage in required_stages
@@ -179,7 +206,7 @@ def full_flow(config_path: str):
                 task_catalog_key=None,
                 checksum_keys=("summary",),
                 schema_versions={"full_workflow": FULL_SUMMARY_SCHEMA_VERSION},
-                task_count=5 if run_latent else 4,
+                task_count=len(execution.plan.decisions),
             )
         except BaseException as exc:
             _write_full_summary(cfg, outcome="failed", error=exc)
