@@ -139,6 +139,39 @@ def test_discover_stage_spines_from_run_root(tmp_path):
     assert set(spines2) == {"raw", "preprocess", "hmm"}
 
 
+def test_registry_refresh_ignores_stage_until_manifest_marks_it_complete(tmp_path):
+    from smftools.informatics.experiment_manifest import record_stage_state
+
+    project = tmp_path / "project"
+    reg.init_project(project)
+    run_dir = _make_run(
+        tmp_path / "expA",
+        stages=["raw"],
+        name="expA",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    record_stage_state(run_dir, "raw", "complete")
+    _, first = reg.add_experiment(project, run_dir)
+    assert set(first["spines"]) == {"raw"}
+
+    _make_run(
+        run_dir,
+        stages=["preprocess"],
+        name="expA",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    record_stage_state(run_dir, "preprocess", "planned")
+    record_stage_state(run_dir, "preprocess", "running")
+    _, while_running = reg.add_experiment(project, run_dir)
+    assert set(while_running["spines"]) == {"raw"}
+
+    record_stage_state(run_dir, "preprocess", "complete")
+    _, completed = reg.add_experiment(project, run_dir)
+    assert set(completed["spines"]) == {"raw", "preprocess"}
+
+
 def test_add_experiment_records_every_available_stage(tmp_path):
     proj = tmp_path / "project"
     reg.init_project(proj)

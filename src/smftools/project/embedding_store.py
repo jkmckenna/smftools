@@ -44,7 +44,7 @@ OBS_NAMES_FILENAME = "obs_names.json"
 ROW_DIGESTS_FILENAME = "feature_row_digests.json"
 
 IDENTITY_SCHEMA_VERSION = 2
-SOURCE_SCHEMA_VERSION = 1
+SOURCE_SCHEMA_VERSION = 2
 GENERATION_SCHEMA_VERSION = 1
 EMBEDDING_IMPLEMENTATION_VERSION = 1
 _ARTIFACT_FILENAMES = (
@@ -256,6 +256,7 @@ def _portable_path(path: Path, anchor: Path) -> str:
 
 def _source_members(project_dir: Path, members: list[dict]) -> list[dict[str, object]]:
     from ..informatics.experiment_manifest import read_experiment_manifest
+    from ..pipeline.project_graph import project_source_member_record
     from .catalog import ProjectCatalog
 
     entries = {entry["id"]: entry for entry in ProjectCatalog.open(project_dir).experiments()}
@@ -273,6 +274,7 @@ def _source_members(project_dir: Path, members: list[dict]) -> list[dict[str, ob
             if stage_record.get(key) is not None
         }
         spine_path = Path(member["spine_path"])
+        semantic_source = project_source_member_record(member)
         records.append(
             {
                 "experiment": member["experiment"],
@@ -284,9 +286,30 @@ def _source_members(project_dir: Path, members: list[dict]) -> list[dict[str, ob
                 "stage_generation_id": stage_record.get("generation_id"),
                 "stage_config_hash": stage_record.get("config_hash"),
                 "stage_fingerprint": _stable_hash(stage_identity),
+                "source_channels": {
+                    "membership": semantic_source["membership_fingerprint"],
+                    "features": semantic_source["feature_fingerprint"],
+                    "variant_reporting": semantic_source["variant_reporting_fingerprint"],
+                },
             }
         )
     return records
+
+
+def _source_member_changed(previous: dict, current: dict | None) -> bool:
+    """Compare only channels consumed by PL-21 when channel metadata is available."""
+    if current is None:
+        return True
+    previous_channels = previous.get("source_channels")
+    current_channels = current.get("source_channels")
+    if not isinstance(previous_channels, dict) or not isinstance(current_channels, dict):
+        # Schema-v1 generations lacked channel separation. Preserve their strict
+        # source comparison instead of guessing that an old source is compatible.
+        return current != previous
+    return any(
+        previous_channels.get(channel) != current_channels.get(channel)
+        for channel in ("membership", "features")
+    )
 
 
 def _dependencies() -> dict[str, str]:
@@ -727,7 +750,7 @@ def fit_or_extend_embedding(
         changed_sources = [
             owner
             for owner, record in previous_members.items()
-            if current_members.get(owner) != record
+            if _source_member_changed(record, current_members.get(owner))
         ]
         if changed_sources:
             raise EmbeddingCompositionError(

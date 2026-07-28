@@ -1,3 +1,5 @@
+import json
+
 import anndata as ad
 import pandas as pd
 from click.testing import CliRunner
@@ -98,6 +100,46 @@ def test_project_cli_end_to_end(tmp_path):
     combined, _ = safe_read_h5ad(out)
     assert combined.n_obs == 7
     assert set(combined.obs["experiment"]) == {"expA", "expB"}
+
+
+def test_project_plan_cli_is_read_only_and_emits_json(tmp_path):
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    project = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(project)]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli_entry.cli,
+            ["project", "add", str(project), str(tmp_path / "expA")],
+        ).exit_code
+        == 0
+    )
+    before = {
+        path.relative_to(project): (path.stat().st_mtime_ns, path.stat().st_size)
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+
+    result = runner.invoke(
+        cli_entry.cli,
+        ["project", "plan", str(project), "embedding", uid, "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["requested_target"] == "project.embedding.generation"
+    assert payload["topological_order"] == [
+        "project.genomic_selection",
+        "project.embedding.feature_matrix",
+        "project.embedding.generation",
+    ]
+    after = {
+        path.relative_to(project): (path.stat().st_mtime_ns, path.stat().st_size)
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_project_materialize_cli_pools_with_layer_projection(tmp_path):

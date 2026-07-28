@@ -662,6 +662,65 @@ def project_list_cmd(project_dir: Path):
         click.echo(f"{n_canon} canonical reference(s) across the project.")
 
 
+@project_group.command("plan")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument(
+    "target",
+    type=click.Choice(("selection", "materialization", "sample-analysis", "embedding")),
+)
+@click.argument("canonical_reference")
+@click.option("--set", "set_name", default=None, help="Restrict to a named experiment set.")
+@click.option("--modality", default=None, help="Restrict to a modality.")
+@click.option(
+    "--experiment",
+    "experiments",
+    multiple=True,
+    help="Restrict to an experiment ID; repeat for multiple experiments.",
+)
+@click.option("--stage", default=None, help="Select one experiment pipeline stage.")
+@click.option("--start", type=int, default=None, help="Genomic window start (with --end).")
+@click.option("--end", type=int, default=None, help="Genomic window end (with --start).")
+@click.option("--layers", default=None, help="Comma-separated materialization layer subset.")
+@click.option("--read-metrics", is_flag=True, help="Include spatial per-read outputs.")
+@click.option("--partitioned", is_flag=True, help="Plan partitioned materialization.")
+@click.option("--json", "as_json", is_flag=True, help="Emit stable machine-readable JSON.")
+def project_plan_cmd(
+    project_dir,
+    target,
+    canonical_reference,
+    set_name,
+    modality,
+    experiments,
+    stage,
+    start,
+    end,
+    layers,
+    read_metrics,
+    partitioned,
+    as_json,
+):
+    """Explain reuse and recomputation for a project analysis without writing."""
+    from .cli.project_cmd import project_plan
+    from .pipeline.project_graph import format_project_plan
+
+    layer_list = None if layers is None else [item for item in layers.split(",") if item]
+    plan = project_plan(
+        project_dir,
+        target,
+        canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+        start=start,
+        end=end,
+        layers=layer_list,
+        read_metrics=read_metrics,
+        partitioned=partitioned,
+    )
+    click.echo(plan.to_json() if as_json else format_project_plan(plan))
+
+
 @project_group.command("materialize")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("canonical_reference")

@@ -150,9 +150,27 @@ def discover_stage_spines(experiment_dir: Path) -> tuple[Path, dict[str, Path]]:
             if stage not in found and (candidate := run_root / stage_dir / SPINE_FILENAME).exists()
         }
     )
+    manifest_path = run_root / "experiment_manifest.json"
+    if manifest_path.exists():
+        from ..informatics.experiment_manifest import read_experiment_manifest
+
+        stage_records = read_experiment_manifest(run_root).get("stages", {})
+        if isinstance(stage_records, dict):
+            for stage in tuple(found):
+                record = stage_records.get(stage)
+                if not isinstance(record, dict):
+                    continue
+                state = record.get("state")
+                if state is None and "completed_at" in record:
+                    state = "complete"
+                if state != "complete":
+                    # A stage directory may exist while a generation is still
+                    # staging. Registry refresh must continue to expose only
+                    # the previously published complete stage.
+                    found.pop(stage)
     if not found:
         raise FileNotFoundError(
-            f"no stage spine found under {experiment_dir} (looked for "
+            f"no complete stage spine found under {experiment_dir} (looked for "
             f"{SPINE_FILENAME} directly inside it, and under "
             f"{sorted(STAGE_DIRS.values())})"
         )

@@ -87,6 +87,43 @@ def project_list(project_dir: str | Path):
     return catalog.experiments(), catalog.references()
 
 
+def project_plan(
+    project_dir: str | Path,
+    target: str,
+    canonical_reference: str,
+    *,
+    set_name: str | None = None,
+    modality: str | None = None,
+    experiments=None,
+    stage: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    layers: list[str] | None = None,
+    read_metrics: bool = False,
+    partitioned: bool = False,
+):
+    """Build a read-only semantic plan for a project analysis target."""
+    from ..pipeline.project_graph import build_project_plan
+    from ..project.catalog import ProjectCatalog
+
+    project_dir = Path(project_dir)
+    catalog = ProjectCatalog.open(project_dir)
+    request = {
+        "project_identity": catalog.registry.get("project_uid", project_dir.name),
+        "canonical_reference": canonical_reference,
+        "set_name": set_name,
+        "modality": modality,
+        "experiments": list(experiments) if experiments else None,
+        "stage": stage,
+        "layers": layers,
+        "start": start,
+        "end": end,
+        "read_metrics": read_metrics,
+        "partitioned": partitioned,
+    }
+    return build_project_plan(project_dir, target, request)
+
+
 def project_materialize(
     project_dir: str | Path,
     canonical_reference: str,
