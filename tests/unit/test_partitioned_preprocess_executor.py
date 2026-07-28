@@ -8,12 +8,16 @@ from smftools.informatics.partition_read import materialize, relative_uns_path
 from smftools.informatics.raw_store import write_raw_store
 from smftools.informatics.stage_obs import read_joined_obs
 from smftools.preprocessing.partitioned_executor import (
+    _select_duplicate_keeper,
     execute_partitioned_preprocessing,
     execute_preprocess_task,
     fit_direct_modality_youden_thresholds,
 )
 from smftools.preprocessing.partitioned_variant import query_partitioned_variant_evidence
-from smftools.preprocessing.variant_reporting import query_preprocess_variant_evidence
+from smftools.preprocessing.variant_reporting import (
+    append_variant_reporting_annotations,
+    query_preprocess_variant_evidence,
+)
 from smftools.readwrite import safe_read_h5ad, safe_read_zarr
 from smftools.tools.partitioned_spatial import (
     _cap_clustermap_rows,
@@ -205,6 +209,113 @@ def test_variant_reporting_precedes_qc_and_preserves_filter_masks(tmp_path):
     assert "chimeric_variant_sites" in materialized.obs
     preprocess_spine, _ = safe_read_h5ad(outputs["spine"], verbose=False)
     assert "preprocess_variant_read_index" in preprocess_spine.uns
+
+
+def test_variant_filter_uses_raw_evidence_thresholds_and_stable_reasons(tmp_path):
+    obs = pd.DataFrame(
+        {
+            "read_id": [
+                "self",
+                "breakpoint",
+                "fraction_below",
+                "state_below",
+                "isolated_other",
+                "discordant",
+                "missing",
+            ],
+            "passes_read_qc": [True] * 7,
+            "passes_modification_qc": [True] * 7,
+            "passes_qc": [True] * 7,
+        }
+    )
+    evidence = pd.DataFrame(
+        {
+            "read_id": obs["read_id"],
+            "variant_reference_set_id": ["set"] * 7,
+            "aligned_member_index": [0] * 7,
+            "evidence_status": [
+                "complete",
+                "complete",
+                "complete",
+                "complete",
+                "complete",
+                "complete",
+                "blocked_missing_input",
+            ],
+            "informative_site_count": [4, 8, 10, 4, 10, 4, np.nan],
+            "callable_site_count": [4, 4, 4, 4, 1, 4, np.nan],
+            "no_call_count": [0, 4, 6, 0, 9, 0, np.nan],
+            "member_1_call_count": [4, 2, 2, 3, 0, 0, np.nan],
+            "member_2_call_count": [0, 2, 2, 1, 1, 4, np.nan],
+            "has_breakpoint": [False, True, True, True, False, False, False],
+            # Deliberately large interpolated segment: it must not bypass the
+            # one-call evidence gate.
+            "other_base_count": [0, 2, 2, 1, 1000, 4, np.nan],
+        }
+    )
+    obs_path = tmp_path / "obs.parquet"
+    evidence_path = tmp_path / "evidence.parquet"
+    obs.to_parquet(obs_path, index=False)
+    evidence.to_parquet(evidence_path, index=False)
+    cfg = SimpleNamespace(
+        variant_analysis_mode="filter",
+        variant_qc_min_callable_sites=4,
+        variant_qc_min_callable_fraction=0.5,
+        variant_qc_min_calls_per_state=2,
+        variant_qc_disallowed_event_classes=["breakpoint"],
+    )
+
+    append_variant_reporting_annotations(obs_path, evidence_path, cfg)
+    filtered = pd.read_parquet(obs_path).set_index("read_id")
+
+    assert filtered["variant_qc_class"].to_dict() == {
+        "self": "self_consistent",
+        "breakpoint": "breakpoint",
+        "fraction_below": "insufficient_evidence",
+        "state_below": "insufficient_evidence",
+        "isolated_other": "insufficient_evidence",
+        "discordant": "ambiguous_reference_assignment",
+        "missing": "evidence_unavailable",
+    }
+    assert filtered["passes_variant_qc"].to_dict() == {
+        "self": True,
+        "breakpoint": False,
+        "fraction_below": True,
+        "state_below": True,
+        "isolated_other": True,
+        "discordant": True,
+        "missing": True,
+    }
+    assert filtered.loc["breakpoint", "variant_qc_reason"] == "disallowed_breakpoint"
+    assert not bool(filtered.loc["breakpoint", "passes_qc"])
+    assert bool(filtered.loc["isolated_other", "passes_qc"])
+
+    obs.to_parquet(obs_path, index=False)
+    cfg.variant_analysis_mode = "report"
+    append_variant_reporting_annotations(obs_path, evidence_path, cfg)
+    reported = pd.read_parquet(obs_path).set_index("read_id")
+    assert reported["variant_qc_class"].to_dict() == filtered["variant_qc_class"].to_dict()
+    assert reported["passes_variant_qc"].all()
+
+
+def test_duplicate_keeper_prefers_variant_pass_before_demux_and_quality():
+    obs = pd.DataFrame(
+        {
+            "passes_variant_qc": [False, True, True],
+            "demux_type": ["preferred", "other", "preferred"],
+            "read_quality": [50, 20, 10],
+        },
+        index=["variant_fail", "variant_pass", "variant_pass_preferred"],
+    )
+
+    keeper = _select_duplicate_keeper(
+        obs,
+        list(obs.index),
+        preferred_demux={"preferred"},
+        metric="read_quality",
+    )
+
+    assert keeper == "variant_pass_preferred"
 
 
 def _direct_youden_frame():

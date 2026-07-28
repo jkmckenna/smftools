@@ -113,13 +113,15 @@ _REDUCER_CONFIG_KEYS = {
     "smf_modality",
     "mod_target_bases",
     "variant_analysis_mode",
+    "variant_qc_disallowed_event_classes",
+    "variant_qc_min_callable_fraction",
+    "variant_qc_min_callable_sites",
+    "variant_qc_min_calls_per_state",
 }
 _VARIANT_REFERENCE_CONFIG_KEYS = {
     "references_to_align_for_variant_annotation",
 }
-_VARIANT_EVIDENCE_CONFIG_KEYS = {
-    "variant_analysis_mode",
-}
+_VARIANT_EVIDENCE_CONFIG_KEYS: set[str] = set()
 _NON_SEMANTIC_CONFIG_KEYS = {
     "device",
     "emit_log_file",
@@ -170,6 +172,13 @@ def _sha256_payload(payload: Any) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _variant_enabled(cfg: Any) -> bool:
+    return str(getattr(cfg, "variant_analysis_mode", "off")).lower() in {
+        "report",
+        "filter",
+    }
 
 
 def _config_fingerprints(cfg: Any) -> dict[str, str]:
@@ -344,7 +353,7 @@ def preprocess_node_inputs(
             "utf-8"
         )
     ).hexdigest()
-    variant_enabled = str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report"
+    variant_enabled = _variant_enabled(cfg)
     analysis_ids = [PREPROCESS_TASKS_NODE]
     if variant_enabled:
         analysis_ids.extend([PREPROCESS_VARIANT_REFERENCE_NODE, PREPROCESS_VARIANT_EVIDENCE_NODE])
@@ -531,7 +540,7 @@ def plan_preprocess_upgrade(
     plan = SemanticPlanner(
         preprocess_registry(
             generation_root,
-            variant_enabled=str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report",
+            variant_enabled=_variant_enabled(cfg),
             algorithm_versions=algorithm_versions,
             additional_specs=additional_specs,
             additional_validators=additional_validators,
@@ -552,7 +561,7 @@ def plan_preprocess_upgrade(
     specs = {
         spec.analysis_id: spec
         for spec in preprocess_node_specs(
-            variant_enabled=str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report",
+            variant_enabled=_variant_enabled(cfg),
             additional_specs=additional_specs,
         )
     }
@@ -626,17 +635,17 @@ def build_preprocess_node_results(
     specs = {
         spec.analysis_id: spec
         for spec in preprocess_node_specs(
-            variant_enabled=str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report",
+            variant_enabled=_variant_enabled(cfg),
             algorithm_versions=algorithm_versions,
         )
     }
     inputs = preprocess_node_inputs(source_path, cfg, root.parents[2])
     results: dict[str, NodeResult] = {}
     analysis_order = [PREPROCESS_TASKS_NODE]
-    if str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report":
+    if _variant_enabled(cfg):
         analysis_order.extend([PREPROCESS_VARIANT_REFERENCE_NODE, PREPROCESS_VARIANT_EVIDENCE_NODE])
     analysis_order.append(PREPROCESS_REDUCERS_NODE)
-    if str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report":
+    if _variant_enabled(cfg):
         analysis_order.append(PREPROCESS_VARIANT_METRICS_NODE)
     analysis_order.append(PREPROCESS_PLOTS_NODE)
     for analysis_id in analysis_order:

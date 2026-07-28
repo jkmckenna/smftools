@@ -114,10 +114,15 @@ rescue_secondary_alignments: True
 rescue_min_margin_bp: 20
 rescue_min_margin_fraction: 0.01
 
-# Variant evidence is reporting-only during preprocess. "auto" enables reporting
-# when both references_to_align_for_variant_annotation members are configured;
-# "off" disables it. Hard variant filtering is intentionally unsupported.
+# Variant evidence runs before QC/dedup during preprocess. "auto" enables
+# reporting when both references_to_align_for_variant_annotation members are
+# configured; "off" disables it. "filter" additionally requires every
+# variant_qc_* policy value below to be explicitly configured.
 variant_analysis_mode: auto
+variant_qc_min_callable_sites: null
+variant_qc_min_callable_fraction: null
+variant_qc_min_calls_per_state: null
+variant_qc_disallowed_event_classes: []
 
 # Nanopore specific demultiplexing
 demux_backend: dorado # smftools|dorado - smftools uses YAML-based barcode refs, dorado uses kit names
@@ -212,10 +217,10 @@ force_redo_filter_reads_on_cigar_indels: True
 
 # Deaminase PCR-chimera labeling (deaminase modality only). Reads showing a span of
 # C->T (top) events and a span of G->A (bottom) events are labeled in
-# obs['deaminase_PCR_chimera'] (reads are kept, not removed). A read is flagged when
-# both strand signatures have >= min_events_per_span events, the best single-switch
-# two-segment model has purity >= min_segment_purity, and the read is not more than
-# max_single_strand_fraction one-sided.
+# obs['deaminase_PCR_chimera'] and excluded from passes_read_qc. A read is flagged
+# when both strand signatures have >= min_events_per_span events, the best
+# single-switch two-segment model has purity >= min_segment_purity, and the read
+# is not more than max_single_strand_fraction one-sided.
 bypass_label_deaminase_pcr_chimeras: False
 deaminase_chimera_min_events_per_span: 3
 deaminase_chimera_min_segment_purity: 0.9

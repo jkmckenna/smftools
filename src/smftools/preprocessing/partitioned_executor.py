@@ -500,8 +500,9 @@ def write_read_qc_sidecar(spine, cfg, output_path: str | Path) -> Path:
        fraction thresholds plus ``min_valid_fraction_positions_in_read_vs_ref``)
        and ``obs["passes_qc"] = passes_read_qc & passes_modification_qc``.
     3. ``reduce_duplicate_reads`` -> ``obs["passes_dedup"] = passes_qc & ~is_duplicate``
-       (windowed Hamming-distance duplicate detection over
-       ``duplicate_detection_site_types``, gated by ``bypass_flag_duplicate_reads``).
+       (windowed Hamming-distance duplicate detection over nonvariant-QC-pass
+       reads, with variant-pass keeper preference, gated by
+       ``bypass_flag_duplicate_reads``).
 
     Downstream, ``execute_partitioned_spatial``/``execute_partitioned_hmm`` both
     select ``next(col for col in ("passes_dedup", "passes_qc") if col in spine.obs)``
@@ -783,8 +784,11 @@ def reduce_duplicate_reads(
         tile_size = (
             reference_length if plan.get("analysis_mode") == "locus" else int(plan["tile_size"])
         )
+        duplicate_candidates = (
+            obs["passes_nonvariant_qc"] if "passes_nonvariant_qc" in obs else obs["passes_qc"]
+        ).astype(bool)
         reference_obs = obs.loc[
-            (obs[REFERENCE_STRAND].astype(str) == str(reference)) & obs["passes_qc"].astype(bool)
+            (obs[REFERENCE_STRAND].astype(str) == str(reference)) & duplicate_candidates
         ]
         for sample, sample_obs in reference_obs.groupby(sample_column, sort=True, observed=True):
             for core_start in range(0, reference_length, tile_size):
@@ -814,7 +818,8 @@ def reduce_duplicate_reads(
 
     clusters: dict[int, list[str]] = {}
     for read_id, index in read_position.items():
-        if not bool(obs.at[read_id, "passes_qc"]):
+        candidate_column = "passes_nonvariant_qc" if "passes_nonvariant_qc" in obs else "passes_qc"
+        if not bool(obs.at[read_id, candidate_column]):
             continue
         clusters.setdefault(union_find.find(index), []).append(read_id)
     duplicate = pd.Series(False, index=obs.index)
@@ -828,18 +833,12 @@ def reduce_duplicate_reads(
         cluster_size_series.loc[members] = len(members)
         if len(members) == 1:
             continue
-        candidates = members
-        if "demux_type" in obs and preferred_demux:
-            preferred = [
-                member for member in members if str(obs.at[member, "demux_type"]) in preferred_demux
-            ]
-            if preferred:
-                candidates = preferred
-        if metric in obs:
-            values = pd.to_numeric(obs.loc[candidates, metric], errors="coerce")
-            keeper = values.idxmax() if values.notna().any() else min(candidates)
-        else:
-            keeper = min(candidates)
+        keeper = _select_duplicate_keeper(
+            obs,
+            members,
+            preferred_demux=preferred_demux,
+            metric=metric,
+        )
         duplicate.loc[[member for member in members if member != keeper]] = True
 
     for column, values in hamming_minima.items():
@@ -851,6 +850,33 @@ def reduce_duplicate_reads(
     obs["passes_dedup"] = obs["passes_qc"].astype(bool) & ~duplicate
     obs.reset_index(drop=True).to_parquet(obs_path, index=False)
     return obs_path
+
+
+def _select_duplicate_keeper(
+    obs: pd.DataFrame,
+    members: list[str],
+    *,
+    preferred_demux: set[str],
+    metric: str,
+) -> str:
+    """Select one deterministic keeper, preferring variant-pass candidates."""
+    candidates = members
+    if "passes_variant_qc" in obs:
+        variant_pass = [
+            member for member in candidates if bool(obs.at[member, "passes_variant_qc"])
+        ]
+        if variant_pass:
+            candidates = variant_pass
+    if "demux_type" in obs and preferred_demux:
+        preferred = [
+            member for member in candidates if str(obs.at[member, "demux_type"]) in preferred_demux
+        ]
+        if preferred:
+            candidates = preferred
+    if metric in obs:
+        values = pd.to_numeric(obs.loc[candidates, metric], errors="coerce")
+        return str(values.idxmax() if values.notna().any() else min(candidates))
+    return min(candidates)
 
 
 def _generate_preprocess_summary_plots_legacy(obs_path, var_path, plot_layout) -> None:
@@ -1137,6 +1163,7 @@ def execute_partitioned_preprocessing(
         obs_sidecar = append_variant_reporting_annotations(
             obs_sidecar,
             variant_outputs["obs"],
+            cfg,
         )
 
     derived_spine = spine.copy()

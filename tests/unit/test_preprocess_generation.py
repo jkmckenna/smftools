@@ -36,8 +36,10 @@ from smftools.preprocessing.semantic_upgrade import (
     PREPROCESS_VARIANT_EVIDENCE_NODE,
     PREPROCESS_VARIANT_METRICS_NODE,
     PREPROCESS_VARIANT_REFERENCE_NODE,
+    _config_fingerprints,
     load_preprocess_node_results,
     plan_preprocess_upgrade,
+    preprocess_node_specs,
 )
 from smftools.readwrite import safe_write_h5ad
 
@@ -97,7 +99,6 @@ def _fake_executor(
     plot_catalog = output_dir / "plots" / "catalog.parquet"
     plot_catalog.parent.mkdir()
     pd.DataFrame(columns=["path"]).to_parquet(plot_catalog, index=False)
-
     spine = ad.AnnData(obs=pd.DataFrame(index=["read-1"]))
     pointers = {
         "preprocess_store": publication_dir / "store",
@@ -420,6 +421,28 @@ def test_upgrade_plan_invalidates_only_affected_nodes(tmp_path, changed_key, exp
     )
 
     assert {decision.analysis_id: decision.state for decision in plan.decisions} == expected
+
+
+def test_variant_policy_changes_only_reducer_compute_fingerprint(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.variant_analysis_mode = "report"
+    cfg.references_to_align_for_variant_annotation = ["refA", "refB"]
+    cfg.variant_qc_min_callable_sites = 4
+    cfg.variant_qc_min_callable_fraction = 0.5
+    cfg.variant_qc_min_calls_per_state = 2
+    cfg.variant_qc_disallowed_event_classes = ["breakpoint"]
+    before = _config_fingerprints(cfg)
+
+    cfg.variant_qc_min_callable_sites = 5
+    after = _config_fingerprints(cfg)
+
+    assert before[PREPROCESS_TASKS_NODE] == after[PREPROCESS_TASKS_NODE]
+    assert before[PREPROCESS_VARIANT_REFERENCE_NODE] == after[PREPROCESS_VARIANT_REFERENCE_NODE]
+    assert before[PREPROCESS_VARIANT_EVIDENCE_NODE] == after[PREPROCESS_VARIANT_EVIDENCE_NODE]
+    assert before[PREPROCESS_REDUCERS_NODE] != after[PREPROCESS_REDUCERS_NODE]
+    specs = {spec.analysis_id: spec for spec in preprocess_node_specs(variant_enabled=True)}
+    assert specs[PREPROCESS_VARIANT_METRICS_NODE].dependencies == (PREPROCESS_REDUCERS_NODE,)
+    assert specs[PREPROCESS_PLOTS_NODE].dependencies == (PREPROCESS_VARIANT_METRICS_NODE,)
 
 
 def test_algorithm_change_and_corrupt_artifact_have_distinct_plan_outcomes(tmp_path):

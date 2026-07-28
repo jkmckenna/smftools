@@ -1070,6 +1070,10 @@ class ExperimentConfig:
     mismatch_frequency_read_span_layer: str = "read_span_mask"
     mismatch_base_frequency_exclude_mod_sites: bool = False
     variant_analysis_mode: str = "off"
+    variant_qc_min_callable_sites: Optional[int] = None
+    variant_qc_min_callable_fraction: Optional[float] = None
+    variant_qc_min_calls_per_state: Optional[int] = None
+    variant_qc_disallowed_event_classes: List[str] = field(default_factory=list)
     references_to_align_for_variant_annotation: List[Optional[str]] = field(
         default_factory=lambda: [None, None]
     )
@@ -1595,18 +1599,71 @@ class ExperimentConfig:
             )
         )
         requested_variant_mode = str(merged.get("variant_analysis_mode", "auto")).strip().lower()
-        if requested_variant_mode not in {"auto", "off", "report"}:
-            raise ValueError("variant_analysis_mode must be one of: auto, off, report")
-        if requested_variant_mode == "report" and not variant_pair_configured:
+        if requested_variant_mode not in {"auto", "off", "report", "filter"}:
+            raise ValueError("variant_analysis_mode must be one of: auto, off, report, filter")
+        if requested_variant_mode in {"report", "filter"} and not variant_pair_configured:
             raise ValueError(
-                "variant_analysis_mode='report' requires references_to_align_for_variant_annotation"
+                f"variant_analysis_mode={requested_variant_mode!r} requires "
+                "references_to_align_for_variant_annotation"
             )
         merged["variant_analysis_mode"] = (
             "report"
-            if requested_variant_mode == "report"
-            or (requested_variant_mode == "auto" and variant_pair_configured)
+            if requested_variant_mode == "auto" and variant_pair_configured
+            else requested_variant_mode
+            if requested_variant_mode in {"report", "filter"}
             else "off"
         )
+
+        variant_integer_thresholds = (
+            "variant_qc_min_callable_sites",
+            "variant_qc_min_calls_per_state",
+        )
+        for key in variant_integer_thresholds:
+            value = _parse_numeric(merged.get(key), None)
+            if value is not None:
+                numeric_value = float(value)
+                if not numeric_value.is_integer():
+                    raise ValueError(f"{key} must be an integer")
+                value = int(numeric_value)
+                if value < 1:
+                    raise ValueError(f"{key} must be at least 1")
+            merged[key] = value
+        callable_fraction = _parse_numeric(merged.get("variant_qc_min_callable_fraction"), None)
+        if callable_fraction is not None:
+            callable_fraction = float(callable_fraction)
+            if not 0 < callable_fraction <= 1:
+                raise ValueError("variant_qc_min_callable_fraction must be in (0, 1]")
+        merged["variant_qc_min_callable_fraction"] = callable_fraction
+        disallowed_event_classes = sorted(
+            {
+                str(value).strip().lower()
+                for value in _parse_list(merged.get("variant_qc_disallowed_event_classes", []))
+                if str(value).strip()
+            }
+        )
+        supported_event_classes = {"breakpoint", "ambiguous_reference_assignment"}
+        unsupported_event_classes = sorted(
+            set(disallowed_event_classes).difference(supported_event_classes)
+        )
+        if unsupported_event_classes:
+            raise ValueError(
+                "variant_qc_disallowed_event_classes contains unsupported classes: "
+                f"{unsupported_event_classes}"
+            )
+        merged["variant_qc_disallowed_event_classes"] = disallowed_event_classes
+        if requested_variant_mode == "filter":
+            required_policy = (
+                *variant_integer_thresholds,
+                "variant_qc_min_callable_fraction",
+            )
+            missing_policy = [key for key in required_policy if merged[key] is None]
+            if missing_policy or not disallowed_event_classes:
+                raise ValueError(
+                    "variant_analysis_mode='filter' requires explicit "
+                    "variant_qc_min_callable_sites, variant_qc_min_callable_fraction, "
+                    "variant_qc_min_calls_per_state, and non-empty "
+                    "variant_qc_disallowed_event_classes"
+                )
 
         merged["filter_threshold"] = float(_parse_numeric(merged.get("filter_threshold", 0.8), 0.8))
         merged["m6A_threshold"] = float(_parse_numeric(merged.get("m6A_threshold", 0.7), 0.7))
@@ -2496,6 +2553,12 @@ class ExperimentConfig:
                 "references_to_align_for_variant_annotation", [None, None]
             ),
             variant_analysis_mode=merged.get("variant_analysis_mode", "off"),
+            variant_qc_min_callable_sites=merged.get("variant_qc_min_callable_sites"),
+            variant_qc_min_callable_fraction=merged.get("variant_qc_min_callable_fraction"),
+            variant_qc_min_calls_per_state=merged.get("variant_qc_min_calls_per_state"),
+            variant_qc_disallowed_event_classes=merged.get(
+                "variant_qc_disallowed_event_classes", []
+            ),
             from_adata_stage=merged.get("from_adata_stage", None),
             plot_current_read_ids=merged.get("plot_current_read_ids", []),
             plot_current_reference_start=merged.get("plot_current_reference_start", None),
