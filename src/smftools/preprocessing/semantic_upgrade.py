@@ -31,6 +31,7 @@ from ..pipeline import (
 PREPROCESS_TASKS_NODE = "preprocess.tasks"
 PREPROCESS_VARIANT_REFERENCE_NODE = "preprocess.variant_reference"
 PREPROCESS_VARIANT_EVIDENCE_NODE = "preprocess.variant_evidence"
+PREPROCESS_VARIANT_METRICS_NODE = "preprocess.variant.cohort_metrics"
 PREPROCESS_REDUCERS_NODE = "preprocess.reducers"
 PREPROCESS_PLOTS_NODE = "preprocess.plots"
 
@@ -144,6 +145,11 @@ _NODE_ARTIFACTS = {
         "variant_read_index",
         "variant_generation_manifest",
     ),
+    PREPROCESS_VARIANT_METRICS_NODE: (
+        "variant_qc_metrics",
+        "variant_qc_summary",
+        "variant_qc_summary_tsv",
+    ),
     PREPROCESS_REDUCERS_NODE: ("var", "obs", "stage_obs", "spine", "manifest"),
     PREPROCESS_PLOTS_NODE: ("plots", "plot_catalog"),
 }
@@ -181,6 +187,7 @@ def _config_fingerprints(cfg: Any) -> dict[str, str]:
         PREPROCESS_TASKS_NODE: _sha256_payload(tasks),
         PREPROCESS_VARIANT_REFERENCE_NODE: _sha256_payload(variant_reference),
         PREPROCESS_VARIANT_EVIDENCE_NODE: _sha256_payload(variant_evidence),
+        PREPROCESS_VARIANT_METRICS_NODE: _sha256_payload({}),
         PREPROCESS_REDUCERS_NODE: _sha256_payload(reducers),
         PREPROCESS_PLOTS_NODE: _sha256_payload(plots),
     }
@@ -238,6 +245,31 @@ def preprocess_node_specs(
         reducer_channels += (
             ChannelDependency(PREPROCESS_VARIANT_EVIDENCE_NODE, "variant_evidence", 1),
         )
+    metrics_spec = SemanticNodeSpec(
+        analysis_id=PREPROCESS_VARIANT_METRICS_NODE,
+        scope=AnalysisScope.EXPERIMENT_ANALYSIS,
+        dependencies=(PREPROCESS_REDUCERS_NODE,),
+        consumed_channels=(ChannelDependency(PREPROCESS_REDUCERS_NODE, "filtered_spine", 1),),
+        produced_channels=(ChannelSpec("variant_cohort_metrics", 1),),
+        semantic_config_keys=("config_fingerprint",),
+        algorithm_version=versions.get(PREPROCESS_VARIANT_METRICS_NODE, "1"),
+        output_schema_version=1,
+        validator_id="preprocess.variant_metrics",
+    )
+    plot_dependencies = (
+        (PREPROCESS_VARIANT_METRICS_NODE,) if variant_enabled else (PREPROCESS_REDUCERS_NODE,)
+    )
+    plot_channels = (
+        (
+            ChannelDependency(
+                PREPROCESS_VARIANT_METRICS_NODE,
+                "variant_cohort_metrics",
+                1,
+            ),
+        )
+        if variant_enabled
+        else (ChannelDependency(PREPROCESS_REDUCERS_NODE, "filtered_spine", 1),)
+    )
     builtins = (
         SemanticNodeSpec(
             analysis_id=PREPROCESS_TASKS_NODE,
@@ -262,8 +294,8 @@ def preprocess_node_specs(
         SemanticNodeSpec(
             analysis_id=PREPROCESS_PLOTS_NODE,
             scope=AnalysisScope.EXPERIMENT_ANALYSIS,
-            dependencies=(PREPROCESS_REDUCERS_NODE,),
-            consumed_channels=(ChannelDependency(PREPROCESS_REDUCERS_NODE, "filtered_spine", 1),),
+            dependencies=plot_dependencies,
+            consumed_channels=plot_channels,
             produced_channels=(ChannelSpec("plots", 1),),
             semantic_config_keys=("config_fingerprint",),
             algorithm_version=versions.get(PREPROCESS_PLOTS_NODE, "1"),
@@ -271,8 +303,15 @@ def preprocess_node_specs(
             validator_id="preprocess.plots",
         ),
     )
-    return (builtins[:1] + (variant_specs if variant_enabled else ()) + builtins[1:]) + tuple(
-        additional_specs
+    optional_specs = variant_specs if variant_enabled else ()
+    optional_metrics = (metrics_spec,) if variant_enabled else ()
+    return (
+        builtins[:1]
+        + optional_specs
+        + builtins[1:2]
+        + optional_metrics
+        + builtins[2:]
+        + tuple(additional_specs)
     )
 
 
@@ -309,7 +348,10 @@ def preprocess_node_inputs(
     analysis_ids = [PREPROCESS_TASKS_NODE]
     if variant_enabled:
         analysis_ids.extend([PREPROCESS_VARIANT_REFERENCE_NODE, PREPROCESS_VARIANT_EVIDENCE_NODE])
-    analysis_ids.extend([PREPROCESS_REDUCERS_NODE, PREPROCESS_PLOTS_NODE])
+    analysis_ids.append(PREPROCESS_REDUCERS_NODE)
+    if variant_enabled:
+        analysis_ids.append(PREPROCESS_VARIANT_METRICS_NODE)
+    analysis_ids.append(PREPROCESS_PLOTS_NODE)
     source_nodes = {PREPROCESS_TASKS_NODE}
     if variant_enabled:
         source_nodes.add(PREPROCESS_VARIANT_REFERENCE_NODE)
@@ -444,6 +486,9 @@ def preprocess_registry(
         ),
         "preprocess.variant_evidence": _artifact_validator(
             root, _NODE_ARTIFACTS[PREPROCESS_VARIANT_EVIDENCE_NODE]
+        ),
+        "preprocess.variant_metrics": _artifact_validator(
+            root, _NODE_ARTIFACTS[PREPROCESS_VARIANT_METRICS_NODE]
         ),
         "preprocess.reducers": _artifact_validator(root, _NODE_ARTIFACTS[PREPROCESS_REDUCERS_NODE]),
         "preprocess.plots": _artifact_validator(root, _NODE_ARTIFACTS[PREPROCESS_PLOTS_NODE]),
@@ -590,7 +635,10 @@ def build_preprocess_node_results(
     analysis_order = [PREPROCESS_TASKS_NODE]
     if str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report":
         analysis_order.extend([PREPROCESS_VARIANT_REFERENCE_NODE, PREPROCESS_VARIANT_EVIDENCE_NODE])
-    analysis_order.extend([PREPROCESS_REDUCERS_NODE, PREPROCESS_PLOTS_NODE])
+    analysis_order.append(PREPROCESS_REDUCERS_NODE)
+    if str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report":
+        analysis_order.append(PREPROCESS_VARIANT_METRICS_NODE)
+    analysis_order.append(PREPROCESS_PLOTS_NODE)
     for analysis_id in analysis_order:
         spec = specs[analysis_id]
         dependencies = tuple(
@@ -674,4 +722,7 @@ def _artifact_relative_path(artifact_id: str) -> Path:
         "variant_obs": Path("variant/variant_obs"),
         "variant_read_index": Path("variant/read_index"),
         "variant_generation_manifest": Path("variant/generation_manifest.json"),
+        "variant_qc_metrics": Path("variant/variant_qc_metrics.parquet"),
+        "variant_qc_summary": Path("variant/variant_qc_summary.json"),
+        "variant_qc_summary_tsv": Path("variant/variant_qc_summary.tsv"),
     }[artifact_id]

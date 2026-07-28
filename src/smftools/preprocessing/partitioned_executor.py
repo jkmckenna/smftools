@@ -970,6 +970,7 @@ def execute_partitioned_preprocessing(
     run_root: str | Path | None = None,
     refresh_experiment_spine: bool = True,
     reuse_task_artifacts_from: str | Path | None = None,
+    analysis_generation_id: str | None = None,
 ) -> dict[str, Path]:
     """Execute planned tasks and write catalogs plus a derived spine.
 
@@ -1168,6 +1169,9 @@ def execute_partitioned_preprocessing(
             "preprocess_variant_generation_manifest": "generation_manifest.json",
             "preprocess_variant_task_catalog": "task_catalog.parquet",
             "preprocess_variant_task_store": "task_store",
+            "preprocess_variant_qc_metrics": "variant_qc_metrics.parquet",
+            "preprocess_variant_qc_summary": "variant_qc_summary.json",
+            "preprocess_variant_qc_summary_tsv": "variant_qc_summary.tsv",
         }.items():
             derived_spine.uns[key] = relative_uns_path(
                 publication_dir / VARIANT_REPORTING_SUBDIR / relative,
@@ -1201,6 +1205,21 @@ def execute_partitioned_preprocessing(
     staging_spine = output_dir / f"{PREPROCESS_SPINE_FILENAME}.partial"
     safe_write_h5ad(derived_spine, staging_spine, backup=False, verbose=False)
     obs_sidecar = reduce_duplicate_reads(staging_spine, obs_sidecar, cfg)
+    if variant_outputs:
+        import json
+
+        from .variant_metrics import write_variant_qc_metric_artifacts
+
+        if analysis_generation_id is None:
+            with Path(variant_outputs["generation_manifest"]).open(encoding="utf-8") as handle:
+                analysis_generation_id = str(json.load(handle)["generation_id"])
+        variant_outputs.update(
+            write_variant_qc_metric_artifacts(
+                obs_sidecar,
+                output_dir / VARIANT_REPORTING_SUBDIR,
+                source_generation_id=analysis_generation_id,
+            )
+        )
     derived_obs = pd.read_parquet(obs_sidecar).set_index("read_id")
     for column in derived_obs.columns:
         if column not in derived_spine.obs:
@@ -1234,6 +1253,10 @@ def execute_partitioned_preprocessing(
             task_catalog=task_catalog,
             read_index=read_index_dir,
         )
+        if variant_outputs:
+            from .variant_metrics import generate_variant_qc_plots
+
+            generate_variant_qc_plots(variant_outputs["metrics"], plot_layout)
 
     manifest = sidecar_manifest_path(output_dir)
     register_sidecar(manifest, "preprocess_store", output_dir / PREPROCESS_STORE_SUBDIR)
@@ -1254,6 +1277,9 @@ def execute_partitioned_preprocessing(
             "preprocess_variant_generation_manifest": variant_outputs["generation_manifest"],
             "preprocess_variant_task_catalog": variant_outputs["task_catalog"],
             "preprocess_variant_task_store": variant_outputs["task_store"],
+            "preprocess_variant_qc_metrics": variant_outputs["metrics"],
+            "preprocess_variant_qc_summary": variant_outputs["summary_json"],
+            "preprocess_variant_qc_summary_tsv": variant_outputs["summary_tsv"],
         }.items():
             register_sidecar(manifest, key, path)
     logger.info("Wrote %d partitioned preprocessing task result(s)", len(records))

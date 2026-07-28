@@ -34,6 +34,7 @@ from smftools.preprocessing.semantic_upgrade import (
     PREPROCESS_REDUCERS_NODE,
     PREPROCESS_TASKS_NODE,
     PREPROCESS_VARIANT_EVIDENCE_NODE,
+    PREPROCESS_VARIANT_METRICS_NODE,
     PREPROCESS_VARIANT_REFERENCE_NODE,
     load_preprocess_node_results,
     plan_preprocess_upgrade,
@@ -579,7 +580,60 @@ def test_reporting_only_upgrade_reuses_tasks_and_publishes_variant_nodes(
     assert results[PREPROCESS_VARIANT_REFERENCE_NODE].reused_from_generation_id is None
     assert results[PREPROCESS_VARIANT_EVIDENCE_NODE].reused_from_generation_id is None
     assert results[PREPROCESS_REDUCERS_NODE].reused_from_generation_id is None
+    assert results[PREPROCESS_VARIANT_METRICS_NODE].reused_from_generation_id is None
+    assert Path(second["variant_qc_metrics"]).is_file()
     assert Path(second["variant_read_index"]).is_dir()
+
+
+def test_variant_plot_regeneration_reuses_evidence_and_metrics(tmp_path, monkeypatch):
+    from tests.unit.test_partitioned_preprocess_executor import _cfg as executor_cfg
+    from tests.unit.test_partitioned_preprocess_executor import _frame
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        extra_uns={
+            "References": {
+                "ref_FASTA_sequence": "ACGCGTACGTAC",
+                "alt_FASTA_sequence": "ATGCGTACGTAC",
+            }
+        },
+    )
+    cfg = executor_cfg()
+    cfg.output_directory = tmp_path
+    cfg.experiment_name = "experiment"
+    cfg.emit_automated_plots = False
+    cfg.variant_analysis_mode = "report"
+    cfg.references_to_align_for_variant_annotation = [
+        "ref_top_strand_FASTA_base",
+        "alt_top_strand_FASTA_base",
+    ]
+    output_dir = tmp_path / "preprocess_adata_outputs"
+    first = publish_preprocess_generation(raw["spine"], cfg, output_dir)
+
+    def fail_evidence(*_args, **_kwargs):
+        raise AssertionError("plot regeneration must not rerun variant evidence")
+
+    monkeypatch.setattr(
+        "smftools.preprocessing.partitioned_variant.execute_partitioned_variant_evidence",
+        fail_evidence,
+    )
+    cfg.emit_automated_plots = True
+    second = publish_preprocess_generation(raw["spine"], cfg, output_dir)
+
+    manifest = json.loads(Path(second["generation_manifest"]).read_text(encoding="utf-8"))
+    results = load_preprocess_node_results(manifest)
+    assert (
+        results[PREPROCESS_VARIANT_EVIDENCE_NODE].reused_from_generation_id
+        == first["generation_id"]
+    )
+    assert (
+        results[PREPROCESS_VARIANT_METRICS_NODE].reused_from_generation_id == first["generation_id"]
+    )
+    assert results[PREPROCESS_PLOTS_NODE].reused_from_generation_id is None
+    plot_types = set(pd.read_parquet(second["plot_catalog"])["plot_type"])
+    assert "variant_read_rates_by_cohort" in plot_types
 
 
 def test_corrupt_reused_copy_prevents_publication_and_preserves_current(

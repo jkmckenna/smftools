@@ -23,6 +23,7 @@ STAGE_PLOT_CATEGORIES = {
         "barcode_summary",
         "read_qc",
         "modification_qc",
+        "variant_qc",
         "duplicate_qc",
         "library_complexity",
         "read_span_quality",
