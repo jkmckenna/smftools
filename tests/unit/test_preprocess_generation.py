@@ -33,6 +33,8 @@ from smftools.preprocessing.semantic_upgrade import (
     PREPROCESS_PLOTS_NODE,
     PREPROCESS_REDUCERS_NODE,
     PREPROCESS_TASKS_NODE,
+    PREPROCESS_VARIANT_EVIDENCE_NODE,
+    PREPROCESS_VARIANT_REFERENCE_NODE,
     load_preprocess_node_results,
     plan_preprocess_upgrade,
 )
@@ -529,6 +531,55 @@ def test_reducer_upgrade_reuses_real_task_partitions(tmp_path, monkeypatch):
     assert results[PREPROCESS_TASKS_NODE].reused_from_generation_id == first["generation_id"]
     assert results[PREPROCESS_REDUCERS_NODE].reused_from_generation_id is None
     assert Path(first["generation"]).is_dir()
+
+
+def test_reporting_only_upgrade_reuses_tasks_and_publishes_variant_nodes(
+    tmp_path,
+    monkeypatch,
+):
+    from tests.unit.test_partitioned_preprocess_executor import _cfg as executor_cfg
+    from tests.unit.test_partitioned_preprocess_executor import _frame
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        extra_uns={
+            "References": {
+                "ref_FASTA_sequence": "ACGCGTACGTAC",
+                "alt_FASTA_sequence": "ATGCGTACGTAC",
+            }
+        },
+    )
+    cfg = executor_cfg()
+    cfg.output_directory = tmp_path
+    cfg.experiment_name = "experiment"
+    cfg.emit_automated_plots = False
+    cfg.variant_analysis_mode = "off"
+    output_dir = tmp_path / "preprocess_adata_outputs"
+    first = publish_preprocess_generation(raw["spine"], cfg, output_dir)
+
+    def fail_task(*_args, **_kwargs):
+        raise AssertionError("reporting-only upgrades must reuse preprocess tasks")
+
+    monkeypatch.setattr(
+        "smftools.preprocessing.partitioned_executor.execute_preprocess_task",
+        fail_task,
+    )
+    cfg.variant_analysis_mode = "report"
+    cfg.references_to_align_for_variant_annotation = [
+        "ref_top_strand_FASTA_base",
+        "alt_top_strand_FASTA_base",
+    ]
+    second = publish_preprocess_generation(raw["spine"], cfg, output_dir)
+
+    manifest = json.loads(Path(second["generation_manifest"]).read_text(encoding="utf-8"))
+    results = load_preprocess_node_results(manifest)
+    assert results[PREPROCESS_TASKS_NODE].reused_from_generation_id == first["generation_id"]
+    assert results[PREPROCESS_VARIANT_REFERENCE_NODE].reused_from_generation_id is None
+    assert results[PREPROCESS_VARIANT_EVIDENCE_NODE].reused_from_generation_id is None
+    assert results[PREPROCESS_REDUCERS_NODE].reused_from_generation_id is None
+    assert Path(second["variant_read_index"]).is_dir()
 
 
 def test_corrupt_reused_copy_prevents_publication_and_preserves_current(

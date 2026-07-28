@@ -114,6 +114,11 @@ rescue_secondary_alignments: True
 rescue_min_margin_bp: 20
 rescue_min_margin_fraction: 0.01
 
+# Variant evidence is reporting-only during preprocess. "auto" enables reporting
+# when both references_to_align_for_variant_annotation members are configured;
+# "off" disables it. Hard variant filtering is intentionally unsupported.
+variant_analysis_mode: auto
+
 # Nanopore specific demultiplexing
 demux_backend: dorado # smftools|dorado - smftools uses YAML-based barcode refs, dorado uses kit names
 barcode_both_ends: False # Require barcode match at both ends

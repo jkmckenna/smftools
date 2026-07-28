@@ -52,10 +52,33 @@ def test_config_normalizes_and_rejects_partial_legacy_pair() -> None:
         defaults_map={},
     )
     assert config.references_to_align_for_variant_annotation == ["refA", "refB"]
+    assert config.variant_analysis_mode == "report"
+
+    disabled, _ = ExperimentConfig.from_var_dict({}, defaults_map={})
+    assert disabled.variant_analysis_mode == "off"
+
+    explicit_off, _ = ExperimentConfig.from_var_dict(
+        {
+            "variant_analysis_mode": "off",
+            "references_to_align_for_variant_annotation": ["refA", "refB"],
+        },
+        defaults_map={},
+    )
+    assert explicit_off.variant_analysis_mode == "off"
 
     with pytest.raises(ValueError, match="both members or neither"):
         ExperimentConfig.from_var_dict(
             {"references_to_align_for_variant_annotation": ["refA", None]},
+            defaults_map={},
+        )
+    with pytest.raises(ValueError, match="requires"):
+        ExperimentConfig.from_var_dict(
+            {"variant_analysis_mode": "report"},
+            defaults_map={},
+        )
+    with pytest.raises(ValueError, match="auto, off, report"):
+        ExperimentConfig.from_var_dict(
+            {"variant_analysis_mode": "filter"},
             defaults_map={},
         )
 

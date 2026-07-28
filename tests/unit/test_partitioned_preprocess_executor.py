@@ -12,6 +12,8 @@ from smftools.preprocessing.partitioned_executor import (
     execute_preprocess_task,
     fit_direct_modality_youden_thresholds,
 )
+from smftools.preprocessing.partitioned_variant import query_partitioned_variant_evidence
+from smftools.preprocessing.variant_reporting import query_preprocess_variant_evidence
 from smftools.readwrite import safe_read_h5ad, safe_read_zarr
 from smftools.tools.partitioned_spatial import (
     _cap_clustermap_rows,
@@ -142,6 +144,55 @@ def _deaminase_cfg():
     cfg.deaminase_chimera_min_segment_purity = 0.9
     cfg.deaminase_chimera_max_single_strand_fraction = 0.8
     return cfg
+
+
+def test_variant_reporting_precedes_qc_and_preserves_filter_masks(tmp_path):
+    pytest.importorskip("pyarrow")
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        extra_uns={
+            "References": {
+                "ref_FASTA_sequence": "ACGCGTACGTAC",
+                "alt_FASTA_sequence": "ATGCGTACGTAC",
+            }
+        },
+    )
+    cfg = _cfg()
+    cfg.variant_analysis_mode = "report"
+    cfg.references_to_align_for_variant_annotation = [
+        "ref_top_strand_FASTA_base",
+        "alt_top_strand_FASTA_base",
+    ]
+
+    outputs = execute_partitioned_preprocessing(
+        raw["spine"],
+        cfg,
+        tmp_path / "preprocess_outputs",
+    )
+
+    obs = pd.read_parquet(outputs["obs"]).set_index("read_id")
+    assert obs["passes_read_qc"].tolist() == [True, False]
+    assert obs["passes_nonvariant_qc"].tolist() == obs["passes_qc"].tolist()
+    assert obs["passes_dedup"].tolist() == obs["passes_qc"].tolist()
+    assert obs["passes_variant_qc"].tolist() == [True, True]
+    assert obs["passes_variant_qc"].dtype == bool
+    assert obs["passes_nonvariant_qc"].dtype == bool
+    assert obs.loc["read2", "variant_evidence_status"] == "complete"
+    assert obs.loc["read2", "nonvariant_qc_reason"] == "failed_read_qc"
+
+    queried = query_partitioned_variant_evidence(
+        tmp_path / "preprocess_outputs" / "variant",
+    )
+    assert set(queried["obs"]["read_id"]) == {"read1", "read2"}
+    discovered = query_preprocess_variant_evidence(outputs["spine"])
+    assert set(discovered["obs"]["read_id"]) == {"read1", "read2"}
+
+    materialized = materialize(outputs["spine"], references="ref_top")
+    assert "chimeric_variant_sites" in materialized.obs
+    preprocess_spine, _ = safe_read_h5ad(outputs["spine"], verbose=False)
+    assert "preprocess_variant_read_index" in preprocess_spine.uns
 
 
 def _direct_youden_frame():
