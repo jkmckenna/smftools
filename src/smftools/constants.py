@@ -120,6 +120,7 @@ _private_partitioned_stage_required_artifacts = {
     ),
     "preprocess": (
         "spine",
+        "generation_spine",
         "store",
         "task_catalog",
         "read_index",
@@ -129,6 +130,9 @@ _private_partitioned_stage_required_artifacts = {
         "stage_obs",
         "plot_catalog",
         "manifest",
+        "generation_manifest",
+        "generation",
+        "current",
     ),
     "spatial": (
         "spine",

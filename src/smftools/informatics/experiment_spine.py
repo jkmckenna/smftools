@@ -33,7 +33,7 @@ from pathlib import Path
 
 from smftools.constants import HMM_DIR, LATENT_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
 
-from .partition_read import load_spine, relative_uns_path
+from .partition_read import load_spine, relative_uns_path, resolve_relative_path
 from .stage_obs import OBS_FILENAME, read_stage_obs
 
 EXPERIMENT_SPINE_DIR = "experiment_spine_outputs"
@@ -82,8 +82,21 @@ def write_experiment_spine(run_root: str | Path) -> Path | None:
 
     obs = read_stage_obs(raw_dir)
     preprocess_dir = run_root / PREPROCESS_DIR
-    if (preprocess_dir / _PREPROCESS_STAGE_OBS_FILENAME).exists():
-        extra = read_stage_obs(preprocess_dir, filename=_PREPROCESS_STAGE_OBS_FILENAME)
+    preprocess_stage_obs = preprocess_dir / _PREPROCESS_STAGE_OBS_FILENAME
+    preprocess_spine_path = preprocess_dir / "spine.h5ad"
+    if preprocess_spine_path.exists():
+        preprocess_spine = load_spine(preprocess_spine_path, verbose=False)
+        generation_stage_obs = resolve_relative_path(
+            preprocess_spine.uns.get("preprocess_stage_obs"),
+            run_root,
+        )
+        if generation_stage_obs is not None:
+            preprocess_stage_obs = generation_stage_obs
+    if preprocess_stage_obs.exists():
+        extra = read_stage_obs(
+            preprocess_stage_obs.parent,
+            filename=preprocess_stage_obs.name,
+        )
         overlap = [column for column in extra.columns if column in obs.columns]
         obs = obs.join(extra.drop(columns=overlap), how="inner")
     obs.index.name = None

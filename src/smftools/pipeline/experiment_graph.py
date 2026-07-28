@@ -9,7 +9,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..constants import PARTITIONED_STAGE_REQUIRED_ARTIFACTS
+from ..constants import PARTITIONED_STAGE_REQUIRED_ARTIFACTS, PREPROCESS_DIR
 from ..informatics.experiment_manifest import read_experiment_manifest, stage_is_complete
 from .analysis_registry import AnalysisRegistry, NodeExecutor
 from .compatibility import SemanticPlanner, node_result_from_inputs
@@ -229,6 +229,20 @@ def _build_experiment_context(
             stage,
             required_artifacts=PARTITIONED_STAGE_REQUIRED_ARTIFACTS[stage],
         )
+        if valid and stage == "preprocess":
+            from ..preprocessing.preprocess_generation import (
+                PreprocessGenerationError,
+                resolve_current_preprocess_generation,
+            )
+
+            try:
+                current = resolve_current_preprocess_generation(run_root / PREPROCESS_DIR)
+            except PreprocessGenerationError:
+                valid = False
+            else:
+                valid = current is not None and current[1].get("generation_id") == (
+                    manifest.get("stages", {}).get("preprocess", {}).get("generation_id")
+                )
         return ArtifactValidation(
             valid=valid,
             reason_code="stage_artifact_validation_failed",

@@ -965,10 +965,21 @@ def execute_partitioned_preprocessing(
     output_dir: str | Path,
     *,
     tasks: Iterable[PreprocessTask] | None = None,
+    publication_dir: str | Path | None = None,
+    run_root: str | Path | None = None,
+    refresh_experiment_spine: bool = True,
 ) -> dict[str, Path]:
-    """Execute planned tasks sequentially and publish catalogs plus a derived spine."""
+    """Execute planned tasks and write catalogs plus a derived spine.
+
+    ``output_dir`` is the physical write location. ``publication_dir`` may name
+    the immutable location those files will occupy after validation, allowing
+    spine pointers to be final before an enclosing publisher atomically moves a
+    staging directory into place.
+    """
     spine_path = Path(spine_path)
     output_dir = Path(output_dir)
+    publication_dir = Path(publication_dir) if publication_dir is not None else output_dir
+    run_root = Path(run_root) if run_root is not None else output_dir.parent
     output_dir.mkdir(parents=True, exist_ok=True)
     from ..informatics.derived_read_index import prepare_derived_read_index
 
@@ -1057,19 +1068,29 @@ def execute_partitioned_preprocessing(
     # these pointers stay correct even after being copied unchanged into a later
     # stage's spine (spatial/hmm), which lives in a sibling directory -- see
     # informatics.partition_read._run_root_from_spine_path.
-    run_root = output_dir.parent
     derived_spine.uns["preprocess_store"] = relative_uns_path(
-        output_dir / PREPROCESS_STORE_SUBDIR, run_root
+        publication_dir / PREPROCESS_STORE_SUBDIR, run_root
     )
-    derived_spine.uns["preprocess_catalog"] = relative_uns_path(catalog_path, run_root)
+    derived_spine.uns["preprocess_catalog"] = relative_uns_path(
+        publication_dir / PREPROCESS_PARTITION_CATALOG, run_root
+    )
+    derived_spine.uns["preprocess_task_catalog"] = relative_uns_path(
+        publication_dir / PREPROCESS_TASK_CATALOG, run_root
+    )
     derived_spine.uns["preprocess_source_spine"] = relative_uns_path(spine_path, run_root)
     derived_spine.uns["source_base_dir"] = relative_uns_path(spine_path.parent, run_root)
-    derived_spine.uns["preprocess_var"] = relative_uns_path(var_catalog, run_root)
-    derived_spine.uns["preprocess_obs"] = relative_uns_path(obs_sidecar, run_root)
+    derived_spine.uns["preprocess_var"] = relative_uns_path(
+        publication_dir / PREPROCESS_VAR_CATALOG, run_root
+    )
+    derived_spine.uns["preprocess_obs"] = relative_uns_path(
+        publication_dir / PREPROCESS_OBS_SIDECAR, run_root
+    )
     from ..informatics.derived_read_index import DERIVED_READ_INDEX_DIRNAME
 
     read_index_dir = output_dir / DERIVED_READ_INDEX_DIRNAME
-    derived_spine.uns["preprocess_read_index"] = relative_uns_path(read_index_dir, run_root)
+    derived_spine.uns["preprocess_read_index"] = relative_uns_path(
+        publication_dir / DERIVED_READ_INDEX_DIRNAME, run_root
+    )
     derived_spine.uns["preprocess_schema_version"] = 2
     published_layers = sorted({layer for record in records for layer in record.get("layers", [])})
     derived_spine.uns["preprocess_layer_absent_fill"] = {
@@ -1104,7 +1125,17 @@ def execute_partitioned_preprocessing(
     stage_obs_path = write_stage_obs(
         output_dir, derived_spine.obs, columns=new_columns, filename=PREPROCESS_STAGE_OBS
     )
-    write_experiment_spine(run_root)
+    derived_spine.uns["preprocess_stage_obs"] = relative_uns_path(
+        publication_dir / PREPROCESS_STAGE_OBS, run_root
+    )
+    derived_spine.uns["preprocess_plot_catalog"] = relative_uns_path(
+        publication_dir / "plots" / "catalog.parquet", run_root
+    )
+    # Re-write after adding the stage-obs pointer. The earlier write is needed
+    # while reducers materialize against a concrete staging spine.
+    safe_write_h5ad(derived_spine, output_spine, backup=False, verbose=False)
+    if refresh_experiment_spine:
+        write_experiment_spine(run_root)
     if bool(getattr(cfg, "emit_automated_plots", True)):
         generate_preprocess_summary_plots(
             obs_sidecar,
