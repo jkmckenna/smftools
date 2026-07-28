@@ -61,6 +61,11 @@ _VARIANT_GENERATION_ARTIFACTS = {
     "variant_reference_catalog": f"{VARIANT_REPORTING_SUBDIR}/reference_catalog.json",
     "variant_generation_manifest": f"{VARIANT_REPORTING_SUBDIR}/generation_manifest.json",
 }
+_VARIANT_METRIC_ARTIFACTS = {
+    "variant_qc_metrics": f"{VARIANT_REPORTING_SUBDIR}/variant_qc_metrics.parquet",
+    "variant_qc_summary": f"{VARIANT_REPORTING_SUBDIR}/variant_qc_summary.json",
+    "variant_qc_summary_tsv": f"{VARIANT_REPORTING_SUBDIR}/variant_qc_summary.tsv",
+}
 _REQUIRED_SIDECARS = (
     "preprocess_store",
     "preprocess_catalog",
@@ -73,6 +78,7 @@ _REQUIRED_SIDECARS = (
     "preprocess_plot_catalog",
 )
 _VARIANT_REQUIRED_SIDECARS = tuple(f"preprocess_{key}" for key in _VARIANT_GENERATION_ARTIFACTS)
+_VARIANT_METRIC_SIDECARS = tuple(f"preprocess_{key}" for key in _VARIANT_METRIC_ARTIFACTS)
 
 
 class PreprocessGenerationError(RuntimeError):
@@ -166,6 +172,15 @@ def _bind_generation_spine(
                 for key, relative in _VARIANT_GENERATION_ARTIFACTS.items()
             }
         )
+    if all(
+        (spine_path.parent / relative).exists() for relative in _VARIANT_METRIC_ARTIFACTS.values()
+    ):
+        pointers.update(
+            {
+                f"preprocess_{key}": publication_dir / relative
+                for key, relative in _VARIANT_METRIC_ARTIFACTS.items()
+            }
+        )
     for key, path in pointers.items():
         spine.uns[key] = relative_uns_path(path, run_root)
     spine.uns["preprocess_generation_id"] = generation_id
@@ -197,6 +212,26 @@ def _regenerate_preprocess_plots(
             task_catalog=generation_dir / PREPROCESS_TASK_CATALOG,
             read_index=generation_dir / "read_index",
         )
+        metrics_path = generation_dir / _VARIANT_METRIC_ARTIFACTS["variant_qc_metrics"]
+        if metrics_path.is_file():
+            from .variant_metrics import generate_variant_qc_plots
+
+            generate_variant_qc_plots(metrics_path, layout)
+
+
+def _regenerate_variant_metrics(
+    generation_dir: Path,
+    *,
+    source_generation_id: str,
+) -> None:
+    """Rebuild cohort metrics from compatible evidence and reducer artifacts."""
+    from .variant_metrics import write_variant_qc_metric_artifacts
+
+    write_variant_qc_metric_artifacts(
+        generation_dir / PREPROCESS_OBS_SIDECAR,
+        generation_dir / VARIANT_REPORTING_SUBDIR,
+        source_generation_id=source_generation_id,
+    )
 
 
 def validate_preprocess_generation(
@@ -235,6 +270,13 @@ def validate_preprocess_generation(
     expected_artifacts = dict(_GENERATION_ARTIFACTS)
     if variant_artifact_keys:
         expected_artifacts.update(_VARIANT_GENERATION_ARTIFACTS)
+    variant_metric_keys = set(_VARIANT_METRIC_ARTIFACTS).intersection(artifacts)
+    if variant_metric_keys and variant_metric_keys != set(_VARIANT_METRIC_ARTIFACTS):
+        raise PreprocessGenerationError("preprocess variant metric artifacts are incomplete")
+    if variant_metric_keys and not variant_artifact_keys:
+        raise PreprocessGenerationError("preprocess variant metrics lack evidence artifacts")
+    if variant_metric_keys:
+        expected_artifacts.update(_VARIANT_METRIC_ARTIFACTS)
     for key, expected_relative in expected_artifacts.items():
         record = artifacts.get(key)
         if not isinstance(record, dict):
@@ -258,12 +300,63 @@ def validate_preprocess_generation(
                 f"preprocess generation artifact directory is invalid: {key}"
             )
 
+    if variant_metric_keys:
+        from ..constants import VARIANT_QC_METRICS_SCHEMA_VERSION
+
+        metric_columns = {
+            "schema_version",
+            "analysis_version",
+            "source_generation_id",
+            "variant_reference_set_id",
+            "cohort",
+            "grouping",
+            "reference",
+            "sample",
+            "level",
+            "measure",
+            "numerator",
+            "denominator",
+            "value",
+        }
+        metrics = pd.read_parquet(generation_dir / _VARIANT_METRIC_ARTIFACTS["variant_qc_metrics"])
+        if not metric_columns.issubset(metrics.columns):
+            raise PreprocessGenerationError("preprocess variant metric schema is incomplete")
+        source_generation_ids = set(metrics["source_generation_id"].dropna().astype(str))
+        if (
+            set(metrics["schema_version"].dropna().astype(int))
+            != {VARIANT_QC_METRICS_SCHEMA_VERSION}
+            or len(source_generation_ids) != 1
+        ):
+            raise PreprocessGenerationError("preprocess variant metric provenance is invalid")
+        metric_source_generation_id = next(iter(source_generation_ids))
+        summary_path = generation_dir / _VARIANT_METRIC_ARTIFACTS["variant_qc_summary"]
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PreprocessGenerationError(
+                "preprocess variant metric summary is unreadable"
+            ) from exc
+        if (
+            int(summary.get("schema_version", -1)) != VARIANT_QC_METRICS_SCHEMA_VERSION
+            or str(summary.get("source_generation_id", "")) != metric_source_generation_id
+        ):
+            raise PreprocessGenerationError(
+                "preprocess variant metric summary provenance is invalid"
+            )
+        compact = pd.read_csv(
+            generation_dir / _VARIANT_METRIC_ARTIFACTS["variant_qc_summary_tsv"],
+            sep="\t",
+        )
+        if not metric_columns.issubset(compact.columns):
+            raise PreprocessGenerationError("preprocess variant TSV summary schema is incomplete")
+
     if "node_results" in manifest:
         from .semantic_upgrade import (
             PREPROCESS_PLOTS_NODE,
             PREPROCESS_REDUCERS_NODE,
             PREPROCESS_TASKS_NODE,
             PREPROCESS_VARIANT_EVIDENCE_NODE,
+            PREPROCESS_VARIANT_METRICS_NODE,
             PREPROCESS_VARIANT_REFERENCE_NODE,
             load_preprocess_node_results,
             preprocess_registry,
@@ -285,6 +378,8 @@ def validate_preprocess_generation(
             expected_nodes.update(
                 {PREPROCESS_VARIANT_REFERENCE_NODE, PREPROCESS_VARIANT_EVIDENCE_NODE}
             )
+        if variant_metric_keys:
+            expected_nodes.add(PREPROCESS_VARIANT_METRICS_NODE)
         if set(node_results) != expected_nodes:
             raise PreprocessGenerationError("preprocess generation node results are incomplete")
         registry = preprocess_registry(generation_dir, variant_enabled=variant_enabled)
@@ -331,6 +426,13 @@ def validate_preprocess_generation(
                 for key, relative in _VARIANT_GENERATION_ARTIFACTS.items()
             }
         )
+    if variant_metric_keys:
+        expected_pointers.update(
+            {
+                f"preprocess_{key}": final_dir / relative
+                for key, relative in _VARIANT_METRIC_ARTIFACTS.items()
+            }
+        )
     for key, path in expected_pointers.items():
         if spine.uns.get(key) != relative_uns_path(path, run_root):
             raise PreprocessGenerationError(f"preprocess spine pointer is unsafe: {key}")
@@ -342,6 +444,10 @@ def validate_preprocess_generation(
     if variant_artifact_keys:
         missing_sidecars.extend(
             key for key in _VARIANT_REQUIRED_SIDECARS if resolve_sidecar(sidecars, key) is None
+        )
+    if variant_metric_keys:
+        missing_sidecars.extend(
+            key for key in _VARIANT_METRIC_SIDECARS if resolve_sidecar(sidecars, key) is None
         )
     if missing_sidecars:
         raise PreprocessGenerationError(
@@ -400,6 +506,7 @@ def publish_preprocess_generation(
         PREPROCESS_PLOTS_NODE,
         PREPROCESS_REDUCERS_NODE,
         PREPROCESS_TASKS_NODE,
+        PREPROCESS_VARIANT_METRICS_NODE,
         build_preprocess_node_results,
         plan_preprocess_upgrade,
         preprocess_force_targets,
@@ -443,6 +550,14 @@ def publish_preprocess_generation(
         if current_generation is not None and compute_nodes.issubset(reusable):
             shutil.copytree(current_generation[0], staging_dir, dirs_exist_ok=True)
             (staging_dir / PREPROCESS_GENERATION_MANIFEST).unlink(missing_ok=True)
+            if (
+                str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report"
+                and PREPROCESS_VARIANT_METRICS_NODE not in reusable
+            ):
+                _regenerate_variant_metrics(
+                    staging_dir,
+                    source_generation_id=generation_id,
+                )
             if PREPROCESS_PLOTS_NODE not in reusable:
                 _regenerate_preprocess_plots(staging_dir, spine_path, cfg)
             staged_spine = staging_dir / PREPROCESS_SPINE_FILENAME
@@ -453,6 +568,8 @@ def publish_preprocess_generation(
                 "run_root": run_root,
                 "refresh_experiment_spine": False,
             }
+            if executor is None:
+                execute_kwargs["analysis_generation_id"] = generation_id
             if (
                 current_generation is not None
                 and PREPROCESS_TASKS_NODE in reusable
@@ -476,6 +593,10 @@ def publish_preprocess_generation(
         artifact_paths = dict(_GENERATION_ARTIFACTS)
         if (staging_dir / VARIANT_REPORTING_SUBDIR).is_dir():
             artifact_paths.update(_VARIANT_GENERATION_ARTIFACTS)
+        if all(
+            (staging_dir / relative).exists() for relative in _VARIANT_METRIC_ARTIFACTS.values()
+        ):
+            artifact_paths.update(_VARIANT_METRIC_ARTIFACTS)
         artifacts = {
             key: _generation_artifact_record(staging_dir / relative, staging_dir)
             for key, relative in artifact_paths.items()
@@ -552,6 +673,10 @@ def publish_preprocess_generation(
     if (final_dir / VARIANT_REPORTING_SUBDIR).is_dir():
         outputs.update(
             {key: final_dir / relative for key, relative in _VARIANT_GENERATION_ARTIFACTS.items()}
+        )
+    if all((final_dir / relative).exists() for relative in _VARIANT_METRIC_ARTIFACTS.values()):
+        outputs.update(
+            {key: final_dir / relative for key, relative in _VARIANT_METRIC_ARTIFACTS.items()}
         )
     outputs.update(
         {

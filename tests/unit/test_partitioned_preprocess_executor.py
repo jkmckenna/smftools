@@ -181,6 +181,18 @@ def test_variant_reporting_precedes_qc_and_preserves_filter_masks(tmp_path):
     assert obs["passes_nonvariant_qc"].dtype == bool
     assert obs.loc["read2", "variant_evidence_status"] == "complete"
     assert obs.loc["read2", "nonvariant_qc_reason"] == "failed_read_qc"
+    metrics = pd.read_parquet(outputs["variant_metrics"])
+    assert set(metrics["cohort"]) == {
+        "all_aligned",
+        "pre_dedup_nonvariant_qc",
+        "post_dedup_nonvariant_qc",
+        "pre_dedup_final_qc",
+        "post_dedup_final_qc",
+    }
+    assert {
+        "variant_read_rates_by_cohort",
+        "variant_cluster_rates_by_cohort",
+    }.issubset(set(pd.read_parquet(outputs["plot_catalog"])["plot_type"]))
 
     queried = query_partitioned_variant_evidence(
         tmp_path / "preprocess_outputs" / "variant",
@@ -667,6 +679,7 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
         "barcode_summary",
         "read_qc",
         "modification_qc",
+        "variant_qc",
         "duplicate_qc",
         "library_complexity",
         "read_span_quality",

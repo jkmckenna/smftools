@@ -29,6 +29,7 @@ VARIANT_CALL_SCHEMA_VERSION: Final[int] = 1
 VARIANT_EVIDENCE_TASK_SCHEMA_VERSION: Final[int] = 1
 VARIANT_EVIDENCE_INDEX_SCHEMA_VERSION: Final[int] = 1
 VARIANT_EVIDENCE_GENERATION_SCHEMA_VERSION: Final[int] = 1
+VARIANT_QC_METRICS_SCHEMA_VERSION: Final[int] = 1
 
 # Barcode kit aliases for smftools demux backend
 # Maps kit alias names to paths of barcode YAML files (relative to package data or absolute)
