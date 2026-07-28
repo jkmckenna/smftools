@@ -95,13 +95,13 @@ def resolve_relative_path(value: object, anchor: Path | None) -> Path | None:
 def _run_root_from_spine_path(spine_path: Path) -> Path:
     """Recover the run's ``output_directory`` from a canonical stage spine path.
 
-    Every stage spine lives at ``output_directory/<STAGE_DIR>/spine.h5ad`` (see
-    ``cli.helpers.AdataPaths``), so two parents up from the spine file is always
-    the run's output_directory -- a stable anchor shared by every sibling stage
-    directory (``raw_outputs``, ``preprocess_adata_outputs``, ...), regardless of
-    which stage's spine is currently open. Used to resolve/write cross-stage uns
-    pointers so they stay correct after being copied into a later stage's spine.
+    Canonical stage spines live at ``output_directory/<STAGE_DIR>/spine.h5ad``.
+    Immutable generation spines add ``generations/<id>`` (or
+    ``.staging/<id>`` while being validated) beneath the stage directory. Both
+    layouts resolve to the same stable run-root anchor shared by sibling stages.
     """
+    if spine_path.parent.parent.name in {"generations", ".staging"}:
+        return spine_path.parent.parent.parent.parent
     return spine_path.parent.parent
 
 

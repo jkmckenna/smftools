@@ -22,8 +22,6 @@ from smftools.cli.raw_adata import (
 )
 from smftools.constants import (
     MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
-    PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
-    PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
     PREPROCESS_DIR,
 )
 from smftools.informatics.experiment_manifest import read_experiment_manifest
@@ -35,44 +33,6 @@ def _double_record(record, *, multiplier):
     unpickle a top-level function, not a test-local closure.
     """
     return [record * multiplier], [str(record)]
-
-
-def _fake_preprocess_outputs(output_spine):
-    output_spine.parent.mkdir(parents=True, exist_ok=True)
-    if not output_spine.exists():
-        ad.AnnData().write_h5ad(output_spine)
-    task_catalog = output_spine.parent / "task_catalog.parquet"
-    store = output_spine.parent / "store"
-    read_index = output_spine.parent / "read_index"
-    catalog = output_spine.parent / "catalog.parquet"
-    var = output_spine.parent / "var.parquet"
-    obs = output_spine.parent / "obs.parquet"
-    stage_obs = output_spine.parent / "stage_obs.parquet"
-    plot_catalog = output_spine.parent / "plots" / "catalog.parquet"
-    store.mkdir(exist_ok=True)
-    read_index.mkdir(exist_ok=True)
-    (store / "task-1").touch()
-    pd.DataFrame({"task_id": ["task-1"]}).to_parquet(task_catalog, index=False)
-    pd.DataFrame().to_parquet(catalog, index=False)
-    pd.DataFrame().to_parquet(var, index=False)
-    pd.DataFrame().to_parquet(obs, index=False)
-    pd.DataFrame().to_parquet(stage_obs, index=False)
-    plot_catalog.parent.mkdir(exist_ok=True)
-    pd.DataFrame().to_parquet(plot_catalog, index=False)
-    manifest = output_spine.parent / "sidecar_manifest.json"
-    manifest.write_text("{}\n", encoding="utf-8")
-    return {
-        "spine": output_spine,
-        "store": store,
-        "task_catalog": task_catalog,
-        "read_index": read_index,
-        "catalog": catalog,
-        "var": var,
-        "obs": obs,
-        "stage_obs": stage_obs,
-        "plot_catalog": plot_catalog,
-        "manifest": manifest,
-    }
 
 
 def test_conversion_signal_matches_existing_binarization_maps():
@@ -946,7 +906,7 @@ def test_preprocess_wrapper_dispatches_planned_spine(tmp_path, monkeypatch):
 
     from smftools.cli import helpers
     from smftools.cli import preprocess_adata as preprocess_module
-    from smftools.preprocessing import partitioned_executor
+    from smftools.preprocessing import preprocess_generation
 
     raw_spine_path = tmp_path / "raw_outputs" / "spine.h5ad"
     raw_spine_path.parent.mkdir()
@@ -970,9 +930,18 @@ def test_preprocess_wrapper_dispatches_planned_spine(tmp_path, monkeypatch):
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
     monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg: paths)
     monkeypatch.setattr(
-        partitioned_executor,
-        "execute_partitioned_preprocessing",
-        lambda source, config, output: _fake_preprocess_outputs(output_spine),
+        preprocess_generation,
+        "publish_preprocess_generation",
+        lambda source, config, output: {
+            "spine": output_spine,
+            "task_count": 1,
+            "generation_id": "generation-a",
+        },
+    )
+    monkeypatch.setattr(
+        helpers,
+        "publish_stage_outputs",
+        lambda lifecycle, *_args, **_kwargs: lifecycle.complete(),
     )
 
     assert preprocess_module.preprocess_adata("experiment.csv") == (output_spine, None)
@@ -983,10 +952,11 @@ def test_preprocess_wrapper_returns_existing_partitioned_spine(tmp_path, monkeyp
 
     from smftools.cli import helpers
     from smftools.cli import preprocess_adata as preprocess_module
+    from smftools.preprocessing import preprocess_generation
     from smftools.readwrite import safe_write_h5ad
 
-    # A final spine is necessary but no longer sufficient: the compatible
-    # complete record and its essential artifact set authorize the skip.
+    # A canonical spine is necessary but no longer sufficient: a validated
+    # current generation and compatible lifecycle record authorize the skip.
     output_spine = tmp_path / PREPROCESS_DIR / "spine.h5ad"
     output_spine.parent.mkdir()
     safe_write_h5ad(
@@ -1010,14 +980,15 @@ def test_preprocess_wrapper_returns_existing_partitioned_spine(tmp_path, monkeyp
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
     monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg: paths)
 
-    with helpers.stage_lifecycle(cfg, "preprocess") as lifecycle:
-        helpers.publish_stage_outputs(
-            lifecycle,
-            _fake_preprocess_outputs(output_spine),
-            required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["preprocess"],
-            schema_versions={"preprocess": 2, "derived_read_index": 1},
-            nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["preprocess"],
-        )
+    monkeypatch.setattr(
+        preprocess_generation,
+        "resolve_current_preprocess_generation",
+        lambda _output: (
+            output_spine.parent / "generations" / "generation-a",
+            {"generation_id": "generation-a"},
+        ),
+    )
+    monkeypatch.setattr(helpers, "partitioned_stage_is_complete", lambda *_args, **_kwargs: True)
 
     assert preprocess_module.preprocess_adata("experiment.csv") == (output_spine, None)
 
@@ -1072,16 +1043,25 @@ def test_preprocess_wrapper_reruns_when_partitioned_spine_missing_qc_dedup(tmp_p
 
     captured = {}
 
-    def fake_execute_partitioned_preprocessing(source_path, executor_cfg, output_dir):
-        captured["source_path"] = source_path
-        return _fake_preprocess_outputs(incomplete_spine)
+    import smftools.preprocessing.preprocess_generation as preprocess_generation_module
 
-    import smftools.preprocessing.partitioned_executor as partitioned_executor_module
+    def fake_publish(source_path, executor_cfg, output_dir):
+        captured["source_path"] = source_path
+        return {
+            "spine": incomplete_spine,
+            "task_count": 1,
+            "generation_id": "generation-a",
+        }
 
     monkeypatch.setattr(
-        partitioned_executor_module,
-        "execute_partitioned_preprocessing",
-        fake_execute_partitioned_preprocessing,
+        preprocess_generation_module,
+        "publish_preprocess_generation",
+        fake_publish,
+    )
+    monkeypatch.setattr(
+        helpers,
+        "publish_stage_outputs",
+        lambda lifecycle, *_args, **_kwargs: lifecycle.complete(),
     )
 
     result = preprocess_module.preprocess_adata("experiment.csv")

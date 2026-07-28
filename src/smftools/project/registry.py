@@ -211,6 +211,23 @@ def _discover_catalogs(spines: dict[str, Path], project_dir: Path) -> dict[str, 
         if spine is None:
             continue
         read_index = spine.parent / "read_index"
+        if stage == "preprocess":
+            from ..informatics.partition_read import load_spine, resolve_relative_path
+            from ..preprocessing.preprocess_generation import (
+                resolve_current_preprocess_generation,
+            )
+
+            current = resolve_current_preprocess_generation(spine.parent)
+            if current is not None:
+                read_index = current[0] / "read_index"
+            else:
+                preprocess = load_spine(spine, verbose=False)
+                generation_index = resolve_relative_path(
+                    preprocess.uns.get("preprocess_read_index"),
+                    spine.parent.parent,
+                )
+                if generation_index is not None:
+                    read_index = generation_index
         if read_index.exists():
             found[f"{stage}_read_index"] = _relative_registry_path(read_index, project_dir)
     latent_spine = spines.get("latent")

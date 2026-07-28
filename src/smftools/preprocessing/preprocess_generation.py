@@ -1,0 +1,375 @@
+"""Immutable generation publication for partitioned preprocessing outputs."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+from pathlib import Path
+from typing import Any, Callable
+from uuid import uuid4
+
+import pandas as pd
+
+from ..informatics.experiment_manifest import (
+    artifact_record,
+    read_experiment_manifest,
+)
+from ..informatics.partition_read import load_spine, relative_uns_path
+from ..informatics.sidecar_manifest import resolve_sidecar, sidecar_manifest_path
+from ..readwrite import atomic_write_json, safe_write_h5ad
+from .partitioned_executor import (
+    PREPROCESS_OBS_SIDECAR,
+    PREPROCESS_PARTITION_CATALOG,
+    PREPROCESS_SPINE_FILENAME,
+    PREPROCESS_STAGE_OBS,
+    PREPROCESS_STORE_SUBDIR,
+    PREPROCESS_TASK_CATALOG,
+    PREPROCESS_VAR_CATALOG,
+)
+
+PREPROCESS_GENERATIONS_SUBDIR = "generations"
+PREPROCESS_STAGING_SUBDIR = ".staging"
+PREPROCESS_CURRENT_FILENAME = "current.json"
+PREPROCESS_GENERATION_MANIFEST = "generation_manifest.json"
+PREPROCESS_GENERATION_SCHEMA_VERSION = 1
+PREPROCESS_CURRENT_SCHEMA_VERSION = 1
+PREPROCESS_TASK_CATALOG_SCHEMA_VERSION = 1
+PREPROCESS_OUTPUT_SCHEMA_VERSION = 2
+PREPROCESS_READ_INDEX_SCHEMA_VERSION = 1
+
+_GENERATION_ARTIFACTS = {
+    "spine": PREPROCESS_SPINE_FILENAME,
+    "store": PREPROCESS_STORE_SUBDIR,
+    "task_catalog": PREPROCESS_TASK_CATALOG,
+    "catalog": PREPROCESS_PARTITION_CATALOG,
+    "read_index": "read_index",
+    "var": PREPROCESS_VAR_CATALOG,
+    "obs": PREPROCESS_OBS_SIDECAR,
+    "stage_obs": PREPROCESS_STAGE_OBS,
+    "plots": "plots",
+    "plot_catalog": "plots/catalog.parquet",
+    "manifest": "sidecar_manifest.json",
+}
+_REQUIRED_SIDECARS = (
+    "preprocess_store",
+    "preprocess_catalog",
+    "preprocess_task_catalog",
+    "preprocess_read_index",
+    "preprocess_var",
+    "preprocess_obs",
+    "preprocess_stage_obs",
+    "preprocess_spine",
+    "preprocess_plot_catalog",
+)
+
+
+class PreprocessGenerationError(RuntimeError):
+    """Raised when an immutable preprocess generation is unsafe to publish or read."""
+
+
+def _checksum(path: Path) -> str:
+    return str(artifact_record(path, path.parent, checksum=True)["sha256"])
+
+
+def _generation_artifact_record(path: Path, generation_root: Path) -> dict[str, Any]:
+    record = artifact_record(path, generation_root, checksum=True)
+    record["anchor"] = "generation_root"
+    return record
+
+
+def _resolve_generation_artifact(
+    generation_root: Path,
+    record: dict[str, Any],
+) -> Path:
+    raw_path = record.get("path")
+    relative = Path(str(raw_path or ""))
+    resolved = (generation_root / relative).resolve()
+    if (
+        record.get("path_kind") != "relative"
+        or record.get("anchor") != "generation_root"
+        or not raw_path
+        or relative.is_absolute()
+        or not resolved.is_relative_to(generation_root.resolve())
+    ):
+        raise PreprocessGenerationError("preprocess generation artifact path is not portable")
+    return resolved
+
+
+def _source_provenance(spine_path: Path, run_root: Path) -> dict[str, Any]:
+    source_stage = {
+        "raw_outputs": "raw",
+        "load_adata_outputs": "raw",
+    }.get(spine_path.parent.name)
+    stage_entry = (
+        read_experiment_manifest(run_root).get("stages", {}).get(source_stage, {})
+        if source_stage is not None
+        else {}
+    )
+    return {
+        "artifact": artifact_record(spine_path, run_root, checksum=True),
+        "stage": source_stage,
+        "generation_id": (
+            stage_entry.get("generation_id") if isinstance(stage_entry, dict) else None
+        ),
+        "config_hash": (stage_entry.get("config_hash") if isinstance(stage_entry, dict) else None),
+        "input_artifact_ids": (
+            stage_entry.get("input_artifact_ids") if isinstance(stage_entry, dict) else None
+        ),
+    }
+
+
+def _atomic_publish_spine(source: Path, destination: Path) -> None:
+    spine = load_spine(source, verbose=False)
+    temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp.h5ad")
+    try:
+        safe_write_h5ad(spine, temporary, backup=False, verbose=False)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def validate_preprocess_generation(
+    generation_dir: str | Path,
+    *,
+    expected_generation_id: str | None = None,
+    final_dir: str | Path | None = None,
+    run_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Validate one complete preprocess generation without mutating it."""
+    generation_dir = Path(generation_dir)
+    manifest_path = generation_dir / PREPROCESS_GENERATION_MANIFEST
+    if not manifest_path.is_file():
+        raise PreprocessGenerationError("preprocess generation manifest is missing")
+    try:
+        with manifest_path.open(encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PreprocessGenerationError("preprocess generation manifest is unreadable") from exc
+    if int(manifest.get("schema_version", -1)) != PREPROCESS_GENERATION_SCHEMA_VERSION:
+        raise PreprocessGenerationError("preprocess generation schema is incompatible")
+    if manifest.get("status") != "complete":
+        raise PreprocessGenerationError("preprocess generation is not complete")
+    generation_id = str(manifest.get("generation_id", ""))
+    if not generation_id or (
+        expected_generation_id is not None and generation_id != expected_generation_id
+    ):
+        raise PreprocessGenerationError("preprocess generation ID does not match")
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise PreprocessGenerationError("preprocess generation artifact manifest is missing")
+    for key, expected_relative in _GENERATION_ARTIFACTS.items():
+        record = artifacts.get(key)
+        if not isinstance(record, dict):
+            raise PreprocessGenerationError(f"preprocess generation artifact is missing: {key}")
+        path = _resolve_generation_artifact(generation_dir, record)
+        if Path(str(record.get("path"))) != Path(expected_relative):
+            raise PreprocessGenerationError(
+                f"preprocess generation artifact path is invalid: {key}"
+            )
+        if not path.exists() or str(record.get("sha256", "")) != _checksum(path):
+            raise PreprocessGenerationError(
+                f"preprocess generation artifact is missing or corrupt: {key}"
+            )
+        expected_kind = record.get("kind")
+        if expected_kind == "file" and not path.is_file():
+            raise PreprocessGenerationError(f"preprocess generation artifact is not a file: {key}")
+        if expected_kind == "directory" and (
+            not path.is_dir() or (key in {"store", "read_index"} and not any(path.iterdir()))
+        ):
+            raise PreprocessGenerationError(
+                f"preprocess generation artifact directory is invalid: {key}"
+            )
+
+    task_catalog = pd.read_parquet(generation_dir / PREPROCESS_TASK_CATALOG)
+    result_catalog = pd.read_parquet(generation_dir / PREPROCESS_PARTITION_CATALOG)
+    task_count = int(manifest.get("task_count", -1))
+    if task_count <= 0 or len(task_catalog) != task_count or len(result_catalog) != task_count:
+        raise PreprocessGenerationError("preprocess generation task counts do not match")
+    for record in result_catalog.to_dict("records"):
+        relative_group = Path(str(record.get("group_path", "")))
+        if (
+            not str(relative_group)
+            or relative_group.is_absolute()
+            or ".." in relative_group.parts
+            or not (generation_dir / relative_group).is_dir()
+        ):
+            raise PreprocessGenerationError("preprocess task catalog has an invalid group path")
+
+    final_dir = Path(final_dir) if final_dir is not None else generation_dir
+    run_root = Path(run_root) if run_root is not None else final_dir.parents[2]
+    spine = load_spine(generation_dir / PREPROCESS_SPINE_FILENAME, verbose=False)
+    expected_pointers = {
+        "preprocess_store": final_dir / PREPROCESS_STORE_SUBDIR,
+        "preprocess_catalog": final_dir / PREPROCESS_PARTITION_CATALOG,
+        "preprocess_var": final_dir / PREPROCESS_VAR_CATALOG,
+        "preprocess_obs": final_dir / PREPROCESS_OBS_SIDECAR,
+        "preprocess_read_index": final_dir / "read_index",
+        "preprocess_stage_obs": final_dir / PREPROCESS_STAGE_OBS,
+        "preprocess_task_catalog": final_dir / PREPROCESS_TASK_CATALOG,
+        "preprocess_plot_catalog": final_dir / "plots" / "catalog.parquet",
+    }
+    for key, path in expected_pointers.items():
+        if spine.uns.get(key) != relative_uns_path(path, run_root):
+            raise PreprocessGenerationError(f"preprocess spine pointer is unsafe: {key}")
+    if str(spine.uns.get("preprocess_generation_id", "")) != generation_id:
+        raise PreprocessGenerationError("preprocess spine generation ID does not match")
+
+    sidecars = sidecar_manifest_path(generation_dir)
+    missing_sidecars = [key for key in _REQUIRED_SIDECARS if resolve_sidecar(sidecars, key) is None]
+    if missing_sidecars:
+        raise PreprocessGenerationError(
+            f"preprocess sidecar manifest is incomplete: {missing_sidecars}"
+        )
+    return manifest
+
+
+def resolve_current_preprocess_generation(
+    output_dir: str | Path,
+) -> tuple[Path, dict[str, Any]] | None:
+    """Resolve and validate the generation selected by preprocess ``current.json``."""
+    output_dir = Path(output_dir)
+    pointer_path = output_dir / PREPROCESS_CURRENT_FILENAME
+    if not pointer_path.exists():
+        return None
+    try:
+        with pointer_path.open(encoding="utf-8") as handle:
+            pointer = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PreprocessGenerationError("preprocess current pointer is unreadable") from exc
+    if int(pointer.get("schema_version", -1)) != PREPROCESS_CURRENT_SCHEMA_VERSION:
+        raise PreprocessGenerationError("preprocess current-pointer schema is incompatible")
+    relative = Path(str(pointer.get("generation_path", "")))
+    generation = (output_dir / relative).resolve()
+    if (
+        not str(relative)
+        or relative.is_absolute()
+        or not generation.is_relative_to(output_dir.resolve())
+    ):
+        raise PreprocessGenerationError("preprocess current pointer is not portable")
+    manifest_path = generation / PREPROCESS_GENERATION_MANIFEST
+    if not manifest_path.is_file() or pointer.get("manifest_sha256") != _checksum(manifest_path):
+        raise PreprocessGenerationError("preprocess current manifest checksum does not match")
+    manifest = validate_preprocess_generation(
+        generation,
+        expected_generation_id=str(pointer.get("generation_id", "")),
+        final_dir=generation,
+        run_root=output_dir.parent,
+    )
+    return generation, manifest
+
+
+def publish_preprocess_generation(
+    spine_path: str | Path,
+    cfg: Any,
+    output_dir: str | Path,
+    *,
+    executor: Callable[..., dict[str, Path]] | None = None,
+) -> dict[str, Path | str | int]:
+    """Build, validate, and atomically select one immutable preprocess generation."""
+    from ..cli.helpers import stage_config_hash
+    from ..informatics.experiment_spine import write_experiment_spine
+    from .partitioned_executor import execute_partitioned_preprocessing
+
+    spine_path = Path(spine_path)
+    output_dir = Path(output_dir)
+    run_root = output_dir.parent
+    generation_id = uuid4().hex
+    staging_dir = output_dir / PREPROCESS_STAGING_SUBDIR / generation_id
+    final_dir = output_dir / PREPROCESS_GENERATIONS_SUBDIR / generation_id
+    current_path = output_dir / PREPROCESS_CURRENT_FILENAME
+    canonical_spine = output_dir / PREPROCESS_SPINE_FILENAME
+    previous_current = (
+        json.loads(current_path.read_text(encoding="utf-8")) if current_path.is_file() else None
+    )
+    staging_dir.mkdir(parents=True)
+    final_dir.parent.mkdir(parents=True, exist_ok=True)
+    moved_to_final = False
+    current_advanced = False
+
+    try:
+        execute = executor or execute_partitioned_preprocessing
+        staged_outputs = execute(
+            spine_path,
+            cfg,
+            staging_dir,
+            publication_dir=final_dir,
+            run_root=run_root,
+            refresh_experiment_spine=False,
+        )
+        staged_spine = Path(staged_outputs["spine"])
+        spine = load_spine(staged_spine, verbose=False)
+        spine.uns["preprocess_generation_id"] = generation_id
+        safe_write_h5ad(spine, staged_spine, backup=False, verbose=False)
+
+        artifacts = {
+            key: _generation_artifact_record(staging_dir / relative, staging_dir)
+            for key, relative in _GENERATION_ARTIFACTS.items()
+        }
+        task_count = len(pd.read_parquet(staging_dir / PREPROCESS_TASK_CATALOG))
+        generation_manifest = staging_dir / PREPROCESS_GENERATION_MANIFEST
+        atomic_write_json(
+            generation_manifest,
+            {
+                "schema_version": PREPROCESS_GENERATION_SCHEMA_VERSION,
+                "status": "complete",
+                "generation_id": generation_id,
+                "compute_config_hash": stage_config_hash(cfg, "preprocess"),
+                "source": _source_provenance(spine_path, run_root),
+                "output_schema_version": PREPROCESS_OUTPUT_SCHEMA_VERSION,
+                "task_catalog_schema_version": PREPROCESS_TASK_CATALOG_SCHEMA_VERSION,
+                "read_index_schema_version": PREPROCESS_READ_INDEX_SCHEMA_VERSION,
+                "task_count": task_count,
+                "artifacts": artifacts,
+            },
+        )
+        validate_preprocess_generation(
+            staging_dir,
+            expected_generation_id=generation_id,
+            final_dir=final_dir,
+            run_root=run_root,
+        )
+
+        os.replace(staging_dir, final_dir)
+        moved_to_final = True
+        final_manifest = final_dir / PREPROCESS_GENERATION_MANIFEST
+        atomic_write_json(
+            current_path,
+            {
+                "schema_version": PREPROCESS_CURRENT_SCHEMA_VERSION,
+                "generation_id": generation_id,
+                "generation_path": final_dir.relative_to(output_dir).as_posix(),
+                "manifest_sha256": _checksum(final_manifest),
+            },
+        )
+        current_advanced = True
+        _atomic_publish_spine(final_dir / PREPROCESS_SPINE_FILENAME, canonical_spine)
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        if moved_to_final:
+            if current_advanced:
+                if previous_current is None:
+                    current_path.unlink(missing_ok=True)
+                else:
+                    atomic_write_json(current_path, previous_current)
+            shutil.rmtree(final_dir, ignore_errors=True)
+        raise
+
+    write_experiment_spine(run_root)
+
+    outputs: dict[str, Path | str | int] = {
+        key: final_dir / relative for key, relative in _GENERATION_ARTIFACTS.items()
+    }
+    outputs.update(
+        {
+            "spine": canonical_spine,
+            "generation_spine": final_dir / PREPROCESS_SPINE_FILENAME,
+            "generation_manifest": final_dir / PREPROCESS_GENERATION_MANIFEST,
+            "generation": final_dir,
+            "current": current_path,
+            "generation_id": generation_id,
+            "task_count": task_count,
+        }
+    )
+    return outputs

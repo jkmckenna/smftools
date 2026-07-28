@@ -100,20 +100,22 @@ def preprocess_adata(
 
     def _run_partitioned(source_path: Path):
         from ..perf_log import perf_substep
-        from ..preprocessing.partitioned_executor import (
-            execute_partitioned_preprocessing,
+        from ..preprocessing.preprocess_generation import (
+            publish_preprocess_generation,
         )
 
         output_dir = Path(cfg.output_directory) / PREPROCESS_DIR
         with stage_lifecycle(cfg, "preprocess", source_path) as lifecycle:
             with perf_substep("partitioned_preprocess"):
-                outputs = execute_partitioned_preprocessing(source_path, cfg, output_dir)
+                outputs = publish_preprocess_generation(source_path, cfg, output_dir)
             publish_stage_outputs(
                 lifecycle,
                 outputs,
                 required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["preprocess"],
                 schema_versions={"preprocess": 2, "derived_read_index": 1},
                 nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["preprocess"],
+                task_count=int(outputs["task_count"]),
+                extra={"generation_id": str(outputs["generation_id"])},
             )
         return outputs["spine"], None
 
@@ -201,23 +203,36 @@ def preprocess_adata(
     # -----------------------------
 
     if partitioned_pp_path is not None and partitioned_pp_path.exists():
-        if not partitioned_stage_is_complete(
+        from ..preprocessing.preprocess_generation import (
+            resolve_current_preprocess_generation,
+        )
+
+        current_generation = resolve_current_preprocess_generation(partitioned_pp_path.parent)
+        if current_generation is None:
+            logger.warning(
+                "Partitioned preprocessing spine uses the legacy in-place schema; "
+                "recomputing it as an immutable generation: %s",
+                partitioned_pp_path,
+            )
+        elif not partitioned_stage_is_complete(
             cfg,
             "preprocess",
             required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["preprocess"],
+            source_path=_raw_source(),
+            extra_matches={"generation_id": current_generation[1]["generation_id"]},
         ):
             logger.warning(
-                "Partitioned preprocessing spine exists without a compatible complete stage "
-                "record; re-running preprocessing: %s",
-                partitioned_pp_path,
+                "Partitioned preprocessing generation exists without a compatible complete "
+                "stage record; re-running preprocessing: %s",
+                current_generation[0],
             )
         else:
             logger.info(
-                "Skipping preprocessing. Partitioned preprocessing spine found: %s",
-                partitioned_pp_path,
+                "Skipping preprocessing. Current immutable generation found: %s",
+                current_generation[0],
             )
             mark_stage_outcome(
-                "skipped", reason="compatible partitioned preprocess stage is already complete"
+                "skipped", reason="compatible preprocess generation is already current"
             )
             return partitioned_pp_path, None
 

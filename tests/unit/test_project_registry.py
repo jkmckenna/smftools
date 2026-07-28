@@ -193,6 +193,41 @@ def test_add_experiment_refresh_discovers_new_latent_stage_and_index(tmp_path):
     assert len(reg.list_experiments(project)) == 1
 
 
+def test_add_experiment_refresh_discovers_preprocess_generation_index(tmp_path):
+    project = tmp_path / "project"
+    reg.init_project(project)
+    run_dir = _make_run(
+        tmp_path / "expA",
+        stages=["raw"],
+        name="expA",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    reg.add_experiment(project, run_dir)
+
+    raw_spine = ad.read_h5ad(run_dir / reg.STAGE_DIRS["raw"] / "spine.h5ad")
+    preprocess_dir = run_dir / reg.STAGE_DIRS["preprocess"]
+    preprocess_dir.mkdir()
+    read_index = preprocess_dir / "generations" / "generation-a" / "read_index"
+    read_index.mkdir(parents=True)
+    raw_spine.uns["preprocess_read_index"] = (
+        "preprocess_adata_outputs/generations/generation-a/read_index"
+    )
+    safe_write_h5ad(
+        raw_spine,
+        preprocess_dir / "spine.h5ad",
+        backup=False,
+        verbose=False,
+    )
+
+    _, refreshed = reg.add_experiment(project, run_dir)
+
+    assert set(refreshed["spines"]) == {"raw", "preprocess"}
+    assert (
+        project / refreshed["catalogs"]["preprocess_read_index"]
+    ).resolve() == read_index.resolve()
+
+
 def test_registry_discovers_region_catalogs_and_reference_map(tmp_path):
     proj = tmp_path / "project"
     reg.init_project(proj)

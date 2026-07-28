@@ -75,6 +75,16 @@ def _states(plan):
     return {decision.analysis_id: decision.state for decision in plan.decisions}
 
 
+def _trust_current_preprocess(monkeypatch, tmp_path):
+    from smftools.preprocessing import preprocess_generation
+
+    monkeypatch.setattr(
+        preprocess_generation,
+        "resolve_current_preprocess_generation",
+        lambda _output: (tmp_path / "generation", {"generation_id": None}),
+    )
+
+
 def test_experiment_graph_is_linear_and_registers_legacy_compatibility_leaves():
     specs = {spec.analysis_id: spec for spec in experiment_graph.experiment_node_specs()}
 
@@ -122,6 +132,7 @@ def test_partial_plan_reuses_compatible_dependencies_and_stops_at_target(
     _record_stage(cfg, "raw")
     _record_stage(cfg, "preprocess")
     monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+    _trust_current_preprocess(monkeypatch, tmp_path)
 
     plan = experiment_graph.build_experiment_plan(cfg, "hmm", paths=paths)
 
@@ -134,6 +145,22 @@ def test_partial_plan_reuses_compatible_dependencies_and_stops_at_target(
     assert states[experiment_graph.EXPERIMENT_NODE_IDS["preprocess"]] is PlanState.COMPATIBLE
     assert states[experiment_graph.EXPERIMENT_NODE_IDS["spatial"]] is PlanState.MISSING
     assert states[experiment_graph.EXPERIMENT_NODE_IDS["hmm"]] is PlanState.MISSING
+
+
+def test_legacy_preprocess_completion_without_current_generation_is_invalid(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    _record_stage(cfg, "raw")
+    _record_stage(cfg, "preprocess")
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+
+    plan = experiment_graph.build_experiment_plan(cfg, "preprocess", paths=paths)
+
+    assert plan.decisions[-1].state is PlanState.INVALID_ARTIFACT
+    assert plan.decisions[-1].reason_code == "stage_artifact_validation_failed"
 
 
 def test_stale_config_and_invalid_artifacts_have_explicit_plan_reasons(
@@ -245,6 +272,7 @@ def test_execution_invokes_only_missing_or_incompatible_stage_wrappers(
     _record_stage(cfg, "raw")
     _record_stage(cfg, "preprocess")
     monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+    _trust_current_preprocess(monkeypatch, tmp_path)
     calls = []
     runners = {
         stage: lambda _config_path, stage=stage: calls.append(stage) or f"{stage}-result"
