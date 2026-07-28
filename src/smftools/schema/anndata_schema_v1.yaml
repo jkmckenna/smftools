@@ -207,7 +207,7 @@ stages:
         dtype: "bool"
         created_by: "smftools.preprocessing.label_deaminase_pcr_chimeras"
         modified_by: []
-        notes: "Flags reads whose deamination signature switches from a C->T span to a G->A span partway through the read (PCR chimera evidence). Reads are labeled, not removed. Deaminase modality only."
+        notes: "Flags reads whose deamination signature switches from a C->T span to a G->A span partway through the read (PCR chimera evidence). Flagged reads are excluded from read QC. Deaminase modality only."
         requires: [["obs.ct_event_count", "obs.ga_event_count", "obs.strand_segment_purity"]]
         optional_inputs: []
     layers:

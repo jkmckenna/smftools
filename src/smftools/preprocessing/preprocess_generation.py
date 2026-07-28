@@ -551,7 +551,7 @@ def publish_preprocess_generation(
             shutil.copytree(current_generation[0], staging_dir, dirs_exist_ok=True)
             (staging_dir / PREPROCESS_GENERATION_MANIFEST).unlink(missing_ok=True)
             if (
-                str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report"
+                str(getattr(cfg, "variant_analysis_mode", "off")).lower() in {"report", "filter"}
                 and PREPROCESS_VARIANT_METRICS_NODE not in reusable
             ):
                 _regenerate_variant_metrics(

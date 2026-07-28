@@ -76,11 +76,31 @@ def test_config_normalizes_and_rejects_partial_legacy_pair() -> None:
             {"variant_analysis_mode": "report"},
             defaults_map={},
         )
-    with pytest.raises(ValueError, match="auto, off, report"):
+    with pytest.raises(ValueError, match="requires explicit"):
         ExperimentConfig.from_var_dict(
-            {"variant_analysis_mode": "filter"},
+            {
+                "variant_analysis_mode": "filter",
+                "references_to_align_for_variant_annotation": ["refA", "refB"],
+            },
             defaults_map={},
         )
+
+    filtering, _ = ExperimentConfig.from_var_dict(
+        {
+            "variant_analysis_mode": "filter",
+            "references_to_align_for_variant_annotation": ["refA", "refB"],
+            "variant_qc_min_callable_sites": 4,
+            "variant_qc_min_callable_fraction": 0.5,
+            "variant_qc_min_calls_per_state": 2,
+            "variant_qc_disallowed_event_classes": ["breakpoint"],
+        },
+        defaults_map={},
+    )
+    assert filtering.variant_analysis_mode == "filter"
+    assert filtering.variant_qc_min_callable_sites == 4
+    assert filtering.variant_qc_min_callable_fraction == 0.5
+    assert filtering.variant_qc_min_calls_per_state == 2
+    assert filtering.variant_qc_disallowed_event_classes == ["breakpoint"]
 
 
 def test_legacy_reference_resolution_rejects_missing_and_ambiguous_sources() -> None:

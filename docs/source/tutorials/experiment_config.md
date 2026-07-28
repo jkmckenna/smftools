@@ -61,6 +61,31 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `mod_list`: Modification calls to use for direct-modality workflows.
 - `conversion_types`: Target modification types for conversion workflows.
 
+## Variant QC and migration
+
+`variant_analysis_mode` accepts `auto`, `off`, `report`, or `filter`. Existing
+configurations do not require migration: `auto` continues to select reporting
+when both `references_to_align_for_variant_annotation` members are configured,
+and `report` never removes a read.
+
+`filter` is intentionally opt-in and has no implicit biological thresholds. It
+requires all of the following:
+
+| Setting | Meaning |
+| --- | --- |
+| `variant_qc_min_callable_sites` | Minimum raw callable informative-site observations |
+| `variant_qc_min_callable_fraction` | Minimum callable fraction of the reference-set informative sites, in `(0, 1]` |
+| `variant_qc_min_calls_per_state` | Minimum raw calls supporting each state of a breakpoint |
+| `variant_qc_disallowed_event_classes` | Non-empty list containing `breakpoint` and/or `ambiguous_reference_assignment` |
+
+Filtering uses raw call counts rather than interpolated variant-segment lengths.
+Insufficient or unavailable evidence remains diagnostic and passes variant QC.
+A fully discordant read without a breakpoint is classified as
+`ambiguous_reference_assignment`; it passes unless that class is explicitly
+disallowed. Per-read indels are outside this initial variant-QC contract.
+Duplicate detection considers all reads passing nonvariant QC and prefers a
+variant-QC-pass member as the cluster keeper.
+
 ## Genome region scopes and migration
 
 The three region fields are independent. Each accepts BED3 through BED6 using original FASTA,

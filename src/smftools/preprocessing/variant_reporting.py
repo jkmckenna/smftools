@@ -1,4 +1,4 @@
-"""Preprocess integration for reporting-only partitioned variant evidence."""
+"""Preprocess integration for partitioned variant evidence and strict QC."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ VARIANT_REPORTING_SUBDIR = "variant"
 
 _SUMMARY_RENAMES = {
     "variant_reference_set_id": "variant_reference_set_id",
+    "aligned_member_index": "variant_aligned_member_index",
     "evidence_status": "variant_evidence_status",
     "informative_site_count": "variant_informative_site_count",
     "callable_site_count": "variant_callable_site_count",
@@ -29,10 +30,70 @@ _SUMMARY_RENAMES = {
     "segment_cigar": "variant_segment_cigar",
 }
 
+VARIANT_QC_BREAKPOINT = "breakpoint"
+VARIANT_QC_AMBIGUOUS_REFERENCE = "ambiguous_reference_assignment"
+VARIANT_QC_SELF_CONSISTENT = "self_consistent"
+VARIANT_QC_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+VARIANT_QC_EVIDENCE_UNAVAILABLE = "evidence_unavailable"
+
 
 def variant_reporting_enabled(cfg: Any) -> bool:
-    """Return whether normalized configuration requests reporting."""
-    return str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "report"
+    """Return whether normalized configuration requests variant evidence."""
+    return str(getattr(cfg, "variant_analysis_mode", "off")).lower() in {
+        "report",
+        "filter",
+    }
+
+
+def _variant_qc_classes(obs: pd.DataFrame, cfg: Any) -> pd.Series:
+    """Classify strict QC events from raw evidence counts, never segment lengths."""
+    minimum_callable = int(getattr(cfg, "variant_qc_min_callable_sites", None) or 1)
+    minimum_fraction = float(getattr(cfg, "variant_qc_min_callable_fraction", None) or 0.0)
+    minimum_state_calls = int(getattr(cfg, "variant_qc_min_calls_per_state", None) or 1)
+    classes = pd.Series(
+        VARIANT_QC_EVIDENCE_UNAVAILABLE,
+        index=obs.index,
+        dtype="object",
+    )
+    complete = obs["variant_evidence_status"].fillna("").astype(str).eq("complete")
+    informative = pd.to_numeric(obs["variant_informative_site_count"], errors="coerce").fillna(0)
+    callable_sites = pd.to_numeric(obs["variant_callable_site_count"], errors="coerce").fillna(0)
+    callable_fraction = callable_sites.div(informative.where(informative > 0))
+    obs["variant_callable_fraction"] = callable_fraction.astype(float)
+    sufficient = (
+        complete & (callable_sites >= minimum_callable) & (callable_fraction >= minimum_fraction)
+    )
+    classes.loc[complete & ~sufficient] = VARIANT_QC_INSUFFICIENT_EVIDENCE
+
+    first_calls = pd.to_numeric(obs["variant_member_1_call_count"], errors="coerce").fillna(0)
+    second_calls = pd.to_numeric(obs["variant_member_2_call_count"], errors="coerce").fillna(0)
+    aligned_member = pd.to_numeric(obs["variant_aligned_member_index"], errors="coerce")
+    self_calls = first_calls.where(aligned_member.eq(0), second_calls)
+    other_calls = second_calls.where(aligned_member.eq(0), first_calls)
+    valid_member = aligned_member.isin([0, 1])
+    classes.loc[complete & ~valid_member] = VARIANT_QC_EVIDENCE_UNAVAILABLE
+
+    breakpoint = obs["variant_has_breakpoint"].fillna(False).astype(bool)
+    supported_breakpoint = (
+        sufficient
+        & valid_member
+        & breakpoint
+        & (self_calls >= minimum_state_calls)
+        & (other_calls >= minimum_state_calls)
+    )
+    classes.loc[supported_breakpoint] = VARIANT_QC_BREAKPOINT
+    unsupported_breakpoint = sufficient & valid_member & breakpoint & ~supported_breakpoint
+    classes.loc[unsupported_breakpoint] = VARIANT_QC_INSUFFICIENT_EVIDENCE
+
+    without_breakpoint = sufficient & valid_member & ~breakpoint
+    ambiguous = without_breakpoint & self_calls.eq(0) & (other_calls >= minimum_state_calls)
+    classes.loc[ambiguous] = VARIANT_QC_AMBIGUOUS_REFERENCE
+    self_consistent = without_breakpoint & other_calls.eq(0) & self_calls.gt(0)
+    classes.loc[self_consistent] = VARIANT_QC_SELF_CONSISTENT
+    classes.loc[without_breakpoint & ~(ambiguous | self_consistent)] = (
+        VARIANT_QC_INSUFFICIENT_EVIDENCE
+    )
+    return classes
 
 
 def _reverse_complement(sequence: str) -> str:
@@ -67,8 +128,9 @@ def resolve_variant_reference_set(
 def append_variant_reporting_annotations(
     obs_path: str | Path,
     variant_obs_path: str | Path,
+    cfg: Any,
 ) -> Path:
-    """Merge evidence summaries and reporting-only QC masks into preprocess obs."""
+    """Merge evidence summaries and compose report/filter variant QC masks."""
     import pyarrow.dataset as arrow_dataset
 
     obs_path = Path(obs_path)
@@ -84,11 +146,22 @@ def append_variant_reporting_annotations(
     summary = evidence[["read_id", *available]].rename(columns=available)
     obs = obs.merge(summary, on="read_id", how="left", validate="one_to_one")
 
-    # Reporting never removes a molecule. Keep the pre-existing QC result as an
-    # explicit independently typed channel, then compose the unchanged result.
+    # Keep the pre-existing QC result as an explicit independent channel before
+    # composing the selected variant policy.
     obs["passes_nonvariant_qc"] = obs["passes_qc"].astype(bool)
-    obs["passes_variant_qc"] = pd.Series(True, index=obs.index, dtype=bool)
+    obs["variant_qc_class"] = _variant_qc_classes(obs, cfg)
+    filter_mode = str(getattr(cfg, "variant_analysis_mode", "off")).lower() == "filter"
+    disallowed = {str(value) for value in getattr(cfg, "variant_qc_disallowed_event_classes", [])}
+    failed_variant = (
+        obs["variant_qc_class"].isin(disallowed)
+        if filter_mode
+        else pd.Series(False, index=obs.index)
+    )
+    obs["passes_variant_qc"] = (~failed_variant).astype(bool)
     obs["variant_qc_reason"] = ""
+    obs.loc[failed_variant, "variant_qc_reason"] = "disallowed_" + obs.loc[
+        failed_variant, "variant_qc_class"
+    ].astype(str)
     obs["nonvariant_qc_reason"] = ""
     obs.loc[~obs["passes_read_qc"].astype(bool), "nonvariant_qc_reason"] = "failed_read_qc"
     modification_failed = ~obs["passes_modification_qc"].astype(bool)
