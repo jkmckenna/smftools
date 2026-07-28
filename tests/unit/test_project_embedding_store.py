@@ -104,6 +104,11 @@ def test_fit_or_extend_embedding_full_fit(tmp_path):
     source_member = result["meta"]["source"]["members"][0]
     assert source_member["stage"] == "raw"
     assert source_member["spine_sha256"]
+    assert set(source_member["source_channels"]) == {
+        "membership",
+        "features",
+        "variant_reporting",
+    }
     assert not Path(source_member["spine_path"]).is_absolute()
     for filename in ("pca_model.pkl", "umap_model.pkl", "pca_space.npy", "coords.npy"):
         assert (generation / filename).exists()
@@ -232,6 +237,37 @@ def test_changed_existing_features_require_force_recompute(tmp_path, monkeypatch
     monkeypatch.setattr(embedding_store, "_make_features", changed_features)
     with pytest.raises(EmbeddingCompositionError, match="changed feature values"):
         fit_or_extend_embedding(proj, uid, min_reads=5, n_neighbors=5)
+
+
+def test_reporting_only_source_change_does_not_require_embedding_refit():
+    from smftools.project.embedding_store import _source_member_changed
+
+    previous = {
+        "spine_sha256": "old-spine",
+        "source_channels": {
+            "membership": "members",
+            "features": "features",
+            "variant_reporting": "old-report",
+        },
+    }
+    reporting_only = {
+        "spine_sha256": "new-spine",
+        "source_channels": {
+            "membership": "members",
+            "features": "features",
+            "variant_reporting": "new-report",
+        },
+    }
+    changed_membership = {
+        **reporting_only,
+        "source_channels": {
+            **reporting_only["source_channels"],
+            "membership": "passes-dedup-changed",
+        },
+    }
+
+    assert not _source_member_changed(previous, reporting_only)
+    assert _source_member_changed(previous, changed_membership)
 
 
 def test_dependency_incompatibility_blocks_extension(tmp_path, monkeypatch):
