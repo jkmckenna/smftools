@@ -23,6 +23,9 @@ BARCODE_BOTH_ENDS: Final[bool] = False
 SEMANTIC_GRAPH_DEFINITION_VERSION: Final[int] = 1
 SEMANTIC_NODE_RESULT_SCHEMA_VERSION: Final[int] = 1
 SEMANTIC_PLAN_SCHEMA_VERSION: Final[int] = 1
+VARIANT_REFERENCE_SET_SCHEMA_VERSION: Final[int] = 1
+VARIANT_INFORMATIVE_SITE_SCHEMA_VERSION: Final[int] = 1
+VARIANT_CALL_SCHEMA_VERSION: Final[int] = 1
 
 # Barcode kit aliases for smftools demux backend
 # Maps kit alias names to paths of barcode YAML files (relative to package data or absolute)
