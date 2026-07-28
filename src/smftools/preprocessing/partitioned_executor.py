@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote
@@ -968,6 +969,7 @@ def execute_partitioned_preprocessing(
     publication_dir: str | Path | None = None,
     run_root: str | Path | None = None,
     refresh_experiment_spine: bool = True,
+    reuse_task_artifacts_from: str | Path | None = None,
 ) -> dict[str, Path]:
     """Execute planned tasks and write catalogs plus a derived spine.
 
@@ -981,9 +983,6 @@ def execute_partitioned_preprocessing(
     publication_dir = Path(publication_dir) if publication_dir is not None else output_dir
     run_root = Path(run_root) if run_root is not None else output_dir.parent
     output_dir.mkdir(parents=True, exist_ok=True)
-    from ..informatics.derived_read_index import prepare_derived_read_index
-
-    prepare_derived_read_index(output_dir)
     from ..cli.stage_artifacts import prepare_analysis_plot_layout
 
     plot_layout = prepare_analysis_plot_layout(
@@ -992,53 +991,97 @@ def execute_partitioned_preprocessing(
         source_spine=spine_path,
     )
     spine = load_spine(spine_path)
-    task_list = (
-        list(tasks)
-        if tasks is not None
-        else plan_preprocess_tasks(
-            spine,
-            target_task_memory_mb=int(getattr(cfg, "target_task_memory_mb", 512)),
-            spine_path=spine_path,
-        )
-    )
-    if not task_list:
-        raise RuntimeError("partitioned preprocessing has no non-empty analysis tasks")
-    task_catalog = write_preprocess_task_catalog(task_list, output_dir / PREPROCESS_TASK_CATALOG)
     obs_sidecar = write_read_qc_sidecar(spine, cfg, output_dir / PREPROCESS_OBS_SIDECAR)
-
-    youden_thresholds: dict[str, pd.DataFrame] | None = None
-    if str(cfg.smf_modality) == "direct" and getattr(
-        cfg, "fit_position_methylation_thresholds", False
-    ):
-        fit_references = sorted({task.reference for task in task_list})
-        logger.info(
-            "Fitting Youden position thresholds for %d reference(s) before task dispatch",
-            len(fit_references),
-        )
-        youden_thresholds = fit_direct_modality_youden_thresholds(
-            spine_path, cfg, fit_references, output_dir
-        )
-
-    import functools
-
-    from ..memory_guard import require_memory_headroom, run_tasks_parallel
-
-    bound_worker = functools.partial(execute_preprocess_task, youden_thresholds=youden_thresholds)
-    estimated_task_bytes = max(
-        (task.estimated_memory_bytes for task in task_list),
-        default=int(getattr(cfg, "target_task_memory_mb", 512)) * (1024**2),
-    )
-    records = run_tasks_parallel(
-        bound_worker,
-        [(spine_path, task, cfg, output_dir) for task in task_list],
-        cfg=cfg,
-        pool_label=f"preprocess derived-layer tasks ({len(task_list)} tasks)",
-        per_item_memory_mb=estimated_task_bytes / (1024**2),
-        estimator="preprocess_task_plan_peak",
-    )
     catalog_path = output_dir / PREPROCESS_PARTITION_CATALOG
-    record_frame = pd.DataFrame(records)
-    record_frame.to_parquet(catalog_path, index=False)
+    task_catalog = output_dir / PREPROCESS_TASK_CATALOG
+    if reuse_task_artifacts_from is not None:
+        from ..informatics.experiment_manifest import artifact_record
+
+        reuse_root = Path(reuse_task_artifacts_from)
+        for relative in (
+            PREPROCESS_STORE_SUBDIR,
+            "read_index",
+        ):
+            shutil.copytree(reuse_root / relative, output_dir / relative, dirs_exist_ok=True)
+        for relative in (PREPROCESS_TASK_CATALOG, PREPROCESS_PARTITION_CATALOG):
+            shutil.copy2(reuse_root / relative, output_dir / relative)
+        for relative in (
+            PREPROCESS_STORE_SUBDIR,
+            "read_index",
+            PREPROCESS_TASK_CATALOG,
+            PREPROCESS_PARTITION_CATALOG,
+        ):
+            source_checksum = artifact_record(
+                reuse_root / relative,
+                reuse_root,
+                checksum=True,
+            )["sha256"]
+            copied_checksum = artifact_record(
+                output_dir / relative,
+                output_dir,
+                checksum=True,
+            )["sha256"]
+            if source_checksum != copied_checksum:
+                raise RuntimeError(f"reused preprocess artifact copy is corrupt: {relative}")
+        record_frame = pd.read_parquet(catalog_path)
+        records = record_frame.to_dict("records")
+        logger.info(
+            "Reused %d validated preprocess task result(s) from %s",
+            len(records),
+            reuse_root,
+        )
+    else:
+        from ..informatics.derived_read_index import prepare_derived_read_index
+
+        prepare_derived_read_index(output_dir)
+        task_list = (
+            list(tasks)
+            if tasks is not None
+            else plan_preprocess_tasks(
+                spine,
+                target_task_memory_mb=int(getattr(cfg, "target_task_memory_mb", 512)),
+                spine_path=spine_path,
+            )
+        )
+        if not task_list:
+            raise RuntimeError("partitioned preprocessing has no non-empty analysis tasks")
+        task_catalog = write_preprocess_task_catalog(
+            task_list, output_dir / PREPROCESS_TASK_CATALOG
+        )
+        youden_thresholds: dict[str, pd.DataFrame] | None = None
+        if str(cfg.smf_modality) == "direct" and getattr(
+            cfg, "fit_position_methylation_thresholds", False
+        ):
+            fit_references = sorted({task.reference for task in task_list})
+            logger.info(
+                "Fitting Youden position thresholds for %d reference(s) before task dispatch",
+                len(fit_references),
+            )
+            youden_thresholds = fit_direct_modality_youden_thresholds(
+                spine_path, cfg, fit_references, output_dir
+            )
+
+        import functools
+
+        from ..memory_guard import require_memory_headroom, run_tasks_parallel
+
+        bound_worker = functools.partial(
+            execute_preprocess_task, youden_thresholds=youden_thresholds
+        )
+        estimated_task_bytes = max(
+            (task.estimated_memory_bytes for task in task_list),
+            default=int(getattr(cfg, "target_task_memory_mb", 512)) * (1024**2),
+        )
+        records = run_tasks_parallel(
+            bound_worker,
+            [(spine_path, task, cfg, output_dir) for task in task_list],
+            cfg=cfg,
+            pool_label=f"preprocess derived-layer tasks ({len(task_list)} tasks)",
+            per_item_memory_mb=estimated_task_bytes / (1024**2),
+            estimator="preprocess_task_plan_peak",
+        )
+        record_frame = pd.DataFrame(records)
+        record_frame.to_parquet(catalog_path, index=False)
     core_columns = [
         column for column in ("reference", "core_start", "core_end") if column in record_frame
     ]
@@ -1048,6 +1091,8 @@ def execute_partitioned_preprocessing(
         else 0
     )
     estimated_reducer_bytes = len(spine.obs) * 4096 + reduced_positions * 2048
+    from ..memory_guard import require_memory_headroom
+
     require_memory_headroom(
         cfg,
         estimated_memory_mb=max(1, estimated_reducer_bytes) / 1024**2,

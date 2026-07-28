@@ -30,6 +30,8 @@ _LAZY_ATTRS = {
     "add_umi_hamming_clusters": "smftools.preprocessing.preprocess_umi_annotations",
     "add_umi_pass_obs_fields": "smftools.preprocessing.preprocess_umi_annotations",
     "preprocess_umi_annotations": "smftools.preprocessing.preprocess_umi_annotations",
+    "plan_preprocess_upgrade": "smftools.preprocessing.semantic_upgrade",
+    "preprocess_node_specs": "smftools.preprocessing.semantic_upgrade",
     "umi_sequence_entropy": "smftools.preprocessing.preprocess_umi_annotations",
     "analyze_umi_bipartite_graph": "smftools.preprocessing.umi_bipartite_analysis",
     "reindex_coordinates": "smftools.preprocessing.reindex_references_adata",
