@@ -102,6 +102,67 @@ def test_project_cli_end_to_end(tmp_path):
     assert set(combined.obs["experiment"]) == {"expA", "expB"}
 
 
+def test_project_workflow_contract_end_to_end(tmp_path):
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    project = tmp_path / "project"
+    output = tmp_path / "workflow-output"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(project)]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli_entry.cli,
+            ["project", "add", str(project), str(tmp_path / "expA")],
+        ).exit_code
+        == 0
+    )
+
+    run = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "run",
+            str(project),
+            uid,
+            "--output-root",
+            str(output),
+            "--layers",
+            "sequence_integer_encoding",
+        ],
+    )
+    assert run.exit_code == 0, run.output
+    result = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
+    assert result["outcome"] == "success"
+    combined, _ = safe_read_h5ad(output / "materialized.h5ad.gz")
+    assert combined.n_obs == 4
+
+    repeated = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "run",
+            str(project),
+            uid,
+            "--output-root",
+            str(output),
+            "--layers",
+            "sequence_integer_encoding",
+        ],
+    )
+    assert repeated.exit_code == 0, repeated.output
+    assert (
+        json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))["outcome"]
+        == "compatible_skip"
+    )
+
+    validate = runner.invoke(
+        cli_entry.cli,
+        ["project", "validate", str(project), str(output), "--json"],
+    )
+    assert validate.exit_code == 0, validate.output
+    assert json.loads(validate.output)["valid"] is True
+
+
 def test_project_plan_cli_is_read_only_and_emits_json(tmp_path):
     uid = reference_uid(SEQUENCE, 12)
     _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)

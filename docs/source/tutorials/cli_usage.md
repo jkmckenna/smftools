@@ -22,6 +22,48 @@ smftools experiment batch raw /path/to/config_paths.csv
 Each command creates or reuses stage-specific artifacts in the output directory. Later commands
 reuse results from earlier stages unless you explicitly force a redo via configuration flags.
 
+### Workflow-engine invocation
+
+Use `experiment run` when another workflow engine owns staging and resources:
+
+```shell
+smftools experiment run experiment_config.csv \
+  --target full \
+  --output-root task-output \
+  --input staged-input.bam \
+  --fasta staged-reference.fa \
+  --cpus 8 \
+  --memory-gb 32 \
+  --strict
+```
+
+The source CSV is not rewritten. Overrides are stored in
+`task-output/.smftools-workflow/runtime_config.csv`, and the command verifies
+that the source config and explicitly staged inputs remain unchanged. CPU and
+memory values are reductions of the config/host resource envelope, not ways to
+raise it. `--accelerator` accepts `auto`, `cpu`, `cuda`, or `mps`; availability
+and a CPU-only config remain hard ceilings.
+
+Every terminal execution writes `workflow_result.json`, including structured
+failure information when the command exits nonzero. It links the plan,
+outcome, generation IDs, relative artifacts and checksums, schema versions,
+timings, resource decision, and `software_versions.json`. Strict mode turns a
+missing external tool needed by a requested optional report into an early
+failure.
+
+After publication or relocation, validate the directory:
+
+```shell
+smftools experiment validate task-output --json
+```
+
+Validation is read-only and exits nonzero for failed, incomplete, incompatible,
+stale, corrupt, or pointer-invalid outputs. Supported staged sources are local
+filesystem files and local `file://` URIs. Directory, HTTP, object-store, and
+other remote inputs must be staged to one local file first. Workflow mode
+creates read-only aliases under the output root so generated indexes and
+sidecars cannot land beside the source files.
+
 ## What each command does
 
 ### `smftools experiment raw`
@@ -294,6 +336,13 @@ canonical name even if experiments called it something different.
   For larger selections, pass `--partitioned` and make `--output` a new directory. This writes
   independently readable experiment/barcode/read-chunk Zarr parts, `catalog.parquet`, and a
   completion manifest without constructing a final pooled AnnData.
+- `project run PROJECT_DIR CANONICAL_REFERENCE --output-root TASK_OUTPUT`
+  exposes materialization through the same stable workflow result schema as
+  `experiment run`. The materialized H5AD (or partitioned directory), versions,
+  checksums, plan, resource decision, and structured failure are confined to
+  `TASK_OUTPUT`. An identical valid request returns `compatible_skip`.
+  `project validate PROJECT_DIR TASK_OUTPUT --json` checks artifact integrity
+  and compares the current project source plan with the published plan.
 - `project export-latent PROJECT_DIR OUTPUT_DIR` exports one Zarr artifact per experiment/core
   latent coordinate owner plus a portable catalog and completion manifest. Filters include
   `--canonical-reference`, repeatable `--experiment`, `--molecule-uid`, and
