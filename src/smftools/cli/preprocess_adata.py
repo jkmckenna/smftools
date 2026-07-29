@@ -25,6 +25,8 @@ logger = get_logger(__name__)
 @stage_logging_lifecycle
 def preprocess_adata(
     config_path: str,
+    *,
+    cfg=None,
 ) -> Tuple[Optional[Path], Optional[Path]]:
     """
     CLI-facing wrapper for preprocessing.
@@ -55,7 +57,7 @@ def preprocess_adata(
     )
 
     # 1) Ensure config is loaded and at least *some* AnnData stage exists
-    cfg = load_experiment_config(config_path)
+    cfg = load_experiment_config(config_path) if cfg is None else cfg
 
     # Configure logging once, before any branch below (skip / partitioned / legacy)
     # might return without ever reaching preprocess_adata_core.

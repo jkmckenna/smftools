@@ -512,7 +512,11 @@ def _load_preprocess_x_selection(
             continue
         if not required.issubset(set(map(str, part.obs_names))):
             continue
-        return part[list(selection.index)].copy()
+        part = part[list(selection.index)].copy()
+        selected_obs = selection.reindex(part.obs_names)
+        for column in selected_obs:
+            part.obs[column] = selected_obs[column].to_numpy()
+        return part
     return None
 
 

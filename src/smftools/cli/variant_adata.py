@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import anndata as ad
 
@@ -11,57 +12,149 @@ from smftools.logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
+VARIANT_DEPRECATION_MESSAGE = (
+    "`smftools experiment variant` is deprecated as a standalone H5AD stage. "
+    "It now requests the authoritative variant evidence, cohort metrics, and plots "
+    "integrated into preprocessing. Configure `variant_analysis_mode: report` (or "
+    "the explicitly thresholded `filter` mode) and use `smftools experiment preprocess`."
+)
+
+
+class LegacyVariantMigrationError(RuntimeError):
+    """Raised when legacy retained-row data cannot produce complete variant evidence."""
+
+
+def _current_generation_has_integrated_variant(output_directory: Path) -> bool:
+    from ..constants import PREPROCESS_DIR
+    from ..preprocessing.preprocess_generation import (
+        PreprocessGenerationError,
+        resolve_current_preprocess_generation,
+    )
+    from ..preprocessing.semantic_upgrade import (
+        PREPROCESS_VARIANT_EVIDENCE_NODE,
+        PREPROCESS_VARIANT_METRICS_NODE,
+        PREPROCESS_VARIANT_REFERENCE_NODE,
+    )
+
+    try:
+        current = resolve_current_preprocess_generation(output_directory / PREPROCESS_DIR)
+    except PreprocessGenerationError:
+        return False
+    if current is None:
+        return False
+    manifest = current[1]
+    complete_nodes = {
+        str(result.get("analysis_id"))
+        for result in manifest.get("node_results", [])
+        if isinstance(result, dict) and result.get("state") == "complete"
+    }
+    required = {
+        PREPROCESS_VARIANT_REFERENCE_NODE,
+        PREPROCESS_VARIANT_EVIDENCE_NODE,
+        PREPROCESS_VARIANT_METRICS_NODE,
+    }
+    return required.issubset(complete_nodes)
+
+
+def _partitioned_raw_source(paths: Any) -> Path | None:
+    from ..informatics.partition_read import load_spine
+
+    for attribute in ("spine", "raw_spine"):
+        candidate = getattr(paths, attribute, None)
+        if candidate is None or not Path(candidate).is_file():
+            continue
+        try:
+            spine = load_spine(candidate, verbose=False)
+        except Exception:
+            continue
+        if bool(spine.uns.get("is_spine")) and bool(dict(spine.uns.get("reference_plans", {}))):
+            return Path(candidate)
+    return None
+
+
+def _legacy_migration_error(paths: Any) -> LegacyVariantMigrationError:
+    pp = Path(paths.pp)
+    pp_dedup = Path(paths.pp_dedup)
+    raw = Path(paths.raw)
+    legacy_variant = Path(paths.variant)
+    if pp_dedup != pp and pp_dedup.is_file():
+        return LegacyVariantMigrationError(
+            "legacy deduplicated preprocess input contains retained rows only; it cannot "
+            "be represented as complete all-molecule variant evidence. Restore the original "
+            "partitioned raw source and rerun preprocess with variant_analysis_mode enabled."
+        )
+    if pp.is_file():
+        return LegacyVariantMigrationError(
+            "legacy monolithic preprocess input cannot publish authoritative partitioned "
+            "all-molecule variant evidence. Restore or regenerate the partitioned raw source."
+        )
+    if raw.is_file():
+        return LegacyVariantMigrationError(
+            "legacy monolithic raw H5AD input is not an authoritative partitioned variant "
+            "source. Rerun `smftools experiment raw`, then preprocess with "
+            "variant_analysis_mode enabled."
+        )
+    if legacy_variant.is_file():
+        return LegacyVariantMigrationError(
+            "only a legacy standalone variant H5AD is available and the original raw source "
+            "is missing. It remains readable with read_legacy_variant_adata(), but cannot be "
+            "upgraded to complete all-molecule evidence."
+        )
+    return LegacyVariantMigrationError(
+        "integrated variant evidence is unavailable and the original partitioned raw source "
+        "is missing; a complete upgrade cannot be reconstructed from filtered outputs."
+    )
+
 
 def variant_adata(
     config_path: str,
-) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
-    """
-    CLI-facing wrapper for variant analyses.
+) -> Tuple[Optional[Path], Optional[Path]]:
+    """Request authoritative integrated variant preprocessing for compatibility."""
+    from ..preprocessing.variant_reference import normalize_legacy_variant_pair
+    from .helpers import get_adata_paths, load_experiment_config
+    from .preprocess_adata import preprocess_adata
 
-    Called by: `smftools experiment variant <config_path>`
-
-    Responsibilities:
-    - Ensure a usable AnnData exists.
-    - Determine which AnnData stages exist.
-    - Decide whether to skip (return existing) or run the core.
-    - Call `variant_adata_core(...)` when actual work is needed.
-    """
-    from ..readwrite import safe_read_h5ad
-    from .helpers import get_adata_paths, load_experiment_config, resolve_adata_stage
-
-    # 1) Ensure config + basic paths via load_adata
+    warnings.warn(VARIANT_DEPRECATION_MESSAGE, FutureWarning, stacklevel=2)
+    logger.warning(VARIANT_DEPRECATION_MESSAGE)
     cfg = load_experiment_config(config_path)
-
     paths = get_adata_paths(cfg)
-
-    variant_path = paths.variant
-
-    # Stage-skipping logic
-    if not getattr(cfg, "force_redo_variant_analyses", False):
-        if variant_path.exists():
-            logger.info(f"Variant AnnData found: {variant_path}\nSkipping smftools variant")
-            return None, variant_path
-
-    # Decide which AnnData to use as the *starting point* for analyses
-    source_path, stage = resolve_adata_stage(cfg, paths, min_stage="pp")
-    if source_path is None:
-        logger.warning(
-            "No suitable AnnData found for variant analyses (need at least preprocessed)."
+    mode = str(getattr(cfg, "variant_analysis_mode", "off")).strip().lower()
+    if mode not in {"report", "filter"}:
+        raise ValueError(
+            "the variant compatibility command requires variant_analysis_mode='report' "
+            "or the explicitly configured 'filter' mode"
         )
-        return None, None
+    if (
+        normalize_legacy_variant_pair(
+            getattr(cfg, "references_to_align_for_variant_annotation", [None, None])
+        )
+        is None
+    ):
+        raise ValueError(
+            "integrated variant reporting requires two references_to_align_for_variant_annotation"
+        )
+    if (
+        not _current_generation_has_integrated_variant(Path(cfg.output_directory))
+        and _partitioned_raw_source(paths) is None
+    ):
+        raise _legacy_migration_error(paths)
+    return preprocess_adata(config_path, cfg=cfg)
 
-    start_adata, _ = safe_read_h5ad(source_path)
 
-    # 4) Run the core
-    adata_variant, variant_path = variant_adata_core(
-        adata=start_adata,
-        cfg=cfg,
-        paths=paths,
-        source_adata_path=source_path,
-        config_path=config_path,
+def read_legacy_variant_adata(path: str | Path):
+    """Read a historical standalone variant H5AD without treating it as current evidence."""
+    from ..readwrite import safe_read_h5ad
+
+    warnings.warn(
+        "legacy standalone variant H5ADs are retained-row snapshots, not authoritative "
+        "integrated all-molecule evidence",
+        FutureWarning,
+        stacklevel=2,
     )
-
-    return adata_variant, variant_path
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    return safe_read_h5ad(path)
 
 
 def variant_adata_core(
@@ -71,15 +164,10 @@ def variant_adata_core(
     source_adata_path: Optional[Path] = None,
     config_path: Optional[str] = None,
 ) -> Tuple[ad.AnnData, Path]:
-    """
-    Core variant analysis pipeline.
+    """Run the historical standalone variant H5AD implementation.
 
-    Assumes:
-    - `cfg` is the ExperimentConfig.
-
-    Does:
-    -
-    - Save AnnData
+    This remains importable for existing programmatic callers and legacy-file
+    reproducibility, but the public CLI no longer dispatches to it.
     """
     import os
     import warnings

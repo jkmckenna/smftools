@@ -102,30 +102,19 @@ General AnnData structures added by `preprocess`:
 
 ### `smftools experiment variant`
 
-The variant command focuses on DNA sequence variation analyses. It:
+This command is a deprecated compatibility alias for integrated preprocessing
+variant analysis. It requests the same immutable all-molecule evidence, cohort
+metrics, QC annotations, and plots produced by `smftools experiment preprocess`;
+it no longer writes or reuses a separate `variant_adata_outputs/*.h5ad.gz`
+stage. Configure `variant_analysis_mode: report` (or the explicitly thresholded
+`filter` mode) and two `references_to_align_for_variant_annotation`.
 
-- Requires at least a preprocessed AnnData object.
-- Calculates position level variation frequencies per reference/sample.
-- Generates z-scores for variant occurance given read level Q-scores and assuming uniform Palt transitions.
-- Visualizes read DNA sequence encodings and mismatch encodings.
-
-General AnnData structures added by `variant`:
-
-- `layers`
-- `"{seq1_col}__{seq2_col}_variant_call"`: per-position variant call state (`1=seq1`, `2=seq2`, `0=unknown/no-coverage`, `-1=non-informative/non-mismatch`).
-- `"{seq1_col}__{seq2_col}_variant_segments"`: segmented track per read span (`0=outside span`, `1=seq1 segment`, `2=seq2 segment`, `3=transition zone`).
-- `var`
-- `"{prefix}_seq1_acceptable_bases"` and `"{prefix}_seq2_acceptable_bases"`: accepted base sets used for variant matching at informative sites.
-- `"{prefix}_informative_site"`: boolean mask of informative mismatch positions.
-- `obs`
-- `"{prefix}_breakpoint_count"` and `"{prefix}_is_chimeric"`: per-read breakpoint summary.
-- `"{prefix}_variant_breakpoints"` and `variant_breakpoints`: list of inferred breakpoint positions per read.
-- `chimeric_variant_sites` and `chimeric_variant_sites_type`: mismatch-segment chimera flags and categorical type labels.
-- `"{prefix}_variant_segment_cigar"` and `variant_segment_cigar`: run-length string using `S` (self) and `X` (other).
-- `"{prefix}_variant_self_base_count"` / `variant_self_base_count`: count of self-classified bases per read span.
-- `"{prefix}_variant_other_base_count"` / `variant_other_base_count`: count of other-classified bases per read span.
-- `uns`
-- workflow completion flags (e.g., `append_variant_call_layer_performed`, `append_variant_segment_layer_performed`) and prior mismatch/substitution metadata used by variant calling.
+Historical standalone variant H5ADs remain readable through
+`smftools.cli.variant_adata.read_legacy_variant_adata()`. They are retained-row
+snapshots and are never treated as proof of complete integrated evidence.
+Legacy raw or preprocess H5ADs cannot reconstruct all-molecule evidence after
+rows have been filtered; restore or regenerate the partitioned raw source
+before requesting the compatibility command.
 
 ### `smftools experiment chimeric`
 

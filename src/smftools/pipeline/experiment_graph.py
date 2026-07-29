@@ -29,12 +29,12 @@ from .semantic_graph import (
 )
 
 EXPERIMENT_STAGES = ("raw", "preprocess", "spatial", "hmm", "latent")
-LEGACY_EXPERIMENT_LEAVES = ("variant", "chimeric")
+LEGACY_EXPERIMENT_LEAVES = ("chimeric",)
 EXPERIMENT_NODE_IDS = {stage: f"experiment.{stage}.complete" for stage in EXPERIMENT_STAGES}
 LEGACY_EXPERIMENT_NODE_IDS = {
     stage: f"experiment.{stage}.legacy" for stage in LEGACY_EXPERIMENT_LEAVES
 }
-EXPERIMENT_TARGETS = ("raw", "preprocess", "spatial", "hmm", "latent", "full")
+EXPERIMENT_TARGETS = ("raw", "preprocess", "variant", "spatial", "hmm", "latent", "full")
 
 _STAGE_OUTPUT_SCHEMA_VERSIONS = {
     "raw": 3,
@@ -158,6 +158,8 @@ def resolve_experiment_target(cfg: Any, target: str) -> str:
     normalized = str(target).strip().lower()
     if normalized == "full":
         normalized = "latent" if bool(getattr(cfg, "full_run_latent", True)) else "hmm"
+    elif normalized == "variant":
+        normalized = "preprocess"
     try:
         return EXPERIMENT_NODE_IDS[normalized]
     except KeyError as exc:
