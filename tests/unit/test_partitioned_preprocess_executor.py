@@ -18,6 +18,8 @@ from smftools.preprocessing.variant_reporting import (
     append_variant_reporting_annotations,
     query_preprocess_variant_evidence,
 )
+from smftools.project.catalog import project_adata
+from smftools.project.registry import add_experiment, init_project
 from smftools.readwrite import safe_read_h5ad, safe_read_zarr
 from smftools.tools.partitioned_spatial import (
     _cap_clustermap_rows,
@@ -157,10 +159,13 @@ def test_variant_reporting_precedes_qc_and_preserves_filter_masks(tmp_path):
         tmp_path / "raw_outputs",
         reference_lengths={"ref_top": 12},
         extra_uns={
+            "experiment": "experiment",
+            "modality": "conversion",
+            "reference_uids": {"ref_top": "uid-ref"},
             "References": {
                 "ref_FASTA_sequence": "ACGCGTACGTAC",
                 "alt_FASTA_sequence": "ATGCGTACGTAC",
-            }
+            },
         },
     )
     cfg = _cfg()
@@ -207,6 +212,11 @@ def test_variant_reporting_precedes_qc_and_preserves_filter_masks(tmp_path):
 
     materialized = materialize(outputs["spine"], references="ref_top")
     assert "chimeric_variant_sites" in materialized.obs
+    project = tmp_path / "project"
+    init_project(project)
+    add_experiment(project, outputs["spine"], stage="preprocess")
+    pooled = project_adata(project, "uid-ref", stage="preprocess", layers=[])
+    assert "chimeric_variant_sites" in pooled.obs
     preprocess_spine, _ = safe_read_h5ad(outputs["spine"], verbose=False)
     assert "preprocess_variant_read_index" in preprocess_spine.uns
 

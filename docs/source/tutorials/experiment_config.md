@@ -86,6 +86,13 @@ disallowed. Per-read indels are outside this initial variant-QC contract.
 Duplicate detection considers all reads passing nonvariant QC and prefers a
 variant-QC-pass member as the cluster keeper.
 
+`smftools experiment variant` is retained only as a deprecated compatibility
+alias. It requires `report` or `filter` mode and requests the same authoritative
+preprocess generation as `smftools experiment preprocess`; standalone variant
+H5AD existence and legacy `*_performed` flags do not establish compatibility.
+The alias cannot upgrade a legacy deduplicated H5AD because filtered-out rows
+are unavailable.
+
 ## Genome region scopes and migration
 
 The three region fields are independent. Each accepts BED3 through BED6 using original FASTA,

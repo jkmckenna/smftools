@@ -60,7 +60,10 @@ Two read-level filters/labels run as part of this stage:
 
 ## Variant Usage
 
-This command performs DNA sequence variation based analyses on the anndata object.
+This deprecated compatibility command requests the integrated preprocessing
+variant evidence, metrics, annotations, and plots. Set
+`variant_analysis_mode: report` (or configure the explicit `filter` policy);
+new standalone variant H5AD files are not produced.
 
 ```shell
 smftools experiment variant "/Path_to_experiment_config.csv"

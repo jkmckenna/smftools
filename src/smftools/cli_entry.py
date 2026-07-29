@@ -150,9 +150,10 @@ def latent(config_path):
 @experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def variant(config_path):
-    """Sequence variation analyses"""
-    from .cli.variant_adata import variant_adata
+    """Deprecated alias for integrated preprocess variant reporting."""
+    from .cli.variant_adata import VARIANT_DEPRECATION_MESSAGE, variant_adata
 
+    click.echo(f"DEPRECATED: {VARIANT_DEPRECATION_MESSAGE}", err=True)
     variant_adata(config_path)
 
 
@@ -188,7 +189,7 @@ def full(config_path):
 @click.argument("config_path", type=click.Path(exists=True))
 @click.option(
     "--target",
-    type=click.Choice(["raw", "preprocess", "spatial", "hmm", "latent", "full"]),
+    type=click.Choice(["raw", "preprocess", "variant", "spatial", "hmm", "latent", "full"]),
     default="full",
     show_default=True,
     help="Experiment target to plan without executing it.",

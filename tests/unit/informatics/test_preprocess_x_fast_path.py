@@ -4,7 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from smftools.informatics.partition_read import _load_preprocess_x_selection, materialize
+from smftools.informatics.partition_read import (
+    _load_preprocess_x_selection,
+    load_spine,
+    materialize,
+)
 from smftools.informatics.raw_store import write_raw_store
 from smftools.preprocessing.partitioned_executor import execute_partitioned_preprocessing
 
@@ -116,6 +120,8 @@ def test_fast_path_matches_raw_reconstruction_for_single_barcode_selection(tmp_p
     )
     reference = reference[list(fast.obs_names)]
     np.testing.assert_array_equal(np.asarray(fast.X), np.asarray(reference.X))
+    spine = load_spine(preprocess["spine"], verbose=False)
+    assert fast.obs["passes_qc"].tolist() == spine.obs.loc[fast.obs_names, "passes_qc"].tolist()
 
 
 def test_fast_path_skipped_for_layers_none_and_still_correct(tmp_path):

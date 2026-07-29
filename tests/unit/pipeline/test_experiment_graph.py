@@ -85,7 +85,7 @@ def _trust_current_preprocess(monkeypatch, tmp_path):
     )
 
 
-def test_experiment_graph_is_linear_and_registers_legacy_compatibility_leaves():
+def test_experiment_graph_is_linear_and_variant_aliases_preprocess(tmp_path):
     specs = {spec.analysis_id: spec for spec in experiment_graph.experiment_node_specs()}
 
     assert set(experiment_graph.EXPERIMENT_NODE_IDS.values()).issubset(specs)
@@ -94,8 +94,10 @@ def test_experiment_graph_is_linear_and_registers_legacy_compatibility_leaves():
     assert specs[experiment_graph.EXPERIMENT_NODE_IDS["latent"]].dependencies == (
         experiment_graph.EXPERIMENT_NODE_IDS["hmm"],
     )
-    assert specs[experiment_graph.LEGACY_EXPERIMENT_NODE_IDS["variant"]].dependencies == (
-        experiment_graph.EXPERIMENT_NODE_IDS["preprocess"],
+    assert "variant" not in experiment_graph.LEGACY_EXPERIMENT_NODE_IDS
+    assert (
+        experiment_graph.resolve_experiment_target(_cfg(tmp_path), "variant")
+        == (experiment_graph.EXPERIMENT_NODE_IDS["preprocess"])
     )
 
 
