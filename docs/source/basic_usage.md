@@ -161,6 +161,29 @@ so an existing valid stage output is reused unless its force-redo configuration 
 smftools experiment full "/Path_to_experiment_config.csv"
 ```
 
+For execution inside Nextflow, Snakemake, WDL, or another external engine, use
+the task-local workflow contract:
+
+```shell
+smftools experiment run "/Path_to_experiment_config.csv" \
+  --target full \
+  --output-root "/Task_local_output" \
+  --input "/Staged_input.bam" \
+  --fasta "/Staged_reference.fa" \
+  --cpus 8 \
+  --memory-gb 32 \
+  --strict
+
+smftools experiment validate "/Task_local_output" --json
+```
+
+This preserves the source config, confines generated artifacts to the declared
+output root, and emits `workflow_result.json` plus `software_versions.json`.
+All published pointers in the workflow result are relative, allowing the
+complete output directory to be relocated and validated. Only local paths and
+local `file://` URIs to concrete files are supported; stage directory inputs
+and remote objects into one task-local file before invocation.
+
 ## Batch Usage
 
 This command performs batch processing of any of the above commands across multiple experiments. It takes in a tsv, txt, or csv of experiment specific config csvs.
@@ -203,6 +226,12 @@ smftools project materialize "/Path_to_project_directory" my_canonical_reference
 # Export a large selection as bounded, independently readable Zarr parts.
 smftools project materialize "/Path_to_project_directory" my_canonical_reference \
     -o "/Path_to_partitioned_output" --partitioned --layers C_site_binary
+
+# Workflow-engine materialization with a stable result and validation contract.
+smftools project run "/Path_to_project_directory" my_canonical_reference \
+    --output-root "/Task_local_project_output" --layers C_site_binary
+smftools project validate "/Path_to_project_directory" \
+    "/Task_local_project_output" --json
 
 # Export experiment/core-local latent coordinates as separate scoped artifacts.
 smftools project export-latent "/Path_to_project_directory" "/Path_to_latent_output" \

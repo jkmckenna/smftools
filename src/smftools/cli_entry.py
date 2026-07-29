@@ -211,6 +211,124 @@ def experiment_plan(config_path, target: str, as_json: bool):
 ##########################################
 
 
+####### Engine-facing workflow contract ###########
+@experiment_group.command("run")
+@click.argument("config_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--target",
+    type=click.Choice(["raw", "preprocess", "variant", "spatial", "hmm", "latent", "full"]),
+    default="full",
+    show_default=True,
+    help="Experiment target to execute.",
+)
+@click.option(
+    "--output-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Exclusive task-local root for every generated artifact.",
+)
+@click.option(
+    "--input",
+    "input_path",
+    default=None,
+    help="Override input_data_path with a staged local path or file:// URI.",
+)
+@click.option(
+    "--fasta",
+    "fasta_path",
+    default=None,
+    help="Override the reference FASTA with a staged local path or file:// URI.",
+)
+@click.option(
+    "--result-json",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Result path inside OUTPUT_ROOT (default: workflow_result.json).",
+)
+@click.option("--cpus", type=click.IntRange(min=1), default=None, help="Task-local CPU ceiling.")
+@click.option(
+    "--memory-gb",
+    type=click.FloatRange(min=0.001),
+    default=None,
+    help="Task-local memory ceiling in GiB.",
+)
+@click.option(
+    "--accelerator",
+    type=click.Choice(["auto", "cpu", "cuda", "mps"]),
+    default=None,
+    help="Task-local accelerator decision, bounded by config and availability.",
+)
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="Fail when a requested optional external tool or report cannot run.",
+)
+def experiment_run(
+    config_path,
+    target,
+    output_root,
+    input_path,
+    fasta_path,
+    result_json,
+    cpus,
+    memory_gb,
+    accelerator,
+    strict,
+):
+    """Execute one experiment with a stable workflow result contract."""
+    from .cli.workflow_contract import WorkflowContractError, run_experiment_workflow
+
+    try:
+        path = run_experiment_workflow(
+            config_path,
+            target=target,
+            output_root=output_root,
+            input_path=input_path,
+            fasta_path=fasta_path,
+            result_json=result_json,
+            cpus=cpus,
+            memory_gb=memory_gb,
+            accelerator=accelerator,
+            strict=strict,
+        )
+    except WorkflowContractError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(path)
+
+
+@experiment_group.command("validate")
+@click.argument("output_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--result-json",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Result path inside OUTPUT_ROOT (default: workflow_result.json).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit structured validation JSON.")
+def experiment_validate(output_root, result_json, as_json):
+    """Validate a completed or relocated workflow output without writing."""
+    import json
+
+    from .cli.workflow_contract import WorkflowContractError, validate_workflow_output
+
+    try:
+        validation = validate_workflow_output(output_root, result_json=result_json)
+    except WorkflowContractError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(validation, sort_keys=True, separators=(",", ":"), indent=2))
+    elif validation["valid"]:
+        click.echo("Workflow output is valid.")
+    else:
+        for issue in validation["issues"]:
+            click.echo(f"{issue['code']}: {issue['message']}", err=True)
+    if not validation["valid"]:
+        raise click.exceptions.Exit(1)
+
+
+##########################################
+
+
 ####### batch command ###########
 @experiment_group.command()
 @click.argument(
@@ -405,6 +523,46 @@ def batch(
             f"Batch completed with {summary['failed']} failure(s) out of {summary['total']} configs"
         )
     click.echo("Batch processing complete.")
+
+
+##########################################
+
+
+@cli.command("versions")
+@click.option(
+    "--tool",
+    "tools",
+    type=click.Choice(
+        [
+            "bedGraphToBigWig",
+            "bedtools",
+            "dorado",
+            "gzip",
+            "minimap2",
+            "modkit",
+            "multiqc",
+            "pod5",
+            "samtools",
+        ]
+    ),
+    multiple=True,
+    help="Include one external tool version; repeat for multiple tools.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit stable machine-readable JSON.")
+def versions_cmd(tools, as_json):
+    """Report stable smftools, Python, and requested external-tool versions."""
+    import json
+
+    from .cli.workflow_contract import software_versions
+
+    versions = software_versions(tools=tuple(tools))
+    if as_json:
+        click.echo(json.dumps(versions, sort_keys=True, separators=(",", ":"), indent=2))
+        return
+    click.echo(f"smftools {versions['smftools']}")
+    click.echo(f"Python {versions['python']}")
+    for name, record in versions["external_tools"].items():
+        click.echo(f"{name}: {record.get('version') or 'unavailable'}")
 
 
 ##########################################
@@ -720,6 +878,143 @@ def project_plan_cmd(
         partitioned=partitioned,
     )
     click.echo(plan.to_json() if as_json else format_project_plan(plan))
+
+
+@project_group.command("run")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("canonical_reference")
+@click.option(
+    "--output-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Exclusive task-local root for the materialization and result contract.",
+)
+@click.option(
+    "--output-name",
+    default=None,
+    help="Artifact name inside OUTPUT_ROOT (default depends on --partitioned).",
+)
+@click.option(
+    "--result-json",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Result path inside OUTPUT_ROOT (default: workflow_result.json).",
+)
+@click.option("--set", "set_name", default=None, help="Restrict to a named experiment set.")
+@click.option("--modality", default=None, help="Restrict to a modality.")
+@click.option(
+    "--experiment",
+    "experiments",
+    multiple=True,
+    help="Restrict to an experiment ID; repeat for multiple experiments.",
+)
+@click.option("--stage", default=None, help="Select one experiment pipeline stage.")
+@click.option("--start", type=int, default=None, help="Genomic window start (with --end).")
+@click.option("--end", type=int, default=None, help="Genomic window end (with --start).")
+@click.option("--layers", default=None, help="Comma-separated materialization layer subset.")
+@click.option("--read-metrics", is_flag=True, help="Include spatial per-read outputs.")
+@click.option("--allow-large", is_flag=True, help="Acknowledge the pooled-object soft limit.")
+@click.option("--partitioned", is_flag=True, help="Write bounded Zarr parts.")
+@click.option("--cpus", type=click.IntRange(min=1), default=None, help="Task-local CPU ceiling.")
+@click.option(
+    "--memory-gb",
+    type=click.FloatRange(min=0.001),
+    default=None,
+    help="Task-local memory ceiling in GiB.",
+)
+@click.option(
+    "--memory-percent",
+    type=click.FloatRange(min=0.001, max=100.0),
+    default=60.0,
+    show_default=True,
+    help="Task-local memory ceiling as a percentage of physical memory.",
+)
+def project_run_cmd(
+    project_dir,
+    canonical_reference,
+    output_root,
+    output_name,
+    result_json,
+    set_name,
+    modality,
+    experiments,
+    stage,
+    start,
+    end,
+    layers,
+    read_metrics,
+    allow_large,
+    partitioned,
+    cpus,
+    memory_gb,
+    memory_percent,
+):
+    """Materialize one project analysis with the stable workflow contract."""
+    from .cli.workflow_contract import (
+        WorkflowContractError,
+        run_project_materialization_workflow,
+    )
+
+    layer_list = None if layers is None else [item for item in layers.split(",") if item]
+    try:
+        path = run_project_materialization_workflow(
+            project_dir,
+            canonical_reference,
+            output_root=output_root,
+            output_name=output_name,
+            result_json=result_json,
+            set_name=set_name,
+            modality=modality,
+            experiments=experiments,
+            stage=stage,
+            start=start,
+            end=end,
+            layers=layer_list,
+            read_metrics=read_metrics,
+            allow_large=allow_large,
+            partitioned=partitioned,
+            cpus=cpus,
+            memory_gb=memory_gb,
+            memory_percent=memory_percent,
+        )
+    except WorkflowContractError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(path)
+
+
+@project_group.command("validate")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("output_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--result-json",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Result path inside OUTPUT_ROOT (default: workflow_result.json).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit structured validation JSON.")
+def project_validate_cmd(project_dir, output_root, result_json, as_json):
+    """Validate project output integrity and current source compatibility."""
+    import json
+
+    from .cli.workflow_contract import WorkflowContractError, validate_workflow_output
+
+    try:
+        validation = validate_workflow_output(
+            output_root,
+            result_json=result_json,
+            project_dir=project_dir,
+        )
+    except WorkflowContractError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(validation, sort_keys=True, separators=(",", ":"), indent=2))
+    elif validation["valid"]:
+        click.echo("Project workflow output is valid.")
+    else:
+        for issue in validation["issues"]:
+            click.echo(f"{issue['code']}: {issue['message']}", err=True)
+    if not validation["valid"]:
+        raise click.exceptions.Exit(1)
 
 
 @project_group.command("materialize")
