@@ -4,7 +4,25 @@ set -euo pipefail
 image="${1:?usage: smoke_cpu_image.sh IMAGE}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 smoke_root="$(mktemp -d)"
-trap 'chmod -R u+rwX "${smoke_root}" 2>/dev/null || true; rm -rf "${smoke_root}"' EXIT
+
+cleanup() {
+  local exit_code=$?
+  local cleanup_code=0
+  trap - EXIT
+  docker run --rm \
+    --user 0:0 \
+    --entrypoint /usr/bin/find \
+    --mount "type=bind,src=${smoke_root},dst=/cleanup" \
+    "${image}" \
+    /cleanup -mindepth 1 -delete >/dev/null || cleanup_code=$?
+  rmdir "${smoke_root}" || cleanup_code=$?
+  if ((exit_code == 0 && cleanup_code != 0)); then
+    exit_code=${cleanup_code}
+  fi
+  exit "${exit_code}"
+}
+
+trap cleanup EXIT
 chmod 0777 "${smoke_root}"
 
 image_id="$(docker image inspect --format '{{.Id}}' "${image}")"
@@ -64,9 +82,11 @@ docker run --rm \
   --tmpfs /tmp:rw,nosuid,nodev,size=128m,mode=1777 \
   --env HOME=/tmp \
   --env MPLCONFIGDIR=/tmp/matplotlib \
+  --env "SMFTOOLS_CONTAINER_DIGEST=${image_id}" \
   "${image}" \
   -euxo pipefail -c '
     test "$(id -u)" = "12345"
     ps -o pid= -p "$$"
-    smftools versions --json
+    smftools versions --json > /tmp/software_versions.json
+    python -c "import json; p=json.load(open(\"/tmp/software_versions.json\")); assert p[\"container\"][\"digest\"].startswith(\"sha256:\")"
   '

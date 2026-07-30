@@ -39,3 +39,6 @@ def test_container_acceptance_builds_without_publishing_and_scans_image():
     assert "compatible_skip" in smoke
     assert "experiment validate /work/relocated" in smoke
     assert "--user 12345:12345" in smoke
+    assert "trap cleanup EXIT" in smoke
+    assert "--user 0:0" in smoke
+    assert "/cleanup -mindepth 1 -delete" in smoke
