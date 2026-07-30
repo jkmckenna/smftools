@@ -63,6 +63,13 @@ dorado --version
 minimap2 --version
 ```
 
+## Production CPU container
+
+For isolated BAM-entry workflows, use the pinned, non-root production image
+contract described in [Production CPU container](containers.md). The image
+includes the CPU runtime, minimap2, and samtools; it intentionally excludes
+Dorado, CUDA, vendor model assets, modkit, and optional reporting tools.
+
 ## Development installation
 
 Clone the repository and install it in editable mode. Runtime feature extras

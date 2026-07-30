@@ -37,7 +37,7 @@ WORKFLOW_RUNTIME_DIRECTORY = ".smftools-workflow"
 WORKFLOW_RUNTIME_CONFIG_FILENAME = "runtime_config.csv"
 WORKFLOW_LOCK_FILENAME = "run.lock"
 WORKFLOW_RESULT_SCHEMA_VERSION = 1
-WORKFLOW_VERSIONS_SCHEMA_VERSION = 1
+WORKFLOW_VERSIONS_SCHEMA_VERSION = 2
 WORKFLOW_VALIDATION_SCHEMA_VERSION = 1
 _SUCCESS_OUTCOMES = frozenset({"success", "compatible_skip"})
 _RESULT_OUTCOMES = _SUCCESS_OUTCOMES | {"failed"}
@@ -76,6 +76,13 @@ _TOOL_VERSION_COMMANDS = {
     "multiqc": ("multiqc", "--version"),
     "pod5": ("pod5", "--version"),
     "samtools": ("samtools", "--version"),
+}
+_CONTAINER_ENVIRONMENT_FIELDS = {
+    "image": "SMFTOOLS_CONTAINER_IMAGE",
+    "tag": "SMFTOOLS_CONTAINER_TAG",
+    "digest": "SMFTOOLS_CONTAINER_DIGEST",
+    "revision": "SMFTOOLS_CONTAINER_REVISION",
+    "profile": "SMFTOOLS_CONTAINER_PROFILE",
 }
 
 
@@ -389,6 +396,8 @@ def _tool_version(tool: str) -> dict[str, Any]:
             command,
             capture_output=True,
             check=False,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             timeout=10,
         )
@@ -417,11 +426,16 @@ def software_versions(
             value = getattr(cfg, field, None)
             if value not in (None, ""):
                 models[field] = str(value)
+    container = {
+        field: os.environ.get(environment_name) or None
+        for field, environment_name in _CONTAINER_ENVIRONMENT_FIELDS.items()
+    }
     return {
         "schema_version": WORKFLOW_VERSIONS_SCHEMA_VERSION,
         "smftools": __version__,
         "python": platform.python_version(),
         "platform": sys.platform,
+        "container": container,
         "external_tools": {tool: _tool_version(tool) for tool in sorted(tools)},
         "models": models,
     }

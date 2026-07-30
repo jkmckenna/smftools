@@ -1,0 +1,59 @@
+name: Production CPU Container
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".dockerignore"
+      - ".github/workflows/container.yml"
+      - "containers/cpu/**"
+      - "pyproject.toml"
+      - "src/**"
+      - "tests/container/**"
+      - "tests/_test_inputs/parallel_dispatch/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-smoke-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      IMAGE: smftools-cpu:sha-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build pinned CPU image
+        run: |
+          docker build \
+            --file containers/cpu/Dockerfile \
+            --build-arg "SMFTOOLS_REVISION=${GITHUB_SHA}" \
+            --build-arg "SMFTOOLS_CONTAINER_TAG=sha-${GITHUB_SHA}" \
+            --tag "${IMAGE}" \
+            .
+
+      - name: Run BAM-entry workflow smoke
+        run: bash tests/container/smoke_cpu_image.sh "${IMAGE}"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0.24.0
+        with:
+          image: ${{ env.IMAGE }}
+          format: spdx-json
+          output-file: smftools-cpu.spdx.json
+          upload-artifact: true
+
+      - name: Scan fixable critical vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL

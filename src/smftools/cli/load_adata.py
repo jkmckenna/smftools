@@ -240,7 +240,6 @@ def load_adata_core(
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
     from ..informatics.partition_read import relative_uns_path
-    from ..informatics.pod5_functions import fast5_to_pod5, subsample_pod5_for_basecalling
     from ..informatics.region_catalog import (
         REFERENCE_INTERVAL_MAP_SCHEMA_VERSION,
         REGION_CATALOG_SCHEMA_VERSION,
@@ -314,12 +313,7 @@ def load_adata_core(
         mod_tsv_dir = modkit_outputs_directory / "mod_tsvs"
         mods = [cfg.mod_map[mod] for mod in cfg.mod_list]
 
-        if not check_executable_exists("dorado"):
-            raise RuntimeError(
-                "Error: 'dorado' is not installed or not in PATH. "
-                "Install from https://github.com/nanoporetech/dorado"
-            )
-        if not check_executable_exists("modkit"):
+        if cfg.direct_signal_backend == "modkit" and not check_executable_exists("modkit"):
             raise RuntimeError(
                 "Error: 'modkit' is not installed or not in PATH. "
                 "Install from https://github.com/nanoporetech/modkit"
@@ -330,7 +324,11 @@ def load_adata_core(
         mods = None
 
     # demux / aligner executables
-    if (not cfg.input_already_demuxed) or cfg.aligner == "dorado":
+    if (
+        cfg.input_type in {"fast5", "pod5"}
+        or not cfg.input_already_demuxed
+        or cfg.aligner == "dorado"
+    ):
         if not check_executable_exists("dorado"):
             raise RuntimeError(
                 "Error: 'dorado' is not installed or not in PATH. "
@@ -346,6 +344,8 @@ def load_adata_core(
     # # Detect the input filetypes
     # If the input files are fast5 files, convert the files to a pod5 file before proceeding.
     if cfg.input_type == "fast5":
+        from ..informatics.pod5_functions import fast5_to_pod5
+
         # take the input directory of fast5 files and write out a single pod5 file into the output directory.
         output_pod5 = load_directory / "FAST5s_to_POD5.pod5"
         if output_pod5.exists():
@@ -553,6 +553,8 @@ def load_adata_core(
                 "Need to provide a valid path to a dorado model directory to use dorado basecalling"
             )
         if getattr(cfg, "max_basecall_reads", None) is not None:
+            from ..informatics.pod5_functions import subsample_pod5_for_basecalling
+
             cfg.input_data_path = subsample_pod5_for_basecalling(
                 cfg.input_data_path,
                 cfg.max_basecall_reads,
