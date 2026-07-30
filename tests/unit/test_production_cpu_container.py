@@ -6,6 +6,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPOSITORY_ROOT / "containers" / "cpu" / "Dockerfile"
 CONTAINER_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "container.yml"
 SMOKE_SCRIPT = REPOSITORY_ROOT / "tests" / "container" / "smoke_cpu_image.sh"
+CONTAINER_DOCS = REPOSITORY_ROOT / "docs" / "source" / "containers.md"
 
 
 @pytest.mark.unit
@@ -42,3 +43,13 @@ def test_container_acceptance_builds_without_publishing_and_scans_image():
     assert "trap cleanup EXIT" in smoke
     assert "--user 0:0" in smoke
     assert "/cleanup -mindepth 1 -delete" in smoke
+
+
+@pytest.mark.unit
+def test_production_container_docs_use_the_image_entrypoint():
+    docs = CONTAINER_DOCS.read_text(encoding="utf-8")
+
+    assert '"smftools-cpu:sha-COMPLETE_COMMIT_SHA" \\\n  experiment run' in docs
+    assert '"smftools-cpu:sha-COMPLETE_COMMIT_SHA" \\\n  experiment validate' in docs
+    assert "smftools-cpu.sif \\\n  smftools versions --json" in docs
+    assert '"smftools-cpu:sha-COMPLETE_COMMIT_SHA" \\\n  smftools ' not in docs

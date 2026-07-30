@@ -14,6 +14,11 @@ project registry. Targets are `selection`, `materialization`,
 machine-readable output; the other selection and projection options mirror
 project materialization.
 
+Use `smftools experiment plan CONFIG --target TARGET` for the corresponding
+read-only experiment plan. The compatibility states, force behavior, and
+semantic-versus-execution distinction are described in
+[](tutorials/semantic_variant_workflows.md).
+
 ## External workflow contract
 
 Workflow engines should use `smftools experiment run` instead of rewriting an
