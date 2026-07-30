@@ -45,7 +45,7 @@ docker run --rm \
   --mount type=bind,src="${PWD}/task-output",dst=/work \
   --env SMFTOOLS_CONTAINER_DIGEST="sha256:IMAGE_DIGEST" \
   "smftools-cpu:sha-COMPLETE_COMMIT_SHA" \
-  smftools experiment run /inputs/experiment.csv \
+  experiment run /inputs/experiment.csv \
     --target full \
     --output-root /work/output \
     --input /inputs/reads.bam \
@@ -69,7 +69,7 @@ docker run --rm \
   --read-only \
   --mount type=bind,src="${PWD}/task-output",dst=/work,readonly \
   "smftools-cpu:sha-COMPLETE_COMMIT_SHA" \
-  smftools experiment validate /work/output --json
+  experiment validate /work/output --json
 ```
 
 When `SMFTOOLS_CONTAINER_DIGEST` is supplied by the workflow engine,
@@ -94,6 +94,10 @@ apptainer exec --cleanenv \
 
 Scheduler or workflow wrappers should set `HOME`, `MPLCONFIGDIR`, and a
 writable temporary directory when the container root filesystem is read-only.
+For `docker run`, the image `ENTRYPOINT` is `smftools`, so commands after the
+image name begin with `experiment`, `project`, or `versions`; do not repeat
+`smftools`. `apptainer exec` executes the command supplied to it directly, so
+its example includes the executable.
 
 ## Included and excluded tools
 

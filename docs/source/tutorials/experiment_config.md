@@ -68,6 +68,10 @@ configurations do not require migration: `auto` continues to select reporting
 when both `references_to_align_for_variant_annotation` members are configured,
 and `report` never removes a read.
 
+See [](semantic_variant_workflows.md) for the reference-set and calling
+contract, durable QC masks and cohorts, immutable generation lifecycle, and
+standalone-variant migration boundary.
+
 `filter` is intentionally opt-in and has no implicit biological thresholds. It
 requires all of the following:
 
