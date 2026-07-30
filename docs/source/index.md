@@ -42,6 +42,7 @@ smftools GitHub link
 :maxdepth: 1
 
 installation
+containers
 basic_usage
 cli
 tutorials/index

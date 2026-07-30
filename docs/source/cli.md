@@ -65,7 +65,9 @@ Use `smftools versions --json` for the stable smftools/Python record. Repeat
 `bedGraphToBigWig`) to probe external versions explicitly. A workflow result
 automatically records the tools required by the stages it is about to execute
 and configured model identities; `--strict` fails before computation if one is
-unavailable.
+unavailable. In the [production CPU container](containers.md), the versions
+record also includes the image, immutable tag, source revision, execution
+profile, and runtime-supplied registry digest.
 
 Project materialization uses the same result schema and task-local ownership:
 

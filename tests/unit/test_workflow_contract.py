@@ -286,21 +286,48 @@ def test_strict_mode_rejects_missing_required_tool(tmp_path, monkeypatch):
 
 
 def test_versions_include_smftools_and_requested_external_tool(monkeypatch):
-    monkeypatch.setattr(workflow_contract.shutil, "which", lambda _name: "/bin/tool")
-    monkeypatch.setattr(
-        workflow_contract.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
+    run_kwargs = {}
+
+    def run(*_args, **kwargs):
+        run_kwargs.update(kwargs)
+        return SimpleNamespace(
             stdout="samtools 1.21\n",
             stderr="",
             returncode=0,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(workflow_contract.shutil, "which", lambda _name: "/bin/tool")
+    monkeypatch.setattr(workflow_contract.subprocess, "run", run)
 
     versions = workflow_contract.software_versions(tools=("samtools",))
 
     assert versions["smftools"]
     assert versions["external_tools"]["samtools"]["version"] == "samtools 1.21"
+    assert run_kwargs["encoding"] == "utf-8"
+    assert run_kwargs["errors"] == "replace"
+
+
+def test_versions_include_supplied_container_identity(monkeypatch):
+    identity = {
+        "SMFTOOLS_CONTAINER_IMAGE": "ghcr.io/jkmckenna/smftools",
+        "SMFTOOLS_CONTAINER_TAG": "sha-abc123",
+        "SMFTOOLS_CONTAINER_DIGEST": "sha256:deadbeef",
+        "SMFTOOLS_CONTAINER_REVISION": "abc123",
+        "SMFTOOLS_CONTAINER_PROFILE": "cpu-bam",
+    }
+    for name, value in identity.items():
+        monkeypatch.setenv(name, value)
+
+    versions = workflow_contract.software_versions()
+
+    assert versions["schema_version"] == 2
+    assert versions["container"] == {
+        "image": "ghcr.io/jkmckenna/smftools",
+        "tag": "sha-abc123",
+        "digest": "sha256:deadbeef",
+        "revision": "abc123",
+        "profile": "cpu-bam",
+    }
 
 
 def test_version_plan_covers_configured_external_backends(monkeypatch, tmp_path):
