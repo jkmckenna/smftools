@@ -114,6 +114,12 @@ HMM_DIR: Final[str] = "hmm_adata_outputs"
 LATENT_DIR: Final[str] = "latent_adata_outputs"
 VARIANT_DIR: Final[str] = "variant_adata_outputs"
 CHIMERIC_DIR: Final[str] = "chimeric_adata_outputs"
+ML_EXPERIMENT_OUTPUTS_DIR: Final[str] = "ml_outputs"
+ML_PROJECT_OUTPUTS_DIR: Final[str] = "ml"
+ML_DATASETS_DIR: Final[str] = "datasets"
+ML_RUNS_DIR: Final[str] = "runs"
+ML_MODELS_DIR: Final[str] = "models"
+ML_INDEX_DIR: Final[str] = "index"
 
 _private_partitioned_stage_required_artifacts = {
     "raw": (
