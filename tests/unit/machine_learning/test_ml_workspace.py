@@ -198,6 +198,7 @@ def test_run_path_bundle_covers_all_job_output_categories(tmp_path) -> None:
     assert paths.root == workspace.runs_root / "run-1"
     assert paths.manifest == paths.root / "run_manifest.json"
     assert paths.resolved_plan == paths.root / "resolved_plan.json"
+    assert paths.resolved_config == paths.root / "resolved_config.json"
     assert paths.environment == paths.root / "environment.json"
     assert paths.history == paths.root / "history.parquet"
     assert paths.metrics == paths.root / "metrics.parquet"
