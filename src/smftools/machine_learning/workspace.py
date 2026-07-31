@@ -88,6 +88,7 @@ class MLRunPaths:
     root: Path
     manifest: Path
     resolved_plan: Path
+    resolved_config: Path
     environment: Path
     history: Path
     metrics: Path
@@ -104,6 +105,7 @@ class MLRunPaths:
         expected = {
             "manifest": root / "run_manifest.json",
             "resolved_plan": root / "resolved_plan.json",
+            "resolved_config": root / "resolved_config.json",
             "environment": root / "environment.json",
             "history": root / "history.parquet",
             "metrics": root / "metrics.parquet",
@@ -135,6 +137,7 @@ class MLRunPaths:
             "root": self.root.as_posix(),
             "manifest": self.manifest.as_posix(),
             "resolved_plan": self.resolved_plan.as_posix(),
+            "resolved_config": self.resolved_config.as_posix(),
             "environment": self.environment.as_posix(),
             "history": self.history.as_posix(),
             "metrics": self.metrics.as_posix(),
@@ -221,6 +224,7 @@ class MLWorkspace:
             root=root,
             manifest=root / "run_manifest.json",
             resolved_plan=root / "resolved_plan.json",
+            resolved_config=root / "resolved_config.json",
             environment=root / "environment.json",
             history=root / "history.parquet",
             metrics=root / "metrics.parquet",
