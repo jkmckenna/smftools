@@ -294,6 +294,38 @@ def test_mask_array_shape_and_dtype_follow_declared_axes() -> None:
         validate_mask_arrays(schema, arrays, batch_size=3)
 
 
+def test_union_channel_schema_uses_observation_specific_design_mask() -> None:
+    dataset = _plan_dataset(
+        modality=("deaminase", "conversion"),
+        channel_policy="union",
+        channels=[
+            {
+                "name": "accessibility",
+                "biological_role": "accessibility",
+                "sources": [
+                    {
+                        "modality": "deaminase",
+                        "stage": "preprocess",
+                        "layer": "C_site_binary",
+                        "site_context": "C",
+                    },
+                    {
+                        "modality": "conversion",
+                        "stage": "preprocess",
+                        "layer": "GpC_site_binary",
+                        "site_context": "GpC",
+                    },
+                ],
+            }
+        ],
+    )
+
+    schema = InputSchema.from_dataset(dataset, reference="locus", n_positions=8)
+
+    design = next(mask for mask in schema.masks if mask.kind == "design")
+    assert design.axes == ("observation", "position", "channel")
+
+
 def test_full_mask_array_validation_rejects_omitted_design_mask() -> None:
     schema = _input_schema()
 

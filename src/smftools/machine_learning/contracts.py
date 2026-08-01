@@ -489,7 +489,14 @@ class InputSchema:
                 else (
                     MaskSpec.standard("observed"),
                     MaskSpec.standard("availability"),
-                    MaskSpec.standard("design"),
+                    MaskSpec.standard(
+                        "design",
+                        axes=(
+                            INPUT_AXES
+                            if dataset.channel_policy == "union"
+                            else ("position", "channel")
+                        ),
+                    ),
                 )
             ),
         )
