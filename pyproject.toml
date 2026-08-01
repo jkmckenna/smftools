@@ -52,6 +52,7 @@ dependencies = [
     "pyarrow>=15",
     "pysam>=0.19.1",
     "scikit-learn>=1.2",
+    "skops>=0.10",
     "seaborn>=0.11",
     "scipy>=1.7.3",
     "tensorly",
@@ -177,6 +178,7 @@ pysam = [
 
 ml-base = [
     "scikit-learn>=1.2",
+    "skops>=0.10",
     "tensorly",
     "torch>=2.0",
     "xgboost>=1.7",
