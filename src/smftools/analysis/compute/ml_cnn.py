@@ -6,15 +6,23 @@ Inputs are plain numpy arrays and labels. No AnnData or file I/O occurs here.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
+
+from smftools.machine_learning.models.residual_cnn import (
+    ResidualCNNConfig,
+    ResidualDilatedCNN1d,
+    build_residual_cnn,
+    default_residual_cnn_config,
+    residual_cnn_config_from_dict,
+    residual_cnn_config_to_dict,
+)
 
 
 def detect_torch_device() -> torch.device:
@@ -25,172 +33,17 @@ def detect_torch_device() -> torch.device:
     return torch.device("cpu")
 
 
-@dataclass
-class CNNConfig:
-    in_channels: int
-    stem_channels: int = 32
-    block_channels: tuple[int, ...] = (64, 64, 96, 96, 128, 128)
-    dilations: tuple[int, ...] = (1, 2, 4, 8, 16, 32)
-    stem_kernel_size: int = 9
-    kernel_size: int = 5
-    dropout: float = 0.15
-    hidden_dim: int = 128
-    use_se: bool = True
-    use_attention_pool: bool = True
-
-
-def cnn_config_to_dict(config: CNNConfig) -> dict:
-    payload = asdict(config)
-    payload["block_channels"] = list(config.block_channels)
-    payload["dilations"] = list(config.dilations)
-    return payload
+CNNConfig = ResidualCNNConfig
+cnn_config_to_dict = residual_cnn_config_to_dict
+default_cnn_config = default_residual_cnn_config
+build_cnn_model = build_residual_cnn
 
 
 def cnn_config_from_dict(payload: dict) -> CNNConfig:
-    data = dict(payload)
-    data["block_channels"] = tuple(data["block_channels"])
-    data["dilations"] = tuple(data["dilations"])
-    return CNNConfig(**data)
-
-
-def default_cnn_config(in_channels: int) -> CNNConfig:
-    return CNNConfig(in_channels=in_channels)
-
-
-class SqueezeExcite1d(nn.Module):
-    def __init__(self, channels: int, reduction: int = 8):
-        super().__init__()
-        hidden = max(channels // reduction, 8)
-        self.net = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1),
-            nn.Conv1d(channels, hidden, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(hidden, channels, kernel_size=1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * self.net(x)
-
-
-class ResidualDilatedBlock1d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        dilation: int,
-        dropout: float,
-        use_se: bool,
-    ):
-        super().__init__()
-        pad = (kernel_size // 2) * dilation
-        self.conv1 = nn.Conv1d(
-            in_channels,
-            out_channels,
-            kernel_size=kernel_size,
-            padding=pad,
-            dilation=dilation,
-        )
-        self.bn1 = nn.BatchNorm1d(out_channels)
-        self.conv2 = nn.Conv1d(
-            out_channels,
-            out_channels,
-            kernel_size=kernel_size,
-            padding=pad,
-            dilation=dilation,
-        )
-        self.bn2 = nn.BatchNorm1d(out_channels)
-        self.drop = nn.Dropout(dropout)
-        self.se = SqueezeExcite1d(out_channels) if use_se else nn.Identity()
-        self.proj = (
-            nn.Conv1d(in_channels, out_channels, kernel_size=1)
-            if in_channels != out_channels
-            else nn.Identity()
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = self.proj(x)
-        x = F.relu(self.bn1(self.conv1(x)), inplace=True)
-        x = self.drop(x)
-        x = self.bn2(self.conv2(x))
-        x = self.se(x)
-        x = F.relu(x + residual, inplace=True)
-        return x
-
-
-class AttentionPooling1d(nn.Module):
-    def __init__(self, channels: int):
-        super().__init__()
-        self.score = nn.Conv1d(channels, 1, kernel_size=1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        weights = torch.softmax(self.score(x), dim=-1)
-        pooled = torch.sum(x * weights, dim=-1)
-        return pooled
-
-
-class ResidualDilatedCNN1d(nn.Module):
-    def __init__(self, config: CNNConfig):
-        super().__init__()
-        self.config = config
-        stem_pad = config.stem_kernel_size // 2
-        self.stem = nn.Sequential(
-            nn.Conv1d(
-                config.in_channels,
-                config.stem_channels,
-                kernel_size=config.stem_kernel_size,
-                padding=stem_pad,
-            ),
-            nn.BatchNorm1d(config.stem_channels),
-            nn.ReLU(inplace=True),
-        )
-
-        blocks = []
-        in_ch = config.stem_channels
-        for out_ch, dilation in zip(config.block_channels, config.dilations):
-            blocks.append(
-                ResidualDilatedBlock1d(
-                    in_channels=in_ch,
-                    out_channels=out_ch,
-                    kernel_size=config.kernel_size,
-                    dilation=dilation,
-                    dropout=config.dropout,
-                    use_se=config.use_se,
-                )
-            )
-            in_ch = out_ch
-        self.backbone = nn.Sequential(*blocks)
-        self.gap = nn.AdaptiveAvgPool1d(1)
-        self.gmp = nn.AdaptiveMaxPool1d(1)
-        self.attn_pool = AttentionPooling1d(in_ch) if config.use_attention_pool else None
-
-        pooled_parts = 3 if config.use_attention_pool else 2
-        self.head = nn.Sequential(
-            nn.Linear(in_ch * pooled_parts, config.hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim, 1),
-        )
-
-    def forward_features(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.stem(x)
-        x = self.backbone(x)
-        return x
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        feats = self.forward_features(x)
-        x_avg = self.gap(feats).squeeze(-1)
-        x_max = self.gmp(feats).squeeze(-1)
-        pooled = [x_avg, x_max]
-        if self.attn_pool is not None:
-            pooled.append(self.attn_pool(feats))
-        x = torch.cat(pooled, dim=1)
-        return self.head(x)
-
-
-def build_cnn_model(config: CNNConfig) -> nn.Module:
-    return ResidualDilatedCNN1d(config)
+    """Restore legacy configs, defaulting the historical one-logit output."""
+    resolved = dict(payload)
+    resolved.setdefault("output_dim", 1)
+    return residual_cnn_config_from_dict(resolved)
 
 
 @dataclass

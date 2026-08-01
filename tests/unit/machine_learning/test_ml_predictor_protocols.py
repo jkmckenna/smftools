@@ -197,8 +197,7 @@ def test_torch_adapter_requires_and_forwards_declared_masks() -> None:
 
     class MaskedModule(torch.nn.Module):
         def forward(self, values, observed_mask):
-            observed = observed_mask.transpose(1, 2)
-            return (values * observed).mean(dim=(1, 2), keepdim=False).unsqueeze(1)
+            return (values * observed_mask).mean(dim=(1, 2), keepdim=False).unsqueeze(1)
 
     input_schema, label_schema = _schemas()
     predictor = TorchPredictor(

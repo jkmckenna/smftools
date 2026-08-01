@@ -308,7 +308,11 @@ class SklearnPredictor:
 
 @dataclass(frozen=True)
 class TorchPredictor:
-    """Predictor adapter around a plain Torch module that returns classification logits."""
+    """Predictor adapter around a plain Torch module returning classification logits.
+
+    Contract-layout position/channel masks are transposed before forwarding so
+    Torch models receive channel-first masks matching channel-first values.
+    """
 
     model: Any
     input_schema: InputSchema
@@ -371,9 +375,15 @@ class TorchPredictor:
         by_name = {mask.name: mask for mask in selected}
         kwargs = {}
         for name, array in supplied.items():
-            kind = by_name[name].kind
+            mask = by_name[name]
+            kind = mask.kind
             argument = self.mask_argument_names.get(kind, f"{kind}_mask")
-            kwargs[argument] = torch.as_tensor(array, dtype=torch.bool, device=self.device)
+            tensor_mask = torch.as_tensor(array, dtype=torch.bool, device=self.device)
+            if mask.axes == ("observation", "position", "channel"):
+                tensor_mask = tensor_mask.permute(0, 2, 1)
+            elif mask.axes == ("position", "channel"):
+                tensor_mask = tensor_mask.permute(1, 0)
+            kwargs[argument] = tensor_mask
         was_training = bool(self.model.training)
         self.model.eval()
         try:

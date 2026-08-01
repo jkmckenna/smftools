@@ -15,6 +15,7 @@ from smftools.machine_learning.models.registry import (
     ModelRegistry,
     ModelRegistryError,
 )
+from smftools.machine_learning.models.residual_cnn import ResidualDilatedCNN1d
 from smftools.machine_learning.plan import parse_ml_plan
 
 pytestmark = pytest.mark.unit
@@ -76,14 +77,45 @@ def test_builtin_registry_is_explicit_and_deterministically_ordered() -> None:
         "bernoulli_nb",
         "logistic_regression",
         "random_forest",
+        "residual_dilated_cnn",
     )
     assert BUILTIN_MODEL_REGISTRY.recipe_names == (
         "bernoulli_nb_v1",
         "logistic_regression_v1",
         "random_forest_v1",
+        "residual_dilated_cnn_v1",
     )
     assert BUILTIN_MODEL_REGISTRY.definition("bernoulli_nb").capabilities.incremental_fit
     assert not BUILTIN_MODEL_REGISTRY.definition("random_forest").capabilities.incremental_fit
+    cnn_capabilities = BUILTIN_MODEL_REGISTRY.definition("residual_dilated_cnn").capabilities
+    assert cnn_capabilities.backend == "torch"
+    assert cnn_capabilities.position_masks
+    assert cnn_capabilities.gradients
+    assert cnn_capabilities.convolutional_layers
+    assert not cnn_capabilities.attention_data
+
+
+def test_builtin_registry_builds_residual_cnn_from_exact_recipe() -> None:
+    resolved = BUILTIN_MODEL_REGISTRY.resolve(
+        "residual_dilated_cnn",
+        input_schema=_input_schema(),
+        parameters={
+            "stem_channels": 4,
+            "block_channels": [4, 8],
+            "dilations": [1, 2],
+            "hidden_dim": 6,
+            "dropout": 0.0,
+            "use_se": False,
+            "use_attention_pool": False,
+        },
+    )
+
+    model = BUILTIN_MODEL_REGISTRY.build(resolved)
+
+    assert isinstance(model, ResidualDilatedCNN1d)
+    assert resolved.backend == "torch"
+    assert resolved.architecture.to_dict()["parameters"] == resolved.config.to_dict()
+    assert model.config == resolved.config
 
 
 @pytest.mark.parametrize(
