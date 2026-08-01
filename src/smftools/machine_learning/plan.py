@@ -561,8 +561,15 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
         required={"strategy", "group_by"},
     )
     strategy = _required_string(value, "strategy", path).lower()
-    if strategy not in {"explicit_groups", "stratified_group"}:
-        _fail(f"{path}.strategy", "must be 'explicit_groups' or 'stratified_group'")
+    if strategy not in {
+        "explicit_groups",
+        "leave_one_group_out",
+        "stratified_group",
+    }:
+        _fail(
+            f"{path}.strategy",
+            "must be 'explicit_groups', 'leave_one_group_out', or 'stratified_group'",
+        )
     seed = value.get("seed", 0)
     if isinstance(seed, bool) or not isinstance(seed, int):
         _fail(f"{path}.seed", "must be an integer")
@@ -595,7 +602,7 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
             _fail(f"{path}.fractions", "cannot be combined with explicit_groups")
         if not all(role_groups.values()):
             _fail(path, "explicit_groups requires non-empty train, validation, and test groups")
-    else:
+    elif strategy == "stratified_group":
         if any(role_groups.values()):
             _fail(path, "stratified_group cannot include explicit role groups")
         if not fractions:
@@ -606,6 +613,12 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
             _fail(f"{path}.fractions", "each fraction must be between zero and one")
         if not math.isclose(sum(fractions.values()), 1.0, rel_tol=0.0, abs_tol=1e-9):
             _fail(f"{path}.fractions", "must sum to 1.0")
+    else:
+        if any(role_groups.values()) or fractions:
+            _fail(
+                path,
+                "leave_one_group_out cannot include explicit role groups or fractions",
+            )
     return SplitSpec(
         strategy=strategy,
         group_by=_string_tuple(value["group_by"], f"{path}.group_by", required=True),

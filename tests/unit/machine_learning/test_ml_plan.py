@@ -316,6 +316,24 @@ def test_unsupported_schema_version_is_actionable() -> None:
         parse_ml_plan(raw)
 
 
+def test_leave_one_group_out_rejects_role_lists_and_fractions() -> None:
+    raw = _base_plan()
+    split = raw["splits"]["sample_holdout"]
+    split["strategy"] = "leave_one_group_out"
+
+    with pytest.raises(
+        MLPlanValidationError,
+        match="cannot include explicit role groups or fractions",
+    ):
+        parse_ml_plan(raw)
+
+    for field in ("train_groups", "validation_groups", "test_groups"):
+        split.pop(field)
+    plan = parse_ml_plan(raw)
+
+    assert plan.splits["sample_holdout"].strategy == "leave_one_group_out"
+
+
 def test_resolved_serialization_and_hash_are_order_stable() -> None:
     first_raw = _base_plan()
     second_raw = json.loads(json.dumps(first_raw, sort_keys=True))
