@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .anndata_data_module import AnnDataModule, build_anndata_loader
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
 from .balancing import (
     ML_BALANCE_RESOLUTION_VERSION,
     BalanceResolution,
@@ -34,6 +36,26 @@ from .transforms import (
     build_sklearn_preprocessing_pipeline,
     fit_feature_transform,
 )
+
+if TYPE_CHECKING:
+    from .anndata_data_module import AnnDataModule, build_anndata_loader
+
+
+_LAZY_EXPORTS = {
+    "AnnDataModule": (".anndata_data_module", "AnnDataModule"),
+    "build_anndata_loader": (".anndata_data_module", "build_anndata_loader"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily expose the legacy optional-Lightning AnnData adapter."""
+    if name in _LAZY_EXPORTS:
+        module_name, attribute = _LAZY_EXPORTS[name]
+        value = getattr(import_module(module_name, __name__), attribute)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "AnnDataModule",
