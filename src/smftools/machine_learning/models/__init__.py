@@ -28,6 +28,14 @@ from .registry import (
     ResolvedModelDefinition,
 )
 from .rnn import RNNClassifier
+from .sklearn_artifacts import (
+    SKLEARN_ARTIFACT_FILENAME,
+    SKLEARN_ARTIFACT_SCHEMA_VERSION,
+    PublishedSklearnModel,
+    SklearnArtifactError,
+    load_published_sklearn_model,
+    publish_sklearn_model,
+)
 from .sklearn_models import SklearnModelWrapper
 from .transformer import (
     BaseTransformer,
@@ -60,12 +68,18 @@ __all__ = [
     "RNNClassifier",
     "RandomForestConfig",
     "ResolvedModelDefinition",
+    "SKLEARN_ARTIFACT_FILENAME",
+    "SKLEARN_ARTIFACT_SCHEMA_VERSION",
     "ScaledModel",
+    "PublishedSklearnModel",
+    "SklearnArtifactError",
     "SklearnModelWrapper",
     "SklearnPredictor",
     "TorchClassifierWrapper",
     "TorchPredictor",
     "TransformerClassifier",
     "adapt_loaded_predictor",
+    "load_published_sklearn_model",
+    "publish_sklearn_model",
     "require_capabilities",
 ]

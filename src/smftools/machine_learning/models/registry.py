@@ -661,7 +661,13 @@ def _build_logistic_regression(config: LogisticRegressionConfig) -> Any:
         extra="ml-base",
         purpose="logistic regression models",
     )
-    return sklearn_linear.LogisticRegression(**config.to_dict())
+    parameters = config.to_dict()
+    if parameters["penalty"] == "l2":
+        # The sklearn default has represented L2 regularization across all
+        # supported versions; omitting it also avoids the 1.8+ deprecation of
+        # explicitly passing the legacy ``penalty`` parameter.
+        parameters.pop("penalty")
+    return sklearn_linear.LogisticRegression(**parameters)
 
 
 def _build_random_forest(config: RandomForestConfig) -> Any:
