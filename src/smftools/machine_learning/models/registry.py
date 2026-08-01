@@ -17,6 +17,7 @@ from ..contracts import (
     InputSchema,
     PredictorCapabilities,
 )
+from .residual_cnn import ResidualCNNConfig, build_residual_cnn
 
 ML_MODEL_RECIPE_VERSION = 1
 BUILTIN_MODEL_REGISTRY_VERSION = 1
@@ -596,6 +597,12 @@ class ModelRegistry:
         selected.assert_input_compatible(input_schema)
         architecture = selected.resolve(parameters)
         config = definition.config_type.from_dict(architecture.parameters)
+        in_channels = getattr(config, "in_channels", None)
+        if in_channels is not None and in_channels != len(input_schema.channels):
+            raise ModelRegistryError(
+                f"model family {family!r} resolves {in_channels} input channels but "
+                f"the input schema declares {len(input_schema.channels)}"
+            )
         return ResolvedModelDefinition(
             family=family,
             backend=definition.backend,
@@ -646,6 +653,22 @@ def _capabilities(
     )
 
 
+def _torch_residual_capabilities() -> PredictorCapabilities:
+    return PredictorCapabilities(
+        schema_version=ML_CAPABILITY_SCHEMA_VERSION,
+        backend="torch",
+        probability_output=True,
+        incremental_fit=False,
+        sample_weights=True,
+        position_masks=True,
+        gradients=True,
+        convolutional_layers=True,
+        attention_data=False,
+        supported_mask_kinds=("observed", "availability", "design", "padding"),
+        required_mask_kinds=(),
+    )
+
+
 def _build_bernoulli_nb(config: BernoulliNBConfig) -> Any:
     sklearn_naive_bayes = require(
         "sklearn.naive_bayes",
@@ -679,6 +702,10 @@ def _build_random_forest(config: RandomForestConfig) -> Any:
     return sklearn_ensemble.RandomForestClassifier(**config.to_dict())
 
 
+def _build_residual_cnn(config: ResidualCNNConfig) -> Any:
+    return build_residual_cnn(config)
+
+
 def _recipe(name: str, parameters: Mapping[str, Any]) -> ModelRecipe:
     return ModelRecipe.create(
         name=f"{name}_v1",
@@ -694,6 +721,15 @@ def _recipe(name: str, parameters: Mapping[str, Any]) -> ModelRecipe:
 _BERNOULLI_RECIPE = _recipe("bernoulli_nb", BernoulliNBConfig().to_dict())
 _LOGISTIC_RECIPE = _recipe("logistic_regression", LogisticRegressionConfig().to_dict())
 _FOREST_RECIPE = _recipe("random_forest", RandomForestConfig().to_dict())
+_RESIDUAL_CNN_RECIPE = ModelRecipe.create(
+    name="residual_dilated_cnn_v1",
+    version="1",
+    family="residual_dilated_cnn",
+    backend="torch",
+    parameters=ResidualCNNConfig(in_channels=1).to_dict(),
+    supported_modalities=_SUPPORTED_MODALITIES,
+    supported_channel_roles=("*",),
+)
 
 BUILTIN_MODEL_REGISTRY = ModelRegistry(
     definitions=(
@@ -724,6 +760,20 @@ BUILTIN_MODEL_REGISTRY = ModelRegistry(
             capabilities=_capabilities(incremental_fit=False, sample_weights=True),
             default_recipe=_FOREST_RECIPE.name,
         ),
+        ModelFamilyDefinition(
+            name="residual_dilated_cnn",
+            backend="torch",
+            architecture_schema_version=1,
+            config_type=ResidualCNNConfig,
+            builder=_build_residual_cnn,
+            capabilities=_torch_residual_capabilities(),
+            default_recipe=_RESIDUAL_CNN_RECIPE.name,
+        ),
     ),
-    recipes=(_BERNOULLI_RECIPE, _LOGISTIC_RECIPE, _FOREST_RECIPE),
+    recipes=(
+        _BERNOULLI_RECIPE,
+        _LOGISTIC_RECIPE,
+        _FOREST_RECIPE,
+        _RESIDUAL_CNN_RECIPE,
+    ),
 )
