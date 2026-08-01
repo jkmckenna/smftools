@@ -61,6 +61,14 @@ if TYPE_CHECKING:
         publish_sklearn_model,
     )
     from .sklearn_models import SklearnModelWrapper
+    from .torch_artifacts import (
+        TORCH_ARTIFACT_FILENAME,
+        TORCH_ARTIFACT_SCHEMA_VERSION,
+        PublishedTorchModel,
+        TorchArtifactError,
+        load_published_torch_model,
+        publish_torch_model,
+    )
 
 
 _LAZY_EXPORTS = {
@@ -72,9 +80,18 @@ _LAZY_EXPORTS = {
     "PublishedSklearnModel": (".sklearn_artifacts", "PublishedSklearnModel"),
     "SklearnArtifactError": (".sklearn_artifacts", "SklearnArtifactError"),
     "SklearnModelWrapper": (".sklearn_models", "SklearnModelWrapper"),
+    "TORCH_ARTIFACT_FILENAME": (".torch_artifacts", "TORCH_ARTIFACT_FILENAME"),
+    "TORCH_ARTIFACT_SCHEMA_VERSION": (
+        ".torch_artifacts",
+        "TORCH_ARTIFACT_SCHEMA_VERSION",
+    ),
     "TorchClassifierWrapper": (".lightning_base", "TorchClassifierWrapper"),
+    "PublishedTorchModel": (".torch_artifacts", "PublishedTorchModel"),
+    "TorchArtifactError": (".torch_artifacts", "TorchArtifactError"),
     "load_published_sklearn_model": (".sklearn_artifacts", "load_published_sklearn_model"),
     "publish_sklearn_model": (".sklearn_artifacts", "publish_sklearn_model"),
+    "load_published_torch_model": (".torch_artifacts", "load_published_torch_model"),
+    "publish_torch_model": (".torch_artifacts", "publish_torch_model"),
 }
 
 
@@ -119,10 +136,14 @@ __all__ = [
     "SKLEARN_ARTIFACT_SCHEMA_VERSION",
     "ScaledModel",
     "PublishedSklearnModel",
+    "PublishedTorchModel",
     "SklearnArtifactError",
     "SklearnModelWrapper",
     "SklearnPredictor",
     "TorchClassifierWrapper",
+    "TorchArtifactError",
+    "TORCH_ARTIFACT_FILENAME",
+    "TORCH_ARTIFACT_SCHEMA_VERSION",
     "TorchPredictor",
     "TransformerClassifier",
     "AttentionPooling1d",
@@ -131,7 +152,9 @@ __all__ = [
     "build_residual_cnn",
     "default_residual_cnn_config",
     "load_published_sklearn_model",
+    "load_published_torch_model",
     "publish_sklearn_model",
+    "publish_torch_model",
     "residual_cnn_config_from_dict",
     "residual_cnn_config_to_dict",
     "require_capabilities",
