@@ -6,6 +6,7 @@ _LAZY_MODULES = {
     "data": "smftools.machine_learning.data",
     "evaluation": "smftools.machine_learning.evaluation",
     "inference": "smftools.machine_learning.inference",
+    "interpretability": "smftools.machine_learning.interpretability",
     "models": "smftools.machine_learning.models",
     "training": "smftools.machine_learning.training",
     "utils": "smftools.machine_learning.utils",
