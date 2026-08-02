@@ -24,6 +24,7 @@ from .contracts import (
     ResolvedJob,
     ResolvedModelSelection,
 )
+from .planning import MLWorkflowDryRun, MLWorkflowPlanningError, plan_ml_workflow
 from .resolution import resolve_model_selection
 from .service import (
     dry_run_job,
@@ -45,6 +46,8 @@ __all__ = [
     "MLJobCancelledError",
     "MLJobExecutionError",
     "MLJobServiceError",
+    "MLWorkflowDryRun",
+    "MLWorkflowPlanningError",
     "ModelMetricCandidate",
     "ModelSelectionRequest",
     "ResolvedJob",
@@ -56,6 +59,7 @@ __all__ = [
     "evaluate_prediction_result",
     "explain_partition_model",
     "resolve_model_selection",
+    "plan_ml_workflow",
     "run_apply_job",
     "run_evaluate_job",
     "run_explain_job",
