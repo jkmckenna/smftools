@@ -16,5 +16,6 @@ ml_splits               build_leave_one_group_out_splits(), summarize_split()
 ml_metrics              build_binary_classifier(), evaluate_binary_classifier(), logit_from_probability()
 ml_cnn                  build_cnn_input(), fit_simple_cnn(), predict_cnn_scores(), integrated_gradients_attributions()
 ml_explanations         bernoulli_nb_logodds_contributions(), tree_shap_contributions(), xgboost_contributions()
+ml_results              training_history_table(), evaluation_metric_table(), evaluation_curve_table(), confusion_table(), class_balance_table(), fold_metric_table(), attribution_summary_table()
 clustering              cluster_block_order(), cluster_row_order_by_labels()
 """
