@@ -6,8 +6,11 @@ import pytest
 from tests.smoke.import_helpers import import_module_or_skip
 
 MODULES = [
+    "smftools.machine_learning.evaluation.contracts",
     "smftools.machine_learning.evaluation.eval_utils",
     "smftools.machine_learning.evaluation.evaluators",
+    "smftools.machine_learning.evaluation.history",
+    "smftools.machine_learning.evaluation.metrics",
 ]
 
 

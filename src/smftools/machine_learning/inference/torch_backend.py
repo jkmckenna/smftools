@@ -2,41 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
 
 from ..data.partition_dataset import MLMaterializedPartitionData, MLPartitionBatch
 from ..data.transforms import TorchFeatureTransform
+from ..evaluation.contracts import PredictionResult
 from ..training.torch_backend import FittedTorchModel
 
-
-@dataclass(frozen=True)
-class TorchPredictionResult:
-    """Ordered Torch predictions for one immutable cohort or batch."""
-
-    molecule_uids: tuple[str, ...]
-    class_ids: np.ndarray
-    scores: np.ndarray
-    probabilities: np.ndarray
-    class_order: tuple[str, ...]
-    split: str
-
-    def __post_init__(self) -> None:
-        n_rows = len(self.molecule_uids)
-        n_classes = len(self.class_order)
-        for name, shape in (
-            ("class_ids", (n_rows,)),
-            ("scores", (n_rows, n_classes)),
-            ("probabilities", (n_rows, n_classes)),
-        ):
-            array = np.asarray(getattr(self, name)).copy()
-            if array.shape != shape:
-                raise ValueError(f"{name} has shape {array.shape}; expected {shape}")
-            array.setflags(write=False)
-            object.__setattr__(self, name, array)
+TorchPredictionResult = PredictionResult
 
 
 def _mask_arrays(model: FittedTorchModel, data: object) -> Mapping[str, Any]:
@@ -56,7 +32,10 @@ def apply_torch_partition_model(
     data: MLMaterializedPartitionData | MLPartitionBatch,
     *,
     phase: str | None = None,
-) -> TorchPredictionResult:
+    cohort: str | None = None,
+    groups: Sequence[str | None] | None = None,
+    model_id: str | None = None,
+) -> PredictionResult:
     """Transform and apply a fitted plain-Torch model without mutating data."""
     data_split = getattr(data, "split", None)
     if phase is None and data.labels is not None and data_split is None:
@@ -68,7 +47,7 @@ def apply_torch_partition_model(
     values = transformed.values.detach().cpu().numpy()
     masks = _mask_arrays(model, data)
     predictor = model.predictor
-    return TorchPredictionResult(
+    return PredictionResult(
         molecule_uids=tuple(data.molecule_uids),
         class_ids=predictor.predict(values, masks=masks, phase=resolved_phase),
         scores=predictor.predict_scores(values, masks=masks, phase=resolved_phase),
@@ -79,4 +58,11 @@ def apply_torch_partition_model(
         ),
         class_order=model.label_schema.class_order,
         split=data_split or resolved_phase,
+        experiment_uids=tuple(data.experiment_uids),
+        modalities=tuple(data.modalities),
+        groups=None if groups is None else tuple(groups),
+        truth_class_ids=None if data.labels is None else np.asarray(data.labels),
+        positive_class=model.label_schema.positive_class,
+        cohort=cohort,
+        model_id=model_id,
     )
