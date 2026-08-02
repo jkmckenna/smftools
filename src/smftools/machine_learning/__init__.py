@@ -8,6 +8,7 @@ _LAZY_MODULES = {
     "inference": "smftools.machine_learning.inference",
     "interpretability": "smftools.machine_learning.interpretability",
     "models": "smftools.machine_learning.models",
+    "orchestration": "smftools.machine_learning.orchestration",
     "training": "smftools.machine_learning.training",
     "utils": "smftools.machine_learning.utils",
 }
