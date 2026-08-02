@@ -10,6 +10,7 @@ MODULES = [
     "smftools.machine_learning.interpretability.artifacts",
     "smftools.machine_learning.interpretability.background",
     "smftools.machine_learning.interpretability.contracts",
+    "smftools.machine_learning.interpretability.neural",
 ]
 
 

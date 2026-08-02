@@ -371,37 +371,6 @@ def _permutation_importance(
     )
 
 
-def _background_data(
-    background: BackgroundReference,
-    input_schema: InputSchema,
-) -> MLMaterializedPartitionData:
-    by_kind = {
-        mask.kind: np.asarray(background.masks[mask.name], dtype=bool)
-        for mask in input_schema.masks
-        if mask.name in background.masks
-    }
-    n_rows, n_positions, n_channels = background.values.shape
-    by_kind.setdefault("observed", np.isfinite(background.values))
-    by_kind.setdefault("availability", np.ones((n_rows, n_channels), dtype=bool))
-    by_kind.setdefault("design", np.ones((n_positions, n_channels), dtype=bool))
-    by_kind.setdefault("padding", np.zeros((n_rows, n_positions), dtype=bool))
-    return MLMaterializedPartitionData(
-        split="train",
-        molecule_uids=background.molecule_uids,
-        read_ids=background.molecule_uids,
-        experiment_uids=background.experiment_uids,
-        modalities=background.modalities,
-        coordinates=background.coordinates,
-        channel_names=background.channel_names,
-        values=background.values,
-        labels=None,
-        observed_mask=by_kind["observed"],
-        availability_mask=by_kind["availability"],
-        design_mask=by_kind["design"],
-        padding_mask=by_kind["padding"],
-    )
-
-
 def _tree_shap(
     model: FittedSklearnModel,
     data: _ClassicalData,
@@ -436,7 +405,7 @@ def _tree_shap(
                 "TreeSHAP background differs from the explanation request baseline"
             )
         background_features = model.transform.transform(
-            _background_data(background, model.input_schema)
+            background.as_materialized(model.input_schema)
         )
     elif request.baseline is not None:
         raise InterpretabilityContractError(

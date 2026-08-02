@@ -21,6 +21,7 @@ from .contracts import (
     InterpretabilityRequest,
     validate_interpretability_request,
 )
+from .neural import explain_torch_model
 
 __all__ = [
     "AGGREGATION_REDUCTIONS",
@@ -38,6 +39,7 @@ __all__ = [
     "InterpretabilityRequest",
     "create_explanation_manifest",
     "explain_sklearn_model",
+    "explain_torch_model",
     "resolved_explanation_method",
     "sample_training_background",
     "validate_interpretability_request",

@@ -233,6 +233,40 @@ class BackgroundReference:
                     "background contains non-finite values marked as observed"
                 )
 
+    def as_materialized(self, input_schema: InputSchema) -> MLMaterializedPartitionData:
+        """Reconstruct immutable training data for a fitted feature transform.
+
+        Undeclared mask kinds receive their neutral fixed-width values. Every
+        mask declared by the input schema remains checksummed and is restored
+        exactly.
+        """
+        self.validate_against(input_schema)
+        by_kind = {
+            mask.kind: np.array(self.masks[mask.name], dtype=bool, copy=True)
+            for mask in input_schema.masks
+            if mask.name in self.masks
+        }
+        n_rows, n_positions, n_channels = self.values.shape
+        by_kind.setdefault("observed", np.isfinite(self.values))
+        by_kind.setdefault("availability", np.ones((n_rows, n_channels), dtype=bool))
+        by_kind.setdefault("design", np.ones((n_positions, n_channels), dtype=bool))
+        by_kind.setdefault("padding", np.zeros((n_rows, n_positions), dtype=bool))
+        return MLMaterializedPartitionData(
+            split="train",
+            molecule_uids=self.molecule_uids,
+            read_ids=self.molecule_uids,
+            experiment_uids=self.experiment_uids,
+            modalities=self.modalities,
+            coordinates=np.array(self.coordinates, copy=True),
+            channel_names=self.channel_names,
+            values=np.array(self.values, copy=True),
+            labels=None,
+            observed_mask=by_kind["observed"],
+            availability_mask=by_kind["availability"],
+            design_mask=by_kind["design"],
+            padding_mask=by_kind["padding"],
+        )
+
 
 def _data_masks(
     data: MLMaterializedPartitionData,
