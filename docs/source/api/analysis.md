@@ -27,6 +27,7 @@ Pure statistical compute functions. No AnnData dependency (except `ep_classifica
    smftools.analysis.compute.metrics_store
    smftools.analysis.compute.ml_cnn
    smftools.analysis.compute.ml_metrics
+   smftools.analysis.compute.ml_results
    smftools.analysis.compute.ml_splits
    smftools.analysis.compute.read_cache
 ```
@@ -45,6 +46,7 @@ Figure rendering. Accepts results and an explicit `output_path`; writes a figure
    smftools.analysis.plot.embeddings
    smftools.analysis.plot.locus
    smftools.analysis.plot.ml
+   smftools.analysis.plot.ml_results
 ```
 
 ### Filters
