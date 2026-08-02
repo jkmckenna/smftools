@@ -1,39 +1,16 @@
-"""Backend-neutral application records for fitted sklearn models."""
+"""Backend-neutral application of fitted sklearn models."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
 
 import numpy as np
 
 from ..data.partition_dataset import MLMaterializedPartitionData, MLPartitionBatch
+from ..evaluation.contracts import PredictionResult
 from ..training.sklearn_backend import FittedSklearnModel
 
-
-@dataclass(frozen=True)
-class SklearnPredictionResult:
-    """Ordered sklearn predictions for one immutable cohort or batch."""
-
-    molecule_uids: tuple[str, ...]
-    class_ids: np.ndarray
-    scores: np.ndarray
-    probabilities: np.ndarray
-    class_order: tuple[str, ...]
-    split: str
-
-    def __post_init__(self) -> None:
-        n_rows = len(self.molecule_uids)
-        n_classes = len(self.class_order)
-        for name, shape in (
-            ("class_ids", (n_rows,)),
-            ("scores", (n_rows, n_classes)),
-            ("probabilities", (n_rows, n_classes)),
-        ):
-            array = np.asarray(getattr(self, name)).copy()
-            if array.shape != shape:
-                raise ValueError(f"{name} has shape {array.shape}; expected {shape}")
-            array.setflags(write=False)
-            object.__setattr__(self, name, array)
+SklearnPredictionResult = PredictionResult
 
 
 def apply_sklearn_partition_model(
@@ -41,7 +18,10 @@ def apply_sklearn_partition_model(
     data: MLMaterializedPartitionData | MLPartitionBatch,
     *,
     phase: str | None = None,
-) -> SklearnPredictionResult:
+    cohort: str | None = None,
+    groups: Sequence[str | None] | None = None,
+    model_id: str | None = None,
+) -> PredictionResult:
     """Transform and apply a fitted sklearn model without mutating input data."""
     data_split = getattr(data, "split", None)
     resolved_phase = phase or ("inference" if data.labels is None else data_split)
@@ -49,11 +29,18 @@ def apply_sklearn_partition_model(
         raise ValueError(f"unsupported prediction phase {resolved_phase!r}")
     features = model.transform.transform(data)
     predictor = model.predictor
-    return SklearnPredictionResult(
+    return PredictionResult(
         molecule_uids=tuple(data.molecule_uids),
         class_ids=predictor.predict(features, phase=resolved_phase),
         scores=predictor.predict_scores(features, phase=resolved_phase),
         probabilities=predictor.predict_probabilities(features, phase=resolved_phase),
         class_order=model.label_schema.class_order,
         split=data_split or resolved_phase,
+        experiment_uids=tuple(data.experiment_uids),
+        modalities=tuple(data.modalities),
+        groups=None if groups is None else tuple(groups),
+        truth_class_ids=None if data.labels is None else np.asarray(data.labels),
+        positive_class=model.label_schema.positive_class,
+        cohort=cohort,
+        model_id=model_id,
     )

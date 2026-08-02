@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
+from ..evaluation import PredictionResult
 from .sklearn_backend import SklearnPredictionResult, apply_sklearn_partition_model
 from .torch_backend import TorchPredictionResult, apply_torch_partition_model
 
@@ -32,6 +33,7 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "SklearnPredictionResult",
     "TorchPredictionResult",
+    "PredictionResult",
     "apply_sklearn_partition_model",
     "apply_torch_partition_model",
     "run_lightning_inference",
