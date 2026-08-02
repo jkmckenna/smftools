@@ -655,6 +655,44 @@ def validate_interpretability_request(
 
 
 @dataclass(frozen=True)
+class AttributionFeature:
+    """One transformed feature with its physical and biological meaning."""
+
+    name: str
+    kind: str
+    coordinate: int
+    channel: InputChannelSchema
+
+    def __post_init__(self) -> None:
+        name = _string(self.name, "feature.name")
+        kind = _string(self.kind, "feature.kind")
+        if kind not in {"signal", "observed", "design", "availability", "padding"}:
+            raise InterpretabilityContractError(
+                "feature.kind must be signal or a canonical mask-indicator kind"
+            )
+        if isinstance(self.coordinate, bool) or not isinstance(self.coordinate, int):
+            raise InterpretabilityContractError("feature.coordinate must be an integer")
+        if not isinstance(self.channel, InputChannelSchema):
+            raise InterpretabilityContractError("feature.channel must be an InputChannelSchema")
+        expected_name = f"{kind}:{self.channel.name}@{self.coordinate}"
+        if name != expected_name:
+            raise InterpretabilityContractError(
+                f"feature.name must match its kind, channel, and coordinate: {expected_name!r}"
+            )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "kind", kind)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return JSON-compatible transformed-feature metadata."""
+        return {
+            "name": self.name,
+            "kind": self.kind,
+            "coordinate": self.coordinate,
+            "channel": self.channel.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class AttributionResult:
     """Immutable attribution values aligned to the resolved biological input axes."""
 
@@ -665,6 +703,7 @@ class AttributionResult:
     observation_uids: tuple[str, ...]
     coordinates: np.ndarray
     channels: tuple[InputChannelSchema, ...]
+    features: tuple[AttributionFeature, ...] = ()
     convergence_delta: np.ndarray | None = None
     metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
 
@@ -678,9 +717,11 @@ class AttributionResult:
             ("position", "channel"),
             ("observation", "position"),
             ("position",),
+            ("observation", "feature"),
+            ("feature",),
         }:
             raise InterpretabilityContractError(
-                "result axes must retain position, with optional observation and channel axes"
+                "result axes must describe aligned position/channel or transformed-feature values"
             )
         object.__setattr__(self, "axes", axes)
         observations = _strings(self.observation_uids, "result.observation_uids")
@@ -706,19 +747,42 @@ class AttributionResult:
         coordinates.setflags(write=False)
         object.__setattr__(self, "coordinates", coordinates)
         channels = tuple(self.channels)
+        features = tuple(self.features)
+        if "feature" in axes:
+            if not features:
+                raise InterpretabilityContractError(
+                    "results with a feature axis must declare transformed-feature metadata"
+                )
+            if not all(isinstance(feature, AttributionFeature) for feature in features):
+                raise InterpretabilityContractError(
+                    "result features must contain AttributionFeature records"
+                )
+            if channels:
+                raise InterpretabilityContractError(
+                    "transformed-feature results declare channels through each feature"
+                )
+            names = tuple(feature.name for feature in features)
+            if len(names) != len(set(names)):
+                raise InterpretabilityContractError("result feature names must be unique")
+        elif features:
+            raise InterpretabilityContractError(
+                "position-aligned results cannot declare transformed-feature metadata"
+            )
         if "channel" in axes and not channels:
             raise InterpretabilityContractError(
                 "results with a channel axis must declare channel metadata"
             )
-        if "channel" not in axes and channels:
+        if "channel" not in axes and "feature" not in axes and channels:
             raise InterpretabilityContractError(
                 "position-only results cannot declare a channel axis"
             )
         object.__setattr__(self, "channels", channels)
+        object.__setattr__(self, "features", features)
         axis_sizes = {
             "observation": len(observations),
             "position": len(coordinates),
             "channel": len(channels),
+            "feature": len(features),
         }
         expected_shape = tuple(axis_sizes[axis] for axis in axes)
         values = np.asarray(self.values, dtype=np.float64).copy()
@@ -752,6 +816,7 @@ class AttributionResult:
         observation_uids: Sequence[str],
         coordinates: Any,
         channels: Sequence[InputChannelSchema],
+        features: Sequence[AttributionFeature] = (),
         convergence_delta: Any | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> AttributionResult:
@@ -763,6 +828,7 @@ class AttributionResult:
             "observation_uids": tuple(observation_uids),
             "coordinates": coordinates,
             "channels": tuple(channels),
+            "features": tuple(features),
             "convergence_delta": convergence_delta,
             "metadata": metadata or {},
         }
@@ -778,6 +844,7 @@ class AttributionResult:
             "observation_uids": list(observation_uids),
             "coordinates": _array_digest(normalized_coordinates),
             "channels": [channel.to_dict() for channel in channels],
+            "features": [feature.to_dict() for feature in features],
             "convergence_delta": (
                 None if normalized_delta is None else _array_digest(normalized_delta)
             ),
@@ -798,6 +865,31 @@ class AttributionResult:
                 "result channel names, biological roles, or physical site contexts differ "
                 "from input schema"
             )
+        if "feature" in self.axes:
+            channels = {channel.name: channel for channel in input_schema.channels}
+            for feature in self.features:
+                if feature.coordinate not in self.coordinates:
+                    raise InterpretabilityContractError(
+                        "result transformed feature references an unknown coordinate"
+                    )
+                if channels.get(feature.channel.name) != feature.channel:
+                    raise InterpretabilityContractError(
+                        "result transformed feature differs from input biological channel metadata"
+                    )
+            expected_signal = {
+                (int(coordinate), channel.name)
+                for coordinate in self.coordinates
+                for channel in input_schema.channels
+            }
+            actual_signal = {
+                (feature.coordinate, feature.channel.name)
+                for feature in self.features
+                if feature.kind == "signal"
+            }
+            if actual_signal != expected_signal:
+                raise InterpretabilityContractError(
+                    "result transformed features must contain every schema-aligned signal feature"
+                )
 
     def _identity_dict(self) -> dict[str, Any]:
         return {
@@ -807,6 +899,7 @@ class AttributionResult:
             "observation_uids": list(self.observation_uids),
             "coordinates": _array_digest(np.asarray(self.coordinates)),
             "channels": [channel.to_dict() for channel in self.channels],
+            "features": [feature.to_dict() for feature in self.features],
             "convergence_delta": (
                 None
                 if self.convergence_delta is None

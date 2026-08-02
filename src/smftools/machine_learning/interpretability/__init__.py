@@ -6,12 +6,14 @@ from .artifacts import (
     resolved_explanation_method,
 )
 from .background import BackgroundReference, sample_training_background
+from .classical import explain_sklearn_model
 from .contracts import (
     AGGREGATION_REDUCTIONS,
     EXPLANATION_SPLITS,
     INTERPRETABILITY_SCHEMA_VERSION,
     METHOD_CONTRACTS,
     AttributionAggregation,
+    AttributionFeature,
     AttributionResult,
     ExplanationDecisionProvenance,
     ExplanationMethodContract,
@@ -26,6 +28,7 @@ __all__ = [
     "INTERPRETABILITY_SCHEMA_VERSION",
     "METHOD_CONTRACTS",
     "AttributionAggregation",
+    "AttributionFeature",
     "AttributionResult",
     "BackgroundReference",
     "ExplanationArtifactLayout",
@@ -34,6 +37,7 @@ __all__ = [
     "InterpretabilityContractError",
     "InterpretabilityRequest",
     "create_explanation_manifest",
+    "explain_sklearn_model",
     "resolved_explanation_method",
     "sample_training_background",
     "validate_interpretability_request",
