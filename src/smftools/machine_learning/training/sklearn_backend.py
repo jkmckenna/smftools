@@ -11,7 +11,7 @@ import numpy as np
 
 from ..contracts import InputSchema, LabelSchema
 from ..data.balancing import BalanceResolution, resolve_role_balance
-from ..data.partition_dataset import PartitionDataset
+from ..data.materialized_dataset import MLDatasetProtocol
 from ..data.transforms import (
     FeatureTransformSpec,
     FittedFeatureTransform,
@@ -110,7 +110,7 @@ def _json_parameters(estimator: Any) -> Mapping[str, Any]:
 
 
 def fit_sklearn_partition_model(
-    dataset: PartitionDataset,
+    dataset: MLDatasetProtocol,
     resolved_model: ResolvedModelDefinition,
     *,
     transform_spec: FeatureTransformSpec | None = None,
@@ -121,10 +121,11 @@ def fit_sklearn_partition_model(
 ) -> SklearnTrainingResult:
     """Fit one registered sklearn estimator from the manifest train role.
 
-    Full-fit estimators use :meth:`PartitionDataset.materialize`, so its
-    conservative memory preflight runs before partition reads. Estimators with
-    ``partial_fit`` are updated in deterministic chunks after the same
-    train-only preprocessing and balancing contracts have been resolved.
+    Partition-backed inputs run their conservative memory preflight before
+    reads; validated pre-materialized inputs are consumed through the same
+    manifest-bound interface. Estimators with ``partial_fit`` are updated in
+    deterministic chunks after the same train-only preprocessing and balancing
+    contracts have been resolved.
     """
     if resolved_model.backend != "sklearn":
         raise SklearnTrainingError("resolved_model must use the sklearn backend")

@@ -14,7 +14,7 @@ from smftools.optional_imports import require
 
 from ..contracts import InputSchema, LabelSchema
 from ..data.balancing import BalanceResolution, resolve_role_balance
-from ..data.partition_dataset import PartitionDataset
+from ..data.materialized_dataset import MLDatasetProtocol
 from ..data.transforms import (
     FeatureTransformSpec,
     FittedFeatureTransform,
@@ -369,7 +369,7 @@ def _evaluate(model: Any, task: ClassificationTask, loader: Any) -> float:
 
 
 def fit_torch_partition_model(
-    dataset: PartitionDataset,
+    dataset: MLDatasetProtocol,
     resolved_model: ResolvedModelDefinition,
     *,
     training_config: TorchTrainingConfig | None = None,
