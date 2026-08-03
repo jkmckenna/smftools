@@ -4,6 +4,7 @@ import numpy as np
 
 from smftools.optional_imports import require
 
+from ..compatibility._warnings import warn_legacy_ml_api
 from ..utils.device import detect_device
 
 torch = require("torch", extra="ml-base", purpose="ML base models")
@@ -17,6 +18,11 @@ class BaseTorchModel(nn.Module):
     """
 
     def __init__(self, dropout_rate=0.0):
+        warn_legacy_ml_api(
+            f"smftools.machine_learning.models.{type(self).__name__}",
+            "a registered model recipe such as ResidualDilatedCNN1d",
+            stacklevel=3,
+        )
         super().__init__()
         self.device = detect_device()  # detects available devices
         self.dropout_rate = dropout_rate  # default dropout rate to be used in regularization.

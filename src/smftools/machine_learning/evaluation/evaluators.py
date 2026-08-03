@@ -5,6 +5,8 @@ import pandas as pd
 
 from smftools.optional_imports import require
 
+from ..compatibility._warnings import warn_legacy_ml_api
+
 plt = require("matplotlib.pyplot", extra="plotting", purpose="evaluation plots")
 sklearn_metrics = require("sklearn.metrics", extra="ml-base", purpose="model evaluation")
 
@@ -22,6 +24,11 @@ class ModelEvaluator:
     """
 
     def __init__(self):
+        warn_legacy_ml_api(
+            "smftools.machine_learning.evaluation.ModelEvaluator",
+            "EvaluationResult with smftools.analysis.compute.ml_results",
+            stacklevel=3,
+        )
         self.results = []
         self.pos_freq = None
         self.num_pos = None
@@ -119,6 +126,11 @@ class PostInferenceModelEvaluator:
             Dictionary of models: {model_name: model_instance}.
             Supports TorchClassifierWrapper and SklearnModelWrapper.
         """
+        warn_legacy_ml_api(
+            "smftools.machine_learning.evaluation.PostInferenceModelEvaluator",
+            "evaluate_predictions with immutable PredictionResult rows",
+            stacklevel=3,
+        )
         self.adata = adata
         self.models = models
         self.target_eval_freq = target_eval_freq

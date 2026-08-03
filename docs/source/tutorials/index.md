@@ -8,6 +8,7 @@ cli_usage
 experiment_config
 semantic_variant_workflows
 pipeline_lifecycle
+ml_migration
 ```
 
 ## Basic workflows
@@ -17,3 +18,5 @@ pipeline_lifecycle
 - Experiment configuration CSV layout and field descriptions.
 - Semantic planning, immutable preprocess generations, and integrated variant analysis.
 - Pipeline restart, latent-coordinate ownership, model trust, and migration.
+- Migration from legacy AnnData, Lightning, analysis-owned training, and wrapper APIs to canonical
+  ML plans, datasets, services, artifacts, evaluation, and explanation results.

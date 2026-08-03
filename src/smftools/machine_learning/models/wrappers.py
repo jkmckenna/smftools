@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from smftools.optional_imports import require
 
+from ..compatibility._warnings import warn_legacy_ml_api
+
 torch = require("torch", extra="ml-base", purpose="model wrappers")
 nn = torch.nn
 
 
 class ScaledModel(nn.Module):
     def __init__(self, model, mean, std):
+        warn_legacy_ml_api(
+            "smftools.machine_learning.models.ScaledModel",
+            "smftools.machine_learning.data.FittedFeatureTransform",
+            stacklevel=3,
+        )
         super().__init__()
         self.model = model
         self.register_buffer("mean", torch.tensor(mean, dtype=torch.float32))

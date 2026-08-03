@@ -4,6 +4,8 @@ import numpy as np
 
 from smftools.optional_imports import require
 
+from ..compatibility._warnings import warn_legacy_ml_api
+
 plt = require("matplotlib.pyplot", extra="plotting", purpose="model evaluation plots")
 pl = require("pytorch_lightning", extra="ml-extended", purpose="Lightning models")
 torch = require("torch", extra="ml-base", purpose="Lightning models")
@@ -44,6 +46,11 @@ class TorchClassifierWrapper(pl.LightningModule):
         target_eval_freq: float = 0.3,
         max_eval_positive: int = None,
     ):
+        warn_legacy_ml_api(
+            "smftools.machine_learning.models.TorchClassifierWrapper",
+            "smftools.machine_learning.training.fit_torch_partition_model",
+            stacklevel=3,
+        )
         super().__init__()
         self.model = model
         self.save_hyperparameters(ignore=["model"])  # logs all except actual model instance

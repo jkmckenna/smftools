@@ -4,6 +4,8 @@ import numpy as np
 
 from smftools.optional_imports import require
 
+from ..compatibility._warnings import warn_legacy_ml_api
+
 plt = require("matplotlib.pyplot", extra="plotting", purpose="model evaluation plots")
 sklearn_metrics = require("sklearn.metrics", extra="ml-base", purpose="model evaluation")
 
@@ -31,6 +33,11 @@ class SklearnModelWrapper:
         target_eval_freq: float = 0.3,
         max_eval_positive=None,
     ):
+        warn_legacy_ml_api(
+            "smftools.machine_learning.models.SklearnModelWrapper",
+            "smftools.machine_learning.models.SklearnPredictor and canonical job services",
+            stacklevel=3,
+        )
         self.model = model
         self.label_col = label_col
         self.num_classes = num_classes

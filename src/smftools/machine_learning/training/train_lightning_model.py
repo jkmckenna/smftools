@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from smftools.optional_imports import require
 
+from ..compatibility._warnings import deprecated_ml_alias
 from ..data import AnnDataModule
 from ..models import TorchClassifierWrapper
 
@@ -16,6 +17,10 @@ EarlyStopping = pl_callbacks.EarlyStopping
 ModelCheckpoint = pl_callbacks.ModelCheckpoint
 
 
+@deprecated_ml_alias(
+    "smftools.machine_learning.training.train_lightning_model",
+    "smftools.machine_learning.training.fit_torch_partition_model",
+)
 def train_lightning_model(
     model,
     datamodule,
@@ -87,6 +92,10 @@ def train_lightning_model(
     return trainer, best_ckpt
 
 
+@deprecated_ml_alias(
+    "smftools.machine_learning.training.run_sliding_window_lightning_training",
+    "an explicit ML plan and canonical train job",
+)
 def run_sliding_window_lightning_training(
     adata,
     tensor_source,

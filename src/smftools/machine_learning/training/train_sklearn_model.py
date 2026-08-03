@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from ..compatibility._warnings import deprecated_ml_alias
 from ..data import AnnDataModule
 from ..models import SklearnModelWrapper
 
 
+@deprecated_ml_alias(
+    "smftools.machine_learning.training.train_sklearn_model",
+    "smftools.machine_learning.training.fit_sklearn_partition_model",
+)
 def train_sklearn_model(model_wrapper, datamodule, evaluate_test=True, evaluate_val=False):
     """
     Fits a SklearnModelWrapper on the train split from datamodule.
@@ -38,6 +43,10 @@ def train_sklearn_model(model_wrapper, datamodule, evaluate_test=True, evaluate_
     return metrics
 
 
+@deprecated_ml_alias(
+    "smftools.machine_learning.training.run_sliding_window_sklearn_training",
+    "an explicit ML plan and canonical train job",
+)
 def run_sliding_window_sklearn_training(
     adata,
     tensor_source,
