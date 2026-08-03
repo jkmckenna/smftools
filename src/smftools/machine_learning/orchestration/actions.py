@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from ..data.materialized_dataset import MLDatasetProtocol
 from ..data.partition_dataset import (
     MLMaterializedPartitionData,
     MLPartitionBatch,
-    PartitionDataset,
 )
 from ..data.transforms import FeatureTransformSpec
 from ..evaluation import (
@@ -63,7 +63,7 @@ class TorchTrainOptions:
 
 
 def train_partition_model(
-    dataset: PartitionDataset,
+    dataset: MLDatasetProtocol,
     resolved_model: ResolvedModelDefinition,
     *,
     sklearn_options: SklearnTrainOptions | None = None,

@@ -11,6 +11,12 @@ from .balancing import (
     resolve_evaluation_sensitivity,
     resolve_role_balance,
 )
+from .materialized_dataset import (
+    MaterializedDataset,
+    MaterializedDatasetPlan,
+    MLDatasetPlanProtocol,
+    MLDatasetProtocol,
+)
 from .partition_dataset import (
     ExperimentPartitionSource,
     MLMaterializedPartitionData,
@@ -65,6 +71,8 @@ __all__ = [
     "FittedFeatureTransform",
     "FittedFeatureTransformProtocol",
     "MLBalanceError",
+    "MLDatasetPlanProtocol",
+    "MLDatasetProtocol",
     "MLTransformError",
     "ML_BALANCE_RESOLUTION_VERSION",
     "ML_FEATURE_TRANSFORM_VERSION",
@@ -74,6 +82,8 @@ __all__ = [
     "MLPartitionDataError",
     "MLPartitionDataPlan",
     "ManifestFeatureTransformer",
+    "MaterializedDataset",
+    "MaterializedDatasetPlan",
     "PartitionDataset",
     "PartitionReadEntry",
     "PartitionReadPolicy",
