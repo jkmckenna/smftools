@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pandas as pd
 
+from ..compatibility._warnings import deprecated_ml_alias
 
+
+@deprecated_ml_alias(
+    "smftools.machine_learning.evaluation.flatten_sliding_window_results",
+    "smftools.analysis.compute.ml_results fixed-schema tables",
+)
 def flatten_sliding_window_results(results_dict):
     """
     Flatten nested sliding window results into pandas DataFrame.

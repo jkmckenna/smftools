@@ -5,6 +5,7 @@ import pandas as pd
 
 from smftools.optional_imports import require
 
+from ..compatibility._warnings import warn_legacy_ml_api
 from .preprocessing import random_fill_nans
 
 pl = require("pytorch_lightning", extra="ml-extended", purpose="Lightning data modules")
@@ -36,6 +37,11 @@ class AnnDataDataset(Dataset):
         window_start=None,
         window_size=None,
     ):
+        warn_legacy_ml_api(
+            "smftools.machine_learning.data.AnnDataDataset",
+            "smftools.machine_learning.data.PartitionDataset or MaterializedDataset",
+            stacklevel=3,
+        )
         self.adata = adata
         self.tensor_source = tensor_source
         self.tensor_key = tensor_key
@@ -98,6 +104,11 @@ def split_dataset(
     """
     Perform split and record assignment into adata.obs[split_col].
     """
+    warn_legacy_ml_api(
+        "smftools.machine_learning.data.anndata_data_module.split_dataset",
+        "smftools.machine_learning.splitting.plan_ml_splits",
+        stacklevel=3,
+    )
     total_len = len(dataset)
 
     if load_existing_split:
@@ -162,6 +173,11 @@ class AnnDataModule(pl.LightningDataModule):
         num_workers=None,
         persistent_workers=False,
     ):
+        warn_legacy_ml_api(
+            "smftools.machine_learning.data.AnnDataModule",
+            "smftools.machine_learning.data.PartitionDataset or MaterializedDataset",
+            stacklevel=3,
+        )
         super().__init__()
         self.adata = adata
         self.tensor_source = tensor_source
@@ -300,6 +316,11 @@ def build_anndata_loader(
     The lightning loader works for both Lightning and the Sklearn wrapper.
     Set lightning to False if you want to make data loaders for base PyTorch or base sklearn models
     """
+    warn_legacy_ml_api(
+        "smftools.machine_learning.data.build_anndata_loader",
+        "smftools.machine_learning.data.PartitionDataset or MaterializedDataset",
+        stacklevel=3,
+    )
     if lightning:
         return AnnDataModule(
             adata,

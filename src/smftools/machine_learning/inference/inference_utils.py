@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pandas as pd
 
+from ..compatibility._warnings import deprecated_ml_alias
 
+
+@deprecated_ml_alias(
+    "smftools.machine_learning.inference.inference_utils.annotate_split_column",
+    "immutable split manifests and PredictionResult rows",
+)
 def annotate_split_column(adata, model, split_col="split"):
     """
     Annotate adata.obs with train/val/test/new labels based on model's stored obs_names.

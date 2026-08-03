@@ -3,9 +3,14 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..compatibility._warnings import deprecated_ml_alias
 from .inference_utils import annotate_split_column
 
 
+@deprecated_ml_alias(
+    "smftools.machine_learning.inference.run_sklearn_inference",
+    "smftools.machine_learning.orchestration.apply_partition_model",
+)
 def run_sklearn_inference(adata, model, datamodule, prefix="model"):
     """
     Run inference on AnnData using SklearnModelWrapper.

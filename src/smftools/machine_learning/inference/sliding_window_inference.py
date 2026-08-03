@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from ..compatibility._warnings import deprecated_ml_alias
 from ..data import AnnDataModule
 from ..evaluation import PostInferenceModelEvaluator
 from .lightning_inference import run_lightning_inference
 from .sklearn_inference import run_sklearn_inference
 
 
+@deprecated_ml_alias(
+    "smftools.machine_learning.inference.sliding_window_inference",
+    "explicit apply/evaluate jobs in an ML plan",
+)
 def sliding_window_inference(
     adata,
     trained_results,

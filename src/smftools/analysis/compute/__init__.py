@@ -13,9 +13,9 @@ ls_periodicity          analyze_ls_periodicity(), analyze_ls_periodicity_direct(
 dimensionality_reduction  run_pipeline(), coverage_filter(), make_features_acf(), diffusion_map_embedding(), umap_from_pca(), cluster_from_pca()
 read_cache              load_layer(), load_var_info(), load_obs_metadata(), is_cached()
 ml_splits               build_leave_one_group_out_splits(), summarize_split()
-ml_metrics              build_binary_classifier(), evaluate_binary_classifier(), logit_from_probability()
-ml_cnn                  build_cnn_input(), fit_simple_cnn(), predict_cnn_scores(), integrated_gradients_attributions()
-ml_explanations         bernoulli_nb_logodds_contributions(), tree_shap_contributions(), xgboost_contributions()
+ml_metrics              evaluate_binary_classifier(), logit_from_probability(); deprecated model adapters
+ml_cnn                  deprecated compatibility adapters; implementations owned by machine_learning
+ml_explanations         deprecated compatibility adapters; implementations owned by machine_learning
 ml_results              training_history_table(), evaluation_metric_table(), evaluation_curve_table(), confusion_table(), class_balance_table(), fold_metric_table(), attribution_summary_table()
 clustering              cluster_block_order(), cluster_row_order_by_labels()
 """

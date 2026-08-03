@@ -5,11 +5,16 @@ import pandas as pd
 
 from smftools.optional_imports import require
 
+from ..compatibility._warnings import deprecated_ml_alias
 from .inference_utils import annotate_split_column
 
 torch = require("torch", extra="ml-base", purpose="Lightning inference")
 
 
+@deprecated_ml_alias(
+    "smftools.machine_learning.inference.run_lightning_inference",
+    "smftools.machine_learning.orchestration.apply_partition_model",
+)
 def run_lightning_inference(adata, model, datamodule, trainer, prefix="model", devices=1):
     """
     Run inference on AnnData using TorchClassifierWrapper + AnnDataModule (in inference mode).

@@ -12,6 +12,8 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
+from smftools.machine_learning.compatibility._warnings import warn_legacy_ml_api
+
 
 def validate_disjoint_groups(
     train_idx: Sequence[int],
@@ -84,6 +86,11 @@ def build_leave_one_group_out_splits(
     remaining rows as train. Folds that do not contain both classes in both
     train and test are omitted.
     """
+    warn_legacy_ml_api(
+        "smftools.analysis.compute.ml_splits.build_leave_one_group_out_splits",
+        "smftools.machine_learning.splitting.plan_ml_splits",
+        stacklevel=3,
+    )
     groups = pd.Series(metadata_df[group_col]).dropna().unique().tolist()
     if sort_groups:
         groups = sorted(groups)
