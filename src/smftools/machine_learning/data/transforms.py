@@ -15,11 +15,29 @@ from smftools.optional_imports import require
 
 from .partition_dataset import MLMaterializedPartitionData, MLPartitionBatch
 
-ML_FEATURE_TRANSFORM_VERSION = 1
+# Version 2 quantizes the fitted statistics before hashing them into
+# ``transform_id``. See ``_identity_digest_payload``. Transform IDs published
+# under version 1 do not match their version 2 recomputation.
+ML_FEATURE_TRANSFORM_VERSION = 2
 _IMPUTATION_METHODS = frozenset({"constant", "mean", "median", "most_frequent"})
 _SCALING_METHODS = frozenset({"none", "standard"})
 _INDICATOR_KINDS = frozenset({"observed", "design", "availability", "padding"})
 _INDICATOR_ORDER = ("observed", "design", "availability", "padding")
+
+# ``transform_id`` hashes the fitted statistics. Hashing raw float64 makes that
+# identity depend on summation order: a fit accumulated over batches and a fit
+# computed over the whole array differ in the last bit, both correctly. That
+# made ``batch_size`` -- a pure performance knob with no scientific meaning --
+# change a transform's identity, and therefore the lineage of every model
+# fitted with it. Measured before this was introduced: four distinct
+# transform IDs across batch sizes 16, 32, 64, and 128 on identical data.
+#
+# Twelve significant digits sits far above the ~1e-16 discrepancy and far below
+# any scientifically meaningful distinction. Only the digest input is
+# quantized; the stored arrays and ``to_dict`` output keep full precision, so
+# published artifacts and their round trip are unaffected.
+_IDENTITY_SIGNIFICANT_DIGITS = 12
+_IDENTITY_STATISTIC_FIELDS = ("fill_values", "centers", "scales")
 
 
 class MLTransformError(ValueError):
@@ -34,6 +52,32 @@ def _canonical_json(value: Any) -> str:
         ensure_ascii=False,
         allow_nan=False,
     )
+
+
+def _quantize_statistic(values: Any) -> list[str]:
+    """Render fitted statistics at fixed precision for hashing.
+
+    Strings rather than rounded floats: the decimal form is exactly what gets
+    hashed, so the quantization is visible in the digest input instead of
+    depending on a float round trip. Negative zero is normalized, since
+    ``-0.0`` and ``0.0`` are numerically equal but format differently.
+    """
+    rendered: list[str] = []
+    for value in np.asarray(values, dtype=np.float64).ravel():
+        scalar = float(value)
+        if scalar == 0.0:
+            scalar = 0.0
+        rendered.append(f"{scalar:.{_IDENTITY_SIGNIFICANT_DIGITS}g}")
+    return rendered
+
+
+def _identity_digest_payload(identity: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a full-precision identity dict with its statistics quantized."""
+    payload = dict(identity)
+    for field in _IDENTITY_STATISTIC_FIELDS:
+        if field in payload:
+            payload[field] = _quantize_statistic(payload[field])
+    return payload
 
 
 def _sha256(value: Any) -> str:
@@ -259,7 +303,7 @@ class FittedFeatureTransform:
         object.__setattr__(self, "channel_names", channels)
         object.__setattr__(self, "coordinates", coordinates)
         object.__setattr__(self, "feature_names", expected_names)
-        identity = self._identity_dict()
+        identity = _identity_digest_payload(self._identity_dict())
         if self.transform_id != _sha256(identity):
             raise MLTransformError("transform_id does not match fitted state and provenance")
 
@@ -384,7 +428,7 @@ def fit_feature_transform(
     }
     return FittedFeatureTransform(
         schema_version=ML_FEATURE_TRANSFORM_VERSION,
-        transform_id=_sha256(identity),
+        transform_id=_sha256(_identity_digest_payload(identity)),
         spec=spec,
         dataset_snapshot_id=dataset_snapshot_id,
         split_id=split_id,
