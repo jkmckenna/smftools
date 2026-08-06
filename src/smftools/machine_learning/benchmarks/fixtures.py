@@ -60,6 +60,10 @@ VALIDATION_GROUPS = 2
 TEST_GROUPS = 2
 TOTAL_GROUPS = TRAIN_GROUPS + VALIDATION_GROUPS + TEST_GROUPS
 
+# One train group, one validation group, and one test group carry class 1 under
+# ``FixtureSpec.imbalanced``, so every role still contains both classes.
+MINORITY_GROUPS = frozenset({1, 7, 9})
+
 
 @dataclass(frozen=True)
 class FixtureSpec:
@@ -71,6 +75,11 @@ class FixtureSpec:
     n_partitions: int = 1
     seed: int = 0
     missing_fraction: float = 0.3
+    # When true, only groups in MINORITY_GROUPS carry class 1, giving a 5:1
+    # train skew. Balanced labels make downsample and upsample no-ops, so any
+    # test of those methods needs this. Every role keeps both classes, which
+    # the balance contract requires.
+    imbalanced: bool = False
 
     def __post_init__(self) -> None:
         if self.n_rows < TOTAL_GROUPS:
@@ -340,7 +349,7 @@ def build_fixture(
                 modality=modality,
                 # Label is a deterministic function of the group, never of the
                 # split role, so no benchmark can shortcut prediction.
-                class_id=group % 2,
+                class_id=(int(group in MINORITY_GROUPS) if spec.imbalanced else group % 2),
                 group_values={},
             )
             for read_id, sample_id, group in zip(read_ids, sample_ids, group_indices, strict=True)
