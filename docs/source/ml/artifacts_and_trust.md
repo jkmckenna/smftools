@@ -75,6 +75,38 @@ reinterpreting old data. Two bumps to be aware of when reading older artifacts:
 Both changes exist so that recorded provenance determines the result. A reproducibility record
 that does not is not one.
 
+## Supported versions
+
+Artifacts record the versions of the packages that produced them, and a load **refuses on any
+mismatch** unless `allow_version_mismatch=True` is passed. The comparison is exact, so a model
+saved under scikit-learn 1.9.0 will not load under 1.9.1 by default.
+
+That is deliberate — a silently different estimator implementation is a reproducibility problem,
+not a convenience — but it means pinning matters for anyone who intends to reload models later.
+
+| Requirement | Declared support | Pinned into artifacts |
+| --- | --- | --- |
+| Python | ≥ 3.11 | no |
+| numpy | ≥ 1.22, < 2 | sklearn artifacts |
+| scipy | ≥ 1.7.3 | sklearn artifacts |
+| scikit-learn | ≥ 1.2 | sklearn artifacts |
+| skops | ≥ 0.10 | sklearn artifacts |
+| torch | ≥ 2.0 | Torch artifacts |
+
+Optional `ml-extended` extras — captum, shap, hydra-core, lightning — are **not** pinned into
+artifacts, because they take no part in producing a fitted model. Captum affects explanations, and
+an explanation records the Captum version in its own result.
+
+## Deprecations
+
+Legacy entry points raise `FutureWarning` naming both the replacement and the removal version.
+Removal is **3.0.0**; nothing is removed in the 2.x line.
+
+The deprecated surface is the analysis-owned ML execution path — `analysis.compute.ml_*` training,
+inference, and explanation entry points — plus the AnnData/Lightning data module and the legacy
+sliding-window and Lightning trainers. See the
+[migration guide](../tutorials/ml_migration.md) for the replacement map.
+
 ## Promotion
 
 A mutable alias can point at a published model so downstream work refers to "the current model"
