@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "work_package": "ML-700",
+  "source": "dev/in-progress/ml700_benchmark_plan.md",
+  "purpose": "Committed limits and regression thresholds for the ML data plane. ML-701 writes user-facing prose from this file; it is the machine-readable half of ML-700's published limits.",
+  "baseline_environment": {
+    "note": "Baselines were captured on a developer laptop. CI must compare ratios and structure, never absolute byte counts or wall times, because hardware differs.",
+    "platform": "macOS, Apple Silicon",
+    "python": "3.12.9",
+    "numpy": "1.26.4",
+    "sklearn": "1.9.0",
+    "torch": "2.13.0",
+    "total_memory_bytes": 137438953472
+  },
+  "estimator": {
+    "module": "smftools.machine_learning.data.partition_dataset",
+    "bytes_per_row": "2 * (n_positions * n_channels * 6 + n_channels + n_positions + 8 + (8 if labeled))",
+    "transient_multiplier": 2,
+    "materialization_multiplier": 3,
+    "default_materialization_budget_bytes": 2147483648,
+    "default_batch_budget_bytes": 67108864,
+    "default_batch_size": 64,
+    "verdict": "The 2x/3x constants were measured against cold-process peak RSS and hold. Worst-case measured slope was 12,950 bytes/row against 21,102 assumed, so the linear term is conservative by roughly 1.6x. No change is warranted; an over-conservative bound costs a config override, an under-conservative one costs a mid-run OOM."
+  },
+  "materialization_limits": {
+    "description": "Maximum rows in a single split that materialize() will approve at the default budget. Refusal fires when 3 * rows * bytes_per_row exceeds the budget. Rows are split rows, not experiment rows.",
+    "recomputable": "Every row here is derived from _bytes_per_row and the default budget. The unit test recomputes and compares, so changing an estimator constant fails immediately.",
+    "rows": [
+      {
+        "n_positions": 500,
+        "n_channels": 1,
+        "bytes_per_row": 7034,
+        "max_materializable_train_rows": 101766,
+        "max_rows_per_batch": 9540
+      },
+      {
+        "n_positions": 500,
+        "n_channels": 2,
+        "bytes_per_row": 13036,
+        "max_materializable_train_rows": 54911,
+        "max_rows_per_batch": 5147
+      },
+      {
+        "n_positions": 1000,
+        "n_channels": 1,
+        "bytes_per_row": 14034,
+        "max_materializable_train_rows": 51006,
+        "max_rows_per_batch": 4781
+      },
+      {
+        "n_positions": 1000,
+        "n_channels": 2,
+        "bytes_per_row": 26036,
+        "max_materializable_train_rows": 27493,
+        "max_rows_per_batch": 2577
+      },
+      {
+        "n_positions": 5000,
+        "n_channels": 1,
+        "bytes_per_row": 70034,
+        "max_materializable_train_rows": 10221,
+        "max_rows_per_batch": 958
+      },
+      {
+        "n_positions": 5000,
+        "n_channels": 2,
+        "bytes_per_row": 130036,
+        "max_materializable_train_rows": 5504,
+        "max_rows_per_batch": 516
+      },
+      {
+        "n_positions": 20000,
+        "n_channels": 1,
+        "bytes_per_row": 280034,
+        "max_materializable_train_rows": 2556,
+        "max_rows_per_batch": 239
+      },
+      {
+        "n_positions": 20000,
+        "n_channels": 2,
+        "bytes_per_row": 520036,
+        "max_materializable_train_rows": 1376,
+        "max_rows_per_batch": 129
+      }
+    ]
+  },
+  "workload_taxonomy": [
+    {
+      "workload": "partition batch read (iter_batches)",
+      "state": "supported",
+      "ceiling": "none",
+      "evidence": "Process RSS reaches a plateau independent of split size. Over 300 batches, per-batch growth decayed monotonically from 739,937 to 17,270 bytes, ending at 3.8% of one batch estimate.",
+      "guidance": "max_batch_bytes bounds one decoded batch, not process RSS. A process streaming a large split shows RSS far above the batch budget while remaining bounded; do not treat that as a leak."
+    },
+    {
+      "workload": "full split materialization (materialize)",
+      "state": "refused above the ceiling",
+      "ceiling": "see materialization_limits",
+      "evidence": "Refusal fires at preflight before allocation, exactly at the closed-form boundary.",
+      "guidance": "At production scale (roughly 10^6 reads) materialization is refused at every width. Use a streaming fit."
+    },
+    {
+      "workload": "sklearn training, incremental families",
+      "state": "supported",
+      "ceiling": "none",
+      "evidence": "fit_sklearn_partition_model_streaming plateaus at 132 MB over 300 batches with 1.02% final-quarter growth, and succeeds where the materialized path raises MLMemoryBudgetError.",
+      "guidance": "Only families declaring incremental_fit can stream. bernoulli_nb qualifies today."
+    },
+    {
+      "workload": "sklearn training, non-incremental families",
+      "state": "refused above the ceiling",
+      "ceiling": "see materialization_limits",
+      "evidence": "logistic_regression and random_forest have no partial_fit and require a materialized split.",
+      "guidance": "Refusal names the streaming-capable families. Raise max_materialization_bytes only if the split genuinely fits."
+    },
+    {
+      "workload": "Torch training",
+      "state": "supported, but memory is NOT modelled",
+      "ceiling": "unknown",
+      "evidence": "fit_torch_partition_model_streaming is bounded: it added 1,696.78 MB in its first decile then 0.00 and 0.25 MB in its last two. But the plateau reached 2,172 MB, which is 12,557x the data batch estimate.",
+      "guidance": "Process memory is dominated by model activations, which no budget in the ML data plane models. max_batch_bytes does not control Torch training memory, and the data budget cannot size a Torch job. Size empirically. Measured ratios across batch size and sequence length spanned 4,409x to 20,833x, so no fixed multiplier converts a data budget into a Torch prediction. See ML-205."
+    }
+  ],
+  "regression_thresholds": {
+    "materialization_worst_headroom_max": 1.0,
+    "materialization_headroom_soft_min": 0.25,
+    "streaming_tail_growth_fraction_max": 0.05,
+    "wall_time_regression_max_fraction": 0.5,
+    "notes": [
+      "Headroom is measured peak RSS divided by the analytic estimate, using the WORST observed peak across repeats, not the median. A memory bound is a worst-case claim.",
+      "Memory must be measured in a fresh process with no warmup. In-process RSS across repeats under-reports peak allocation once CPython's allocator holds a warm arena: 82 KB was measured for a 12 MB workload at two warmups.",
+      "Streaming workloads must never be thresholded on high-water RSS, which over-reports because freed pages are not returned to the OS. Use trajectory deceleration instead.",
+      "The bounded/accumulating verdict returned by measure_batch_trajectory is threshold-sensitive and has flipped between runs on identical behaviour. It is a reading aid, not a gate. Any CI use needs repeats and a wide margin."
+    ]
+  },
+  "unmodelled": [
+    {
+      "term": "Torch activation memory",
+      "owner": "ML-205",
+      "reason": "Dominates process RSS during Torch training by 3 to 4 orders of magnitude over the data estimate, with a non-constant ratio. No preflight covers it."
+    }
+  ],
+  "explanation_chunking": {
+    "method_measured": "Saliency",
+    "model": "residual_dilated_cnn",
+    "cohort": "400 rows x 400 positions x 1 channel",
+    "timing": [
+      {
+        "example_batch_size": 1,
+        "chunks": 400,
+        "seconds": 3.854,
+        "relative_to_best": 1.99
+      },
+      {
+        "example_batch_size": 8,
+        "chunks": 50,
+        "seconds": 1.933,
+        "relative_to_best": 1.0
+      },
+      {
+        "example_batch_size": 64,
+        "chunks": 7,
+        "seconds": 4.962,
+        "relative_to_best": 2.57
+      },
+      {
+        "example_batch_size": 512,
+        "chunks": 1,
+        "seconds": 5.334,
+        "relative_to_best": 2.76
+      }
+    ],
+    "guidance": [
+      "Wall time has an interior optimum. Larger chunks are not faster: the largest chunk measured was 2.76x slower than the best, and the smallest was 1.99x slower. Do not assume 'batch it all at once' is the fast path.",
+      "example_batch_size is a SCIENTIFIC parameter, not only a performance knob. Changing it changes attribution values by roughly 1.1e-3 relative (max absolute difference 2.27e-4 against a max value of 0.204), deterministically -- attributions repeat bitwise at a fixed chunk size but differ across chunk sizes, consistent with batch-size-dependent convolution kernel selection accumulating through the residual blocks.",
+      "Choose a chunk size and hold it fixed across runs you intend to compare. Tuning it for speed between runs silently perturbs the attributions being compared.",
+      "Provenance is intact: example_batch_size is part of request.parameters and therefore request_id, and result_id incorporates request_id. Two explanations computed at different chunk sizes are correctly recorded as different results rather than colliding."
+    ],
+    "caveats": [
+      "Timing measured in-process on one laptop; treat the shape of the curve as the finding, not the absolute seconds.",
+      "Memory across chunk sizes was NOT measured reliably. The sweep runs chunk sizes sequentially in one process, so a warm allocator arena under-reports later cells -- one cell reported 0.1 MB for work comparable to a cell reporting 46.8 MB. Measuring explanation memory needs the cold-subprocess discipline used for reads."
+    ]
+  },
+  "worker_scaling": {
+    "cohort": "3000 train rows x 1000 positions x 1 channel",
+    "measurement": "Shard 0 only, read sequentially in-process at each num_workers. This measures the cost of the sharding arithmetic, NOT parallel wall-clock speedup.",
+    "shards": [
+      {
+        "num_workers": 1,
+        "shard_rows": 3000,
+        "median_seconds": 5.469,
+        "rows_per_second": 549,
+        "efficiency_vs_ideal": 1.0
+      },
+      {
+        "num_workers": 2,
+        "shard_rows": 1500,
+        "median_seconds": 2.657,
+        "rows_per_second": 565,
+        "efficiency_vs_ideal": 1.03
+      },
+      {
+        "num_workers": 4,
+        "shard_rows": 750,
+        "median_seconds": 1.324,
+        "rows_per_second": 566,
+        "efficiency_vs_ideal": 1.03
+      },
+      {
+        "num_workers": 8,
+        "shard_rows": 375,
+        "median_seconds": 0.661,
+        "rows_per_second": 567,
+        "efficiency_vs_ideal": 1.03
+      }
+    ],
+    "guidance": [
+      "Sharding is free. Per-shard throughput is flat at roughly 550-570 rows/second regardless of worker count, and shard time scales as 1/N with no measurable per-shard overhead. Splitting a read across workers costs nothing in arithmetic terms.",
+      "This does NOT establish an N-times wall-clock speedup. Shards were read one at a time in a single process; real parallel workers contend for disk and memory bandwidth, and that contention is unmeasured here.",
+      "Shard disjointness and determinism are contracts covered separately by tests/integration/machine_learning/test_partition_dataset.py, not by this timing sweep."
+    ]
+  }
+}

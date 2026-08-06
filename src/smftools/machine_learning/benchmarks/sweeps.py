@@ -268,6 +268,10 @@ def measure_batch_trajectory(
     prewarm: bool = True,
     root: Path | None = None,
     timeout: float = 3600.0,
+    mode: str = "trajectory",
+    backend: str | None = None,
+    max_epochs: int = 3,
+    batch_size: int | None = None,
 ) -> dict[str, object]:
     """Run one long streaming read and decide bounded vs accumulating.
 
@@ -288,13 +292,18 @@ def measure_batch_trajectory(
 
     with _workspace(root) as workspace:
         payload = {
-            "mode": "trajectory",
+            "mode": mode,
             "n_rows": n_rows,
             "n_positions": n_positions,
             "n_channels": n_channels,
             "prewarm": prewarm,
             "workspace": str(workspace),
+            "max_epochs": max_epochs,
         }
+        if backend is not None:
+            payload["backend"] = backend
+        if batch_size is not None:
+            payload["batch_size"] = batch_size
         completed = subprocess.run(
             [
                 sys.executable,
@@ -333,16 +342,27 @@ def measure_batch_trajectory(
     batch_bytes = record["estimated_bytes"]
     last = quartiles[-1]
     first = quartiles[0]
-    # Bounded if the final quartile has decayed well below both the batch size
-    # and its own first quartile. Accumulation cannot decay: it is driven by a
-    # fresh allocation every iteration.
+    plateau = trajectory[-1]
+
+    # The criterion is plateau-relative, not batch-estimate-relative. An earlier
+    # version compared final-quartile growth to the data batch estimate, which
+    # is the wrong scale for a fit: a Torch working set is dominated by model
+    # activations, so a genuinely flat trajectory was reported as
+    # "accumulating" simply because the model is larger than one data batch.
+    # What distinguishes bounded from accumulating is whether growth has stopped
+    # relative to where it settled, plus deceleration from the first quartile --
+    # real accumulation cannot decelerate, since it allocates afresh every pass.
+    tail_fraction = (last * max(1, n // 4)) / plateau if plateau > 0 else 0.0
     verdict = (
-        "bounded"
-        if last < 0.2 * batch_bytes and (first <= 0 or last < 0.5 * first)
-        else "accumulating"
+        "bounded" if tail_fraction < 0.05 and (first <= 0 or last < 0.5 * first) else "accumulating"
     )
 
     return {
+        "mode": mode,
+        "backend": record.get("backend"),
+        "plateau_bytes": plateau,
+        "tail_growth_fraction": tail_fraction,
+        "plateau_over_batch_estimate": (plateau / batch_bytes) if batch_bytes else None,
         "batches": n,
         "batch_estimate_bytes": batch_bytes,
         "effective_batch_size": record["effective_batch_size"],
@@ -482,3 +502,118 @@ class _workspace:
         if self._tmp is not None:
             self._tmp.cleanup()
             self._tmp = None
+
+
+def measure_explanation_chunking(
+    *,
+    n_rows: int = 400,
+    n_positions: int = 400,
+    n_channels: int = 1,
+    example_batch_sizes: Sequence[int] = (1, 8, 64, 512),
+    method: str = "Saliency",
+    root: Path | None = None,
+) -> list[dict[str, object]]:
+    """Sweep D: what does ``example_batch_size`` buy, and what does it cost?
+
+    Attribution runs a forward and backward pass per chunk, so the chunk size
+    trades wall time against peak memory in the same way a training batch does.
+    Neither term is modelled by any budget in the ML data plane -- see the Torch
+    entry in ``tests/acceptance/ml_scale_thresholds.json`` -- so the guidance
+    published for chunk sizing has to be measured rather than derived.
+
+    Runs in-process: attribution is a single bounded pass, so the warm-arena
+    under-reporting that forced cold subprocesses for repeated reads does not
+    apply in the same way. Peak is still the high-water mark and is reported as
+    such.
+    """
+    import gc
+    import time
+
+    import numpy as np
+    import psutil
+
+    from smftools.machine_learning.artifacts import ExplanationMaskPolicy, ExplanationTarget
+    from smftools.machine_learning.interpretability import (
+        ExplanationDecisionProvenance,
+        InterpretabilityRequest,
+        explain_torch_model,
+    )
+    from smftools.machine_learning.models.registry import BUILTIN_MODEL_REGISTRY
+    from smftools.machine_learning.training.torch_backend import (
+        TorchTrainingConfig,
+        fit_torch_partition_model_streaming,
+    )
+
+    results: list[dict[str, object]] = []
+    process = psutil.Process()
+
+    with _workspace(root) as workspace:
+        built = build_fixture(
+            workspace,
+            FixtureSpec(
+                n_rows=n_rows,
+                n_positions=n_positions,
+                n_channels=n_channels,
+                imbalanced=True,
+            ),
+        )
+        resolved = BUILTIN_MODEL_REGISTRY.resolve(
+            "residual_dilated_cnn", input_schema=built.plan.dataset.input_schema
+        )
+        trained = fit_torch_partition_model_streaming(
+            built.dataset,
+            resolved,
+            training_config=TorchTrainingConfig(max_epochs=1, device="cpu", batch_size=32),
+        )
+        data = built.dataset.materialize("test")
+        mask_kinds = tuple(
+            mask.kind
+            for mask in trained.model.input_schema.masks
+            if mask.kind in trained.model.architecture.capabilities.supported_mask_kinds
+        )
+
+        for size in example_batch_sizes:
+            request = InterpretabilityRequest.create(
+                method=method,
+                model_id="a" * 64,
+                dataset_snapshot_id=built.plan.dataset.snapshot_id,
+                input_schema_hash=trained.model.input_schema.schema_hash,
+                split_role=data.split,
+                cohort=f"{data.split}-natural",
+                observation_uids=data.molecule_uids,
+                target=ExplanationTarget(
+                    output_name="activity_target_logit", class_id=1, class_name="active"
+                ),
+                baseline=None,
+                layer=None,
+                mask_policy=ExplanationMaskPolicy.create(
+                    mask_kinds=mask_kinds,
+                    handling=(
+                        "forward masks through the model and zero invalid input attributions"
+                    ),
+                ),
+                decision=ExplanationDecisionProvenance("fixed"),
+                parameters={"absolute": False, "example_batch_size": size},
+                random_seed=13,
+            )
+            gc.collect()
+            baseline_rss = int(process.memory_info().rss)
+            start = time.perf_counter()
+            result = explain_torch_model(trained.model, data, request)
+            elapsed = time.perf_counter() - start
+            peak = int(process.memory_info().rss) - baseline_rss
+            values = np.asarray(result.values)
+            results.append(
+                {
+                    "method": method,
+                    "example_batch_size": size,
+                    "n_rows_explained": int(values.shape[0]),
+                    "n_positions": n_positions,
+                    "seconds": elapsed,
+                    "rss_delta_bytes": max(0, peak),
+                    "attribution_checksum": float(np.abs(values).sum()),
+                }
+            )
+            del result, values
+            gc.collect()
+    return results
