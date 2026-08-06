@@ -10,17 +10,15 @@ and ``_raw_feature_rows`` both accept an ``MLPartitionBatch``. Only fitting need
 a bounded implementation, and that is what this module provides.
 
 How many passes a fit costs depends entirely on the spec, and the default spec
-costs none:
+costs none::
 
-===========================  ==============  ======================================
-``imputation`` / ``scaling``  Data passes     Why
-===========================  ==============  ======================================
-``constant`` / ``none``       **0**          Both statistics are declared, not learned
-``constant`` / ``standard``   1              Scaling needs moments of the imputed matrix
-``mean``/``most_frequent`` / ``none``  1   Fill values need per-column statistics
-``mean``/``most_frequent`` / ``standard`` 2  Fill values must be known before imputing
-``median`` / any              refused        Exact median needs the full distribution
-===========================  ==============  ======================================
+    imputation / scaling                      passes  why
+    ----------------------------------------  ------  ----------------------------------
+    constant / none                                0  both statistics are declared
+    constant / standard                            1  scaling needs imputed moments
+    mean or most_frequent / none                   1  fill values need column statistics
+    mean or most_frequent / standard               2  fill values precede imputation
+    median / any                             refused  exact median needs the full column
 
 Because ``FeatureTransformSpec`` defaults to ``imputation="constant"`` and
 ``scaling="none"``, the common case resolves the entire transform from read-plan

@@ -15,6 +15,7 @@ tools
 analysis
 plotting
 datasets
+machine_learning
 ```
 
 ## Informatics module diagram
