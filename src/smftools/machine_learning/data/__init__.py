@@ -10,6 +10,7 @@ from .balancing import (
     balance_counts,
     resolve_evaluation_sensitivity,
     resolve_role_balance,
+    resolve_role_balance_from_plan,
 )
 from .materialized_dataset import (
     MaterializedDataset,
@@ -97,4 +98,5 @@ __all__ = [
     "random_fill_nans",
     "resolve_evaluation_sensitivity",
     "resolve_role_balance",
+    "resolve_role_balance_from_plan",
 ]

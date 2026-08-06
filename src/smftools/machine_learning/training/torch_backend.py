@@ -13,8 +13,13 @@ import numpy as np
 from smftools.optional_imports import require
 
 from ..contracts import InputSchema, LabelSchema
-from ..data.balancing import BalanceResolution, resolve_role_balance
+from ..data.balancing import (
+    BalanceResolution,
+    resolve_role_balance,
+    resolve_role_balance_from_plan,
+)
 from ..data.materialized_dataset import MLDatasetProtocol
+from ..data.streaming_transforms import fit_feature_transform_streaming, plan_transform_fit
 from ..data.transforms import (
     FeatureTransformSpec,
     FittedFeatureTransform,
@@ -26,7 +31,12 @@ from ..models.protocols import TorchPredictor
 from ..models.registry import BUILTIN_MODEL_REGISTRY, ModelRegistry, ResolvedModelDefinition
 from ..plan import BalancingSpec
 
-TORCH_TRAINING_CONFIG_VERSION = 1
+# Version 2 adds ``shuffle_buffer_batches``. It belongs in the persisted config
+# rather than a call argument because it changes fitted weights: a streaming fit
+# permutes rows within a window of decoded batches, so two runs with identical
+# recorded provenance but different buffer sizes produce different models. A
+# reproducibility record that does not determine the result is not one.
+TORCH_TRAINING_CONFIG_VERSION = 2
 _SUPPORTED_DEVICES = frozenset({"auto", "cpu", "cuda", "mps"})
 
 
@@ -63,6 +73,10 @@ class TorchTrainingConfig:
     seed: int = 0
     device: str = "auto"
     deterministic: bool = True
+    # Streaming fits only. Rows are permuted within this many decoded partition
+    # batches; the materialized path shuffles globally and ignores it. Recorded
+    # here because it changes fitted weights.
+    shuffle_buffer_batches: int = 8
 
     def __post_init__(self) -> None:
         if self.schema_version != TORCH_TRAINING_CONFIG_VERSION:
@@ -70,7 +84,7 @@ class TorchTrainingConfig:
                 f"unsupported Torch training config version {self.schema_version}; "
                 f"expected {TORCH_TRAINING_CONFIG_VERSION}"
             )
-        for name in ("max_epochs", "batch_size", "patience"):
+        for name in ("max_epochs", "batch_size", "patience", "shuffle_buffer_batches"):
             object.__setattr__(self, name, _positive_integer(getattr(self, name), name))
         if isinstance(self.seed, bool) or not isinstance(self.seed, int) or self.seed < 0:
             raise TorchTrainingError("seed must be a non-negative integer")
@@ -104,6 +118,7 @@ class TorchTrainingConfig:
             "seed": self.seed,
             "device": self.device,
             "deterministic": self.deterministic,
+            "shuffle_buffer_batches": self.shuffle_buffer_batches,
         }
 
     @classmethod
@@ -120,6 +135,7 @@ class TorchTrainingConfig:
             "seed",
             "device",
             "deterministic",
+            "shuffle_buffer_batches",
         }
         if set(raw) != expected:
             raise TorchTrainingError(f"Torch training fields must be exactly {sorted(expected)}")
@@ -366,6 +382,300 @@ def _evaluate(model: Any, task: ClassificationTask, loader: Any) -> float:
     if count == 0:
         raise TorchTrainingError("evaluation loader produced no observations")
     return total / count
+
+
+class _StreamingLoader:
+    """Re-iterable loader that decodes partition batches instead of a tensor.
+
+    Rebuilds its generator on every ``__iter__``, so it substitutes directly for
+    the ``DataLoader`` the materialized path uses, including inside
+    :func:`_evaluate`.
+
+    Shuffling is **buffered, not global**. Random access over a partition store
+    is what streaming exists to avoid, so training rows are permuted within a
+    window of ``buffer_batches`` decoded batches rather than across the whole
+    split. This changes SGD sample ordering and therefore the fitted weights; it
+    is a genuine semantic difference from the materialized path, not an
+    implementation detail. Widen the buffer to approach global shuffling at the
+    cost of holding more rows.
+    """
+
+    def __init__(
+        self,
+        dataset: MLDatasetProtocol,
+        transform: TorchFeatureTransform,
+        split: str,
+        *,
+        batch_size: int,
+        multiplicity: np.ndarray | None = None,
+        shuffle_seed: int | None = None,
+        buffer_batches: int = 8,
+    ) -> None:
+        self._dataset = dataset
+        self._transform = transform
+        self._split = split
+        self._batch_size = batch_size
+        self._multiplicity = multiplicity
+        self._shuffle_seed = shuffle_seed
+        self._buffer_batches = max(1, int(buffer_batches))
+        self.epoch = 0
+
+    def _decoded(self):
+        torch = require("torch", extra="ml-base", purpose="plain Torch streaming")
+        offset = 0
+        for batch in self._dataset.iter_batches(self._split):
+            rows = len(batch.molecule_uids)
+            local = None
+            if self._multiplicity is not None:
+                counts = self._multiplicity[offset : offset + rows]
+                offset += rows
+                if not counts.any():
+                    continue
+                local = np.repeat(np.flatnonzero(counts), counts[counts > 0])
+            else:
+                offset += rows
+            transformed = self._transform(batch)
+            if transformed.labels is None:
+                raise TorchTrainingError("Torch classification batches require labels")
+            design = transformed.design_mask
+            if design.ndim == 2:
+                design = design.unsqueeze(0).expand(rows, -1, -1)
+            tensors = (
+                transformed.values,
+                transformed.labels,
+                transformed.observed_mask,
+                transformed.availability_mask,
+                design,
+                transformed.padding_mask,
+            )
+            if local is not None:
+                selected = torch.as_tensor(local, dtype=torch.long, device=tensors[0].device)
+                tensors = tuple(tensor.index_select(0, selected) for tensor in tensors)
+            yield tensors
+
+    def __iter__(self):
+        torch = require("torch", extra="ml-base", purpose="plain Torch streaming")
+
+        def drain(chunks):
+            if not chunks:
+                return
+            merged = tuple(torch.cat(parts, dim=0) for parts in zip(*chunks, strict=True))
+            total = merged[0].shape[0]
+            if self._shuffle_seed is not None:
+                generator = torch.Generator()
+                generator.manual_seed(self._shuffle_seed + self.epoch)
+                order = torch.randperm(total, generator=generator).to(merged[0].device)
+                merged = tuple(tensor.index_select(0, order) for tensor in merged)
+            for start in range(0, total, self._batch_size):
+                stop = start + self._batch_size
+                yield tuple(tensor[start:stop] for tensor in merged)
+
+        buffer: list[tuple[Any, ...]] = []
+        for tensors in self._decoded():
+            buffer.append(tensors)
+            if len(buffer) >= self._buffer_batches:
+                yield from drain(buffer)
+                buffer = []
+        yield from drain(buffer)
+
+
+def fit_torch_partition_model_streaming(
+    dataset: MLDatasetProtocol,
+    resolved_model: ResolvedModelDefinition,
+    *,
+    training_config: TorchTrainingConfig | None = None,
+    transform_spec: FeatureTransformSpec | None = None,
+    balancing: BalancingSpec | None = None,
+    registry: ModelRegistry = BUILTIN_MODEL_REGISTRY,
+) -> TorchTrainingResult:
+    """Train a plain-Torch model without materializing any split.
+
+    :func:`fit_torch_partition_model` materializes ``train``, ``validation``,
+    and ``test``, so it is bounded by ``max_materialization_bytes`` three times
+    over and cannot reach a production-scale experiment. This path decodes
+    partition batches instead.
+
+    Two differences from the materialized path are deliberate and affect
+    results, so they are stated rather than buried:
+
+    1. **Shuffling is buffered, not global** (see :class:`_StreamingLoader`).
+       Fitted weights will not match the materialized path even at identical
+       seeds. Weight parity is therefore asserted nowhere; what is asserted is
+       that the locked-test contract, balance provenance, and transform
+       identity are preserved.
+    2. **Every epoch re-reads the store.** In-memory training pays one decode
+       for all epochs; streaming pays one decode per epoch. It trades wall time
+       for the ability to run at all.
+
+    ``weighted_sampler`` balancing is refused: it draws with replacement across
+    the whole split, which needs the random access streaming avoids.
+    """
+    if resolved_model.backend != "torch":
+        raise TorchTrainingError("resolved_model must use the Torch backend")
+    config = training_config or TorchTrainingConfig()
+    input_schema = dataset.plan.dataset.input_schema
+    label_schema = dataset.plan.dataset.label_schema
+    if label_schema is None:
+        raise TorchTrainingError("Torch classification requires a label schema")
+    output_dim = getattr(resolved_model.config, "output_dim", None)
+    task = ClassificationTask(label_schema, output_dim)
+    device = _resolve_device(config.device)
+    resolved_transform_spec = transform_spec or FeatureTransformSpec(indicators=())
+    if resolved_transform_spec.indicators:
+        raise TorchTrainingError(
+            "Torch signal transforms cannot append mask indicators; masks remain separate inputs"
+        )
+    # Refuses non-streamable specs (imputation="median") before any read.
+    plan_transform_fit(resolved_transform_spec)
+
+    balance = resolve_role_balance_from_plan(
+        dataset.plan,
+        label_schema,
+        balancing or BalancingSpec(),
+        role="train",
+        seed=config.seed,
+        dataset_snapshot_id=dataset.plan.dataset.snapshot_id,
+        split_id=dataset.plan.split.split_id,
+    )
+    if balance.method == "weighted_sampler":
+        raise TorchTrainingError(
+            "weighted_sampler balancing cannot be streamed: it samples with replacement across "
+            "the whole train split, which requires random access. Use class_weight for the same "
+            "reweighting without global sampling, or downsample/upsample."
+        )
+
+    entries = dataset.plan.entries_for("train")
+    fitted_transform = fit_feature_transform_streaming(
+        dataset,
+        resolved_transform_spec,
+        dataset_snapshot_id=dataset.plan.dataset.snapshot_id,
+        split_id=dataset.plan.split.split_id,
+        coordinates=tuple(int(value) for value in dataset.plan.coordinates),
+        channel_names=tuple(channel.name for channel in input_schema.channels),
+        molecule_uids=tuple(entry.molecule_uid for entry in entries),
+    )
+
+    torch = require("torch", extra="ml-base", purpose="plain Torch training")
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(config.seed)
+    transform = TorchFeatureTransform(fitted_transform, device=device)
+
+    multiplicity = np.bincount(balance.selected_indices, minlength=len(entries))
+    train_loader = _StreamingLoader(
+        dataset,
+        transform,
+        "train",
+        batch_size=config.batch_size,
+        multiplicity=multiplicity,
+        shuffle_seed=config.seed,
+        buffer_batches=config.shuffle_buffer_batches,
+    )
+    validation_loader = _StreamingLoader(
+        dataset,
+        transform,
+        "validation",
+        batch_size=config.batch_size,
+    )
+
+    model = registry.build(resolved_model).to(device)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
+    class_weights = (
+        None
+        if balance.method != "class_weight" or balance.class_weights is None
+        else torch.tensor(balance.class_weights, dtype=torch.float32, device=device)
+    )
+    history: list[TorchEpochRecord] = []
+    best_loss = float("inf")
+    best_epoch = 0
+    best_state: dict[str, Any] | None = None
+    stale_epochs = 0
+
+    with _seeded_execution(config):
+        for epoch in range(1, config.max_epochs + 1):
+            train_loader.epoch = epoch
+            model.train()
+            train_numerator = 0.0
+            train_denominator = 0.0
+            for batch in train_loader:
+                optimizer.zero_grad(set_to_none=True)
+                losses, labels = _batch_loss(model, task, batch)
+                weights = None if class_weights is None else class_weights[labels]
+                numerator = losses.sum() if weights is None else (losses * weights).sum()
+                denominator = (
+                    float(losses.numel()) if weights is None else float(weights.sum().item())
+                )
+                loss = numerator / denominator
+                loss.backward()
+                optimizer.step()
+                train_numerator += float(numerator.detach().item())
+                train_denominator += denominator
+            if train_denominator == 0:
+                raise TorchTrainingError("streaming train loader produced no observations")
+            validation_loss = _evaluate(model, task, validation_loader)
+            history.append(
+                TorchEpochRecord(
+                    epoch=epoch,
+                    train_loss=train_numerator / train_denominator,
+                    validation_loss=validation_loss,
+                )
+            )
+            if validation_loss < best_loss - config.min_delta:
+                best_loss = validation_loss
+                best_epoch = epoch
+                best_state = {
+                    name: value.detach().cpu().clone() for name, value in model.state_dict().items()
+                }
+                stale_epochs = 0
+            else:
+                stale_epochs += 1
+                if stale_epochs >= config.patience:
+                    break
+
+    if best_state is None:
+        raise TorchTrainingError("training did not produce a finite validation state")
+    model.load_state_dict(best_state, strict=True)
+    model.to(device)
+    validation_loss = _evaluate(model, task, validation_loader)
+
+    # The locked test role stays unread until early stopping has selected and
+    # restored the best validation state, exactly as in the materialized path.
+    test_loader = _StreamingLoader(
+        dataset,
+        transform,
+        "test",
+        batch_size=config.batch_size,
+    )
+    test_loss = _evaluate(model, task, test_loader)
+    fitted = FittedTorchModel(
+        family=resolved_model.family,
+        architecture=resolved_model,
+        model=model,
+        transform=fitted_transform,
+        input_schema=input_schema,
+        label_schema=label_schema,
+        dataset_snapshot_id=dataset.plan.dataset.snapshot_id,
+        split_id=dataset.plan.split.split_id,
+        training_config=config,
+        resolved_device=device,
+        best_epoch=best_epoch,
+        history=tuple(history),
+        validation_loss=validation_loss,
+        test_loss=test_loss,
+    )
+    return TorchTrainingResult(
+        model=fitted,
+        balance=balance,
+        n_training_observations=len(balance.selected_indices),
+        class_counts=balance.result_counts,
+        stopped_early=len(history) < config.max_epochs,
+    )
 
 
 def fit_torch_partition_model(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -15,7 +15,7 @@ from smftools.optional_imports import require
 
 from ..contracts import LabelSchema
 from ..plan import BalancingSpec
-from .partition_dataset import MLMaterializedPartitionData
+from .partition_dataset import MLMaterializedPartitionData, MLPartitionDataPlan
 
 ML_BALANCE_RESOLUTION_VERSION = 1
 _TRAIN_METHODS = frozenset(
@@ -51,13 +51,14 @@ def _digest(value: str, name: str) -> str:
     return value.lower()
 
 
-def _labels(
-    data: MLMaterializedPartitionData,
+def _validated_labels(
+    labels: Any,
+    role: str,
     label_schema: LabelSchema,
 ) -> tuple[np.ndarray, tuple[int, ...]]:
-    if data.labels is None:
+    if labels is None:
         raise MLBalanceError("balancing requires supervised labels")
-    labels = np.asarray(data.labels, dtype=np.int64)
+    labels = np.asarray(labels, dtype=np.int64)
     expected_ids = tuple(range(len(label_schema.class_order)))
     unknown = sorted(set(map(int, labels)).difference(expected_ids))
     if unknown:
@@ -65,8 +66,15 @@ def _labels(
     counts = tuple(int(np.count_nonzero(labels == class_id)) for class_id in expected_ids)
     absent = [label_schema.class_order[index] for index, count in enumerate(counts) if count == 0]
     if absent:
-        raise MLBalanceError(f"role {data.split!r} is missing persisted classes: {absent}")
+        raise MLBalanceError(f"role {role!r} is missing persisted classes: {absent}")
     return labels, counts
+
+
+def _labels(
+    data: MLMaterializedPartitionData,
+    label_schema: LabelSchema,
+) -> tuple[np.ndarray, tuple[int, ...]]:
+    return _validated_labels(data.labels, data.split, label_schema)
 
 
 def _balanced_class_weights(counts: tuple[int, ...]) -> np.ndarray:
@@ -217,8 +225,10 @@ class BalanceResolution:
         )
 
 
-def _resolve(
-    data: MLMaterializedPartitionData,
+def _resolve_from_labels(
+    labels: Any,
+    molecule_uids: Sequence[str],
+    role: str,
     label_schema: LabelSchema,
     *,
     method: str,
@@ -228,6 +238,13 @@ def _resolve(
     purpose: str,
     allow_evaluation_resampling: bool,
 ) -> BalanceResolution:
+    """Resolve a balance from labels and identities alone.
+
+    Balancing never reads feature values, so this core needs only the label
+    vector, the molecule identities, and the role name. That is what lets
+    :func:`resolve_role_balance_from_plan` resolve a cohort from read-plan
+    metadata without decoding a single batch.
+    """
     dataset_snapshot_id = _digest(dataset_snapshot_id, "dataset_snapshot_id")
     split_id = _digest(split_id, "split_id")
     method = str(method).strip().lower()
@@ -235,9 +252,12 @@ def _resolve(
         raise MLBalanceError(f"unsupported balance method {method!r}")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise MLBalanceError("seed must be a non-negative integer")
-    if data.split != "train" and method != "natural" and not allow_evaluation_resampling:
+    if role != "train" and method != "natural" and not allow_evaluation_resampling:
         raise MLBalanceError("validation and test primary cohorts must retain natural prevalence")
-    labels, counts = _labels(data, label_schema)
+    labels, counts = _validated_labels(labels, role, label_schema)
+    molecule_uids = tuple(str(item) for item in molecule_uids)
+    if len(molecule_uids) != len(labels):
+        raise MLBalanceError("molecule identities and labels must have the same length")
     weights = _balanced_class_weights(counts)
     class_weights = weights if method in {"class_weight", "weighted_sampler"} else None
     sample_weights = weights[labels] if method == "weighted_sampler" else None
@@ -248,14 +268,14 @@ def _resolve(
     result_counts = tuple(
         int(np.count_nonzero(labels[indices] == item)) for item in range(len(counts))
     )
-    source_molecule_digest = _sha256({"molecule_uids": list(data.molecule_uids)})
-    selected_uids = [data.molecule_uids[index] for index in indices]
+    source_molecule_digest = _sha256({"molecule_uids": list(molecule_uids)})
+    selected_uids = [molecule_uids[index] for index in indices]
     selected_molecule_digest = _sha256({"molecule_uids": selected_uids})
     identity = {
         "schema_version": ML_BALANCE_RESOLUTION_VERSION,
         "dataset_snapshot_id": dataset_snapshot_id,
         "split_id": split_id,
-        "role": data.split,
+        "role": role,
         "purpose": purpose,
         "method": method,
         "seed": seed,
@@ -273,7 +293,7 @@ def _resolve(
         resolution_id=_sha256(identity),
         dataset_snapshot_id=dataset_snapshot_id,
         split_id=split_id,
-        role=data.split,
+        role=role,
         purpose=purpose,
         method=method,
         seed=seed,
@@ -285,6 +305,76 @@ def _resolve(
         selected_indices=indices,
         class_weights=class_weights,
         sample_weights=sample_weights,
+    )
+
+
+def _resolve(
+    data: MLMaterializedPartitionData,
+    label_schema: LabelSchema,
+    *,
+    method: str,
+    seed: int,
+    dataset_snapshot_id: str,
+    split_id: str,
+    purpose: str,
+    allow_evaluation_resampling: bool,
+) -> BalanceResolution:
+    return _resolve_from_labels(
+        data.labels,
+        data.molecule_uids,
+        data.split,
+        label_schema,
+        method=method,
+        seed=seed,
+        dataset_snapshot_id=dataset_snapshot_id,
+        split_id=split_id,
+        purpose=purpose,
+        allow_evaluation_resampling=allow_evaluation_resampling,
+    )
+
+
+def resolve_role_balance_from_plan(
+    plan: MLPartitionDataPlan,
+    label_schema: LabelSchema,
+    balancing: BalancingSpec,
+    *,
+    role: str = "train",
+    seed: int,
+    dataset_snapshot_id: str,
+    split_id: str,
+) -> BalanceResolution:
+    """Resolve a primary cohort from read-plan metadata, reading no data.
+
+    Balancing depends only on labels and molecule identities, and
+    ``PartitionReadEntry`` already carries both. A cohort can therefore be
+    resolved before a single batch is decoded, which is what makes balancing
+    free for a streaming fit rather than a reason to materialize.
+
+    Produces a resolution identical to :func:`resolve_role_balance` on the same
+    role, because the plan's canonical entry order is the order
+    ``materialize`` returns.
+    """
+    role_specs = {
+        "train": balancing.train,
+        "validation": balancing.validation,
+        "test": balancing.test,
+    }
+    if role not in role_specs:
+        raise MLBalanceError(f"unsupported split role {role!r}")
+    entries = plan.entries_for(role)
+    if any(entry.class_id is None for entry in entries):
+        raise MLBalanceError("balancing requires supervised labels")
+    return _resolve_from_labels(
+        np.asarray([entry.class_id for entry in entries], dtype=np.int64),
+        tuple(entry.molecule_uid for entry in entries),
+        role,
+        label_schema,
+        method=role_specs[role].method,
+        seed=seed,
+        dataset_snapshot_id=dataset_snapshot_id,
+        split_id=split_id,
+        purpose="primary",
+        allow_evaluation_resampling=False,
     )
 
 
