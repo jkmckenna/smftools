@@ -7,10 +7,13 @@ evaluation, interpretability, and immutable artifacts.
 :maxdepth: 1
 
 architecture
+quickstart
+plan_reference
 performance
 ```
 
-New to the package, start with [architecture and ownership](architecture.md). Sizing a run, or
+Training something for the first time, start with the [quick start](quickstart.md).
+Wanting the design rationale, start with [architecture and ownership](architecture.md). Sizing a run, or
 wondering why a read was refused, start with [performance and limits](performance.md).
 
 Migrating from the legacy `analysis.compute.ml_*` entry points is covered by the
