@@ -43,11 +43,12 @@ def main(argv: list[str]) -> int:
         seed=request.get("seed", 0),
     )
 
-    policy = None
+    policy_kwargs = {}
     if request.get("max_materialization_bytes") is not None:
-        policy = PartitionReadPolicy(
-            max_materialization_bytes=int(request["max_materialization_bytes"])
-        )
+        policy_kwargs["max_materialization_bytes"] = int(request["max_materialization_bytes"])
+    if request.get("batch_size") is not None:
+        policy_kwargs["batch_size"] = int(request["batch_size"])
+    policy = PartitionReadPolicy(**policy_kwargs) if policy_kwargs else None
 
     # Init-separation control. One-time costs -- Zarr codec registration, AnnData
     # machinery, pandas index types -- are paid by the first read in a process
@@ -114,6 +115,87 @@ def main(argv: list[str]) -> int:
                     "prewarm": bool(request.get("prewarm")),
                     "trajectory": trajectory,
                     "rss_after_collect": int(process.memory_info().rss) - trajectory_baseline,
+                }
+            )
+        )
+        return 0
+
+    elif mode == "streaming_fit":
+        # ML-204 acceptance: peak memory during a streaming *fit* must be
+        # bounded, verified with the trajectory method rather than a single peak
+        # reading. RSS is sampled as each batch leaves the reader, so the sample
+        # points sit inside the fit rather than around it.
+        import gc
+
+        import psutil
+
+        from ..data.partition_dataset import PartitionReadPolicy  # noqa: F811
+        from ..models.registry import BUILTIN_MODEL_REGISTRY
+
+        process = psutil.Process()
+        trajectory: list[int] = []
+        baseline_holder = {"value": 0}
+
+        class _Sampling:
+            """Delegates to the dataset, sampling RSS at each yielded batch."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            @property
+            def plan(self):
+                return self._inner.plan
+
+            def materialize(self, split_name):
+                raise AssertionError("a streaming fit must not materialize")
+
+            def iter_batches(self, split_name, **kwargs):
+                for item in self._inner.iter_batches(split_name, **kwargs):
+                    trajectory.append(int(process.memory_info().rss) - baseline_holder["value"])
+                    yield item
+
+        sampling = _Sampling(built.dataset)
+        backend = request.get("backend", "sklearn")
+        family = "bernoulli_nb" if backend == "sklearn" else "residual_dilated_cnn"
+        resolved = BUILTIN_MODEL_REGISTRY.resolve(family, input_schema=plan.dataset.input_schema)
+        gc.collect()
+        baseline_holder["value"] = int(process.memory_info().rss)
+
+        if backend == "sklearn":
+            from ..training.sklearn_backend import fit_sklearn_partition_model_streaming
+
+            fit_sklearn_partition_model_streaming(sampling, resolved)
+        else:
+            from ..training.torch_backend import (
+                TorchTrainingConfig,
+                fit_torch_partition_model_streaming,
+            )
+
+            fit_torch_partition_model_streaming(
+                sampling,
+                resolved,
+                training_config=TorchTrainingConfig(
+                    max_epochs=int(request.get("max_epochs", 3)),
+                    device="cpu",
+                    batch_size=plan.effective_batch_size,
+                ),
+            )
+        gc.collect()
+        print(
+            json.dumps(
+                {
+                    "peak_rss_delta": max(trajectory) if trajectory else 0,
+                    "baseline_rss": baseline_holder["value"],
+                    "estimated_bytes": plan.estimate_batch_bytes(plan.effective_batch_size),
+                    "bytes_per_row": plan.bytes_per_row,
+                    "effective_batch_size": plan.effective_batch_size,
+                    "split_counts": dict(built.split_counts),
+                    "refused": False,
+                    "refusal_message": None,
+                    "prewarm": bool(request.get("prewarm")),
+                    "backend": backend,
+                    "trajectory": trajectory,
+                    "rss_after_collect": int(process.memory_info().rss) - baseline_holder["value"],
                 }
             )
         )
