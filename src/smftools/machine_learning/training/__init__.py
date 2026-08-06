@@ -8,6 +8,7 @@ from .sklearn_backend import (
     SklearnTrainingError,
     SklearnTrainingResult,
     fit_sklearn_partition_model,
+    fit_sklearn_partition_model_streaming,
 )
 from .torch_backend import (
     TORCH_TRAINING_CONFIG_VERSION,
@@ -18,6 +19,7 @@ from .torch_backend import (
     TorchTrainingError,
     TorchTrainingResult,
     fit_torch_partition_model,
+    fit_torch_partition_model_streaming,
 )
 
 if TYPE_CHECKING:
@@ -64,7 +66,9 @@ __all__ = [
     "TorchTrainingError",
     "TorchTrainingResult",
     "fit_sklearn_partition_model",
+    "fit_sklearn_partition_model_streaming",
     "fit_torch_partition_model",
+    "fit_torch_partition_model_streaming",
     "run_sliding_window_lightning_training",
     "run_sliding_window_sklearn_training",
     "train_lightning_model",
