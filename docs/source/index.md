@@ -46,6 +46,7 @@ containers
 basic_usage
 cli
 tutorials/index
+ml/index
 api/index
 schema/anndata_schema
 release-notes/index
