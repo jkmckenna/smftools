@@ -6,9 +6,14 @@ on:
   pull_request:
     branches: ["main"]
 
+# Cancel superseded pull-request runs, but never cancel a push to main.
+# github.ref is refs/heads/main for every merge, so an unconditional
+# cancel-in-progress made each merge cancel the previous merge's validation:
+# rapid merges left main commits with no completed pytest, lint, or build.
+# Pushes now queue within the group instead, so every merge is validated.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   format:

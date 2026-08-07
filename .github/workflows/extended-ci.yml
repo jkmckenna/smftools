@@ -8,9 +8,12 @@ on:
 permissions:
   contents: read
 
+# Both triggers resolve github.ref to refs/heads/main, so cancel-in-progress
+# let a manual dispatch kill the weekly scheduled integration run. Queue
+# instead: these are slow, infrequent, and losing one costs a week of coverage.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   minimum-python-unit:
