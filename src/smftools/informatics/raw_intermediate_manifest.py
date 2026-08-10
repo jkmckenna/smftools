@@ -91,10 +91,12 @@ def executable_version(command: str) -> str | None:
             [command, "--version"],
             capture_output=True,
             check=False,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, UnicodeError, subprocess.SubprocessError):
         return None
     output = (result.stdout or result.stderr).strip()
     return output.splitlines()[0] if output else None
