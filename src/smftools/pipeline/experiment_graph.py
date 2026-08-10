@@ -445,18 +445,21 @@ def _expected_stage_inputs(
     *,
     scope_identity: str,
 ) -> NodeInputs:
-    from ..cli.helpers import stage_config_hash, stage_input_artifact_ids
+    from ..cli.helpers import raw_input_artifact_ids, stage_config_hash, stage_input_artifact_ids
 
     source_path = _source_path_for_stage(cfg, paths, stage)
-    input_ids = (
-        stage_input_artifact_ids(
-            cfg.output_directory,
-            source_path,
-            include_region_catalogs=stage == "latent",
+    if stage == "raw":
+        input_ids = raw_input_artifact_ids(cfg)
+    else:
+        input_ids = (
+            stage_input_artifact_ids(
+                cfg.output_directory,
+                source_path,
+                include_region_catalogs=stage == "latent",
+            )
+            if source_path is not None
+            else []
         )
-        if source_path is not None
-        else []
-    )
     return NodeInputs(
         semantic_config={"stage_config_hash": stage_config_hash(cfg, stage)},
         input_artifacts=_artifact_identities(input_ids),
@@ -527,13 +530,31 @@ def _source_path_for_stage(cfg: Any, paths: Any, stage: str) -> Path | None:
 
 
 def _artifact_identities(values: list[str] | tuple[str, ...]) -> tuple[ArtifactIdentity, ...]:
-    return tuple(
-        ArtifactIdentity(
-            artifact_id=f"stage-input:{index}",
-            checksum=hashlib.sha256(str(value).encode("utf-8")).hexdigest(),
-        )
-        for index, value in enumerate(values)
-    )
+    identities = []
+    for index, value in enumerate(values):
+        text = str(value)
+        if text.startswith("input-manifest:"):
+            identities.append(
+                ArtifactIdentity("input-manifest", text.removeprefix("input-manifest:"))
+            )
+        elif text.startswith("alignment-reference-bundle:"):
+            identities.append(
+                ArtifactIdentity(
+                    "alignment-reference-bundle",
+                    text.removeprefix("alignment-reference-bundle:"),
+                )
+            )
+        elif text.startswith("source:"):
+            _, source_id, checksum = text.split(":", 2)
+            identities.append(ArtifactIdentity(f"source:{source_id}", checksum))
+        else:
+            identities.append(
+                ArtifactIdentity(
+                    artifact_id=f"stage-input:{index}",
+                    checksum=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                )
+            )
+    return tuple(identities)
 
 
 def _current_stage_results(

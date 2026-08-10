@@ -1583,6 +1583,7 @@ def raw_adata(config_path: str):
         load_experiment_config,
         partitioned_stage_is_complete,
         publish_stage_outputs,
+        raw_input_artifact_ids,
         stage_lifecycle,
     )
     from .load_adata import load_adata_core
@@ -1617,7 +1618,11 @@ def raw_adata(config_path: str):
     )
     from ..informatics.sidecar_manifest import sidecar_manifest_path
 
-    with stage_lifecycle(cfg, "raw") as lifecycle:
+    with stage_lifecycle(
+        cfg,
+        "raw",
+        input_artifact_ids=raw_input_artifact_ids(cfg),
+    ) as lifecycle:
         with perf_substep("raw_pipeline"):
             result = load_adata_core(cfg, paths, config_path=config_path, raw_only=True)
         raw_root = Path(cfg.output_directory) / RAW_DIR
