@@ -248,9 +248,14 @@ def _write_runtime_config(
     runtime_dir = output_root / WORKFLOW_RUNTIME_DIRECTORY
     runtime_dir.mkdir(parents=True, exist_ok=True)
     effective_sources: dict[str, Path] = {}
+    configured_manifest = (
+        _local_path(source_cfg.input_manifest_path, label="configured input manifest")
+        if input_path is None and getattr(source_cfg, "input_manifest_path", None)
+        else None
+    )
     configured_input = input_path or (
         _local_path(source_cfg.input_data_path, label="configured input")
-        if getattr(source_cfg, "input_data_path", None)
+        if configured_manifest is None and getattr(source_cfg, "input_data_path", None)
         else None
     )
     configured_fasta = fasta_path or (
@@ -259,6 +264,14 @@ def _write_runtime_config(
         else None
     )
     aliased_input = None
+    aliased_manifest = None
+    if configured_manifest is not None:
+        effective_sources["input_manifest"] = configured_manifest
+        for index, source in enumerate(getattr(source_cfg, "input_files", ()) or ()):
+            effective_sources[f"input:{index:06d}"] = Path(source).resolve()
+        aliased_manifest = _stage_readonly_alias(
+            configured_manifest, runtime_dir, stem="input_manifest"
+        )
     if configured_input is not None:
         effective_sources["input"] = configured_input
         aliased_input = _stage_readonly_alias(configured_input, runtime_dir, stem="input")
@@ -273,7 +286,11 @@ def _write_runtime_config(
     _set_config_value(frame, "max_memory_gb", resolved_memory_gb, "float")
     _set_config_value(frame, "device", resolved_accelerator, "string")
     _set_config_value(frame, "hmm_device", resolved_accelerator, "string")
-    if aliased_input is not None:
+    if aliased_manifest is not None:
+        _set_config_value(frame, "input_data_path", "", "string")
+        _set_config_value(frame, "input_manifest_path", str(aliased_manifest), "string")
+    elif aliased_input is not None:
+        _set_config_value(frame, "input_manifest_path", "", "string")
         _set_config_value(frame, "input_data_path", str(aliased_input), "string")
     if aliased_fasta is not None:
         _set_config_value(frame, "fasta", str(aliased_fasta), "string")

@@ -190,3 +190,32 @@ def test_conversion_fastq_remains_supported(tmp_path):
 
     assert config.input_type == "fastq"
     assert config.input_source_role == "reads"
+
+
+def test_input_manifest_path_resolves_relative_sources(tmp_path):
+    input_path = _touch(tmp_path / "reads" / "sample.fastq")
+    manifest_path = tmp_path / "manifest.csv"
+    manifest_path.write_text("path\nreads/sample.fastq\n", encoding="utf-8")
+
+    config, _ = ExperimentConfig.from_var_dict(
+        {"input_manifest_path": str(manifest_path)}, defaults_map={}
+    )
+
+    assert config.input_manifest_path == manifest_path.resolve()
+    assert config.input_files == [input_path.resolve()]
+    assert config.input_type == "fastq"
+
+
+def test_input_path_and_manifest_are_mutually_exclusive(tmp_path):
+    input_path = _touch(tmp_path / "sample.fastq")
+    manifest_path = tmp_path / "manifest.csv"
+    manifest_path.write_text("path\nsample.fastq\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly one"):
+        ExperimentConfig.from_var_dict(
+            {
+                "input_data_path": str(input_path),
+                "input_manifest_path": str(manifest_path),
+            },
+            defaults_map={},
+        )

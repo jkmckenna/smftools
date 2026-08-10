@@ -11,6 +11,7 @@ device: "auto"
 ######## smftools load params #########
 # Generic i/o
 recursive_input_search: True
+input_manifest_path: null # Optional schema-1 CSV input declaration; mutually exclusive with input_data_path
 strands:
   - bottom
   - top

@@ -35,6 +35,9 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `smf_modality`: Defines whether the data is `conversion`, `direct` or `deaminase`, which determines
   preprocessing and HMM feature handling.
 - `input_data_path`: Location of raw input data (fast5/pod5/fastq/bam).
+- `input_manifest_path`: Optional schema-1 CSV declaring the exact input files and metadata.
+  Configure this or `input_data_path`, never both. Relative paths are resolved from the CSV's
+  directory.
 - `alignment_mode`: Alignment policy. `align` is the default and preserves existing behavior,
   including realigning a supplied BAM. `existing` is reserved for validated aligned-BAM input and
   currently fails before execution because that ingestion path is not implemented yet.
@@ -83,6 +86,37 @@ source is ambiguous or unsupported:
 Existing configurations that omit `alignment_mode` continue to use `align`. The flags
 `input_already_demuxed`, `skip_bam_split`, and `align_from_bam` retain their existing meanings and
 do not select existing-alignment ingestion.
+
+### Canonical input manifest schema 1
+
+An input manifest is a CSV with one source file per row. `path` is the only required column.
+Supported optional columns are `source_kind`, `source_role`, `sample`, `barcode`, `read_group`,
+`pair_id`, `mate`, `namespace`, `modification_capability`, and `trimmed`. A previously resolved
+manifest may also include `source_id`, `sha256`, `size_bytes`, and `inferred_fields`; smftools
+verifies declared identity fields against the current bytes.
+
+For example:
+
+```text
+path,sample,barcode
+reads/tumor_S1_L001_R1_001.fastq.gz,tumor,barcode01
+reads/tumor_S1_L001_R2_001.fastq.gz,tumor,barcode01
+```
+
+Common Illumina/CASAVA and `R1`/`R2` filenames are paired automatically when
+`fastq_auto_pairing` is enabled. Explicit CSV metadata takes precedence over filename inference.
+Every pair must contain exactly one R1 and one R2 with compatible sample, barcode, read-group,
+namespace, and source-role metadata.
+
+Before external tools run, smftools streams each source through SHA-256 and rejects missing,
+duplicate, unreadable, or concurrently modified inputs. Absolute source locations are excluded
+from the canonical identity, so relocating an unchanged relative-path manifest and its files does
+not change its digest. The raw task publishes `resolved_input_manifest.csv`,
+`resolved_input_manifest.json`, and `input_resolution_report.json` under
+`raw_outputs/input_manifest/`. A task-local SQLite cache avoids rehashing files whose complete
+filesystem signature is unchanged; the content digest remains authoritative. Raw-stage records
+created before these three artifacts existed are treated as incomplete and rebuilt on the next
+raw request.
 
 ## Variant QC and migration
 

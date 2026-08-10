@@ -237,6 +237,7 @@ def load_adata_core(
         add_secondary_supplementary_alignment_flags,
         expand_bi_tag_columns,
     )
+    from ..informatics.input_manifest import materialize_input_view, resolve_input_manifest
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
     from ..informatics.partition_read import relative_uns_path
@@ -296,6 +297,25 @@ def load_adata_core(
         log_file=log_file,
         reconfigure=log_file is not None and not raw_only,
     )
+
+    resolved_input_manifest = resolve_input_manifest(
+        output_directory=output_directory,
+        input_manifest_path=cfg.input_manifest_path,
+        input_paths=None if cfg.input_manifest_path else cfg.input_files,
+        alignment_mode=cfg.alignment_mode,
+        modality=cfg.smf_modality,
+        barcode_map=cfg.fastq_barcode_map,
+        auto_pair=cfg.fastq_auto_pairing,
+    )
+    cfg.input_manifest_digest = resolved_input_manifest.digest
+    cfg.input_type = resolved_input_manifest.input_type
+    cfg.input_files = [Path(row.path) for row in resolved_input_manifest.rows]
+    cfg._resolved_input_manifest = resolved_input_manifest
+    if cfg.input_manifest_path:
+        if len(cfg.input_files) == 1:
+            cfg.input_data_path = cfg.input_files[0]
+        elif cfg.input_type in {"pod5", "fast5"}:
+            cfg.input_data_path = materialize_input_view(resolved_input_manifest, output_directory)
 
     raw_adata_path = paths.raw
     pp_adata_path = paths.pp
@@ -373,15 +393,18 @@ def load_adata_core(
         else:
             logger.info("Concatenating FASTQ files into a single BAM file")
             summary = concatenate_fastqs_to_bam(
-                cfg.input_files,
+                resolved_input_manifest.fastq_inputs(),
                 output_bam,
                 barcode_tag="BC",
                 gzip_suffixes=(".gz", ".gzip"),
-                barcode_map=cfg.fastq_barcode_map,
+                barcode_map={
+                    **(cfg.fastq_barcode_map or {}),
+                    **resolved_input_manifest.fastq_barcode_map(),
+                },
                 add_read_group=True,
                 rg_sample_field=None,
                 progress=False,
-                auto_pair=cfg.fastq_auto_pairing,
+                auto_pair=False,
                 samtools_backend=cfg.samtools_backend,
             )
 
@@ -1320,6 +1343,33 @@ def load_adata_core(
             input_data_path=(
                 relative_uns_path(cfg.input_data_path, run_root) if cfg.input_data_path else None
             ),
+            input_manifest={
+                "schema_version": 1,
+                "digest": cfg.input_manifest_digest,
+                "artifacts": {
+                    "csv": relative_uns_path(
+                        output_directory
+                        / RAW_DIR
+                        / "input_manifest"
+                        / "resolved_input_manifest.csv",
+                        run_root,
+                    ),
+                    "json": relative_uns_path(
+                        output_directory
+                        / RAW_DIR
+                        / "input_manifest"
+                        / "resolved_input_manifest.json",
+                        run_root,
+                    ),
+                    "resolution_report": relative_uns_path(
+                        output_directory
+                        / RAW_DIR
+                        / "input_manifest"
+                        / "input_resolution_report.json",
+                        run_root,
+                    ),
+                },
+            },
             fasta_path=relative_uns_path(fasta, run_root) if fasta else None,
             reference_uids=extra_uns.get("reference_uids"),
             reference_lengths={str(k): int(v) for k, v in reference_lengths.items()},
