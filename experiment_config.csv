@@ -1,6 +1,7 @@
 ﻿variable,value,help,options,type
 smf_modality,conversion,Modality of SMF. Can either be conversion or direct.,"conversion, direct",str 
 input_data_path,/path_to_POD5_directory,Path to directory/file containing input sequencing data,,str 
+alignment_mode,align,Alignment policy. Existing is reserved until validated aligned-BAM ingestion is implemented.,"align, existing",str
 fasta,/path_to_fasta.fasta,Path to initial FASTA file,,str 
 fasta_regions_of_interest,/path_to_bed.bed,Path to a bed file to subsample the fasta on.,,str 
 output_directory,/outputs,Directory to act as root for all analysis outputs,,str 

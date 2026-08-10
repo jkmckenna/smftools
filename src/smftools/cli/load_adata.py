@@ -324,6 +324,12 @@ def load_adata_core(
         mods = None
 
     # demux / aligner executables
+    if getattr(cfg, "alignment_mode", "align") != "align":
+        raise ValueError(
+            "Only alignment_mode='align' is currently executable; validated existing-alignment "
+            "ingestion is not implemented yet."
+        )
+
     if (
         cfg.input_type in {"fast5", "pod5"}
         or not cfg.input_already_demuxed

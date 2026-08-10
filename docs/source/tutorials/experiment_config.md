@@ -35,6 +35,9 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `smf_modality`: Defines whether the data is `conversion`, `direct` or `deaminase`, which determines
   preprocessing and HMM feature handling.
 - `input_data_path`: Location of raw input data (fast5/pod5/fastq/bam).
+- `alignment_mode`: Alignment policy. `align` is the default and preserves existing behavior,
+  including realigning a supplied BAM. `existing` is reserved for validated aligned-BAM input and
+  currently fails before execution because that ingestion path is not implemented yet.
 - `fasta`: Reference FASTA for alignment and positional context.
 - `alignment_regions_bed`: Optional original-FASTA BED file that restricts the alignment
   reference universe.
@@ -60,6 +63,26 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `mapping_threshold`: Minimum mapping proportion per reference required for downstream steps.
 - `mod_list`: Modification calls to use for direct-modality workflows.
 - `conversion_types`: Target modification types for conversion workflows.
+
+## Input contract and migration
+
+Input discovery fails before creating an output directory or invoking an external tool when the
+source is ambiguous or unsupported:
+
+- Directories must contain one recognized input kind. Mixed POD5, FAST5, FASTQ, BAM, SAM, CRAM,
+  or H5AD collections are rejected with per-kind counts instead of silently selecting one kind.
+- BAM directories are rejected until validated multi-alignment source partitions are available;
+  supply one BAM file instead.
+- SAM and CRAM inputs are rejected with conversion guidance. CRAM will require exact reference
+  validation before it becomes a supported existing-alignment input.
+- `aligner` must resolve to `dorado` or `minimap2`; the existing `mm2`, `minimap`, and `minimap-2`
+  aliases normalize to `minimap2`.
+- Direct-modification experiments cannot use FASTQ because sequence-only FASTQ cannot retain MM/ML
+  modification probabilities. Use raw signal or a modification-tagged BAM.
+
+Existing configurations that omit `alignment_mode` continue to use `align`. The flags
+`input_already_demuxed`, `skip_bam_split`, and `align_from_bam` retain their existing meanings and
+do not select existing-alignment ingestion.
 
 ## Variant QC and migration
 
