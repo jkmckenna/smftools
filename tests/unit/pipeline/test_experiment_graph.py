@@ -71,6 +71,40 @@ def _record_stage(cfg, stage: str, *, config_value: str | None = None):
     )
 
 
+def _raw_identity_cfg(tmp_path, *, manifest=False):
+    source = tmp_path / "reads.fastq"
+    source.write_bytes(b"reads-v1")
+    fasta = tmp_path / "reference.fa"
+    fasta.write_text(">ref\nACGT\n", encoding="utf-8")
+    values = {
+        "smf_modality": "conversion",
+        "fasta": fasta,
+        "input_files": [source],
+        "input_manifest_path": None,
+        "alignment_mode": "align",
+        "fastq_barcode_map": None,
+        "fastq_auto_pairing": True,
+        "conversion_types": [],
+        "strands": [],
+    }
+    if manifest:
+        manifest_path = tmp_path / "inputs.csv"
+        manifest_path.write_text("path\nreads.fastq\n", encoding="utf-8")
+        values.update(input_manifest_path=manifest_path, input_files=[source])
+    return _cfg(tmp_path, **values), source, fasta
+
+
+def _record_raw_identity(cfg):
+    record_stage_state(
+        cfg.output_directory,
+        "raw",
+        "complete",
+        config_hash=helpers.stage_config_hash(cfg, "raw"),
+        input_artifact_ids=helpers.raw_input_artifact_ids(cfg),
+        schema_versions={"raw": 3},
+    )
+
+
 def _states(plan):
     return {decision.analysis_id: decision.state for decision in plan.decisions}
 
@@ -245,6 +279,56 @@ def test_changed_source_artifact_is_reported_as_stale_input(tmp_path, monkeypatc
 
     assert decision.state is PlanState.STALE_INPUT
     assert decision.reason_code == "input_artifacts_changed"
+
+
+def test_raw_planning_uses_manifest_sources_and_reference_identity(tmp_path, monkeypatch):
+    cfg, source, fasta = _raw_identity_cfg(tmp_path)
+    paths = _paths(tmp_path)
+    _record_raw_identity(cfg)
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+
+    compatible = experiment_graph.build_experiment_plan(cfg, "raw", paths=paths)
+    assert compatible.decisions[0].state is PlanState.COMPATIBLE
+    expected = experiment_graph._expected_stage_inputs(
+        cfg,
+        paths,
+        "raw",
+        scope_identity=f"experiment_name:{cfg.experiment_name}",
+    )
+    assert len(expected.input_artifacts) == 3
+    assert expected.input_artifacts[0].artifact_id == "input-manifest"
+    assert expected.input_artifacts[1].artifact_id.startswith("source:")
+    assert expected.input_artifacts[2].artifact_id == "alignment-reference-bundle"
+
+    source.write_bytes(b"reads-v2")
+    changed_source = experiment_graph.build_experiment_plan(cfg, "raw", paths=paths)
+    assert changed_source.decisions[0].state is PlanState.STALE_INPUT
+
+    source.write_bytes(b"reads-v1")
+    fasta.write_text(">ref\nTGCA\n", encoding="utf-8")
+    changed_reference = experiment_graph.build_experiment_plan(cfg, "raw", paths=paths)
+    assert changed_reference.decisions[0].state is PlanState.STALE_INPUT
+
+
+def test_raw_manifest_row_reorder_is_compatible_but_membership_change_is_stale(
+    tmp_path, monkeypatch
+):
+    cfg, first, _fasta = _raw_identity_cfg(tmp_path, manifest=True)
+    second = tmp_path / "other.fastq"
+    second.write_bytes(b"other")
+    cfg.input_manifest_path.write_text("path\nreads.fastq\nother.fastq\n", encoding="utf-8")
+    cfg.input_files = [first, second]
+    _record_raw_identity(cfg)
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+
+    cfg.input_manifest_path.write_text("path\nother.fastq\nreads.fastq\n", encoding="utf-8")
+    reordered = experiment_graph.build_experiment_plan(cfg, "raw", paths=_paths(tmp_path))
+    assert reordered.decisions[0].state is PlanState.COMPATIBLE
+
+    cfg.input_manifest_path.write_text("path\nreads.fastq\n", encoding="utf-8")
+    cfg.input_files = [first]
+    removed = experiment_graph.build_experiment_plan(cfg, "raw", paths=_paths(tmp_path))
+    assert removed.decisions[0].state is PlanState.STALE_INPUT
 
 
 def test_force_flag_recomputes_target_and_dependents(tmp_path, monkeypatch):

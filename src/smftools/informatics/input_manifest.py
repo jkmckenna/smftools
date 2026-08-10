@@ -507,19 +507,27 @@ def _atomic_write_csv(path: Path, rows: Iterable[InputManifestRow]) -> None:
 
 def resolve_input_manifest(
     *,
-    output_directory: str | Path,
+    output_directory: str | Path | None,
     input_manifest_path: str | Path | None = None,
     input_paths: Sequence[str | Path] | None = None,
     alignment_mode: str = "align",
     modality: str = "",
     barcode_map: Mapping[str, str] | None = None,
     auto_pair: bool = True,
+    publish: bool = True,
 ) -> ResolvedInputManifest:
     """Resolve declarations, hash sources, validate metadata, and publish schema 1."""
     if bool(input_manifest_path) == bool(input_paths):
         raise InputManifestError("Provide exactly one of input_manifest_path or input_paths.")
-    staging = Path(output_directory) / RAW_DIR / INPUT_MANIFEST_DIRNAME
-    staging.mkdir(parents=True, exist_ok=True)
+    if publish and output_directory is None:
+        raise InputManifestError("output_directory is required when publishing a manifest.")
+    staging = (
+        Path(output_directory) / RAW_DIR / INPUT_MANIFEST_DIRNAME
+        if output_directory is not None
+        else None
+    )
+    if staging is not None and publish:
+        staging.mkdir(parents=True, exist_ok=True)
     if input_manifest_path:
         manifest_path = Path(input_manifest_path).expanduser().resolve(strict=False)
         declarations = _read_csv_declarations(manifest_path)
@@ -538,7 +546,9 @@ def resolve_input_manifest(
         )
     _validate_declarations(declarations, alignment_mode)
 
-    cache_path = staging / CHECKSUM_CACHE_FILENAME
+    cache_path = (
+        staging / CHECKSUM_CACHE_FILENAME if staging is not None and publish else ":memory:"
+    )
     rows: list[InputManifestRow] = []
     hits = misses = 0
     with sqlite3.connect(cache_path) as connection:
@@ -588,33 +598,57 @@ def resolve_input_manifest(
         cache_hits=hits,
         cache_misses=misses,
     )
-    _atomic_write_csv(staging / RESOLVED_INPUT_MANIFEST_CSV, result.rows)
-    _atomic_write_json(
-        staging / RESOLVED_INPUT_MANIFEST_JSON,
-        {
-            "schema_version": INPUT_MANIFEST_SCHEMA_VERSION,
-            "manifest_digest": digest,
-            "resolution_method": method,
-            "base_directory": str(base_directory),
-            "source_count": len(rows),
-            "warnings": list(result.warnings),
-            "sources": [row.csv_record() for row in rows],
-        },
-    )
-    _atomic_write_json(
-        staging / INPUT_RESOLUTION_REPORT_JSON,
-        {
-            "schema_version": INPUT_MANIFEST_SCHEMA_VERSION,
-            "manifest_digest": digest,
-            "resolution_method": method,
-            "base_directory": str(base_directory),
-            "source_count": len(rows),
-            "cache_hits": hits,
-            "cache_misses": misses,
-            "warnings": list(result.warnings),
-        },
-    )
+    if publish:
+        assert staging is not None
+        _atomic_write_csv(staging / RESOLVED_INPUT_MANIFEST_CSV, result.rows)
+        _atomic_write_json(
+            staging / RESOLVED_INPUT_MANIFEST_JSON,
+            {
+                "schema_version": INPUT_MANIFEST_SCHEMA_VERSION,
+                "manifest_digest": digest,
+                "resolution_method": method,
+                "base_directory": str(base_directory),
+                "source_count": len(rows),
+                "warnings": list(result.warnings),
+                "sources": [row.csv_record() for row in rows],
+            },
+        )
+        _atomic_write_json(
+            staging / INPUT_RESOLUTION_REPORT_JSON,
+            {
+                "schema_version": INPUT_MANIFEST_SCHEMA_VERSION,
+                "manifest_digest": digest,
+                "resolution_method": method,
+                "base_directory": str(base_directory),
+                "source_count": len(rows),
+                "cache_hits": hits,
+                "cache_misses": misses,
+                "warnings": list(result.warnings),
+            },
+        )
     return result
+
+
+def resolve_input_manifest_readonly(
+    *,
+    input_manifest_path: str | Path | None = None,
+    input_paths: Sequence[str | Path] | None = None,
+    alignment_mode: str = "align",
+    modality: str = "",
+    barcode_map: Mapping[str, str] | None = None,
+    auto_pair: bool = True,
+) -> ResolvedInputManifest:
+    """Resolve current source identity without writing cache or publication artifacts."""
+    return resolve_input_manifest(
+        output_directory=None,
+        input_manifest_path=input_manifest_path,
+        input_paths=input_paths,
+        alignment_mode=alignment_mode,
+        modality=modality,
+        barcode_map=barcode_map,
+        auto_pair=auto_pair,
+        publish=False,
+    )
 
 
 def input_manifest_artifact_paths(output_directory: str | Path) -> dict[str, Path]:

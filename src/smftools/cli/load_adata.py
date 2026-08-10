@@ -241,6 +241,15 @@ def load_adata_core(
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
     from ..informatics.partition_read import relative_uns_path
+    from ..informatics.raw_intermediate_manifest import (
+        IntermediateSpec,
+        alignment_reference_bundle,
+        artifact_checksum,
+        commit_intermediate,
+        committed_output,
+        executable_version,
+        prepare_intermediate,
+    )
     from ..informatics.region_catalog import (
         REFERENCE_INTERVAL_MAP_SCHEMA_VERSION,
         REGION_CATALOG_SCHEMA_VERSION,
@@ -311,6 +320,11 @@ def load_adata_core(
     cfg.input_type = resolved_input_manifest.input_type
     cfg.input_files = [Path(row.path) for row in resolved_input_manifest.rows]
     cfg._resolved_input_manifest = resolved_input_manifest
+    source_artifacts = (
+        ("input-manifest", resolved_input_manifest.digest),
+        *((f"source:{row.source_id}", row.sha256) for row in resolved_input_manifest.rows),
+    )
+    force_redo_intermediates = bool(getattr(cfg, "force_redo_load_adata", False))
     if cfg.input_manifest_path:
         if len(cfg.input_files) == 1:
             cfg.input_data_path = cfg.input_files[0]
@@ -372,25 +386,61 @@ def load_adata_core(
     if cfg.input_type == "fast5":
         from ..informatics.pod5_functions import fast5_to_pod5
 
-        # take the input directory of fast5 files and write out a single pod5 file into the output directory.
-        output_pod5 = load_directory / "FAST5s_to_POD5.pod5"
-        if output_pod5.exists():
-            pass
+        conversion_spec = IntermediateSpec(
+            operation="fast5-to-pod5",
+            input_artifacts=source_artifacts,
+            operation_config={"output_format": "pod5"},
+            tool_versions={"pod5": executable_version("pod5")},
+        )
+        conversion_workspace = prepare_intermediate(
+            output_directory,
+            conversion_spec,
+            force_redo=force_redo_intermediates,
+        )
+        if conversion_workspace.reusable:
+            output_pod5 = committed_output(conversion_workspace, "pod5")
+            if output_pod5 is None:
+                raise RuntimeError("Validated FAST5 conversion commit has no POD5 output.")
+            logger.info("Reusing validated FAST5-to-POD5 intermediate: %s", output_pod5)
         else:
+            output_pod5 = conversion_workspace.root / "converted.pod5"
             logger.info(
                 f"Input directory contains fast5 files, converting them and concatenating into a single pod5 file in the {output_pod5}"
             )
             fast5_to_pod5(cfg.input_data_path, output_pod5)
+            commit_intermediate(conversion_workspace, {"pod5": output_pod5})
         # Reassign the pod5_dir variable to point to the new pod5 file.
         cfg.input_data_path = output_pod5
         cfg.input_type = "pod5"
     # If the input is a fastq or a directory of fastqs, concatenate them into an unaligned BAM and save the barcode
     elif cfg.input_type == "fastq":
-        # Output file for FASTQ concatenation.
-        output_bam = bam_outputs_directory / "canonical_basecalls.bam"
-        if output_bam.exists():
-            logger.debug("Output BAM already exists")
+        normalization_spec = IntermediateSpec(
+            operation="fastq-to-unaligned-bam",
+            input_artifacts=source_artifacts,
+            operation_config={
+                "add_read_group": True,
+                "auto_pair": False,
+                "barcode_map": {
+                    **(cfg.fastq_barcode_map or {}),
+                    **resolved_input_manifest.fastq_barcode_map(),
+                },
+                "barcode_tag": "BC",
+                "samtools_backend": cfg.samtools_backend,
+            },
+            tool_versions={"samtools": executable_version("samtools")},
+        )
+        normalization_workspace = prepare_intermediate(
+            output_directory,
+            normalization_spec,
+            force_redo=force_redo_intermediates,
+        )
+        if normalization_workspace.reusable:
+            output_bam = committed_output(normalization_workspace, "bam")
+            if output_bam is None:
+                raise RuntimeError("Validated FASTQ normalization commit has no BAM output.")
+            logger.info("Reusing validated FASTQ-to-BAM intermediate: %s", output_bam)
         else:
+            output_bam = normalization_workspace.root / "canonical_basecalls.bam"
             logger.info("Concatenating FASTQ files into a single BAM file")
             summary = concatenate_fastqs_to_bam(
                 resolved_input_manifest.fastq_inputs(),
@@ -409,6 +459,7 @@ def load_adata_core(
             )
 
             logger.info(f"Found the following barcodes in FASTQ inputs: {summary['barcodes']}")
+            commit_intermediate(normalization_workspace, {"bam": output_bam})
 
         # Set the input data path to the concatenated BAM.
         cfg.input_data_path = output_bam
@@ -428,31 +479,12 @@ def load_adata_core(
     else:
         logger.info("Error, can not find input bam or pod5")
 
-    # Generate the base name of the unaligned bam without the .bam suffix
-    if basecall:
-        model_basename = Path(cfg.model).name
-        model_basename = str(model_basename).replace(".", "_")
-        if cfg.smf_modality == "direct":
-            mod_string = "_".join(cfg.mod_list)
-            bam = bam_outputs_directory / f"{model_basename}_{mod_string}_calls"
-        else:
-            bam = bam_outputs_directory / f"{model_basename}_canonical_basecalls"
-        unaligned_output = bam.with_suffix(cfg.bam_suffix)
-    else:
+    if not basecall:
         # Preserve the exact BAM input path. Path.with_suffix() would incorrectly
         # turn names such as ``sample.repaired.bam`` into ``sample.bam`` after the
         # terminal .bam suffix has already been removed.
         unaligned_output = Path(cfg.input_data_path)
         bam = unaligned_output.with_suffix("")
-
-    # Generate path names for the unaligned, aligned, as well as the aligned/sorted bam.
-    aligned_BAM = (
-        bam_outputs_directory / (bam.stem + "_aligned")
-    )  # doing this allows specifying an input bam in a seperate directory as the aligned output bams
-
-    aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
-    aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
-    aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
 
     ########################################################################################################################
 
@@ -464,6 +496,7 @@ def load_adata_core(
         logger.warning("Need to provide an input FASTA path to proceed with smftools load")
 
     original_fasta = Path(cfg.fasta)
+    reference_bundle = alignment_reference_bundle(cfg)
     run_root = load_directory.parent
     region_catalog_paths = write_region_catalogs(
         cfg,
@@ -481,9 +514,9 @@ def load_adata_core(
         fasta_stem = cfg.fasta.stem
         bed_stem = Path(cfg.alignment_regions_bed).stem
         source_sha = str(alignment_catalog["source_sha256"].iloc[0])
-        output_FASTA = (
-            fasta_outputs_directory
-            / f"{fasta_stem}_subsampled_by_{bed_stem}_{source_sha[:12]}.fasta"
+        output_FASTA = fasta_outputs_directory / (
+            f"{fasta_stem}_subsampled_by_{bed_stem}_{source_sha[:12]}_"
+            f"{reference_bundle['digest'][:12]}.fasta"
         )
         normalized_bed = write_normalized_alignment_bed(
             alignment_catalog,
@@ -501,7 +534,7 @@ def load_adata_core(
     # For conversion style SMF, make a converted reference FASTA
     if cfg.smf_modality == "conversion":
         fasta_stem = fasta.stem
-        converted_FASTA_basename = f"{fasta_stem}_converted.fasta"
+        converted_FASTA_basename = f"{fasta_stem}_converted_{reference_bundle['digest'][:12]}.fasta"
         converted_FASTA = fasta_outputs_directory / converted_FASTA_basename
 
         if "converted.fa" in fasta.name:
@@ -589,12 +622,36 @@ def load_adata_core(
                 cfg.max_basecall_reads,
                 load_directory,
             )
-        if aligned_sorted_output.exists():
-            logger.info(
-                f"{aligned_sorted_output} already exists. Using existing basecalled, aligned, sorted BAM."
-            )
-        elif unaligned_output.exists():
-            logger.info(f"{unaligned_output} already exists. Using existing basecalled BAM.")
+        basecall_spec = IntermediateSpec(
+            operation="dorado-basecalling",
+            input_artifacts=(("pod5-input", artifact_checksum(cfg.input_data_path)),),
+            operation_config={
+                "barcode_both_ends": bool(cfg.barcode_both_ends),
+                "barcode_kit": cfg.barcode_kit if cfg.barcode_kit != "custom" else None,
+                "device": str(cfg.device),
+                "emit_moves": bool(cfg.emit_moves),
+                "model": str(cfg.model),
+                "modifications": list(cfg.mod_list or []) if cfg.smf_modality == "direct" else [],
+                "modality": str(cfg.smf_modality),
+                "trim": bool(cfg.trim),
+            },
+            tool_versions={"dorado": executable_version("dorado")},
+        )
+        basecall_workspace = prepare_intermediate(
+            output_directory,
+            basecall_spec,
+            force_redo=force_redo_intermediates,
+        )
+        if basecall_workspace.reusable:
+            unaligned_output = committed_output(basecall_workspace, "bam")
+            if unaligned_output is None:
+                raise RuntimeError("Validated basecalling commit has no BAM output.")
+            logger.info("Reusing validated dorado basecalling intermediate: %s", unaligned_output)
+        else:
+            bam = basecall_workspace.root / "basecalls"
+            unaligned_output = bam.with_suffix(cfg.bam_suffix)
+        if basecall_workspace.reusable:
+            pass
         elif cfg.smf_modality != "direct":
             require_memory_headroom(
                 cfg,
@@ -615,6 +672,7 @@ def load_adata_core(
                 cfg.device,
                 cfg.emit_moves,
             )
+            commit_intermediate(basecall_workspace, {"bam": unaligned_output})
         else:
             require_memory_headroom(
                 cfg,
@@ -636,6 +694,7 @@ def load_adata_core(
                 cfg.device,
                 cfg.emit_moves,
             )
+            commit_intermediate(basecall_workspace, {"bam": unaligned_output})
     elif basecall:
         logger.error("Basecalling is currently only supported for ont sequencers and not pacbio.")
     else:
@@ -645,8 +704,49 @@ def load_adata_core(
     ################################### 4) Alignment and sorting #############################################
 
     # 3) Align the BAM to the reference FASTA and sort the bam on positional coordinates. Also make an index and a bed file of mapped reads
-    if aligned_sorted_output.exists():
-        logger.debug(f"{aligned_sorted_output} already exists. Using existing aligned/sorted BAM.")
+    alignment_spec = IntermediateSpec(
+        operation="alignment-sort-index",
+        input_artifacts=(
+            ("unaligned-bam", artifact_checksum(unaligned_output)),
+            ("alignment-reference-bundle", reference_bundle["digest"]),
+            ("alignment-fasta", artifact_checksum(fasta)),
+        ),
+        operation_config={
+            "align_from_bam": bool(getattr(cfg, "align_from_bam", False)),
+            "aligner": str(cfg.aligner),
+            "aligner_args": list(getattr(cfg, "aligner_args", None) or []),
+            "bam_suffix": str(cfg.bam_suffix),
+            "rescue_min_margin_bp": int(getattr(cfg, "rescue_min_margin_bp", 0)),
+            "rescue_min_margin_fraction": float(getattr(cfg, "rescue_min_margin_fraction", 0.0)),
+            "rescue_secondary_alignments": bool(getattr(cfg, "rescue_secondary_alignments", False)),
+            "samtools_backend": str(cfg.samtools_backend),
+        },
+        tool_versions={
+            str(cfg.aligner): executable_version(str(cfg.aligner)),
+            "samtools": executable_version("samtools"),
+        },
+    )
+    alignment_workspace = prepare_intermediate(
+        output_directory,
+        alignment_spec,
+        force_redo=force_redo_intermediates,
+    )
+    aligned_BAM = alignment_workspace.root / "aligned"
+    aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
+    aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
+    aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
+    alignment_bai = Path(str(aligned_sorted_output) + ".bai")
+    if alignment_workspace.reusable:
+        committed_bam = committed_output(alignment_workspace, "aligned-sorted-bam")
+        committed_bai = committed_output(alignment_workspace, "aligned-sorted-bai")
+        if committed_bam is None or committed_bai is None:
+            raise RuntimeError("Validated alignment commit is missing BAM or BAI output.")
+        aligned_sorted_output = committed_bam
+        aligned_sorted_BAM = aligned_sorted_output.with_suffix("")
+        alignment_bai = committed_bai
+        logger.info(
+            "Reusing validated alignment/sort/index intermediate: %s", aligned_sorted_output
+        )
     else:
         require_memory_headroom(
             cfg,
@@ -664,7 +764,7 @@ def load_adata_core(
     # allele contig). Runs before anything downstream reads aligned_sorted_
     # output, so a corrected Reference_strand is the only thing raw ingestion
     # ever sees. See src/smftools/informatics/alignment_rescue.py.
-    if getattr(cfg, "rescue_secondary_alignments", False):
+    if getattr(cfg, "rescue_secondary_alignments", False) and not alignment_workspace.reusable:
         rescue_summary_path = aligned_sorted_BAM.with_name(
             aligned_sorted_BAM.stem + "_rescue_summary.csv"
         )
@@ -702,6 +802,15 @@ def load_adata_core(
             if rescued_tmp_bai.exists():
                 rescued_tmp_bai.replace(final_bai)
             summary.to_dataframe().to_csv(rescue_summary_path, index=False)
+
+    if not alignment_workspace.reusable:
+        alignment_outputs = {
+            "aligned-sorted-bam": aligned_sorted_output,
+            "aligned-sorted-bai": alignment_bai,
+        }
+        if getattr(cfg, "rescue_secondary_alignments", False):
+            alignment_outputs["rescue-summary"] = rescue_summary_path
+        commit_intermediate(alignment_workspace, alignment_outputs)
 
     if cfg.make_beds:
         # Make beds and provide basic histograms
@@ -754,34 +863,72 @@ def load_adata_core(
             logger.info(f"Loading UMI config from YAML: {umi_yaml_path}")
             umi_kit_config = load_umi_config_from_yaml(umi_yaml_path)
         resolved_umi = resolve_umi_config(umi_kit_config, cfg)
-
-        umi_positional_sidecar = annotate_umi_tags_in_bam(
-            unaligned_output,
-            use_umi=True,
-            umi_kit_config=umi_kit_config,
-            umi_length=getattr(cfg, "umi_length", None),
-            umi_search_window=getattr(cfg, "umi_search_window", 200),
-            umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "edlib"),
-            umi_adapter_max_edits=resolved_umi["umi_adapter_max_edits"],
-            samtools_backend=cfg.samtools_backend,
-            umi_ends=resolved_umi["umi_ends"],
-            umi_flank_mode=resolved_umi["umi_flank_mode"],
-            umi_amplicon_max_edits=resolved_umi["umi_amplicon_max_edits"],
-            same_orientation=resolved_umi.get("same_orientation", False),
-            threads=cfg.threads,
+        umi_inputs = [
+            ("unaligned-bam", artifact_checksum(unaligned_output)),
+            ("aligned-bam", artifact_checksum(aligned_sorted_output)),
+        ]
+        if umi_yaml_path:
+            umi_inputs.append(("umi-config", artifact_checksum(umi_yaml_path)))
+        umi_spec = IntermediateSpec(
+            operation="umi-sidecars",
+            input_artifacts=tuple(umi_inputs),
+            operation_config={
+                "adapter_matcher": getattr(cfg, "umi_adapter_matcher", "edlib"),
+                "amplicon_max_edits": resolved_umi["umi_amplicon_max_edits"],
+                "ends": resolved_umi["umi_ends"],
+                "flank_mode": resolved_umi["umi_flank_mode"],
+                "length": getattr(cfg, "umi_length", None),
+                "max_edits": resolved_umi["umi_adapter_max_edits"],
+                "same_orientation": resolved_umi.get("same_orientation", False),
+                "search_window": getattr(cfg, "umi_search_window", 200),
+            },
+            tool_versions={"samtools": executable_version("samtools")},
         )
+        umi_workspace = prepare_intermediate(
+            output_directory,
+            umi_spec,
+            force_redo=force_redo_intermediates,
+        )
+        if umi_workspace.reusable:
+            umi_positional_sidecar = committed_output(umi_workspace, "umi-positional")
+            umi_sidecar = committed_output(umi_workspace, "umi-oriented")
+            if umi_positional_sidecar is None or umi_sidecar is None:
+                raise RuntimeError("Validated UMI commit is missing a sidecar output.")
+            logger.info("Reusing validated UMI sidecars: %s", umi_workspace.root)
+        else:
+            generated_positional = annotate_umi_tags_in_bam(
+                unaligned_output,
+                use_umi=True,
+                umi_kit_config=umi_kit_config,
+                umi_length=getattr(cfg, "umi_length", None),
+                umi_search_window=getattr(cfg, "umi_search_window", 200),
+                umi_adapter_matcher=getattr(cfg, "umi_adapter_matcher", "edlib"),
+                umi_adapter_max_edits=resolved_umi["umi_adapter_max_edits"],
+                samtools_backend=cfg.samtools_backend,
+                umi_ends=resolved_umi["umi_ends"],
+                umi_flank_mode=resolved_umi["umi_flank_mode"],
+                umi_amplicon_max_edits=resolved_umi["umi_amplicon_max_edits"],
+                same_orientation=resolved_umi.get("same_orientation", False),
+                threads=cfg.threads,
+            )
+            umi_positional_sidecar = umi_workspace.root / "positional.parquet"
+            shutil.copy2(generated_positional, umi_positional_sidecar)
+            logger.info("Deriving orientation-aware UMI tags (U1/U2/RX/FC) from aligned BAM")
+            umi_sidecar = derive_umi_orientation_tags_from_aligned_bam(
+                umi_positional_sidecar,
+                aligned_sorted_output,
+                output_sidecar_path=umi_workspace.root / "oriented.parquet",
+                samtools_backend=cfg.samtools_backend,
+            )
+            commit_intermediate(
+                umi_workspace,
+                {"umi-oriented": umi_sidecar, "umi-positional": umi_positional_sidecar},
+            )
         register_sidecar(
             sidecar_manifest,
             "umi_positional",
             umi_positional_sidecar,
             metadata={"source_bam": str(unaligned_output)},
-        )
-        logger.info("Deriving orientation-aware UMI tags (U1/U2/RX/FC) from aligned BAM")
-        umi_sidecar = derive_umi_orientation_tags_from_aligned_bam(
-            umi_positional_sidecar,
-            aligned_sorted_output,
-            output_sidecar_path=aligned_sorted_output.with_suffix(".umi_tags.parquet"),
-            samtools_backend=cfg.samtools_backend,
         )
         register_sidecar(
             sidecar_manifest,
@@ -837,35 +984,75 @@ def load_adata_core(
             f"Loaded {len(barcode_references)} barcode references (length={barcode_length})"
         )
         resolved_bc = resolve_barcode_config(barcode_kit_config, cfg)
-
-        logger.info("Extracting and assigning barcodes from unaligned BAM using smftools backend")
-        barcode_positional_sidecar = extract_and_assign_barcodes_in_bam(
-            unaligned_output,
-            barcode_adapters=getattr(cfg, "barcode_adapters", [None, None]),
-            barcode_references=barcode_references,
-            barcode_length=barcode_length,
-            barcode_search_window=getattr(cfg, "barcode_search_window", 200),
-            barcode_max_edit_distance=resolved_bc["barcode_max_edit_distance"],
-            barcode_adapter_matcher=getattr(cfg, "barcode_adapter_matcher", "edlib"),
-            barcode_composite_max_edits=resolved_bc["barcode_composite_max_edits"],
-            barcode_min_separation=resolved_bc.get("barcode_min_separation"),
-            require_both_ends=getattr(cfg, "barcode_both_ends", False),
-            min_barcode_score=getattr(cfg, "barcode_min_score", None),
-            samtools_backend=cfg.samtools_backend,
-            barcode_kit_config=barcode_kit_config,
-            barcode_ends=resolved_bc["barcode_ends"],
-            barcode_amplicon_gap_tolerance=resolved_bc["barcode_amplicon_gap_tolerance"],
-            threads=cfg.threads,
+        barcode_spec = IntermediateSpec(
+            operation="smftools-barcode-sidecars",
+            input_artifacts=(
+                ("unaligned-bam", artifact_checksum(unaligned_output)),
+                ("barcode-config", artifact_checksum(barcode_yaml_path)),
+            ),
+            operation_config={
+                "adapter_matcher": getattr(cfg, "barcode_adapter_matcher", "edlib"),
+                "amplicon_gap_tolerance": resolved_bc["barcode_amplicon_gap_tolerance"],
+                "barcode_ends": resolved_bc["barcode_ends"],
+                "composite_max_edits": resolved_bc["barcode_composite_max_edits"],
+                "max_edit_distance": resolved_bc["barcode_max_edit_distance"],
+                "min_score": getattr(cfg, "barcode_min_score", None),
+                "min_separation": resolved_bc.get("barcode_min_separation"),
+                "require_both_ends": bool(getattr(cfg, "barcode_both_ends", False)),
+                "search_window": getattr(cfg, "barcode_search_window", 200),
+            },
+            tool_versions={"samtools": executable_version("samtools")},
         )
+        barcode_workspace = prepare_intermediate(
+            output_directory,
+            barcode_spec,
+            force_redo=force_redo_intermediates,
+        )
+        if barcode_workspace.reusable:
+            barcode_positional_sidecar = committed_output(barcode_workspace, "barcode-positional")
+            barcode_sidecar = committed_output(barcode_workspace, "barcode")
+            if barcode_positional_sidecar is None or barcode_sidecar is None:
+                raise RuntimeError("Validated barcode commit is missing a sidecar output.")
+            logger.info("Reusing validated smftools barcode sidecars: %s", barcode_workspace.root)
+        else:
+            logger.info(
+                "Extracting and assigning barcodes from unaligned BAM using smftools backend"
+            )
+            generated_barcode_sidecar = extract_and_assign_barcodes_in_bam(
+                unaligned_output,
+                barcode_adapters=getattr(cfg, "barcode_adapters", [None, None]),
+                barcode_references=barcode_references,
+                barcode_length=barcode_length,
+                barcode_search_window=getattr(cfg, "barcode_search_window", 200),
+                barcode_max_edit_distance=resolved_bc["barcode_max_edit_distance"],
+                barcode_adapter_matcher=getattr(cfg, "barcode_adapter_matcher", "edlib"),
+                barcode_composite_max_edits=resolved_bc["barcode_composite_max_edits"],
+                barcode_min_separation=resolved_bc.get("barcode_min_separation"),
+                require_both_ends=getattr(cfg, "barcode_both_ends", False),
+                min_barcode_score=getattr(cfg, "barcode_min_score", None),
+                samtools_backend=cfg.samtools_backend,
+                barcode_kit_config=barcode_kit_config,
+                barcode_ends=resolved_bc["barcode_ends"],
+                barcode_amplicon_gap_tolerance=resolved_bc["barcode_amplicon_gap_tolerance"],
+                threads=cfg.threads,
+            )
+            barcode_positional_sidecar = barcode_workspace.root / "positional.parquet"
+            shutil.copy2(generated_barcode_sidecar, barcode_positional_sidecar)
+            barcode_sidecar = barcode_workspace.root / "aligned.parquet"
+            shutil.copy2(generated_barcode_sidecar, barcode_sidecar)
+            commit_intermediate(
+                barcode_workspace,
+                {
+                    "barcode": barcode_sidecar,
+                    "barcode-positional": barcode_positional_sidecar,
+                },
+            )
         register_sidecar(
             sidecar_manifest,
             "barcode_positional",
             barcode_positional_sidecar,
             metadata={"source_bam": str(unaligned_output)},
         )
-        barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
-        if Path(barcode_positional_sidecar) != barcode_sidecar:
-            shutil.copy2(barcode_positional_sidecar, barcode_sidecar)
         register_sidecar(
             sidecar_manifest,
             "barcode",
@@ -878,6 +1065,30 @@ def load_adata_core(
     ################################### 5) Demultiplexing ######################################################################
 
     skip_bam_split = getattr(cfg, "skip_bam_split", False)
+    dorado_barcode_workspace = None
+    if demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+        dorado_barcode_spec = IntermediateSpec(
+            operation="dorado-barcode-sidecar",
+            input_artifacts=(("aligned-bam", artifact_checksum(aligned_sorted_output)),),
+            operation_config={
+                "barcode_both_ends": bool(getattr(cfg, "barcode_both_ends", False)),
+                "barcode_kit": str(cfg.barcode_kit),
+                "bm_score_threshold": float(getattr(cfg, "dorado_bm_score_threshold", 0.65)),
+                "skip_bam_split": bool(skip_bam_split),
+                "trim": bool(cfg.trim),
+            },
+            tool_versions={"dorado": executable_version("dorado")},
+        )
+        dorado_barcode_workspace = prepare_intermediate(
+            output_directory,
+            dorado_barcode_spec,
+            force_redo=force_redo_intermediates,
+        )
+        if dorado_barcode_workspace.reusable:
+            barcode_sidecar = committed_output(dorado_barcode_workspace, "barcode")
+            if barcode_sidecar is None:
+                raise RuntimeError("Validated Dorado barcode commit has no sidecar output.")
+            logger.info("Reusing validated Dorado barcode sidecar: %s", barcode_sidecar)
 
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     if skip_bam_split:
@@ -890,7 +1101,12 @@ def load_adata_core(
         # For dorado backend in non-split mode:
         # - if BC+bi tags are present on the aligned BAM, derive BM and write sidecar
         # - if bi is absent, keep BC-only sidecar behavior and warn that BM/demux_type is unavailable
-        if demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+        if (
+            demux_backend == "dorado"
+            and cfg.barcode_kit
+            and not cfg.input_already_demuxed
+            and not dorado_barcode_workspace.reusable
+        ):
             tag_info = _bam_has_barcode_info_tags(aligned_sorted_output)
             if barcode_sidecar is None:
                 barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
@@ -1051,42 +1267,43 @@ def load_adata_core(
             # Derive BM from bi into sidecar (without modifying BAMs).
             # For no_classify: bi/BC are on the aligned_sorted BAM.
             # For classify: bi/BC are on the split BAMs after dorado re-classification.
-            barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
-            if demux_mode == "no_classify":
-                derive_bm_from_bi_to_sidecar(
-                    aligned_sorted_output,
-                    barcode_sidecar,
-                    samtools_backend=cfg.samtools_backend,
-                )
-                sidecar_source = "dorado_aligned_sorted_bam"
-            else:
-                # Derive from each split BAM and concatenate
-                sidecar_dfs = []
-                for bam_file in bam_files:
-                    if "unclassified" in bam_file.name:
-                        continue
-                    per_bam_sidecar = bam_file.with_suffix(".barcode_tags.parquet")
+            if not dorado_barcode_workspace.reusable:
+                barcode_sidecar = aligned_sorted_output.with_suffix(".barcode_tags.parquet")
+                if demux_mode == "no_classify":
                     derive_bm_from_bi_to_sidecar(
-                        bam_file,
-                        per_bam_sidecar,
+                        aligned_sorted_output,
+                        barcode_sidecar,
                         samtools_backend=cfg.samtools_backend,
                     )
-                    sidecar_dfs.append(pd.read_parquet(per_bam_sidecar))
-                if sidecar_dfs:
-                    bc_df = pd.concat(sidecar_dfs, ignore_index=True)
-                    bc_df = bc_df.drop_duplicates(subset=["read_name"], keep="first")
+                    sidecar_source = "dorado_aligned_sorted_bam"
                 else:
-                    bc_df = pd.DataFrame(columns=["read_name", "BC", "BM"])
-                bc_df.to_parquet(barcode_sidecar, index=False)
-                sidecar_source = "dorado_single_pass_demux_bams"
+                    # Derive from each split BAM and concatenate
+                    sidecar_dfs = []
+                    for bam_file in bam_files:
+                        if "unclassified" in bam_file.name:
+                            continue
+                        per_bam_sidecar = bam_file.with_suffix(".barcode_tags.parquet")
+                        derive_bm_from_bi_to_sidecar(
+                            bam_file,
+                            per_bam_sidecar,
+                            samtools_backend=cfg.samtools_backend,
+                        )
+                        sidecar_dfs.append(pd.read_parquet(per_bam_sidecar))
+                    if sidecar_dfs:
+                        bc_df = pd.concat(sidecar_dfs, ignore_index=True)
+                        bc_df = bc_df.drop_duplicates(subset=["read_name"], keep="first")
+                    else:
+                        bc_df = pd.DataFrame(columns=["read_name", "BC", "BM"])
+                    bc_df.to_parquet(barcode_sidecar, index=False)
+                    sidecar_source = "dorado_single_pass_demux_bams"
 
-            register_sidecar(
-                sidecar_manifest,
-                "barcode",
-                barcode_sidecar,
-                metadata={"source": sidecar_source},
-            )
-            logger.info("dorado barcode sidecar written: %s", barcode_sidecar)
+                register_sidecar(
+                    sidecar_manifest,
+                    "barcode",
+                    barcode_sidecar,
+                    metadata={"source": sidecar_source},
+                )
+                logger.info("dorado barcode sidecar written: %s", barcode_sidecar)
 
             se_bam_files = bam_files
             bam_dir = cfg.split_path
@@ -1178,6 +1395,20 @@ def load_adata_core(
                     metadata={"source": "dorado_legacy_split_bams"},
                 )
 
+    if dorado_barcode_workspace is not None and not dorado_barcode_workspace.reusable:
+        if barcode_sidecar is None:
+            raise RuntimeError("Dorado barcode processing did not produce a sidecar.")
+        committed_barcode = dorado_barcode_workspace.root / "barcode.parquet"
+        shutil.copy2(barcode_sidecar, committed_barcode)
+        barcode_sidecar = committed_barcode
+        commit_intermediate(dorado_barcode_workspace, {"barcode": barcode_sidecar})
+        register_sidecar(
+            sidecar_manifest,
+            "barcode",
+            barcode_sidecar,
+            metadata={"source": "dorado_committed_intermediate"},
+        )
+
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
     if not skip_bam_split and getattr(cfg, "max_reads_per_barcode", None) is not None:
@@ -1253,26 +1484,61 @@ def load_adata_core(
         if direct_uses_modkit:
             from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
 
-            require_memory_headroom(
-                cfg,
-                operation_label="modkit raw extraction",
-                estimator="external_modkit_peak",
+            direct_inputs = [("aligned-bam", artifact_checksum(aligned_sorted_output))]
+            if barcode_sidecar is not None:
+                direct_inputs.append(("barcode-sidecar", artifact_checksum(barcode_sidecar)))
+            direct_mod_spec = IntermediateSpec(
+                operation="direct-modification-extraction",
+                input_artifacts=tuple(direct_inputs),
+                operation_config={
+                    "bam_suffix": str(cfg.bam_suffix),
+                    "skip_unclassified": bool(cfg.skip_unclassified),
+                    "thresholds": list(cfg.thresholds or []),
+                },
+                tool_versions={"modkit": executable_version("modkit")},
             )
-            if not mod_bed_dir.is_dir():
+            direct_mod_workspace = prepare_intermediate(
+                output_directory,
+                direct_mod_spec,
+                force_redo=force_redo_intermediates,
+            )
+            if direct_mod_workspace.reusable:
+                mod_bed_dir = committed_output(direct_mod_workspace, "mod-beds")
+                mod_tsv_dir = committed_output(direct_mod_workspace, "mod-tsvs")
+                if mod_bed_dir is None or mod_tsv_dir is None:
+                    raise RuntimeError(
+                        "Validated direct-mod commit is missing an output directory."
+                    )
+                logger.info(
+                    "Reusing validated direct-modification extraction: %s",
+                    direct_mod_workspace.root,
+                )
+            else:
+                mod_bed_dir = direct_mod_workspace.root / "mod_beds"
+                mod_tsv_dir = direct_mod_workspace.root / "mod_tsvs"
+                require_memory_headroom(
+                    cfg,
+                    operation_label="modkit raw extraction",
+                    estimator="external_modkit_peak",
+                )
                 make_dirs([mod_bed_dir])
                 modQC(aligned_sorted_output, cfg.thresholds)
                 make_modbed(aligned_sorted_output, cfg.thresholds, mod_bed_dir)
-            make_dirs([mod_tsv_dir])
-            extract_mods(
-                cfg.thresholds,
-                mod_tsv_dir,
-                bam_dir if bam_dir is not None else cfg.split_path,
-                cfg.bam_suffix,
-                skip_unclassified=cfg.skip_unclassified,
-                modkit_summary=False,
-                threads=cfg.threads,
-                single_bam=aligned_sorted_output,
-            )
+                make_dirs([mod_tsv_dir])
+                extract_mods(
+                    cfg.thresholds,
+                    mod_tsv_dir,
+                    bam_dir if bam_dir is not None else cfg.split_path,
+                    cfg.bam_suffix,
+                    skip_unclassified=cfg.skip_unclassified,
+                    modkit_summary=False,
+                    threads=cfg.threads,
+                    single_bam=aligned_sorted_output,
+                )
+                commit_intermediate(
+                    direct_mod_workspace,
+                    {"mod-beds": mod_bed_dir, "mod-tsvs": mod_tsv_dir},
+                )
             mod_tsv_paths = sorted(mod_tsv_dir.glob("*.tsv")) + sorted(mod_tsv_dir.glob("*.tsv.gz"))
 
         from ..readwrite import safe_read_h5ad
@@ -1687,14 +1953,13 @@ def load_adata_core(
     ############################################### delete intermediate BAM files ###############################################
     if cfg.delete_intermediate_bams:
         logger.info("Deleting intermediate BAM files")
-        # delete aligned and sorted bam
-        if aligned_sorted_output.exists():
-            aligned_sorted_output.unlink()
-        bai = aligned_sorted_output.parent / (aligned_sorted_output.name + ".bai")
-        if bai.exists():
-            bai.unlink()
+        logger.info(
+            "Retaining committed alignment BAM and index so their immutable revision remains reusable"
+        )
         # delete the demultiplexed bams. Keep the demultiplexing summary files and directories to faciliate demultiplexing in the future with these files
         for bam in bam_files:
+            if Path(bam).resolve() == aligned_sorted_output.resolve():
+                continue
             bai = bam.parent / (bam.name + ".bai")
             if bam.exists():
                 bam.unlink()

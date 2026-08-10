@@ -59,6 +59,14 @@ _STAGE_NON_SEMANTIC_CONFIG_KEYS = {
     stage: {"plot_regions_bed", "plot_allow_unanalyzed_gaps", "plot_subsample_seed"}
     for stage in ("preprocess", "spatial", "hmm", "latent", "full")
 }
+_STAGE_NON_SEMANTIC_CONFIG_KEYS["raw"] = {
+    "alignment_regions_bed",
+    "fasta",
+    "input_data_path",
+    "input_files",
+    "input_manifest_digest",
+    "input_manifest_path",
+}
 _STAGE_SEMANTIC_CONFIG_KEYS = {
     "latent": {
         "from_adata_stage",
@@ -278,7 +286,38 @@ def stage_input_artifact_ids(
     return identities
 
 
-def stage_lifecycle(cfg, stage: str, source_path: str | Path | None = None):
+def raw_input_artifact_ids(cfg: Any) -> list[str]:
+    """Return ordered content identities for raw sources and alignment reference."""
+    from ..informatics.input_manifest import resolve_input_manifest_readonly
+    from ..informatics.raw_intermediate_manifest import alignment_reference_bundle
+
+    input_manifest_path = getattr(cfg, "input_manifest_path", None)
+    input_files = getattr(cfg, "input_files", None)
+    identities: list[str] = []
+    if input_manifest_path or input_files:
+        resolved = resolve_input_manifest_readonly(
+            input_manifest_path=input_manifest_path,
+            input_paths=None if input_manifest_path else input_files,
+            alignment_mode=getattr(cfg, "alignment_mode", "align"),
+            modality=getattr(cfg, "smf_modality", ""),
+            barcode_map=getattr(cfg, "fastq_barcode_map", None),
+            auto_pair=bool(getattr(cfg, "fastq_auto_pairing", True)),
+        )
+        identities.append(f"input-manifest:{resolved.digest}")
+        identities.extend(f"source:{row.source_id}:{row.sha256}" for row in resolved.rows)
+    if getattr(cfg, "fasta", None):
+        reference = alignment_reference_bundle(cfg)
+        identities.append(f"alignment-reference-bundle:{reference['digest']}")
+    return identities
+
+
+def stage_lifecycle(
+    cfg,
+    stage: str,
+    source_path: str | Path | None = None,
+    *,
+    input_artifact_ids: list[str] | None = None,
+):
     """Create a lifecycle context for one partitioned CLI stage."""
     from ..informatics.experiment_manifest import StageLifecycle
 
@@ -287,10 +326,14 @@ def stage_lifecycle(cfg, stage: str, source_path: str | Path | None = None):
         run_root,
         str(stage),
         config_hash=stage_config_hash(cfg, stage),
-        input_artifact_ids=stage_input_artifact_ids(
-            run_root,
-            source_path,
-            include_region_catalogs=str(stage) == "latent",
+        input_artifact_ids=(
+            input_artifact_ids
+            if input_artifact_ids is not None
+            else stage_input_artifact_ids(
+                run_root,
+                source_path,
+                include_region_catalogs=str(stage) == "latent",
+            )
         ),
     )
 
@@ -369,15 +412,18 @@ def partitioned_stage_is_complete(
     """Check the compatible completion record used by partitioned CLI skips."""
     from ..informatics.experiment_manifest import stage_is_complete
 
-    input_artifact_ids = (
-        stage_input_artifact_ids(
-            cfg.output_directory,
-            source_path,
-            include_region_catalogs=str(stage) == "latent",
+    if str(stage) == "raw":
+        input_artifact_ids = raw_input_artifact_ids(cfg)
+    else:
+        input_artifact_ids = (
+            stage_input_artifact_ids(
+                cfg.output_directory,
+                source_path,
+                include_region_catalogs=str(stage) == "latent",
+            )
+            if source_path is not None
+            else None
         )
-        if source_path is not None
-        else None
-    )
     return stage_is_complete(
         cfg.output_directory,
         stage,
