@@ -16,10 +16,23 @@ pytestmark = pytest.mark.integration
 
 
 def test_latent_resource_decision_uses_live_runtime_headroom():
+    # The cap is derived from live RSS rather than hardcoded at 1.0 GiB. A fixed
+    # cap made this test depend on how much memory every *earlier* test in the
+    # session had left resident: the integration suite reaches roughly 688 MiB
+    # before this file is even collected, and adding ML integration coverage
+    # pushed Linux CI past the cap, so headroom resolved to zero and the
+    # operation was refused.
+    #
+    # Deriving the cap also strengthens the assertion: a decision that ignored
+    # live usage entirely would report headroom equal to the whole cap.
+    margin_bytes = 512 * 1024**2
+    live_rss = process_tree_rss_bytes()
+    cap_bytes = live_rss + margin_bytes
+
     cfg = SimpleNamespace(
         threads=1,
         max_memory_percent=None,
-        max_memory_gb=1.0,
+        max_memory_gb=cap_bytes / 1024**3,
         memory_reserve_gb=0.0,
         latent_run_pca_umap=True,
         latent_run_nmf=True,
@@ -37,10 +50,17 @@ def test_latent_resource_decision_uses_live_runtime_headroom():
         minimum_reads=3,
     )
 
+    headroom = decision.pool_budget["usable_headroom_bytes"]
+
     assert decision.effective_reads == 3
     assert decision.pool_budget["process_tree_rss_bytes"] > 0
-    assert decision.pool_budget["usable_headroom_bytes"] > 0
+    assert headroom > 0
     assert decision.predicted_peak_bytes > 0
+    # Live usage was subtracted from the cap rather than ignored. Deliberately
+    # not asserted against the margin: the decision re-reads RSS internally, and
+    # that reading legitimately differs from the one above by tens of MiB, so a
+    # tight bound would be flaky in exactly the way this test is being fixed for.
+    assert headroom < cap_bytes
 
 
 def test_process_tree_rss_includes_a_live_child():
