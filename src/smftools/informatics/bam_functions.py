@@ -2487,8 +2487,7 @@ def align_and_sort_BAM(
             if ret != 0:
                 raise RuntimeError(f"dorado failed with exit code {ret}")
     else:
-        logger.error(f"Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado")
-        return
+        raise ValueError(f"Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado.")
 
     # --- Sort & Index ---
     logger.debug(f"Sorting: {aligned_output} -> {aligned_sorted_output}")

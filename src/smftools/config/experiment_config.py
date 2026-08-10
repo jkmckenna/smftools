@@ -7,7 +7,7 @@ import math
 import warnings
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import IO, Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import IO, Any, Dict, List, Literal, Optional, Sequence, Tuple, Union, cast
 
 from smftools.constants import (
     BAM_OUTPUTS_DIR,
@@ -38,6 +38,59 @@ except Exception:
 
 import numpy as np
 import pandas as pd
+
+AlignmentMode = Literal["align", "existing"]
+InputSourceRole = Literal["raw_signal", "reads", "alignment"]
+
+SUPPORTED_ALIGNMENT_MODES = frozenset({"align", "existing"})
+SUPPORTED_ALIGNERS = frozenset({"dorado", "minimap2"})
+_ALIGNER_ALIASES = {
+    "mm2": "minimap2",
+    "minimap": "minimap2",
+    "minimap-2": "minimap2",
+}
+_DISCOVERY_KIND_ORDER = ("pod5", "fast5", "fastq", "bam", "sam", "cram", "h5ad")
+
+
+def _normalize_alignment_mode(value: Any) -> AlignmentMode:
+    """Return a supported alignment mode or raise a configuration error."""
+    mode = str(value or "align").strip().lower()
+    if mode not in SUPPORTED_ALIGNMENT_MODES:
+        supported = ", ".join(sorted(SUPPORTED_ALIGNMENT_MODES))
+        raise ValueError(f"alignment_mode must be one of: {supported}; got {value!r}.")
+    return cast(AlignmentMode, mode)
+
+
+def _normalize_aligner(value: Any) -> str:
+    """Normalize supported aligner aliases and reject unknown aligners early."""
+    requested = str(value or "minimap2").strip().lower()
+    aligner = _ALIGNER_ALIASES.get(requested, requested)
+    if aligner not in SUPPORTED_ALIGNERS:
+        supported = ", ".join(sorted(SUPPORTED_ALIGNERS))
+        raise ValueError(f"aligner must be one of: {supported}; got {value!r}.")
+    return aligner
+
+
+def _recognized_discovery_counts(found: Dict[str, Any]) -> Dict[str, int]:
+    """Return deterministic nonzero counts for recognized input kinds."""
+    return {
+        kind: len(found[f"{kind}_paths"])
+        for kind in _DISCOVERY_KIND_ORDER
+        if found.get(f"{kind}_paths")
+    }
+
+
+def _source_role_for_input(
+    input_type: Optional[str], alignment_mode: AlignmentMode
+) -> Optional[InputSourceRole]:
+    """Derive the ingestion role from source kind and alignment policy."""
+    if input_type in {"pod5", "fast5"}:
+        return "raw_signal"
+    if alignment_mode == "existing" and input_type in {"bam", "cram"}:
+        return "alignment"
+    if input_type in {"fastq", "bam"}:
+        return "reads"
+    return None
 
 
 # -------------------------
@@ -764,6 +817,8 @@ class ExperimentConfig:
     recursive_input_search: bool = True
     input_type: Optional[str] = None
     input_files: Optional[List[Path]] = None
+    alignment_mode: AlignmentMode = "align"
+    input_source_role: Optional[InputSourceRole] = None
     informatics_outputs_dir: str = INFORMATICS_OUTPUTS_DIR
     informatics_outputs_path: Optional[str] = None
     bam_outputs_dir: str = BAM_OUTPUTS_DIR
@@ -1445,6 +1500,12 @@ class ExperimentConfig:
         if merged.get("experiment_name") is None and date_str:
             merged["experiment_name"] = f"{date_str}_SMF_experiment"
 
+        # Normalize public alignment vocabulary before filesystem writes or
+        # external-tool checks can occur.
+        alignment_mode = _normalize_alignment_mode(merged.get("alignment_mode", "align"))
+        merged["alignment_mode"] = alignment_mode
+        merged["aligner"] = _normalize_aligner(merged.get("aligner", "minimap2"))
+
         # Input file types and path handling
         # When input_data_path is not provided (e.g. concatenate command),
         # skip file discovery and default I/O variables to None.
@@ -1458,55 +1519,55 @@ class ExperimentConfig:
             input_type = None
             input_files = None
 
-            # Detect the input filetype
-            if input_data_path.is_file():
-                suffix = input_data_path.suffix.lower()
-                suffixes = [
-                    s.lower() for s in input_data_path.suffixes
-                ]  # handles multi-part extensions
-
-                # recognize multi-suffix cases like .fastq.gz or .fq.gz
-                if any(s in [".pod5", ".p5"] for s in suffixes):
-                    input_type = "pod5"
-                    input_files = [Path(input_data_path)]
-                elif any(s in [".fast5", ".f5"] for s in suffixes):
-                    input_type = "fast5"
-                    input_files = [Path(input_data_path)]
-                elif any(s in [".fastq", ".fq"] for s in suffixes):
-                    input_type = "fastq"
-                    input_files = [Path(input_data_path)]
-                elif any(s in [".bam"] for s in suffixes):
-                    input_type = "bam"
-                    input_files = [Path(input_data_path)]
-                elif any(s in [".h5ad", ".h5"] for s in suffixes):
-                    input_type = "h5ad"
-                    input_files = [Path(input_data_path)]
-                else:
-                    print("Error detecting input file type")
-
-            elif input_data_path.is_dir():
-                found = discover_input_files(
-                    input_data_path,
-                    bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
-                    recursive=merged["recursive_input_search"],
+            input_is_directory = input_data_path.is_dir()
+            found = discover_input_files(
+                input_data_path,
+                bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
+                recursive=bool(merged.get("recursive_input_search", True)),
+            )
+            recognized_counts = _recognized_discovery_counts(found)
+            if len(recognized_counts) > 1:
+                detail = ", ".join(
+                    f"{kind}={recognized_counts[kind]}"
+                    for kind in _DISCOVERY_KIND_ORDER
+                    if kind in recognized_counts
+                )
+                raise ValueError(
+                    "input_data_path contains mixed recognized input types "
+                    f"({detail}). Use one homogeneous source type per experiment."
+                )
+            if not recognized_counts:
+                raise ValueError(
+                    f"input_data_path contains no supported input files: {input_data_path}"
                 )
 
-                if found["input_is_pod5"]:
-                    input_type = "pod5"
-                    input_files = found["pod5_paths"]
-                elif found["input_is_fast5"]:
-                    input_type = "fast5"
-                    input_files = found["fast5_paths"]
-                elif found["input_is_fastq"]:
-                    input_type = "fastq"
-                    input_files = found["fastq_paths"]
-                elif found["input_is_bam"]:
-                    input_type = "bam"
-                    input_files = found["bam_paths"]
-                elif found["input_is_h5ad"]:
-                    input_type = "h5ad"
-                    input_files = found["h5ad_paths"]
+            input_type = next(iter(recognized_counts))
+            input_files = found[f"{input_type}_paths"]
+            if input_type in {"sam", "cram"}:
+                raise ValueError(
+                    f"{input_type.upper()} input is not supported yet. Convert it to BAM and use "
+                    "alignment_mode='align'; validated existing-alignment support is planned."
+                )
+            if input_is_directory and input_type == "bam":
+                raise ValueError(
+                    "BAM directory input is not supported yet. Supply one BAM file; validated "
+                    "multi-alignment source partitions are planned."
+                )
+            if alignment_mode == "existing":
+                if input_type != "bam":
+                    raise ValueError("alignment_mode='existing' requires an aligned BAM input.")
+                raise ValueError(
+                    "alignment_mode='existing' is reserved but not implemented yet. "
+                    "Use alignment_mode='align' to retain legacy BAM realignment behavior."
+                )
+            modality = str(merged.get("smf_modality") or "").strip().lower()
+            if modality == "direct" and input_type == "fastq":
+                raise ValueError(
+                    "Direct-modification analysis requires raw signal or modification-tagged "
+                    "BAM input; FASTQ is sequence-only and cannot preserve MM/ML probabilities."
+                )
 
+            if input_is_directory:
                 print(
                     f"Found {found['all_files_searched']} files; "
                     f"fastq={len(found['fastq_paths'])}, "
@@ -1519,6 +1580,8 @@ class ExperimentConfig:
             input_data_path = None
             input_type = None
             input_files = None
+
+        input_source_role = _source_role_for_input(input_type, alignment_mode)
 
         # output_directory and derived paths
         raw_output_dir = merged.get("output_directory")
@@ -1949,9 +2012,11 @@ class ExperimentConfig:
             annotate_secondary_supplementary=merged.get("annotate_secondary_supplementary", True),
             smf_modality=merged.get("smf_modality"),
             input_data_path=input_data_path,
-            recursive_input_search=merged.get("recursive_input_search"),
+            recursive_input_search=bool(merged.get("recursive_input_search", True)),
             input_type=input_type,
             input_files=input_files,
+            alignment_mode=alignment_mode,
+            input_source_role=input_source_role,
             output_directory=output_dir,
             summary_file=summary_file,
             fasta=merged.get("fasta"),

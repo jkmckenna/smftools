@@ -16,8 +16,9 @@ def discover_input_files(
     Discover input files under `input_data_path`.
 
     Returns a dict with:
-      - pod5_paths, fast5_paths, fastq_paths, bam_paths, other_paths (lists of Path)
-      - input_is_pod5, input_is_fast5, input_is_fastq, input_is_bam (bools)
+      - pod5_paths, fast5_paths, fastq_paths, bam_paths, sam_paths, cram_paths,
+        h5ad_paths, other_paths (lists of Path)
+      - one ``input_is_*`` boolean for each recognized input kind
       - all_files_searched (int)
 
     Behavior:
@@ -70,6 +71,8 @@ def discover_input_files(
     fast5_paths: List[Path] = []
     fastq_paths: List[Path] = []
     bam_paths: List[Path] = []
+    sam_paths: List[Path] = []
+    cram_paths: List[Path] = []
     h5ad_paths: List[Path] = []
     other_paths: List[Path] = []
 
@@ -85,6 +88,10 @@ def discover_input_files(
             h5ad_paths.append(fp)
         elif key == bam_suffix:
             bam_paths.append(fp)
+        elif key == ".sam":
+            sam_paths.append(fp)
+        elif key == ".cram":
+            cram_paths.append(fp)
         else:
             other_paths.append(fp)
 
@@ -118,12 +125,16 @@ def discover_input_files(
         "fast5_paths": sorted(fast5_paths),
         "fastq_paths": sorted(fastq_paths),
         "bam_paths": sorted(bam_paths),
+        "sam_paths": sorted(sam_paths),
+        "cram_paths": sorted(cram_paths),
         "h5ad_paths": sorted(h5ad_paths),
         "other_paths": sorted(other_paths),
         "input_is_pod5": len(pod5_paths) > 0,
         "input_is_fast5": len(fast5_paths) > 0,
         "input_is_fastq": len(fastq_paths) > 0,
         "input_is_bam": len(bam_paths) > 0,
+        "input_is_sam": len(sam_paths) > 0,
+        "input_is_cram": len(cram_paths) > 0,
         "input_is_h5ad": len(h5ad_paths) > 0,
         "all_files_searched": total_searched,
     }
