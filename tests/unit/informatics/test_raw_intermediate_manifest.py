@@ -6,9 +6,22 @@ from smftools.informatics.raw_intermediate_manifest import (
     alignment_reference_bundle,
     commit_intermediate,
     committed_output,
+    executable_version,
     prepare_intermediate,
     validate_intermediate_commit,
 )
+
+
+def test_executable_version_replaces_invalid_utf8(monkeypatch):
+    def fake_run(command, **kwargs):
+        assert command == ["samtools", "--version"]
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+        return SimpleNamespace(stdout="samtools 1.16.1\ufffdbuild\nmetadata", stderr="")
+
+    monkeypatch.setattr("smftools.informatics.raw_intermediate_manifest.subprocess.run", fake_run)
+
+    assert executable_version("samtools") == "samtools 1.16.1\ufffdbuild"
 
 
 def _spec(checksum="source-v1", *, version="1.0", policy="strict"):
