@@ -201,6 +201,55 @@ def test_workflow_success_writes_only_declared_root_and_preserves_staged_inputs(
     assert not (tmp_path / "configured-output").exists()
 
 
+def test_runtime_config_preserves_manifest_contract(tmp_path, monkeypatch):
+    source_file = tmp_path / "reads.fastq"
+    source_file.write_bytes(b"reads")
+    input_manifest = tmp_path / "inputs.csv"
+    input_manifest.write_text("path\nreads.fastq\n", encoding="utf-8")
+    source_config = tmp_path / "source.csv"
+    source_config.write_text(
+        "variable,value,type\n"
+        f"input_manifest_path,{input_manifest},string\n"
+        f"output_directory,{tmp_path / 'configured-output'},string\n",
+        encoding="utf-8",
+    )
+    envelope = SimpleNamespace(
+        resolved_threads=4,
+        resolved_memory_bytes=8 * 1024**3,
+        as_dict=lambda: {},
+    )
+    cfg = SimpleNamespace(
+        input_manifest_path=input_manifest,
+        input_data_path=source_file,
+        input_files=[source_file],
+        fasta=None,
+        device="cpu",
+        _resource_envelope=envelope,
+    )
+    monkeypatch.setattr("smftools.cli.helpers.load_experiment_config", lambda _path: cfg)
+    output = tmp_path / "task-output"
+
+    runtime_config, _, effective_sources = workflow_contract._write_runtime_config(
+        source_config,
+        output,
+        input_path=None,
+        fasta_path=None,
+        cpus=None,
+        memory_gb=None,
+        accelerator=None,
+    )
+
+    runtime_values = pd.read_csv(runtime_config, keep_default_na=False).set_index("variable")[
+        "value"
+    ]
+    assert runtime_values["input_data_path"] == ""
+    assert Path(runtime_values["input_manifest_path"]).resolve() == input_manifest
+    assert effective_sources == {
+        "input:000000": source_file.resolve(),
+        "input_manifest": input_manifest.resolve(),
+    }
+
+
 def test_compatible_skip_has_distinct_successful_outcome(tmp_path, monkeypatch):
     source = _source_config(tmp_path)
     output = tmp_path / "task-output"

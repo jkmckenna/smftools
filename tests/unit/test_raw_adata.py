@@ -786,6 +786,13 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
         pd.DataFrame().to_parquet(tmp_path / "reference_interval_map.parquet", index=False)
         (tmp_path / "molecule_index").mkdir()
         (paths.raw_spine.parent / "sidecar_manifest.json").write_text("{}\n", encoding="utf-8")
+        manifest_root = paths.raw_spine.parent / "input_manifest"
+        manifest_root.mkdir()
+        (manifest_root / "resolved_input_manifest.csv").write_text(
+            "schema_version,path\n1,input.fastq\n", encoding="utf-8"
+        )
+        (manifest_root / "resolved_input_manifest.json").write_text("{}\n", encoding="utf-8")
+        (manifest_root / "input_resolution_report.json").write_text("{}\n", encoding="utf-8")
         return SimpleNamespace(n_obs=1), paths.raw_spine, core_cfg
 
     monkeypatch.setattr(load_module, "load_adata_core", fake_core)
@@ -805,6 +812,9 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
         "molecule_index",
         "reference_interval_map",
         "manifest",
+        "input_manifest_csv",
+        "input_manifest_json",
+        "input_resolution_report",
     }
     monkeypatch.setattr(
         load_module,

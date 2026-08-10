@@ -130,6 +130,9 @@ _private_partitioned_stage_required_artifacts = {
         "molecule_index",
         "reference_interval_map",
         "manifest",
+        "input_manifest_csv",
+        "input_manifest_json",
+        "input_resolution_report",
     ),
     "preprocess": (
         "spine",

@@ -27,6 +27,7 @@ from smftools.constants import (
     STRANDS,
     TRIM,
 )
+from smftools.informatics.input_manifest import inspect_input_manifest
 
 from .discover_input_files import discover_input_files
 
@@ -807,6 +808,8 @@ class ExperimentConfig:
 
     # General I/O
     input_data_path: Optional[str] = None
+    input_manifest_path: Optional[str] = None
+    input_manifest_digest: Optional[str] = None
     output_directory: Optional[str] = None
     emit_log_file: Optional[bool] = True
     emit_perf_log: Optional[bool] = True
@@ -1506,15 +1509,37 @@ class ExperimentConfig:
         merged["alignment_mode"] = alignment_mode
         merged["aligner"] = _normalize_aligner(merged.get("aligner", "minimap2"))
 
-        # Input file types and path handling
-        # When input_data_path is not provided (e.g. concatenate command),
-        # skip file discovery and default I/O variables to None.
+        # Input file types and path handling. Full content hashing is deferred
+        # to task execution so config loading remains read-only.
         raw_input_data_path = merged.get("input_data_path")
-        if raw_input_data_path is not None and str(raw_input_data_path).strip().lower() not in (
-            "",
-            "none",
-            "null",
-        ):
+        raw_input_manifest_path = merged.get("input_manifest_path")
+        has_input_path = raw_input_data_path is not None and str(
+            raw_input_data_path
+        ).strip().lower() not in ("", "none", "null")
+        has_manifest_path = raw_input_manifest_path is not None and str(
+            raw_input_manifest_path
+        ).strip().lower() not in ("", "none", "null")
+        if has_input_path and has_manifest_path:
+            raise ValueError(
+                "Configure exactly one of input_data_path or input_manifest_path, not both."
+            )
+
+        input_manifest_path = None
+        if has_manifest_path:
+            inspected = inspect_input_manifest(
+                raw_input_manifest_path, alignment_mode=alignment_mode
+            )
+            input_manifest_path = inspected.path
+            input_files = list(inspected.source_paths)
+            input_type = inspected.input_type
+            input_data_path = input_files[0] if len(input_files) == 1 else None
+            modality = str(merged.get("smf_modality") or "").strip().lower()
+            if modality == "direct" and input_type == "fastq":
+                raise ValueError(
+                    "Direct-modification analysis requires raw signal or modification-tagged "
+                    "BAM input; FASTQ is sequence-only and cannot preserve MM/ML probabilities."
+                )
+        elif has_input_path:
             input_data_path = Path(raw_input_data_path)
             input_type = None
             input_files = None
@@ -2012,6 +2037,8 @@ class ExperimentConfig:
             annotate_secondary_supplementary=merged.get("annotate_secondary_supplementary", True),
             smf_modality=merged.get("smf_modality"),
             input_data_path=input_data_path,
+            input_manifest_path=input_manifest_path,
+            input_manifest_digest=merged.get("input_manifest_digest"),
             recursive_input_search=bool(merged.get("recursive_input_search", True)),
             input_type=input_type,
             input_files=input_files,
@@ -2821,8 +2848,8 @@ class ExperimentConfig:
         errors: List[str] = []
         errors.extend(self.validate_resources(raise_on_error=False))
         errors.extend(self.validate_latent(raise_on_error=False))
-        if not self.input_data_path:
-            errors.append("input_data_path is required but missing.")
+        if not self.input_data_path and not self.input_manifest_path:
+            errors.append("One of input_data_path or input_manifest_path is required but missing.")
         if not self.output_directory:
             errors.append("output_directory is required but missing.")
         if not self.fasta:
@@ -2831,6 +2858,8 @@ class ExperimentConfig:
         if require_paths:
             if self.input_data_path and not Path(self.input_data_path).exists():
                 errors.append(f"input_data_path does not exist: {self.input_data_path}")
+            if self.input_manifest_path and not Path(self.input_manifest_path).exists():
+                errors.append(f"input_manifest_path does not exist: {self.input_manifest_path}")
             if self.fasta and not Path(self.fasta).exists():
                 errors.append(f"fasta does not exist: {self.fasta}")
             for field_name in (

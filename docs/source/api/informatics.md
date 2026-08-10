@@ -24,6 +24,7 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.fastq_export
    smftools.informatics.h5ad_functions
    smftools.informatics.incremental_zarr
+   smftools.informatics.input_manifest
    smftools.informatics.modkit_extract_to_adata
    smftools.informatics.modkit_functions
    smftools.informatics.molecule_identity

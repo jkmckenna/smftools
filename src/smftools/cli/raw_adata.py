@@ -1609,6 +1609,7 @@ def raw_adata(config_path: str):
             paths.raw_spine,
         )
 
+    from ..informatics.input_manifest import input_manifest_artifact_paths
     from ..informatics.raw_store import (
         INTERVAL_CATALOG_FILENAME,
         MOLECULE_INDEX_DIRNAME,
@@ -1631,6 +1632,13 @@ def raw_adata(config_path: str):
             ),
             "manifest": sidecar_manifest_path(raw_root),
         }
+        outputs.update(
+            {
+                key: path
+                for key, path in input_manifest_artifact_paths(cfg.output_directory).items()
+                if path.exists()
+            }
+        )
         region_catalog_root = Path(cfg.output_directory) / REGION_CATALOG_DIRNAME
         for scope, filename in REGION_CATALOG_FILENAMES.items():
             catalog_path = region_catalog_root / filename
@@ -1648,12 +1656,16 @@ def raw_adata(config_path: str):
                 "analysis_regions",
                 "plot_regions",
                 "manifest",
+                "input_manifest_csv",
+                "input_manifest_json",
+                "input_resolution_report",
             ),
             schema_versions={
                 "raw": 3,
                 "identity": 1,
                 "region_catalog": 1,
                 "reference_interval_map": 1,
+                "input_manifest": 1,
             },
             extra={"n_molecules": int(result[0].n_obs)},
             nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["raw"],
