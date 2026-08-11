@@ -82,6 +82,12 @@ source is ambiguous or unsupported:
   aliases normalize to `minimap2`.
 - Direct-modification experiments cannot use FASTQ because sequence-only FASTQ cannot retain MM/ML
   modification probabilities. Use raw signal or a modification-tagged BAM.
+- Generated alignments use a structured adapter registry. smftools requires Dorado 0.7.0 or newer,
+  minimap2 2.24.0 or newer, and samtools 1.10.0 or newer when the external samtools backend is
+  selected. Executables are probed and adapter capabilities are checked before alignment staging.
+- The minimap2 BAM-to-FASTQ route is sequence-only and is therefore rejected for `direct`
+  experiments because it would discard MM/ML tags. Use Dorado for a tag-preserving generated
+  alignment, or use `alignment_mode: existing` for an authoritative aligned, tagged BAM.
 
 Existing configurations that omit `alignment_mode` continue to use `align`. Set
 `alignment_mode: existing` for one aligned BAM that must be validated and ingested without
@@ -96,6 +102,13 @@ Existing mode does not probe or invoke the configured aligner. The alignment man
 available BAM `@PG` provenance, or `unknown` when it is absent. Valid paired existing alignments
 remain unsupported until molecule-segment ingestion is available; malformed paired flags fail
 with a distinct validation error.
+
+Generated mode records the selected adapter, probed version, argument vector with path-independent
+placeholders, declared capabilities, sort/index backend, and semantic reference identity in the
+same schema-1 alignment manifest used by existing mode. Dorado and minimap2 currently build their
+reference indexes in memory, so the identity is recorded for compatibility and restart decisions
+rather than pointing to a persistent index artifact. Paired adapter inputs remain unsupported until
+the paired-alignment contract is introduced.
 
 External conversion workflows must align against the exact transformed reference records that
 smftools will validate. The public Python helper publishes that content-identified FASTA and its
