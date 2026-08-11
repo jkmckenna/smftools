@@ -28,6 +28,7 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.complement_base_list
    smftools.informatics.converted_BAM_to_adata
    smftools.informatics.derived_read_index
+   smftools.informatics.export_bundle
    smftools.informatics.fasta_functions
    smftools.informatics.fastq_export
    smftools.informatics.h5ad_functions

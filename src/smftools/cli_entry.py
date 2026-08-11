@@ -1319,6 +1319,80 @@ def export_fastq_project_cmd(
     click.echo(f"Wrote FASTQ export to: {out}")
 
 
+@experiment_group.command("export-bundle")
+@click.argument("config_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--outdir", "-o", type=click.Path(path_type=Path, file_okay=False), required=True)
+@click.option(
+    "--format",
+    "bundle_format",
+    type=click.Choice(["fastq", "bam"], case_sensitive=False),
+    default="fastq",
+    show_default=True,
+    help="FASTQ is sequence-only; BAM preserves alignment and auxiliary tags.",
+)
+@click.option("--group-by", default=None, help="obs column used for FASTQ grouping.")
+@click.option("--allow-unfiltered", is_flag=True, help="Allow export without a QC selection.")
+@click.option("--no-gzip", is_flag=True, help="Write plain FASTQ instead of FASTQ.gz.")
+def export_bundle_experiment_cmd(
+    config_path: Path,
+    outdir: Path,
+    bundle_format: str,
+    group_by: str | None,
+    allow_unfiltered: bool,
+    no_gzip: bool,
+):
+    """Export a portable, checksummed re-ingestion bundle."""
+    from .cli.export_bundle import export_bundle_for_experiment
+
+    out = export_bundle_for_experiment(
+        str(config_path),
+        outdir,
+        bundle_format=bundle_format.lower(),
+        group_by=group_by,
+        allow_unfiltered=allow_unfiltered,
+        gzip_output=not no_gzip,
+    )
+    click.echo(f"Wrote {bundle_format.upper()} bundle to: {out}")
+
+
+@project_group.command("export-bundle")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--outdir", "-o", type=click.Path(path_type=Path, file_okay=False), required=True)
+@click.option(
+    "--format",
+    "bundle_format",
+    type=click.Choice(["fastq", "bam"], case_sensitive=False),
+    default="fastq",
+    show_default=True,
+)
+@click.option("--experiments", default=None, help="Comma-separated experiment ids to include.")
+@click.option("--allow-unfiltered", is_flag=True, help="Allow export without QC selections.")
+@click.option("--no-gzip", is_flag=True, help="Write plain FASTQ instead of FASTQ.gz.")
+def export_bundle_project_cmd(
+    project_dir: Path,
+    outdir: Path,
+    bundle_format: str,
+    experiments: str | None,
+    allow_unfiltered: bool,
+    no_gzip: bool,
+):
+    """Export selected project experiments as a portable bundle."""
+    from .cli.export_bundle import export_bundle_for_project
+
+    selected = (
+        [item.strip() for item in experiments.split(",") if item.strip()] if experiments else None
+    )
+    out = export_bundle_for_project(
+        project_dir,
+        outdir,
+        bundle_format=bundle_format.lower(),
+        experiments=selected,
+        allow_unfiltered=allow_unfiltered,
+        gzip_output=not no_gzip,
+    )
+    click.echo(f"Wrote {bundle_format.upper()} bundle to: {out}")
+
+
 ##########################################
 
 

@@ -123,44 +123,16 @@ def export_fastq_for_experiment(
         ValueError: If no QC-passed read set is available and
             ``allow_unfiltered`` is not set.
     """
-    from ..informatics.fastq_export import write_fastq_manifest, write_fastq_per_barcode
-    from ..informatics.partition_read import load_spine
-    from .helpers import get_adata_paths, load_experiment_config
+    from .export_bundle import export_bundle_for_experiment
 
-    cfg = load_experiment_config(config_path)
-    paths = get_adata_paths(cfg)
-
-    if not paths.raw_spine or not paths.raw_spine.exists():
-        raise FileNotFoundError(
-            f"no raw ragged spine found at {paths.raw_spine}; "
-            f"run `smftools experiment raw {config_path}` first"
-        )
-    raw_spine = load_spine(paths.raw_spine)
-    base_dir = paths.raw_spine.parent
-
-    label_obs, accepted_ids, source = _resolve_qc_obs(paths, allow_unfiltered=allow_unfiltered)
-    resolved_group_by = _resolve_group_by(label_obs, group_by, cfg)
-    raw_obs = _obs_by_read_id(raw_spine.obs)
-    labels = label_obs[resolved_group_by].reindex(raw_obs.index)
-
-    logger.info(
-        "Exporting FASTQ: %d QC-passed read(s) from %s, grouped by %r",
-        len(accepted_ids) if accepted_ids is not None else raw_spine.n_obs,
-        source,
-        resolved_group_by,
-    )
-
-    outdir = Path(outdir)
-    manifest = write_fastq_per_barcode(
-        raw_obs,
-        base_dir,
+    return export_bundle_for_experiment(
+        config_path,
         outdir,
-        read_ids=accepted_ids,
-        group_labels=labels,
+        bundle_format="fastq",
+        group_by=group_by,
+        allow_unfiltered=allow_unfiltered,
         gzip_output=gzip_output,
     )
-    write_fastq_manifest(outdir, manifest)
-    return outdir
 
 
 def export_fastq_for_project(
@@ -189,74 +161,23 @@ def export_fastq_for_project(
     Returns:
         Path: ``outdir``.
     """
-    from ..informatics.fastq_export import write_fastq_manifest, write_fastq_per_barcode
-    from ..informatics.partition_read import load_spine
-    from ..project.registry import list_experiments
+    from .export_bundle import export_bundle_for_project
 
-    outdir = Path(outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    entries = list_experiments(project_dir, active_only=True)
-    if experiments is not None:
-        wanted = {str(e) for e in experiments}
-        entries = [entry for entry in entries if entry["id"] in wanted]
-
-    overall_manifest: dict[str, dict[str, object]] = {}
-    for entry in entries:
-        exp_id = str(entry["id"])
-        raw_spine_path = entry.get("spines", {}).get("raw")
-        if not raw_spine_path or not Path(raw_spine_path).exists():
-            logger.warning("skipping %r: raw spine not found at %s", exp_id, raw_spine_path)
-            continue
-        raw_spine_path = Path(raw_spine_path)
-
-        preprocess_spine_path = entry.get("spines", {}).get("preprocess")
-        if preprocess_spine_path and not Path(preprocess_spine_path).exists():
-            preprocess_spine_path = None
-        if preprocess_spine_path is None and not allow_unfiltered:
-            logger.warning(
-                "skipping %r: no preprocess spine found; run partitioned preprocessing "
-                "for this experiment, or pass allow_unfiltered=True",
-                exp_id,
-            )
-            continue
-
-        raw_spine = load_spine(raw_spine_path)
-        base_dir = raw_spine_path.parent
-
-        if preprocess_spine_path is not None:
-            spine = load_spine(Path(preprocess_spine_path))
-            accepted = None
-            label_obs = _obs_by_read_id(spine.obs)
-            for column in _QC_PASS_COLUMNS:
-                if column in label_obs.columns:
-                    accepted = set(label_obs.index[label_obs[column].astype(bool)].astype(str))
-                    break
-        else:
-            logger.warning("exporting %r unfiltered (no preprocess spine found)", exp_id)
-            accepted = None
-            label_obs = _obs_by_read_id(raw_spine.obs)
-
-        group_by = "Sample" if "Sample" in label_obs.columns else "Barcode"
-        raw_obs = _obs_by_read_id(raw_spine.obs)
-        labels = label_obs[group_by].reindex(raw_obs.index).astype(str)
-        labels = f"{exp_id}__" + labels
-
-        logger.info(
-            "Exporting FASTQ for experiment %r: %d QC-passed read(s)",
-            exp_id,
-            len(accepted) if accepted is not None else raw_spine.n_obs,
-        )
-
-        manifest = write_fastq_per_barcode(
-            raw_obs,
-            base_dir,
+    try:
+        return export_bundle_for_project(
+            project_dir,
             outdir,
-            read_ids=accepted,
-            group_labels=labels,
+            bundle_format="fastq",
+            experiments=experiments,
+            allow_unfiltered=allow_unfiltered,
             gzip_output=gzip_output,
         )
-        overall_manifest.update(manifest)
+    except ValueError as exc:
+        if str(exc) != "no project experiments are eligible for export":
+            raise
+        from ..informatics.fastq_export import write_fastq_manifest
 
-    write_fastq_manifest(outdir, overall_manifest)
-    return outdir
+        outdir = Path(outdir)
+        outdir.mkdir(parents=True, exist_ok=True)
+        write_fastq_manifest(outdir, {})
+        return outdir

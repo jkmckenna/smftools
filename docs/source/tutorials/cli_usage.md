@@ -368,15 +368,19 @@ canonical name even if experiments called it something different.
 
 `smftools project export-fastq ...` builds on the same registry.
 
-### `smftools experiment export-fastq` / `smftools project export-fastq`
+### Re-ingestion exports
 
-Writes one FASTQ (`.fastq.gz` by default) per barcode of QC-passed reads, for a single experiment
-or an entire project -- available under both hierarchies, sharing the same underlying export logic.
-Sequence and quality are read directly from the raw ragged store, so no BAM re-parsing is needed.
+`export-fastq` remains the sequence-only compatibility command. It now writes a versioned bundle
+alongside one FASTQ (`.fastq.gz` by default) per selected group. Sequence and quality come directly
+from physical segments in the raw ragged store, including distinct R1/R2 files for paired
+molecules. Collision-safe FASTQ template names and `identity_map.csv` preserve the relationship to
+the original experiment, namespace, molecule, segment, and source read.
 
 ```shell
 smftools experiment export-fastq /path/to/experiment_config.csv --outdir /path/to/fastq_outdir
 smftools project export-fastq /path/to/project_dir --outdir /path/to/fastq_outdir
+smftools experiment export-bundle /path/to/experiment_config.csv --outdir ./bundle --format fastq
+smftools project export-bundle /path/to/project_dir --outdir ./bundle --format bam
 ```
 
 - `smftools experiment export-fastq` resolves the QC-passed read set from the most complete
@@ -390,8 +394,19 @@ smftools project export-fastq /path/to/project_dir --outdir /path/to/fastq_outdi
   `<experiment_id>__<barcode>.fastq.gz` and only includes experiments that have run partitioned
   preprocessing (others are skipped with a warning unless `--allow-unfiltered`); `--experiments`
   restricts to an explicit comma-separated id list.
-- `--no-gzip` writes plain `.fastq`. A `fastq_manifest.csv` (barcode, read count, path) is written
-  alongside the FASTQs.
+- `--no-gzip` writes plain `.fastq`. A `fastq_manifest.csv` remains available for compatibility.
+- `export-bundle --format fastq` is explicitly sequence-only. Its manifest records lost BAM tags,
+  alignment, read-group, and MM/ML capabilities. A direct-modification workflow cannot re-ingest
+  this bundle as lossless input.
+- `export-bundle --format bam` filters the owned coordinate-sorted alignment while preserving BAM
+  flags and auxiliary tags, including BC, RG, MM, and ML. It writes BAM indexes and declares
+  `lossless_bam` capability.
+- Both formats write `bundle_manifest.json`, a canonical relative `inputs.csv`, and
+  `identity_map.csv`. Every artifact has a size and SHA-256 checksum; moving the complete directory
+  is supported. Point a new experiment's `input_manifest_path` directly at
+  `bundle_manifest.json`. The manifest also declares whether QC/dedup selection was applied,
+  whether the export is unfiltered, source experiment/generation identities, modality, trim state,
+  namespaces, and paired layout.
 
 
 ## Batch processing

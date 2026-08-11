@@ -233,8 +233,15 @@ def _capability_for_kind(kind: str, role: str, modality: str) -> str:
 
 
 def _read_csv_declarations(manifest_path: Path) -> list[_Declaration]:
+    if manifest_path.suffix.lower() == ".json":
+        from .export_bundle import ExportBundleError, resolve_bundle_input_manifest
+
+        try:
+            manifest_path = resolve_bundle_input_manifest(manifest_path)
+        except ExportBundleError as exc:
+            raise InputManifestError(str(exc)) from exc
     if manifest_path.suffix.lower() != ".csv":
-        raise InputManifestError("Input manifest schema 1 supports CSV files only.")
+        raise InputManifestError("Input declarations must be a schema-1 CSV or export bundle JSON.")
     if not manifest_path.is_file():
         raise InputManifestError(f"Input manifest does not exist: {manifest_path}")
     try:

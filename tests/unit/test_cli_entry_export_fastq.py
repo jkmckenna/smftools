@@ -75,3 +75,34 @@ def test_project_export_fastq_dispatches_to_project_export(tmp_path, monkeypatch
     assert captured["project_dir"] == project_dir
     assert captured["kwargs"]["experiments"] == ["exp1", "exp2"]
     assert captured["kwargs"]["gzip_output"] is False
+
+
+def test_experiment_export_bundle_dispatches_format(tmp_path, monkeypatch):
+    import smftools.cli.export_bundle as export_bundle_module
+
+    captured = {}
+
+    def fake_export(config_path, outdir, **kwargs):
+        captured.update(config_path=config_path, outdir=outdir, kwargs=kwargs)
+        return outdir
+
+    monkeypatch.setattr(export_bundle_module, "export_bundle_for_experiment", fake_export)
+    config = tmp_path / "experiment.csv"
+    config.touch()
+    result = CliRunner().invoke(
+        cli,
+        [
+            "experiment",
+            "export-bundle",
+            str(config),
+            "--outdir",
+            str(tmp_path / "bundle"),
+            "--format",
+            "bam",
+            "--allow-unfiltered",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["kwargs"]["bundle_format"] == "bam"
+    assert captured["kwargs"]["allow_unfiltered"] is True

@@ -35,9 +35,10 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 - `smf_modality`: Defines whether the data is `conversion`, `direct` or `deaminase`, which determines
   preprocessing and HMM feature handling.
 - `input_data_path`: Location of raw input data (fast5/pod5/fastq/bam).
-- `input_manifest_path`: Optional schema-1 CSV declaring the exact input files and metadata.
-  Configure this or `input_data_path`, never both. Relative paths are resolved from the CSV's
-  directory.
+- `input_manifest_path`: Optional schema-1 CSV declaring the exact input files and metadata, or a
+  schema-1 `bundle_manifest.json` produced by `experiment/project export-bundle`. Configure this
+  or `input_data_path`, never both. Relative paths and bundle checksums are resolved from the
+  manifest's directory.
 - `alignment_mode`: Alignment policy. `align` is the default and preserves existing behavior,
   including realigning a supplied BAM. `existing` validates and owns one aligned BAM without
   changing its alignment placements.
