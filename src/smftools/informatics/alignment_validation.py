@@ -1,9 +1,12 @@
-"""Validation and owned normalization for existing aligned BAM input."""
+"""Validation and owned normalization for existing BAM/CRAM input."""
 
 from __future__ import annotations
 
 import gzip
+import hashlib
 import shutil
+import sqlite3
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,10 +52,32 @@ class AlignmentValidationSummary:
         return payload
 
 
+@dataclass(frozen=True)
+class AlignmentPartitionValidation:
+    """Validation result for one declared alignment source partition."""
+
+    source_id: str
+    namespace: str
+    path: str
+    summary: AlignmentValidationSummary
+
+
 def _require_pysam():
     from .bam_functions import _require_pysam
 
     return _require_pysam()
+
+
+def _open_alignment(pysam, path: Path, reference_fasta: str | Path):
+    """Open BAM or CRAM with the exact declared decoding reference."""
+    if path.suffix.lower() == ".cram":
+        return pysam.AlignmentFile(
+            str(path),
+            "rc",
+            check_sq=False,
+            reference_filename=str(reference_fasta),
+        )
+    return pysam.AlignmentFile(str(path), "rb", check_sq=False)
 
 
 def _fasta_records(fasta_path: str | Path) -> tuple[tuple[str, int], ...]:
@@ -94,6 +119,34 @@ def _fasta_records(fasta_path: str | Path) -> tuple[tuple[str, int], ...]:
     if len({item[0] for item in records}) != len(records):
         raise AlignmentValidationError(f"Reference FASTA contains duplicate record names: {path}")
     return tuple(records)
+
+
+def _fasta_reference_md5s(fasta_path: str | Path) -> dict[str, str]:
+    """Return CRAM-compatible MD5 checksums for reference sequences."""
+    path = Path(fasta_path)
+    checksums: dict[str, str] = {}
+    name: str | None = None
+    digest = hashlib.md5(usedforsecurity=False)
+    handle_context = (
+        gzip.open(path, "rt", encoding="utf-8")
+        if path.suffix.lower() in {".gz", ".gzip"}
+        else path.open("r", encoding="utf-8")
+    )
+    with handle_context as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if name is not None:
+                    checksums[name] = digest.hexdigest()
+                name = line[1:].split(maxsplit=1)[0]
+                digest = hashlib.md5(usedforsecurity=False)
+            else:
+                digest.update(line.upper().encode("ascii"))
+    if name is not None:
+        checksums[name] = digest.hexdigest()
+    return checksums
 
 
 def _program_provenance(header: dict[str, Any]) -> tuple[tuple[dict[str, str], ...], str]:
@@ -163,12 +216,12 @@ def validate_existing_alignment(
     *,
     modality: str,
 ) -> AlignmentValidationSummary:
-    """Validate an aligned BAM against the exact prepared alignment reference.
+    """Validate an aligned BAM or CRAM against the exact prepared reference.
 
     The source is opened read-only and is never indexed, sorted, or rewritten.
 
     Args:
-        bam_path: Existing BAM supplied by the user.
+        bam_path: Existing BAM or CRAM supplied by the user.
         reference_fasta: Exact prepared FASTA whose records must match ``@SQ``.
         modality: Experiment modality; ``direct`` requires coherent MM/ML tags.
 
@@ -179,7 +232,7 @@ def validate_existing_alignment(
     bam_path = Path(bam_path)
     expected_references = _fasta_records(reference_fasta)
     try:
-        with pysam.AlignmentFile(str(bam_path), "rb", check_sq=False) as bam:
+        with _open_alignment(pysam, bam_path, reference_fasta) as bam:
             header = bam.header.to_dict()
             observed_references = tuple(zip(bam.references, bam.lengths, strict=True))
             if not observed_references:
@@ -189,6 +242,28 @@ def validate_existing_alignment(
                     "Existing alignment @SQ names, lengths, or order do not match the exact "
                     "prepared alignment reference."
                 )
+            if bam_path.suffix.lower() == ".cram":
+                expected_md5s = _fasta_reference_md5s(reference_fasta)
+                observed_md5s = {
+                    str(record.get("SN", "")): str(record.get("M5", "")).lower()
+                    for record in header.get("SQ", [])
+                }
+                missing_md5 = [name for name, _ in expected_references if not observed_md5s[name]]
+                mismatched_md5 = [
+                    name
+                    for name, _ in expected_references
+                    if observed_md5s[name] != expected_md5s[name]
+                ]
+                if missing_md5 or mismatched_md5:
+                    details = []
+                    if missing_md5:
+                        details.append(f"missing M5 for {missing_md5}")
+                    if mismatched_md5:
+                        details.append(f"reference checksum mismatch for {mismatched_md5}")
+                    raise AlignmentValidationError(
+                        "Existing CRAM does not match the exact prepared alignment reference: "
+                        + "; ".join(details)
+                    )
             source_index_present = bam.has_index()
             source_index_valid = False
             if source_index_present:
@@ -293,7 +368,10 @@ def validate_existing_alignment(
     except AlignmentValidationError:
         raise
     except (OSError, ValueError) as exc:
-        raise AlignmentValidationError(f"Could not read existing BAM {bam_path}: {exc}") from exc
+        source_label = "CRAM" if bam_path.suffix.lower() == ".cram" else "BAM"
+        raise AlignmentValidationError(
+            f"Could not read existing {source_label} {bam_path}: {exc}"
+        ) from exc
 
     if total == 0 or primary == 0:
         raise AlignmentValidationError("Existing alignment contains no primary records.")
@@ -336,16 +414,26 @@ def normalize_existing_alignment(
     modality: str,
     threads: int | None = None,
 ) -> tuple[Path, Path, AlignmentValidationSummary, AlignmentValidationSummary]:
-    """Copy or coordinate-sort an existing BAM into an owned indexed artifact."""
+    """Normalize an existing BAM or CRAM into an owned indexed BAM artifact."""
     pysam = _require_pysam()
     source_bam = Path(source_bam)
     output_bam = Path(output_bam)
     output_bam.parent.mkdir(parents=True, exist_ok=True)
     source_summary = validate_existing_alignment(source_bam, reference_fasta, modality=modality)
-    if source_summary.coordinate_sorted:
+    if source_summary.coordinate_sorted and source_bam.suffix.lower() == ".bam":
         shutil.copy2(source_bam, output_bam)
+    elif source_summary.coordinate_sorted:
+        try:
+            with _open_alignment(pysam, source_bam, reference_fasta) as source:
+                with pysam.AlignmentFile(str(output_bam), "wb", header=source.header) as output:
+                    for record in source.fetch(until_eof=True):
+                        output.write(record)
+        except (OSError, ValueError) as exc:
+            raise AlignmentValidationError(
+                f"Could not normalize existing CRAM {source_bam}: {exc}"
+            ) from exc
     else:
-        arguments = ["-o", str(output_bam)]
+        arguments = ["--reference", str(reference_fasta), "-o", str(output_bam)]
         if threads and int(threads) > 1:
             arguments.extend(["-@", str(int(threads))])
         arguments.append(str(source_bam))
@@ -370,6 +458,113 @@ def normalize_existing_alignment(
     if not normalized_summary.coordinate_sorted or not normalized_summary.source_index_valid:
         raise AlignmentValidationError("Normalized existing alignment is not sorted and indexed.")
     return output_bam, output_bai, source_summary, normalized_summary
+
+
+def validate_alignment_partitions(
+    rows,
+    reference_fasta: str | Path,
+    *,
+    modality: str,
+) -> tuple[AlignmentPartitionValidation, ...]:
+    """Validate compatible partitions and reject cross-source template collisions.
+
+    Sources are scanned one at a time. Template membership is tracked in a temporary
+    SQLite index so validation memory remains bounded by database page caches rather
+    than the number of reads in the experiment. Repeated template names are allowed
+    across distinct declared namespaces, but never across source shards in the same
+    namespace.
+
+    Args:
+        rows: Canonically ordered existing-alignment manifest rows.
+        reference_fasta: Exact prepared FASTA used for every source partition.
+        modality: Experiment modality used for tag-capability validation.
+
+    Returns:
+        Per-partition validation summaries in canonical source order.
+    """
+    pysam = _require_pysam()
+    rows = tuple(rows)
+    if not rows:
+        raise AlignmentValidationError("Alignment partition manifest contains no sources.")
+    results: list[AlignmentPartitionValidation] = []
+    expected_pair_layout: str | None = None
+    with tempfile.TemporaryDirectory(prefix="smftools-alignment-partitions-") as temporary:
+        collision_db = Path(temporary) / "templates.sqlite3"
+        with sqlite3.connect(collision_db) as connection:
+            connection.execute(
+                "CREATE TABLE templates ("
+                "namespace TEXT NOT NULL, template_id TEXT NOT NULL, "
+                "source_id TEXT NOT NULL, PRIMARY KEY(namespace, template_id))"
+            )
+            for row in rows:
+                path = Path(str(row.path))
+                source_id = str(row.source_id)
+                namespace = str(getattr(row, "namespace", "") or "")
+                summary = validate_existing_alignment(path, reference_fasta, modality=modality)
+                pair_layout = (
+                    "unpaired"
+                    if summary.paired_primary_records == 0
+                    else "paired"
+                    if summary.paired_primary_records == summary.primary_records
+                    else "mixed"
+                )
+                if expected_pair_layout is None:
+                    expected_pair_layout = pair_layout
+                elif pair_layout != expected_pair_layout:
+                    raise AlignmentValidationError(
+                        "Alignment source partitions have incompatible pair layouts: "
+                        f"expected {expected_pair_layout}, found {pair_layout} in {path}."
+                    )
+                try:
+                    with _open_alignment(pysam, path, reference_fasta) as alignment:
+                        batch: list[tuple[str, str, str]] = []
+                        for record in alignment.fetch(until_eof=True):
+                            if record.is_secondary or record.is_supplementary:
+                                continue
+                            batch.append((namespace, str(record.query_name), source_id))
+                            if len(batch) >= 10_000:
+                                _insert_partition_templates(connection, batch, path)
+                                batch.clear()
+                        if batch:
+                            _insert_partition_templates(connection, batch, path)
+                except AlignmentValidationError:
+                    raise
+                except (OSError, ValueError) as exc:
+                    raise AlignmentValidationError(
+                        f"Could not inspect template identities in {path}: {exc}"
+                    ) from exc
+                results.append(
+                    AlignmentPartitionValidation(
+                        source_id=source_id,
+                        namespace=namespace,
+                        path=str(path),
+                        summary=summary,
+                    )
+                )
+    return tuple(results)
+
+
+def _insert_partition_templates(
+    connection: sqlite3.Connection,
+    rows: list[tuple[str, str, str]],
+    path: Path,
+) -> None:
+    """Insert one bounded template batch and report cross-source collisions."""
+    for namespace, template_id, source_id in rows:
+        existing = connection.execute(
+            "SELECT source_id FROM templates WHERE namespace = ? AND template_id = ?",
+            (namespace, template_id),
+        ).fetchone()
+        if existing is not None and str(existing[0]) != source_id:
+            namespace_label = namespace or "<default>"
+            raise AlignmentValidationError(
+                "Alignment source partitions contain duplicate template identity "
+                f"{template_id!r} in namespace {namespace_label!r}; collision detected at {path}."
+            )
+        connection.execute(
+            "INSERT OR IGNORE INTO templates(namespace, template_id, source_id) VALUES (?, ?, ?)",
+            (namespace, template_id, source_id),
+        )
 
 
 def prepare_alignment_reference_bundle(

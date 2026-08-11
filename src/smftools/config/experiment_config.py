@@ -1572,20 +1572,24 @@ class ExperimentConfig:
 
             input_type = next(iter(recognized_counts))
             input_files = found[f"{input_type}_paths"]
-            if input_type in {"sam", "cram"}:
+            if input_type == "sam":
                 raise ValueError(
                     f"{input_type.upper()} input is not supported yet. Convert it to BAM and use "
                     "alignment_mode='existing' for an already-produced alignment, or "
                     "alignment_mode='align' to realign its reads."
                 )
-            if input_is_directory and input_type == "bam":
+            if input_type == "cram" and alignment_mode != "existing":
+                raise ValueError("CRAM input requires alignment_mode='existing'.")
+            if input_is_directory and input_type in {"bam", "cram"}:
                 raise ValueError(
-                    "BAM directory input is not supported yet. Supply one BAM file; validated "
-                    "multi-alignment source partitions are planned."
+                    "Alignment directory input is ambiguous. Supply one BAM/CRAM file or an "
+                    "explicit input manifest for validated source partitions."
                 )
             if alignment_mode == "existing":
-                if input_type != "bam":
-                    raise ValueError("alignment_mode='existing' requires an aligned BAM input.")
+                if input_type not in {"bam", "cram"}:
+                    raise ValueError(
+                        "alignment_mode='existing' requires aligned BAM or CRAM input."
+                    )
             modality = str(merged.get("smf_modality") or "").strip().lower()
             if modality == "direct" and input_type == "fastq":
                 raise ValueError(

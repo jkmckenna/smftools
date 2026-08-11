@@ -80,6 +80,7 @@ _RAW_SCALAR_OBS_COLUMNS = (
     "sample_confidence",
     "read_group",
     "namespace",
+    "source_read_id",
     "identity_status",
     "identity_conflicts",
     "identity_schema_version",

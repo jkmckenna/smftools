@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable, Union
 
@@ -234,6 +235,7 @@ def _publish_canonical_barcode_identity(
     classifier_source: str,
     sidecar_manifest: str | Path,
     force_redo: bool,
+    sidecar_key_suffix: str = "",
 ) -> tuple[Path, Path]:
     """Publish or reuse the canonical barcode/sample identity intermediate."""
     from ..informatics.barcode_sidecar import (
@@ -285,9 +287,10 @@ def _publish_canonical_barcode_identity(
             classifier_source=classifier_source,
         )
         commit_intermediate(workspace, {"barcode": barcode_sidecar, "report": report})
+    key_suffix = f":{sidecar_key_suffix}" if sidecar_key_suffix else ""
     register_sidecar(
         sidecar_manifest,
-        "barcode",
+        f"barcode{key_suffix}",
         barcode_sidecar,
         metadata={
             "schema_version": BARCODE_IDENTITY_SCHEMA_VERSION,
@@ -296,7 +299,7 @@ def _publish_canonical_barcode_identity(
     )
     register_sidecar(
         sidecar_manifest,
-        "barcode_identity_report",
+        f"barcode_identity_report{key_suffix}",
         report,
         metadata={"schema_version": BARCODE_IDENTITY_SCHEMA_VERSION},
     )
@@ -365,6 +368,8 @@ def _prepare_existing_alignment(
     modality: str,
     threads: int | None,
     force_redo: bool,
+    source_row=None,
+    sidecar_key_suffix: str = "",
 ) -> tuple[Path, Path, Path]:
     """Validate, normalize, and own one existing alignment without realignment."""
     from ..informatics.alignment_manifest import (
@@ -386,9 +391,10 @@ def _prepare_existing_alignment(
     pysam = _require_pysam()
     source_bam = Path(source_bam)
     source_rows = tuple(getattr(resolved_input_manifest, "rows", ()))
+    selected_row = source_row or (source_rows[0] if len(source_rows) == 1 else None)
     source_checksum = (
-        str(source_rows[0].sha256)
-        if len(source_rows) == 1 and getattr(source_rows[0], "sha256", None)
+        str(selected_row.sha256)
+        if selected_row is not None and getattr(selected_row, "sha256", None)
         else artifact_checksum(source_bam)
     )
     reference_checksum = artifact_checksum(reference_fasta)
@@ -440,7 +446,9 @@ def _prepare_existing_alignment(
             validation={
                 "source": source_summary.to_dict(),
                 "normalized": normalized_summary.to_dict(),
-                "normalization_applied": not source_summary.coordinate_sorted,
+                "normalization_applied": (
+                    not source_summary.coordinate_sorted or source_bam.suffix.lower() == ".cram"
+                ),
             },
         )
         commit_intermediate(
@@ -453,7 +461,7 @@ def _prepare_existing_alignment(
         )
     register_sidecar(
         sidecar_manifest,
-        "alignment_manifest",
+        f"alignment_manifest:{sidecar_key_suffix}" if sidecar_key_suffix else "alignment_manifest",
         manifest_path,
         metadata={
             "alignment_mode": "existing",
@@ -775,7 +783,11 @@ def load_adata_core(
         # Preserve the exact BAM input path. Path.with_suffix() would incorrectly
         # turn names such as ``sample.repaired.bam`` into ``sample.bam`` after the
         # terminal .bam suffix has already been removed.
-        unaligned_output = Path(cfg.input_data_path)
+        unaligned_output = Path(
+            cfg.input_files[0]
+            if cfg.alignment_mode == "existing" and len(cfg.input_files) > 1
+            else cfg.input_data_path
+        )
         bam = unaligned_output.with_suffix("")
 
     ########################################################################################################################
@@ -999,18 +1011,60 @@ def load_adata_core(
     # without invoking an aligner or changing alignment placement.
     alignment_workspace = None
     alignment_manifest_path = None
+    alignment_partitions = None
     if cfg.alignment_mode == "existing":
-        aligned_sorted_output, alignment_bai, alignment_manifest_path = _prepare_existing_alignment(
-            output_directory=output_directory,
-            source_bam=unaligned_output,
-            reference_fasta=fasta,
-            reference_bundle=reference_bundle,
-            resolved_input_manifest=resolved_input_manifest,
-            sidecar_manifest=sidecar_manifest,
-            modality=cfg.smf_modality,
-            threads=cfg.threads,
-            force_redo=force_redo_intermediates,
+        from ..informatics.alignment_validation import validate_alignment_partitions
+
+        alignment_rows = resolved_input_manifest.alignment_inputs()
+        if len(alignment_rows) > 1:
+            unsupported = []
+            if not getattr(cfg, "skip_bam_split", False):
+                unsupported.append("skip_bam_split=False")
+            if not cfg.input_already_demuxed:
+                unsupported.append("input_already_demuxed=False")
+            if getattr(cfg, "use_umi", False):
+                unsupported.append("use_umi=True")
+            if getattr(cfg, "make_beds", False):
+                unsupported.append("make_beds=True")
+            if (
+                str(cfg.smf_modality) == "direct"
+                and str(getattr(cfg, "direct_signal_backend", "modkit")) == "modkit"
+            ):
+                unsupported.append("direct_signal_backend='modkit'")
+            if unsupported:
+                raise ValueError(
+                    "Partitioned existing-alignment ingestion does not support this processing "
+                    "route yet: " + ", ".join(unsupported)
+                )
+        validate_alignment_partitions(alignment_rows, fasta, modality=cfg.smf_modality)
+        prepared_partitions = []
+        for source_row in alignment_rows:
+            prepared_partitions.append(
+                (
+                    *_prepare_existing_alignment(
+                        output_directory=output_directory,
+                        source_bam=source_row.path,
+                        reference_fasta=fasta,
+                        reference_bundle=reference_bundle,
+                        resolved_input_manifest=resolved_input_manifest,
+                        sidecar_manifest=sidecar_manifest,
+                        modality=cfg.smf_modality,
+                        threads=cfg.threads,
+                        force_redo=force_redo_intermediates,
+                        source_row=source_row,
+                        sidecar_key_suffix=(
+                            source_row.source_id if len(alignment_rows) > 1 else ""
+                        ),
+                    ),
+                    source_row,
+                )
+            )
+        aligned_sorted_output, alignment_bai, alignment_manifest_path, _first_row = (
+            prepared_partitions[0]
         )
+        alignment_partitions = [
+            (bam_path, row) for bam_path, _bai, _manifest, row in prepared_partitions
+        ]
         aligned_sorted_BAM = aligned_sorted_output.with_suffix("")
         unaligned_output = aligned_sorted_output
     else:
@@ -1110,6 +1164,8 @@ def load_adata_core(
             aligned_sorted_BAM = aligned_sorted_output.with_suffix("")
             alignment_bai = adapter_result.aligned_sorted_bai
             alignment_adapter_provenance = adapter_result.provenance
+
+        alignment_partitions = [(aligned_sorted_output, resolved_input_manifest.rows[0])]
 
     alignment_was_generated = alignment_workspace is not None and not alignment_workspace.reusable
 
@@ -1478,9 +1534,10 @@ def load_adata_core(
 
     # 3) Split the aligned and sorted BAM files by barcode (BC Tag) into the split_BAM directory
     if skip_bam_split:
-        logger.info("skip_bam_split=True: skipping BAM splitting, using single aligned BAM")
-        se_bam_files = [aligned_sorted_output]
-        bam_files = [aligned_sorted_output]
+        logger.info("skip_bam_split=True: skipping BAM splitting, using aligned source partitions")
+        assert alignment_partitions is not None
+        se_bam_files = [bam_path for bam_path, _row in alignment_partitions]
+        bam_files = list(se_bam_files)
         unclassified_bams = []
         bam_dir = None
         double_barcoded_path = None
@@ -1801,15 +1858,38 @@ def load_adata_core(
     # BAM filenames exist from which to reconstruct labels.
     classifier_source = _barcode_classifier_source(cfg, demux_backend=demux_backend)
     route_barcode_sidecar = barcode_sidecar
-    barcode_sidecar, _barcode_identity_report = _publish_canonical_barcode_identity(
-        output_directory=output_directory,
-        aligned_bam=aligned_sorted_output,
-        resolved_input_manifest=resolved_input_manifest,
-        route_sidecar=route_barcode_sidecar,
-        classifier_source=classifier_source,
-        sidecar_manifest=sidecar_manifest,
-        force_redo=force_redo_intermediates,
-    )
+    partition_barcode_sidecars: dict[Path, Path] = {}
+    assert alignment_partitions is not None
+    if len(alignment_partitions) == 1:
+        barcode_sidecar, _barcode_identity_report = _publish_canonical_barcode_identity(
+            output_directory=output_directory,
+            aligned_bam=aligned_sorted_output,
+            resolved_input_manifest=resolved_input_manifest,
+            route_sidecar=route_barcode_sidecar,
+            classifier_source=classifier_source,
+            sidecar_manifest=sidecar_manifest,
+            force_redo=force_redo_intermediates,
+        )
+        partition_barcode_sidecars[Path(aligned_sorted_output)] = barcode_sidecar
+    else:
+        for partition_bam, source_row in alignment_partitions:
+            partition_manifest = replace(
+                resolved_input_manifest,
+                rows=(source_row,),
+                digest=str(source_row.source_id),
+            )
+            partition_sidecar, _report = _publish_canonical_barcode_identity(
+                output_directory=output_directory,
+                aligned_bam=partition_bam,
+                resolved_input_manifest=partition_manifest,
+                route_sidecar=None,
+                classifier_source=classifier_source,
+                sidecar_manifest=sidecar_manifest,
+                force_redo=force_redo_intermediates,
+                sidecar_key_suffix=str(source_row.source_id),
+            )
+            partition_barcode_sidecars[Path(partition_bam)] = partition_sidecar
+        barcode_sidecar = partition_barcode_sidecars[Path(aligned_sorted_output)]
 
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
@@ -1955,16 +2035,44 @@ def load_adata_core(
         # _split_modkit_tsv_by_bucket).
         frame = None
         from ..informatics.raw_store import write_raw_store_streaming
-        from .raw_adata import build_ragged_records_streaming
-
-        reference_frames, reference_lengths, extra_uns = build_ragged_records_streaming(
-            cfg,
-            fasta=fasta,
-            aligned_bam=aligned_sorted_output,
-            barcode_sidecar=barcode_sidecar,
-            umi_sidecar=umi_sidecar,
-            mod_tsv_paths=mod_tsv_paths,
+        from .raw_adata import (
+            build_partitioned_ragged_records_streaming,
+            build_ragged_records_streaming,
         )
+
+        assert alignment_partitions is not None
+        if len(alignment_partitions) == 1:
+            reference_frames, reference_lengths, extra_uns = build_ragged_records_streaming(
+                cfg,
+                fasta=fasta,
+                aligned_bam=aligned_sorted_output,
+                barcode_sidecar=barcode_sidecar,
+                umi_sidecar=umi_sidecar,
+                mod_tsv_paths=mod_tsv_paths,
+            )
+        else:
+            reference_frames, reference_lengths, extra_uns = (
+                build_partitioned_ragged_records_streaming(
+                    cfg,
+                    fasta=fasta,
+                    partitions=[
+                        (
+                            partition_bam,
+                            str(source_row.namespace),
+                            partition_barcode_sidecars[Path(partition_bam)],
+                        )
+                        for partition_bam, source_row in alignment_partitions
+                    ],
+                    umi_sidecar=umi_sidecar,
+                )
+            )
+            extra_uns["alignment_source_partitions"] = {
+                str(source_row.source_id): {
+                    "source_id": str(source_row.source_id),
+                    "namespace": str(source_row.namespace),
+                }
+                for partition_bam, source_row in alignment_partitions
+            }
         extra_uns["reference_interval_map"] = relative_uns_path(reference_interval_map, run_root)
         extra_uns["region_catalogs"] = {
             scope: relative_uns_path(path, run_root)

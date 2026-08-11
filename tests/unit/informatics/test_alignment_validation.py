@@ -18,6 +18,7 @@ from smftools.informatics.alignment_validation import (
     AlignmentValidationError,
     normalize_existing_alignment,
     prepare_alignment_reference_bundle,
+    validate_alignment_partitions,
     validate_existing_alignment,
 )
 from smftools.informatics.sidecar_manifest import resolve_sidecar
@@ -75,6 +76,21 @@ def _bam(
 def _signatures(path):
     with pysam.AlignmentFile(str(path), "rb") as bam:
         return sorted(read.to_string() for read in bam.fetch(until_eof=True))
+
+
+def _cram(path, fasta, *, sequence="ACGTACGTACGT"):
+    source_bam = _bam(path.with_suffix(".source.bam"), starts=(1, 5))
+    pysam.faidx(str(fasta))
+    with pysam.AlignmentFile(str(source_bam), "rb") as source:
+        with pysam.AlignmentFile(
+            str(path),
+            "wc",
+            header=source.header,
+            reference_filename=str(fasta),
+        ) as output:
+            for record in source.fetch(until_eof=True):
+                output.write(record)
+    return path
 
 
 def _paired_bam(path, *, singleton=False, discordant=False):
@@ -181,6 +197,54 @@ def test_unsorted_alignment_is_sorted_without_changing_records(tmp_path):
     assert normalized_summary.source_index_valid is True
     assert bai.is_file()
     assert _signatures(output) == before
+
+
+def test_cram_requires_exact_reference_and_normalizes_to_bam(tmp_path):
+    fasta = _fasta(tmp_path / "reference.fa")
+    source = _cram(tmp_path / "source.cram", fasta)
+
+    output, bai, source_summary, normalized_summary = normalize_existing_alignment(
+        source,
+        tmp_path / "owned" / "aligned.bam",
+        fasta,
+        modality="conversion",
+        threads=1,
+    )
+
+    assert source_summary.reference_records == (("ref", 12),)
+    assert normalized_summary.coordinate_sorted is True
+    assert output.is_file() and bai.is_file()
+
+    wrong_fasta = _fasta(tmp_path / "wrong.fa", sequence="ACGTACGTACGA")
+    pysam.faidx(str(wrong_fasta))
+    with pytest.raises(AlignmentValidationError, match="reference checksum mismatch"):
+        validate_existing_alignment(source, wrong_fasta, modality="conversion")
+
+
+def test_partition_validation_scopes_template_identity_by_namespace(tmp_path):
+    fasta = _fasta(tmp_path / "reference.fa")
+    first = _bam(tmp_path / "lane-1.bam", starts=(1,))
+    second = _bam(tmp_path / "lane-2.bam", starts=(5,))
+
+    validated = validate_alignment_partitions(
+        (
+            SimpleNamespace(path=first, source_id="source-1", namespace="lane-1"),
+            SimpleNamespace(path=second, source_id="source-2", namespace="lane-2"),
+        ),
+        fasta,
+        modality="conversion",
+    )
+    assert {item.namespace for item in validated} == {"lane-1", "lane-2"}
+
+    with pytest.raises(AlignmentValidationError, match="duplicate template identity"):
+        validate_alignment_partitions(
+            (
+                SimpleNamespace(path=first, source_id="source-1", namespace="lane"),
+                SimpleNamespace(path=second, source_id="source-2", namespace="lane"),
+            ),
+            fasta,
+            modality="conversion",
+        )
 
 
 @pytest.mark.parametrize(

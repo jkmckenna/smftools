@@ -22,6 +22,20 @@ def template_read_id(read_id: object) -> str:
     return _MATE_SUFFIX_RE.sub("", str(read_id))
 
 
+def namespaced_source_id(namespace: object, source_id: object) -> str:
+    """Qualify a source-local identifier without delimiter ambiguity.
+
+    Empty namespaces retain legacy identities. This keeps existing single-source
+    stores byte-for-byte stable while making declared alignment partitions safe
+    when their BAM/CRAM query names overlap.
+    """
+    namespace = str(namespace or "")
+    source_id = str(source_id)
+    if not namespace:
+        return source_id
+    return f"ns{len(namespace)}:{namespace}:{source_id}"
+
+
 def alignment_segment_id(read: object) -> str:
     """Return a unique primary-segment identity without changing BAM QNAME.
 
