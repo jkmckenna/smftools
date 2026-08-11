@@ -11,6 +11,7 @@ from smftools.informatics.partition_query import (
     query_batch_rows,
     query_derived_index,
     query_molecule_index,
+    query_segment_index,
     read_zarr_subset,
 )
 from smftools.informatics.partition_read import materialize
@@ -48,6 +49,28 @@ def test_query_molecule_index_pushes_all_selection_dimensions(tmp_path):
     )
 
     assert result["read_id"].tolist() == ["r1"]
+
+
+def test_query_segment_index_resolves_both_identity_levels(tmp_path):
+    index = tmp_path / "segment_index"
+    index.mkdir()
+    pd.DataFrame(
+        {
+            "segment_read_id": ["template/1", "template/2"],
+            "segment_uid": ["s1", "s2"],
+            "molecule_uid": ["m1", "m1"],
+            "Reference_strand": ["ref_top", "ref_top"],
+            "reference_start": [0, 20],
+            "reference_end": [10, 30],
+            "canonical_row": [0, 1],
+        }
+    ).to_parquet(index / "part.parquet", index=False)
+
+    by_molecule = query_segment_index(index, molecule_uids="m1")
+    by_segment = query_segment_index(index, segment_uids="s2")
+
+    assert by_molecule["segment_read_id"].tolist() == ["template/1", "template/2"]
+    assert by_segment["segment_read_id"].tolist() == ["template/2"]
 
 
 def test_query_derived_index_filters_tasks_and_deduplicates_model_rows(tmp_path):

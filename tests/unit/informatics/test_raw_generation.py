@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -15,7 +16,7 @@ from smftools.informatics.raw_generation import (
     resolve_current_raw_generation,
     validate_raw_generation,
 )
-from smftools.readwrite import safe_write_h5ad
+from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
 
 
 def _publication_sources(run_root: Path):
@@ -28,10 +29,18 @@ def _publication_sources(run_root: Path):
     )
     pd.DataFrame({"read_id": ["read-1"]}).to_parquet(raw_root / "obs.parquet", index=False)
     pd.DataFrame({"read_id": ["read-1"]}).to_parquet(run_root / "molecules.parquet", index=False)
+    pd.DataFrame({"read_id": ["read-1"], "segment_read_id": ["read-1"]}).to_parquet(
+        run_root / "segments.parquet", index=False
+    )
     molecule_index = run_root / "molecule_index"
     molecule_index.mkdir(exist_ok=True)
     pd.DataFrame({"read_id": ["read-1"]}).to_parquet(
         molecule_index / "part-00000.parquet", index=False
+    )
+    segment_index = run_root / "segment_index"
+    segment_index.mkdir(exist_ok=True)
+    pd.DataFrame({"segment_read_id": ["read-1"]}).to_parquet(
+        segment_index / "part-00000.parquet", index=False
     )
     pd.DataFrame({"reference": ["ref"]}).to_parquet(
         run_root / "reference_interval_map.parquet", index=False
@@ -61,6 +70,8 @@ def _publication_sources(run_root: Path):
         "obs": raw_root / "obs.parquet",
         "molecules": run_root / "molecules.parquet",
         "molecule_index": molecule_index,
+        "segments": run_root / "segments.parquet",
+        "segment_index": segment_index,
         "reference_interval_map": run_root / "reference_interval_map.parquet",
         "input_manifest_csv": input_manifest / "resolved_input_manifest.csv",
         "input_manifest_json": input_manifest / "resolved_input_manifest.json",
@@ -97,6 +108,35 @@ def test_publish_selects_valid_relocatable_generation(tmp_path):
     moved_generation, moved_manifest = resolve_current_raw_generation(relocated / "raw_outputs")
     assert moved_generation == relocated / "raw_outputs" / "generations" / "generation-a"
     assert moved_manifest["generation_id"] == "generation-a"
+
+
+def test_schema_one_generation_remains_valid_without_segment_artifacts(tmp_path):
+    outputs = _publish(tmp_path, generation_id="generation-a")
+    generation = Path(outputs["generation"])
+    spine_path = generation / "spine.h5ad"
+    spine, _ = safe_read_h5ad(spine_path, verbose=False)
+    spine.uns.pop("segments_catalog", None)
+    spine.uns.pop("segment_index", None)
+    safe_write_h5ad(spine, spine_path, backup=False, verbose=False)
+    shutil.rmtree(generation / "segment_index")
+    (generation / "segments.parquet").unlink()
+
+    manifest_path = generation / RAW_GENERATION_MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 1
+    manifest["artifacts"].pop("segments")
+    manifest["artifacts"].pop("segment_index")
+    manifest["artifacts"]["spine"]["sha256"] = hashlib.sha256(spine_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    validated = validate_raw_generation(
+        generation,
+        expected_generation_id="generation-a",
+        final_dir=generation,
+        run_root=tmp_path,
+    )
+
+    assert validated["schema_version"] == 1
 
 
 def test_corrupt_artifact_behind_current_pointer_is_rejected(tmp_path):

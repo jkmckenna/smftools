@@ -13,6 +13,7 @@ import pandas as pd
 from .molecule_identity import (
     EXPERIMENT_UID_COLUMN,
     MOLECULE_UID_COLUMN,
+    TEMPLATE_ID_COLUMN,
     molecule_uid,
     validate_experiment_uid,
 )
@@ -61,9 +62,11 @@ def write_derived_read_index(
         raise ValueError(f"{stage} task {task.task_id!r} spans multiple experiments")
     experiment_uid = validate_experiment_uid(unique_experiments[0])
     read_ids = obs.get("read_id", pd.Series(obs.index.astype(str), index=obs.index)).astype(str)
+    template_ids = obs.get(TEMPLATE_ID_COLUMN, read_ids).astype(str)
     molecule_uids = obs.get(MOLECULE_UID_COLUMN)
     expected_molecule_uids = pd.Series(
-        [molecule_uid(experiment_uid, read_id) for read_id in read_ids], index=obs.index
+        [molecule_uid(experiment_uid, template_id) for template_id in template_ids],
+        index=obs.index,
     )
     if molecule_uids is None:
         molecule_uids = expected_molecule_uids
@@ -163,9 +166,10 @@ def write_latent_read_index(
         raise ValueError(f"latent task {analysis_core_id!r} spans multiple experiments")
     experiment_uid = validate_experiment_uid(unique_experiments[0])
     read_ids = obs.get("read_id", pd.Series(obs.index.astype(str), index=obs.index)).astype(str)
+    template_ids = obs.get(TEMPLATE_ID_COLUMN, read_ids).astype(str)
     molecule_uids = obs.get(MOLECULE_UID_COLUMN)
     expected_molecule_uids = pd.Series(
-        [molecule_uid(experiment_uid, read_id) for read_id in read_ids],
+        [molecule_uid(experiment_uid, template_id) for template_id in template_ids],
         index=obs.index,
     )
     if molecule_uids is None:

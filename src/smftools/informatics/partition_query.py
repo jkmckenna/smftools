@@ -73,6 +73,54 @@ def query_molecule_index(
     return frame.sort_values(order, kind="stable").reset_index(drop=True) if order else frame
 
 
+def query_segment_index(
+    index_path: str | Path,
+    *,
+    references=None,
+    samples=None,
+    barcodes=None,
+    read_ids=None,
+    molecule_uids=None,
+    segment_uids=None,
+    start: int | None = None,
+    end: int | None = None,
+    columns: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Query physical segments and their ragged-shard pointers."""
+    import pyarrow.dataset as ds
+
+    dataset = ds.dataset(Path(index_path), format="parquet")
+    available = set(dataset.schema.names)
+    requested = {
+        "references": ("Reference_strand", _as_values(references)),
+        "samples": ("Sample", _as_values(samples)),
+        "barcodes": ("Barcode", _as_values(barcodes)),
+        "read_ids": ("segment_read_id", _as_values(read_ids)),
+        "molecule_uids": ("molecule_uid", _as_values(molecule_uids)),
+        "segment_uids": ("segment_uid", _as_values(segment_uids)),
+    }
+    expressions = []
+    for label, (field, values) in requested.items():
+        if values is None:
+            continue
+        if field not in available:
+            raise KeyError(f"segment index cannot filter {label}: missing column {field!r}")
+        expressions.append(ds.field(field).isin(values))
+    if (start is None) != (end is None):
+        raise ValueError("start and end must be provided together")
+    if start is not None:
+        expressions.extend(
+            [
+                ds.field("reference_start") < int(end),
+                ds.field("reference_end") > int(start),
+            ]
+        )
+    selected_columns = None if columns is None else [name for name in columns if name in available]
+    frame = dataset.to_table(filter=_and(expressions), columns=selected_columns).to_pandas()
+    order = [column for column in ("canonical_row", "group_path", "group_row") if column in frame]
+    return frame.sort_values(order, kind="stable").reset_index(drop=True) if order else frame
+
+
 def query_derived_index(
     index_path: str | Path,
     *,

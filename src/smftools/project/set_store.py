@@ -84,14 +84,24 @@ def normalize_part(sub, experiment: str, stage: str, experiment_uid: str):
       per-reference var columns whose outer-union overflows HDF5's per-attribute
       limit -- see the design doc).
     """
-    from ..informatics.molecule_identity import molecule_uid, pooled_obs_name
+    from ..informatics.molecule_identity import (
+        MOLECULE_UID_COLUMN,
+        TEMPLATE_ID_COLUMN,
+        molecule_uid,
+        pooled_obs_name,
+    )
 
     read_ids = sub.obs.get("read_id", sub.obs.index.to_series()).astype(str)
     if read_ids.duplicated().any():
         raise ValueError(f"experiment {experiment!r} contains duplicate instrument read IDs")
     sub.obs["read_id"] = read_ids.to_numpy()
     sub.obs["experiment_uid"] = str(experiment_uid)
-    sub.obs["molecule_uid"] = [molecule_uid(experiment_uid, read_id) for read_id in read_ids]
+    template_ids = sub.obs.get(TEMPLATE_ID_COLUMN, read_ids).astype(str)
+    expected_uids = [molecule_uid(experiment_uid, template_id) for template_id in template_ids]
+    existing_uids = sub.obs.get(MOLECULE_UID_COLUMN)
+    if existing_uids is not None and existing_uids.astype(str).tolist() != expected_uids:
+        raise ValueError(f"experiment {experiment!r} contains inconsistent molecule identities")
+    sub.obs[MOLECULE_UID_COLUMN] = expected_uids
     sub.obs["experiment"] = experiment
     sub.obs.index = [pooled_obs_name(experiment_uid, read_id) for read_id in read_ids]
     sub.uns["project_stage"] = stage

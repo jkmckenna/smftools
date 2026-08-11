@@ -29,8 +29,12 @@ from .molecule_identity import (
     EXPERIMENT_UID_COLUMN,
     IDENTITY_SCHEMA_VERSION,
     MOLECULE_UID_COLUMN,
+    SEGMENT_ID_COLUMN,
+    SEGMENT_UID_COLUMN,
+    TEMPLATE_ID_COLUMN,
     molecule_uid,
     new_experiment_uid,
+    segment_uid,
     validate_experiment_uid,
 )
 from .partition_read import relative_uns_path
@@ -51,10 +55,12 @@ RAW_SUBDIR = "raw"
 RAW_SHARD_TEMPLATE = "part-{index:05d}.parquet"
 INTERVAL_CATALOG_FILENAME = "interval_catalog.parquet"
 MOLECULES_FILENAME = "molecules.parquet"
+SEGMENTS_FILENAME = "segments.parquet"
 MOLECULE_INDEX_DIRNAME = "molecule_index"
+SEGMENT_INDEX_DIRNAME = "segment_index"
 BARCODE_INDEX_FILENAME = "barcode_index.parquet"
 SPINE_FILENAME = "spine.h5ad"
-RAW_SCHEMA_VERSION = 3
+RAW_SCHEMA_VERSION = 4
 
 _OBS_COLUMN_ALIASES = {
     REFERENCE: (REFERENCE, "reference"),
@@ -152,6 +158,129 @@ def _build_raw_spine_obs(
     return obs
 
 
+def _normalize_segment_identities(frame: pd.DataFrame, experiment_uid: str) -> pd.DataFrame:
+    """Attach versioned template, molecule, and segment identities to raw rows."""
+    result = frame.copy()
+    read_ids = result[READ_ID].astype(str)
+    if TEMPLATE_ID_COLUMN in result:
+        template_ids = result[TEMPLATE_ID_COLUMN].fillna("").astype(str)
+        template_ids = template_ids.where(template_ids.str.len() > 0, read_ids)
+    else:
+        template_ids = read_ids
+
+    if SEGMENT_ID_COLUMN in result:
+        segment_ids = result[SEGMENT_ID_COLUMN].fillna("").astype(str)
+    else:
+        segment_ids = pd.Series("", index=result.index, dtype="string")
+    mates = result.get("mate", pd.Series("unpaired", index=result.index)).astype(str)
+    inferred_segments = mates.map({"R1": "R1", "R2": "R2"}).fillna("single")
+    segment_ids = segment_ids.where(segment_ids.str.len() > 0, inferred_segments)
+
+    result[TEMPLATE_ID_COLUMN] = template_ids
+    result[SEGMENT_ID_COLUMN] = segment_ids
+    result[EXPERIMENT_UID_COLUMN] = experiment_uid
+    result[MOLECULE_UID_COLUMN] = [
+        molecule_uid(experiment_uid, template_id) for template_id in template_ids
+    ]
+    result[SEGMENT_UID_COLUMN] = [
+        segment_uid(experiment_uid, template_id, segment_id)
+        for template_id, segment_id in zip(template_ids, segment_ids, strict=True)
+    ]
+    return result
+
+
+def _build_segment_obs(
+    frame: pd.DataFrame,
+    shard_by_read: Mapping[str, str],
+    row_by_read: Mapping[str, int],
+) -> pd.DataFrame:
+    """Build the scalar segment catalog contribution for one written group."""
+    obs = _build_raw_spine_obs(frame, shard_by_read, row_by_read)
+    for position, column in enumerate(
+        (
+            EXPERIMENT_UID_COLUMN,
+            MOLECULE_UID_COLUMN,
+            TEMPLATE_ID_COLUMN,
+            SEGMENT_ID_COLUMN,
+            SEGMENT_UID_COLUMN,
+        )
+    ):
+        if column in obs:
+            obs.drop(columns=column, inplace=True)
+        obs.insert(position, column, frame[column].to_numpy())
+    obs.insert(0, "segment_read_id", obs.index.astype(str))
+    return obs
+
+
+def _collapse_segment_obs(segment_obs: pd.DataFrame) -> pd.DataFrame:
+    """Collapse lossless segment metadata into one molecule-spine row per template."""
+    if segment_obs.empty:
+        return segment_obs
+    rows: list[pd.Series] = []
+    for this_molecule_uid, group in segment_obs.groupby(
+        MOLECULE_UID_COLUMN, sort=False, observed=True
+    ):
+        template_values = group[TEMPLATE_ID_COLUMN].astype(str).unique()
+        if len(template_values) != 1:
+            raise ValueError(f"molecule_uid {this_molecule_uid!r} maps to multiple templates")
+        for column in (SAMPLE, BARCODE, "read_group", "namespace"):
+            if column in group:
+                values = group[column].dropna().astype(str).unique()
+                if len(values) > 1:
+                    raise ValueError(
+                        f"molecule {template_values[0]!r} has conflicting {column} metadata"
+                    )
+        row = group.iloc[0].copy()
+        segment_count = len(group)
+        paired = bool(group.get("paired", pd.Series(False, index=group.index)).astype(bool).any())
+        proper = bool(
+            group.get("proper_pair", pd.Series(False, index=group.index)).astype(bool).all()
+        )
+        mate_unmapped = bool(
+            group.get("mate_unmapped", pd.Series(False, index=group.index)).astype(bool).any()
+        )
+        pair_state = (
+            "single"
+            if not paired
+            else "singleton"
+            if mate_unmapped or segment_count == 1
+            else "proper_pair"
+            if proper
+            else "discordant"
+        )
+        row["read_id"] = template_values[0]
+        row["segment_count"] = segment_count
+        row["pair_state"] = pair_state
+        row["outer_fragment_start"] = int(group["reference_start"].min())
+        row["outer_fragment_end"] = int(group["reference_end"].max())
+        references = group[REFERENCE_STRAND].astype(str).unique()
+        if len(references) > 1:
+            row[REFERENCE_STRAND] = "mixed"
+        if segment_count > 1:
+            row["ragged_shard"] = ""
+            row["ragged_row"] = -1
+        row["group_path"] = row["ragged_shard"]
+        row["group_row"] = int(row["ragged_row"])
+        rows.append(row)
+
+    obs = pd.DataFrame(rows)
+    obs.index = pd.Index(obs["read_id"].astype(str), name=None)
+    obs.drop(
+        columns=[
+            column
+            for column in ("segment_read_id", SEGMENT_ID_COLUMN, SEGMENT_UID_COLUMN)
+            if column in obs
+        ],
+        inplace=True,
+    )
+    if obs.index.has_duplicates:
+        duplicated = obs.index[obs.index.duplicated()].unique().tolist()
+        raise ValueError(f"molecule template identities must be unique; repeated: {duplicated[:5]}")
+    if obs[MOLECULE_UID_COLUMN].duplicated().any():
+        raise ValueError("molecule_uid values must be unique on the molecule spine")
+    return obs
+
+
 def _resolve_experiment_uid(output_dir: Path, extra_uns: Mapping[str, object] | None) -> str:
     """Reuse the run's persisted experiment identity or create it exactly once."""
     from .experiment_manifest import read_experiment_manifest, update_experiment_manifest
@@ -180,9 +309,9 @@ def _resolve_experiment_uid(output_dir: Path, extra_uns: Mapping[str, object] | 
     return resolved
 
 
-def _write_molecule_index(rows: list[dict[str, object]], output_dir: Path) -> Path:
-    """Write bounded Parquet index pieces mirroring raw shard boundaries."""
-    index_dir = output_dir.parent / MOLECULE_INDEX_DIRNAME
+def _write_pointer_index(rows: list[dict[str, object]], output_dir: Path, *, dirname: str) -> Path:
+    """Write bounded Parquet pointer-index pieces mirroring raw shard boundaries."""
+    index_dir = output_dir.parent / dirname
     if index_dir.exists():
         shutil.rmtree(index_dir)
     index_dir.mkdir(parents=True, exist_ok=True)
@@ -200,6 +329,16 @@ def _write_molecule_index(rows: list[dict[str, object]], output_dir: Path) -> Pa
             row_group_size=portable_parquet_row_group_rows(group),
         )
     return index_dir
+
+
+def _write_molecule_index(rows: list[dict[str, object]], output_dir: Path) -> Path:
+    """Write molecule-to-segment pointer rows."""
+    return _write_pointer_index(rows, output_dir, dirname=MOLECULE_INDEX_DIRNAME)
+
+
+def _write_segment_index(rows: list[dict[str, object]], output_dir: Path) -> Path:
+    """Write segment-to-ragged-shard pointer rows."""
+    return _write_pointer_index(rows, output_dir, dirname=SEGMENT_INDEX_DIRNAME)
 
 
 def _reference_path_component(reference: str) -> str:
@@ -281,7 +420,8 @@ def _write_raw_shards_streaming(
     shard_paths: list[Path] = []
     catalog_rows: list[dict[str, object]] = []
     barcode_index_rows: list[dict[str, object]] = []
-    molecules_rows: list[dict[str, object]] = []
+    segment_rows: list[dict[str, object]] = []
+    segment_obs_frames: list[pd.DataFrame] = []
     shard_by_read: dict[str, str] = {}
     row_by_read: dict[str, int] = {}
     sample_column: str | None = None
@@ -289,6 +429,7 @@ def _write_raw_shards_streaming(
     canonical_row = 0
     n_reads_total = 0
     references_seen: set[str] = set()
+    segment_uids_seen: set[str] = set()
     # Persists across items so a reference split into multiple groups keeps
     # numbering shards forward instead of colliding at index 0 -- the fix for
     # the overwrite bug this function's docstring describes.
@@ -301,7 +442,7 @@ def _write_raw_shards_streaming(
             continue
         references_seen.add(reference_name)
         group_t0 = perf_counter()
-        group = group.reset_index(drop=True)
+        group = _normalize_segment_identities(group.reset_index(drop=True), experiment_uid)
         incoming_ids = group[READ_ID].astype(str)
         duplicated = incoming_ids[incoming_ids.duplicated()].unique().tolist()
         duplicated.extend(sorted(set(incoming_ids).intersection(shard_by_read)))
@@ -310,6 +451,17 @@ def _write_raw_shards_streaming(
             raise ValueError(
                 f"raw read_id values must be experiment-global unique; repeated: {preview}"
             )
+        incoming_segment_uids = group[SEGMENT_UID_COLUMN].astype(str)
+        duplicated_segment_uids = (
+            incoming_segment_uids[incoming_segment_uids.duplicated()].unique().tolist()
+        )
+        duplicated_segment_uids.extend(
+            sorted(set(incoming_segment_uids).intersection(segment_uids_seen))
+        )
+        if duplicated_segment_uids:
+            preview = ", ".join(map(repr, duplicated_segment_uids[:5]))
+            raise ValueError(f"raw segment_uid values must be unique; repeated: {preview}")
+        segment_uids_seen.update(incoming_segment_uids)
         group["reference_end"] = (group["reference_start"] + group["aligned_length"]).astype(
             "int64"
         )
@@ -350,28 +502,32 @@ def _write_raw_shards_streaming(
                 for row_number, read_id in enumerate(shard_read_ids):
                     shard_by_read[read_id] = relative_path
                     row_by_read[read_id] = row_number
-                    molecules_rows.append(
+                    source_row = shard.iloc[row_number]
+                    scalar_payload = {
+                        str(column): source_row[column]
+                        for column in shard.columns
+                        if column not in RAGGED_ARRAY_COLUMNS
+                        and column not in {"reference_end", "start_bin"}
+                        and not isinstance(source_row[column], (list, tuple, np.ndarray))
+                    }
+                    for canonical, candidates in _OBS_COLUMN_ALIASES.items():
+                        source = next(
+                            (column for column in candidates if column in source_row.index), None
+                        )
+                        if source is not None:
+                            scalar_payload[canonical] = source_row[source]
+                        for alias in candidates:
+                            if alias != canonical:
+                                scalar_payload.pop(alias, None)
+                    segment_rows.append(
                         {
-                            "read_id": read_id,
-                            EXPERIMENT_UID_COLUMN: experiment_uid,
-                            MOLECULE_UID_COLUMN: molecule_uid(experiment_uid, read_id),
+                            **scalar_payload,
+                            "segment_read_id": read_id,
                             "canonical_row": canonical_row,
-                            REFERENCE_STRAND: reference_name,
-                            "reference_start": int(shard["reference_start"].iloc[row_number]),
-                            "reference_end": int(shard["reference_end"].iloc[row_number]),
+                            "reference_end": int(source_row["reference_end"]),
                             "start_bin": int(start_bin),
                             "group_path": relative_path,
                             "group_row": row_number,
-                            **(
-                                {SAMPLE: str(shard[sample_column].iloc[row_number])}
-                                if sample_column is not None and sample_column in shard.columns
-                                else {}
-                            ),
-                            **(
-                                {BARCODE: str(shard[barcode_column].iloc[row_number])}
-                                if barcode_column is not None and barcode_column in shard.columns
-                                else {}
-                            ),
                         }
                     )
                     canonical_row += 1
@@ -414,6 +570,7 @@ def _write_raw_shards_streaming(
         )
         if on_reference_written is not None:
             on_reference_written(reference_name, sorted_group, shard_by_read, row_by_read, is_final)
+        segment_obs_frames.append(_build_segment_obs(sorted_group, shard_by_read, row_by_read))
 
     if not references_seen:
         raise ValueError("cannot write an empty raw store")
@@ -425,7 +582,8 @@ def _write_raw_shards_streaming(
     return {
         "shard_paths": shard_paths,
         "catalog_rows": catalog_rows,
-        "molecules_rows": molecules_rows,
+        "segment_rows": segment_rows,
+        "segment_obs": pd.concat(segment_obs_frames) if segment_obs_frames else pd.DataFrame(),
         "barcode_index_rows": barcode_index_rows,
         "shard_by_read": shard_by_read,
         "row_by_read": row_by_read,
@@ -507,7 +665,8 @@ def write_raw_store(
     )
     shard_paths = streamed["shard_paths"]
     catalog_rows = streamed["catalog_rows"]
-    molecules_rows = streamed["molecules_rows"]
+    segment_rows = streamed["segment_rows"]
+    segment_obs = streamed["segment_obs"]
     barcode_index_rows = streamed["barcode_index_rows"]
     shard_by_read = streamed["shard_by_read"]
     row_by_read = streamed["row_by_read"]
@@ -516,26 +675,44 @@ def write_raw_store(
     catalog_path = output_dir / INTERVAL_CATALOG_FILENAME
     pd.DataFrame(catalog_rows).to_parquet(catalog_path, index=False)
 
-    # Canonical molecule-ID catalog: one row per read, in the exact physical write
-    # order every shard was cut from -- a standalone, cheap-to-scan statement of
-    # "what molecules exist and in what order," separate from spine.h5ad (which is
-    # built from `normalized`'s original, pre-sort order and stays that way -- this
-    # is purely additive, no existing consumer changes).
+    molecule_obs = _collapse_segment_obs(segment_obs)
+    first_rows = (
+        pd.DataFrame(segment_rows)
+        .groupby(MOLECULE_UID_COLUMN, sort=False, observed=True)["canonical_row"]
+        .min()
+    )
+    molecule_obs["canonical_row"] = molecule_obs[MOLECULE_UID_COLUMN].map(first_rows).astype(int)
+    molecule_catalog = molecule_obs.sort_values("canonical_row", kind="stable")
+    input_templates = (
+        normalized[TEMPLATE_ID_COLUMN].fillna("").astype(str)
+        if TEMPLATE_ID_COLUMN in normalized
+        else normalized[READ_ID].astype(str)
+    )
+    input_templates = input_templates.where(
+        input_templates.str.len() > 0, normalized[READ_ID].astype(str)
+    )
+    input_order: dict[str, int] = {}
+    for position, template_id in enumerate(input_templates):
+        input_order.setdefault(str(template_id), position)
+    molecule_obs["_input_order"] = molecule_obs[TEMPLATE_ID_COLUMN].map(input_order)
+    molecule_obs = molecule_obs.sort_values("_input_order", kind="stable").drop(
+        columns="_input_order"
+    )
+
+    segments_path = output_dir.parent / SEGMENTS_FILENAME
+    pd.DataFrame(segment_rows).to_parquet(segments_path, index=False)
     molecules_path = output_dir.parent / MOLECULES_FILENAME
-    pd.DataFrame(molecules_rows).to_parquet(molecules_path, index=False)
-    molecule_index_path = _write_molecule_index(molecules_rows, output_dir)
+    molecule_catalog.reset_index(drop=True).to_parquet(molecules_path, index=False)
+    segment_index_path = _write_segment_index(segment_rows, output_dir)
+    molecule_index_rows = [{**row, "read_id": str(row[TEMPLATE_ID_COLUMN])} for row in segment_rows]
+    molecule_index_path = _write_molecule_index(molecule_index_rows, output_dir)
 
     barcode_index_path: Path | None = None
     if barcode_index_rows:
         barcode_index_path = output_dir / BARCODE_INDEX_FILENAME
         pd.DataFrame(barcode_index_rows).to_parquet(barcode_index_path, index=False)
 
-    obs = _build_raw_spine_obs(normalized, shard_by_read, row_by_read)
-    obs.insert(0, "read_id", obs.index.astype(str))
-    obs.insert(1, EXPERIMENT_UID_COLUMN, experiment_uid)
-    obs.insert(
-        2, MOLECULE_UID_COLUMN, [molecule_uid(experiment_uid, read_id) for read_id in obs.index]
-    )
+    obs = molecule_obs.copy()
     obs.index.name = None
     if bam_path is not None:
         # Relative to the run's output_directory (not output_dir/raw_dir), not
@@ -568,8 +745,15 @@ def write_raw_store(
             # above, since molecules.parquet lives alongside output_dir, not inside it.
             "molecules_catalog": relative_uns_path(molecules_path, output_dir.parent),
             "molecule_index": relative_uns_path(molecule_index_path, output_dir.parent),
+            "segments_catalog": relative_uns_path(segments_path, output_dir.parent),
+            "segment_index": relative_uns_path(segment_index_path, output_dir.parent),
             EXPERIMENT_UID_COLUMN: experiment_uid,
             "identity_schema_version": IDENTITY_SCHEMA_VERSION,
+            "alignment_segment_policy": {
+                "primary": "include",
+                "secondary": "exclude",
+                "supplementary": "exclude",
+            },
             "reference_plans": {plan.reference: plan.to_dict() for plan in plans},
             "reference_lengths": {
                 str(reference): int(length) for reference, length in reference_lengths.items()
@@ -594,6 +778,8 @@ def write_raw_store(
     register_sidecar(manifest_path, "interval_catalog", catalog_path)
     register_sidecar(manifest_path, "molecules", molecules_path)
     register_sidecar(manifest_path, "molecule_index", molecule_index_path)
+    register_sidecar(manifest_path, "segments", segments_path)
+    register_sidecar(manifest_path, "segment_index", segment_index_path)
     if barcode_index_path is not None:
         register_sidecar(manifest_path, "barcode_index", barcode_index_path)
     register_sidecar(manifest_path, "obs", obs_path)
@@ -610,6 +796,8 @@ def write_raw_store(
         "interval_catalog": catalog_path,
         "molecules": molecules_path,
         "molecule_index": molecule_index_path,
+        "segments": segments_path,
+        "segment_index": segment_index_path,
         "barcode_index": barcode_index_path,
         "obs": obs_path,
         "manifest": manifest_path,
@@ -673,13 +861,11 @@ def write_raw_store_streaming(
     raw_dir = output_dir / RAW_SUBDIR
     raw_dir.mkdir(parents=True, exist_ok=True)
 
-    obs_frames: list[pd.DataFrame] = []
     plans: list = []
     reads_seen_by_reference: dict[str, int] = {}
 
     def _on_reference_written(reference_name, group, shard_by_read, row_by_read, is_final):
         if group is not None:
-            obs_frames.append(_build_raw_spine_obs(group, shard_by_read, row_by_read))
             reads_seen_by_reference[reference_name] = reads_seen_by_reference.get(
                 reference_name, 0
             ) + len(group)
@@ -712,34 +898,36 @@ def write_raw_store_streaming(
     )
     shard_paths = streamed["shard_paths"]
     catalog_rows = streamed["catalog_rows"]
-    molecules_rows = streamed["molecules_rows"]
+    segment_rows = streamed["segment_rows"]
+    segment_obs = streamed["segment_obs"]
     barcode_index_rows = streamed["barcode_index_rows"]
 
     catalog_path = output_dir / INTERVAL_CATALOG_FILENAME
     pd.DataFrame(catalog_rows).to_parquet(catalog_path, index=False)
 
+    molecule_obs = _collapse_segment_obs(segment_obs)
+    first_rows = (
+        pd.DataFrame(segment_rows)
+        .groupby(MOLECULE_UID_COLUMN, sort=False, observed=True)["canonical_row"]
+        .min()
+    )
+    molecule_obs["canonical_row"] = molecule_obs[MOLECULE_UID_COLUMN].map(first_rows).astype(int)
+    molecule_obs = molecule_obs.sort_values("canonical_row", kind="stable")
+
+    segments_path = output_dir.parent / SEGMENTS_FILENAME
+    pd.DataFrame(segment_rows).to_parquet(segments_path, index=False)
     molecules_path = output_dir.parent / MOLECULES_FILENAME
-    pd.DataFrame(molecules_rows).to_parquet(molecules_path, index=False)
-    molecule_index_path = _write_molecule_index(molecules_rows, output_dir)
+    molecule_obs.reset_index(drop=True).to_parquet(molecules_path, index=False)
+    segment_index_path = _write_segment_index(segment_rows, output_dir)
+    molecule_index_rows = [{**row, "read_id": str(row[TEMPLATE_ID_COLUMN])} for row in segment_rows]
+    molecule_index_path = _write_molecule_index(molecule_index_rows, output_dir)
 
     barcode_index_path: Path | None = None
     if barcode_index_rows:
         barcode_index_path = output_dir / BARCODE_INDEX_FILENAME
         pd.DataFrame(barcode_index_rows).to_parquet(barcode_index_path, index=False)
 
-    # Concatenating per-reference obs frames reproduces write_raw_store's own
-    # obs shape (same columns, built by the same _build_raw_spine_obs), but in
-    # reference-arrival order rather than the caller's original row order --
-    # spine.obs order was never a documented/relied-upon contract (read_id is
-    # always the lookup key), so this is a safe, deliberate difference, not a
-    # regression. See raw_store.py's module docstring / write_raw_store's own
-    # docstring for the equivalence argument this relies on for everything else.
-    obs = pd.concat(obs_frames) if obs_frames else pd.DataFrame()
-    obs.insert(0, "read_id", obs.index.astype(str))
-    obs.insert(1, EXPERIMENT_UID_COLUMN, experiment_uid)
-    obs.insert(
-        2, MOLECULE_UID_COLUMN, [molecule_uid(experiment_uid, read_id) for read_id in obs.index]
-    )
+    obs = molecule_obs.copy()
     obs.index.name = None
     if bam_path is not None:
         obs["bam_path"] = relative_uns_path(bam_path, output_dir.parent)
@@ -753,8 +941,15 @@ def write_raw_store_streaming(
             "interval_catalog": catalog_path.relative_to(output_dir).as_posix(),
             "molecules_catalog": relative_uns_path(molecules_path, output_dir.parent),
             "molecule_index": relative_uns_path(molecule_index_path, output_dir.parent),
+            "segments_catalog": relative_uns_path(segments_path, output_dir.parent),
+            "segment_index": relative_uns_path(segment_index_path, output_dir.parent),
             EXPERIMENT_UID_COLUMN: experiment_uid,
             "identity_schema_version": IDENTITY_SCHEMA_VERSION,
+            "alignment_segment_policy": {
+                "primary": "include",
+                "secondary": "exclude",
+                "supplementary": "exclude",
+            },
             "reference_plans": {plan.reference: plan.to_dict() for plan in plans},
             "reference_lengths": {
                 str(reference): int(length) for reference, length in reference_lengths.items()
@@ -779,6 +974,8 @@ def write_raw_store_streaming(
     register_sidecar(manifest_path, "interval_catalog", catalog_path)
     register_sidecar(manifest_path, "molecules", molecules_path)
     register_sidecar(manifest_path, "molecule_index", molecule_index_path)
+    register_sidecar(manifest_path, "segments", segments_path)
+    register_sidecar(manifest_path, "segment_index", segment_index_path)
     if barcode_index_path is not None:
         register_sidecar(manifest_path, "barcode_index", barcode_index_path)
     register_sidecar(manifest_path, "obs", obs_path)
@@ -796,6 +993,8 @@ def write_raw_store_streaming(
         "interval_catalog": catalog_path,
         "molecules": molecules_path,
         "molecule_index": molecule_index_path,
+        "segments": segments_path,
+        "segment_index": segment_index_path,
         "barcode_index": barcode_index_path,
         "obs": obs_path,
         "manifest": manifest_path,

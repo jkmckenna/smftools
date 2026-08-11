@@ -769,9 +769,12 @@ def _write_legacy_raw_artifacts(tmp_path, raw_spine_path):
         raw_spine_path.parent / "obs.parquet", index=False
     )
     pd.DataFrame().to_parquet(tmp_path / "molecules.parquet", index=False)
+    pd.DataFrame().to_parquet(tmp_path / "segments.parquet", index=False)
     pd.DataFrame().to_parquet(tmp_path / "reference_interval_map.parquet", index=False)
     (tmp_path / "molecule_index").mkdir(exist_ok=True)
     (tmp_path / "molecule_index" / "part-00000.parquet").touch()
+    (tmp_path / "segment_index").mkdir(exist_ok=True)
+    (tmp_path / "segment_index" / "part-00000.parquet").touch()
     (raw_spine_path.parent / "sidecar_manifest.json").write_text("{}\n", encoding="utf-8")
     manifest_root = raw_spine_path.parent / "input_manifest"
     manifest_root.mkdir(exist_ok=True)
@@ -821,6 +824,8 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
         "interval_catalog",
         "molecules",
         "molecule_index",
+        "segments",
+        "segment_index",
         "reference_interval_map",
         "manifest",
         "input_manifest_csv",

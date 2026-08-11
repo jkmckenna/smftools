@@ -49,6 +49,19 @@ def _frame() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _paired_frame() -> pd.DataFrame:
+    frame = _frame().iloc[:2].copy()
+    frame["read_id"] = ["template-a/1", "template-a/2"]
+    frame["template_id"] = "template-a"
+    frame["mate"] = ["R1", "R2"]
+    frame["paired"] = True
+    frame["proper_pair"] = True
+    frame["mate_unmapped"] = False
+    frame["sample"] = "bc01"
+    frame["barcode"] = "bc01"
+    return frame
+
+
 def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     # bam_outputs/ living alongside the raw store, matching real layout
     # (raw_outputs/bam_outputs/...), so the relative bam_path encoding below has
@@ -80,7 +93,7 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     assert all("/start_bin=" in str(path) for path in spine.obs["ragged_shard"])
     assert set(spine.obs["Barcode"].astype(str)) == {"bc01", "bc02"}
     assert list(spine.obs["reference_end"]) == [4, 4, 6, 6]
-    assert spine.uns["raw_schema_version"] == 3
+    assert spine.uns["raw_schema_version"] == 4
     assert spine.obs["read_id"].astype(str).tolist() == list(spine.obs_names)
     assert spine.obs["experiment_uid"].nunique() == 1
     assert spine.obs["molecule_uid"].is_unique
@@ -117,6 +130,11 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     assert set(molecule_index["group_path"]) == set(spine.obs["ragged_shard"])
     assert set(molecule_index["group_row"]) == {0, 1}
     assert set(molecule_index["Barcode"]) == {"bc01", "bc02"}
+    segments = pd.read_parquet(paths["segments"])
+    assert set(segments["segment_read_id"]) == {"read1", "read2", "read3", "read4"}
+    assert segments["segment_uid"].is_unique
+    assert paths["segment_index"].is_dir()
+    assert spine.uns["segments_catalog"] == relative_uns_path(paths["segments"], run_root)
 
     # barcode_index.parquet: contiguous (start_row, end_row) per sample within each
     # reference's shard -- a direct row-slice instead of a scan + boolean mask.
@@ -164,6 +182,76 @@ def test_raw_store_reuses_persisted_experiment_identity(tmp_path):
 
     assert second_spine.uns["experiment_uid"] == first_spine.uns["experiment_uid"]
     assert list(second_spine.obs["molecule_uid"]) == list(first_spine.obs["molecule_uid"])
+
+
+def test_paired_segments_share_one_molecule_and_materialize_losslessly(tmp_path):
+    paths = write_raw_store(
+        _paired_frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref1_top": 4},
+    )
+    spine, _ = safe_read_h5ad(paths["spine"], verbose=False)
+    segments = pd.read_parquet(paths["segments"])
+    molecule_index = pd.concat(
+        [pd.read_parquet(path) for path in paths["molecule_index"].rglob("*.parquet")],
+        ignore_index=True,
+    )
+
+    assert list(spine.obs_names) == ["template-a"]
+    assert spine.obs.iloc[0]["segment_count"] == 2
+    assert spine.obs.iloc[0]["pair_state"] == "proper_pair"
+    assert segments["segment_uid"].is_unique
+    assert segments["molecule_uid"].nunique() == 1
+    assert set(segments["segment_id"]) == {"R1", "R2"}
+    assert molecule_index["read_id"].tolist() == ["template-a", "template-a"]
+
+    materialized = materialize(
+        paths["spine"], molecule_uids=[str(spine.obs.iloc[0]["molecule_uid"])]
+    )
+    assert set(materialized.obs_names) == {"template-a/1", "template-a/2"}
+    assert materialized.obs["molecule_uid"].nunique() == 1
+    assert materialized.obs["segment_uid"].is_unique
+
+
+def test_duplicate_physical_segment_identity_fails(tmp_path):
+    frame = _paired_frame()
+    frame["mate"] = "R1"
+
+    with pytest.raises(ValueError, match="segment_uid values must be unique"):
+        write_raw_store(frame, tmp_path, reference_lengths={"ref1_top": 4})
+
+
+def test_schema_three_single_segment_materializes_same_scientific_values(tmp_path):
+    paths = write_raw_store(
+        _frame(), tmp_path / "raw_outputs", reference_lengths={"ref1_top": 4, "ref2_top": 6}
+    )
+    current = materialize(paths["spine"], references="ref1_top")
+    legacy_spine, _ = safe_read_h5ad(paths["spine"], verbose=False)
+    legacy_spine.uns["raw_schema_version"] = 3
+    legacy_spine.uns.pop("segments_catalog", None)
+    legacy_spine.uns.pop("segment_index", None)
+    legacy_path = tmp_path / "raw_outputs" / "legacy-spine.h5ad"
+    safe_write_h5ad(legacy_spine, legacy_path, backup=False, verbose=False)
+
+    legacy = materialize(legacy_path, references="ref1_top")
+
+    np.testing.assert_array_equal(legacy.X, current.X)
+    for layer in current.layers:
+        np.testing.assert_array_equal(legacy.layers[layer], current.layers[layer])
+
+
+def test_paired_segment_pointers_survive_experiment_relocation(tmp_path):
+    original = tmp_path / "original"
+    paths = write_raw_store(
+        _paired_frame(), original / "raw_outputs", reference_lengths={"ref1_top": 4}
+    )
+    moved = tmp_path / "moved"
+    shutil.copytree(original, moved)
+    shutil.rmtree(original)
+
+    result = materialize(moved / "raw_outputs" / paths["spine"].name)
+
+    assert set(result.obs_names) == {"template-a/1", "template-a/2"}
 
 
 def test_materialize_filters_canonical_raw_index_by_barcode_and_molecule_uid(tmp_path):
@@ -341,6 +429,20 @@ def test_streaming_raw_store_rejects_duplicate_ids_across_flushes(tmp_path):
     with pytest.raises(ValueError, match="experiment-global unique"):
         write_raw_store_streaming(
             [("ref1_top", first, False), ("ref1_top", repeated, True)],
+            tmp_path / "raw_outputs",
+            reference_lengths={"ref1_top": 4},
+        )
+
+
+def test_streaming_raw_store_rejects_segment_collision_across_flushes(tmp_path):
+    frame = validate_ragged_frame(_paired_frame()).reset_index(drop=True)
+    first = frame.iloc[[0]].copy()
+    repeated_segment = frame.iloc[[1]].copy()
+    repeated_segment["mate"] = "R1"
+
+    with pytest.raises(ValueError, match="segment_uid values must be unique"):
+        write_raw_store_streaming(
+            [("ref1_top", first, False), ("ref1_top", repeated_segment, True)],
             tmp_path / "raw_outputs",
             reference_lengths={"ref1_top": 4},
         )
