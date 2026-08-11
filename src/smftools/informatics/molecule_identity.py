@@ -7,10 +7,13 @@ import hashlib
 import re
 import uuid
 
-IDENTITY_SCHEMA_VERSION = 1
+IDENTITY_SCHEMA_VERSION = 2
 EXPERIMENT_UID_COLUMN = "experiment_uid"
 MOLECULE_UID_COLUMN = "molecule_uid"
 READ_ID_COLUMN = "read_id"
+TEMPLATE_ID_COLUMN = "template_id"
+SEGMENT_ID_COLUMN = "segment_id"
+SEGMENT_UID_COLUMN = "segment_uid"
 _MATE_SUFFIX_RE = re.compile(r"(?:/|[._-](?:R|read)?)([12])$", re.IGNORECASE)
 
 
@@ -68,18 +71,43 @@ def validate_experiment_uid(value: object) -> str:
         raise ValueError(f"invalid experiment_uid: {value!r}") from exc
 
 
-def molecule_uid(experiment_uid: object, read_id: object) -> str:
-    """Return a deterministic compact identity for one experiment/read pair.
+def _identity_digest(*values: object) -> str:
+    """Return a delimiter-safe 128-bit digest for ordered identity components."""
+    payload = bytearray()
+    for value in values:
+        encoded = str(value).encode("utf-8")
+        payload.extend(len(encoded).to_bytes(8, "big"))
+        payload.extend(encoded)
+    return hashlib.sha256(payload).hexdigest()[:32]
+
+
+def molecule_uid(experiment_uid: object, template_id: object) -> str:
+    """Return a deterministic compact identity for one experiment/template pair.
 
     The hash input is length-prefixed so arbitrary read identifiers cannot create
     delimiter ambiguities. A 128-bit SHA-256 prefix keeps indexes compact while
     retaining ample collision resistance; the unhashed primary key remains
     ``(experiment_uid, read_id)``.
     """
+    # Preserve the schema-v1 byte encoding so existing single-read molecule
+    # identities remain stable when ``read_id`` becomes ``template_id``.
     experiment = validate_experiment_uid(experiment_uid).encode("utf-8")
-    read = str(read_id).encode("utf-8")
-    payload = len(experiment).to_bytes(4, "big") + experiment + len(read).to_bytes(8, "big") + read
+    template = str(template_id).encode("utf-8")
+    payload = (
+        len(experiment).to_bytes(4, "big")
+        + experiment
+        + len(template).to_bytes(8, "big")
+        + template
+    )
     return hashlib.sha256(payload).hexdigest()[:32]
+
+
+def segment_uid(experiment_uid: object, template_id: object, segment_id: object) -> str:
+    """Return a deterministic identity for one physical segment of a molecule."""
+    segment = str(segment_id).strip()
+    if not segment:
+        raise ValueError("segment_id must be nonempty")
+    return _identity_digest(validate_experiment_uid(experiment_uid), template_id, segment)
 
 
 def pooled_obs_name(experiment_uid: object, read_id: object) -> str:

@@ -424,16 +424,20 @@ def _indexed_selection_summary(
     if not owns_index:
         return False, 0, 0
     expression = _index_filter(dataset, member, start, end)
-    n_reads = int(dataset.count_rows(filter=expression))
-    if start is not None:
-        return True, n_reads, int(end) - int(start)
+    molecule_uids: set[str] = set()
     width = 0
     for batch in dataset.scanner(
-        columns=["reference_end"], filter=expression, batch_size=65536
+        columns=["molecule_uid", "reference_end"],
+        filter=expression,
+        batch_size=65536,
     ).to_batches():
-        values = batch.column(0).to_numpy(zero_copy_only=False)
+        molecule_uids.update(map(str, batch.column(0).to_pylist()))
+        values = batch.column(1).to_numpy(zero_copy_only=False)
         if values.size:
             width = max(width, int(values.max()))
+    n_reads = len(molecule_uids)
+    if start is not None:
+        return True, n_reads, int(end) - int(start)
     return True, n_reads, width
 
 
@@ -455,15 +459,21 @@ def _iter_index_selection_batches(
         filter=_index_filter(dataset, member, start, end),
         batch_size=max(1, int(batch_size)),
     )
+    seen: set[str] = set()
     for batch in scanner.to_batches():
         frame = batch.to_pandas()
         if frame.empty:
             continue
+        frame["read_id"] = frame["read_id"].astype(str)
+        frame = frame.loc[~frame["read_id"].isin(seen)]
+        seen.update(frame["read_id"])
+        if frame.empty:
+            continue
         if "Barcode" not in frame:
-            yield "all", frame["read_id"].astype(str).tolist()
+            yield "all", frame["read_id"].tolist()
             continue
         for barcode, group in frame.groupby("Barcode", sort=True, observed=True):
-            yield str(barcode), group["read_id"].astype(str).tolist()
+            yield str(barcode), group["read_id"].tolist()
 
 
 def _project_export_part_id(member: dict, barcode: str, chunk_index: int) -> str:

@@ -128,6 +128,8 @@ _private_partitioned_stage_required_artifacts = {
         "interval_catalog",
         "molecules",
         "molecule_index",
+        "segments",
+        "segment_index",
         "reference_interval_map",
         "manifest",
         "input_manifest_csv",

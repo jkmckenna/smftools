@@ -32,6 +32,7 @@ from .partition_query import (
     DEFAULT_QUERY_MEMORY_MB,
     query_derived_index,
     query_molecule_index,
+    query_segment_index,
     read_zarr_subset,
 )
 
@@ -301,6 +302,49 @@ def _load_ragged_selection(
     Peak is now ~one shard's frame + the dense output.
     """
     from .ragged_store import materialize_ragged_streaming, read_ragged_parquet
+
+    segment_counts = selection.get("segment_count")
+    requires_segment_expansion = (
+        segment_counts is not None and (segment_counts.astype("int64") > 1).any()
+    )
+    if int(spine.uns.get("raw_schema_version", 0)) >= 4 and requires_segment_expansion:
+        index_value = spine.uns.get("segment_index")
+        run_root = _run_root_from_source_base(base)
+        index_path = resolve_relative_path(index_value, run_root)
+        if index_path is None or not index_path.exists():
+            raise FileNotFoundError("raw schema 4 segment index is missing")
+        segments = query_segment_index(
+            index_path,
+            molecule_uids=selection["molecule_uid"].astype(str).tolist(),
+        )
+        if segments.empty:
+            raise ValueError("materialize: selected molecules have no physical segments")
+        resolved_shards = _resolve_ragged_paths(spine, base)
+
+        def _resolved_segment_shard(value: object) -> str:
+            relative = Path(str(value))
+            matches = [
+                path
+                for path in resolved_shards
+                if len(path.parts) >= len(relative.parts)
+                and path.parts[-len(relative.parts) :] == relative.parts
+            ]
+            if len(matches) != 1:
+                raise FileNotFoundError(
+                    f"cannot resolve segment ragged shard {relative.as_posix()!r}"
+                )
+            return str(matches[0])
+
+        segments["group_path"] = segments["group_path"].map(_resolved_segment_shard)
+        molecule_metadata = selection.drop_duplicates("molecule_uid").set_index("molecule_uid")
+        for column in molecule_metadata:
+            if column not in segments and column not in {"ragged_shard", "ragged_row"}:
+                segments[column] = segments["molecule_uid"].map(molecule_metadata[column])
+        segments = segments.rename(
+            columns={"group_path": "ragged_shard", "group_row": "ragged_row"}
+        )
+        segments.index = pd.Index(segments["segment_read_id"].astype(str), name=None)
+        selection = segments
 
     if "ragged_shard" in selection:
         paths = [
@@ -910,6 +954,7 @@ def materialize(
     import anndata as ad
 
     candidate_read_ids = None
+    selection_filtered_by_index = False
     if (
         isinstance(spine, (str, Path))
         and Path(spine).parent.name.endswith("_outputs")
@@ -938,6 +983,7 @@ def materialize(
                 logger.debug("molecule-index query unavailable (%s); filtering spine", error)
             else:
                 candidate_read_ids = indexed["read_id"].astype(str).tolist()
+                selection_filtered_by_index = True
                 if not candidate_read_ids:
                     raise ValueError("materialize: selection matched no molecules")
 
@@ -983,14 +1029,14 @@ def materialize(
     )
     sel = _select_spine_obs(
         spine_obj,
-        references,
-        samples,
-        barcodes,
+        None if selection_filtered_by_index else references,
+        None if selection_filtered_by_index else samples,
+        None if selection_filtered_by_index else barcodes,
         read_ids,
         molecule_uids,
         obs_mask,
-        start,
-        end,
+        None if selection_filtered_by_index else start,
+        None if selection_filtered_by_index else end,
         candidate_read_ids,
     )
     if sel.shape[0] == 0:

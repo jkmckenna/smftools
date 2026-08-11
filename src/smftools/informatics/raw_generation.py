@@ -18,7 +18,7 @@ RAW_GENERATIONS_SUBDIR = "generations"
 RAW_STAGING_SUBDIR = ".staging"
 RAW_CURRENT_FILENAME = "current.json"
 RAW_GENERATION_MANIFEST = "generation_manifest.json"
-RAW_GENERATION_SCHEMA_VERSION = 1
+RAW_GENERATION_SCHEMA_VERSION = 2
 RAW_CURRENT_SCHEMA_VERSION = 1
 
 RAW_GENERATION_ARTIFACT_PATHS: dict[str, str] = {
@@ -28,6 +28,8 @@ RAW_GENERATION_ARTIFACT_PATHS: dict[str, str] = {
     "obs": "obs.parquet",
     "molecules": "molecules.parquet",
     "molecule_index": "molecule_index",
+    "segments": "segments.parquet",
+    "segment_index": "segment_index",
     "reference_interval_map": "reference_interval_map.parquet",
     "sidecar_manifest": "sidecar_manifest.json",
     "input_manifest_csv": "input_manifest/resolved_input_manifest.csv",
@@ -35,7 +37,12 @@ RAW_GENERATION_ARTIFACT_PATHS: dict[str, str] = {
     "input_resolution_report": "input_manifest/input_resolution_report.json",
 }
 RAW_REQUIRED_ARTIFACTS = tuple(RAW_GENERATION_ARTIFACT_PATHS)
-_NONEMPTY_DIRECTORIES = frozenset({"ragged_store", "molecule_index"})
+_RAW_GENERATION_V1_ARTIFACT_PATHS = {
+    key: value
+    for key, value in RAW_GENERATION_ARTIFACT_PATHS.items()
+    if key not in {"segments", "segment_index"}
+}
+_NONEMPTY_DIRECTORIES = frozenset({"ragged_store", "molecule_index", "segment_index"})
 
 
 class RawGenerationError(RuntimeError):
@@ -129,6 +136,10 @@ def _bind_generation_spine(
         publication_dir / "molecules.parquet", run_root
     )
     spine.uns["molecule_index"] = relative_uns_path(publication_dir / "molecule_index", run_root)
+    spine.uns["segments_catalog"] = relative_uns_path(
+        publication_dir / "segments.parquet", run_root
+    )
+    spine.uns["segment_index"] = relative_uns_path(publication_dir / "segment_index", run_root)
     spine.uns["reference_interval_map"] = relative_uns_path(
         publication_dir / "reference_interval_map.parquet", run_root
     )
@@ -172,7 +183,8 @@ def validate_raw_generation(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RawGenerationError("raw generation manifest is missing or unreadable") from exc
-    if int(manifest.get("schema_version", -1)) != RAW_GENERATION_SCHEMA_VERSION:
+    generation_schema = int(manifest.get("schema_version", -1))
+    if generation_schema not in {1, RAW_GENERATION_SCHEMA_VERSION}:
         raise RawGenerationError("raw generation schema is incompatible")
     if manifest.get("status") != "complete":
         raise RawGenerationError("raw generation is not complete")
@@ -185,10 +197,15 @@ def validate_raw_generation(
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
         raise RawGenerationError("raw generation artifact manifest is missing")
-    missing = sorted(set(RAW_REQUIRED_ARTIFACTS).difference(artifacts))
+    required_paths = (
+        RAW_GENERATION_ARTIFACT_PATHS
+        if generation_schema >= 2
+        else _RAW_GENERATION_V1_ARTIFACT_PATHS
+    )
+    missing = sorted(set(required_paths).difference(artifacts))
     if missing:
         raise RawGenerationError(f"raw generation artifacts are incomplete: {missing}")
-    artifact_paths = dict(RAW_GENERATION_ARTIFACT_PATHS)
+    artifact_paths = dict(required_paths)
     region_artifacts = manifest.get("region_artifacts", {})
     if not isinstance(region_artifacts, dict):
         raise RawGenerationError("raw generation region artifact map is invalid")
@@ -224,6 +241,13 @@ def validate_raw_generation(
         "molecule_index": final_dir / "molecule_index",
         "reference_interval_map": final_dir / "reference_interval_map.parquet",
     }
+    if generation_schema >= 2:
+        expected_pointers.update(
+            {
+                "segments_catalog": final_dir / "segments.parquet",
+                "segment_index": final_dir / "segment_index",
+            }
+        )
     for key, path in expected_pointers.items():
         if spine.uns.get(key) != relative_uns_path(path, run_root):
             raise RawGenerationError(f"raw spine pointer is unsafe: {key}")

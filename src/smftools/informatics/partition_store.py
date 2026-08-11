@@ -445,7 +445,12 @@ def write_dense_cache_from_spine(
     memory by the largest reference partition and preserves one shared row layout.
     """
     from ..readwrite import safe_read_h5ad, safe_write_h5ad, safe_write_zarr
-    from .partition_read import _resolve_ragged_paths, materialize
+    from .partition_read import (
+        _resolve_ragged_paths,
+        _run_root_from_spine_path,
+        materialize,
+        resolve_relative_path,
+    )
 
     spine_path = Path(spine_path)
     output_dir = Path(output_dir) if output_dir is not None else spine_path.parent
@@ -455,6 +460,17 @@ def write_dense_cache_from_spine(
         raise KeyError(f"spine.obs lacks required column {REFERENCE_STRAND!r}")
     ragged_paths: list[Path] = []
     if output_dir != spine_path.parent and "ragged_store" in spine.uns:
+        source_run_root = _run_root_from_spine_path(spine_path)
+        target_run_root = output_dir.parent
+        for key in (
+            "molecules_catalog",
+            "molecule_index",
+            "segments_catalog",
+            "segment_index",
+        ):
+            resolved = resolve_relative_path(spine.uns.get(key), source_run_root)
+            if resolved is not None:
+                spine.uns[key] = serialize_artifact_path(resolved, target_run_root)
         ragged_paths = _resolve_ragged_paths(spine, spine_path.parent)
         spine.uns["ragged_store"] = [
             serialize_artifact_path(path, output_dir) for path in ragged_paths

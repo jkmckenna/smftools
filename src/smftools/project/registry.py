@@ -230,9 +230,15 @@ def _discover_catalogs(spines: dict[str, Path], project_dir: Path) -> dict[str, 
                 found[name] = _relative_registry_path(path, project_dir)
         generation_layout = raw_dir.parent.name == "generations"
         raw_artifact_root = raw_dir if generation_layout else raw_dir.parent
-        molecule_index = raw_artifact_root / "molecule_index"
-        if molecule_index.exists():
-            found["molecule_index"] = _relative_registry_path(molecule_index, project_dir)
+        for key, name in (
+            ("molecules", "molecules.parquet"),
+            ("molecule_index", "molecule_index"),
+            ("segments", "segments.parquet"),
+            ("segment_index", "segment_index"),
+        ):
+            path = raw_artifact_root / name
+            if path.exists():
+                found[key] = _relative_registry_path(path, project_dir)
         reference_interval_map = raw_artifact_root / REFERENCE_INTERVAL_MAP_FILENAME
         if reference_interval_map.exists():
             found["reference_interval_map"] = _relative_registry_path(

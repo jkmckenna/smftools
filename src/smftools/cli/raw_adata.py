@@ -1627,6 +1627,8 @@ def raw_adata(config_path: str):
         INTERVAL_CATALOG_FILENAME,
         MOLECULE_INDEX_DIRNAME,
         MOLECULES_FILENAME,
+        SEGMENT_INDEX_DIRNAME,
+        SEGMENTS_FILENAME,
     )
     from ..informatics.sidecar_manifest import sidecar_manifest_path
 
@@ -1639,6 +1641,8 @@ def raw_adata(config_path: str):
             "obs": canonical_raw_root / "obs.parquet",
             "molecules": Path(cfg.output_directory) / MOLECULES_FILENAME,
             "molecule_index": Path(cfg.output_directory) / MOLECULE_INDEX_DIRNAME,
+            "segments": Path(cfg.output_directory) / SEGMENTS_FILENAME,
+            "segment_index": Path(cfg.output_directory) / SEGMENT_INDEX_DIRNAME,
             "reference_interval_map": (
                 Path(cfg.output_directory) / REFERENCE_INTERVAL_MAP_FILENAME
             ),
