@@ -133,6 +133,10 @@ _private_partitioned_stage_required_artifacts = {
         "input_manifest_csv",
         "input_manifest_json",
         "input_resolution_report",
+        "generation_spine",
+        "generation_manifest",
+        "generation",
+        "current",
     ),
     "preprocess": (
         "spine",

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import anndata as ad
 import numpy as np
 import pandas as pd
+import pytest
 from click.testing import CliRunner
 
 from smftools.cli.raw_adata import (
@@ -757,6 +758,30 @@ def test_cli_exposes_raw_and_optional_load_commands():
     assert "Optionally pre-build the dense zarr cache" in result.output
 
 
+def _write_legacy_raw_artifacts(tmp_path, raw_spine_path):
+    raw_spine_path.parent.mkdir(parents=True, exist_ok=True)
+    ad.AnnData(obs=pd.DataFrame(index=["read-1"])).write_h5ad(raw_spine_path)
+    ragged_store = raw_spine_path.parent / "raw"
+    ragged_store.mkdir(exist_ok=True)
+    (ragged_store / "part-00000.parquet").touch()
+    pd.DataFrame().to_parquet(raw_spine_path.parent / "interval_catalog.parquet", index=False)
+    pd.DataFrame({"read_id": ["read-1"]}).to_parquet(
+        raw_spine_path.parent / "obs.parquet", index=False
+    )
+    pd.DataFrame().to_parquet(tmp_path / "molecules.parquet", index=False)
+    pd.DataFrame().to_parquet(tmp_path / "reference_interval_map.parquet", index=False)
+    (tmp_path / "molecule_index").mkdir(exist_ok=True)
+    (tmp_path / "molecule_index" / "part-00000.parquet").touch()
+    (raw_spine_path.parent / "sidecar_manifest.json").write_text("{}\n", encoding="utf-8")
+    manifest_root = raw_spine_path.parent / "input_manifest"
+    manifest_root.mkdir(exist_ok=True)
+    (manifest_root / "resolved_input_manifest.csv").write_text(
+        "schema_version,path\n1,input.fastq\n", encoding="utf-8"
+    )
+    (manifest_root / "resolved_input_manifest.json").write_text("{}\n", encoding="utf-8")
+    (manifest_root / "input_resolution_report.json").write_text("{}\n", encoding="utf-8")
+
+
 def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkeypatch):
     from smftools.cli import helpers
     from smftools.cli import load_adata as load_module
@@ -767,7 +792,7 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
     captured = {}
 
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
-    monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg: paths)
+    monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg, **_kwargs: paths)
 
     def fake_core(core_cfg, core_paths, config_path=None, *, raw_only=False):
         captured.update(
@@ -776,30 +801,16 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
             config_path=config_path,
             raw_only=raw_only,
         )
-        paths.raw_spine.parent.mkdir(parents=True, exist_ok=True)
-        ad.AnnData().write_h5ad(paths.raw_spine)
-        ragged_store = paths.raw_spine.parent / "raw"
-        ragged_store.mkdir()
-        (ragged_store / "part-00000.parquet").touch()
-        pd.DataFrame().to_parquet(paths.raw_spine.parent / "interval_catalog.parquet", index=False)
-        pd.DataFrame().to_parquet(tmp_path / "molecules.parquet", index=False)
-        pd.DataFrame().to_parquet(tmp_path / "reference_interval_map.parquet", index=False)
-        (tmp_path / "molecule_index").mkdir()
-        (paths.raw_spine.parent / "sidecar_manifest.json").write_text("{}\n", encoding="utf-8")
-        manifest_root = paths.raw_spine.parent / "input_manifest"
-        manifest_root.mkdir()
-        (manifest_root / "resolved_input_manifest.csv").write_text(
-            "schema_version,path\n1,input.fastq\n", encoding="utf-8"
-        )
-        (manifest_root / "resolved_input_manifest.json").write_text("{}\n", encoding="utf-8")
-        (manifest_root / "input_resolution_report.json").write_text("{}\n", encoding="utf-8")
+        _write_legacy_raw_artifacts(tmp_path, paths.raw_spine)
         return SimpleNamespace(n_obs=1), paths.raw_spine, core_cfg
 
     monkeypatch.setattr(load_module, "load_adata_core", fake_core)
     result = raw_adata("experiment.csv")
 
     assert result[0].n_obs == 1
-    assert result[1:] == (paths.raw_spine, cfg)
+    generation_spine = result[1]
+    assert generation_spine.parent.parent.name == "generations"
+    assert result[2] is cfg
     assert captured["raw_only"] is True
     entry = read_experiment_manifest(tmp_path)["stages"]["raw"]
     assert entry["state"] == "complete"
@@ -815,13 +826,18 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
         "input_manifest_csv",
         "input_manifest_json",
         "input_resolution_report",
+        "obs",
+        "generation_spine",
+        "generation_manifest",
+        "generation",
+        "current",
     }
     monkeypatch.setattr(
         load_module,
         "load_adata_core",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected rerun")),
     )
-    assert raw_adata("experiment.csv")[1:] == (paths.raw_spine, cfg)
+    assert raw_adata("experiment.csv")[1:] == (generation_spine, cfg)
     summaries = []
     for perf_path in sorted((tmp_path / "raw_outputs" / "logs").glob("*_perf.jsonl")):
         summaries.extend(
@@ -830,6 +846,50 @@ def test_raw_wrapper_stops_legacy_pipeline_before_dense_loading(tmp_path, monkey
             if '"event": "stage_summary"' in line
         )
     assert [summary["outcome"] for summary in summaries] == ["completed", "skipped"]
+
+    cfg.force_redo_load_adata = True
+    monkeypatch.setattr(
+        load_module,
+        "load_adata_core",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected raw failure")),
+    )
+    with pytest.raises(RuntimeError, match="injected raw failure"):
+        raw_adata("experiment.csv")
+    from smftools.informatics.raw_generation import resolve_current_raw_generation
+
+    selected, manifest = resolve_current_raw_generation(tmp_path / "raw_outputs")
+    assert selected == generation_spine.parent
+    assert manifest["generation_id"] == selected.name
+    cfg.force_redo_load_adata = False
+    assert raw_adata("experiment.csv")[1] == generation_spine
+    from smftools.project.registry import discover_stage_spines
+
+    _, discovered = discover_stage_spines(tmp_path)
+    assert discovered["raw"] == generation_spine
+
+
+def test_raw_wrapper_migrates_compatible_legacy_layout_without_recompute(tmp_path, monkeypatch):
+    from smftools.cli import helpers
+    from smftools.cli import load_adata as load_module
+    from smftools.cli.raw_adata import raw_adata
+
+    cfg = SimpleNamespace(output_directory=tmp_path, force_redo_load_adata=False)
+    paths = SimpleNamespace(raw_spine=tmp_path / "raw_outputs" / "spine.h5ad")
+    _write_legacy_raw_artifacts(tmp_path, paths.raw_spine)
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg, **_kwargs: paths)
+    monkeypatch.setattr(helpers, "partitioned_stage_is_complete", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        load_module,
+        "load_adata_core",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected recompute")),
+    )
+
+    spine, generation_spine, _ = raw_adata("experiment.csv")
+
+    assert spine.n_obs == 1
+    assert generation_spine.parent.parent.name == "generations"
+    assert paths.raw_spine.exists()
 
 
 def test_load_dense_cache_runs_raw_then_cache_builder(tmp_path, monkeypatch):

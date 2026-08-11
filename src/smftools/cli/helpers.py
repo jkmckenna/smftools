@@ -268,7 +268,10 @@ def stage_input_artifact_ids(
         HMM_DIR: "hmm",
         LATENT_DIR: "latent",
     }
-    source_stage = stage_by_dir.get(source_path.parent.name)
+    source_stage_dir = source_path.parent.name
+    if source_path.parent.parent.name == "generations":
+        source_stage_dir = source_path.parent.parent.parent.name
+    source_stage = stage_by_dir.get(source_stage_dir)
     if source_stage is not None:
         entry = read_experiment_manifest(run_root).get("stages", {}).get(source_stage)
         if isinstance(entry, dict):
@@ -408,6 +411,7 @@ def partitioned_stage_is_complete(
     required: tuple[str, ...],
     source_path: str | Path | None = None,
     extra_matches: dict[str, Any] | None = None,
+    allow_previous_complete: bool = False,
 ) -> bool:
     """Check the compatible completion record used by partitioned CLI skips."""
     from ..informatics.experiment_manifest import stage_is_complete
@@ -431,12 +435,20 @@ def partitioned_stage_is_complete(
         input_artifact_ids=input_artifact_ids,
         required_artifacts=required,
         extra_matches=extra_matches,
+        allow_previous_complete=allow_previous_complete,
     )
 
 
-def get_adata_paths(cfg) -> AdataPaths:
-    """
-    Central helper: given cfg, compute all standard AnnData paths.
+def get_adata_paths(cfg, *, allow_invalid_raw: bool = False) -> AdataPaths:
+    """Compute all standard AnnData paths for an experiment.
+
+    Args:
+        cfg: Loaded experiment configuration.
+        allow_invalid_raw: Fall back to the legacy raw spine when the current
+            generation selector is invalid. Reserved for raw-stage recovery.
+
+    Returns:
+        The canonical and generation-selected artifact paths.
     """
     output_directory = Path(cfg.output_directory)
 
@@ -470,7 +482,20 @@ def get_adata_paths(cfg) -> AdataPaths:
     store = load_dir / "store"
     spine = load_dir / "spine.h5ad"
     catalog = load_dir / "catalog.parquet"
-    raw_spine = output_directory / RAW_DIR / "spine.h5ad"
+    raw_output_dir = output_directory / RAW_DIR
+    from ..informatics.raw_generation import RawGenerationError, resolve_current_raw_generation
+
+    try:
+        current_raw_generation = resolve_current_raw_generation(raw_output_dir)
+    except RawGenerationError:
+        if not allow_invalid_raw:
+            raise
+        current_raw_generation = None
+    raw_spine = (
+        current_raw_generation[0] / "spine.h5ad"
+        if current_raw_generation is not None
+        else raw_output_dir / "spine.h5ad"
+    )
     preprocess_spine = output_directory / PREPROCESS_DIR / "spine.h5ad"
     spatial_spine = output_directory / SPATIAL_DIR / "spine.h5ad"
     hmm_spine = output_directory / HMM_DIR / "spine.h5ad"

@@ -1,0 +1,427 @@
+"""Immutable generation publication for raw-ingestion outputs."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+from pathlib import Path
+from typing import Any, Mapping
+from uuid import uuid4
+
+from ..readwrite import atomic_write_json, safe_read_h5ad, safe_write_h5ad
+from .experiment_manifest import artifact_record
+from .partition_read import relative_uns_path, resolve_relative_path
+from .sidecar_manifest import register_sidecar, resolve_sidecar, sidecar_manifest_path
+
+RAW_GENERATIONS_SUBDIR = "generations"
+RAW_STAGING_SUBDIR = ".staging"
+RAW_CURRENT_FILENAME = "current.json"
+RAW_GENERATION_MANIFEST = "generation_manifest.json"
+RAW_GENERATION_SCHEMA_VERSION = 1
+RAW_CURRENT_SCHEMA_VERSION = 1
+
+RAW_GENERATION_ARTIFACT_PATHS: dict[str, str] = {
+    "spine": "spine.h5ad",
+    "ragged_store": "raw",
+    "interval_catalog": "interval_catalog.parquet",
+    "obs": "obs.parquet",
+    "molecules": "molecules.parquet",
+    "molecule_index": "molecule_index",
+    "reference_interval_map": "reference_interval_map.parquet",
+    "sidecar_manifest": "sidecar_manifest.json",
+    "input_manifest_csv": "input_manifest/resolved_input_manifest.csv",
+    "input_manifest_json": "input_manifest/resolved_input_manifest.json",
+    "input_resolution_report": "input_manifest/input_resolution_report.json",
+}
+RAW_REQUIRED_ARTIFACTS = tuple(RAW_GENERATION_ARTIFACT_PATHS)
+_NONEMPTY_DIRECTORIES = frozenset({"ragged_store", "molecule_index"})
+
+
+class RawGenerationError(RuntimeError):
+    """Raised when a raw generation cannot be published or selected safely."""
+
+
+def _checksum(path: Path) -> str:
+    return str(artifact_record(path, path.parent, checksum=True)["sha256"])
+
+
+def _generation_artifact_record(path: Path, generation_root: Path) -> dict[str, Any]:
+    record = artifact_record(path, generation_root, checksum=True)
+    record["anchor"] = "generation_root"
+    return record
+
+
+def _resolve_generation_artifact(
+    generation_root: Path,
+    record: Mapping[str, Any],
+) -> Path:
+    raw_path = record.get("path")
+    relative = Path(str(raw_path or ""))
+    resolved = (generation_root / relative).resolve()
+    if (
+        record.get("path_kind") != "relative"
+        or record.get("anchor") != "generation_root"
+        or not raw_path
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or not resolved.is_relative_to(generation_root.resolve())
+    ):
+        raise RawGenerationError("raw generation artifact path is not portable")
+    return resolved
+
+
+def _copy_artifact(source: Path, destination: Path) -> None:
+    if source.is_dir():
+        shutil.copytree(source, destination)
+    else:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
+def raw_generation_dependencies(
+    spine_path: str | Path,
+    source_manifest: str | Path,
+    *,
+    run_root: str | Path,
+    owned_artifacts: Mapping[str, str | Path],
+) -> dict[str, Path]:
+    """Discover shared immutable BAM and annotation dependencies for a generation."""
+    run_root = Path(run_root)
+    owned = [Path(path).resolve() for path in owned_artifacts.values() if Path(path).exists()]
+
+    def is_owned(path: Path) -> bool:
+        resolved = path.resolve()
+        return any(resolved == root or resolved.is_relative_to(root) for root in owned)
+
+    dependencies: dict[str, Path] = {}
+    spine, _ = safe_read_h5ad(spine_path, verbose=False)
+    if "bam_path" in spine.obs:
+        for index, value in enumerate(sorted(set(spine.obs["bam_path"].dropna().astype(str)))):
+            path = resolve_relative_path(value, run_root)
+            if path is not None and path.exists() and not is_owned(path):
+                dependencies[f"aligned-bam:{index}"] = path
+
+    manifest_path = Path(source_manifest)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    sidecars = manifest.get("sidecars", {})
+    if isinstance(sidecars, dict):
+        for key in sorted(sidecars):
+            path = resolve_sidecar(manifest_path, key)
+            if path is not None and not is_owned(path):
+                dependencies[f"sidecar:{key}"] = path
+    return dependencies
+
+
+def _bind_generation_spine(
+    spine_path: Path,
+    *,
+    generation_id: str,
+    publication_dir: Path,
+    run_root: Path,
+    region_artifacts: Mapping[str, str],
+) -> None:
+    spine, _ = safe_read_h5ad(spine_path, verbose=False)
+    spine.uns["molecules_catalog"] = relative_uns_path(
+        publication_dir / "molecules.parquet", run_root
+    )
+    spine.uns["molecule_index"] = relative_uns_path(publication_dir / "molecule_index", run_root)
+    spine.uns["reference_interval_map"] = relative_uns_path(
+        publication_dir / "reference_interval_map.parquet", run_root
+    )
+    spine.uns["region_catalogs"] = {
+        scope: relative_uns_path(publication_dir / relative, run_root)
+        for scope, relative in sorted(region_artifacts.items())
+    }
+    spine.uns["raw_generation_id"] = generation_id
+    safe_write_h5ad(spine, spine_path, backup=False, verbose=False)
+
+
+def _write_generation_sidecar_manifest(
+    generation_dir: Path,
+    artifact_paths: Mapping[str, str],
+) -> Path:
+    manifest_path = sidecar_manifest_path(generation_dir)
+    manifest_path.unlink(missing_ok=True)
+    for key, relative in sorted(artifact_paths.items()):
+        if key in {
+            "sidecar_manifest",
+            "input_manifest_csv",
+            "input_manifest_json",
+            "input_resolution_report",
+        }:
+            continue
+        register_sidecar(manifest_path, key, generation_dir / relative)
+    return manifest_path
+
+
+def validate_raw_generation(
+    generation_dir: str | Path,
+    *,
+    expected_generation_id: str | None = None,
+    final_dir: str | Path | None = None,
+    run_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Validate one complete raw generation without mutating it."""
+    generation_dir = Path(generation_dir)
+    manifest_path = generation_dir / RAW_GENERATION_MANIFEST
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RawGenerationError("raw generation manifest is missing or unreadable") from exc
+    if int(manifest.get("schema_version", -1)) != RAW_GENERATION_SCHEMA_VERSION:
+        raise RawGenerationError("raw generation schema is incompatible")
+    if manifest.get("status") != "complete":
+        raise RawGenerationError("raw generation is not complete")
+    generation_id = str(manifest.get("generation_id", ""))
+    if not generation_id or (
+        expected_generation_id is not None and generation_id != expected_generation_id
+    ):
+        raise RawGenerationError("raw generation ID does not match")
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise RawGenerationError("raw generation artifact manifest is missing")
+    missing = sorted(set(RAW_REQUIRED_ARTIFACTS).difference(artifacts))
+    if missing:
+        raise RawGenerationError(f"raw generation artifacts are incomplete: {missing}")
+    artifact_paths = dict(RAW_GENERATION_ARTIFACT_PATHS)
+    region_artifacts = manifest.get("region_artifacts", {})
+    if not isinstance(region_artifacts, dict):
+        raise RawGenerationError("raw generation region artifact map is invalid")
+    artifact_paths.update(
+        {f"region:{scope}": str(path) for scope, path in region_artifacts.items()}
+    )
+    if "barcode_index" in artifacts:
+        artifact_paths["barcode_index"] = "barcode_index.parquet"
+
+    for key, expected_relative in artifact_paths.items():
+        record = artifacts.get(key)
+        if not isinstance(record, dict):
+            raise RawGenerationError(f"raw generation artifact is missing: {key}")
+        path = _resolve_generation_artifact(generation_dir, record)
+        if Path(str(record.get("path"))) != Path(expected_relative):
+            raise RawGenerationError(f"raw generation artifact path is invalid: {key}")
+        if not path.exists() or str(record.get("sha256", "")) != _checksum(path):
+            raise RawGenerationError(f"raw generation artifact is missing or corrupt: {key}")
+        if record.get("kind") == "file" and not path.is_file():
+            raise RawGenerationError(f"raw generation artifact is not a file: {key}")
+        if record.get("kind") == "directory" and (
+            not path.is_dir() or (key in _NONEMPTY_DIRECTORIES and not any(path.iterdir()))
+        ):
+            raise RawGenerationError(f"raw generation artifact directory is invalid: {key}")
+
+    final_dir = Path(final_dir) if final_dir is not None else generation_dir
+    run_root = Path(run_root) if run_root is not None else final_dir.parents[2]
+    spine, _ = safe_read_h5ad(generation_dir / "spine.h5ad", verbose=False)
+    if str(spine.uns.get("raw_generation_id", "")) != generation_id:
+        raise RawGenerationError("raw spine generation ID does not match")
+    expected_pointers = {
+        "molecules_catalog": final_dir / "molecules.parquet",
+        "molecule_index": final_dir / "molecule_index",
+        "reference_interval_map": final_dir / "reference_interval_map.parquet",
+    }
+    for key, path in expected_pointers.items():
+        if spine.uns.get(key) != relative_uns_path(path, run_root):
+            raise RawGenerationError(f"raw spine pointer is unsafe: {key}")
+    expected_regions = {
+        scope: relative_uns_path(final_dir / relative, run_root)
+        for scope, relative in sorted(region_artifacts.items())
+    }
+    if dict(spine.uns.get("region_catalogs", {})) != expected_regions:
+        raise RawGenerationError("raw spine region catalog pointers are unsafe")
+
+    dependencies = manifest.get("dependencies", {})
+    if not isinstance(dependencies, dict):
+        raise RawGenerationError("raw generation dependency manifest is invalid")
+    for key, record in dependencies.items():
+        if not isinstance(record, dict):
+            raise RawGenerationError(f"raw generation dependency is invalid: {key}")
+        raw_path = Path(str(record.get("path", "")))
+        if record.get("path_kind") != "relative" or record.get("anchor") != "run_root":
+            raise RawGenerationError(f"raw generation dependency is not portable: {key}")
+        dependency = (run_root / raw_path).resolve()
+        if not dependency.is_relative_to(run_root.resolve()):
+            raise RawGenerationError(f"raw generation dependency escapes run root: {key}")
+        if not dependency.exists() or str(record.get("sha256", "")) != _checksum(dependency):
+            raise RawGenerationError(f"raw generation dependency is missing or corrupt: {key}")
+    return manifest
+
+
+def resolve_current_raw_generation(
+    raw_output_dir: str | Path,
+) -> tuple[Path, dict[str, Any]] | None:
+    """Resolve and validate the generation selected by raw ``current.json``."""
+    raw_output_dir = Path(raw_output_dir)
+    pointer_path = raw_output_dir / RAW_CURRENT_FILENAME
+    if not pointer_path.exists():
+        return None
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RawGenerationError("raw current pointer is unreadable") from exc
+    if int(pointer.get("schema_version", -1)) != RAW_CURRENT_SCHEMA_VERSION:
+        raise RawGenerationError("raw current-pointer schema is incompatible")
+    relative = Path(str(pointer.get("generation_path", "")))
+    generation = (raw_output_dir / relative).resolve()
+    if (
+        not str(relative)
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or not generation.is_relative_to(raw_output_dir.resolve())
+    ):
+        raise RawGenerationError("raw current pointer is not portable")
+    manifest_path = generation / RAW_GENERATION_MANIFEST
+    if not manifest_path.is_file() or pointer.get("manifest_sha256") != _checksum(manifest_path):
+        raise RawGenerationError("raw current manifest checksum does not match")
+    manifest = validate_raw_generation(
+        generation,
+        expected_generation_id=str(pointer.get("generation_id", "")),
+        final_dir=generation,
+        run_root=raw_output_dir.parent,
+    )
+    return generation, manifest
+
+
+def publish_raw_generation(
+    run_root: str | Path,
+    source_artifacts: Mapping[str, str | Path],
+    *,
+    config_hash: str,
+    input_artifact_ids: list[str],
+    dependencies: Mapping[str, str | Path] | None = None,
+    region_artifacts: Mapping[str, str | Path] | None = None,
+    generation_id: str | None = None,
+) -> dict[str, Path | str]:
+    """Snapshot, validate, and atomically select one immutable raw generation."""
+    run_root = Path(run_root)
+    raw_output_dir = run_root / "raw_outputs"
+    generation_id = generation_id or uuid4().hex
+    staging_dir = raw_output_dir / RAW_STAGING_SUBDIR / generation_id
+    final_dir = raw_output_dir / RAW_GENERATIONS_SUBDIR / generation_id
+    current_path = raw_output_dir / RAW_CURRENT_FILENAME
+    try:
+        previous_current = (
+            json.loads(current_path.read_text(encoding="utf-8")) if current_path.is_file() else None
+        )
+    except (OSError, json.JSONDecodeError):
+        # A corrupt selector must not prevent a recomputation from publishing a
+        # new valid generation. It is deliberately not restored on rollback.
+        previous_current = None
+    staging_dir.mkdir(parents=True)
+    final_dir.parent.mkdir(parents=True, exist_ok=True)
+    moved_to_final = False
+    current_advanced = False
+
+    normalized_sources = {key: Path(path) for key, path in source_artifacts.items()}
+    missing = sorted(
+        key
+        for key in RAW_REQUIRED_ARTIFACTS
+        if key != "sidecar_manifest"
+        and (key not in normalized_sources or not normalized_sources[key].exists())
+    )
+    if missing:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise RawGenerationError(f"raw publication source artifacts are incomplete: {missing}")
+
+    region_paths = {str(scope): Path(path) for scope, path in (region_artifacts or {}).items()}
+    region_relatives = {
+        scope: f"region_catalogs/{path.name}" for scope, path in sorted(region_paths.items())
+    }
+    artifact_paths = dict(RAW_GENERATION_ARTIFACT_PATHS)
+    artifact_paths.update(
+        {f"region:{scope}": relative for scope, relative in region_relatives.items()}
+    )
+    if "barcode_index" in normalized_sources and normalized_sources["barcode_index"].exists():
+        artifact_paths["barcode_index"] = "barcode_index.parquet"
+
+    try:
+        for key, relative in artifact_paths.items():
+            if key == "sidecar_manifest":
+                continue
+            source = (
+                region_paths[key.removeprefix("region:")]
+                if key.startswith("region:")
+                else normalized_sources[key]
+            )
+            _copy_artifact(source, staging_dir / relative)
+        _bind_generation_spine(
+            staging_dir / "spine.h5ad",
+            generation_id=generation_id,
+            publication_dir=final_dir,
+            run_root=run_root,
+            region_artifacts=region_relatives,
+        )
+        _write_generation_sidecar_manifest(staging_dir, artifact_paths)
+        artifacts = {
+            key: _generation_artifact_record(staging_dir / relative, staging_dir)
+            for key, relative in artifact_paths.items()
+        }
+        dependency_records = {
+            str(key): artifact_record(Path(path), run_root, checksum=True)
+            for key, path in sorted((dependencies or {}).items())
+        }
+        generation_manifest = staging_dir / RAW_GENERATION_MANIFEST
+        atomic_write_json(
+            generation_manifest,
+            {
+                "schema_version": RAW_GENERATION_SCHEMA_VERSION,
+                "status": "complete",
+                "generation_id": generation_id,
+                "config_hash": str(config_hash),
+                "input_artifact_ids": list(input_artifact_ids),
+                "region_artifacts": region_relatives,
+                "artifacts": artifacts,
+                "dependencies": dependency_records,
+            },
+        )
+        validate_raw_generation(
+            staging_dir,
+            expected_generation_id=generation_id,
+            final_dir=final_dir,
+            run_root=run_root,
+        )
+        os.replace(staging_dir, final_dir)
+        moved_to_final = True
+        final_manifest = final_dir / RAW_GENERATION_MANIFEST
+        atomic_write_json(
+            current_path,
+            {
+                "schema_version": RAW_CURRENT_SCHEMA_VERSION,
+                "generation_id": generation_id,
+                "generation_path": final_dir.relative_to(raw_output_dir).as_posix(),
+                "manifest_sha256": _checksum(final_manifest),
+            },
+        )
+        current_advanced = True
+        validate_raw_generation(
+            final_dir,
+            expected_generation_id=generation_id,
+            run_root=run_root,
+        )
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        if moved_to_final:
+            if current_advanced:
+                if previous_current is None:
+                    current_path.unlink(missing_ok=True)
+                else:
+                    atomic_write_json(current_path, previous_current)
+            shutil.rmtree(final_dir, ignore_errors=True)
+        raise
+
+    outputs: dict[str, Path | str] = {
+        key: final_dir / relative for key, relative in artifact_paths.items()
+    }
+    outputs.update(
+        {
+            "generation": final_dir,
+            "generation_manifest": final_dir / RAW_GENERATION_MANIFEST,
+            "current": current_path,
+            "generation_id": generation_id,
+        }
+    )
+    return outputs
