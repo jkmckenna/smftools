@@ -140,6 +140,37 @@ def test_fastq_identity_maps_use_resolved_paths(tmp_path):
     assert result.fastq_sample_map() == {str(source): "sample-a"}
 
 
+def test_existing_bam_resolves_as_aligned_source(tmp_path):
+    source = _write(tmp_path / "aligned.bam", b"bam-placeholder")
+
+    result = resolve_input_manifest(
+        output_directory=tmp_path / "output",
+        input_paths=[source],
+        alignment_mode="existing",
+        modality="conversion",
+    )
+
+    assert result.input_type == "bam"
+    assert result.rows[0].source_kind == "aligned_bam"
+    assert result.rows[0].source_role == "alignment"
+    assert "source_kind" in result.rows[0].inferred_fields
+
+
+def test_existing_mode_rejects_explicit_unaligned_bam(tmp_path):
+    source = _write(tmp_path / "reads.bam", b"bam-placeholder")
+    user_manifest = _manifest(
+        tmp_path / "manifest.csv",
+        [{"path": source.name, "source_kind": "unaligned_bam"}],
+    )
+
+    with pytest.raises(InputManifestError, match="conflicts with source_kind='unaligned_bam'"):
+        resolve_input_manifest(
+            output_directory=tmp_path / "output",
+            input_manifest_path=user_manifest,
+            alignment_mode="existing",
+        )
+
+
 def test_incomplete_pair_fails_cleanly(tmp_path):
     source = _write(tmp_path / "sample_R1.fastq", b"one")
 

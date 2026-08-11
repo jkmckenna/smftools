@@ -39,8 +39,8 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
   Configure this or `input_data_path`, never both. Relative paths are resolved from the CSV's
   directory.
 - `alignment_mode`: Alignment policy. `align` is the default and preserves existing behavior,
-  including realigning a supplied BAM. `existing` is reserved for validated aligned-BAM input and
-  currently fails before execution because that ingestion path is not implemented yet.
+  including realigning a supplied BAM. `existing` validates and owns one aligned BAM without
+  changing its alignment placements.
 - `fasta`: Reference FASTA for alignment and positional context.
 - `alignment_regions_bed`: Optional original-FASTA BED file that restricts the alignment
   reference universe.
@@ -83,9 +83,35 @@ source is ambiguous or unsupported:
 - Direct-modification experiments cannot use FASTQ because sequence-only FASTQ cannot retain MM/ML
   modification probabilities. Use raw signal or a modification-tagged BAM.
 
-Existing configurations that omit `alignment_mode` continue to use `align`. The flags
+Existing configurations that omit `alignment_mode` continue to use `align`. Set
+`alignment_mode: existing` for one aligned BAM that must be validated and ingested without
+realignment. smftools checks readability, primary records, sequence/quality/CIGAR availability,
+paired flags, exact prepared-reference `@SQ` names/lengths/order, and direct-modification MM/ML
+tags. It then copies or coordinate-sorts the BAM into an immutable owned intermediate and creates
+an owned index; the source BAM and any source index remain untouched. The flags
 `input_already_demuxed`, `skip_bam_split`, and `align_from_bam` retain their existing meanings and
 do not select existing-alignment ingestion.
+
+Existing mode does not probe or invoke the configured aligner. The alignment manifest records
+available BAM `@PG` provenance, or `unknown` when it is absent. Valid paired existing alignments
+remain unsupported until molecule-segment ingestion is available; malformed paired flags fail
+with a distinct validation error.
+
+External conversion workflows must align against the exact transformed reference records that
+smftools will validate. The public Python helper publishes that content-identified FASTA and its
+manifest before alignment:
+
+```python
+from smftools.informatics.alignment_validation import prepare_alignment_reference_bundle
+
+prepared_fasta, bundle_manifest = prepare_alignment_reference_bundle(
+    "reference.fasta",
+    "prepared-reference",
+    modality="conversion",
+    conversion_types=["unconverted", "5mC"],
+    strands=["top", "bottom"],
+)
+```
 
 ### Canonical input manifest schema 1
 

@@ -1507,7 +1507,10 @@ class ExperimentConfig:
         # external-tool checks can occur.
         alignment_mode = _normalize_alignment_mode(merged.get("alignment_mode", "align"))
         merged["alignment_mode"] = alignment_mode
-        merged["aligner"] = _normalize_aligner(merged.get("aligner", "minimap2"))
+        if alignment_mode == "align":
+            merged["aligner"] = _normalize_aligner(merged.get("aligner", "minimap2"))
+        else:
+            merged["aligner"] = str(merged.get("aligner") or "unknown").strip().lower()
 
         # Input file types and path handling. Full content hashing is deferred
         # to task execution so config loading remains read-only.
@@ -1571,7 +1574,8 @@ class ExperimentConfig:
             if input_type in {"sam", "cram"}:
                 raise ValueError(
                     f"{input_type.upper()} input is not supported yet. Convert it to BAM and use "
-                    "alignment_mode='align'; validated existing-alignment support is planned."
+                    "alignment_mode='existing' for an already-produced alignment, or "
+                    "alignment_mode='align' to realign its reads."
                 )
             if input_is_directory and input_type == "bam":
                 raise ValueError(
@@ -1581,10 +1585,6 @@ class ExperimentConfig:
             if alignment_mode == "existing":
                 if input_type != "bam":
                     raise ValueError("alignment_mode='existing' requires an aligned BAM input.")
-                raise ValueError(
-                    "alignment_mode='existing' is reserved but not implemented yet. "
-                    "Use alignment_mode='align' to retain legacy BAM realignment behavior."
-                )
             modality = str(merged.get("smf_modality") or "").strip().lower()
             if modality == "direct" and input_type == "fastq":
                 raise ValueError(

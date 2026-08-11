@@ -58,7 +58,7 @@ filter_threshold: 0.8 # Dorado probability filter threshold for base calling.
 emit_moves: True # Whether to emit move tables (mv tag) during basecalling for signal-to-base alignment
 
 # Alignment params
-alignment_mode: "align" # align realigns sequence input; existing is reserved until validated existing-alignment ingestion is implemented
+alignment_mode: "align" # align produces a new alignment; existing validates and owns one aligned BAM without realignment
 aligner: "dorado" # Aligner to use: dorado, minimap2
 align_from_bam: False # Whether to run alignment from a bam file for minimap2. If False, runs alignment from a FASTQ file.
 aligner_args:

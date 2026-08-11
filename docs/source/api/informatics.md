@@ -12,6 +12,8 @@ Processes raw sequencing data to load an adata object.
    :toctree: generated/informatics
    
    smftools.informatics.analysis_region_plan
+   smftools.informatics.alignment_manifest
+   smftools.informatics.alignment_validation
    smftools.informatics.artifact_paths
    smftools.informatics.bam_functions
    smftools.informatics.barcode_sidecar
