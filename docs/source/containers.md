@@ -60,10 +60,12 @@ The checked-in direct-modification smoke profile uses `alignment_mode:
 existing` because its BAM is already aligned and modification-tagged; this
 avoids a lossy BAM-to-FASTQ realignment. For direct-modification workflows that
 should not require modkit, set `direct_signal_backend` to `pysam`. Generated
-minimap2 alignments require minimap2 2.24.0 or newer. Set `samtools_backend` to
-`python` when the portable Python backend is desired; the packaged `samtools`
-executable remains available for explicitly selected CLI behavior and must be
-samtools 1.10.0 or newer.
+minimap2 alignments require minimap2 2.24.0 or newer. BWA-MEM2 and Bowtie2
+adapters require separately supplied executables because the production CPU
+image does not package them. Set `samtools_backend` to `python` when the
+portable Python backend is desired; the packaged `samtools` executable remains
+available for explicitly selected CLI behavior and must be samtools 1.10.0 or
+newer.
 
 Validate the result using the same immutable image:
 

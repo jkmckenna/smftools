@@ -53,6 +53,7 @@ class AlignmentEnvironment:
     adapter_version_tuple: tuple[int, int, int]
     samtools_backend: str
     sort_index_version: str
+    index_builder_version: str | None = None
 
     @property
     def tool_versions(self) -> dict[str, str]:
@@ -60,6 +61,11 @@ class AlignmentEnvironment:
         return {
             "adapter": self.adapter_version,
             "sort_index": self.sort_index_version,
+            **(
+                {"index_builder": self.index_builder_version}
+                if self.index_builder_version is not None
+                else {}
+            ),
         }
 
 
@@ -96,7 +102,10 @@ def _parse_version(output: str, executable: str) -> tuple[int, int, int]:
 
 
 def probe_executable_version(
-    executable: str, minimum: tuple[int, int, int]
+    executable: str,
+    minimum: tuple[int, int, int],
+    *,
+    version_args: tuple[str, ...] = ("--version",),
 ) -> tuple[str, tuple[int, int, int]]:
     """Require an executable with a parseable version at or above ``minimum``."""
     if shutil.which(executable) is None:
@@ -105,7 +114,7 @@ def probe_executable_version(
         )
     try:
         completed = subprocess.run(
-            [executable, "--version"],
+            [executable, *version_args],
             capture_output=True,
             check=False,
             encoding="utf-8",
@@ -115,19 +124,24 @@ def probe_executable_version(
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise AlignmentAdapterError(f"Could not probe {executable} version: {exc}") from exc
-    output = (completed.stdout or completed.stderr).strip()
+    output = "\n".join(
+        part.strip() for part in (completed.stdout, completed.stderr) if part and part.strip()
+    )
     if completed.returncode != 0 or not output:
         raise AlignmentAdapterError(
             f"Could not probe {executable} version (exit {completed.returncode})."
         )
-    version = _parse_version(output.splitlines()[0], executable)
+    version = _parse_version(output, executable)
     if version < minimum:
         required = ".".join(map(str, minimum))
         observed = ".".join(map(str, version))
         raise AlignmentAdapterError(
             f"{executable} {observed} is unsupported; install {executable} >= {required}."
         )
-    return output.splitlines()[0], version
+    version_line = next(
+        line.strip() for line in output.splitlines() if _VERSION_PATTERN.search(line)
+    )
+    return version_line, version
 
 
 class AlignmentAdapter(ABC):
@@ -138,12 +152,18 @@ class AlignmentAdapter(ABC):
     minimum_version: tuple[int, int, int]
     capabilities: AlignmentCapabilities
     reference_index_parameters: Mapping[str, Any] = {}
+    version_args: tuple[str, ...] = ("--version",)
+    tag_preservation_limits: tuple[str, ...] = ()
 
     def validate_environment(self, samtools_backend: str) -> AlignmentEnvironment:
         """Probe required versions before an alignment workspace is staged."""
         from ..bam_functions import _require_pysam, _resolve_samtools_backend
 
-        adapter_version, parsed = probe_executable_version(self.executable, self.minimum_version)
+        adapter_version, parsed = probe_executable_version(
+            self.executable,
+            self.minimum_version,
+            version_args=self.version_args,
+        )
         resolved_backend = _resolve_samtools_backend(samtools_backend)
         if resolved_backend == "python":
             pysam = _require_pysam()
@@ -170,6 +190,11 @@ class AlignmentAdapter(ABC):
             raise AlignmentAdapterError(
                 f"Adapter {self.name!r} does not support source layout "
                 f"{request.source_layout!r}. {remedy}"
+            )
+        if request.align_from_bam and not self.capabilities.supports_bam_input:
+            raise AlignmentAdapterError(
+                f"Adapter {self.name!r} does not accept BAM alignment input; "
+                "set align_from_bam=false to use canonical FASTQ staging."
             )
         preserves_mm_ml = self.preserves_mm_ml(request)
         if request.modality.strip().lower() == "direct" and not preserves_mm_ml:
@@ -299,6 +324,7 @@ class AlignmentAdapter(ABC):
             "normalized_argv": self.normalized_argv(request),
             "source_layout": request.source_layout,
             "capabilities": self.capabilities.to_dict(),
+            "tag_preservation_limits": list(self.tag_preservation_limits),
             "reference_index": reference_plan,
             "sort_index": {
                 "backend": environment.samtools_backend,
@@ -306,3 +332,86 @@ class AlignmentAdapter(ABC):
             },
         }
         return AlignmentExecutionResult(sorted_bam, bai, provenance)
+
+
+def prepare_sequence_fastqs(
+    request: AlignmentRequest, environment: AlignmentEnvironment
+) -> AlignmentInputs:
+    """Stage canonical single-end or synchronized paired FASTQ input."""
+    if request.source_layout == "paired_bam":
+        return _prepare_paired_fastqs(request)
+    from ..bam_functions import _bam_to_fastq_with_pysam, _bam_to_fastq_with_samtools
+
+    fastq = request.aligned_bam.with_name("alignment_input.fastq")
+    try:
+        if environment.samtools_backend == "python":
+            _bam_to_fastq_with_pysam(request.input_bam, fastq)
+        else:
+            _bam_to_fastq_with_samtools(request.input_bam, fastq)
+    except Exception:
+        fastq.unlink(missing_ok=True)
+        raise
+    return fastq
+
+
+def _prepare_paired_fastqs(request: AlignmentRequest) -> tuple[Path, Path]:
+    """Split a canonical paired unaligned BAM into synchronized mate streams."""
+    from ..bam_functions import _require_pysam
+
+    r1_fastq = request.aligned_bam.with_name("alignment_input_R1.fastq")
+    r2_fastq = request.aligned_bam.with_name("alignment_input_R2.fastq")
+    r1_fastq.parent.mkdir(parents=True, exist_ok=True)
+    pysam = _require_pysam()
+
+    def _write_record(handle, read, mate: int) -> None:
+        if read.query_sequence is None or read.query_qualities is None:
+            raise AlignmentAdapterError(
+                f"Paired input record {read.query_name!r} lacks sequence or qualities."
+            )
+        tags = [f"{tag}:Z:{read.get_tag(tag)}" for tag in ("BC", "RG") if read.has_tag(tag)]
+        comment = " " + "\t".join(tags) if tags else ""
+        quality = pysam.array_to_qualitystring(read.query_qualities)
+        handle.write(f"@{read.query_name}/{mate}{comment}\n{read.query_sequence}\n+\n{quality}\n")
+
+    try:
+        with (
+            pysam.AlignmentFile(str(request.input_bam), "rb", check_sq=False) as bam,
+            r1_fastq.open("w", encoding="utf-8") as r1_handle,
+            r2_fastq.open("w", encoding="utf-8") as r2_handle,
+        ):
+            iterator = iter(bam.fetch(until_eof=True))
+            pair_number = 0
+            while True:
+                try:
+                    first = next(iterator)
+                except StopIteration:
+                    break
+                try:
+                    second = next(iterator)
+                except StopIteration as exc:
+                    raise AlignmentAdapterError(
+                        "Canonical paired BAM ended with an unmatched mate."
+                    ) from exc
+                pair_number += 1
+                reads = {
+                    1: first if first.is_read1 else second,
+                    2: first if first.is_read2 else second,
+                }
+                if (
+                    not first.is_paired
+                    or not second.is_paired
+                    or first.query_name != second.query_name
+                    or not reads[1].is_read1
+                    or not reads[2].is_read2
+                ):
+                    raise AlignmentAdapterError(
+                        "Canonical paired BAM is not synchronized at pair "
+                        f"{pair_number}: expected adjacent R1/R2 records with one query name."
+                    )
+                _write_record(r1_handle, reads[1], 1)
+                _write_record(r2_handle, reads[2], 2)
+    except Exception:
+        r1_fastq.unlink(missing_ok=True)
+        r2_fastq.unlink(missing_ok=True)
+        raise
+    return r1_fastq, r2_fastq

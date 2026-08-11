@@ -131,8 +131,21 @@ def test_cram_requires_existing_alignment_mode(tmp_path):
 
 
 def test_unknown_aligner_fails_during_config_loading():
-    with pytest.raises(ValueError, match="aligner must be one of: dorado, minimap2"):
-        ExperimentConfig.from_var_dict({"aligner": "bowtie2"}, defaults_map={})
+    with pytest.raises(
+        ValueError,
+        match="aligner must be one of: bowtie2, bwa-mem2, dorado, minimap2",
+    ):
+        ExperimentConfig.from_var_dict({"aligner": "bowtie1"}, defaults_map={})
+
+
+@pytest.mark.parametrize(
+    ("alias", "expected"),
+    [("bwa", "bwa-mem2"), ("bwa_mem2", "bwa-mem2"), ("bt2", "bowtie2")],
+)
+def test_short_read_aligner_aliases_are_normalized(alias, expected):
+    config, _ = ExperimentConfig.from_var_dict({"aligner": alias}, defaults_map={})
+
+    assert config.aligner == expected
 
 
 def test_unknown_alignment_mode_fails_during_config_loading():

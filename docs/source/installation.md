@@ -49,6 +49,9 @@ External tools depend on the experiment's input and configured backends:
   demultiplexing. It is not needed when the configured workflow starts from a
   suitable basecalled BAM and uses another aligner/backend.
 - Minimap2 can perform alignment when Dorado alignment is not used.
+- BWA-MEM2 and Bowtie2/Bowtie2-build are optional short-read alignment
+  adapters. They are external executables and are not installed by the Python
+  package.
 - Modkit extracts modification probabilities from MM/ML BAM tags for direct
   modification-detection protocols. The pysam modification backend is included
   in the default Python install and can be selected instead.
@@ -61,6 +64,9 @@ Make any selected executable available on `PATH`. For example:
 ```shell
 dorado --version
 minimap2 --version
+bwa-mem2 version
+bowtie2 --version
+bowtie2-build --version
 ```
 
 ## Production CPU container
@@ -68,7 +74,7 @@ minimap2 --version
 For isolated BAM-entry workflows, use the pinned, non-root production image
 contract described in [Production CPU container](containers.md). The image
 includes the CPU runtime, minimap2, and samtools; it intentionally excludes
-Dorado, CUDA, vendor model assets, modkit, and optional reporting tools.
+Dorado, BWA-MEM2, Bowtie2, CUDA, vendor model assets, modkit, and optional reporting tools.
 
 ## Development installation
 
