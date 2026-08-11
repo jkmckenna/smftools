@@ -9,6 +9,7 @@ column) -- no BAM re-parsing or dense materialization.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import re
 from pathlib import Path
 from typing import Mapping
@@ -37,6 +38,7 @@ def write_fastq_per_barcode(
     *,
     read_ids: set[str] | None = None,
     group_labels: pd.Series | str = "Barcode",
+    record_names: pd.Series | None = None,
     gzip_output: bool = True,
 ) -> dict[str, dict[str, object]]:
     """Write one FASTQ per barcode/group from the raw ragged store.
@@ -56,6 +58,8 @@ def write_fastq_per_barcode(
         group_labels: Either a column name in ``raw_obs``, or an externally
             supplied ``Series`` (indexed by read_id) of per-read group/barcode
             labels -- e.g. sample-sheet-enriched names from a preprocessed AnnData.
+        record_names: Optional collision-safe FASTQ names indexed like ``raw_obs``.
+            The raw read ID is retained when omitted.
         gzip_output: Whether to gzip-compress the FASTQ output.
 
     Returns:
@@ -90,6 +94,14 @@ def write_fastq_per_barcode(
                 int(missing.sum()),
             )
         labels = labels.astype(str).where(~missing, "unknown")
+    names = (
+        pd.Series(subset.index.astype(str), index=subset.index)
+        if record_names is None
+        else record_names.reindex(subset.index)
+    )
+    if names.isna().any() or names.astype(str).duplicated().any():
+        raise ValueError("FASTQ export record names must be complete and unique")
+    names = names.astype(str)
 
     outdir.mkdir(parents=True, exist_ok=True)
     suffix = ".fastq.gz" if gzip_output else ".fastq"
@@ -100,11 +112,18 @@ def write_fastq_per_barcode(
     handles: dict[str, object] = {}
     paths: dict[str, Path] = {}
     counts: dict[str, int] = {}
+    filename_owners: dict[str, str] = {}
 
     def _handle_for(barcode: str):
         handle = handles.get(barcode)
         if handle is None:
-            path = outdir / f"{_sanitize_filename(barcode)}{suffix}"
+            stem = _sanitize_filename(barcode)
+            owner = filename_owners.get(stem)
+            if owner is not None and owner != barcode:
+                digest = hashlib.sha256(barcode.encode("utf-8")).hexdigest()[:10]
+                stem = f"{stem}-{digest}"
+            filename_owners[stem] = barcode
+            path = outdir / f"{stem}{suffix}"
             handle = _open(path)
             handles[barcode] = handle
             paths[barcode] = path
@@ -124,7 +143,7 @@ def write_fastq_per_barcode(
                 sequence = "".join(decode_int_sequence(row[SEQUENCE]))
                 quality = phred_to_fastq_quality_string(row[QUALITY])
                 handle = _handle_for(barcode)
-                handle.write(f"@{read_id}\n{sequence}\n+\n{quality}\n")
+                handle.write(f"@{names.loc[read_id]}\n{sequence}\n+\n{quality}\n")
                 counts[barcode] += 1
     finally:
         for handle in handles.values():

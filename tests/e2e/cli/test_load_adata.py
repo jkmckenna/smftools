@@ -5,12 +5,14 @@ from __future__ import annotations
 import csv
 import importlib
 import importlib.resources as resources
+import random
 import shutil
 import sys
 import types
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from smftools.cli.load_adata import load_adata
@@ -120,3 +122,107 @@ def test_partitioned_existing_bams_produce_one_raw_generation(tmp_path: Path):
     assert spine.n_obs == 4
     assert spine.obs_names.is_unique
     assert set(spine.obs["namespace"].astype(str)) == {"lane-1", "lane-2"}
+
+
+@pytest.mark.e2e
+def test_sequence_export_bundle_reingests_as_fresh_raw_generation(tmp_path: Path, monkeypatch):
+    if shutil.which("minimap2") is None:
+        pytest.skip("minimap2 is required for the export-bundle round trip")
+    from types import SimpleNamespace
+
+    from smftools.cli import helpers
+    from smftools.cli.export_fastq import export_fastq_for_experiment
+    from smftools.informatics.raw_store import write_raw_store
+
+    rng = random.Random(13)
+    reference_sequence = "".join(rng.choices("ACGT", k=2400))
+    read_sequence = reference_sequence[500:1100]
+    encoding = {base: index for index, base in enumerate("ACGT")}
+    source = write_raw_store(
+        pd.DataFrame(
+            [
+                {
+                    "read_id": "duplicate-prone-name",
+                    "reference": "ref",
+                    "Reference_strand": "ref_top",
+                    "barcode": "bc01",
+                    "sample": "sample-one",
+                    "reference_start": 500,
+                    "cigar": "600M",
+                    "aligned_length": 600,
+                    "sequence": [encoding[base] for base in read_sequence],
+                    "quality": [30] * 600,
+                    "mismatch": [4] * 600,
+                    "read_length": 600,
+                    "mapped_length": 600,
+                    "reference_length": 2400,
+                    "read_quality": 30,
+                    "mapping_quality": 60,
+                    "read_length_to_reference_length_ratio": 0.25,
+                    "mapped_length_to_reference_length_ratio": 0.25,
+                    "mapped_length_to_read_length_ratio": 1.0,
+                }
+            ]
+        ),
+        tmp_path / "source" / "raw_outputs",
+        reference_lengths={"ref_top": 2400},
+        extra_uns={"modality": "conversion"},
+    )
+    source_paths = SimpleNamespace(
+        raw_spine=source["spine"], preprocess_spine=None, pp_dedup=None, pp=None
+    )
+    source_cfg = SimpleNamespace(
+        experiment_name="source",
+        sample_name_col_for_plotting="Sample",
+        smf_modality="conversion",
+        trim=False,
+    )
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: source_cfg)
+    monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg: source_paths)
+    bundle = tmp_path / "bundle"
+    export_fastq_for_experiment("source.csv", bundle, allow_unfiltered=True)
+
+    fasta = tmp_path / "reference.fasta"
+    fasta.write_text(f">ref\n{reference_sequence}\n", encoding="utf-8")
+    config = tmp_path / "reingest.csv"
+    values = {
+        "smf_modality": "conversion",
+        "alignment_mode": "align",
+        "aligner": "minimap2",
+        "align_from_bam": "False",
+        "input_manifest_path": str(bundle / "bundle_manifest.json"),
+        "fasta": str(fasta),
+        "output_directory": str(tmp_path / "reingested"),
+        "experiment_name": "reingested",
+        "samtools_backend": "python",
+        "skip_bam_split": "True",
+        "skip_bam_qc": "True",
+        "input_already_demuxed": "True",
+        "make_beds": "False",
+        "make_bigwigs": "False",
+        "threads": "1",
+        "max_memory_gb": "4",
+    }
+    with config.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["variable", "value", "type"])
+        writer.writeheader()
+        for variable, value in values.items():
+            value_type = (
+                "bool"
+                if value in {"True", "False"}
+                else "int"
+                if variable == "threads"
+                else "float"
+                if variable == "max_memory_gb"
+                else "str"
+            )
+            writer.writerow({"variable": variable, "value": value, "type": value_type})
+
+    monkeypatch.undo()
+    spine, spine_path, _cfg = raw_adata(str(config))
+
+    identity = pd.read_csv(bundle / "identity_map.csv").iloc[0]
+    assert spine_path.is_file()
+    assert spine.n_obs == 1
+    assert spine.obs.iloc[0]["template_id"] == identity["bundle_template_id"]
+    assert spine.obs.iloc[0]["Sample"] == "sample-one"
