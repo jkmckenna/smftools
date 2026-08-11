@@ -105,6 +105,13 @@ def _run_root_from_spine_path(spine_path: Path) -> Path:
     return spine_path.parent.parent
 
 
+def _run_root_from_source_base(base: Path) -> Path:
+    """Recover the run root from a raw-store base, including generations."""
+    if base.parent.name in {"generations", ".staging"}:
+        return base.parent.parent.parent
+    return base.parent
+
+
 def _resolve_spine(spine, base_dir):
     """Return ``(spine_adata, base_dir)`` resolving partition path resolution root.
 
@@ -934,6 +941,7 @@ def materialize(
                 if not candidate_read_ids:
                     raise ValueError("materialize: selection matched no molecules")
 
+    spine_path = Path(spine) if isinstance(spine, (str, Path)) else None
     spine_obj, base = _resolve_spine(spine, base_dir)
     if not bool(spine_obj.uns.get("is_spine", False)):
         # Legacy monolithic AnnData (pre-partitioned-store pipeline): already
@@ -952,10 +960,14 @@ def materialize(
         )
     # Cross-stage uns pointers (preprocess_catalog, hmm_catalog, preprocess_var, ...)
     # are stored relative to the run's output_directory, not `base` (which is the
-    # raw store's own directory) -- see _run_root_from_spine_path. `base` is always
-    # a direct child of output_directory by construction, so its parent recovers it
-    # without needing the original spine_path here.
-    run_root = base.parent
+    # raw store's own directory) -- see _run_root_from_spine_path. Immutable raw
+    # generations add ``generations/<id>`` below ``raw_outputs``, so ``base.parent``
+    # is not necessarily the run root.
+    run_root = (
+        _run_root_from_spine_path(spine_path)
+        if spine_path is not None
+        else _run_root_from_source_base(base)
+    )
     requested_read_metrics: bool | set[str] = (
         read_metrics if isinstance(read_metrics, bool) else set(read_metrics)
     )

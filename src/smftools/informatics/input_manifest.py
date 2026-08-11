@@ -277,7 +277,14 @@ def _validate_declarations(
     if kind in {"sam", "cram"}:
         raise InputManifestError(f"{kind.upper()} input is not supported yet.")
     if alignment_mode == "existing":
-        raise InputManifestError("alignment_mode='existing' is reserved but not implemented yet.")
+        if kind not in {"unaligned_bam", "aligned_bam"}:
+            raise InputManifestError("alignment_mode='existing' requires one aligned BAM input.")
+        if any(
+            _nonempty(item.values.get("source_kind")) == "unaligned_bam" for item in declarations
+        ):
+            raise InputManifestError(
+                "alignment_mode='existing' conflicts with source_kind='unaligned_bam'."
+            )
     if kind in {"unaligned_bam", "aligned_bam"} and len(declarations) != 1:
         raise InputManifestError("Multiple BAM input sources are not supported yet.")
     return kind, resolved_paths
@@ -399,6 +406,9 @@ def _normalized_row(
     values = declaration.values
     kind = _source_kind(declaration.path, values.get("source_kind", ""))
     inferred: list[str] = []
+    if alignment_mode == "existing" and kind == "unaligned_bam":
+        kind = "aligned_bam"
+        inferred.append("source_kind")
     metadata = {key: values.get(key, "") for key in _CANONICAL_COLUMNS}
     if kind == "fastq" and auto_pair and not (metadata["pair_id"] and metadata["mate"]):
         inferred_values, inferred_names = _infer_fastq_metadata(declaration.path)

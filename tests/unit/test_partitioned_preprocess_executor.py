@@ -889,6 +889,30 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
     assert bool(derived.var.loc["0", "position_in_ref_top"])
 
 
+def test_materialize_derived_layer_from_immutable_raw_generation(tmp_path):
+    staging_raw = tmp_path / "raw-staging"
+    write_raw_store(
+        _frame(),
+        staging_raw,
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    generation = tmp_path / "raw_outputs" / "generations" / "generation-a"
+    generation.parent.mkdir(parents=True)
+    staging_raw.rename(generation)
+
+    outputs = execute_partitioned_preprocessing(
+        generation / "spine.h5ad",
+        _cfg(),
+        tmp_path / "preprocess_outputs",
+    )
+    restored = materialize(outputs["spine"], layers=["nan0_0minus1"])
+
+    assert "nan0_0minus1" in restored.layers
+    assert restored.shape == (2, 12)
+
+
 def test_partitioned_executor_writes_normalized_stage_obs(tmp_path):
     raw = write_raw_store(
         _frame(),

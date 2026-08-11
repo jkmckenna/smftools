@@ -151,17 +151,34 @@ def test_legacy_bam_defaults_to_align_mode(tmp_path):
     assert config.input_source_role == "reads"
 
 
-def test_existing_alignment_mode_is_reserved_until_ingestion_is_implemented(tmp_path):
+def test_existing_alignment_mode_accepts_one_bam_as_alignment_input(tmp_path):
     input_path = _touch(tmp_path / "aligned.bam")
 
-    with pytest.raises(ValueError, match="reserved but not implemented"):
-        ExperimentConfig.from_var_dict(
-            {
-                "input_data_path": str(input_path),
-                "alignment_mode": "existing",
-            },
-            defaults_map={},
-        )
+    config, _ = ExperimentConfig.from_var_dict(
+        {
+            "input_data_path": str(input_path),
+            "alignment_mode": "existing",
+        },
+        defaults_map={},
+    )
+
+    assert config.alignment_mode == "existing"
+    assert config.input_source_role == "alignment"
+
+
+def test_existing_alignment_does_not_validate_the_external_aligner_name(tmp_path):
+    input_path = _touch(tmp_path / "aligned.bam")
+
+    config, _ = ExperimentConfig.from_var_dict(
+        {
+            "input_data_path": str(input_path),
+            "alignment_mode": "existing",
+            "aligner": "external-workflow",
+        },
+        defaults_map={},
+    )
+
+    assert config.aligner == "external-workflow"
 
 
 def test_direct_modification_fastq_fails_as_signal_incapable(tmp_path):
