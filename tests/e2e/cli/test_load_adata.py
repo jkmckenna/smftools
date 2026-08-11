@@ -125,6 +125,195 @@ def test_partitioned_existing_bams_produce_one_raw_generation(tmp_path: Path):
 
 
 @pytest.mark.e2e
+def test_existing_bam_source_append_publishes_new_complete_generation(tmp_path: Path):
+    pysam = pytest.importorskip("pysam")
+    from smftools.informatics.raw_generation import resolve_current_raw_generation
+
+    source = Path("tests/_test_inputs/parallel_dispatch/sample.bam").resolve()
+    fasta = tmp_path / "sample.fasta"
+    shutil.copy2(Path("tests/_test_inputs/parallel_dispatch/sample.fasta").resolve(), fasta)
+    partitions = [tmp_path / "lane-1.bam", tmp_path / "lane-2.bam"]
+    with pysam.AlignmentFile(str(source), "rb") as input_bam:
+        outputs = [
+            pysam.AlignmentFile(str(path), "wb", header=input_bam.header) for path in partitions
+        ]
+        try:
+            for index, record in enumerate(input_bam.fetch(until_eof=True)):
+                outputs[index % len(outputs)].write(record)
+        finally:
+            for output in outputs:
+                output.close()
+
+    manifest = tmp_path / "inputs.csv"
+    fieldnames = ["path", "source_kind", "namespace", "sample", "barcode"]
+    with manifest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "path": partitions[0].name,
+                "source_kind": "aligned_bam",
+                "namespace": "lane-1",
+                "sample": "sample",
+                "barcode": "sample",
+            }
+        )
+
+    config = tmp_path / "config.csv"
+    values = {
+        "smf_modality": "direct",
+        "alignment_mode": "existing",
+        "input_manifest_path": str(manifest),
+        "fasta": str(fasta),
+        "output_directory": str(tmp_path / "output"),
+        "experiment_name": "append-e2e",
+        "direct_signal_backend": "pysam",
+        "samtools_backend": "python",
+        "skip_bam_split": "True",
+        "skip_bam_qc": "True",
+        "input_already_demuxed": "True",
+        "make_beds": "False",
+        "make_bigwigs": "False",
+        "threads": "1",
+        "max_memory_gb": "4",
+    }
+    with config.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["variable", "value", "type"])
+        writer.writeheader()
+        for variable, value in values.items():
+            value_type = (
+                "bool"
+                if value in {"True", "False"}
+                else "int"
+                if variable == "threads"
+                else "float"
+                if variable == "max_memory_gb"
+                else "str"
+            )
+            writer.writerow({"variable": variable, "value": value, "type": value_type})
+
+    first_spine, _first_path, _cfg = raw_adata(str(config))
+    first_generation, _first_manifest = resolve_current_raw_generation(
+        tmp_path / "output" / "raw_outputs"
+    )
+    with manifest.open("a", newline="", encoding="utf-8") as handle:
+        csv.DictWriter(handle, fieldnames=fieldnames).writerow(
+            {
+                "path": partitions[1].name,
+                "source_kind": "aligned_bam",
+                "namespace": "lane-2",
+                "sample": "sample",
+                "barcode": "sample",
+            }
+        )
+
+    appended_spine, _appended_path, _cfg = raw_adata(str(config))
+    second_generation, second_manifest = resolve_current_raw_generation(
+        tmp_path / "output" / "raw_outputs"
+    )
+
+    assert first_spine.n_obs == 2
+    assert appended_spine.n_obs == 4
+    assert second_generation != first_generation
+    assert first_generation.is_dir()
+    assert second_manifest["source_transition"]["kind"] == "append_only"
+    assert len(second_manifest["source_transition"]["added_source_ids"]) == 1
+    assert second_manifest["reuse"]["reused_files"] > 0
+
+
+@pytest.mark.e2e
+def test_fastq_source_append_aligns_only_new_source(tmp_path: Path):
+    if shutil.which("minimap2") is None:
+        pytest.skip("minimap2 is required for the FASTQ append round trip")
+    from smftools.informatics.raw_generation import resolve_current_raw_generation
+
+    rng = random.Random(14)
+    reference_sequence = "".join(rng.choices("ACGT", k=2600))
+    fasta = tmp_path / "reference.fasta"
+    fasta.write_text(f">ref\n{reference_sequence}\n", encoding="utf-8")
+    fastqs = [tmp_path / "first.fastq", tmp_path / "second.fastq"]
+    for index, path in enumerate(fastqs):
+        sequence = reference_sequence[400 + index * 700 : 1000 + index * 700]
+        path.write_text(
+            f"@read-{index + 1}\n{sequence}\n+\n{'I' * len(sequence)}\n",
+            encoding="utf-8",
+        )
+
+    manifest = tmp_path / "inputs.csv"
+    fieldnames = ["path", "namespace", "sample", "barcode"]
+    with manifest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "path": fastqs[0].name,
+                "namespace": "lane-1",
+                "sample": "sample",
+                "barcode": "sample",
+            }
+        )
+
+    config = tmp_path / "config.csv"
+    values = {
+        "smf_modality": "conversion",
+        "alignment_mode": "align",
+        "aligner": "minimap2",
+        "align_from_bam": "False",
+        "input_manifest_path": str(manifest),
+        "fasta": str(fasta),
+        "output_directory": str(tmp_path / "output"),
+        "experiment_name": "fastq-append-e2e",
+        "samtools_backend": "python",
+        "skip_bam_split": "True",
+        "skip_bam_qc": "True",
+        "input_already_demuxed": "True",
+        "make_beds": "False",
+        "make_bigwigs": "False",
+        "threads": "1",
+        "max_memory_gb": "4",
+    }
+    with config.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["variable", "value", "type"])
+        writer.writeheader()
+        for variable, value in values.items():
+            value_type = (
+                "bool"
+                if value in {"True", "False"}
+                else "int"
+                if variable == "threads"
+                else "float"
+                if variable == "max_memory_gb"
+                else "str"
+            )
+            writer.writerow({"variable": variable, "value": value, "type": value_type})
+
+    first_spine, _path, _cfg = raw_adata(str(config))
+    first_generation, _manifest = resolve_current_raw_generation(
+        tmp_path / "output" / "raw_outputs"
+    )
+    with manifest.open("a", newline="", encoding="utf-8") as handle:
+        csv.DictWriter(handle, fieldnames=fieldnames).writerow(
+            {
+                "path": fastqs[1].name,
+                "namespace": "lane-2",
+                "sample": "sample",
+                "barcode": "sample",
+            }
+        )
+
+    appended_spine, _path, _cfg = raw_adata(str(config))
+    second_generation, second_manifest = resolve_current_raw_generation(
+        tmp_path / "output" / "raw_outputs"
+    )
+
+    assert first_spine.n_obs == 1
+    assert appended_spine.n_obs == 2
+    assert first_generation.is_dir() and second_generation != first_generation
+    assert second_manifest["source_transition"]["kind"] == "append_only"
+    assert second_manifest["reuse"]["reused_files"] > 0
+
+
+@pytest.mark.e2e
 def test_sequence_export_bundle_reingests_as_fresh_raw_generation(tmp_path: Path, monkeypatch):
     if shutil.which("minimap2") is None:
         pytest.skip("minimap2 is required for the export-bundle round trip")

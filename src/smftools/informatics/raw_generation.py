@@ -78,12 +78,52 @@ def _resolve_generation_artifact(
     return resolved
 
 
-def _copy_artifact(source: Path, destination: Path) -> None:
+def _copy_artifact(
+    source: Path,
+    destination: Path,
+    *,
+    reuse_source: Path | None = None,
+    reuse_stats: dict[str, int] | None = None,
+) -> None:
+    """Copy an artifact, hardlinking checksum-identical immutable files."""
+    stats = reuse_stats if reuse_stats is not None else {}
+
+    def copy_file(source_file: Path, destination_file: Path, candidate: Path | None) -> None:
+        destination_file.parent.mkdir(parents=True, exist_ok=True)
+        size = source_file.stat().st_size
+        if (
+            candidate is not None
+            and candidate.is_file()
+            and candidate.stat().st_size == size
+            and _checksum(candidate) == _checksum(source_file)
+        ):
+            os.link(candidate, destination_file)
+            stats["reused_files"] = stats.get("reused_files", 0) + 1
+            stats["reused_bytes"] = stats.get("reused_bytes", 0) + size
+        else:
+            shutil.copy2(source_file, destination_file)
+            stats["new_files"] = stats.get("new_files", 0) + 1
+            stats["new_bytes"] = stats.get("new_bytes", 0) + size
+
     if source.is_dir():
-        shutil.copytree(source, destination)
+        destination.mkdir(parents=True)
+        for path in sorted(source.rglob("*")):
+            relative = path.relative_to(source)
+            target = destination / relative
+            candidate = reuse_source / relative if reuse_source is not None else None
+            if path.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif path.is_file():
+                copy_file(path, target, candidate)
+            else:
+                raise RawGenerationError(f"unsupported raw publication artifact: {path}")
     else:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        copy_file(source, destination, reuse_source)
+
+
+def _artifact_file_totals(path: Path) -> tuple[int, int]:
+    files = [path] if path.is_file() else [item for item in path.rglob("*") if item.is_file()]
+    return len(files), sum(item.stat().st_size for item in files)
 
 
 def raw_generation_dependencies(
@@ -272,6 +312,18 @@ def validate_raw_generation(
             raise RawGenerationError(f"raw generation dependency escapes run root: {key}")
         if not dependency.exists() or str(record.get("sha256", "")) != _checksum(dependency):
             raise RawGenerationError(f"raw generation dependency is missing or corrupt: {key}")
+    transition = manifest.get("source_transition", {})
+    if transition:
+        if not isinstance(transition, dict) or int(transition.get("schema_version", -1)) != 1:
+            raise RawGenerationError("raw generation source transition is invalid")
+        if transition.get("kind") != "append_only" or not transition.get("added_source_ids"):
+            raise RawGenerationError("raw generation append transition is incomplete")
+        reuse = manifest.get("reuse")
+        if not isinstance(reuse, dict) or not reuse.get("generation_id"):
+            raise RawGenerationError("raw generation append reuse provenance is missing")
+        for field in ("reused_files", "reused_bytes", "new_files", "new_bytes"):
+            if int(reuse.get(field, -1)) < 0:
+                raise RawGenerationError("raw generation append reuse counts are invalid")
     return manifest
 
 
@@ -319,6 +371,8 @@ def publish_raw_generation(
     dependencies: Mapping[str, str | Path] | None = None,
     region_artifacts: Mapping[str, str | Path] | None = None,
     generation_id: str | None = None,
+    reuse_generation: str | Path | None = None,
+    source_transition: Mapping[str, Any] | None = None,
 ) -> dict[str, Path | str]:
     """Snapshot, validate, and atomically select one immutable raw generation."""
     run_root = Path(run_root)
@@ -335,6 +389,16 @@ def publish_raw_generation(
         # A corrupt selector must not prevent a recomputation from publishing a
         # new valid generation. It is deliberately not restored on rollback.
         previous_current = None
+    reuse_root = Path(reuse_generation) if reuse_generation is not None else None
+    reuse_manifest: dict[str, Any] | None = None
+    if reuse_root is not None:
+        reuse_manifest = validate_raw_generation(reuse_root, run_root=run_root)
+    reuse_stats: dict[str, int] = {
+        "reused_files": 0,
+        "reused_bytes": 0,
+        "new_files": 0,
+        "new_bytes": 0,
+    }
     staging_dir.mkdir(parents=True)
     final_dir.parent.mkdir(parents=True, exist_ok=True)
     moved_to_final = False
@@ -371,7 +435,18 @@ def publish_raw_generation(
                 if key.startswith("region:")
                 else normalized_sources[key]
             )
-            _copy_artifact(source, staging_dir / relative)
+            if reuse_root is None:
+                file_count, byte_count = _artifact_file_totals(source)
+                reuse_stats["new_files"] += file_count
+                reuse_stats["new_bytes"] += byte_count
+                _copy_artifact(source, staging_dir / relative)
+            else:
+                _copy_artifact(
+                    source,
+                    staging_dir / relative,
+                    reuse_source=reuse_root / relative,
+                    reuse_stats=reuse_stats,
+                )
         _bind_generation_spine(
             staging_dir / "spine.h5ad",
             generation_id=generation_id,
@@ -400,6 +475,15 @@ def publish_raw_generation(
                 "region_artifacts": region_relatives,
                 "artifacts": artifacts,
                 "dependencies": dependency_records,
+                "source_transition": dict(source_transition or {}),
+                "reuse": {
+                    "generation_id": (
+                        str(reuse_manifest.get("generation_id"))
+                        if reuse_manifest is not None
+                        else None
+                    ),
+                    **reuse_stats,
+                },
             },
         )
         validate_raw_generation(

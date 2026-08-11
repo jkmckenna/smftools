@@ -1674,7 +1674,16 @@ def raw_adata(config_path: str):
     # when a current generation is corrupt.
     paths = get_adata_paths(cfg, allow_invalid_raw=True)
     required = PARTITIONED_STAGE_REQUIRED_ARTIFACTS["raw"]
-    from ..informatics.input_manifest import input_manifest_artifact_paths
+    from ..informatics.input_manifest import (
+        input_manifest_artifact_paths,
+        resolve_input_manifest_readonly,
+    )
+    from ..informatics.raw_append import (
+        RawAppendAssembly,
+        assemble_raw_append,
+        discard_raw_append_assembly,
+        plan_raw_append,
+    )
     from ..informatics.raw_generation import (
         RawGenerationError,
         publish_raw_generation,
@@ -1690,6 +1699,11 @@ def raw_adata(config_path: str):
         SEGMENTS_FILENAME,
     )
     from ..informatics.sidecar_manifest import sidecar_manifest_path
+
+    append_assembly: RawAppendAssembly | None = None
+    append_plan = None
+    raw_config_hash = stage_config_hash(cfg, "raw")
+    requested_raw_input_ids = raw_input_artifact_ids(cfg)
 
     def publication_inputs():
         canonical_raw_root = Path(cfg.output_directory) / RAW_DIR
@@ -1708,8 +1722,10 @@ def raw_adata(config_path: str):
             "sidecar_manifest": sidecar_manifest_path(canonical_raw_root),
             **input_manifest_artifact_paths(cfg.output_directory),
         }
+        if append_assembly is not None:
+            sources.update(append_assembly.sources)
         barcode_index = canonical_raw_root / BARCODE_INDEX_FILENAME
-        if barcode_index.exists():
+        if "barcode_index" not in sources and barcode_index.exists():
             sources["barcode_index"] = barcode_index
         regions = {
             scope: Path(cfg.output_directory) / REGION_CATALOG_DIRNAME / filename
@@ -1729,10 +1745,18 @@ def raw_adata(config_path: str):
         return publish_raw_generation(
             cfg.output_directory,
             sources,
-            config_hash=stage_config_hash(cfg, "raw"),
-            input_artifact_ids=raw_input_artifact_ids(cfg),
+            config_hash=raw_config_hash,
+            input_artifact_ids=requested_raw_input_ids,
             dependencies=dependencies,
             region_artifacts=regions,
+            reuse_generation=(
+                current_generation[0] if append_plan is not None and append_plan.eligible else None
+            ),
+            source_transition=(
+                append_plan.transition.to_dict()
+                if append_plan is not None and append_plan.eligible
+                else None
+            ),
         )
 
     def lifecycle_outputs(generation):
@@ -1768,10 +1792,34 @@ def raw_adata(config_path: str):
             logger.info("Raw generation is already complete: %s", current_generation[0])
             mark_stage_outcome("skipped", reason="compatible raw generation is already complete")
             return spine, current_spine, cfg
-        logger.warning(
-            "Raw generation exists without a compatible complete stage record; rebuilding: %s",
-            current_generation[0],
+        requested_manifest = resolve_input_manifest_readonly(
+            input_manifest_path=cfg.input_manifest_path,
+            input_paths=None if cfg.input_manifest_path else cfg.input_files,
+            alignment_mode=cfg.alignment_mode,
+            modality=cfg.smf_modality,
+            barcode_map=cfg.fastq_barcode_map,
+            auto_pair=cfg.fastq_auto_pairing,
         )
+        append_plan = plan_raw_append(
+            current_generation[0],
+            requested_manifest,
+            run_root=cfg.output_directory,
+            config_hash=raw_config_hash,
+            input_artifact_ids=requested_raw_input_ids,
+        )
+        if append_plan.eligible:
+            cfg._raw_append_source_ids = append_plan.transition.added_source_ids
+            logger.info(
+                "Raw source transition is append-only: reusing %d and processing %d source(s)",
+                len(append_plan.transition.reused_source_ids),
+                len(append_plan.transition.added_source_ids),
+            )
+        else:
+            logger.warning(
+                "Raw generation requires a full recompute (%s): %s",
+                append_plan.reason,
+                current_generation[0],
+            )
 
     legacy_required = tuple(
         key
@@ -1789,14 +1837,28 @@ def raw_adata(config_path: str):
     with stage_lifecycle(
         cfg,
         "raw",
-        input_artifact_ids=raw_input_artifact_ids(cfg),
+        input_artifact_ids=requested_raw_input_ids,
     ) as lifecycle:
         if migrate_legacy:
             logger.info("Migrating compatible legacy raw artifacts into an immutable generation")
         else:
             with perf_substep("raw_pipeline"):
                 result = load_adata_core(cfg, paths, config_path=config_path, raw_only=True)
-        generation = publish_generation()
+        if append_plan is not None and append_plan.eligible:
+            append_assembly = assemble_raw_append(
+                cfg.output_directory,
+                current_generation[0],
+                transition=append_plan.transition.to_dict(),
+                analysis_mode=getattr(cfg, "analysis_mode", "auto"),
+                load_cache_mode=getattr(cfg, "load_cache_mode", "auto"),
+                max_full_matrix_gb=float(getattr(cfg, "max_full_matrix_gb", 8.0)),
+                genome_tile_size=int(getattr(cfg, "genome_tile_size", 10_000)),
+                genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
+            )
+        try:
+            generation = publish_generation()
+        finally:
+            discard_raw_append_assembly(append_assembly)
         outputs = lifecycle_outputs(generation)
         generation_spine = Path(generation["spine"])
         spine, _ = safe_read_h5ad(generation_spine)
@@ -1829,6 +1891,17 @@ def raw_adata(config_path: str):
             extra={
                 "n_molecules": int(spine.n_obs),
                 "generation_id": str(generation["generation_id"]),
+                "source_transition": (
+                    append_plan.transition.to_dict()
+                    if append_plan is not None and append_plan.eligible
+                    else None
+                ),
+                "append_reused_molecules": (
+                    append_assembly.reused_molecules if append_assembly is not None else 0
+                ),
+                "append_added_molecules": (
+                    append_assembly.added_molecules if append_assembly is not None else 0
+                ),
             },
             nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["raw"],
         )

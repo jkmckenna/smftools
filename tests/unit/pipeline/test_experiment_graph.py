@@ -331,6 +331,26 @@ def test_raw_manifest_row_reorder_is_compatible_but_membership_change_is_stale(
     assert removed.decisions[0].state is PlanState.STALE_INPUT
 
 
+def test_added_raw_source_invalidates_raw_channel_and_dependent_preprocess(tmp_path, monkeypatch):
+    cfg, first, _fasta = _raw_identity_cfg(tmp_path, manifest=True)
+    _record_raw_identity(cfg)
+    _record_stage(cfg, "preprocess")
+    second = tmp_path / "added.fastq"
+    second.write_bytes(b"added")
+    cfg.input_manifest_path.write_text("path\nreads.fastq\nadded.fastq\n", encoding="utf-8")
+    cfg.input_files = [first, second]
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+    _trust_current_preprocess(monkeypatch, tmp_path)
+
+    plan = experiment_graph.build_experiment_plan(cfg, "preprocess", paths=_paths(tmp_path))
+    states = _states(plan)
+
+    assert states[experiment_graph.EXPERIMENT_NODE_IDS["raw"]] is PlanState.STALE_INPUT
+    assert (
+        states[experiment_graph.EXPERIMENT_NODE_IDS["preprocess"]] is PlanState.DEPENDENT_RECOMPUTE
+    )
+
+
 def test_force_flag_recomputes_target_and_dependents(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, force_redo_load_adata=True)
     paths = _paths(tmp_path)

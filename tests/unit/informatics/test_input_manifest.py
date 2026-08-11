@@ -9,8 +9,12 @@ from smftools.informatics import input_manifest as manifest_module
 from smftools.informatics.input_manifest import (
     HASH_CHUNK_SIZE,
     InputManifestError,
+    InputManifestTransitionKind,
+    classify_input_manifest_transition,
     inspect_input_manifest,
+    read_resolved_input_manifest,
     resolve_input_manifest,
+    subset_input_manifest,
 )
 
 
@@ -381,3 +385,75 @@ def test_inspection_rejects_unknown_columns(tmp_path):
 
     with pytest.raises(InputManifestError, match="Unknown input manifest columns: surprise"):
         inspect_input_manifest(manifest)
+
+
+def test_manifest_transition_classifies_identical_append_and_removal(tmp_path):
+    first = _write(tmp_path / "first.fastq", b"first")
+    second = _write(tmp_path / "second.fastq", b"second")
+    previous = resolve_input_manifest(output_directory=tmp_path / "previous", input_paths=[first])
+    identical = resolve_input_manifest(output_directory=tmp_path / "identical", input_paths=[first])
+    appended = resolve_input_manifest(
+        output_directory=tmp_path / "appended", input_paths=[first, second]
+    )
+
+    same = classify_input_manifest_transition(previous, identical)
+    addition = classify_input_manifest_transition(previous, appended)
+    removal = classify_input_manifest_transition(appended, previous)
+
+    assert same.kind is InputManifestTransitionKind.IDENTICAL
+    assert addition.kind is InputManifestTransitionKind.APPEND_ONLY
+    assert addition.permits_incremental_append
+    assert addition.reused_source_ids == (previous.rows[0].source_id,)
+    assert set(addition.added_source_ids) == {row.source_id for row in appended.rows}.difference(
+        {previous.rows[0].source_id}
+    )
+    assert removal.kind is InputManifestTransitionKind.REMOVED
+
+
+def test_manifest_transition_requires_rebuild_for_content_or_metadata_mutation(tmp_path):
+    source = _write(tmp_path / "sample.fastq", b"v1")
+    previous = resolve_input_manifest(output_directory=tmp_path / "previous", input_paths=[source])
+    source.write_bytes(b"v2")
+    changed_content = resolve_input_manifest(
+        output_directory=tmp_path / "content", input_paths=[source]
+    )
+    assert (
+        classify_input_manifest_transition(previous, changed_content).kind
+        is InputManifestTransitionKind.CONTENT_MUTATED
+    )
+
+    source.write_bytes(b"v1")
+    declared = _manifest(tmp_path / "declared.csv", [{"path": source.name, "sample": "changed"}])
+    changed_metadata = resolve_input_manifest(
+        output_directory=tmp_path / "metadata", input_manifest_path=declared
+    )
+    transition = classify_input_manifest_transition(previous, changed_metadata)
+    assert transition.kind is InputManifestTransitionKind.METADATA_MUTATED
+    assert transition.changed_paths == (str(source.resolve()),)
+
+
+def test_published_manifest_round_trip_and_complete_pair_subset(tmp_path):
+    first = _write(tmp_path / "sample_R1.fastq", b"r1")
+    second = _write(tmp_path / "sample_R2.fastq", b"r2")
+    resolved = resolve_input_manifest(
+        output_directory=tmp_path / "output", input_paths=[first, second]
+    )
+    published = read_resolved_input_manifest(
+        tmp_path / "output" / "raw_outputs" / "input_manifest" / "resolved_input_manifest.json"
+    )
+
+    assert published.digest == resolved.digest
+    assert subset_input_manifest(published, (row.source_id for row in published.rows)).digest == (
+        resolved.digest
+    )
+    with pytest.raises(InputManifestError, match="exactly one R1 and one R2"):
+        subset_input_manifest(published, [published.rows[0].source_id])
+
+    published_path = (
+        tmp_path / "output" / "raw_outputs" / "input_manifest" / "resolved_input_manifest.json"
+    )
+    payload = json.loads(published_path.read_text())
+    payload["sources"][0]["source_id"] = "0" * 64
+    published_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(InputManifestError, match="invalid source identity"):
+        read_resolved_input_manifest(published_path)

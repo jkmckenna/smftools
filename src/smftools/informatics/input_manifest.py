@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 from collections import Counter
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -63,6 +64,17 @@ _AMBIGUOUS_MATE_TOKEN_RE = re.compile(r"(?:^|[._-])(?:R|read)?[12](?:[._-]|$)", 
 
 class InputManifestError(ValueError):
     """Raised when input declarations cannot be normalized safely."""
+
+
+class InputManifestTransitionKind(str, Enum):
+    """Relationship between a selected and requested canonical source set."""
+
+    IDENTICAL = "identical"
+    APPEND_ONLY = "append_only"
+    REMOVED = "removed"
+    CONTENT_MUTATED = "content_mutated"
+    METADATA_MUTATED = "metadata_mutated"
+    REPLACED = "replaced"
 
 
 @dataclass(frozen=True)
@@ -166,6 +178,37 @@ class ResolvedInputManifest:
 
 
 @dataclass(frozen=True)
+class InputManifestTransition:
+    """Deterministic source-set transition used by immutable raw ingestion."""
+
+    kind: InputManifestTransitionKind
+    previous_digest: str
+    current_digest: str
+    reused_source_ids: tuple[str, ...] = ()
+    added_source_ids: tuple[str, ...] = ()
+    removed_source_ids: tuple[str, ...] = ()
+    changed_paths: tuple[str, ...] = ()
+
+    @property
+    def permits_incremental_append(self) -> bool:
+        """Return whether only complete new sources were added."""
+        return self.kind is InputManifestTransitionKind.APPEND_ONLY
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return stable schema-1 provenance for generation manifests."""
+        return {
+            "schema_version": 1,
+            "kind": self.kind.value,
+            "previous_digest": self.previous_digest,
+            "current_digest": self.current_digest,
+            "reused_source_ids": list(self.reused_source_ids),
+            "added_source_ids": list(self.added_source_ids),
+            "removed_source_ids": list(self.removed_source_ids),
+            "changed_paths": list(self.changed_paths),
+        }
+
+
+@dataclass(frozen=True)
 class InspectedInputManifest:
     """Lightweight structural result used during config loading."""
 
@@ -182,6 +225,155 @@ class _Declaration:
 
 def _json_bytes(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def input_manifest_digest(rows: Sequence[InputManifestRow]) -> str:
+    """Return the relocation-invariant digest for canonical rows."""
+    ordered = sorted(rows, key=lambda row: (row.pair_id, row.mate, row.source_id))
+    return hashlib.sha256(_json_bytes([row.identity() for row in ordered])).hexdigest()
+
+
+def subset_input_manifest(
+    manifest: ResolvedInputManifest,
+    source_ids: Iterable[str],
+) -> ResolvedInputManifest:
+    """Return a validated canonical subset for source-scoped execution."""
+    selected_ids = {str(value) for value in source_ids}
+    rows = tuple(row for row in manifest.rows if row.source_id in selected_ids)
+    missing = sorted(selected_ids.difference(row.source_id for row in rows))
+    if missing:
+        raise InputManifestError(f"Input manifest subset contains unknown source IDs: {missing}")
+    if not rows:
+        raise InputManifestError("Input manifest subset cannot be empty.")
+    _validate_pairs(rows)
+    return ResolvedInputManifest(
+        rows=rows,
+        digest=input_manifest_digest(rows),
+        resolution_method=f"{manifest.resolution_method}:subset",
+        base_directory=manifest.base_directory,
+        warnings=manifest.warnings,
+        cache_hits=manifest.cache_hits,
+        cache_misses=manifest.cache_misses,
+    )
+
+
+def read_resolved_input_manifest(path: str | Path) -> ResolvedInputManifest:
+    """Read and verify a previously published canonical manifest JSON."""
+    manifest_path = Path(path)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InputManifestError(
+            f"Published input manifest is unreadable: {manifest_path}"
+        ) from exc
+    if int(payload.get("schema_version", -1)) != INPUT_MANIFEST_SCHEMA_VERSION:
+        raise InputManifestError("Published input manifest schema is incompatible.")
+    source_records = payload.get("sources")
+    if not isinstance(source_records, list) or not source_records:
+        raise InputManifestError("Published input manifest contains no source rows.")
+    rows: list[InputManifestRow] = []
+    try:
+        for record in source_records:
+            if not isinstance(record, Mapping):
+                raise TypeError
+            rows.append(
+                InputManifestRow(
+                    source_id=str(record["source_id"]),
+                    path=str(record["path"]),
+                    sha256=str(record["sha256"]),
+                    size_bytes=int(record["size_bytes"]),
+                    source_kind=str(record["source_kind"]),
+                    source_role=str(record["source_role"]),
+                    sample=str(record.get("sample", "")),
+                    barcode=str(record.get("barcode", "")),
+                    read_group=str(record.get("read_group", "")),
+                    pair_id=str(record.get("pair_id", "")),
+                    mate=str(record.get("mate", "unpaired")),
+                    namespace=str(record.get("namespace", "")),
+                    modification_capability=str(
+                        record.get("modification_capability", "sequence_only")
+                    ),
+                    trimmed=str(record.get("trimmed", "unknown")),
+                    inferred_fields=tuple(
+                        value
+                        for value in str(record.get("inferred_fields", "")).split(";")
+                        if value
+                    ),
+                )
+            )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InputManifestError("Published input manifest source rows are invalid.") from exc
+    rows.sort(key=lambda row: (row.pair_id, row.mate, row.source_id))
+    if any(
+        row.source_id != hashlib.sha256(_json_bytes(row.identity())).hexdigest() for row in rows
+    ):
+        raise InputManifestError("Published input manifest contains an invalid source identity.")
+    _validate_pairs(rows)
+    digest = input_manifest_digest(rows)
+    if str(payload.get("manifest_digest", "")) != digest:
+        raise InputManifestError("Published input manifest digest does not match its source rows.")
+    return ResolvedInputManifest(
+        rows=tuple(rows),
+        digest=digest,
+        resolution_method=str(payload.get("resolution_method", "published")),
+        base_directory=str(payload.get("base_directory", manifest_path.parent)),
+        warnings=tuple(map(str, payload.get("warnings", ()))),
+    )
+
+
+def classify_input_manifest_transition(
+    previous: ResolvedInputManifest,
+    current: ResolvedInputManifest,
+) -> InputManifestTransition:
+    """Classify whether a requested source set is a safe append or rebuild."""
+    previous_by_id = {row.source_id: row for row in previous.rows}
+    current_by_id = {row.source_id: row for row in current.rows}
+    previous_ids = set(previous_by_id)
+    current_ids = set(current_by_id)
+    reused = tuple(sorted(previous_ids & current_ids))
+    added = tuple(sorted(current_ids - previous_ids))
+    removed = tuple(sorted(previous_ids - current_ids))
+    if not added and not removed:
+        kind = InputManifestTransitionKind.IDENTICAL
+        changed_paths: tuple[str, ...] = ()
+    elif not removed:
+        kind = InputManifestTransitionKind.APPEND_ONLY
+        changed_paths = ()
+    else:
+        removed_rows = [previous_by_id[source_id] for source_id in removed]
+        added_rows = [current_by_id[source_id] for source_id in added]
+        current_by_path = {str(Path(row.path).resolve(strict=False)): row for row in added_rows}
+        content_paths: set[str] = set()
+        metadata_paths: set[str] = set()
+        added_by_checksum: dict[str, list[InputManifestRow]] = {}
+        for row in added_rows:
+            added_by_checksum.setdefault(row.sha256, []).append(row)
+        for old in removed_rows:
+            normalized_path = str(Path(old.path).resolve(strict=False))
+            replacement = current_by_path.get(normalized_path)
+            if replacement is not None:
+                target = content_paths if replacement.sha256 != old.sha256 else metadata_paths
+                target.add(normalized_path)
+            elif old.sha256 in added_by_checksum:
+                metadata_paths.add(normalized_path)
+        changed_paths = tuple(sorted(content_paths | metadata_paths))
+        if content_paths:
+            kind = InputManifestTransitionKind.CONTENT_MUTATED
+        elif metadata_paths:
+            kind = InputManifestTransitionKind.METADATA_MUTATED
+        elif added:
+            kind = InputManifestTransitionKind.REPLACED
+        else:
+            kind = InputManifestTransitionKind.REMOVED
+    return InputManifestTransition(
+        kind=kind,
+        previous_digest=previous.digest,
+        current_digest=current.digest,
+        reused_source_ids=reused,
+        added_source_ids=added,
+        removed_source_ids=removed,
+        changed_paths=changed_paths,
+    )
 
 
 def _nonempty(value: Any) -> str:
@@ -646,7 +838,7 @@ def resolve_input_manifest(
             + ", ".join(duplicate_ids)
         )
     _validate_pairs(rows)
-    digest = hashlib.sha256(_json_bytes([row.identity() for row in rows])).hexdigest()
+    digest = input_manifest_digest(rows)
     result = ResolvedInputManifest(
         rows=tuple(rows),
         digest=digest,
