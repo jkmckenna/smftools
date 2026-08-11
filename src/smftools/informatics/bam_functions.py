@@ -2960,6 +2960,8 @@ def concatenate_fastqs_to_bam(
     output_bam: Union[str, Path],
     barcode_tag: str = "BC",
     barcode_map: Optional[Dict[Union[str, Path], str]] = None,
+    read_group_map: Optional[Dict[Union[str, Path], str]] = None,
+    sample_map: Optional[Dict[Union[str, Path], str]] = None,
     add_read_group: bool = True,
     rg_sample_field: Optional[str] = None,
     progress: bool = True,
@@ -2980,6 +2982,10 @@ def concatenate_fastqs_to_bam(
         SAM tag used to store barcode on each read (default 'BC').
     barcode_map : dict or None
         Optional mapping {path: barcode} to override automatic filename-based barcode extraction.
+    read_group_map : dict or None
+        Optional mapping {path: read-group ID}. Paired sources must resolve to one ID.
+    sample_map : dict or None
+        Optional mapping {path: sample label} written to the matching @RG SM field.
     add_read_group : bool
         If True, add @RG header lines (ID = barcode) and set each read's RG tag.
     rg_sample_field : str or None
@@ -3145,6 +3151,7 @@ def concatenate_fastqs_to_bam(
         seq: str,
         qual: Optional[str],
         bc: str,
+        read_group: str,
         read1: bool,
         read2: bool,
     ) -> pysam.AlignedSegment:
@@ -3179,7 +3186,7 @@ def concatenate_fastqs_to_bam(
         a.template_length = 0
         a.set_tag(barcode_tag, str(bc), value_type="Z")
         if add_read_group:
-            a.set_tag("RG", str(bc), value_type="Z")
+            a.set_tag("RG", str(read_group), value_type="Z")
         return a
 
     def _write_sam_line(
@@ -3188,6 +3195,7 @@ def concatenate_fastqs_to_bam(
         seq: str,
         qual: str,
         bc: str,
+        read_group: str,
         *,
         read1: bool,
         read2: bool,
@@ -3202,7 +3210,7 @@ def concatenate_fastqs_to_bam(
             flag = 4
         tags = [f"{barcode_tag}:Z:{bc}"]
         if add_read_group:
-            tags.append(f"RG:Z:{bc}")
+            tags.append(f"RG:Z:{read_group}")
         tag_str = "\t".join(tags)
         if not qual:
             qual = "*"
@@ -3251,18 +3259,37 @@ def concatenate_fastqs_to_bam(
 
     # ---------- barcodes ----------
     barcode_map = {Path(k): v for k, v in (barcode_map or {}).items()}
+    read_group_map = {Path(k): v for k, v in (read_group_map or {}).items()}
+    sample_map = {Path(k): v for k, v in (sample_map or {}).items()}
     per_path_barcode: Dict[Path, str] = {}
+    per_path_read_group: Dict[Path, str] = {}
+    read_group_samples: Dict[str, str] = {}
     barcodes_in_order: List[str] = []
 
     for r1, r2 in explicit_pairs:
         bc = barcode_map.get(r1) or barcode_map.get(r2) or _extract_barcode_from_filename(r1)
+        read_group = read_group_map.get(r1) or read_group_map.get(r2) or bc
+        sample = sample_map.get(r1) or sample_map.get(r2) or rg_sample_field
         per_path_barcode[r1] = bc
         per_path_barcode[r2] = bc
+        per_path_read_group[r1] = read_group
+        per_path_read_group[r2] = read_group
+        if sample:
+            previous = read_group_samples.setdefault(str(read_group), str(sample))
+            if previous != str(sample):
+                raise ValueError(f"read group {read_group!r} has conflicting sample labels")
         if bc not in barcodes_in_order:
             barcodes_in_order.append(bc)
     for pth in singles:
         bc = barcode_map.get(pth) or _extract_barcode_from_filename(pth)
+        read_group = read_group_map.get(pth) or bc
+        sample = sample_map.get(pth) or rg_sample_field
         per_path_barcode[pth] = bc
+        per_path_read_group[pth] = read_group
+        if sample:
+            previous = read_group_samples.setdefault(str(read_group), str(sample))
+            if previous != str(sample):
+                raise ValueError(f"read group {read_group!r} has conflicting sample labels")
         if bc not in barcodes_in_order:
             barcodes_in_order.append(bc)
 
@@ -3270,8 +3297,9 @@ def concatenate_fastqs_to_bam(
     header = {"HD": {"VN": "1.6", "SO": "unknown"}, "SQ": []}
     if add_read_group:
         header["RG"] = [
-            {"ID": bc, **({"SM": rg_sample_field} if rg_sample_field else {})}
-            for bc in barcodes_in_order
+            {"ID": read_group, **({"SM": sample} if sample else {})}
+            for read_group in sorted(set(per_path_read_group.values()))
+            for sample in [read_group_samples.get(str(read_group), "")]
         ]
     header.setdefault("PG", []).append(
         {"ID": "concat-fastq", "PN": "concatenate_fastqs_to_bam", "VN": "1"}
@@ -3297,10 +3325,11 @@ def concatenate_fastqs_to_bam(
         assert bam_out_ctx.stdin is not None
         header_lines = ["@HD\tVN:1.6\tSO:unknown"]
         if add_read_group:
-            for bc in barcodes_in_order:
-                rg_fields = [f"ID:{bc}"]
-                if rg_sample_field:
-                    rg_fields.append(f"SM:{rg_sample_field}")
+            for read_group in sorted(set(per_path_read_group.values())):
+                rg_fields = [f"ID:{read_group}"]
+                sample = read_group_samples.get(str(read_group), "")
+                if sample:
+                    rg_fields.append(f"SM:{sample}")
                 rg_body = "\t".join(rg_fields)
                 header_lines.append(f"@RG\t{rg_body}")
         header_lines.append("@PG\tID:concat-fastq\tPN:concatenate_fastqs_to_bam\tVN:1")
@@ -3315,6 +3344,7 @@ def concatenate_fastqs_to_bam(
             if not (r1_path.exists() and r2_path.exists()):
                 raise FileNotFoundError(f"Paired file missing: {r1_path} or {r2_path}")
             bc = per_path_barcode.get(r1_path) or per_path_barcode.get(r2_path) or "barcode"
+            read_group = per_path_read_group.get(r1_path) or per_path_read_group.get(r2_path) or bc
 
             if backend_choice == "python":
                 it1 = _fastq_iter(r1_path)
@@ -3360,7 +3390,13 @@ def concatenate_fastqs_to_bam(
                 if rec1 is not None:
                     if backend_choice == "python":
                         a1 = _make_unaligned_segment(
-                            name, rec1.sequence, rec1.quality, bc, read1=True, read2=False
+                            name,
+                            rec1.sequence,
+                            rec1.quality,
+                            bc,
+                            read_group,
+                            read1=True,
+                            read2=False,
                         )
                         bam_out_ctx.write(a1)
                     else:
@@ -3370,6 +3406,7 @@ def concatenate_fastqs_to_bam(
                             rec1[1],
                             rec1[2],
                             bc,
+                            read_group,
                             read1=True,
                             read2=False,
                             add_read_group=add_read_group,
@@ -3379,7 +3416,13 @@ def concatenate_fastqs_to_bam(
                 if rec2 is not None:
                     if backend_choice == "python":
                         a2 = _make_unaligned_segment(
-                            name, rec2.sequence, rec2.quality, bc, read1=False, read2=True
+                            name,
+                            rec2.sequence,
+                            rec2.quality,
+                            bc,
+                            read_group,
+                            read1=False,
+                            read2=True,
                         )
                         bam_out_ctx.write(a2)
                     else:
@@ -3389,6 +3432,7 @@ def concatenate_fastqs_to_bam(
                             rec2[1],
                             rec2[2],
                             bc,
+                            read_group,
                             read1=False,
                             read2=True,
                             add_read_group=add_read_group,
@@ -3412,6 +3456,7 @@ def concatenate_fastqs_to_bam(
             if not pth.exists():
                 raise FileNotFoundError(pth)
             bc = per_path_barcode.get(pth, "barcode")
+            read_group = per_path_read_group.get(pth, bc)
             if backend_choice == "python":
                 iterator = _fastq_iter(pth)
             else:
@@ -3419,7 +3464,13 @@ def concatenate_fastqs_to_bam(
             for rec in iterator:
                 if backend_choice == "python":
                     a = _make_unaligned_segment(
-                        rec.name, rec.sequence, rec.quality, bc, read1=False, read2=False
+                        rec.name,
+                        rec.sequence,
+                        rec.quality,
+                        bc,
+                        read_group,
+                        read1=False,
+                        read2=False,
                     )
                     bam_out_ctx.write(a)
                 else:
@@ -3429,6 +3480,7 @@ def concatenate_fastqs_to_bam(
                         rec[1],
                         rec[2],
                         bc,
+                        read_group,
                         read1=False,
                         read2=False,
                         add_read_group=add_read_group,

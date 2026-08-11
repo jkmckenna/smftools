@@ -137,8 +137,24 @@ class ResolvedInputManifest:
         return [*pairs, *sorted(singles)]
 
     def fastq_barcode_map(self) -> dict[str, str]:
-        """Return filename-to-barcode overrides for declared FASTQ metadata."""
-        return {Path(row.path).name: row.barcode for row in self.rows if row.barcode}
+        """Return declared FASTQ barcodes keyed by resolved source path."""
+        return {
+            row.path: row.barcode for row in self.rows if row.source_kind == "fastq" and row.barcode
+        }
+
+    def fastq_read_group_map(self) -> dict[str, str]:
+        """Return stable FASTQ source/read-pair identifiers for BAM RG tags."""
+        return {
+            row.path: row.read_group or row.pair_id or row.barcode or row.source_id
+            for row in self.rows
+            if row.source_kind == "fastq"
+        }
+
+    def fastq_sample_map(self) -> dict[str, str]:
+        """Return declared FASTQ sample labels keyed by resolved source path."""
+        return {
+            row.path: row.sample for row in self.rows if row.source_kind == "fastq" and row.sample
+        }
 
 
 @dataclass(frozen=True)

@@ -14,6 +14,7 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.analysis_region_plan
    smftools.informatics.artifact_paths
    smftools.informatics.bam_functions
+   smftools.informatics.barcode_sidecar
    smftools.informatics.basecalling
    smftools.informatics.bed_functions
    smftools.informatics.binarize_converted_base_identities

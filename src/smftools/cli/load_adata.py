@@ -159,6 +159,135 @@ def load_dense_cache(config_path: str):
     return spine, cache_paths["spine"], cfg
 
 
+def _publish_canonical_barcode_identity(
+    *,
+    output_directory: str | Path,
+    aligned_bam: str | Path,
+    resolved_input_manifest,
+    route_sidecar: str | Path | None,
+    classifier_source: str,
+    sidecar_manifest: str | Path,
+    force_redo: bool,
+) -> tuple[Path, Path]:
+    """Publish or reuse the canonical barcode/sample identity intermediate."""
+    from ..informatics.barcode_sidecar import (
+        BARCODE_IDENTITY_SCHEMA_VERSION,
+        publish_barcode_identity_sidecar,
+    )
+    from ..informatics.raw_intermediate_manifest import (
+        IntermediateSpec,
+        artifact_checksum,
+        commit_intermediate,
+        committed_output,
+        prepare_intermediate,
+    )
+    from ..informatics.sidecar_manifest import register_sidecar
+
+    aligned_bam = Path(aligned_bam)
+    identity_inputs = [
+        ("aligned-bam", artifact_checksum(aligned_bam)),
+        ("input-manifest", resolved_input_manifest.digest),
+    ]
+    route_sidecar = Path(route_sidecar) if route_sidecar is not None else None
+    if route_sidecar is not None and route_sidecar.is_file():
+        identity_inputs.append(("route-barcode-sidecar", artifact_checksum(route_sidecar)))
+    identity_spec = IntermediateSpec(
+        operation="canonical-barcode-identity",
+        input_artifacts=tuple(identity_inputs),
+        operation_config={
+            "classifier_source": classifier_source,
+            "schema_version": BARCODE_IDENTITY_SCHEMA_VERSION,
+        },
+    )
+    workspace = prepare_intermediate(
+        output_directory,
+        identity_spec,
+        force_redo=force_redo,
+    )
+    if workspace.reusable:
+        barcode_sidecar = committed_output(workspace, "barcode")
+        report = committed_output(workspace, "report")
+        if barcode_sidecar is None or report is None:
+            raise RuntimeError("Validated barcode identity commit is missing an output.")
+        logger.info("Reusing validated canonical barcode identity: %s", workspace.root)
+    else:
+        barcode_sidecar, report = publish_barcode_identity_sidecar(
+            aligned_bam,
+            workspace.root / "barcode.parquet",
+            input_manifest=resolved_input_manifest,
+            classifier_sidecar=route_sidecar,
+            classifier_source=classifier_source,
+        )
+        commit_intermediate(workspace, {"barcode": barcode_sidecar, "report": report})
+    register_sidecar(
+        sidecar_manifest,
+        "barcode",
+        barcode_sidecar,
+        metadata={
+            "schema_version": BARCODE_IDENTITY_SCHEMA_VERSION,
+            "source": "canonical_identity",
+        },
+    )
+    register_sidecar(
+        sidecar_manifest,
+        "barcode_identity_report",
+        report,
+        metadata={"schema_version": BARCODE_IDENTITY_SCHEMA_VERSION},
+    )
+    return Path(barcode_sidecar), Path(report)
+
+
+def _barcode_classifier_source(cfg, *, demux_backend: str) -> str:
+    """Return the provenance tier for route-specific barcode evidence."""
+    if cfg.input_already_demuxed:
+        return "filename"
+    if not cfg.barcode_kit:
+        return "filename"
+    return "sequence:smftools" if demux_backend == "smftools" else "sequence:dorado"
+
+
+def _attach_dense_barcode_identity(
+    raw_adata, sidecar_path: str | Path, experiment_name: str
+) -> None:
+    """Attach canonical identity fields and namespace-aware grouping to dense raw data."""
+    from ..informatics.barcode_sidecar import read_barcode_identity_sidecar
+
+    identity = read_barcode_identity_sidecar(sidecar_path).set_index("read_name")
+    identity = identity.reindex(raw_adata.obs_names)
+    for column in [
+        "barcode",
+        "barcode_source",
+        "barcode_confidence",
+        "sample",
+        "sample_source",
+        "sample_confidence",
+        "read_group",
+        "namespace",
+        "identity_status",
+        "identity_conflicts",
+        "identity_schema_version",
+        "BC",
+        "BM",
+        "bi",
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "B6",
+    ]:
+        if column in identity.columns:
+            raw_adata.obs[column] = identity[column].values
+    namespace = pd.Series(str(experiment_name), index=raw_adata.obs_names)
+    if "namespace" in raw_adata.obs:
+        declared = raw_adata.obs["namespace"].fillna("").astype(str)
+        namespace = declared.where(declared != "", namespace)
+    barcode_column = "barcode" if "barcode" in raw_adata.obs else "Barcode"
+    raw_adata.obs["Experiment_name_and_barcode"] = (
+        namespace.astype(str) + "_" + raw_adata.obs[barcode_column].astype(str)
+    )
+
+
 def load_adata_core(
     cfg,
     paths: AdataPaths,
@@ -425,6 +554,7 @@ def load_adata_core(
                     **resolved_input_manifest.fastq_barcode_map(),
                 },
                 "barcode_tag": "BC",
+                "identity_metadata_schema": 1,
                 "samtools_backend": cfg.samtools_backend,
             },
             tool_versions={"samtools": executable_version("samtools")},
@@ -451,6 +581,8 @@ def load_adata_core(
                     **(cfg.fastq_barcode_map or {}),
                     **resolved_input_manifest.fastq_barcode_map(),
                 },
+                read_group_map=resolved_input_manifest.fastq_read_group_map(),
+                sample_map=resolved_input_manifest.fastq_sample_map(),
                 add_read_group=True,
                 rg_sample_field=None,
                 progress=False,
@@ -1409,6 +1541,22 @@ def load_adata_core(
             metadata={"source": "dorado_committed_intermediate"},
         )
 
+    # Resolve every route-specific authority into one canonical identity
+    # sidecar before QC and raw metadata consume it. This also covers the
+    # input_already_demuxed=True + skip_bam_split=True route, where no split
+    # BAM filenames exist from which to reconstruct labels.
+    classifier_source = _barcode_classifier_source(cfg, demux_backend=demux_backend)
+    route_barcode_sidecar = barcode_sidecar
+    barcode_sidecar, _barcode_identity_report = _publish_canonical_barcode_identity(
+        output_directory=output_directory,
+        aligned_bam=aligned_sorted_output,
+        resolved_input_manifest=resolved_input_manifest,
+        route_sidecar=route_barcode_sidecar,
+        classifier_source=classifier_source,
+        sidecar_manifest=sidecar_manifest,
+        force_redo=force_redo_intermediates,
+    )
+
     add_or_update_column_in_csv(cfg.summary_file, "demuxed_bams", [se_bam_files])
 
     if not skip_bam_split and getattr(cfg, "max_reads_per_barcode", None) is not None:
@@ -1857,29 +2005,15 @@ def load_adata_core(
                 raw_adata.obs[col] = umi_df[col].values
         del umi_df
 
-    # Load barcode tags from Parquet sidecar (written by smftools or derived from dorado bi)
-    _load_barcode_sidecar = False
-    if cfg.barcode_kit and not cfg.input_already_demuxed:
-        if demux_backend == "smftools":
-            _load_barcode_sidecar = True
-        elif demux_backend == "dorado":
-            dorado_ver = _get_dorado_version()
-            if dorado_ver is not None and dorado_ver >= (1, 3, 1):
-                _load_barcode_sidecar = True
-
-    if _load_barcode_sidecar and (not barcode_sidecar or not Path(barcode_sidecar).exists()):
+    # Load the canonical barcode/sample identity sidecar for every route.
+    if not barcode_sidecar or not Path(barcode_sidecar).exists():
         _resolved_barcode_sidecar = resolve_sidecar(sidecar_manifest, "barcode")
         if _resolved_barcode_sidecar is not None:
             barcode_sidecar = _resolved_barcode_sidecar
 
-    if _load_barcode_sidecar and barcode_sidecar and Path(barcode_sidecar).exists():
-        logger.info("Loading barcode tags from Parquet sidecar: %s", barcode_sidecar)
-        bc_df = pd.read_parquet(barcode_sidecar).set_index("read_name")
-        bc_df = bc_df.reindex(raw_adata.obs_names)
-        for col in ["BC", "BM", "bi", "B1", "B2", "B3", "B4", "B5", "B6"]:
-            if col in bc_df.columns:
-                raw_adata.obs[col] = bc_df[col].values
-        del bc_df
+    if barcode_sidecar and Path(barcode_sidecar).exists():
+        logger.info("Loading barcode/sample identity from Parquet sidecar: %s", barcode_sidecar)
+        _attach_dense_barcode_identity(raw_adata, barcode_sidecar, cfg.experiment_name)
 
     # Expand dorado bi array tag into individual float score columns
     if "bi" in raw_adata.obs.columns or "bi" in bam_tag_names:
