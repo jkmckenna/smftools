@@ -156,6 +156,94 @@ def test_existing_bam_resolves_as_aligned_source(tmp_path):
     assert "source_kind" in result.rows[0].inferred_fields
 
 
+def test_explicit_manifest_accepts_canonical_alignment_partitions(tmp_path):
+    first = _write(tmp_path / "lane-1.bam", b"first")
+    second = _write(tmp_path / "lane-2.bam", b"second")
+    forward = _manifest(
+        tmp_path / "forward.csv",
+        [
+            {"path": first.name, "source_kind": "aligned_bam", "namespace": "lane-1"},
+            {"path": second.name, "source_kind": "aligned_bam", "namespace": "lane-2"},
+        ],
+    )
+    reverse = _manifest(
+        tmp_path / "reverse.csv",
+        [
+            {"path": second.name, "source_kind": "aligned_bam", "namespace": "lane-2"},
+            {"path": first.name, "source_kind": "aligned_bam", "namespace": "lane-1"},
+        ],
+    )
+
+    resolved = resolve_input_manifest(
+        output_directory=tmp_path / "forward-output",
+        input_manifest_path=forward,
+        alignment_mode="existing",
+        modality="conversion",
+    )
+    reordered = resolve_input_manifest(
+        output_directory=tmp_path / "reverse-output",
+        input_manifest_path=reverse,
+        alignment_mode="existing",
+        modality="conversion",
+    )
+
+    assert resolved.input_type == "bam"
+    assert resolved.digest == reordered.digest
+    assert {row.namespace for row in resolved.alignment_inputs()} == {"lane-1", "lane-2"}
+
+
+def test_multiple_alignment_paths_require_explicit_manifest(tmp_path):
+    first = _write(tmp_path / "lane-1.bam", b"first")
+    second = _write(tmp_path / "lane-2.bam", b"second")
+
+    with pytest.raises(InputManifestError, match="require an explicit input manifest"):
+        resolve_input_manifest(
+            output_directory=tmp_path / "output",
+            input_paths=[first, second],
+            alignment_mode="existing",
+            modality="conversion",
+        )
+
+
+def test_existing_cram_resolves_as_alignment_source(tmp_path):
+    source = _write(tmp_path / "aligned.cram", b"cram-placeholder")
+    user_manifest = _manifest(tmp_path / "manifest.csv", [{"path": source.name}])
+
+    result = resolve_input_manifest(
+        output_directory=tmp_path / "output",
+        input_manifest_path=user_manifest,
+        alignment_mode="existing",
+        modality="direct",
+    )
+
+    assert result.input_type == "bam"
+    assert result.rows[0].source_kind == "cram"
+    assert result.rows[0].source_role == "alignment"
+    assert result.rows[0].modification_capability == "mm_ml"
+
+
+def test_explicit_manifest_accepts_compatible_bam_and_cram_partitions(tmp_path):
+    bam = _write(tmp_path / "lane-1.bam", b"bam")
+    cram = _write(tmp_path / "lane-2.cram", b"cram")
+    user_manifest = _manifest(
+        tmp_path / "manifest.csv",
+        [
+            {"path": bam.name, "source_kind": "aligned_bam", "namespace": "lane-1"},
+            {"path": cram.name, "namespace": "lane-2"},
+        ],
+    )
+
+    result = resolve_input_manifest(
+        output_directory=tmp_path / "output",
+        input_manifest_path=user_manifest,
+        alignment_mode="existing",
+        modality="conversion",
+    )
+
+    assert result.input_type == "bam"
+    assert {row.source_kind for row in result.rows} == {"aligned_bam", "cram"}
+
+
 def test_existing_mode_rejects_explicit_unaligned_bam(tmp_path):
     source = _write(tmp_path / "reads.bam", b"bam-placeholder")
     user_manifest = _manifest(

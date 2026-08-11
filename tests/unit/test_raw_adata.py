@@ -1,5 +1,6 @@
 import gzip
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import anndata as ad
@@ -20,6 +21,7 @@ from smftools.cli.raw_adata import (
     _split_by_reference_strand,
     _split_modkit_tsv_by_bucket,
     _yield_flush_result,
+    build_partitioned_ragged_records_streaming,
 )
 from smftools.constants import (
     MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
@@ -57,6 +59,28 @@ def test_conversion_signal_matches_existing_binarization_maps():
     record["Read_mismatch_trend"] = "G->A"
     signal = _conversion_signal(record, deaminase=True)
     np.testing.assert_array_equal(signal, [0.0, 1.0])
+
+
+def test_partitioned_streaming_qualifies_source_local_read_identity(monkeypatch):
+    def fake_build(_cfg, *, aligned_bam, **_kwargs):
+        frame = pd.DataFrame({"read_id": ["shared"], "template_id": ["shared"], "namespace": [""]})
+        return iter([("ref", frame, True)]), {"ref": 12}, {"signal_columns": []}
+
+    monkeypatch.setattr("smftools.cli.raw_adata.build_ragged_records_streaming", fake_build)
+    frames, lengths, _uns = build_partitioned_ragged_records_streaming(
+        SimpleNamespace(),
+        fasta=Path("reference.fa"),
+        partitions=[
+            (Path("lane-1.bam"), "lane-1", None),
+            (Path("lane-2.bam"), "lane-2", None),
+        ],
+    )
+
+    materialized = [frame for _reference, frame, _final in frames]
+    assert lengths == {"ref": 12}
+    assert [frame.loc[0, "source_read_id"] for frame in materialized] == ["shared", "shared"]
+    assert len({frame.loc[0, "read_id"] for frame in materialized}) == 2
+    assert len({frame.loc[0, "template_id"] for frame in materialized}) == 2
 
 
 def test_split_by_reference_strand_separates_mixed_deaminase_chromosome():

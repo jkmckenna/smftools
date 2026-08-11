@@ -35,7 +35,7 @@ from smftools.constants import (
 )
 from smftools.logging_utils import get_logger, mark_stage_outcome, stage_logging_lifecycle
 
-from ..informatics.molecule_identity import alignment_segment_id
+from ..informatics.molecule_identity import alignment_segment_id, namespaced_source_id
 
 logger = get_logger(__name__)
 
@@ -1582,6 +1582,65 @@ def build_ragged_records_streaming(
             umi_sidecar=umi_sidecar,
         )
     raise ValueError(f"build_ragged_records_streaming does not support modality {modality!r}")
+
+
+def build_partitioned_ragged_records_streaming(
+    cfg,
+    *,
+    fasta: Path,
+    partitions: list[tuple[Path, str, str | Path | None]],
+    umi_sidecar: str | Path | None = None,
+) -> tuple[object, dict[str, int], dict[str, object]]:
+    """Stream canonical alignment partitions without concatenating their BAMs.
+
+    Args:
+        cfg: Resolved experiment configuration.
+        fasta: Exact prepared alignment FASTA.
+        partitions: Canonically ordered ``(BAM, namespace, barcode-sidecar)`` tuples.
+        umi_sidecar: Optional read-level UMI sidecar shared by all partitions.
+
+    Returns:
+        The same generator, reference-length, and metadata contract as
+        :func:`build_ragged_records_streaming`.
+    """
+    if not partitions:
+        raise ValueError("partitioned raw extraction requires at least one alignment source")
+    prepared = []
+    expected_lengths: dict[str, int] | None = None
+    common_uns: dict[str, object] | None = None
+    for aligned_bam, namespace, barcode_sidecar in partitions:
+        frames, lengths, extra_uns = build_ragged_records_streaming(
+            cfg,
+            fasta=fasta,
+            aligned_bam=aligned_bam,
+            barcode_sidecar=barcode_sidecar,
+            umi_sidecar=umi_sidecar,
+        )
+        if expected_lengths is None:
+            expected_lengths = lengths
+            common_uns = extra_uns
+        elif lengths != expected_lengths:
+            raise ValueError("alignment partitions resolved incompatible reference lengths")
+        prepared.append((frames, str(namespace or "")))
+
+    def _frames():
+        for frames, namespace in prepared:
+            for reference, frame, is_final in frames:
+                if frame is not None and namespace:
+                    frame = frame.copy()
+                    frame["source_read_id"] = frame["read_id"].astype(str)
+                    frame["read_id"] = frame["read_id"].map(
+                        lambda value: namespaced_source_id(namespace, value)
+                    )
+                    if "template_id" in frame:
+                        frame["template_id"] = frame["template_id"].map(
+                            lambda value: namespaced_source_id(namespace, value)
+                        )
+                    frame["namespace"] = namespace
+                yield reference, frame, is_final
+
+    assert expected_lengths is not None and common_uns is not None
+    return _frames(), expected_lengths, common_uns
 
 
 @stage_logging_lifecycle

@@ -103,7 +103,7 @@ def test_bam_directory_fails_before_output_directory_creation(tmp_path):
     output_dir = tmp_path / "output"
     _touch(input_dir / "reads.bam")
 
-    with pytest.raises(ValueError, match="BAM directory input is not supported"):
+    with pytest.raises(ValueError, match="Alignment directory input is ambiguous"):
         ExperimentConfig.from_var_dict(
             {
                 "input_data_path": str(input_dir),
@@ -115,11 +115,18 @@ def test_bam_directory_fails_before_output_directory_creation(tmp_path):
     assert not output_dir.exists()
 
 
-@pytest.mark.parametrize(("suffix", "label"), [(".sam", "SAM"), (".cram", "CRAM")])
-def test_sam_and_cram_fail_with_current_support_guidance(tmp_path, suffix, label):
+@pytest.mark.parametrize(("suffix", "label"), [(".sam", "SAM")])
+def test_sam_fails_with_current_support_guidance(tmp_path, suffix, label):
     input_path = _touch(tmp_path / f"reads{suffix}")
 
     with pytest.raises(ValueError, match=f"{label} input is not supported yet"):
+        ExperimentConfig.from_var_dict({"input_data_path": str(input_path)}, defaults_map={})
+
+
+def test_cram_requires_existing_alignment_mode(tmp_path):
+    input_path = _touch(tmp_path / "reads.cram")
+
+    with pytest.raises(ValueError, match="requires alignment_mode='existing'"):
         ExperimentConfig.from_var_dict({"input_data_path": str(input_path)}, defaults_map={})
 
 
@@ -163,6 +170,21 @@ def test_existing_alignment_mode_accepts_one_bam_as_alignment_input(tmp_path):
     )
 
     assert config.alignment_mode == "existing"
+    assert config.input_source_role == "alignment"
+
+
+def test_existing_alignment_mode_accepts_one_cram_as_alignment_input(tmp_path):
+    input_path = _touch(tmp_path / "aligned.cram")
+
+    config, _ = ExperimentConfig.from_var_dict(
+        {
+            "input_data_path": str(input_path),
+            "alignment_mode": "existing",
+        },
+        defaults_map={},
+    )
+
+    assert config.input_type == "cram"
     assert config.input_source_role == "alignment"
 
 

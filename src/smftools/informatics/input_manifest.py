@@ -116,10 +116,18 @@ class ResolvedInputManifest:
     @property
     def input_type(self) -> str:
         kinds = {row.source_kind for row in self.rows}
+        if kinds and kinds <= {"unaligned_bam", "aligned_bam", "cram"}:
+            return "bam"
         if len(kinds) != 1:
             raise InputManifestError(f"Manifest has mixed source kinds: {sorted(kinds)}")
         kind = next(iter(kinds))
-        return "bam" if kind in {"unaligned_bam", "aligned_bam"} else kind
+        return kind
+
+    def alignment_inputs(self) -> tuple[InputManifestRow, ...]:
+        """Return canonical existing-alignment source partitions."""
+        if self.input_type != "bam" or any(row.source_role != "alignment" for row in self.rows):
+            raise InputManifestError("alignment_inputs() requires an existing-alignment manifest.")
+        return self.rows
 
     def fastq_inputs(self) -> list[Path | tuple[Path, Path]]:
         """Return explicit FASTQ pairs and singles for concatenation."""
@@ -214,7 +222,7 @@ def _role_for_kind(kind: str, alignment_mode: str) -> str:
 def _capability_for_kind(kind: str, role: str, modality: str) -> str:
     if role == "raw_signal":
         return "raw_signal"
-    if kind in {"unaligned_bam", "aligned_bam"}:
+    if kind in {"unaligned_bam", "aligned_bam", "cram"}:
         if modality == "direct":
             return "mm_ml"
         if modality in {"conversion", "deaminase"}:
@@ -262,31 +270,40 @@ def _read_csv_declarations(manifest_path: Path) -> list[_Declaration]:
 
 
 def _validate_declarations(
-    declarations: Sequence[_Declaration], alignment_mode: str
+    declarations: Sequence[_Declaration],
+    alignment_mode: str,
+    *,
+    explicit_manifest: bool,
 ) -> tuple[str, tuple[Path, ...]]:
     resolved_paths = tuple(declaration.path for declaration in declarations)
     duplicates = sorted(str(path) for path, count in Counter(resolved_paths).items() if count > 1)
     if duplicates:
         raise InputManifestError(f"Duplicate resolved input paths: {', '.join(duplicates)}")
     kinds = {_source_kind(item.path, item.values.get("source_kind", "")) for item in declarations}
-    if len(kinds) != 1:
+    alignment_kinds = {"unaligned_bam", "aligned_bam", "cram"}
+    compatible_alignment_mix = alignment_mode == "existing" and kinds <= alignment_kinds
+    if len(kinds) != 1 and not compatible_alignment_mix:
         raise InputManifestError(
             f"Input manifest has mixed source kinds: {', '.join(sorted(kinds))}"
         )
-    kind = next(iter(kinds))
-    if kind in {"sam", "cram"}:
+    kind = "aligned_bam" if len(kinds) > 1 else next(iter(kinds))
+    if kind == "sam":
         raise InputManifestError(f"{kind.upper()} input is not supported yet.")
+    if "cram" in kinds and alignment_mode != "existing":
+        raise InputManifestError("CRAM input requires alignment_mode='existing'.")
     if alignment_mode == "existing":
-        if kind not in {"unaligned_bam", "aligned_bam"}:
-            raise InputManifestError("alignment_mode='existing' requires one aligned BAM input.")
+        if not kinds <= alignment_kinds:
+            raise InputManifestError(
+                "alignment_mode='existing' requires aligned BAM or CRAM input."
+            )
         if any(
             _nonempty(item.values.get("source_kind")) == "unaligned_bam" for item in declarations
         ):
             raise InputManifestError(
                 "alignment_mode='existing' conflicts with source_kind='unaligned_bam'."
             )
-    if kind in {"unaligned_bam", "aligned_bam"} and len(declarations) != 1:
-        raise InputManifestError("Multiple BAM input sources are not supported yet.")
+    if kinds <= alignment_kinds and len(declarations) != 1 and not explicit_manifest:
+        raise InputManifestError("Multiple alignment sources require an explicit input manifest.")
     return kind, resolved_paths
 
 
@@ -296,11 +313,13 @@ def inspect_input_manifest(
     """Validate manifest structure without hashing or writing task state."""
     path = Path(manifest_path).expanduser().resolve(strict=False)
     declarations = _read_csv_declarations(path)
-    kind, source_paths = _validate_declarations(declarations, alignment_mode)
+    kind, source_paths = _validate_declarations(
+        declarations, alignment_mode, explicit_manifest=True
+    )
     for source_path in source_paths:
         if not source_path.is_file():
             raise InputManifestError(f"Input source is missing or not a file: {source_path}")
-    input_type = "bam" if kind in {"unaligned_bam", "aligned_bam"} else kind
+    input_type = "bam" if kind in {"unaligned_bam", "aligned_bam", "cram"} else kind
     return InspectedInputManifest(path=path, source_paths=source_paths, input_type=input_type)
 
 
@@ -438,6 +457,7 @@ def _normalized_row(
         "fastq": {"sequence_only", "conversion_sequence"},
         "unaligned_bam": {"mm_ml", "sequence_only", "conversion_sequence"},
         "aligned_bam": {"mm_ml", "sequence_only", "conversion_sequence"},
+        "cram": {"mm_ml", "sequence_only", "conversion_sequence"},
         "h5ad": {"sequence_only", "conversion_sequence", "mm_ml"},
     }.get(kind, {"sequence_only"})
     if capability not in allowed_capabilities:
@@ -570,7 +590,11 @@ def resolve_input_manifest(
         base_directory = Path(
             os.path.commonpath([str(declaration.path.parent) for declaration in declarations])
         )
-    _validate_declarations(declarations, alignment_mode)
+    _validate_declarations(
+        declarations,
+        alignment_mode,
+        explicit_manifest=bool(input_manifest_path),
+    )
 
     cache_path = (
         staging / CHECKSUM_CACHE_FILENAME if staging is not None and publish else ":memory:"
