@@ -13,6 +13,10 @@ Processes raw sequencing data to load an adata object.
    
    smftools.informatics.analysis_region_plan
    smftools.informatics.alignment_manifest
+   smftools.informatics.alignment_adapters
+   smftools.informatics.alignment_adapters.base
+   smftools.informatics.alignment_adapters.builtin
+   smftools.informatics.alignment_adapters.registry
    smftools.informatics.alignment_validation
    smftools.informatics.artifact_paths
    smftools.informatics.bam_functions

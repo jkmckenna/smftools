@@ -1,5 +1,6 @@
 variable,value,help,options,type
 smf_modality,direct,,,str
+alignment_mode,existing,,,str
 input_data_path,/inputs/sample.bam,,,str
 fasta,/inputs/sample.fasta,,,str
 output_directory,/work/source-output,,,str

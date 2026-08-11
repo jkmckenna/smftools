@@ -2393,114 +2393,27 @@ def align_and_sort_BAM(
     output,
     cfg,
 ):
-    """
-    A wrapper for running dorado aligner and samtools functions
+    """Backward-compatible wrapper around the structured adapter registry."""
+    from .alignment_adapters import AlignmentRequest, get_alignment_adapter
+    from .raw_intermediate_manifest import artifact_checksum
 
-    Parameters:
-        fasta (str): File path to the reference genome to align to.
-        input (str): File path to the basecalled file to align. Works for .bam and .fastq files
-        cfg: The configuration object
-
-    Returns:
-        None
-            The function writes out files for: 1) An aligned BAM, 2) and aligned_sorted BAM, 3) an index file for the aligned_sorted BAM, 4) A bed file for the aligned_sorted BAM, 5) A text file containing read names in the aligned_sorted BAM
-    """
-    logger.debug("Aligning and sorting BAM using align_and_sort_BAM")
-    input_basename = input.name
-    input_suffix = input.suffix
-    input_as_fastq = input.with_name(input.stem + ".fastq")
-
-    aligned_BAM = output.parent / output.stem
-    aligned_output = aligned_BAM.with_suffix(cfg.bam_suffix)
-
-    aligned_sorted_BAM = aligned_BAM.with_name(aligned_BAM.stem + "_sorted")
-    aligned_sorted_output = aligned_sorted_BAM.with_suffix(cfg.bam_suffix)
-
-    if cfg.threads:
-        threads = str(cfg.threads)
-    else:
-        threads = None
-
-    samtools_backend = _resolve_samtools_backend(getattr(cfg, "samtools_backend", "auto"))
-
-    if cfg.aligner == "minimap2":
-        if not cfg.align_from_bam:
-            logger.debug(f"Converting BAM to FASTQ: {input}")
-            if samtools_backend == "python":
-                _bam_to_fastq_with_pysam(input, input_as_fastq)
-            else:
-                _bam_to_fastq_with_samtools(input, input_as_fastq)
-            logger.debug(f"Aligning FASTQ to Reference: {input_as_fastq}")
-            mm_input = input_as_fastq
-        else:
-            logger.debug(f"Aligning BAM to Reference: {input}")
-            mm_input = input
-
-        if threads:
-            minimap_command = (
-                ["minimap2"] + cfg.aligner_args + ["-t", threads, str(fasta), str(mm_input)]
-            )
-        else:
-            minimap_command = ["minimap2"] + cfg.aligner_args + [str(fasta), str(mm_input)]
-
-        with open(aligned_output, "wb") as out:
-            proc = subprocess.Popen(
-                minimap_command,
-                stdout=out,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-
-            assert proc.stderr is not None
-            for line in proc.stderr:
-                logger.info("[minimap2] %s", line.rstrip())
-
-            ret = proc.wait()
-            if ret != 0:
-                raise RuntimeError(f"minimap2 failed with exit code {ret}")
-
-        if not cfg.align_from_bam:
-            os.remove(input_as_fastq)
-
-    elif cfg.aligner == "dorado":
-        # Run dorado aligner
-        print(f"Aligning BAM to Reference: {input}")
-        if threads:
-            alignment_command = (
-                ["dorado", "aligner", "-t", threads] + cfg.aligner_args + [str(fasta), str(input)]
-            )
-        else:
-            alignment_command = ["dorado", "aligner"] + cfg.aligner_args + [str(fasta), str(input)]
-
-        with open(aligned_output, "wb") as out:
-            proc = subprocess.Popen(
-                alignment_command,
-                stdout=out,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-
-            assert proc.stderr is not None
-            _stream_dorado_logs(proc.stderr)
-            ret = proc.wait()
-
-            if ret != 0:
-                raise RuntimeError(f"dorado failed with exit code {ret}")
-    else:
-        raise ValueError(f"Aligner not recognized: {cfg.aligner}. Choose from minimap2 and dorado.")
-
-    # --- Sort & Index ---
-    logger.debug(f"Sorting: {aligned_output} -> {aligned_sorted_output}")
-    if samtools_backend == "python":
-        _sort_bam_with_pysam(aligned_output, aligned_sorted_output, threads=threads)
-    else:
-        _sort_bam_with_samtools(aligned_output, aligned_sorted_output, threads=threads)
-
-    logger.debug(f"Indexing: {aligned_sorted_output}")
-    if samtools_backend == "python":
-        _index_bam_with_pysam(aligned_sorted_output, threads=threads)
-    else:
-        _index_bam_with_samtools(aligned_sorted_output, threads=threads)
+    adapter = get_alignment_adapter(cfg.aligner)
+    environment = adapter.validate_environment(getattr(cfg, "samtools_backend", "auto"))
+    aligned_output = Path(output).with_suffix(cfg.bam_suffix)
+    adapter.execute(
+        AlignmentRequest(
+            reference_fasta=Path(fasta),
+            input_bam=Path(input),
+            aligned_bam=aligned_output,
+            source_layout=str(getattr(cfg, "alignment_source_layout", "single_bam")),
+            modality=str(getattr(cfg, "smf_modality", "conversion")),
+            aligner_args=tuple(cfg.aligner_args or ()),
+            threads=cfg.threads,
+            align_from_bam=bool(cfg.align_from_bam),
+        ),
+        environment,
+        artifact_checksum(fasta),
+    )
 
 
 def bam_qc(

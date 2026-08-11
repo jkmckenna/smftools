@@ -27,6 +27,8 @@ def write_alignment_manifest(
     normalized_bam: str | Path,
     normalized_bai: str | Path,
     validation: Mapping[str, Any],
+    alignment_mode: str = "existing",
+    adapter: Mapping[str, Any] | None = None,
 ) -> Path:
     """Publish a complete alignment manifest with relative owned artifacts."""
     path = Path(path)
@@ -49,7 +51,7 @@ def write_alignment_manifest(
     payload = {
         "schema_version": ALIGNMENT_MANIFEST_SCHEMA_VERSION,
         "state": "complete",
-        "alignment_mode": "existing",
+        "alignment_mode": str(alignment_mode),
         "input_manifest_digest": str(input_manifest_digest),
         "reference_bundle": {
             **dict(reference_bundle),
@@ -59,7 +61,7 @@ def write_alignment_manifest(
             ),
         },
         "source": {
-            "path": str(Path(source_bam).resolve()),
+            "path_hint": Path(source_bam).name,
             "sha256": str(source_sha256),
         },
         "artifacts": {
@@ -68,6 +70,8 @@ def write_alignment_manifest(
         },
         "validation": dict(validation),
     }
+    if adapter is not None:
+        payload["adapter"] = dict(adapter)
     atomic_write_json(path, payload)
     read_alignment_manifest(path)
     return path
@@ -80,8 +84,11 @@ def read_alignment_manifest(path: str | Path) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if payload.get("schema_version") != ALIGNMENT_MANIFEST_SCHEMA_VERSION:
             raise AlignmentManifestError("Unsupported alignment manifest schema version.")
-        if payload.get("state") != "complete" or payload.get("alignment_mode") != "existing":
-            raise AlignmentManifestError("Alignment manifest is not a complete existing alignment.")
+        mode = payload.get("alignment_mode")
+        if payload.get("state") != "complete" or mode not in {"align", "existing"}:
+            raise AlignmentManifestError("Alignment manifest is not a complete alignment.")
+        if mode == "align" and not isinstance(payload.get("adapter"), dict):
+            raise AlignmentManifestError("Generated alignment manifest lacks adapter provenance.")
         if not payload.get("input_manifest_digest"):
             raise AlignmentManifestError("Alignment manifest lacks input-manifest identity.")
         reference = payload.get("reference_bundle")

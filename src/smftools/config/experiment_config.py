@@ -27,6 +27,7 @@ from smftools.constants import (
     STRANDS,
     TRIM,
 )
+from smftools.informatics.alignment_adapters import adapter_names
 from smftools.informatics.input_manifest import inspect_input_manifest
 
 from .discover_input_files import discover_input_files
@@ -44,7 +45,7 @@ AlignmentMode = Literal["align", "existing"]
 InputSourceRole = Literal["raw_signal", "reads", "alignment"]
 
 SUPPORTED_ALIGNMENT_MODES = frozenset({"align", "existing"})
-SUPPORTED_ALIGNERS = frozenset({"dorado", "minimap2"})
+SUPPORTED_ALIGNERS = frozenset(adapter_names())
 _ALIGNER_ALIASES = {
     "mm2": "minimap2",
     "minimap": "minimap2",

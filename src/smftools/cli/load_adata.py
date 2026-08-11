@@ -28,20 +28,59 @@ def check_executable_exists(cmd: str) -> bool:
 
 
 def _validate_alignment_executables(cfg) -> None:
-    """Require aligner executables only when the request produces an alignment."""
+    """Require non-adapter Dorado use only when the request needs it."""
     if getattr(cfg, "alignment_mode", "align") == "existing":
         return
     if (
-        cfg.input_type in {"fast5", "pod5"}
-        or not cfg.input_already_demuxed
-        or cfg.aligner == "dorado"
+        cfg.input_type in {"fast5", "pod5"} or not cfg.input_already_demuxed
     ) and not check_executable_exists("dorado"):
         raise RuntimeError(
             "Error: 'dorado' is not installed or not in PATH. "
             "Install from https://github.com/nanoporetech/dorado"
         )
-    if cfg.aligner == "minimap2" and not check_executable_exists("minimap2"):
-        raise RuntimeError("Error: 'minimap2' is not installed or not in PATH. Install minimap2")
+
+
+def _alignment_source_layout(resolved_input_manifest) -> str:
+    """Return the adapter-facing layout after canonical BAM normalization."""
+    paired = any(
+        bool(getattr(row, "pair_id", "")) or str(getattr(row, "mate", "unpaired")) in {"R1", "R2"}
+        for row in resolved_input_manifest.rows
+    )
+    return "paired_bam" if paired else "single_bam"
+
+
+def _probe_alignment_adapter(cfg):
+    """Select and probe an adapter before any task output is created."""
+    if getattr(cfg, "alignment_mode", "align") == "existing":
+        return None
+    from ..informatics.alignment_adapters import get_alignment_adapter
+
+    adapter = get_alignment_adapter(cfg.aligner)
+    environment = adapter.validate_environment(cfg.samtools_backend)
+    return adapter, environment
+
+
+def _resolve_alignment_adapter(cfg, resolved_input_manifest, probed_adapter):
+    """Validate the resolved source layout before alignment staging or execution."""
+    if probed_adapter is None:
+        return None
+    from ..informatics.alignment_adapters import AlignmentRequest
+
+    adapter, environment = probed_adapter
+    source_layout = _alignment_source_layout(resolved_input_manifest)
+    adapter.validate_request(
+        AlignmentRequest(
+            reference_fasta=Path(cfg.fasta),
+            input_bam=Path(cfg.input_data_path or "input.bam"),
+            aligned_bam=Path("aligned.bam"),
+            source_layout=source_layout,
+            modality=str(cfg.smf_modality),
+            aligner_args=tuple(cfg.aligner_args or ()),
+            threads=cfg.threads,
+            align_from_bam=bool(cfg.align_from_bam),
+        )
+    )
+    return adapter, environment, source_layout
 
 
 def delete_tsvs(
@@ -458,7 +497,6 @@ def load_adata_core(
         _bam_has_barcode_info_tags,
         _build_flanking_from_adapters,
         _get_dorado_version,
-        align_and_sort_BAM,
         annotate_umi_tags_in_bam,
         bam_qc,
         build_barcode_sidecar_from_split_bams,
@@ -539,6 +577,12 @@ def load_adata_core(
     sidecar_manifest = sidecar_manifest_path(load_directory)
     logging_directory = load_directory / LOGGING_DIR
 
+    # Fail tool/version checks before creating any task output. Source-layout
+    # validation follows canonical manifest resolution but still precedes the
+    # alignment workspace.
+    _validate_alignment_executables(cfg)
+    probed_alignment_adapter = _probe_alignment_adapter(cfg)
+
     make_dirs(
         [
             output_directory,
@@ -612,8 +656,9 @@ def load_adata_core(
         mod_tsv_dir = None
         mods = None
 
-    # Existing alignments never require or probe an alignment executable.
-    _validate_alignment_executables(cfg)
+    alignment_adapter_context = _resolve_alignment_adapter(
+        cfg, resolved_input_manifest, probed_alignment_adapter
+    )
 
     # # Detect the input filetypes
     # If the input files are fast5 files, convert the files to a pod5 file before proceeding.
@@ -943,8 +988,9 @@ def load_adata_core(
     # Existing mode owns a validated copy (or coordinate-sorted normalization)
     # without invoking an aligner or changing alignment placement.
     alignment_workspace = None
+    alignment_manifest_path = None
     if cfg.alignment_mode == "existing":
-        aligned_sorted_output, alignment_bai, _alignment_manifest = _prepare_existing_alignment(
+        aligned_sorted_output, alignment_bai, alignment_manifest_path = _prepare_existing_alignment(
             output_directory=output_directory,
             source_bam=unaligned_output,
             reference_fasta=fasta,
@@ -958,18 +1004,35 @@ def load_adata_core(
         aligned_sorted_BAM = aligned_sorted_output.with_suffix("")
         unaligned_output = aligned_sorted_output
     else:
+        from ..informatics.alignment_adapters import AlignmentRequest
+        from ..informatics.alignment_manifest import (
+            ALIGNMENT_MANIFEST_SCHEMA_VERSION,
+            read_alignment_manifest,
+            write_alignment_manifest,
+        )
+        from ..informatics.alignment_validation import validate_existing_alignment
+
+        assert alignment_adapter_context is not None
+        adapter, adapter_environment, source_layout = alignment_adapter_context
+        alignment_reference_sha256 = artifact_checksum(fasta)
+        reference_index_plan = adapter.reference_plan(
+            alignment_reference_sha256, adapter_environment
+        )
         alignment_spec = IntermediateSpec(
             operation="alignment-sort-index",
             input_artifacts=(
                 ("unaligned-bam", artifact_checksum(unaligned_output)),
                 ("alignment-reference-bundle", reference_bundle["digest"]),
-                ("alignment-fasta", artifact_checksum(fasta)),
+                ("alignment-fasta", alignment_reference_sha256),
             ),
             operation_config={
+                "alignment_adapter_schema": 1,
+                "alignment_manifest_schema": ALIGNMENT_MANIFEST_SCHEMA_VERSION,
                 "align_from_bam": bool(getattr(cfg, "align_from_bam", False)),
-                "aligner": str(cfg.aligner),
+                "adapter": adapter.name,
                 "aligner_args": list(getattr(cfg, "aligner_args", None) or []),
                 "bam_suffix": str(cfg.bam_suffix),
+                "reference_index_identity": reference_index_plan["identity"],
                 "rescue_min_margin_bp": int(getattr(cfg, "rescue_min_margin_bp", 0)),
                 "rescue_min_margin_fraction": float(
                     getattr(cfg, "rescue_min_margin_fraction", 0.0)
@@ -978,10 +1041,13 @@ def load_adata_core(
                     getattr(cfg, "rescue_secondary_alignments", False)
                 ),
                 "samtools_backend": str(cfg.samtools_backend),
+                "source_layout": source_layout,
             },
             tool_versions={
-                str(cfg.aligner): executable_version(str(cfg.aligner)),
-                "samtools": executable_version("samtools"),
+                adapter.name: adapter_environment.adapter_version,
+                f"sort-index:{adapter_environment.samtools_backend}": (
+                    adapter_environment.sort_index_version
+                ),
             },
         )
         alignment_workspace = prepare_intermediate(
@@ -997,8 +1063,12 @@ def load_adata_core(
         if alignment_workspace.reusable:
             committed_bam = committed_output(alignment_workspace, "aligned-sorted-bam")
             committed_bai = committed_output(alignment_workspace, "aligned-sorted-bai")
-            if committed_bam is None or committed_bai is None:
-                raise RuntimeError("Validated alignment commit is missing BAM or BAI output.")
+            alignment_manifest_path = committed_output(alignment_workspace, "alignment-manifest")
+            if committed_bam is None or committed_bai is None or alignment_manifest_path is None:
+                raise RuntimeError(
+                    "Validated alignment commit is missing BAM, BAI, or manifest output."
+                )
+            read_alignment_manifest(alignment_manifest_path)
             aligned_sorted_output = committed_bam
             aligned_sorted_BAM = aligned_sorted_output.with_suffix("")
             alignment_bai = committed_bai
@@ -1012,8 +1082,24 @@ def load_adata_core(
                 estimator="external_alignment_peak",
             )
             logger.info("Aligning and sorting reads")
-            align_and_sort_BAM(fasta, unaligned_output, aligned_output, cfg)
-            aligned_output.unlink()
+            adapter_result = adapter.execute(
+                AlignmentRequest(
+                    reference_fasta=Path(fasta),
+                    input_bam=Path(unaligned_output),
+                    aligned_bam=aligned_output,
+                    source_layout=source_layout,
+                    modality=str(cfg.smf_modality),
+                    aligner_args=tuple(cfg.aligner_args or ()),
+                    threads=cfg.threads,
+                    align_from_bam=bool(cfg.align_from_bam),
+                ),
+                adapter_environment,
+                alignment_reference_sha256,
+            )
+            aligned_sorted_output = adapter_result.aligned_sorted_bam
+            aligned_sorted_BAM = aligned_sorted_output.with_suffix("")
+            alignment_bai = adapter_result.aligned_sorted_bai
+            alignment_adapter_provenance = adapter_result.provenance
 
     alignment_was_generated = alignment_workspace is not None and not alignment_workspace.reusable
 
@@ -1063,14 +1149,44 @@ def load_adata_core(
             summary.to_dataframe().to_csv(rescue_summary_path, index=False)
 
     if alignment_was_generated:
+        normalized_summary = validate_existing_alignment(
+            aligned_sorted_output,
+            fasta,
+            modality=cfg.smf_modality,
+        )
+        alignment_manifest_path = write_alignment_manifest(
+            alignment_workspace.root / "alignment_manifest.json",
+            input_manifest_digest=resolved_input_manifest.digest,
+            reference_bundle=reference_bundle,
+            prepared_reference_sha256=artifact_checksum(fasta),
+            source_bam=unaligned_output,
+            source_sha256=artifact_checksum(unaligned_output),
+            normalized_bam=aligned_sorted_output,
+            normalized_bai=alignment_bai,
+            validation={"normalized": normalized_summary.to_dict()},
+            alignment_mode="align",
+            adapter=alignment_adapter_provenance,
+        )
         alignment_outputs = {
             "aligned-sorted-bam": aligned_sorted_output,
             "aligned-sorted-bai": alignment_bai,
+            "alignment-manifest": alignment_manifest_path,
         }
         if getattr(cfg, "rescue_secondary_alignments", False):
             alignment_outputs["rescue-summary"] = rescue_summary_path
         assert alignment_workspace is not None
         commit_intermediate(alignment_workspace, alignment_outputs)
+
+    if alignment_was_generated and alignment_manifest_path is not None:
+        register_sidecar(
+            sidecar_manifest,
+            "alignment_manifest",
+            alignment_manifest_path,
+            metadata={
+                "alignment_mode": cfg.alignment_mode,
+                "schema_version": 1,
+            },
+        )
 
     if cfg.make_beds:
         # Make beds and provide basic histograms
