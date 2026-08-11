@@ -342,6 +342,29 @@ def _write_segment_index(rows: list[dict[str, object]], output_dir: Path) -> Pat
     return _write_pointer_index(rows, output_dir, dirname=SEGMENT_INDEX_DIRNAME)
 
 
+def write_raw_pointer_indexes(
+    segments: pd.DataFrame,
+    artifact_root: str | Path,
+) -> tuple[Path, Path]:
+    """Rebuild molecule and segment indexes from a complete segment catalog."""
+    required = {
+        TEMPLATE_ID_COLUMN,
+        "group_path",
+        "group_row",
+        REFERENCE_STRAND,
+        "start_bin",
+    }
+    missing = sorted(required.difference(segments.columns))
+    if missing:
+        raise ValueError(f"segment catalog cannot rebuild pointer indexes; missing: {missing}")
+    rows = segments.to_dict(orient="records")
+    output_dir = Path(artifact_root) / "raw_outputs"
+    segment_index = _write_segment_index(rows, output_dir)
+    molecule_rows = [{**row, "read_id": str(row[TEMPLATE_ID_COLUMN])} for row in rows]
+    molecule_index = _write_molecule_index(molecule_rows, output_dir)
+    return molecule_index, segment_index
+
+
 def _reference_path_component(reference: str) -> str:
     """Return a reversible filesystem-safe reference component."""
     return quote(str(reference), safe="._-")

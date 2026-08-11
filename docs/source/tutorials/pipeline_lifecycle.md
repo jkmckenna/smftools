@@ -51,6 +51,26 @@ should use the partitioned lifecycle.
 
 ## Restart, growth, and force-redo
 
+Raw ingestion classifies the requested canonical input manifest against the
+selected immutable raw generation before doing work:
+
+- An identical manifest is a restart/cache hit and performs no extraction.
+- A pure addition with unchanged raw configuration and alignment-reference
+  identity processes only the added sources. A complete FASTQ pair must be
+  added together.
+- Removal, changed bytes at an existing source, changed sample/barcode/pair
+  metadata, completing a previously unpaired source by changing its pair
+  declaration, or a reference/configuration change performs a full recompute.
+
+An append writes a new complete generation. Prior raw shards and unchanged
+index pieces are checksum-matched and hardlinked directly from the selected
+immutable generation; canonical working files are never used as reuse
+authority. Aggregate molecule/segment catalogs and indexes are rebuilt, and
+duplicate molecule or segment identities fail before the current-generation
+pointer advances. The generation manifest records the transition, reused and
+added source IDs, prior generation ID, and reused/new file and byte counts.
+An interrupted append leaves the prior generation selected.
+
 Partitioned latent output is published as immutable generations. A generation
 becomes current only after its task stores, model bundles, indexes, plots,
 spine pointers, checksums, schemas, source provenance, and completion manifest

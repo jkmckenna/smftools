@@ -548,7 +548,11 @@ def load_adata_core(
         add_secondary_supplementary_alignment_flags,
         expand_bi_tag_columns,
     )
-    from ..informatics.input_manifest import materialize_input_view, resolve_input_manifest
+    from ..informatics.input_manifest import (
+        materialize_input_view,
+        resolve_input_manifest,
+        subset_input_manifest,
+    )
     from ..informatics.modkit_extract_to_adata import modkit_extract_to_adata
     from ..informatics.modkit_functions import extract_mods, make_modbed, modQC
     from ..informatics.partition_read import relative_uns_path
@@ -624,6 +628,7 @@ def load_adata_core(
         reconfigure=log_file is not None and not raw_only,
     )
 
+    requested_input_data_path = cfg.input_data_path
     resolved_input_manifest = resolve_input_manifest(
         output_directory=output_directory,
         input_manifest_path=cfg.input_manifest_path,
@@ -633,7 +638,19 @@ def load_adata_core(
         barcode_map=cfg.fastq_barcode_map,
         auto_pair=cfg.fastq_auto_pairing,
     )
-    cfg.input_manifest_digest = resolved_input_manifest.digest
+    full_input_manifest = resolved_input_manifest
+    cfg.input_manifest_digest = full_input_manifest.digest
+    append_source_ids = tuple(getattr(cfg, "_raw_append_source_ids", ()))
+    if append_source_ids:
+        resolved_input_manifest = subset_input_manifest(
+            full_input_manifest,
+            append_source_ids,
+        )
+        logger.info(
+            "Append-only raw execution selected %d new source(s) from %d total source(s)",
+            len(resolved_input_manifest.rows),
+            len(full_input_manifest.rows),
+        )
     cfg.input_type = resolved_input_manifest.input_type
     cfg.input_files = [Path(row.path) for row in resolved_input_manifest.rows]
     cfg._resolved_input_manifest = resolved_input_manifest
@@ -2041,7 +2058,10 @@ def load_adata_core(
         )
 
         assert alignment_partitions is not None
-        if len(alignment_partitions) == 1:
+        append_partition_identity = bool(getattr(cfg, "_raw_append_source_ids", ())) and bool(
+            getattr(alignment_partitions[0][1], "namespace", "")
+        )
+        if len(alignment_partitions) == 1 and not append_partition_identity:
             reference_frames, reference_lengths, extra_uns = build_ragged_records_streaming(
                 cfg,
                 fasta=fasta,
@@ -2112,6 +2132,10 @@ def load_adata_core(
             update_experiment_manifest,
         )
 
+        if append_source_ids:
+            cfg.input_files = [Path(row.path) for row in full_input_manifest.rows]
+            cfg._resolved_input_manifest = full_input_manifest
+            cfg.input_data_path = requested_input_data_path
         resolved_config = cfg.to_dict()
         update_experiment_manifest(
             run_root,

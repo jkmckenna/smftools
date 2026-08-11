@@ -240,6 +240,34 @@ def test_failed_replacement_preserves_prior_current_generation(tmp_path, monkeyp
     assert not (tmp_path / "raw_outputs" / "generations" / "generation-b").exists()
 
 
+def test_publication_reuses_checksum_identical_immutable_files(tmp_path):
+    first = _publish(tmp_path, generation_id="generation-a")
+    sources, dependencies, regions = _publication_sources(tmp_path)
+
+    second = publish_raw_generation(
+        tmp_path,
+        sources,
+        config_hash="config-a",
+        input_artifact_ids=["input-manifest:def"],
+        dependencies=dependencies,
+        region_artifacts=regions,
+        generation_id="generation-b",
+        reuse_generation=first["generation"],
+        source_transition={
+            "schema_version": 1,
+            "kind": "append_only",
+            "added_source_ids": ["source-b"],
+        },
+    )
+
+    manifest = json.loads(Path(second["generation_manifest"]).read_text())
+    first_shard = Path(first["generation"]) / "raw" / "part-00000.parquet"
+    second_shard = Path(second["generation"]) / "raw" / "part-00000.parquet"
+    assert manifest["reuse"]["generation_id"] == "generation-a"
+    assert manifest["reuse"]["reused_files"] > 0
+    assert first_shard.stat().st_ino == second_shard.stat().st_ino
+
+
 def test_staging_copy_failure_preserves_prior_current_generation(tmp_path, monkeypatch):
     first = _publish(tmp_path, generation_id="generation-a")
     sources, dependencies, regions = _publication_sources(tmp_path)

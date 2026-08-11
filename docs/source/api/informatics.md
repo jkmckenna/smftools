@@ -45,6 +45,7 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.plot_region_stitching
    smftools.informatics.pod5_functions
    smftools.informatics.ragged_store
+   smftools.informatics.raw_append
    smftools.informatics.raw_store
    smftools.informatics.reference_identity
    smftools.informatics.region_catalog
