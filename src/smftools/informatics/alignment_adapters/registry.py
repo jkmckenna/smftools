@@ -6,9 +6,12 @@ from types import MappingProxyType
 
 from .base import AlignmentAdapter, AlignmentAdapterError
 from .builtin import DoradoAdapter, Minimap2Adapter
+from .short_read import Bowtie2Adapter, BwaMem2Adapter
 
 _ADAPTERS = MappingProxyType(
     {
+        "bowtie2": Bowtie2Adapter(),
+        "bwa-mem2": BwaMem2Adapter(),
         "dorado": DoradoAdapter(),
         "minimap2": Minimap2Adapter(),
     }

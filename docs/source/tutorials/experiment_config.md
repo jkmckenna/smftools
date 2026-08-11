@@ -74,27 +74,32 @@ source is ambiguous or unsupported:
 
 - Directories must contain one recognized input kind. Mixed POD5, FAST5, FASTQ, BAM, SAM, CRAM,
   or H5AD collections are rejected with per-kind counts instead of silently selecting one kind.
-- BAM directories are rejected until validated multi-alignment source partitions are available;
-  supply one BAM file instead.
-- SAM and CRAM inputs are rejected with conversion guidance. CRAM will require exact reference
-  validation before it becomes a supported existing-alignment input.
-- `aligner` must resolve to `dorado` or `minimap2`; the existing `mm2`, `minimap`, and `minimap-2`
-  aliases normalize to `minimap2`.
+- Implicit BAM/CRAM directories remain rejected. Supply one alignment file or an explicit input
+  manifest whose rows declare compatible BAM/CRAM source partitions and namespaces.
+- SAM input remains unsupported. CRAM is supported only with `alignment_mode: existing` and must
+  carry reference MD5 values matching the exact prepared FASTA.
+- `aligner` must resolve to `dorado`, `minimap2`, `bwa-mem2`, or `bowtie2`. Common minimap2,
+  BWA-MEM2, and Bowtie2 aliases normalize to those canonical names.
 - Direct-modification experiments cannot use FASTQ because sequence-only FASTQ cannot retain MM/ML
   modification probabilities. Use raw signal or a modification-tagged BAM.
 - Generated alignments use a structured adapter registry. smftools requires Dorado 0.7.0 or newer,
-  minimap2 2.24.0 or newer, and samtools 1.10.0 or newer when the external samtools backend is
-  selected. Executables are probed and adapter capabilities are checked before alignment staging.
+  minimap2 2.24.0 or newer, BWA-MEM2 2.2.1 or newer, Bowtie2/Bowtie2-build 2.4.0 or newer, and
+  samtools 1.10.0 or newer when the external samtools backend is selected. Executables are probed
+  and adapter capabilities are checked before alignment staging.
 - The minimap2 BAM-to-FASTQ route is sequence-only and is therefore rejected for `direct`
   experiments because it would discard MM/ML tags. Use Dorado for a tag-preserving generated
   alignment, or use `alignment_mode: existing` for an authoritative aligned, tagged BAM.
+- BWA-MEM2 and Bowtie2 always consume canonical sequence-only FASTQ staging, so direct MM/ML
+  workflows and `align_from_bam: true` are rejected for those adapters.
 
 Existing configurations that omit `alignment_mode` continue to use `align`. Set
-`alignment_mode: existing` for one aligned BAM that must be validated and ingested without
-realignment. smftools checks readability, primary records, sequence/quality/CIGAR availability,
+`alignment_mode: existing` for aligned BAM/CRAM input that must be validated and ingested without
+realignment. Explicit manifests may declare multiple compatible source partitions. smftools checks
+readability, primary records, sequence/quality/CIGAR availability,
 paired flags, exact prepared-reference `@SQ` names/lengths/order, and direct-modification MM/ML
-tags. It then copies or coordinate-sorts the BAM into an immutable owned intermediate and creates
-an owned index; the source BAM and any source index remain untouched. The flags
+tags. It then normalizes each source independently into an immutable owned BAM and index; source
+alignments and their indexes remain untouched. Namespace-scoped template collisions are checked
+before extraction, and the partition streams are never concatenated into one mandatory BAM. The flags
 `input_already_demuxed`, `skip_bam_split`, and `align_from_bam` retain their existing meanings and
 do not select existing-alignment ingestion.
 
@@ -109,8 +114,11 @@ Generated mode records the selected adapter, probed version, argument vector wit
 placeholders, declared capabilities, sort/index backend, and semantic reference identity in the
 same schema-1 alignment manifest used by existing mode. Dorado and minimap2 currently build their
 reference indexes in memory, so the identity is recorded for compatibility and restart decisions
-rather than pointing to a persistent index artifact. Minimap2 accepts synchronized paired FASTQ
-inputs through two ordered mate streams; Dorado remains a single-BAM adapter. Paired FASTQ names
+rather than pointing to a persistent index artifact. BWA-MEM2 and Bowtie2 publish atomic,
+content-addressed native indexes beneath the owned alignment workspace; the reference checksum,
+adapter version, builder version, exact index files, and normalized index/alignment argv are part of
+provenance. Minimap2, BWA-MEM2, and Bowtie2 accept synchronized paired FASTQ inputs through two
+ordered mate streams; Dorado remains a single-BAM adapter. Paired FASTQ names
 may use `/1`/`/2`, `_R1`/`_R2`, or CASAVA mate comments. Mismatched names, conflicting mate
 annotations, and unequal record counts fail normalization. Mixed paired and unpaired FASTQ
 collections require separate runs.

@@ -47,6 +47,11 @@ InputSourceRole = Literal["raw_signal", "reads", "alignment"]
 SUPPORTED_ALIGNMENT_MODES = frozenset({"align", "existing"})
 SUPPORTED_ALIGNERS = frozenset(adapter_names())
 _ALIGNER_ALIASES = {
+    "bowtie": "bowtie2",
+    "bt2": "bowtie2",
+    "bwa": "bwa-mem2",
+    "bwa_mem2": "bwa-mem2",
+    "bwamem2": "bwa-mem2",
     "mm2": "minimap2",
     "minimap": "minimap2",
     "minimap-2": "minimap2",
@@ -281,6 +286,8 @@ def resolve_aligner_args(
     """
     # builtin defaults (aligner -> args)
     builtin_defaults = {
+        "bowtie2": [],
+        "bwa-mem2": [],
         "minimap2": ["-a", "-x", "map-ont", "--MD", "-Y", "-y", "-N", "5", "--secondary=no"],
         "dorado": ["--mm2-opts", "-N", "5"],
     }
@@ -288,7 +295,7 @@ def resolve_aligner_args(
         default_by_aligner = builtin_defaults
 
     # synonyms mapping
-    synonyms = {"mm2": "minimap2", "minimap": "minimap2", "minimap-2": "minimap2"}
+    synonyms = dict(_ALIGNER_ALIASES)
     if aligner_synonyms:
         synonyms.update(aligner_synonyms)
 

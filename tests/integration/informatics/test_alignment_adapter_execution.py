@@ -160,3 +160,68 @@ def test_minimap2_adapter_preserves_paired_segment_and_mate_identity(tmp_path):
     ]
     assert not (workspace / "alignment_input_R1.fastq").exists()
     assert not (workspace / "alignment_input_R2.fastq").exists()
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "required_tools"),
+    [
+        ("bwa-mem2", ("bwa-mem2",)),
+        ("bowtie2", ("bowtie2", "bowtie2-build")),
+    ],
+)
+@pytest.mark.parametrize("paired", [False, True], ids=["single", "paired"])
+def test_short_read_adapter_executes_with_native_index(
+    tmp_path, adapter_name, required_tools, paired
+):
+    missing = [tool for tool in required_tools if shutil.which(tool) is None]
+    if missing:
+        pytest.skip(f"required tools are not installed: {', '.join(missing)}")
+
+    rng = random.Random(31)
+    reference_sequence = "".join(rng.choices("ACGT", k=2400))
+    complement = str.maketrans("ACGT", "TGCA")
+    r1_sequence = reference_sequence[300:500]
+    r2_sequence = reference_sequence[900:1100].translate(complement)[::-1]
+    reference = tmp_path / "reference with spaces.fa"
+    reference.write_text(f">ref\n{reference_sequence}\n", encoding="utf-8")
+    r1 = tmp_path / "reads R1.fastq"
+    r1.write_text(f"@template/1\n{r1_sequence}\n+\n{'I' * 200}\n", encoding="utf-8")
+    inputs = [r1]
+    if paired:
+        r2 = tmp_path / "reads R2.fastq"
+        r2.write_text(f"@template/2\n{r2_sequence}\n+\n{'I' * 200}\n", encoding="utf-8")
+        inputs = [(r1, r2)]
+    source_bam = tmp_path / "source reads.bam"
+    concatenate_fastqs_to_bam(
+        inputs,
+        source_bam,
+        progress=False,
+        samtools_backend="python",
+    )
+
+    workspace = tmp_path / "alignment workspace"
+    adapter = get_alignment_adapter(adapter_name)
+    result = adapter.execute(
+        AlignmentRequest(
+            reference_fasta=reference,
+            input_bam=source_bam,
+            aligned_bam=workspace / "aligned.bam",
+            source_layout="paired_bam" if paired else "single_bam",
+            modality="conversion",
+            threads=1,
+            align_from_bam=False,
+        ),
+        adapter.validate_environment("python"),
+        artifact_checksum(reference),
+    )
+
+    validation = validate_existing_alignment(
+        result.aligned_sorted_bam, reference, modality="conversion"
+    )
+    assert validation.mapped_primary_records == (2 if paired else 1)
+    assert validation.paired_primary_records == (2 if paired else 0)
+    assert result.provenance["reference_index"]["strategy"] == ("content_addressed_native_index")
+    assert result.provenance["reference_index"]["index_files"]
+    assert not (workspace / "alignment_input.fastq").exists()
+    assert not (workspace / "alignment_input_R1.fastq").exists()
+    assert not (workspace / "alignment_input_R2.fastq").exists()

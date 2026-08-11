@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,8 +14,15 @@ from smftools.informatics.alignment_adapters import (
     adapter_names,
     get_alignment_adapter,
 )
-from smftools.informatics.alignment_adapters.base import probe_executable_version
+from smftools.informatics.alignment_adapters.base import (
+    AlignmentAdapter,
+    probe_executable_version,
+)
 from smftools.informatics.alignment_adapters.builtin import DoradoAdapter, Minimap2Adapter
+from smftools.informatics.alignment_adapters.short_read import (
+    Bowtie2Adapter,
+    BwaMem2Adapter,
+)
 from smftools.informatics.alignment_manifest import (
     read_alignment_manifest,
     write_alignment_manifest,
@@ -46,7 +54,7 @@ def _environment(name="minimap2 2.27-r1193", version=(2, 27, 0)):
 
 
 def test_registry_is_the_supported_aligner_authority():
-    assert adapter_names() == ("dorado", "minimap2")
+    assert adapter_names() == ("bowtie2", "bwa-mem2", "dorado", "minimap2")
     assert set(adapter_names()) == set(SUPPORTED_ALIGNERS)
     with pytest.raises(AlignmentAdapterError, match="Unknown alignment adapter"):
         get_alignment_adapter("shell-command")
@@ -83,6 +91,114 @@ def test_minimap2_and_dorado_argv_preserve_legacy_order_and_argument_boundaries(
     assert "--flag=a;b" in dorado_argv
 
 
+@pytest.mark.parametrize(
+    ("adapter", "paired", "expected"),
+    [
+        (
+            BwaMem2Adapter(),
+            False,
+            [
+                "bwa-mem2",
+                "mem",
+                "-t",
+                "3",
+                "--rg",
+                "@RG ID:sample one",
+                "--flag=a;b",
+                "$INDEX",
+                "$READS",
+            ],
+        ),
+        (
+            BwaMem2Adapter(),
+            True,
+            [
+                "bwa-mem2",
+                "mem",
+                "-t",
+                "3",
+                "--rg",
+                "@RG ID:sample one",
+                "--flag=a;b",
+                "$INDEX",
+                "$R1",
+                "$R2",
+            ],
+        ),
+        (
+            Bowtie2Adapter(),
+            False,
+            [
+                "bowtie2",
+                "--rg",
+                "@RG ID:sample one",
+                "--flag=a;b",
+                "-p",
+                "3",
+                "-x",
+                "$INDEX",
+                "-U",
+                "$READS",
+            ],
+        ),
+        (
+            Bowtie2Adapter(),
+            True,
+            [
+                "bowtie2",
+                "--rg",
+                "@RG ID:sample one",
+                "--flag=a;b",
+                "-p",
+                "3",
+                "-x",
+                "$INDEX",
+                "-1",
+                "$R1",
+                "-2",
+                "$R2",
+            ],
+        ),
+    ],
+)
+def test_short_read_adapter_argv_preserves_paths_and_pair_layout(
+    tmp_path, adapter, paired, expected
+):
+    request = _request(
+        tmp_path,
+        reference_fasta=Path("$INDEX"),
+        source_layout="paired_bam" if paired else "single_bam",
+        align_from_bam=False,
+    )
+    inputs = (Path("$R1"), Path("$R2")) if paired else Path("$READS")
+
+    assert adapter.build_argv(request, inputs) == expected
+    assert "@RG ID:sample one" in expected
+    assert any("MM/ML" in limit for limit in adapter.tag_preservation_limits)
+
+
+@pytest.mark.parametrize("adapter", [BwaMem2Adapter(), Bowtie2Adapter()])
+def test_short_read_adapters_reject_direct_and_bam_passthrough(tmp_path, adapter):
+    with pytest.raises(AlignmentAdapterError, match="does not accept BAM"):
+        adapter.validate_request(_request(tmp_path))
+    with pytest.raises(AlignmentAdapterError, match="discard MM/ML"):
+        adapter.validate_request(_request(tmp_path, align_from_bam=False, modality="direct"))
+
+
+@pytest.mark.parametrize(
+    ("adapter", "argument"),
+    [
+        (BwaMem2Adapter(), "-oelsewhere.sam"),
+        (Bowtie2Adapter(), "-S=elsewhere.sam"),
+        (Bowtie2Adapter(), "-p4"),
+        (Bowtie2Adapter(), "--threads=4"),
+    ],
+)
+def test_short_read_adapters_reject_managed_output_arguments(tmp_path, adapter, argument):
+    with pytest.raises(AlignmentAdapterError, match="manages these options internally"):
+        adapter.validate_request(_request(tmp_path, align_from_bam=False, aligner_args=(argument,)))
+
+
 def test_version_probe_rejects_missing_unparseable_and_old_tools(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda _name: None)
     with pytest.raises(AlignmentAdapterError, match="requires executable"):
@@ -102,6 +218,38 @@ def test_version_probe_rejects_missing_unparseable_and_old_tools(monkeypatch):
     )
     with pytest.raises(AlignmentAdapterError, match="minimap2 >= 2.24.0"):
         probe_executable_version("minimap2", (2, 24, 0))
+
+
+def test_version_probe_supports_bwa_subcommand_and_preamble(monkeypatch):
+    calls = []
+    monkeypatch.setattr("shutil.which", lambda name: f"/tools/{name}")
+
+    def probe(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="Launching optimized binary\n2.2.1\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", probe)
+    line, version = probe_executable_version("bwa-mem2", (2, 2, 1), version_args=("version",))
+
+    assert calls == [["bwa-mem2", "version"]]
+    assert line == "2.2.1"
+    assert version == (2, 2, 1)
+
+
+def test_bowtie2_environment_requires_index_builder(monkeypatch):
+    monkeypatch.setattr(
+        AlignmentAdapter,
+        "validate_environment",
+        lambda _self, _backend: _environment(name="bowtie2 2.5.4", version=(2, 5, 4)),
+    )
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    with pytest.raises(AlignmentAdapterError, match="bowtie2-build"):
+        Bowtie2Adapter().validate_environment("python")
 
 
 def test_missing_adapter_executable_fails_before_task_output_creation(tmp_path, monkeypatch):
@@ -154,6 +302,71 @@ def test_reference_plan_identity_uses_only_semantic_inputs(tmp_path):
     assert first["identity"] != changed_reference["identity"]
     assert first["identity"] != changed_version["identity"]
     assert "threads" not in first["index_parameters"]
+
+
+@pytest.mark.parametrize("adapter", [BwaMem2Adapter(), Bowtie2Adapter()])
+def test_short_read_reference_index_is_content_addressed_and_reused(tmp_path, monkeypatch, adapter):
+    request = _request(tmp_path, align_from_bam=False)
+    request.reference_fasta.write_text(">ref\nACGTACGT\n", encoding="utf-8")
+    environment = _environment()
+    environment = replace(
+        environment,
+        index_builder_version=f"{adapter.index_executable} 2.5.0",
+    )
+    calls = []
+
+    def build(argv, **_kwargs):
+        calls.append(argv)
+        if isinstance(adapter, BwaMem2Adapter):
+            prefix = Path(argv[argv.index("-p") + 1])
+            for suffix in adapter.index_suffixes:
+                Path(f"{prefix}{suffix}").write_bytes(suffix.encode())
+        else:
+            prefix = Path(argv[-1])
+            for number in (1, 2, 3, 4):
+                Path(f"{prefix}.{number}.bt2").write_bytes(str(number).encode())
+            for number in (1, 2):
+                Path(f"{prefix}.rev.{number}.bt2").write_bytes(str(number).encode())
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", build)
+    first_prefix, first_plan = adapter.prepare_reference(request, environment, "a" * 64)
+    second_prefix, second_plan = adapter.prepare_reference(request, environment, "a" * 64)
+    changed_prefix, changed_plan = adapter.prepare_reference(request, environment, "b" * 64)
+    changed_environment = replace(
+        environment,
+        adapter_version="adapter 9.0.0",
+        adapter_version_tuple=(9, 0, 0),
+        index_builder_version="builder 9.0.0",
+    )
+    version_prefix, version_plan = adapter.prepare_reference(request, changed_environment, "a" * 64)
+
+    assert first_prefix == second_prefix
+    assert first_prefix != changed_prefix
+    assert first_plan["reused"] is False
+    assert second_plan["reused"] is True
+    assert changed_plan["identity"] != first_plan["identity"]
+    assert version_prefix not in {first_prefix, changed_prefix}
+    assert version_plan["identity"] != first_plan["identity"]
+    assert len(calls) == 3
+    assert all(record["sha256"] for record in second_plan["index_files"])
+    assert " " in str(request.reference_fasta)
+
+
+@pytest.mark.parametrize("adapter", [BwaMem2Adapter(), Bowtie2Adapter()])
+def test_failed_short_read_index_does_not_publish_manifest(tmp_path, monkeypatch, adapter):
+    request = _request(tmp_path, align_from_bam=False)
+    request.reference_fasta.write_text(">ref\nACGT\n", encoding="utf-8")
+    environment = replace(_environment(), index_builder_version=f"{adapter.index_executable} 2.5.0")
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=17, stdout="", stderr="index failed"),
+    )
+
+    with pytest.raises(AlignmentAdapterError, match="index build failed"):
+        adapter.prepare_reference(request, environment, "a" * 64)
+
+    assert not list(request.aligned_bam.parent.glob("**/index_manifest.json"))
 
 
 def test_failed_adapter_execution_removes_partial_outputs(tmp_path, monkeypatch):

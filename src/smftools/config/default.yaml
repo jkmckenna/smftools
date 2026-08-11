@@ -59,9 +59,11 @@ emit_moves: True # Whether to emit move tables (mv tag) during basecalling for s
 
 # Alignment params
 alignment_mode: "align" # align produces a new alignment; existing validates and owns one aligned BAM without realignment
-aligner: "dorado" # Aligner to use: dorado, minimap2
-align_from_bam: False # Whether to run alignment from a bam file for minimap2. If False, runs alignment from a FASTQ file.
+aligner: "dorado" # Aligner to use: dorado, minimap2, bwa-mem2, bowtie2
+align_from_bam: False # Direct BAM input is supported by dorado/minimap2; short-read adapters require False and stage FASTQ.
 aligner_args:
+  bwa-mem2: []
+  bowtie2: []
   minimap2:
     ont:
       - '-a'
