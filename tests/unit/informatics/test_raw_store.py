@@ -200,6 +200,7 @@ def test_paired_segments_share_one_molecule_and_materialize_losslessly(tmp_path)
     assert list(spine.obs_names) == ["template-a"]
     assert spine.obs.iloc[0]["segment_count"] == 2
     assert spine.obs.iloc[0]["pair_state"] == "proper_pair"
+    assert spine.uns["pair_consensus_contract"]["schema_version"] == 1
     assert segments["segment_uid"].is_unique
     assert segments["molecule_uid"].nunique() == 1
     assert set(segments["segment_id"]) == {"R1", "R2"}
@@ -208,9 +209,103 @@ def test_paired_segments_share_one_molecule_and_materialize_losslessly(tmp_path)
     materialized = materialize(
         paths["spine"], molecule_uids=[str(spine.obs.iloc[0]["molecule_uid"])]
     )
-    assert set(materialized.obs_names) == {"template-a/1", "template-a/2"}
+    assert list(materialized.obs_names) == ["template-a"]
     assert materialized.obs["molecule_uid"].nunique() == 1
-    assert materialized.obs["segment_uid"].is_unique
+    assert materialized.obs.iloc[0]["consensus_algorithm"] == "conversion_quality_consensus_v1"
+    np.testing.assert_array_equal(materialized.layers["mate_coverage_count"], [[2, 2, 2, 2]])
+
+
+def test_paired_consensus_preserves_uncovered_gap_and_overlap_policy(tmp_path):
+    frame = _paired_frame()
+    frame["reference_start"] = [0, 3]
+    frame["cigar"] = ["2M", "2M"]
+    frame["aligned_length"] = [2, 2]
+    frame["sequence"] = [[0, 1], [2, 3]]
+    frame["quality"] = [[30, 30], [31, 31]]
+    frame["mismatch"] = [[4, 4], [4, 4]]
+    frame["modification_signal"] = [[0.0, 1.0], [1.0, 0.0]]
+    paths = write_raw_store(
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref1_top": 5},
+        shard_size=1,
+        extra_uns={"modality": "conversion"},
+    )
+
+    result = materialize(paths["spine"])
+
+    np.testing.assert_array_equal(result.layers["covered_base_mask"], [[1, 1, 0, 1, 1]])
+    np.testing.assert_array_equal(result.layers["mate_coverage_count"], [[1, 1, 0, 1, 1]])
+    np.testing.assert_array_equal(result.layers["read_span_mask"], [[1, 1, 1, 1, 1]])
+    assert np.isnan(result.X[0, 2])
+    assert result.obs.iloc[0]["consensus_gap_bases"] == 1
+    assert result.obs.iloc[0]["consensus_overlap_bases"] == 0
+
+
+def test_paired_consensus_marks_signal_conflict_and_uses_base_quality(tmp_path):
+    frame = _paired_frame()
+    frame["sequence"] = [[0, 1, 2, 3], [0, 2, 3, 3]]
+    frame["quality"] = [[30, 40, 20, 30], [30, 20, 20, 30]]
+    frame["mismatch"] = [[4, 1, 2, 4], [4, 2, 3, 4]]
+    frame["modification_signal"] = [[0.0, 1.0, np.nan, 0.0], [0.0, 0.0, 1.0, 0.0]]
+    paths = write_raw_store(
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref1_top": 4},
+        extra_uns={"modality": "conversion"},
+    )
+
+    result = materialize(paths["spine"])
+
+    unknown = 4
+    np.testing.assert_array_equal(result.layers["sequence_integer_encoding"], [[0, 1, unknown, 3]])
+    np.testing.assert_array_equal(result.X, [[0.0, np.nan, 1.0, 0.0]])
+    np.testing.assert_array_equal(result.layers["overlap_conflict_mask"], [[0, 1, 1, 0]])
+    assert result.obs.iloc[0]["consensus_conflict_bases"] == 2
+
+
+def test_paired_direct_modification_materialization_is_rejected(tmp_path):
+    paths = write_raw_store(
+        _paired_frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref1_top": 4},
+        extra_uns={"modality": "direct"},
+    )
+
+    with pytest.raises(ValueError, match="paired direct-modification consensus is unsupported"):
+        materialize(paths["spine"])
+
+
+def test_paired_singleton_materializes_as_one_consensus_molecule(tmp_path):
+    frame = _paired_frame().iloc[[0]].copy()
+    frame["mate_unmapped"] = True
+    paths = write_raw_store(
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref1_top": 4},
+        extra_uns={"modality": "conversion"},
+    )
+
+    result = materialize(paths["spine"])
+
+    assert list(result.obs_names) == ["template-a"]
+    assert result.obs.iloc[0]["pair_state"] == "singleton"
+    assert bool(result.obs.iloc[0]["consensus_singleton"])
+    np.testing.assert_array_equal(result.layers["mate_coverage_count"], [[1, 1, 1, 1]])
+
+
+def test_discordant_pair_consensus_is_rejected_explicitly(tmp_path):
+    frame = _paired_frame()
+    frame["proper_pair"] = False
+    paths = write_raw_store(
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref1_top": 4},
+        extra_uns={"modality": "conversion"},
+    )
+
+    with pytest.raises(ValueError, match="does not support discordant"):
+        materialize(paths["spine"])
 
 
 def test_duplicate_physical_segment_identity_fails(tmp_path):
@@ -251,7 +346,7 @@ def test_paired_segment_pointers_survive_experiment_relocation(tmp_path):
 
     result = materialize(moved / "raw_outputs" / paths["spine"].name)
 
-    assert set(result.obs_names) == {"template-a/1", "template-a/2"}
+    assert list(result.obs_names) == ["template-a"]
 
 
 def test_materialize_filters_canonical_raw_index_by_barcode_and_molecule_uid(tmp_path):

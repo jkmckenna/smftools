@@ -130,4 +130,5 @@ def test_materialize_ragged_without_signal_columns_has_only_base_layers():
         "mismatch_integer_encoding",
         "base_quality_scores",
         "read_span_mask",
+        "covered_base_mask",
     }

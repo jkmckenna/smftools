@@ -754,6 +754,12 @@ def write_raw_store(
                 "secondary": "exclude",
                 "supplementary": "exclude",
             },
+            "pair_consensus_contract": {
+                "schema_version": 1,
+                "conversion": "conversion_quality_consensus",
+                "deaminase": "conversion_quality_consensus",
+                "direct": "unsupported",
+            },
             "reference_plans": {plan.reference: plan.to_dict() for plan in plans},
             "reference_lengths": {
                 str(reference): int(length) for reference, length in reference_lengths.items()
@@ -949,6 +955,12 @@ def write_raw_store_streaming(
                 "primary": "include",
                 "secondary": "exclude",
                 "supplementary": "exclude",
+            },
+            "pair_consensus_contract": {
+                "schema_version": 1,
+                "conversion": "conversion_quality_consensus",
+                "deaminase": "conversion_quality_consensus",
+                "direct": "unsupported",
             },
             "reference_plans": {plan.reference: plan.to_dict() for plan in plans},
             "reference_lengths": {

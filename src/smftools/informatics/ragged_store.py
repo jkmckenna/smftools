@@ -16,8 +16,11 @@ import pandas as pd
 
 from smftools.constants import (
     BASE_QUALITY_SCORES,
+    COVERED_BASE_MASK,
+    MATE_COVERAGE_COUNT,
     MISMATCH_INTEGER_ENCODING,
     MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
+    OVERLAP_CONFLICT_MASK,
     READ_SPAN_MASK,
     REFERENCE_STRAND,
     SEQUENCE_INTEGER_ENCODING,
@@ -437,7 +440,15 @@ def _reference_lengths_for_rows(
 class _DenseGrids:
     """Preallocated dense output arrays a ragged scatter fills in place."""
 
-    __slots__ = ("signal", "sequence", "mismatch", "quality", "span", "feature_layers")
+    __slots__ = (
+        "signal",
+        "sequence",
+        "mismatch",
+        "quality",
+        "span",
+        "covered",
+        "feature_layers",
+    )
 
     def __init__(self, n_reads: int, n_positions: int, feature_layer_names: Iterable[str]):
         unknown = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"]
@@ -446,6 +457,7 @@ class _DenseGrids:
         self.mismatch = np.full((n_reads, n_positions), unknown, dtype=np.int8)
         self.quality = np.full((n_reads, n_positions), -1, dtype=np.int8)
         self.span = np.zeros((n_reads, n_positions), dtype=np.int8)
+        self.covered = np.zeros((n_reads, n_positions), dtype=np.int8)
         self.feature_layers: dict[str, np.ndarray] = {
             name: np.full((n_reads, n_positions), np.nan, dtype=np.float32)
             for name in feature_layer_names
@@ -520,6 +532,7 @@ def _scatter_read_row(
         ):
             continue
         target_position = reference_position - window_start
+        grids.covered[out_row, target_position] = 1
         if signal_values:
             grids.signal[out_row, target_position] = signal_values[query_position]
         if sequence_values:
@@ -548,6 +561,7 @@ def _assemble_ragged_adata(
         MISMATCH_INTEGER_ENCODING: grids.mismatch,
         BASE_QUALITY_SCORES: grids.quality,
         READ_SPAN_MASK: grids.span,
+        COVERED_BASE_MASK: grids.covered,
         **grids.feature_layers,
     }
     keep = set(available_layers) if layers is None else set(layers)
@@ -616,6 +630,178 @@ def materialize_ragged(
             padding=padding,
         )
     return _assemble_ragged_adata(grids, obs, layers, uns, window_start, window_end)
+
+
+def collapse_paired_segments(
+    segments: "ad.AnnData",
+    *,
+    molecule_obs: pd.DataFrame,
+    layers: Iterable[str] | None = None,
+) -> "ad.AnnData":
+    """Collapse one or two conversion segments into one molecule consensus row.
+
+    Segment rows must carry ``molecule_uid``. Signal disagreements in mate
+    overlaps remain missing and are flagged; sequence disagreements select the
+    higher-quality observation, with equal-quality ties represented as ``N``.
+    """
+    import anndata as ad
+
+    if "molecule_uid" not in segments.obs or "molecule_uid" not in molecule_obs:
+        raise ValueError("paired consensus requires molecule_uid metadata")
+    molecule_obs = molecule_obs.copy()
+    unknown = MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT["N"]
+    n_molecules = len(molecule_obs)
+    n_positions = segments.n_vars
+    signal = np.full((n_molecules, n_positions), np.nan, dtype=np.float32)
+    sequence = np.full((n_molecules, n_positions), unknown, dtype=np.int8)
+    mismatch = np.full((n_molecules, n_positions), unknown, dtype=np.int8)
+    quality = np.full((n_molecules, n_positions), -1, dtype=np.int8)
+    span = np.zeros((n_molecules, n_positions), dtype=np.int8)
+    covered = np.zeros((n_molecules, n_positions), dtype=np.int8)
+    mate_count = np.zeros((n_molecules, n_positions), dtype=np.int8)
+    conflicts = np.zeros((n_molecules, n_positions), dtype=np.int8)
+    feature_names = [name for name in SIGNAL_FEATURE_LAYERS.values() if name in segments.layers]
+    feature_layers = {
+        name: np.full((n_molecules, n_positions), np.nan, dtype=np.float32)
+        for name in feature_names
+    }
+    rows_by_molecule = {
+        str(molecule_uid): np.asarray(rows, dtype=np.int64)
+        for molecule_uid, rows in segments.obs.reset_index(drop=True)
+        .groupby("molecule_uid", sort=False, observed=True)
+        .groups.items()
+    }
+
+    for out_row, molecule_uid in enumerate(molecule_obs["molecule_uid"].astype(str)):
+        rows = rows_by_molecule.get(molecule_uid, np.empty(0, dtype=np.int64))
+        if not 1 <= len(rows) <= 2:
+            raise ValueError(
+                f"paired consensus requires one or two primary segments per molecule; "
+                f"{molecule_uid!r} has {len(rows)}"
+            )
+        row_covered = np.asarray(segments.layers[COVERED_BASE_MASK][rows], dtype=bool)
+        counts = row_covered.sum(axis=0, dtype=np.int8)
+        mate_count[out_row] = counts
+        covered[out_row] = counts > 0
+        span[out_row] = np.asarray(segments.layers[READ_SPAN_MASK][rows]).max(axis=0)
+        if {"outer_fragment_start", "outer_fragment_end"}.issubset(molecule_obs.columns):
+            positions = np.asarray(segments.var_names, dtype=np.int64)
+            fragment_start = int(molecule_obs.iloc[out_row]["outer_fragment_start"])
+            fragment_end = int(molecule_obs.iloc[out_row]["outer_fragment_end"])
+            span[out_row] = ((positions >= fragment_start) & (positions < fragment_end)).astype(
+                np.int8
+            )
+
+        segment_signal = np.asarray(segments.X[rows], dtype=np.float32)
+        segment_sequence = np.asarray(segments.layers[SEQUENCE_INTEGER_ENCODING][rows])
+        segment_quality = np.asarray(segments.layers[BASE_QUALITY_SCORES][rows])
+        segment_mismatch = np.asarray(segments.layers[MISMATCH_INTEGER_ENCODING][rows])
+        if len(rows) == 1:
+            signal[out_row] = segment_signal[0]
+            sequence[out_row] = segment_sequence[0]
+            quality[out_row] = segment_quality[0]
+            mismatch[out_row] = segment_mismatch[0]
+            for name in feature_names:
+                feature_layers[name][out_row] = np.asarray(segments.layers[name][rows[0]])
+        else:
+            first_only = row_covered[0] & ~row_covered[1]
+            second_only = row_covered[1] & ~row_covered[0]
+            overlap = row_covered[0] & row_covered[1]
+
+            first_signal, second_signal = segment_signal
+            first_finite = np.isfinite(first_signal)
+            second_finite = np.isfinite(second_signal)
+            use_first_signal = first_finite & (~second_finite | ~overlap)
+            use_second_signal = second_finite & (~first_finite | ~overlap)
+            agreeing_signal = (
+                overlap & first_finite & second_finite & (first_signal == second_signal)
+            )
+            signal[out_row, use_first_signal | agreeing_signal] = first_signal[
+                use_first_signal | agreeing_signal
+            ]
+            signal[out_row, use_second_signal] = second_signal[use_second_signal]
+            conflicts[out_row, overlap & first_finite & second_finite & ~agreeing_signal] = 1
+
+            first_sequence, second_sequence = segment_sequence
+            first_quality, second_quality = segment_quality
+            first_mismatch, second_mismatch = segment_mismatch
+            use_first_base = first_only | (
+                overlap
+                & (
+                    ((first_sequence == second_sequence) & (first_quality >= second_quality))
+                    | ((first_sequence != second_sequence) & (first_quality > second_quality))
+                )
+            )
+            use_second_base = second_only | (
+                overlap
+                & (
+                    ((first_sequence == second_sequence) & (second_quality > first_quality))
+                    | ((first_sequence != second_sequence) & (second_quality > first_quality))
+                )
+            )
+            sequence[out_row, use_first_base] = first_sequence[use_first_base]
+            quality[out_row, use_first_base] = first_quality[use_first_base]
+            mismatch[out_row, use_first_base] = first_mismatch[use_first_base]
+            sequence[out_row, use_second_base] = second_sequence[use_second_base]
+            quality[out_row, use_second_base] = second_quality[use_second_base]
+            mismatch[out_row, use_second_base] = second_mismatch[use_second_base]
+            conflicts[out_row, overlap & (first_sequence != second_sequence)] = 1
+
+            for name in feature_names:
+                first_feature, second_feature = np.asarray(segments.layers[name][rows])
+                first_feature_finite = np.isfinite(first_feature)
+                second_feature_finite = np.isfinite(second_feature)
+                use_first_feature = first_feature_finite & (~second_feature_finite | ~overlap)
+                use_second_feature = second_feature_finite & (~first_feature_finite | ~overlap)
+                agreeing_feature = (
+                    overlap
+                    & first_feature_finite
+                    & second_feature_finite
+                    & (first_feature == second_feature)
+                )
+                feature_layers[name][out_row, use_first_feature | agreeing_feature] = first_feature[
+                    use_first_feature | agreeing_feature
+                ]
+                feature_layers[name][out_row, use_second_feature] = second_feature[
+                    use_second_feature
+                ]
+
+        molecule_obs.iloc[out_row, molecule_obs.columns.get_loc("consensus_overlap_bases")] = int(
+            np.count_nonzero(counts == 2)
+        )
+        molecule_obs.iloc[out_row, molecule_obs.columns.get_loc("consensus_gap_bases")] = int(
+            np.count_nonzero((span[out_row] > 0) & (counts == 0))
+        )
+        molecule_obs.iloc[out_row, molecule_obs.columns.get_loc("consensus_conflict_bases")] = int(
+            conflicts[out_row].sum()
+        )
+
+    available = {
+        SEQUENCE_INTEGER_ENCODING: sequence,
+        MISMATCH_INTEGER_ENCODING: mismatch,
+        BASE_QUALITY_SCORES: quality,
+        READ_SPAN_MASK: span,
+        COVERED_BASE_MASK: covered,
+        MATE_COVERAGE_COUNT: mate_count,
+        OVERLAP_CONFLICT_MASK: conflicts,
+        **feature_layers,
+    }
+    keep = set(available) if layers is None else set(layers)
+    unknown_layers = keep.difference(available)
+    if unknown_layers:
+        raise KeyError(f"ragged store cannot materialize layers: {sorted(unknown_layers)}")
+    result = ad.AnnData(
+        X=signal,
+        obs=molecule_obs.copy(),
+        var=segments.var.copy(),
+        layers={name: value for name, value in available.items() if name in keep},
+    )
+    result.uns.update(dict(segments.uns))
+    result.uns["paired_consensus"] = {
+        "algorithm": "conversion_quality_consensus",
+        "schema_version": 1,
+    }
+    return result
 
 
 def materialize_ragged_streaming(

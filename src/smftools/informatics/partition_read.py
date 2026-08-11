@@ -301,13 +301,33 @@ def _load_ragged_selection(
     0.5GB preprocess task to a 16-44GB peak (see dev/pipeline_scaling_audit.md).
     Peak is now ~one shard's frame + the dense output.
     """
-    from .ragged_store import materialize_ragged_streaming, read_ragged_parquet
-
-    segment_counts = selection.get("segment_count")
-    requires_segment_expansion = (
-        segment_counts is not None and (segment_counts.astype("int64") > 1).any()
+    from .ragged_store import (
+        collapse_paired_segments,
+        materialize_ragged_streaming,
+        read_ragged_parquet,
     )
-    if int(spine.uns.get("raw_schema_version", 0)) >= 4 and requires_segment_expansion:
+
+    pair_states = selection.get("pair_state", pd.Series("single", index=selection.index))
+    requires_pair_consensus = (
+        int(spine.uns.get("raw_schema_version", 0)) >= 4
+        and pair_states.astype(str).ne("single").any()
+    )
+    if requires_pair_consensus:
+        modality = str(spine.uns.get("modality", "conversion")).strip().lower()
+        if modality == "direct":
+            raise ValueError(
+                "paired direct-modification consensus is unsupported; "
+                "no validated probability-consensus contract is available"
+            )
+        molecule_selection = selection.copy()
+        if pair_states.astype(str).eq("discordant").any():
+            raise ValueError("paired consensus does not support discordant primary segments")
+        molecule_selection["consensus_algorithm"] = "conversion_quality_consensus_v1"
+        molecule_selection["consensus_singleton"] = pair_states.astype(str).eq("singleton")
+        molecule_selection["consensus_discordant"] = pair_states.astype(str).eq("discordant")
+        molecule_selection["consensus_overlap_bases"] = 0
+        molecule_selection["consensus_gap_bases"] = 0
+        molecule_selection["consensus_conflict_bases"] = 0
         index_value = spine.uns.get("segment_index")
         run_root = _run_root_from_source_base(base)
         index_path = resolve_relative_path(index_value, run_root)
@@ -370,11 +390,11 @@ def _load_ragged_selection(
         for path in paths:
             yield read_ragged_parquet([path], read_ids=selected_read_ids)
 
-    return materialize_ragged_streaming(
+    materialized = materialize_ragged_streaming(
         _shard_chunks(),
         obs=selection,
         reference_lengths=lengths,
-        layers=layers,
+        layers=None if requires_pair_consensus else layers,
         uns={
             key: value
             for key, value in spine.uns.items()
@@ -383,6 +403,13 @@ def _load_ragged_selection(
         start=start,
         end=end,
     )
+    if requires_pair_consensus:
+        return collapse_paired_segments(
+            materialized,
+            molecule_obs=molecule_selection,
+            layers=layers,
+        )
+    return materialized
 
 
 def _reference_plan(spine: "ad.AnnData", reference: str) -> dict[str, object]:

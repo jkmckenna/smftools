@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from smftools.constants import REFERENCE_STRAND
+from smftools.constants import COVERED_BASE_MASK, REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 
 from ..cli.hmm_adata import (
@@ -143,7 +143,7 @@ def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
             cfg=cfg,
         )
         position_mask = _resolve_pos_mask_for_methbase(adata, reference, signal)
-        return values, coordinates, position_mask
+        return _mask_uncovered_model_input(adata, values, coordinates), coordinates, position_mask
 
     values, coordinates, used_signals = build_multi_channel_union(
         adata,
@@ -156,7 +156,28 @@ def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
     for signal in used_signals:
         signal_mask = _resolve_pos_mask_for_methbase(adata, reference, signal)
         position_mask = signal_mask if position_mask is None else position_mask | signal_mask
-    return values, coordinates, position_mask
+    return _mask_uncovered_model_input(adata, values, coordinates), coordinates, position_mask
+
+
+def _mask_uncovered_model_input(adata, values: np.ndarray, coordinates: np.ndarray) -> np.ndarray:
+    """Keep paired insert gaps missing in HMM training and inference matrices."""
+    if COVERED_BASE_MASK not in adata.layers:
+        return values
+    positions = np.asarray(adata.var_names, dtype=np.int64)
+    column_by_position = {int(position): index for index, position in enumerate(positions)}
+    try:
+        columns = np.asarray([column_by_position[int(position)] for position in coordinates])
+    except KeyError as exc:
+        raise ValueError(
+            f"HMM coordinate {exc.args[0]} is absent from materialized coverage"
+        ) from exc
+    covered = np.asarray(adata.layers[COVERED_BASE_MASK], dtype=bool)[:, columns]
+    result = np.asarray(values, dtype=float).copy()
+    if result.ndim == 2:
+        result[~covered] = np.nan
+    else:
+        result[~covered, :] = np.nan
+    return result
 
 
 def _annotate_task(

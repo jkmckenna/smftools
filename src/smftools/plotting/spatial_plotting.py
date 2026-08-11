@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import scipy.cluster.hierarchy as sch
 
+from smftools.constants import COVERED_BASE_MASK
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 from smftools.parallel_utils import resolve_n_jobs as _resolve_n_jobs
@@ -180,8 +181,9 @@ def plot_rolling_nn_and_layer(
         L_df = L_df.loc[:, right_panel_var_mask]
 
     read_span_mask = None
-    if read_span_layer and read_span_layer in subset.layers:
-        span = subset.layers[read_span_layer]
+    coverage_layer = COVERED_BASE_MASK if COVERED_BASE_MASK in subset.layers else read_span_layer
+    if coverage_layer and coverage_layer in subset.layers:
+        span = subset.layers[coverage_layer]
         span = span.toarray() if hasattr(span, "toarray") else np.asarray(span)
         span_df = pd.DataFrame(span[valid], index=subset.obs_names[valid], columns=subset.var_names)
         span_df.index = span_df.index.astype(str)
@@ -422,8 +424,9 @@ def plot_zero_hamming_span_and_layer(
         layer_df = layer_df.loc[:, nan_mask]
 
     read_span_mask = None
-    if read_span_layer and read_span_layer in subset.layers:
-        span_mask = subset.layers[read_span_layer]
+    coverage_layer = COVERED_BASE_MASK if COVERED_BASE_MASK in subset.layers else read_span_layer
+    if coverage_layer and coverage_layer in subset.layers:
+        span_mask = subset.layers[coverage_layer]
         span_mask = span_mask.toarray() if hasattr(span_mask, "toarray") else np.asarray(span_mask)
         span_mask_df = pd.DataFrame(span_mask, index=subset.obs_names, columns=subset.var_names)
         span_mask_df.index = span_mask_df.index.astype(str)

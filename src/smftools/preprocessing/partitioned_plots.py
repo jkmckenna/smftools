@@ -8,7 +8,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from smftools.constants import BASE_QUALITY_SCORES, READ_SPAN_MASK, REFERENCE_STRAND
+from smftools.constants import (
+    BASE_QUALITY_SCORES,
+    COVERED_BASE_MASK,
+    READ_SPAN_MASK,
+    REFERENCE_STRAND,
+)
 
 
 def _register(layout, path, category, plot_type, **metadata):
@@ -568,7 +573,7 @@ def _read_span_quality_plots(
             read_ids=read_ids,
             start=plan.start,
             end=plan.end,
-            layers=[READ_SPAN_MASK, BASE_QUALITY_SCORES],
+            layers=[READ_SPAN_MASK, COVERED_BASE_MASK, BASE_QUALITY_SCORES],
         )
         mask_unanalyzed_gaps(core, plan.gaps)
         sample_column = _sample_column(core.obs)
@@ -576,7 +581,7 @@ def _read_span_quality_plots(
             subset = core[list(map(str, sample_obs.index))]
             column_step = max(1, math.ceil(subset.n_vars / max_positions))
             positions = np.asarray(subset.var_names, dtype=np.int64)[::column_step]
-            span = np.asarray(subset.layers[READ_SPAN_MASK])[:, ::column_step]
+            span = np.asarray(subset.layers[COVERED_BASE_MASK])[:, ::column_step]
             quality = np.asarray(subset.layers[BASE_QUALITY_SCORES], dtype=float)[:, ::column_step]
             quality[(span == 0) | (quality < 0)] = np.nan
             quality_count = np.sum(~np.isnan(quality), axis=0)
@@ -588,7 +593,7 @@ def _read_span_quality_plots(
             )
             figure, axes = plt.subplots(2, 2, figsize=(13, 7), height_ratios=(1, 4))
             axes[0, 0].plot(positions, span.mean(axis=0), color="#2a9d8f", linewidth=0.8)
-            axes[0, 0].set(title="Mean read span", ylim=(0, 1.02))
+            axes[0, 0].set(title="Mean observed-base coverage", ylim=(0, 1.02))
             axes[0, 1].plot(positions, quality_mean, color="#3a86ff", linewidth=0.8)
             axes[0, 1].set(title="Mean base quality")
             axes[1, 0].imshow(
@@ -598,7 +603,7 @@ def _read_span_quality_plots(
                 quality, aspect="auto", interpolation="nearest", cmap="viridis", vmin=0, vmax=50
             )
             axes[1, 0].set(
-                xlabel="Reference position", ylabel="Sampled reads", title="Read-span mask"
+                xlabel="Reference position", ylabel="Sampled reads", title="Covered-base mask"
             )
             axes[1, 1].set(xlabel="Reference position", title="Base-quality scores")
             figure.colorbar(image, ax=axes[1, 1], label="Phred score", shrink=0.8)
@@ -616,7 +621,7 @@ def _read_span_quality_plots(
                 stage="preprocess",
                 plot_type="read_span_base_quality",
                 region=plan.source_manifest(),
-                layers=[READ_SPAN_MASK, BASE_QUALITY_SCORES],
+                layers=[READ_SPAN_MASK, COVERED_BASE_MASK, BASE_QUALITY_SCORES],
                 selection_seed=selection.seed,
                 selection_sha256=selection.selection_sha256,
                 selected_molecule_uids=selection.molecule_uids,

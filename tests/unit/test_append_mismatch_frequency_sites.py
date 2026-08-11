@@ -70,3 +70,23 @@ def test_append_mismatch_frequency_sites_adds_expected_vars():
     assert adata.var["ref1_mismatch_base_frequencies"].iloc[1] == [("C", 0.5)]
     assert adata.var["ref1_mismatch_base_frequencies"].iloc[2] == []
     assert adata.var["ref2_mismatch_base_frequencies"].iloc[2] == [("T", 0.5)]
+
+
+def test_covered_base_mask_takes_precedence_over_outer_read_span():
+    obs = pd.DataFrame({"Reference_strand": pd.Categorical(["ref1", "ref1"])})
+    adata = ad.AnnData(X=np.zeros((2, 1)), obs=obs)
+    adata.layers["mismatch_integer_encoding"] = np.array([[0], [4]], dtype=np.int8)
+    adata.layers["read_span_mask"] = np.ones((2, 1), dtype=np.int8)
+    adata.layers["covered_base_mask"] = np.array([[0], [1]], dtype=np.int8)
+    adata.uns["mismatch_integer_encoding_map"] = {
+        "A": 0,
+        "C": 1,
+        "G": 2,
+        "T": 3,
+        "N": 4,
+        "PAD": 5,
+    }
+
+    append_mismatch_frequency_sites(adata, quality_layer=None)
+
+    assert adata.var["ref1_mismatch_frequency"].iloc[0] == 0.0
