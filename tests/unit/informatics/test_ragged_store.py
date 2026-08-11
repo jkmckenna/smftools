@@ -63,6 +63,29 @@ def test_cigar_lengths_and_aligned_pairs():
     ]
 
 
+def test_paired_ragged_record_uses_segment_identity_and_preserves_mate_fields():
+    class PairedRead(FakeRead):
+        is_paired = True
+        is_proper_pair = True
+        is_read1 = True
+        is_read2 = False
+        mate_is_unmapped = False
+        mate_is_reverse = True
+        next_reference_name = "chr1"
+        next_reference_start = 0
+        template_length = 12
+
+    record = alignment_to_ragged_record(PairedRead(), "AACCGGTTAACC")
+
+    assert record[READ_ID] == "read1/1"
+    assert record["template_id"] == "read1"
+    assert record["mate"] == "R1"
+    assert record["proper_pair"] is True
+    assert record["mate_reference"] == "chr1"
+    assert record["mate_reference_start"] == 0
+    assert record["template_length"] == 12
+
+
 def test_ragged_parquet_round_trip(tmp_path):
     path = write_ragged_parquet(_ragged_frame(), tmp_path / "reads.parquet")
     result = read_ragged_parquet(path)

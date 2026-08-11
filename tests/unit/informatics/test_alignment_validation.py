@@ -77,6 +77,36 @@ def _signatures(path):
         return sorted(read.to_string() for read in bam.fetch(until_eof=True))
 
 
+def _paired_bam(path, *, singleton=False, discordant=False):
+    header = {
+        "HD": {"VN": "1.6", "SO": "coordinate"},
+        "SQ": [{"SN": "ref", "LN": 12}],
+    }
+    with pysam.AlignmentFile(str(path), "wb", header=header) as bam:
+        mate_records = ((1, 1),) if singleton else ((1, 1), (2, 6))
+        for mate, start in mate_records:
+            read = pysam.AlignedSegment(bam.header)
+            read.query_name = "template"
+            read.query_sequence = "ACGT"
+            read.query_qualities = pysam.qualitystring_to_array("IIII")
+            read.reference_id = 0
+            read.reference_start = start
+            read.cigarstring = "4M"
+            read.mapping_quality = 60
+            read.is_paired = True
+            read.is_read1 = mate == 1
+            read.is_read2 = mate == 2
+            read.is_reverse = mate == 2
+            read.mate_is_reverse = mate == 1
+            read.is_proper_pair = not singleton and not discordant
+            read.mate_is_unmapped = singleton
+            read.next_reference_id = -1 if singleton else 0
+            read.next_reference_start = -1 if singleton else (6 if mate == 1 else 1)
+            read.template_length = 9 if mate == 1 else -9
+            bam.write(read)
+    return path
+
+
 def test_valid_existing_alignment_is_owned_indexed_and_manifested(tmp_path):
     fasta = _fasta(tmp_path / "reference.fa")
     source = _bam(tmp_path / "source.bam", starts=(1, 5))
@@ -214,15 +244,46 @@ def test_required_alignment_fields_fail(tmp_path, field, kwargs, message):
         validate_existing_alignment(source, fasta, modality="conversion")
 
 
-def test_invalid_and_currently_unsupported_paired_flags_fail_early(tmp_path):
+def test_invalid_paired_flags_fail_early(tmp_path):
     fasta = _fasta(tmp_path / "reference.fa")
     invalid = _bam(tmp_path / "invalid.bam", paired_flags=(0x1,))
-    valid_pair_flag = _bam(tmp_path / "paired.bam", paired_flags=(0x1 | 0x40,))
 
     with pytest.raises(AlignmentValidationError, match="exactly one of read1/read2"):
         validate_existing_alignment(invalid, fasta, modality="conversion")
-    with pytest.raises(AlignmentValidationError, match="Paired existing alignments"):
-        validate_existing_alignment(valid_pair_flag, fasta, modality="conversion")
+
+
+@pytest.mark.parametrize(
+    ("singleton", "discordant", "expected"),
+    [
+        (False, False, (2, 0, 0)),
+        (True, False, (0, 1, 0)),
+        (False, True, (0, 0, 2)),
+    ],
+)
+def test_existing_paired_alignment_preserves_and_reports_pair_state(
+    tmp_path, singleton, discordant, expected
+):
+    fasta = _fasta(tmp_path / "reference.fa")
+    source = _paired_bam(tmp_path / "paired.bam", singleton=singleton, discordant=discordant)
+
+    output, _, source_summary, normalized_summary = normalize_existing_alignment(
+        source,
+        tmp_path / "owned" / "aligned.bam",
+        fasta,
+        modality="conversion",
+    )
+
+    assert source_summary.paired_primary_records == (1 if singleton else 2)
+    assert (
+        source_summary.proper_pair_primary_records,
+        source_summary.singleton_primary_records,
+        source_summary.discordant_pair_primary_records,
+    ) == expected
+    assert normalized_summary.to_dict() == source_summary.to_dict() | {
+        "source_index_present": True,
+        "source_index_valid": True,
+    }
+    assert _signatures(output) == _signatures(source)
 
 
 def test_manifest_reader_rejects_owned_artifact_corruption(tmp_path):

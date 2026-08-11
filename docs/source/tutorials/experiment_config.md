@@ -100,15 +100,20 @@ do not select existing-alignment ingestion.
 
 Existing mode does not probe or invoke the configured aligner. The alignment manifest records
 available BAM `@PG` provenance, or `unknown` when it is absent. Valid paired existing alignments
-remain unsupported until molecule-segment ingestion is available; malformed paired flags fail
-with a distinct validation error.
+are retained with distinct R1/R2 segment identities and their proper-pair, singleton/discordant,
+mate-reference, mate-position, orientation, and template-length metadata. Malformed paired flags
+or missing mapped-mate coordinates fail with a distinct validation error. Singleton and
+discordant records are reported but are not filtered.
 
 Generated mode records the selected adapter, probed version, argument vector with path-independent
 placeholders, declared capabilities, sort/index backend, and semantic reference identity in the
 same schema-1 alignment manifest used by existing mode. Dorado and minimap2 currently build their
 reference indexes in memory, so the identity is recorded for compatibility and restart decisions
-rather than pointing to a persistent index artifact. Paired adapter inputs remain unsupported until
-the paired-alignment contract is introduced.
+rather than pointing to a persistent index artifact. Minimap2 accepts synchronized paired FASTQ
+inputs through two ordered mate streams; Dorado remains a single-BAM adapter. Paired FASTQ names
+may use `/1`/`/2`, `_R1`/`_R2`, or CASAVA mate comments. Mismatched names, conflicting mate
+annotations, and unequal record counts fail normalization. Mixed paired and unpaired FASTQ
+collections require separate runs.
 
 External conversion workflows must align against the exact transformed reference records that
 smftools will validate. The public Python helper publishes that content-identified FASTA and its

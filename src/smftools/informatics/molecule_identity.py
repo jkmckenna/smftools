@@ -4,12 +4,48 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import uuid
 
 IDENTITY_SCHEMA_VERSION = 1
 EXPERIMENT_UID_COLUMN = "experiment_uid"
 MOLECULE_UID_COLUMN = "molecule_uid"
 READ_ID_COLUMN = "read_id"
+_MATE_SUFFIX_RE = re.compile(r"(?:/|[._-](?:R|read)?)([12])$", re.IGNORECASE)
+
+
+def template_read_id(read_id: object) -> str:
+    """Return the shared template name for a SAM query/segment name."""
+    return _MATE_SUFFIX_RE.sub("", str(read_id))
+
+
+def alignment_segment_id(read: object) -> str:
+    """Return a unique primary-segment identity without changing BAM QNAME.
+
+    Paired SAM records intentionally share a query name. Raw storage requires
+    one unique row key per physical alignment segment, so R1/R2 receive a
+    canonical ``/1`` or ``/2`` suffix while the unsuffixed value remains the
+    template identity. Unpaired/long-read names are unchanged.
+    """
+    return alignment_segment_id_from_fields(
+        getattr(read, "query_name"),
+        paired=bool(getattr(read, "is_paired", False)),
+        read1=bool(getattr(read, "is_read1", False)),
+        read2=bool(getattr(read, "is_read2", False)),
+    )
+
+
+def alignment_segment_id_from_fields(
+    query_name: object, *, paired: bool, read1: bool, read2: bool
+) -> str:
+    """Return a segment identity from decoded SAM name/flag fields."""
+    query_name = str(query_name)
+    if not paired:
+        return query_name
+    template = template_read_id(query_name)
+    if bool(read1) == bool(read2):
+        raise ValueError(f"paired alignment {query_name!r} must set exactly one of read1/read2")
+    return f"{template}/{'1' if read1 else '2'}"
 
 
 def new_experiment_uid() -> str:
