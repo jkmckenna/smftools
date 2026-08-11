@@ -42,11 +42,21 @@ def _validate_alignment_executables(cfg) -> None:
 
 def _alignment_source_layout(resolved_input_manifest) -> str:
     """Return the adapter-facing layout after canonical BAM normalization."""
-    paired = any(
-        bool(getattr(row, "pair_id", "")) or str(getattr(row, "mate", "unpaired")) in {"R1", "R2"}
+    paired_rows = [
+        row
         for row in resolved_input_manifest.rows
-    )
-    return "paired_bam" if paired else "single_bam"
+        if bool(getattr(row, "pair_id", ""))
+        or str(getattr(row, "mate", "unpaired")) in {"R1", "R2"}
+    ]
+    unpaired_rows = [
+        row
+        for row in resolved_input_manifest.rows
+        if not bool(getattr(row, "pair_id", ""))
+        and str(getattr(row, "mate", "unpaired")) not in {"R1", "R2"}
+    ]
+    if paired_rows and unpaired_rows:
+        return "mixed_bam"
+    return "paired_bam" if paired_rows else "single_bam"
 
 
 def _probe_alignment_adapter(cfg):

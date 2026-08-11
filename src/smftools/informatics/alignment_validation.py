@@ -27,6 +27,9 @@ class AlignmentValidationSummary:
     secondary_records: int
     supplementary_records: int
     paired_primary_records: int
+    proper_pair_primary_records: int
+    singleton_primary_records: int
+    discordant_pair_primary_records: int
     coordinate_sorted: bool
     header_sort_order: str
     source_index_present: bool
@@ -196,6 +199,7 @@ def validate_existing_alignment(
                     source_index_valid = False
 
             total = primary = mapped = secondary = supplementary = paired = mm_ml = 0
+            proper_pair = singleton = discordant = 0
             coordinate_sorted = True
             last_reference = -1
             last_start = -1
@@ -223,6 +227,23 @@ def validate_existing_alignment(
                         raise AlignmentValidationError(
                             f"Paired alignment {read.query_name!r} must set exactly one of "
                             "read1/read2."
+                        )
+                    if read.is_proper_pair:
+                        if read.is_unmapped or read.mate_is_unmapped:
+                            raise AlignmentValidationError(
+                                f"Proper-pair alignment {read.query_name!r} marks a mate unmapped."
+                            )
+                        proper_pair += 1
+                    elif read.is_unmapped or read.mate_is_unmapped:
+                        singleton += 1
+                    else:
+                        discordant += 1
+                    if not read.mate_is_unmapped and (
+                        int(read.next_reference_id) < 0 or int(read.next_reference_start) < 0
+                    ):
+                        raise AlignmentValidationError(
+                            f"Paired alignment {read.query_name!r} has a mapped mate but lacks "
+                            "mate reference/position fields."
                         )
                 elif read.is_read1 or read.is_read2:
                     raise AlignmentValidationError(
@@ -282,11 +303,6 @@ def validate_existing_alignment(
         raise AlignmentValidationError(
             "Direct-modification existing alignment requires valid MM/ML tags on every primary read."
         )
-    if paired:
-        raise AlignmentValidationError(
-            "Paired existing alignments are not supported until molecule-segment ingestion is "
-            "available; use single/long-read input for alignment_mode='existing'."
-        )
     programs, aligner = _program_provenance(header)
     coordinate_sorted = (
         coordinate_sorted and str(header.get("HD", {}).get("SO", "")) == "coordinate"
@@ -298,6 +314,9 @@ def validate_existing_alignment(
         secondary_records=secondary,
         supplementary_records=supplementary,
         paired_primary_records=paired,
+        proper_pair_primary_records=proper_pair,
+        singleton_primary_records=singleton,
+        discordant_pair_primary_records=discordant,
         coordinate_sorted=coordinate_sorted,
         header_sort_order=str(header.get("HD", {}).get("SO", "unknown")),
         source_index_present=source_index_present,

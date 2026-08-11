@@ -22,6 +22,7 @@ from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
 from ..readwrite import date_string, time_string
+from .molecule_identity import alignment_segment_id, alignment_segment_id_from_fields
 
 if TYPE_CHECKING:
     import pysam as pysam_types
@@ -2950,6 +2951,10 @@ def concatenate_fastqs_to_bam(
             Barcode token string.
         """
         stem = _strip_fastq_ext(p)
+        casava = re.fullmatch(r"(?i)(.+?)_S\d+_L\d{3}_R[12]_\d{3}", stem)
+        if casava:
+            return casava.group(1)
+        stem = re.sub(r"(?i)(?:[._-](?:R|read)?[12])(?:_\d{3})?$", "", stem)
         if "_" in stem:
             token = stem.split("_")[-1]
             if token:
@@ -3020,14 +3025,14 @@ def concatenate_fastqs_to_bam(
             for rec in fx:
                 yield rec  # rec.name, rec.sequence, rec.quality
 
-    def _fastq_iter_plain(p: Path) -> Iterable[Tuple[str, str, str]]:
+    def _fastq_iter_plain(p: Path) -> Iterable[Tuple[str, str, str, str]]:
         """Yield FASTQ records from plain-text parsing.
 
         Args:
             p: FASTQ path.
 
         Yields:
-            Tuple of (name, sequence, quality).
+            Tuple of (name, sequence, quality, comment).
         """
         import bz2
         import gzip
@@ -3053,11 +3058,43 @@ def concatenate_fastqs_to_bam(
                 qual = fh.readline()
                 if not qual:
                     break
-                name = header.strip()
-                if name.startswith("@"):
-                    name = name[1:]
-                name = name.split()[0]
-                yield name, seq.strip(), qual.strip()
+                header = header.strip()
+                if header.startswith("@"):
+                    header = header[1:]
+                name, _, comment = header.partition(" ")
+                yield name, seq.strip(), qual.strip(), comment.strip()
+
+    def _fastq_parts(rec: object) -> Tuple[str, str, Optional[str], str]:
+        """Return name, sequence, quality, and comment for either parser backend."""
+        if backend_choice == "python":
+            return (
+                str(getattr(rec, "name")),
+                str(getattr(rec, "sequence")),
+                getattr(rec, "quality", None),
+                str(getattr(rec, "comment", "") or ""),
+            )
+        name, sequence, quality, comment = rec
+        return str(name), str(sequence), str(quality), str(comment)
+
+    def _paired_fastq_identity(
+        rec: object, *, expected_mate: int, path: Path, record_number: int
+    ) -> Tuple[str, str, Optional[str]]:
+        """Validate one mate annotation and return its normalized template identity."""
+        name, sequence, quality, comment = _fastq_parts(rec)
+        suffix_match = re.search(r"(?i)(?:/|[._-](?:R|read)?)([12])$", name)
+        suffix_mate = int(suffix_match.group(1)) if suffix_match else None
+        casava_match = re.match(r"^([12]):(?:[YN]):", comment)
+        casava_mate = int(casava_match.group(1)) if casava_match else None
+        for label, observed in (("name suffix", suffix_mate), ("CASAVA comment", casava_mate)):
+            if observed is not None and observed != expected_mate:
+                raise ValueError(
+                    f"Paired FASTQ {path} record {record_number} declares mate R{observed} "
+                    f"in its {label}, but the file is assigned as R{expected_mate}."
+                )
+        template = re.sub(r"(?i)(?:/|[._-](?:R|read)?)[12]$", "", name)
+        if not template:
+            raise ValueError(f"Paired FASTQ {path} record {record_number} has an empty read name.")
+        return template, sequence, quality
 
     def _make_unaligned_segment(
         name: str,
@@ -3179,10 +3216,31 @@ def concatenate_fastqs_to_bam(
     read_group_samples: Dict[str, str] = {}
     barcodes_in_order: List[str] = []
 
+    def _paired_metadata_value(
+        values: Tuple[Optional[str], Optional[str]], *, field: str, pair: Tuple[Path, Path]
+    ) -> Optional[str]:
+        declared = {str(value) for value in values if value not in (None, "")}
+        if len(declared) > 1:
+            raise ValueError(f"Paired FASTQ files {pair} have conflicting {field} metadata.")
+        return next(iter(declared), None)
+
     for r1, r2 in explicit_pairs:
-        bc = barcode_map.get(r1) or barcode_map.get(r2) or _extract_barcode_from_filename(r1)
-        read_group = read_group_map.get(r1) or read_group_map.get(r2) or bc
-        sample = sample_map.get(r1) or sample_map.get(r2) or rg_sample_field
+        pair = (r1, r2)
+        bc = _paired_metadata_value(
+            (barcode_map.get(r1), barcode_map.get(r2)), field="barcode", pair=pair
+        ) or _extract_barcode_from_filename(r1)
+        read_group = (
+            _paired_metadata_value(
+                (read_group_map.get(r1), read_group_map.get(r2)), field="read-group", pair=pair
+            )
+            or bc
+        )
+        sample = (
+            _paired_metadata_value(
+                (sample_map.get(r1), sample_map.get(r2)), field="sample", pair=pair
+            )
+            or rg_sample_field
+        )
         per_path_barcode[r1] = bc
         per_path_barcode[r2] = bc
         per_path_read_group[r1] = read_group
@@ -3248,6 +3306,7 @@ def concatenate_fastqs_to_bam(
         header_lines.append("@PG\tID:concat-fastq\tPN:concatenate_fastqs_to_bam\tVN:1")
         bam_out_ctx.stdin.write("\n".join(header_lines) + "\n")
 
+    write_failed = False
     try:
         # Paired
         it_pairs = explicit_pairs
@@ -3266,100 +3325,81 @@ def concatenate_fastqs_to_bam(
                 it1 = _fastq_iter_plain(r1_path)
                 it2 = _fastq_iter_plain(r2_path)
 
-            for rec1, rec2 in zip_longest(it1, it2, fillvalue=None):
-
-                def _clean(n: Optional[str]) -> Optional[str]:
-                    """Normalize FASTQ read names by trimming read suffixes."""
-                    if n is None:
-                        return None
-                    return re.sub(r"(?:/1$|/2$|\s[12]$)", "", n)
-
-                name = (
-                    _clean(getattr(rec1, "name", None) if backend_choice == "python" else rec1[0])
-                    if rec1 is not None
-                    else None
+            for record_number, (rec1, rec2) in enumerate(
+                zip_longest(it1, it2, fillvalue=None), start=1
+            ):
+                if rec1 is None or rec2 is None:
+                    shorter = r1_path if rec1 is None else r2_path
+                    longer = r2_path if rec1 is None else r1_path
+                    raise ValueError(
+                        "Paired FASTQ files have unequal record counts: "
+                        f"{shorter} ended before {longer} at record {record_number}."
+                    )
+                name1, sequence1, quality1 = _paired_fastq_identity(
+                    rec1, expected_mate=1, path=r1_path, record_number=record_number
                 )
-                if name is None:
-                    name = (
-                        _clean(
-                            getattr(rec2, "name", None) if backend_choice == "python" else rec2[0]
-                        )
-                        if rec2 is not None
-                        else None
+                name2, sequence2, quality2 = _paired_fastq_identity(
+                    rec2, expected_mate=2, path=r2_path, record_number=record_number
+                )
+                if name1 != name2:
+                    raise ValueError(
+                        "Paired FASTQ records are out of sync at record "
+                        f"{record_number}: R1 template {name1!r} does not match "
+                        f"R2 template {name2!r}."
                     )
-                if name is None:
-                    name = (
-                        getattr(rec1, "name", None)
-                        if backend_choice == "python" and rec1 is not None
-                        else (rec1[0] if rec1 is not None else None)
-                    )
-                if name is None:
-                    name = (
-                        getattr(rec2, "name", None)
-                        if backend_choice == "python" and rec2 is not None
-                        else (rec2[0] if rec2 is not None else None)
-                    )
+                name = name1
 
-                if rec1 is not None:
-                    if backend_choice == "python":
-                        a1 = _make_unaligned_segment(
-                            name,
-                            rec1.sequence,
-                            rec1.quality,
-                            bc,
-                            read_group,
-                            read1=True,
-                            read2=False,
-                        )
-                        bam_out_ctx.write(a1)
-                    else:
-                        _write_sam_line(
-                            bam_out_ctx.stdin,
-                            name,
-                            rec1[1],
-                            rec1[2],
-                            bc,
-                            read_group,
-                            read1=True,
-                            read2=False,
-                            add_read_group=add_read_group,
-                        )
-                    per_file_counts[r1_path] = per_file_counts.get(r1_path, 0) + 1
-                    total_written += 1
-                if rec2 is not None:
-                    if backend_choice == "python":
-                        a2 = _make_unaligned_segment(
-                            name,
-                            rec2.sequence,
-                            rec2.quality,
-                            bc,
-                            read_group,
-                            read1=False,
-                            read2=True,
-                        )
-                        bam_out_ctx.write(a2)
-                    else:
-                        _write_sam_line(
-                            bam_out_ctx.stdin,
-                            name,
-                            rec2[1],
-                            rec2[2],
-                            bc,
-                            read_group,
-                            read1=False,
-                            read2=True,
-                            add_read_group=add_read_group,
-                        )
-                    per_file_counts[r2_path] = per_file_counts.get(r2_path, 0) + 1
-                    total_written += 1
-
-                if rec1 is not None and rec2 is not None:
-                    paired_pairs_written += 1
+                if backend_choice == "python":
+                    a1 = _make_unaligned_segment(
+                        name,
+                        sequence1,
+                        quality1,
+                        bc,
+                        read_group,
+                        read1=True,
+                        read2=False,
+                    )
+                    bam_out_ctx.write(a1)
                 else:
-                    if rec1 is not None:
-                        singletons_written += 1
-                    if rec2 is not None:
-                        singletons_written += 1
+                    _write_sam_line(
+                        bam_out_ctx.stdin,
+                        name,
+                        sequence1,
+                        quality1 or "",
+                        bc,
+                        read_group,
+                        read1=True,
+                        read2=False,
+                        add_read_group=add_read_group,
+                    )
+                per_file_counts[r1_path] = per_file_counts.get(r1_path, 0) + 1
+                total_written += 1
+                if backend_choice == "python":
+                    a2 = _make_unaligned_segment(
+                        name,
+                        sequence2,
+                        quality2,
+                        bc,
+                        read_group,
+                        read1=False,
+                        read2=True,
+                    )
+                    bam_out_ctx.write(a2)
+                else:
+                    _write_sam_line(
+                        bam_out_ctx.stdin,
+                        name,
+                        sequence2,
+                        quality2 or "",
+                        bc,
+                        read_group,
+                        read1=False,
+                        read2=True,
+                        add_read_group=add_read_group,
+                    )
+                per_file_counts[r2_path] = per_file_counts.get(r2_path, 0) + 1
+                total_written += 1
+                paired_pairs_written += 1
 
         # Singles
         it_singles = singles
@@ -3401,6 +3441,9 @@ def concatenate_fastqs_to_bam(
                 per_file_counts[pth] = per_file_counts.get(pth, 0) + 1
                 total_written += 1
                 singletons_written += 1
+    except Exception:
+        write_failed = True
+        raise
     finally:
         if backend_choice == "python":
             bam_out_ctx.close()
@@ -3411,6 +3454,8 @@ def concatenate_fastqs_to_bam(
             if rc != 0:
                 stderr = bam_out_ctx.stderr.read() if bam_out_ctx.stderr else ""
                 raise RuntimeError(f"samtools view failed (exit {rc}):\n{stderr}")
+        if write_failed:
+            output_bam.unlink(missing_ok=True)
 
     return {
         "total_reads": total_written,
@@ -4055,7 +4100,8 @@ def extract_read_relative_base_identities(
                     continue
                 if primary_only and (read.is_secondary or read.is_supplementary):
                     continue
-                if read_name_filter is not None and read.query_name not in read_name_filter:
+                segment_id = alignment_segment_id(read)
+                if read_name_filter is not None and segment_id not in read_name_filter:
                     continue
                 if not _in_window(read.reference_start):
                     continue
@@ -4083,10 +4129,16 @@ def extract_read_relative_base_identities(
         fields = line.rstrip("\n").split("\t")
         if len(fields) < 11:
             continue
-        read_name = fields[0]
-        if read_name_filter is not None and read_name not in read_name_filter:
-            continue
         flag = int(fields[1])
+        read_name = fields[0]
+        segment_id = alignment_segment_id_from_fields(
+            read_name,
+            paired=bool(flag & 0x1),
+            read1=bool(flag & 0x40),
+            read2=bool(flag & 0x80),
+        )
+        if read_name_filter is not None and segment_id not in read_name_filter:
+            continue
         cigar = fields[5]
         sequence = fields[9]
         if cigar == "*" or sequence == "*":
@@ -4103,11 +4155,22 @@ def extract_read_relative_base_identities(
         read = SimpleNamespace(
             is_unmapped=False,
             is_reverse=bool(flag & 16),
+            is_paired=bool(flag & 0x1),
+            is_proper_pair=bool(flag & 0x2),
+            is_read1=bool(flag & 0x40),
+            is_read2=bool(flag & 0x80),
+            mate_is_unmapped=bool(flag & 0x8),
+            mate_is_reverse=bool(flag & 0x20),
             query_name=read_name,
             query_sequence=sequence,
             query_qualities=qualities,
             reference_name=str(record),
             reference_start=reference_start,
+            next_reference_name=(
+                str(record) if fields[6] == "=" else "" if fields[6] == "*" else fields[6]
+            ),
+            next_reference_start=int(fields[7]) - 1 if fields[7] != "0" else -1,
+            template_length=int(fields[8]),
             cigarstring=cigar,
         )
         records.append(
@@ -4381,7 +4444,7 @@ def extract_read_features_from_bam(
                 mapping_quality = float(read.mapping_quality)
                 reference_start = float(read.reference_start)
                 reference_end = float(read.reference_end)
-                read_metrics[read.query_name] = [
+                read_metrics[alignment_segment_id(read)] = [
                     float(read.query_length),
                     median_read_quality,
                     float(reference_length),
@@ -4455,7 +4518,10 @@ def extract_read_features_from_bam(
         fields = line.rstrip("\n").split("\t")
         if len(fields) < 11:
             continue
-        read_name = fields[0]
+        flag = int(fields[1])
+        read_name = alignment_segment_id_from_fields(
+            fields[0], paired=bool(flag & 0x1), read1=bool(flag & 0x40), read2=bool(flag & 0x80)
+        )
         reference_name = fields[2]
         mapping_quality = float(fields[4])
         cigar = fields[5]
@@ -4542,7 +4608,7 @@ def extract_read_tags_from_bam(
                         tag_map[tag] = read.get_tag(tag)
                     except Exception:
                         tag_map[tag] = None
-                read_tags[read.query_name] = tag_map
+                read_tags[alignment_segment_id(read)] = tag_map
     else:
         # -F 2308 filters unmapped(4) + secondary(256) + supplementary(2048)
         exclude_flag = "2308" if primary_only else "4"
@@ -4555,8 +4621,13 @@ def extract_read_tags_from_bam(
             fields = line.rstrip("\n").split("\t")
             if len(fields) < 11:
                 continue
-            read_name = fields[0]
             flag = int(fields[1])
+            read_name = alignment_segment_id_from_fields(
+                fields[0],
+                paired=bool(flag & 0x1),
+                read1=bool(flag & 0x40),
+                read2=bool(flag & 0x80),
+            )
             cigar = fields[5]
             tag_map: Dict[str, object] = {}
             if include_cigar:

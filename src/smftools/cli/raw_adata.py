@@ -35,6 +35,8 @@ from smftools.constants import (
 )
 from smftools.logging_utils import get_logger, mark_stage_outcome, stage_logging_lifecycle
 
+from ..informatics.molecule_identity import alignment_segment_id
+
 logger = get_logger(__name__)
 
 
@@ -341,7 +343,7 @@ def _attach_direct_signals_from_bam(
             for read in fetch_iter:
                 if read.is_secondary or read.is_supplementary or read.is_unmapped:
                     continue
-                read_id = read.query_name
+                read_id = alignment_segment_id(read)
                 if read_id not in wanted:
                     continue
                 record = frame.loc[read_id]
@@ -454,7 +456,7 @@ def _read_move_tables(
         for read in bam.fetch(until_eof=True):
             if primary_only and (read.is_secondary or read.is_supplementary):
                 continue
-            read_id = str(read.query_name)
+            read_id = alignment_segment_id(read)
             if read_id not in target_ids or read_id in tables or not read.has_tag("mv"):
                 continue
             ts = int(read.get_tag("ts")) if read.has_tag("ts") else 0
@@ -883,7 +885,7 @@ def _read_ids_for_reference(aligned_bam: Path, record: str) -> list[str]:
         for read in bam.fetch(record):
             if read.is_unmapped or read.is_secondary or read.is_supplementary:
                 continue
-            read_ids.append(read.query_name)
+            read_ids.append(alignment_segment_id(read))
     return read_ids
 
 

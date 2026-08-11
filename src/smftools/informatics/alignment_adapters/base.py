@@ -10,7 +10,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TypeAlias
 
 from smftools.logging_utils import get_logger
 
@@ -22,6 +22,9 @@ _VERSION_PATTERN = re.compile(r"(?<!\d)(\d+)\.(\d+)(?:\.(\d+))?")
 
 class AlignmentAdapterError(RuntimeError):
     """Raised when adapter selection, validation, or execution fails."""
+
+
+AlignmentInputs: TypeAlias = Path | tuple[Path, ...]
 
 
 @dataclass(frozen=True)
@@ -208,11 +211,13 @@ class AlignmentAdapter(ABC):
         return request.reference_fasta, self.reference_plan(reference_sha256, environment)
 
     @abstractmethod
-    def prepare_input(self, request: AlignmentRequest, environment: AlignmentEnvironment) -> Path:
-        """Prepare and return the execution input, possibly as an owned temporary file."""
+    def prepare_input(
+        self, request: AlignmentRequest, environment: AlignmentEnvironment
+    ) -> AlignmentInputs:
+        """Prepare and return one or more execution inputs."""
 
     @abstractmethod
-    def build_argv(self, request: AlignmentRequest, execution_input: Path) -> list[str]:
+    def build_argv(self, request: AlignmentRequest, execution_input: AlignmentInputs) -> list[str]:
         """Build the exact argument vector for this request."""
 
     @abstractmethod
@@ -265,7 +270,10 @@ class AlignmentAdapter(ABC):
             f"{request.aligned_bam.stem}_sorted{request.aligned_bam.suffix}"
         )
         bai = Path(f"{sorted_bam}.bai")
-        temporary_input = execution_input if execution_input != request.input_bam else None
+        execution_inputs = (
+            execution_input if isinstance(execution_input, tuple) else (execution_input,)
+        )
+        temporary_inputs = tuple(path for path in execution_inputs if path != request.input_bam)
         try:
             self._run_aligner(argv, request.aligned_bam)
             threads = str(request.threads) if request.threads else None
@@ -281,7 +289,7 @@ class AlignmentAdapter(ABC):
             bai.unlink(missing_ok=True)
             raise
         finally:
-            if temporary_input is not None:
+            for temporary_input in temporary_inputs:
                 temporary_input.unlink(missing_ok=True)
         request.aligned_bam.unlink(missing_ok=True)
         provenance = {

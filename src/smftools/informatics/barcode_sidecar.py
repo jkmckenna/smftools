@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import pandas as pd
 
 from ..readwrite import atomic_write_json
+from .molecule_identity import alignment_segment_id
 
 BARCODE_IDENTITY_SCHEMA_VERSION = 1
 BARCODE_IDENTITY_REPORT_SUFFIX = ".identity_report.json"
@@ -176,7 +177,8 @@ def _bam_records(bam_path: str | Path) -> dict[str, dict[str, Any]]:
                 "bam_bm": _value(read.get_tag("BM")) if read.has_tag("BM") else "",
                 "bam_bi": list(read.get_tag("bi")) if read.has_tag("bi") else None,
             }
-            existing = records.get(str(read.query_name))
+            segment_id = alignment_segment_id(read)
+            existing = records.get(segment_id)
             if existing is not None and any(
                 _classified(_value(existing.get(key)))
                 and _classified(_value(record.get(key)))
@@ -185,7 +187,7 @@ def _bam_records(bam_path: str | Path) -> dict[str, dict[str, Any]]:
             ):
                 existing["bam_record_conflict"] = True
                 continue
-            records.setdefault(str(read.query_name), record)
+            records.setdefault(segment_id, record)
     return records
 
 

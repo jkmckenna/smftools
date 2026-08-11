@@ -23,6 +23,7 @@ from smftools.constants import (
     SEQUENCE_INTEGER_ENCODING,
 )
 
+from .molecule_identity import alignment_segment_id, template_read_id
 from .physical_layout import portable_parquet_row_group_rows
 from .signal_features import SIGNAL_FEATURE_COLUMNS
 
@@ -38,6 +39,8 @@ SEQUENCE = "sequence"
 QUALITY = "quality"
 MISMATCH = "mismatch"
 MODIFICATION_SIGNAL = "modification_signal"
+TEMPLATE_ID = "template_id"
+MATE = "mate"
 
 RAGGED_REQUIRED_COLUMNS = (
     READ_ID,
@@ -375,8 +378,32 @@ def alignment_to_ragged_record(
 
     reference_name = reference or str(read.reference_name)
     strand = "bottom" if read.is_reverse else "top"
+    paired = bool(getattr(read, "is_paired", False))
+    mate = (
+        "R1"
+        if paired and bool(getattr(read, "is_read1", False))
+        else "R2"
+        if paired and bool(getattr(read, "is_read2", False))
+        else "unpaired"
+    )
+    mate_unmapped = bool(getattr(read, "mate_is_unmapped", False)) if paired else False
+    mate_reference = getattr(read, "next_reference_name", None)
+    if mate_unmapped or mate_reference in (None, "*"):
+        mate_reference = ""
+    mate_reference_start = getattr(read, "next_reference_start", -1)
+    if mate_reference_start is None:
+        mate_reference_start = -1
     return {
-        READ_ID: str(read.query_name),
+        READ_ID: alignment_segment_id(read),
+        TEMPLATE_ID: template_read_id(read.query_name) if paired else str(read.query_name),
+        MATE: mate,
+        "paired": paired,
+        "proper_pair": bool(getattr(read, "is_proper_pair", False)),
+        "mate_unmapped": mate_unmapped,
+        "mate_reverse": bool(getattr(read, "mate_is_reverse", False)) if paired else False,
+        "mate_reference": str(mate_reference),
+        "mate_reference_start": int(mate_reference_start),
+        "template_length": int(getattr(read, "template_length", 0) or 0),
         REFERENCE: reference_name,
         REFERENCE_STRAND: reference_strand or f"{reference_name}_{strand}",
         "strand": strand,

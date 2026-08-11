@@ -129,8 +129,10 @@ def test_missing_adapter_executable_fails_before_task_output_creation(tmp_path, 
 
 def test_adapter_capability_errors_name_layout_and_tag_preserving_remedy(tmp_path):
     adapter = Minimap2Adapter()
-    with pytest.raises(AlignmentAdapterError, match="paired_bam.*IAR-08"):
+    with pytest.raises(AlignmentAdapterError, match="two-FASTQ route"):
         adapter.validate_request(_request(tmp_path, source_layout="paired_bam"))
+    adapter.validate_request(_request(tmp_path, source_layout="paired_bam", align_from_bam=False))
+    assert adapter.capabilities.supports_paired_end is True
     with pytest.raises(AlignmentAdapterError, match="discard MM/ML tags"):
         adapter.validate_request(_request(tmp_path, modality="direct", align_from_bam=False))
     DoradoAdapter().validate_request(_request(tmp_path, modality="direct", align_from_bam=False))
