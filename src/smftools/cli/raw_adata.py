@@ -94,26 +94,36 @@ def _attach_obs_metadata(
     streaming``) should compute it once, upfront, and pass the same dict to
     every call rather than re-scanning the whole BAM once per reference.
     """
+    from ..informatics.barcode_sidecar import read_barcode_identity_sidecar
     from ..informatics.ragged_store import cigar_max_indel_runs
 
     frame = frame.set_index("read_id", drop=False)
-    for sidecar in (
-        _load_read_sidecar(barcode_sidecar),
-        _load_read_sidecar(umi_sidecar),
-    ):
+    if barcode_sidecar is not None and Path(barcode_sidecar).is_file():
+        barcode_frame = read_barcode_identity_sidecar(barcode_sidecar).set_index(
+            "read_name", drop=False
+        )
+        for column in barcode_frame.columns:
+            if column != "read_name":
+                frame[column] = barcode_frame[column].reindex(frame.index)
+    for sidecar in (_load_read_sidecar(umi_sidecar),):
         if sidecar is not None:
             for column in sidecar.columns:
                 frame[column] = sidecar[column].reindex(frame.index)
 
-    if "BC" in frame:
-        frame["barcode"] = frame["BC"].fillna("unclassified").astype(str)
-    elif "barcode" not in frame:
+    if "barcode" not in frame:
         frame["barcode"] = "unknown"
-    frame["sample"] = frame["barcode"]
+    else:
+        frame["barcode"] = frame["barcode"].fillna("unknown").astype(str)
+    if "sample" not in frame:
+        frame["sample"] = frame["barcode"]
+    else:
+        frame["sample"] = frame["sample"].fillna(frame["barcode"]).astype(str)
     frame["Experiment_name"] = str(cfg.experiment_name)
-    frame["Experiment_name_and_barcode"] = (
-        frame["Experiment_name"] + "_" + frame["barcode"].astype(str)
-    )
+    identity_namespace = pd.Series(str(cfg.experiment_name), index=frame.index)
+    if "namespace" in frame:
+        declared_namespace = frame["namespace"].fillna("").astype(str)
+        identity_namespace = declared_namespace.where(declared_namespace != "", identity_namespace)
+    frame["Experiment_name_and_barcode"] = identity_namespace + "_" + frame["barcode"].astype(str)
 
     if metrics is None:
         from ..informatics.bam_functions import extract_read_features_from_bam

@@ -68,6 +68,15 @@ _OBS_COLUMN_ALIASES = {
 
 _RAW_SCALAR_OBS_COLUMNS = (
     "BC",
+    "barcode_source",
+    "barcode_confidence",
+    "sample_source",
+    "sample_confidence",
+    "read_group",
+    "namespace",
+    "identity_status",
+    "identity_conflicts",
+    "identity_schema_version",
     "U1",
     "U2",
     "Experiment_name",

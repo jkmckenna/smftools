@@ -117,6 +117,29 @@ def test_casava_pairs_keep_lanes_distinct_and_explicit_metadata_wins(tmp_path):
     assert next(row for row in result.rows if row.path == str(paths[0])).sample == "declared-sample"
 
 
+def test_fastq_identity_maps_use_resolved_paths(tmp_path):
+    source = _write(tmp_path / "inputs" / "sample.fastq", b"@one\nAC\n+\n!!\n")
+    user_manifest = _manifest(
+        tmp_path / "manifest.csv",
+        [
+            {
+                "path": "inputs/sample.fastq",
+                "barcode": "barcode01",
+                "sample": "sample-a",
+                "read_group": "group-a",
+            }
+        ],
+    )
+
+    result = resolve_input_manifest(
+        output_directory=tmp_path / "output", input_manifest_path=user_manifest
+    )
+
+    assert result.fastq_barcode_map() == {str(source): "barcode01"}
+    assert result.fastq_read_group_map() == {str(source): "group-a"}
+    assert result.fastq_sample_map() == {str(source): "sample-a"}
+
+
 def test_incomplete_pair_fails_cleanly(tmp_path):
     source = _write(tmp_path / "sample_R1.fastq", b"one")
 

@@ -118,6 +118,21 @@ filesystem signature is unchanged; the content digest remains authoritative. Raw
 created before these three artifacts existed are treated as incomplete and rebuilt on the next
 raw request.
 
+### Barcode and sample identity migration
+
+Raw ingestion publishes one versioned barcode/sample identity sidecar for every input route. The
+authority order is explicit manifest metadata, validated BAM `BC`/`RG`/`SM` metadata, configured
+sequence classification, then legacy filename inference. Each raw molecule records the selected
+barcode and sample together with its source, confidence, classification status, and any conflicting
+lower-priority evidence. The paired JSON report records classified, unclassified, unknown, and
+conflicting counts and fractions.
+
+Filename inference remains compatible for legacy inputs, but now emits a warning when it supplies
+the selected barcode. Add `barcode`, `sample`, `read_group`, and, when combining experiments,
+`namespace` to the input manifest to make identity explicit. Mate tokens such as `R1` and `R2` are
+removed before legacy inference and are never treated as barcodes. Already-demultiplexed runs may
+keep `skip_bam_split: true`; barcode/sample metadata no longer depends on split-BAM filenames.
+
 ## Variant QC and migration
 
 `variant_analysis_mode` accepts `auto`, `off`, `report`, or `filter`. Existing
