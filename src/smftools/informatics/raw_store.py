@@ -612,6 +612,7 @@ def write_raw_store_streaming(
     genome_tile_halo: int = 1_000,
     bam_path: str | Path | None = None,
     extra_uns: Mapping[str, object] | None = None,
+    refresh_experiment_spine: bool = True,
 ) -> dict[str, object]:
     """Streaming entry point: consumes bounded-size, possibly-repeated-per-
     reference groups (see ``_write_raw_shards_streaming``), never holding
@@ -763,7 +764,8 @@ def write_raw_store_streaming(
     if barcode_index_path is not None:
         register_sidecar(manifest_path, "barcode_index", barcode_index_path)
     register_sidecar(manifest_path, "obs", obs_path)
-    write_experiment_spine(output_dir.parent)
+    if refresh_experiment_spine:
+        write_experiment_spine(output_dir.parent)
     logger.info(
         "Streamed raw store with %d reads in %d shard(s) in %.2fs",
         len(obs),

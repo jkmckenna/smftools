@@ -1583,6 +1583,7 @@ def load_adata_core(
             genome_tile_halo=int(getattr(cfg, "genome_tile_halo", 1_000)),
             bam_path=aligned_sorted_output,
             extra_uns=extra_uns,
+            refresh_experiment_spine=False,
         )
         # The streaming path never materializes one experiment-wide frame
         # (that's the whole point) -- downstream steps below that used to

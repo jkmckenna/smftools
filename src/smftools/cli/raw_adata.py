@@ -1584,6 +1584,7 @@ def raw_adata(config_path: str):
         partitioned_stage_is_complete,
         publish_stage_outputs,
         raw_input_artifact_ids,
+        stage_config_hash,
         stage_lifecycle,
     )
     from .load_adata import load_adata_core
@@ -1597,58 +1598,133 @@ def raw_adata(config_path: str):
     cfg.bed_outputs_path = raw_root / BED_OUTPUTS_DIR
     cfg.modkit_outputs_path = raw_root / MODKIT_OUTPUTS_DIR
     cfg.split_path = cfg.bam_outputs_path / SPLIT_DIR
-    paths = get_adata_paths(cfg)
+    # Raw is the one stage authorized to replace an invalid selector. Every
+    # downstream caller uses the strict default and refuses canonical fallback
+    # when a current generation is corrupt.
+    paths = get_adata_paths(cfg, allow_invalid_raw=True)
     required = PARTITIONED_STAGE_REQUIRED_ARTIFACTS["raw"]
-    if paths.raw_spine and paths.raw_spine.exists() and not cfg.force_redo_load_adata:
-        if partitioned_stage_is_complete(cfg, "raw", required=required):
-            spine, _ = safe_read_h5ad(paths.raw_spine)
-            logger.info("Raw ragged store already exists: %s", paths.raw_spine)
-            mark_stage_outcome("skipped", reason="compatible raw stage is already complete")
-            return spine, paths.raw_spine, cfg
-        logger.warning(
-            "Raw spine exists without a compatible complete stage record; re-running raw: %s",
-            paths.raw_spine,
-        )
-
     from ..informatics.input_manifest import input_manifest_artifact_paths
+    from ..informatics.raw_generation import (
+        RawGenerationError,
+        publish_raw_generation,
+        raw_generation_dependencies,
+        resolve_current_raw_generation,
+    )
     from ..informatics.raw_store import (
+        BARCODE_INDEX_FILENAME,
         INTERVAL_CATALOG_FILENAME,
         MOLECULE_INDEX_DIRNAME,
         MOLECULES_FILENAME,
     )
     from ..informatics.sidecar_manifest import sidecar_manifest_path
 
-    with stage_lifecycle(
-        cfg,
-        "raw",
-        input_artifact_ids=raw_input_artifact_ids(cfg),
-    ) as lifecycle:
-        with perf_substep("raw_pipeline"):
-            result = load_adata_core(cfg, paths, config_path=config_path, raw_only=True)
-        raw_root = Path(cfg.output_directory) / RAW_DIR
-        outputs = {
-            "spine": Path(result[1]),
-            "ragged_store": raw_root / "raw",
-            "interval_catalog": raw_root / INTERVAL_CATALOG_FILENAME,
+    def publication_inputs():
+        canonical_raw_root = Path(cfg.output_directory) / RAW_DIR
+        sources = {
+            "spine": canonical_raw_root / "spine.h5ad",
+            "ragged_store": canonical_raw_root / "raw",
+            "interval_catalog": canonical_raw_root / INTERVAL_CATALOG_FILENAME,
+            "obs": canonical_raw_root / "obs.parquet",
             "molecules": Path(cfg.output_directory) / MOLECULES_FILENAME,
             "molecule_index": Path(cfg.output_directory) / MOLECULE_INDEX_DIRNAME,
             "reference_interval_map": (
                 Path(cfg.output_directory) / REFERENCE_INTERVAL_MAP_FILENAME
             ),
-            "manifest": sidecar_manifest_path(raw_root),
+            "sidecar_manifest": sidecar_manifest_path(canonical_raw_root),
+            **input_manifest_artifact_paths(cfg.output_directory),
         }
-        outputs.update(
-            {
-                key: path
-                for key, path in input_manifest_artifact_paths(cfg.output_directory).items()
-                if path.exists()
-            }
+        barcode_index = canonical_raw_root / BARCODE_INDEX_FILENAME
+        if barcode_index.exists():
+            sources["barcode_index"] = barcode_index
+        regions = {
+            scope: Path(cfg.output_directory) / REGION_CATALOG_DIRNAME / filename
+            for scope, filename in REGION_CATALOG_FILENAMES.items()
+            if (Path(cfg.output_directory) / REGION_CATALOG_DIRNAME / filename).exists()
+        }
+        dependencies = raw_generation_dependencies(
+            sources["spine"],
+            sources["sidecar_manifest"],
+            run_root=cfg.output_directory,
+            owned_artifacts={**sources, **regions},
         )
-        region_catalog_root = Path(cfg.output_directory) / REGION_CATALOG_DIRNAME
-        for scope, filename in REGION_CATALOG_FILENAMES.items():
-            catalog_path = region_catalog_root / filename
-            if catalog_path.exists():
-                outputs[f"{scope}_regions"] = catalog_path
+        return sources, dependencies, regions
+
+    def publish_generation():
+        sources, dependencies, regions = publication_inputs()
+        return publish_raw_generation(
+            cfg.output_directory,
+            sources,
+            config_hash=stage_config_hash(cfg, "raw"),
+            input_artifact_ids=raw_input_artifact_ids(cfg),
+            dependencies=dependencies,
+            region_artifacts=regions,
+        )
+
+    def lifecycle_outputs(generation):
+        outputs = {
+            key: Path(path)
+            for key, path in generation.items()
+            if key not in {"generation_id", "sidecar_manifest"} and isinstance(path, Path)
+        }
+        outputs["manifest"] = Path(generation["sidecar_manifest"])
+        outputs["generation_spine"] = Path(generation["spine"])
+        for scope in REGION_CATALOG_FILENAMES:
+            generation_key = f"region:{scope}"
+            if generation_key in generation:
+                outputs[f"{scope}_regions"] = Path(generation[generation_key])
+        return outputs
+
+    try:
+        current_generation = resolve_current_raw_generation(raw_root)
+    except RawGenerationError as exc:
+        current_generation = None
+        logger.warning("Raw current generation is invalid; rebuilding: %s", exc)
+    if current_generation is not None and not cfg.force_redo_load_adata:
+        generation_id = str(current_generation[1]["generation_id"])
+        current_spine = current_generation[0] / "spine.h5ad"
+        if partitioned_stage_is_complete(
+            cfg,
+            "raw",
+            required=required,
+            extra_matches={"generation_id": generation_id},
+            allow_previous_complete=True,
+        ):
+            spine, _ = safe_read_h5ad(current_spine)
+            logger.info("Raw generation is already complete: %s", current_generation[0])
+            mark_stage_outcome("skipped", reason="compatible raw generation is already complete")
+            return spine, current_spine, cfg
+        logger.warning(
+            "Raw generation exists without a compatible complete stage record; rebuilding: %s",
+            current_generation[0],
+        )
+
+    legacy_required = tuple(
+        key
+        for key in required
+        if key not in {"generation_spine", "generation_manifest", "generation", "current"}
+    )
+    canonical_spine = raw_root / "spine.h5ad"
+    migrate_legacy = (
+        current_generation is None
+        and canonical_spine.exists()
+        and not cfg.force_redo_load_adata
+        and partitioned_stage_is_complete(cfg, "raw", required=legacy_required)
+    )
+
+    with stage_lifecycle(
+        cfg,
+        "raw",
+        input_artifact_ids=raw_input_artifact_ids(cfg),
+    ) as lifecycle:
+        if migrate_legacy:
+            logger.info("Migrating compatible legacy raw artifacts into an immutable generation")
+        else:
+            with perf_substep("raw_pipeline"):
+                result = load_adata_core(cfg, paths, config_path=config_path, raw_only=True)
+        generation = publish_generation()
+        outputs = lifecycle_outputs(generation)
+        generation_spine = Path(generation["spine"])
+        spine, _ = safe_read_h5ad(generation_spine)
         publish_stage_outputs(
             lifecycle,
             outputs,
@@ -1664,15 +1740,24 @@ def raw_adata(config_path: str):
                 "input_manifest_csv",
                 "input_manifest_json",
                 "input_resolution_report",
+                "generation_manifest",
+                "current",
             ),
             schema_versions={
                 "raw": 3,
+                "raw_generation": 1,
                 "identity": 1,
                 "region_catalog": 1,
                 "reference_interval_map": 1,
                 "input_manifest": 1,
             },
-            extra={"n_molecules": int(result[0].n_obs)},
+            extra={
+                "n_molecules": int(spine.n_obs),
+                "generation_id": str(generation["generation_id"]),
+            },
             nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["raw"],
         )
-    return result
+        from ..informatics.experiment_spine import write_experiment_spine
+
+        write_experiment_spine(cfg.output_directory)
+    return spine, generation_spine, cfg

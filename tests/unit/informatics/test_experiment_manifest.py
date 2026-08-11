@@ -199,6 +199,20 @@ def test_failed_replacement_preserves_previous_complete_record(tmp_path):
     assert entry["state"] == "failed"
     assert entry["previous_complete"]["state"] == "complete"
     assert entry["previous_complete"]["generation_id"] == "generation-one"
+    assert stage_is_complete(
+        tmp_path,
+        "latent",
+        config_hash="first",
+        required_artifacts=("spine",),
+        extra_matches={"generation_id": "generation-one"},
+        allow_previous_complete=True,
+    )
+    assert not stage_is_complete(
+        tmp_path,
+        "latent",
+        extra_matches={"generation_id": "generation-two"},
+        allow_previous_complete=True,
+    )
 
 
 def test_stage_completion_validates_directory_checksum_and_extra_fields(tmp_path):

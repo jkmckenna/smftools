@@ -233,6 +233,7 @@ def stage_is_complete(
     input_artifact_ids: list[str] | None = None,
     required_artifacts: tuple[str, ...] = (),
     extra_matches: dict[str, Any] | None = None,
+    allow_previous_complete: bool = False,
 ) -> bool:
     """Return whether a compatible stage record and its required artifacts are valid."""
     run_root = Path(run_root)
@@ -242,6 +243,13 @@ def stage_is_complete(
     state = entry.get("state")
     if state is None and "completed_at" in entry:
         state = "complete"
+    if state != "complete" and allow_previous_complete:
+        previous = entry.get("previous_complete")
+        if isinstance(previous, dict):
+            entry = previous
+            state = entry.get("state")
+            if state is None and "completed_at" in entry:
+                state = "complete"
     if state != "complete":
         return False
     if config_hash is not None and entry.get("config_hash") != config_hash:

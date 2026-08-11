@@ -77,6 +77,11 @@ def write_experiment_spine(run_root: str | Path) -> Path | None:
 
     run_root = Path(run_root)
     raw_dir = run_root / RAW_DIR
+    from .raw_generation import resolve_current_raw_generation
+
+    current_raw_generation = resolve_current_raw_generation(raw_dir)
+    if current_raw_generation is not None:
+        raw_dir = current_raw_generation[0]
     if not (raw_dir / OBS_FILENAME).exists():
         return None
 
@@ -102,8 +107,10 @@ def write_experiment_spine(run_root: str | Path) -> Path | None:
     obs.index.name = None
 
     uns: dict[str, object] = {}
-    for _stage, stage_dir in _STAGE_DIRS_IN_UNION_ORDER:
+    for stage, stage_dir in _STAGE_DIRS_IN_UNION_ORDER:
         spine_path = run_root / stage_dir / "spine.h5ad"
+        if stage == "raw" and current_raw_generation is not None:
+            spine_path = current_raw_generation[0] / "spine.h5ad"
         if not spine_path.exists():
             continue
         stage_spine = load_spine(spine_path, verbose=False)

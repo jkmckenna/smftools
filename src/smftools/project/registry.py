@@ -22,6 +22,7 @@ from smftools.constants import (
     CHIMERIC_DIR,
     HMM_DIR,
     LATENT_DIR,
+    PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
     PREPROCESS_DIR,
     RAW_DIR,
     REFERENCE_INTERVAL_MAP_FILENAME,
@@ -150,6 +151,11 @@ def discover_stage_spines(experiment_dir: Path) -> tuple[Path, dict[str, Path]]:
             if stage not in found and (candidate := run_root / stage_dir / SPINE_FILENAME).exists()
         }
     )
+    from ..informatics.raw_generation import resolve_current_raw_generation
+
+    current_raw_generation = resolve_current_raw_generation(run_root / STAGE_DIRS["raw"])
+    if current_raw_generation is not None:
+        found["raw"] = current_raw_generation[0] / SPINE_FILENAME
     manifest_path = run_root / "experiment_manifest.json"
     if manifest_path.exists():
         from ..informatics.experiment_manifest import read_experiment_manifest
@@ -164,6 +170,18 @@ def discover_stage_spines(experiment_dir: Path) -> tuple[Path, dict[str, Path]]:
                 if state is None and "completed_at" in record:
                     state = "complete"
                 if state != "complete":
+                    if stage == "raw" and current_raw_generation is not None:
+                        from ..informatics.experiment_manifest import stage_is_complete
+
+                        generation_id = str(current_raw_generation[1]["generation_id"])
+                        if stage_is_complete(
+                            run_root,
+                            "raw",
+                            required_artifacts=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["raw"],
+                            extra_matches={"generation_id": generation_id},
+                            allow_previous_complete=True,
+                        ):
+                            continue
                     # A stage directory may exist while a generation is still
                     # staging. Registry refresh must continue to expose only
                     # the previously published complete stage.
@@ -210,16 +228,17 @@ def _discover_catalogs(spines: dict[str, Path], project_dir: Path) -> dict[str, 
             path = raw_dir / name
             if path.exists():
                 found[name] = _relative_registry_path(path, project_dir)
-        molecule_index = raw_dir.parent / "molecule_index"
+        generation_layout = raw_dir.parent.name == "generations"
+        raw_artifact_root = raw_dir if generation_layout else raw_dir.parent
+        molecule_index = raw_artifact_root / "molecule_index"
         if molecule_index.exists():
             found["molecule_index"] = _relative_registry_path(molecule_index, project_dir)
-        run_root = raw_dir.parent
-        reference_interval_map = run_root / REFERENCE_INTERVAL_MAP_FILENAME
+        reference_interval_map = raw_artifact_root / REFERENCE_INTERVAL_MAP_FILENAME
         if reference_interval_map.exists():
             found["reference_interval_map"] = _relative_registry_path(
                 reference_interval_map, project_dir
             )
-        region_catalog_root = run_root / REGION_CATALOG_DIRNAME
+        region_catalog_root = raw_artifact_root / REGION_CATALOG_DIRNAME
         for scope, filename in REGION_CATALOG_FILENAMES.items():
             region_catalog = region_catalog_root / filename
             if region_catalog.exists():
