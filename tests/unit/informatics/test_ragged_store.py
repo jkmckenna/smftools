@@ -181,6 +181,9 @@ def test_materialize_ragged_places_indels_and_soft_clips():
     expected_span = np.zeros(12, dtype=np.int8)
     expected_span[1:9] = 1
     np.testing.assert_array_equal(result.layers[READ_SPAN_MASK][0], expected_span)
+    expected_covered = np.zeros(12, dtype=np.int8)
+    expected_covered[[1, 2, 3, 4, 5, 7, 8]] = 1
+    np.testing.assert_array_equal(result.layers["covered_base_mask"][0], expected_covered)
 
     expected_signal = np.full(12, np.nan, dtype=np.float32)
     expected_signal[[1, 2, 3, 4, 5, 7, 8]] = [1, 2, 3, 5, 6, 7, 8]

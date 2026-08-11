@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
-from smftools.constants import BASE_QUALITY_SCORES, MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT
+from smftools.constants import (
+    BASE_QUALITY_SCORES,
+    COVERED_BASE_MASK,
+    MODKIT_EXTRACT_SEQUENCE_BASE_TO_INT,
+)
 from smftools.logging_utils import get_logger
 
 if TYPE_CHECKING:
@@ -31,7 +35,7 @@ def append_mismatch_frequency_sites(
         adata: AnnData object.
         ref_column: Obs column defining reference categories.
         mismatch_layer: Layer containing mismatch integer encodings.
-        read_span_layer: Layer containing read span masks (1=covered, 0=not covered).
+        read_span_layer: Legacy layer used when ``covered_base_mask`` is unavailable.
         quality_layer: Layer containing base quality scores for Q-value based error rates.
         mismatch_frequency_range: Lower/upper bounds (inclusive) for variable site flagging.
         uns_flag: Flag in ``adata.uns`` indicating prior completion.
@@ -68,11 +72,12 @@ def append_mismatch_frequency_sites(
         logger.debug("Mismatch encoding map missing base labels; skipping mismatch frequency step.")
         return
 
-    has_span_mask = read_span_layer in adata.layers
+    coverage_layer = COVERED_BASE_MASK if COVERED_BASE_MASK in adata.layers else read_span_layer
+    has_span_mask = coverage_layer in adata.layers
     if not has_span_mask:
         logger.debug(
             "Read span mask '%s' not found; mismatch frequencies will be computed over all reads.",
-            read_span_layer,
+            coverage_layer,
         )
 
     if quality_layer is None:
@@ -119,7 +124,7 @@ def append_mismatch_frequency_sites(
 
         mismatch_matrix = np.asarray(adata.layers[mismatch_layer][ref_mask])
         if has_span_mask:
-            span_matrix = np.asarray(adata.layers[read_span_layer][ref_mask])
+            span_matrix = np.asarray(adata.layers[coverage_layer][ref_mask])
             coverage_mask = span_matrix > 0
             coverage_counts = coverage_mask.sum(axis=0).astype(float)
         else:

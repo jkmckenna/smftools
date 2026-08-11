@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import scipy.cluster.hierarchy as sch
 
+from smftools.constants import COVERED_BASE_MASK
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
@@ -221,8 +222,11 @@ def plot_mismatch_base_frequency_by_position(
             subset = adata[row_mask, :].copy()
             mismatch_matrix = np.asarray(subset.layers[mismatch_layer])
 
-            if read_span_layer in subset.layers:
-                span_matrix = np.asarray(subset.layers[read_span_layer])
+            coverage_layer = (
+                COVERED_BASE_MASK if COVERED_BASE_MASK in subset.layers else read_span_layer
+            )
+            if coverage_layer in subset.layers:
+                span_matrix = np.asarray(subset.layers[coverage_layer])
                 coverage_mask = span_matrix > 0
             else:
                 coverage_mask = np.ones_like(mismatch_matrix, dtype=bool)
@@ -1621,8 +1625,11 @@ def plot_variant_segment_clustermaps(
                     n_reads = max_reads
 
                 # column filter: drop positions with no coverage
-                if read_span_layer in subset.layers:
-                    span_matrix = np.asarray(subset.layers[read_span_layer])
+                coverage_layer = (
+                    COVERED_BASE_MASK if COVERED_BASE_MASK in subset.layers else read_span_layer
+                )
+                if coverage_layer in subset.layers:
+                    span_matrix = np.asarray(subset.layers[coverage_layer])
                     col_has_coverage = np.any(span_matrix > 0, axis=0)
                 else:
                     col_has_coverage = np.any(seg_matrix > 0, axis=0)
@@ -1783,8 +1790,11 @@ def plot_variant_segment_clustermaps_multi_obs(
                     seg_matrix = seg_matrix[:max_reads]
                     n_reads = max_reads
 
-                if read_span_layer in subset.layers:
-                    span_matrix = np.asarray(subset.layers[read_span_layer])
+                coverage_layer = (
+                    COVERED_BASE_MASK if COVERED_BASE_MASK in subset.layers else read_span_layer
+                )
+                if coverage_layer in subset.layers:
+                    span_matrix = np.asarray(subset.layers[coverage_layer])
                     if max_reads is not None:
                         span_matrix = span_matrix[:max_reads]
                     col_has_coverage = np.any(span_matrix > 0, axis=0)

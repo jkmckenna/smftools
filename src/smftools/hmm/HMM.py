@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Un
 import numpy as np
 from scipy.sparse import issparse
 
+from smftools.constants import COVERED_BASE_MASK
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
@@ -189,11 +190,17 @@ def mask_layers_outside_read_span(
     if coords.shape[0] != adata.n_vars:
         raise ValueError("Coordinate source length does not match adata.n_vars.")
 
-    try:
-        starts = np.asarray(adata.obs[start_key], dtype=float)
-        ends = np.asarray(adata.obs[end_key], dtype=float)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Start/end positions must be numeric.") from exc
+    covered = None
+    if COVERED_BASE_MASK in adata.layers:
+        covered = np.asarray(adata.layers[COVERED_BASE_MASK], dtype=bool)
+        if covered.shape != adata.shape:
+            raise ValueError("covered_base_mask must match adata shape")
+    else:
+        try:
+            starts = np.asarray(adata.obs[start_key], dtype=float)
+            ends = np.asarray(adata.obs[end_key], dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Start/end positions must be numeric.") from exc
 
     masked = []
     for layer in layers:
@@ -204,16 +211,19 @@ def mask_layers_outside_read_span(
         if not np.issubdtype(arr.dtype, np.floating):
             arr = arr.astype(float, copy=True)
 
-        for i in range(adata.n_obs):
-            start = starts[i]
-            end = ends[i]
-            if not np.isfinite(start) or not np.isfinite(end):
-                continue
-            start_i = int(start)
-            end_i = int(end)
-            row_mask = (coords < start_i) | (coords > end_i)
-            if row_mask.any():
-                arr[i, row_mask] = np.nan
+        if covered is not None:
+            arr[~covered] = np.nan
+        else:
+            for i in range(adata.n_obs):
+                start = starts[i]
+                end = ends[i]
+                if not np.isfinite(start) or not np.isfinite(end):
+                    continue
+                start_i = int(start)
+                end_i = int(end)
+                row_mask = (coords < start_i) | (coords > end_i)
+                if row_mask.any():
+                    arr[i, row_mask] = np.nan
 
         adata.layers[layer] = arr
         masked.append(layer)
