@@ -1,6 +1,47 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
+
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
+
+def _run_dorado_basecaller(command: list[str], output: str | Path) -> None:
+    """Run one dorado basecalling command, streaming stdout into a BAM.
+
+    Dorado writes the BAM to stdout and diagnostics to stderr, and it exits
+    non-zero without writing anything when it cannot resolve a model or read
+    its inputs. stderr is inherited so long-running progress output stays
+    visible and unbuffered rather than accumulating in memory.
+
+    Args:
+        command: The fully resolved dorado argument vector.
+        output: Path of the BAM file to receive dorado's stdout.
+
+    Raises:
+        RuntimeError: If dorado exits non-zero, or exits zero without writing
+            any output. Either case leaves no usable BAM, so the empty file is
+            removed to keep it from being mistaken for a real basecall.
+    """
+    output = Path(output)
+    logger.info("Running dorado basecalling: %s", " ".join(command))
+    logger.info("Writing dorado basecalls to %s", output)
+    with output.open("wb") as handle:
+        completed = subprocess.run(command, stdout=handle)
+    if completed.returncode != 0:
+        output.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"dorado basecalling failed (exit {completed.returncode}). "
+            "See the dorado output above for the reported cause."
+        )
+    if output.stat().st_size == 0:
+        output.unlink(missing_ok=True)
+        raise RuntimeError(
+            "dorado basecalling reported success but produced an empty BAM. "
+            f"Verify that {command[-1]} contains readable signal data."
+        )
 
 
 def canoncall(
@@ -33,6 +74,9 @@ def canoncall(
     Returns:
         None
             Outputs a BAM file holding the canonical base calls output by the dorado basecaller.
+
+    Raises:
+        RuntimeError: If dorado fails or produces no basecalls.
     """
     output = bam + bam_suffix
     command = [
@@ -54,10 +98,7 @@ def canoncall(
     if emit_moves:
         command.append("--emit-moves")
     command += [model, pod5_dir]
-    command_string = " ".join(command)
-    print(f"Running {command_string}\n to generate {output}")
-    with open(output, "w") as outfile:
-        subprocess.run(command, stdout=outfile)
+    _run_dorado_basecaller(command, output)
 
 
 def modcall(
@@ -92,9 +133,10 @@ def modcall(
     Returns:
         None
             Outputs a BAM file holding the modified base calls output by the dorado basecaller.
-    """
-    import subprocess
 
+    Raises:
+        RuntimeError: If dorado fails or produces no basecalls.
+    """
     output = bam + bam_suffix
     command = [
         "dorado",
@@ -115,6 +157,4 @@ def modcall(
     if emit_moves:
         command.append("--emit-moves")
     command += [model, pod5_dir]
-    print(f"Running: {' '.join(command)}")
-    with open(output, "w") as outfile:
-        subprocess.run(command, stdout=outfile)
+    _run_dorado_basecaller(command, output)
