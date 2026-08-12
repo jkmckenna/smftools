@@ -406,6 +406,114 @@ def test_version_plan_covers_configured_external_backends(monkeypatch, tmp_path)
     }
 
 
+@pytest.mark.parametrize(
+    ("aligner", "expected"),
+    [
+        ("minimap2", {"minimap2"}),
+        ("bwa-mem2", {"bwa-mem2"}),
+        # bowtie2 builds its native index with a separate binary.
+        ("bowtie2", {"bowtie2", "bowtie2-build"}),
+    ],
+)
+def test_version_plan_covers_every_supported_aligner(monkeypatch, tmp_path, aligner, expected):
+    cfg = _cfg(tmp_path)
+    cfg.aligner = aligner
+    monkeypatch.setattr(workflow_contract.shutil, "which", lambda name: None)
+
+    tools = set(workflow_contract._required_external_tools(cfg, raw_will_run=True))
+
+    assert expected <= tools
+    assert all(tool in workflow_contract._TOOL_VERSION_COMMANDS for tool in tools)
+
+
+def _write_bundle(root: Path, *, bundle_kind: str = "sequence_only") -> Path:
+    """Build a real, checksum-valid re-ingestion bundle."""
+    from smftools.informatics.export_bundle import (
+        artifact_record,
+        write_bundle_manifest,
+        write_canonical_input_manifest,
+        write_identity_map,
+    )
+
+    root.mkdir(parents=True, exist_ok=True)
+    reads = root / "reads.fastq"
+    reads.write_text("@r1\nACGT\n+\nIIII\n", encoding="utf-8")
+    write_canonical_input_manifest(
+        root / "inputs.csv",
+        [{"path": "reads.fastq", "source_kind": "fastq", "sample": "s", "barcode": "bc01"}],
+        alignment_mode="align",
+        modality="conversion",
+    )
+    write_identity_map(
+        root / "identity_map.csv", [{"bundle_read_id": "r1", "source_read_id": "r1"}]
+    )
+    return write_bundle_manifest(
+        root,
+        bundle_kind=bundle_kind,
+        scope="experiment",
+        modality="conversion",
+        selection={},
+        source_generations=[{"generation_id": "generation-a"}],
+        artifacts=[artifact_record(root, reads)],
+        lost_capabilities=["direct_modification"],
+    )
+
+
+def test_staged_bundle_keeps_relative_artifacts_resolvable(tmp_path):
+    """Staging symlinks the manifest, so bundle-relative artifacts must still resolve.
+
+    The raw stage resolves the manifest path before anchoring relative rows, so a
+    read-only alias outside the bundle still points back into it. Locks that in so
+    hardening the staging path cannot silently break bundle re-ingestion.
+    """
+    from smftools.informatics.input_manifest import resolve_input_manifest_readonly
+
+    bundle_manifest = _write_bundle(tmp_path / "bundle")
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+
+    alias = workflow_contract._stage_readonly_alias(
+        bundle_manifest, runtime_dir, stem="input_manifest"
+    )
+
+    assert alias.suffix == ".json"
+    resolved = resolve_input_manifest_readonly(
+        input_manifest_path=alias, alignment_mode="align", modality="conversion"
+    )
+    assert [Path(row.path).name for row in resolved.rows] == ["reads.fastq"]
+    assert all(Path(row.path).is_file() for row in resolved.rows)
+
+
+def test_source_snapshot_records_bundle_kind_and_lost_capabilities(tmp_path):
+    """A file fingerprint cannot express what re-ingesting a bundle costs."""
+    bundle_manifest = _write_bundle(tmp_path / "bundle")
+
+    snapshot = workflow_contract._snapshot_sources({"input_manifest": bundle_manifest})
+    records = workflow_contract._source_result_records(snapshot)
+
+    bundle = records["input_manifest"]["bundle"]
+    assert bundle["bundle_kind"] == "sequence_only"
+    assert bundle["lost_capabilities"] == ["direct_modification"]
+    assert bundle["source_generation_ids"] == ["generation-a"]
+    assert bundle["modality"] == "conversion"
+    # The ordinary fingerprint contract still applies to the manifest file.
+    assert records["input_manifest"]["fingerprint"] == snapshot["input_manifest"]["fingerprint"]
+
+
+def test_non_bundle_sources_carry_no_bundle_provenance(tmp_path):
+    plain = tmp_path / "inputs.csv"
+    plain.write_text("path\nreads.fastq\n", encoding="utf-8")
+    unrelated_json = tmp_path / "other.json"
+    unrelated_json.write_text('{"schema_version": 1}\n', encoding="utf-8")
+
+    records = workflow_contract._source_result_records(
+        workflow_contract._snapshot_sources({"input_manifest": plain, "sidecar": unrelated_json})
+    )
+
+    assert "bundle" not in records["input_manifest"]
+    assert "bundle" not in records["sidecar"]
+
+
 def test_validation_detects_corruption_and_relocated_output_validates(
     tmp_path,
     monkeypatch,

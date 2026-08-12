@@ -69,6 +69,11 @@ _RESULT_REQUIRED_FIELDS = frozenset(
 _TOOL_VERSION_COMMANDS = {
     "bedGraphToBigWig": ("bedGraphToBigWig",),
     "bedtools": ("bedtools", "--version"),
+    # bowtie2 builds indexes with a separate binary, and bwa-mem2 reports its
+    # version through a subcommand rather than a --version flag.
+    "bowtie2": ("bowtie2", "--version"),
+    "bowtie2-build": ("bowtie2-build", "--version"),
+    "bwa-mem2": ("bwa-mem2", "version"),
     "dorado": ("dorado", "--version"),
     "gzip": ("gzip", "--version"),
     "minimap2": ("minimap2", "--version"),
@@ -151,14 +156,75 @@ def _source_fingerprint(path: Path) -> dict[str, Any]:
     raise WorkflowContractError(f"staged input does not exist: {path}")
 
 
-def _snapshot_sources(paths: Mapping[str, Path]) -> dict[str, dict[str, Any]]:
+def _bundle_provenance(path: Path) -> dict[str, Any] | None:
+    """Return re-ingestion bundle facts for one staged input, or ``None``.
+
+    A re-ingestion bundle enters the workflow as its ``bundle_manifest.json``,
+    which the raw stage resolves to the bundle's canonical input manifest. The
+    file fingerprint alone cannot express what re-ingesting it costs, so record
+    the declared kind and any capabilities the export dropped. Provenance only:
+    the raw stage performs the authoritative checksum validation, and anything
+    unreadable or non-bundle is reported as absent rather than failing the run.
+
+    Args:
+        path: A staged source path, which may or may not be a bundle manifest.
+
+    Returns:
+        The bundle's kind, scope, modality, lost capabilities, and source
+        generation ids, or ``None`` when *path* is not a readable bundle.
+    """
+    if path.suffix.lower() != ".json":
+        return None
+    try:
+        from ..informatics.export_bundle import BUNDLE_KINDS
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, Mapping) or payload.get("bundle_kind") not in BUNDLE_KINDS:
+        return None
+    generations = payload.get("source_generations")
     return {
-        name: {
+        "bundle_kind": str(payload["bundle_kind"]),
+        "scope": str(payload.get("scope", "")),
+        "modality": str(payload.get("modality", "")),
+        "lost_capabilities": sorted(str(item) for item in (payload.get("lost_capabilities") or ())),
+        "source_generation_ids": sorted(
+            str(item.get("generation_id", ""))
+            for item in (generations if isinstance(generations, list) else ())
+            if isinstance(item, Mapping) and item.get("generation_id")
+        ),
+    }
+
+
+def _snapshot_sources(paths: Mapping[str, Path]) -> dict[str, dict[str, Any]]:
+    snapshot: dict[str, dict[str, Any]] = {}
+    for name, path in sorted(paths.items()):
+        record: dict[str, Any] = {
             "path": str(path),
             "fingerprint": _source_fingerprint(path),
         }
-        for name, path in sorted(paths.items())
-    }
+        bundle = _bundle_provenance(path)
+        if bundle is not None:
+            record["bundle"] = bundle
+        snapshot[name] = record
+    return snapshot
+
+
+def _source_result_records(
+    snapshot: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Project a source snapshot into its workflow-result representation."""
+    records = {}
+    for name, record in snapshot.items():
+        entry: dict[str, Any] = {
+            "kind": record["fingerprint"]["kind"],
+            "fingerprint": record["fingerprint"],
+        }
+        if "bundle" in record:
+            entry["bundle"] = record["bundle"]
+        records[name] = entry
+    return records
 
 
 def _assert_sources_unchanged(snapshot: Mapping[str, Mapping[str, Any]]) -> None:
@@ -326,8 +392,12 @@ def _required_external_tools(cfg: Any, *, raw_will_run: bool) -> tuple[str, ...]
     if input_type == "fast5":
         tools.add("pod5")
     aligner = str(getattr(cfg, "aligner", "") or "").lower()
-    if aligner in {"dorado", "minimap2"}:
+    if aligner in {"dorado", "minimap2", "bwa-mem2"}:
         tools.add(aligner)
+    elif aligner == "bowtie2":
+        # The bowtie2 adapter shells out to bowtie2-build for its native index,
+        # so a host with only the aligner would fail at index-build time.
+        tools.update(("bowtie2", "bowtie2-build"))
     if (
         str(getattr(cfg, "demux_backend", "") or "").lower() == "dorado"
         and getattr(cfg, "barcode_kit", None)
@@ -785,13 +855,7 @@ def run_experiment_workflow(
             "artifacts": artifacts,
             "schemas": schemas,
             "resources": resources,
-            "sources": {
-                name: {
-                    "kind": record["fingerprint"]["kind"],
-                    "fingerprint": record["fingerprint"],
-                }
-                for name, record in source_snapshot.items()
-            },
+            "sources": _source_result_records(source_snapshot),
             "strict": bool(strict),
             "failure": failure,
         }
