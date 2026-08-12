@@ -1,9 +1,14 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from smftools.informatics.raw_intermediate_manifest import (
     IntermediateSpec,
+    RawIntermediateError,
     alignment_reference_bundle,
+    artifact_checksum,
     commit_intermediate,
     committed_output,
     executable_version,
@@ -124,6 +129,79 @@ def test_force_redo_allocates_revision_without_mutating_commit(tmp_path):
     assert forced.root != committed.root
     assert artifact.read_bytes() == b"original"
     assert forced_artifact.read_bytes() == b"replacement"
+
+
+def test_empty_output_is_never_committed(tmp_path):
+    """A silently failed tool leaves an empty artifact that must not be committed."""
+    spec = _spec()
+    workspace = prepare_intermediate(tmp_path, spec)
+    empty_file = workspace.root / "canonical.bam"
+    empty_file.write_bytes(b"")
+
+    with pytest.raises(RawIntermediateError, match="is empty"):
+        commit_intermediate(workspace, {"bam": empty_file})
+
+    assert not workspace.manifest_path.exists()
+    assert prepare_intermediate(tmp_path, spec).reusable is False
+
+
+def test_empty_directory_output_is_never_committed(tmp_path):
+    spec = _spec()
+    workspace = prepare_intermediate(tmp_path, spec)
+    empty_directory = workspace.root / "mod_beds"
+    empty_directory.mkdir()
+
+    with pytest.raises(RawIntermediateError, match="has no files"):
+        commit_intermediate(workspace, {"mod-beds": empty_directory})
+
+    populated = workspace.root / "mod_tsvs"
+    populated.mkdir()
+    (populated / "ref.tsv").write_text("read_id\n", encoding="utf-8")
+    assert commit_intermediate(workspace, {"mod-tsvs": populated}).exists()
+
+
+def test_previously_committed_empty_artifact_is_not_reused(tmp_path):
+    """A cache poisoned before this check existed must heal, not be reused.
+
+    Reproduces the dorado failure mode: a zero-byte BAM has a perfectly stable
+    checksum, so checksum validation alone accepted the commit and every later
+    run reused it instead of rerunning the basecaller.
+    """
+    spec = _spec()
+    workspace = prepare_intermediate(tmp_path, spec)
+    poisoned = workspace.root / "canonical.bam"
+    poisoned.write_bytes(b"")
+    # Hand-write the manifest that the pre-fix commit path would have published.
+    workspace.manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state": "complete",
+                "operation": spec.operation,
+                "revision_id": workspace.revision_id,
+                "compatibility_key": spec.compatibility_key,
+                "compatibility": spec.compatibility_payload(),
+                "tool_versions": dict(spec.tool_versions),
+                "outputs": [
+                    {
+                        "artifact_id": "bam",
+                        "path": "canonical.bam",
+                        "kind": "file",
+                        "size_bytes": 0,
+                        "sha256": artifact_checksum(poisoned),
+                    }
+                ],
+                "committed_at": "2026-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert validate_intermediate_commit(workspace.manifest_path, spec) is None
+
+    replacement = prepare_intermediate(tmp_path, spec)
+    assert replacement.reusable is False
+    assert replacement.root != workspace.root
 
 
 def test_reference_bundle_is_relocation_invariant_and_content_sensitive(tmp_path):

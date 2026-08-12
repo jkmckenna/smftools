@@ -84,6 +84,35 @@ def artifact_checksum(path: str | Path) -> str:
     raise RawIntermediateError(f"Intermediate artifact is missing: {path}")
 
 
+def _assert_artifact_is_usable(path: str | Path) -> None:
+    """Reject artifacts that cannot represent real external-tool output.
+
+    An external tool that fails silently typically leaves a zero-byte file or
+    an empty directory behind. Both hash to perfectly stable checksums, so
+    checksum validation alone accepts them and every later run reuses the
+    broken artifact instead of recomputing it. No producer in this pipeline
+    emits an empty artifact on success: BAM, POD5, and Parquet all carry magic
+    bytes, and even a fully empty ``DataFrame.to_csv`` writes a newline.
+
+    Args:
+        path: The committed artifact to check.
+
+    Raises:
+        RawIntermediateError: If the artifact is missing, is an empty file, or
+            is a directory containing no files.
+    """
+    path = Path(path)
+    if path.is_file():
+        if path.stat().st_size == 0:
+            raise RawIntermediateError(f"Intermediate artifact is empty: {path}")
+        return
+    if path.is_dir():
+        if not any(child.is_file() for child in path.rglob("*")):
+            raise RawIntermediateError(f"Intermediate artifact directory has no files: {path}")
+        return
+    raise RawIntermediateError(f"Intermediate artifact is missing: {path}")
+
+
 def executable_version(command: str) -> str | None:
     """Return a concise executable version string without failing planning."""
     try:
@@ -229,6 +258,10 @@ def validate_intermediate_commit(
             if relative_path.is_absolute() or ".." in relative_path.parts:
                 return None
             path = root / relative_path
+            # Reject previously committed empty artifacts too, so a cache
+            # poisoned before this check existed heals by recomputing instead
+            # of reusing a silently failed tool's output forever.
+            _assert_artifact_is_usable(path)
             if artifact_checksum(path) != record.get("sha256"):
                 return None
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, RawIntermediateError):
@@ -292,6 +325,7 @@ def commit_intermediate(
             raise RawIntermediateError(
                 f"Committed intermediate output must be owned by its revision: {path}"
             ) from exc
+        _assert_artifact_is_usable(path)
         records.append(
             {
                 "artifact_id": str(artifact_id),
