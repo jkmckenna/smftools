@@ -19,7 +19,7 @@ from smftools.informatics.raw_generation import (
     resolve_current_raw_generation,
 )
 from smftools.informatics.raw_store import write_raw_store
-from smftools.readwrite import safe_read_h5ad
+from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
 
 EXPERIMENT_UID = "12345678-1234-5678-1234-567812345678"
 
@@ -47,12 +47,21 @@ def _frame(read_id: str, *, start: int = 0) -> pd.DataFrame:
     )
 
 
-def _write_store(run_root: Path, read_id: str, *, start: int = 0) -> dict[str, object]:
+def _write_store(
+    run_root: Path,
+    read_id: str,
+    *,
+    start: int = 0,
+    signal_columns: list[str] | None = None,
+) -> dict[str, object]:
+    extra_uns: dict[str, object] = {"experiment_uid": EXPERIMENT_UID}
+    if signal_columns is not None:
+        extra_uns["signal_columns"] = signal_columns
     return write_raw_store(
         _frame(read_id, start=start),
         run_root / "raw_outputs",
         reference_lengths={"ref_top": 20},
-        extra_uns={"experiment_uid": EXPERIMENT_UID},
+        extra_uns=extra_uns,
     )
 
 
@@ -86,14 +95,14 @@ def _source_ids(manifest, reference: str = "reference-a") -> list[str]:
     ]
 
 
-def _initial_generation(tmp_path: Path):
+def _initial_generation(tmp_path: Path, **store_kwargs):
     first = tmp_path / "first.fastq"
     first.write_bytes(b"first")
     previous_manifest = resolve_input_manifest(
         output_directory=tmp_path,
         input_paths=[first],
     )
-    store = _write_store(tmp_path, "read-one")
+    store = _write_store(tmp_path, "read-one", **store_kwargs)
     outputs = publish_raw_generation(
         tmp_path,
         _sources(tmp_path, store),
@@ -231,6 +240,81 @@ def test_append_assembly_reuses_shards_and_publishes_complete_relocatable_genera
     moved, moved_manifest = resolve_current_raw_generation(relocated / "raw_outputs")
     assert moved_manifest["generation_id"] == "generation-b"
     assert safe_read_h5ad(moved / "spine.h5ad", verbose=False)[0].n_obs == 2
+
+
+def _plan_for_added_source(tmp_path: Path, first: Path, generation: Path):
+    second = tmp_path / "second.fastq"
+    second.write_bytes(b"second")
+    current = resolve_input_manifest(
+        output_directory=tmp_path,
+        input_paths=[first, second],
+    )
+    return current, plan_raw_append(
+        generation,
+        current,
+        run_root=tmp_path,
+        config_hash="config-a",
+        input_artifact_ids=_source_ids(current),
+    )
+
+
+def test_append_unions_data_derived_signal_columns(tmp_path):
+    """An append must not drop channels only the prior generation observed."""
+    first, _previous, generation = _initial_generation(tmp_path, signal_columns=["mod_a", "mod_b"])
+    current, plan = _plan_for_added_source(tmp_path, first, generation)
+    added_store = _write_store(tmp_path, "read-two", start=5, signal_columns=["mod_a", "mod_c"])
+    assembly = assemble_raw_append(tmp_path, generation, transition=plan.transition.to_dict())
+    publish_raw_generation(
+        tmp_path,
+        {**_sources(tmp_path, added_store), **assembly.sources},
+        config_hash="config-a",
+        input_artifact_ids=_source_ids(current),
+        reuse_generation=generation,
+        source_transition=plan.transition.to_dict(),
+        generation_id="generation-b",
+    )
+    discard_raw_append_assembly(assembly)
+
+    selected, _manifest = resolve_current_raw_generation(tmp_path / "raw_outputs")
+    spine, _ = safe_read_h5ad(selected / "spine.h5ad", verbose=False)
+
+    # Prior order preserved, prior-only channel retained, new channel appended.
+    assert list(spine.uns["signal_columns"]) == ["mod_a", "mod_b", "mod_c"]
+
+
+def test_append_reconciles_optional_molecule_columns_with_nulls(tmp_path):
+    """Optional columns present on only one side must union, not fail.
+
+    Columns such as ``source_read_id`` only appear for namespaced sources, so a
+    generation that lacks one is expressing "no value here" rather than schema
+    drift. Rows from both generations must survive with nulls where absent.
+    """
+    first, _previous, generation = _initial_generation(tmp_path)
+    current, plan = _plan_for_added_source(tmp_path, first, generation)
+    added_store = _write_store(tmp_path, "read-two", start=5)
+    added_spine_path = Path(added_store["spine"])
+    added_spine, _ = safe_read_h5ad(added_spine_path, verbose=False)
+    added_spine.obs["optional_field"] = "present"
+    safe_write_h5ad(added_spine, added_spine_path, backup=False, verbose=False)
+
+    assembly = assemble_raw_append(tmp_path, generation, transition=plan.transition.to_dict())
+    publish_raw_generation(
+        tmp_path,
+        {**_sources(tmp_path, added_store), **assembly.sources},
+        config_hash="config-a",
+        input_artifact_ids=_source_ids(current),
+        reuse_generation=generation,
+        source_transition=plan.transition.to_dict(),
+        generation_id="generation-b",
+    )
+    discard_raw_append_assembly(assembly)
+
+    selected, _manifest = resolve_current_raw_generation(tmp_path / "raw_outputs")
+    spine, _ = safe_read_h5ad(selected / "spine.h5ad", verbose=False)
+
+    assert spine.n_obs == 2
+    assert spine.obs.loc["read-two", "optional_field"] == "present"
+    assert pd.isna(spine.obs.loc["read-one", "optional_field"])
 
 
 def test_append_collision_fails_without_advancing_current(tmp_path):

@@ -671,6 +671,20 @@ def collapse_paired_segments(
         .groupby("molecule_uid", sort=False, observed=True)
         .groups.items()
     }
+    # Hoist everything that does not vary per molecule: the position axis, the
+    # outer-fragment bounds, and the summary column offsets are all fixed for
+    # the whole call, so resolving them inside the loop repeated the work once
+    # per molecule.
+    has_fragment_bounds = {"outer_fragment_start", "outer_fragment_end"}.issubset(
+        molecule_obs.columns
+    )
+    positions = np.asarray(segments.var_names, dtype=np.int64)
+    if has_fragment_bounds:
+        fragment_starts = molecule_obs["outer_fragment_start"].to_numpy(dtype=np.int64)
+        fragment_ends = molecule_obs["outer_fragment_end"].to_numpy(dtype=np.int64)
+    overlap_column = molecule_obs.columns.get_loc("consensus_overlap_bases")
+    gap_column = molecule_obs.columns.get_loc("consensus_gap_bases")
+    conflict_column = molecule_obs.columns.get_loc("consensus_conflict_bases")
 
     for out_row, molecule_uid in enumerate(molecule_obs["molecule_uid"].astype(str)):
         rows = rows_by_molecule.get(molecule_uid, np.empty(0, dtype=np.int64))
@@ -684,13 +698,10 @@ def collapse_paired_segments(
         mate_count[out_row] = counts
         covered[out_row] = counts > 0
         span[out_row] = np.asarray(segments.layers[READ_SPAN_MASK][rows]).max(axis=0)
-        if {"outer_fragment_start", "outer_fragment_end"}.issubset(molecule_obs.columns):
-            positions = np.asarray(segments.var_names, dtype=np.int64)
-            fragment_start = int(molecule_obs.iloc[out_row]["outer_fragment_start"])
-            fragment_end = int(molecule_obs.iloc[out_row]["outer_fragment_end"])
-            span[out_row] = ((positions >= fragment_start) & (positions < fragment_end)).astype(
-                np.int8
-            )
+        if has_fragment_bounds:
+            span[out_row] = (
+                (positions >= fragment_starts[out_row]) & (positions < fragment_ends[out_row])
+            ).astype(np.int8)
 
         segment_signal = np.asarray(segments.X[rows], dtype=np.float32)
         segment_sequence = np.asarray(segments.layers[SEQUENCE_INTEGER_ENCODING][rows])
@@ -766,15 +777,11 @@ def collapse_paired_segments(
                     use_second_feature
                 ]
 
-        molecule_obs.iloc[out_row, molecule_obs.columns.get_loc("consensus_overlap_bases")] = int(
-            np.count_nonzero(counts == 2)
-        )
-        molecule_obs.iloc[out_row, molecule_obs.columns.get_loc("consensus_gap_bases")] = int(
+        molecule_obs.iloc[out_row, overlap_column] = int(np.count_nonzero(counts == 2))
+        molecule_obs.iloc[out_row, gap_column] = int(
             np.count_nonzero((span[out_row] > 0) & (counts == 0))
         )
-        molecule_obs.iloc[out_row, molecule_obs.columns.get_loc("consensus_conflict_bases")] = int(
-            conflicts[out_row].sum()
-        )
+        molecule_obs.iloc[out_row, conflict_column] = int(conflicts[out_row].sum())
 
     available = {
         SEQUENCE_INTEGER_ENCODING: sequence,
