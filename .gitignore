@@ -58,3 +58,7 @@ htmlcov/
 
 # Docs
 .aider*
+# Sphinx build output and the autosummary/schema pages it generates from source.
+/docs/_build/
+/docs/source/api/generated/
+/docs/source/schema/_generated_schema_tables.md
