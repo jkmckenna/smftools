@@ -184,16 +184,22 @@ def _bundle_provenance(path: Path) -> dict[str, Any] | None:
     if not isinstance(payload, Mapping) or payload.get("bundle_kind") not in BUNDLE_KINDS:
         return None
     generations = payload.get("source_generations")
+    # The exporters name this field `raw_generation_id`; `generation_id` is
+    # accepted as well so a bundle written by any other producer of this schema
+    # still records its origin instead of silently reporting none.
+    generation_ids = {
+        str(value)
+        for item in (generations if isinstance(generations, list) else ())
+        if isinstance(item, Mapping)
+        for value in (item.get("raw_generation_id") or item.get("generation_id"),)
+        if value
+    }
     return {
         "bundle_kind": str(payload["bundle_kind"]),
         "scope": str(payload.get("scope", "")),
         "modality": str(payload.get("modality", "")),
         "lost_capabilities": sorted(str(item) for item in (payload.get("lost_capabilities") or ())),
-        "source_generation_ids": sorted(
-            str(item.get("generation_id", ""))
-            for item in (generations if isinstance(generations, list) else ())
-            if isinstance(item, Mapping) and item.get("generation_id")
-        ),
+        "source_generation_ids": sorted(generation_ids),
     }
 
 

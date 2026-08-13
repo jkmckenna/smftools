@@ -24,15 +24,25 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from ..logging_utils import get_logger
 from ..readwrite import atomic_write_json
+
+logger = get_logger(__name__)
 
 MANIFEST_FILENAME = "experiment_manifest.json"
 MANIFEST_SCHEMA_VERSION = 2
 STAGE_STATES = frozenset({"planned", "running", "complete", "failed"})
 _ALLOWED_STAGE_TRANSITIONS = {
     None: frozenset({"planned", "complete"}),
-    "planned": frozenset({"running", "failed"}),
-    "running": frozenset({"complete", "failed"}),
+    # A stage left in `planned` or `running` is an attempt that never reached a
+    # terminal state: the process was killed, the container was evicted, or the
+    # machine died. Planning a new attempt over it is the restart path, not an
+    # error -- refusing it would leave the run directory permanently unusable
+    # through a cryptic transition failure, recoverable only by hand-editing the
+    # manifest. Nothing is skipped on the strength of a non-complete record, so
+    # superseding one cannot authorize reuse of a half-written attempt.
+    "planned": frozenset({"planned", "running", "failed"}),
+    "running": frozenset({"planned", "complete", "failed"}),
     "complete": frozenset({"planned", "complete", "failed"}),
     "failed": frozenset({"planned", "failed"}),
 }
@@ -197,6 +207,19 @@ def record_stage_state(
         entry = {}
         if previous_state == "complete":
             entry["previous_complete"] = previous
+        elif isinstance(previous.get("previous_complete"), dict):
+            # An abandoned or failed attempt still carries the last complete
+            # record. Forget it here and a crashed run would look like it never
+            # had a valid prior result, forcing a full recompute of work whose
+            # published generation is still on disk and still valid.
+            entry["previous_complete"] = previous["previous_complete"]
+        if previous_state in {"planned", "running"}:
+            entry["superseded_attempt"] = {
+                "state": previous_state,
+                "planned_at": previous.get("planned_at"),
+                "started_at": previous.get("started_at"),
+                "updated_at": previous.get("updated_at"),
+            }
     else:
         entry = dict(previous)
     entry["state"] = state
@@ -223,6 +246,62 @@ def record_stage_state(
     stages[stage] = entry
     _save(path, manifest)
     return path
+
+
+def restore_previous_complete_state(run_root: str | Path, stage: str) -> bool:
+    """Promote a retained complete record back to the live stage state.
+
+    An attempt that never reached a terminal state -- a killed process, an evicted
+    container -- leaves the live record non-complete while the previously
+    published artifacts remain valid and current. Once a caller has verified those
+    artifacts still satisfy the stage, the live record should say so: leaving it
+    non-complete reports the stage as incomplete to workflow validation and
+    project discovery even though nothing is missing.
+
+    Args:
+        run_root: Experiment run root holding the manifest.
+        stage: Stage whose retained complete record should become live.
+
+    Returns:
+        Whether a retained complete record was promoted.
+    """
+    path = experiment_manifest_path(run_root)
+    manifest = _load(path)
+    stages = manifest.setdefault("stages", {})
+    entry = stages.get(stage)
+    if not isinstance(entry, dict):
+        return False
+    state = entry.get("state")
+    if state is None and "completed_at" in entry:
+        state = "complete"
+    if state == "complete":
+        return False
+    previous = entry.get("previous_complete")
+    if not isinstance(previous, dict):
+        return False
+    previous_state = previous.get("state")
+    if previous_state is None and "completed_at" in previous:
+        previous_state = "complete"
+    if previous_state != "complete":
+        return False
+    restored = dict(previous)
+    restored["state"] = "complete"
+    restored["updated_at"] = _now()
+    restored["restored_from_previous_complete"] = True
+    # Keep the abandoned attempt visible: the restored record is the prior one,
+    # so without this the manifest would show no trace that anything was tried.
+    restored["superseded_attempt"] = entry.get(
+        "superseded_attempt",
+        {
+            "state": state,
+            "planned_at": entry.get("planned_at"),
+            "started_at": entry.get("started_at"),
+            "updated_at": entry.get("updated_at"),
+        },
+    )
+    stages[stage] = restored
+    _save(path, manifest)
+    return True
 
 
 def stage_is_complete(
@@ -336,12 +415,22 @@ class StageLifecycle(AbstractContextManager["StageLifecycle"]):
 
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
         if exc_value is not None:
-            record_stage_state(
-                self.run_root,
-                self.stage,
-                "failed",
-                outcome=f"{type(exc_value).__name__}: {exc_value}",
-            )
+            try:
+                record_stage_state(
+                    self.run_root,
+                    self.stage,
+                    "failed",
+                    outcome=f"{type(exc_value).__name__}: {exc_value}",
+                )
+            except Exception:
+                # Bookkeeping must never replace the failure being reported: an
+                # unwritable or externally modified manifest would otherwise
+                # surface instead of the error the user actually needs to see.
+                logger.exception(
+                    "could not record the failed state for stage %r; reporting the "
+                    "original failure instead",
+                    self.stage,
+                )
         elif not self._complete:
             record_stage_state(
                 self.run_root,
