@@ -207,6 +207,7 @@ def project_materialize(
     *,
     set_name: str | None = None,
     modality: str | None = None,
+    experiments=None,
     stage: str | None = None,
     start: int | None = None,
     end: int | None = None,
@@ -220,6 +221,8 @@ def project_materialize(
     """Pool a canonical reference across matching experiments into one AnnData and write it.
 
     This is the explicit "give me one pooled object" path (``project.catalog.project_adata``).
+    ``experiments`` restricts the pool to explicit experiment IDs, intersected
+    with ``set_name`` when both are given.
     ``stage`` picks a genomic pipeline stage per experiment (``raw``,
     ``preprocess``, ``spatial``, ``hmm``, ...); the default falls back through
     the most-derived stage available per experiment. Latent task coordinates
@@ -240,6 +243,7 @@ def project_materialize(
             output_path,
             set_name=set_name,
             modality=modality,
+            experiments=experiments,
             stage=stage,
             start=start,
             end=end,
@@ -255,6 +259,7 @@ def project_materialize(
         canonical_reference,
         set_name=set_name,
         modality=modality,
+        experiments=experiments,
         stage=stage,
         start=start,
         end=end,
@@ -306,6 +311,170 @@ def project_export_latent(
     )
     logger.info("Wrote scoped latent project export -> %s", output)
     return output
+
+
+SAMPLE_ANALYSIS_SCHEMA_VERSION = 1
+
+
+def project_sample_analysis_partitions(
+    project_dir: str | Path,
+    canonical_reference: str,
+    *,
+    set_name: str | None = None,
+    modality: str | None = None,
+    experiments=None,
+    stage: str | None = None,
+) -> list[dict]:
+    """Resolve which per-sample-store partitions one selection would analyze.
+
+    Sample analysis is per ``(experiment, reference_strand, sample)``, one scope
+    finer than materialization's per-experiment selection, so the selection is
+    resolved to experiments first and then expanded through the per-sample store.
+
+    Args:
+        project_dir: Project root.
+        canonical_reference: Harmonized reference to analyze.
+        set_name: Optional named set restricting the experiments.
+        modality: Optional modality restriction.
+        experiments: Optional explicit experiment IDs.
+        stage: Optional pipeline stage for spine resolution.
+
+    Returns:
+        One record per partition, sorted, each with ``experiment``,
+        ``reference_strand``, ``sample``, and the store ``kind``.
+    """
+    from ..project.catalog import ProjectCatalog, resolve_set_members
+    from ..project.sample_store import list_per_sample_partitions
+
+    catalog = ProjectCatalog.open(project_dir)
+    members = resolve_set_members(
+        catalog,
+        canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+    )
+    records = []
+    for member in members:
+        wanted = set(member["reference_strands"])
+        for partition in list_per_sample_partitions(project_dir, member["experiment"]):
+            if str(partition["reference_strand"]) not in wanted:
+                continue
+            records.append(
+                {
+                    "experiment": str(member["experiment"]),
+                    "experiment_uid": str(member["experiment_uid"]),
+                    "reference_strand": str(partition["reference_strand"]),
+                    "sample": str(partition["sample"]),
+                    "kind": str(partition["kind"]),
+                }
+            )
+    return sorted(
+        records, key=lambda item: (item["experiment"], item["reference_strand"], item["sample"])
+    )
+
+
+def project_sample_analysis(
+    project_dir: str | Path,
+    canonical_reference: str,
+    output_path: str | Path,
+    *,
+    set_name: str | None = None,
+    modality: str | None = None,
+    experiments=None,
+    stage: str | None = None,
+    layer: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    method: str = "direct",
+    force_recompute: bool = False,
+) -> dict:
+    """Run per-sample periodicity across a project selection into one task-local table.
+
+    Each partition's result is computed and cached in the project's per-sample
+    store under its own definition hash (see
+    :func:`smftools.project.sample_analysis.compute_periodicity`), so re-running
+    this reuses those caches. What lands in *output_path* is the joined,
+    task-local product: one row per read, with the partition identity kept
+    explicit so rows from different experiments never become
+    indistinguishable.
+
+    Args:
+        project_dir: Project root.
+        canonical_reference: Harmonized reference to analyze.
+        output_path: Task-local parquet path to write.
+        set_name: Optional named set restricting the experiments.
+        modality: Optional modality restriction.
+        experiments: Optional explicit experiment IDs.
+        stage: Optional pipeline stage for spine resolution.
+        layer: Layer to analyze; ``None`` uses ``X``.
+        start: Optional genomic window start.
+        end: Optional genomic window end.
+        method: Periodicity method passed through to the compute function.
+        force_recompute: Recompute each partition instead of reading its cache.
+
+    Returns:
+        A summary with the schema version, the analyzed partitions, and row counts.
+
+    Raises:
+        ValueError: The selection matched no per-sample-store partition.
+    """
+    import pandas as pd
+
+    from ..project.sample_analysis import compute_periodicity
+
+    partitions = project_sample_analysis_partitions(
+        project_dir,
+        canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+    )
+    if not partitions:
+        raise ValueError(
+            f"no per-sample-store partition matches {canonical_reference!r} for this selection; "
+            "run `smftools project add` so the per-sample store is cataloged"
+        )
+    output_path = Path(output_path)
+    frames = []
+    analyzed = []
+    for partition in partitions:
+        result = compute_periodicity(
+            project_dir,
+            partition["experiment"],
+            partition["reference_strand"],
+            partition["sample"],
+            layer=layer,
+            start=start,
+            end=end,
+            method=method,
+            force_recompute=force_recompute,
+        )
+        frame = result.reset_index()
+        for column in ("experiment", "reference_strand", "sample"):
+            frame.insert(0, column, partition[column])
+        frames.append(frame)
+        analyzed.append({**partition, "n_reads": int(len(frame))})
+    joined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    joined.to_parquet(output_path, index=False)
+    logger.info(
+        "Wrote project sample analysis for %d partition(s), %d read(s) -> %s",
+        len(analyzed),
+        len(joined),
+        output_path,
+    )
+    return {
+        "schema_version": SAMPLE_ANALYSIS_SCHEMA_VERSION,
+        "canonical_reference": str(canonical_reference),
+        "analysis": "periodicity",
+        "method": str(method),
+        "partitions": analyzed,
+        "n_partitions": len(analyzed),
+        "n_reads": int(len(joined)),
+    }
 
 
 def project_sample_store_list(

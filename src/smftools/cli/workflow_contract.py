@@ -944,7 +944,15 @@ def _project_output_is_compatible(
     *,
     request: Mapping[str, Any],
     plan: Mapping[str, Any],
+    command: str = "project.materialize",
+    artifact_id: str = "project:materialization",
 ) -> bool:
+    """Whether a prior result can be reused for this exact request and plan.
+
+    The command and artifact ID are part of the check, so one project product's
+    result can never satisfy a different product's request in the same output
+    root.
+    """
     if not result_path.is_file():
         return False
     try:
@@ -952,14 +960,14 @@ def _project_output_is_compatible(
     except (OSError, json.JSONDecodeError):
         return False
     if (
-        result.get("command") != "project.materialize"
+        result.get("command") != command
         or result.get("request") != dict(request)
         or result.get("plan") != dict(plan)
         or result.get("outcome") not in _SUCCESS_OUTCOMES
     ):
         return False
     for artifact in result.get("artifacts", []):
-        if artifact.get("artifact_id") != "project:materialization":
+        if artifact.get("artifact_id") != artifact_id:
             continue
         path = (output_root / str(artifact.get("path", ""))).resolve()
         if (
@@ -1088,6 +1096,9 @@ def run_project_materialization_workflow(
                     materialized_path,
                     set_name=set_name,
                     modality=modality,
+                    # Without this the published plan and request name a subset
+                    # while the artifact pools every matching experiment.
+                    experiments=list(experiments) or None,
                     stage=stage,
                     start=start,
                     end=end,
@@ -1158,6 +1169,240 @@ def run_project_materialization_workflow(
             "strict": False,
             "failure": failure,
             "request": request,
+        }
+        contract_issues = workflow_result_contract_issues(payload)
+        if contract_issues:
+            raise WorkflowContractError(
+                f"refusing to publish invalid workflow result: {contract_issues}"
+            )
+        atomic_write_json(result_path, payload)
+        if failure is not None:
+            raise WorkflowContractError(
+                f"project workflow failed; structured result written to {result_path}: "
+                f"{failure['type']}: {failure['message']}"
+            )
+    return result_path
+
+
+def _sample_analysis_request(
+    canonical_reference: str,
+    *,
+    output_name: str,
+    set_name: str | None,
+    modality: str | None,
+    experiments: tuple[str, ...],
+    stage: str | None,
+    start: int | None,
+    end: int | None,
+    layer: str | None,
+    method: str,
+) -> dict[str, Any]:
+    return {
+        "canonical_reference": str(canonical_reference),
+        "output_name": output_name,
+        "set_name": set_name,
+        "modality": modality,
+        "experiments": list(experiments) if experiments else None,
+        "stage": stage,
+        "start": start,
+        "end": end,
+        "layer": layer,
+        "method": str(method),
+    }
+
+
+def run_project_sample_analysis_workflow(
+    project_dir: str | Path,
+    canonical_reference: str,
+    *,
+    output_root: str | Path,
+    output_name: str | None = None,
+    result_json: str | Path | None = None,
+    set_name: str | None = None,
+    modality: str | None = None,
+    experiments: tuple[str, ...] = (),
+    stage: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    layer: str | None = None,
+    method: str = "direct",
+    force_recompute: bool = False,
+    cpus: int | None = None,
+    memory_gb: float | None = None,
+    memory_percent: float | None = 60.0,
+) -> Path:
+    """Run project sample analysis under the shared workflow contract.
+
+    A separate product from materialization, with its own command name, artifact
+    ID, and request shape, so a task-local sample-analysis result is never
+    mistaken for -- or skipped against -- a materialized selection.
+    """
+    from ..cli.project_cmd import (
+        SAMPLE_ANALYSIS_SCHEMA_VERSION,
+        project_plan,
+        project_sample_analysis,
+    )
+
+    source_project = _local_path(project_dir, label="project")
+    run_root = _local_path(output_root, label="output root")
+    if run_root.is_relative_to(source_project):
+        raise WorkflowContractError(
+            "project workflow output root must be outside the source project directory"
+        )
+    run_root.mkdir(parents=True, exist_ok=True)
+    result_path = _result_path(run_root, result_json)
+    name = output_name or "sample_analysis.parquet"
+    analysis_path = _require_within(
+        run_root / name,
+        run_root,
+        label="project sample analysis output",
+    )
+    reserved = (
+        result_path,
+        run_root / WORKFLOW_VERSIONS_FILENAME,
+        run_root / WORKFLOW_RUNTIME_DIRECTORY,
+    )
+    if any(
+        analysis_path == path
+        or analysis_path.is_relative_to(path)
+        or path.is_relative_to(analysis_path)
+        for path in reserved
+    ):
+        raise WorkflowContractError(
+            f"project output name overlaps workflow-owned control artifacts: {name!r}"
+        )
+    request = _sample_analysis_request(
+        canonical_reference,
+        output_name=name,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+        start=start,
+        end=end,
+        layer=layer,
+        method=method,
+    )
+    started = perf_counter()
+    started_at = _now()
+    run_id = uuid4().hex
+    failure: dict[str, Any] | None = None
+    plan_payload: dict[str, Any] | None = None
+    versions_path: Path | None = None
+    resources: dict[str, Any] = {}
+    summary: dict[str, Any] | None = None
+    outcome = "failed"
+
+    with _exclusive_run(run_root):
+        try:
+            plan = project_plan(
+                source_project,
+                "sample-analysis",
+                canonical_reference,
+                set_name=set_name,
+                modality=modality,
+                experiments=experiments,
+                stage=stage,
+                start=start,
+                end=end,
+            )
+            plan_payload = plan.to_dict()
+            resources = _project_resource_decision(
+                cpus=cpus,
+                memory_gb=memory_gb,
+                memory_percent=memory_percent,
+            )
+            versions_path, _ = _write_versions(
+                run_root,
+                tools=(),
+                cfg=SimpleNamespace(),
+                strict=False,
+            )
+            if not force_recompute and _project_output_is_compatible(
+                result_path,
+                run_root,
+                request=request,
+                plan=plan_payload,
+                command="project.sample-analysis",
+                artifact_id="project:sample-analysis",
+            ):
+                outcome = "compatible_skip"
+            else:
+                summary = project_sample_analysis(
+                    source_project,
+                    canonical_reference,
+                    analysis_path,
+                    set_name=set_name,
+                    modality=modality,
+                    experiments=list(experiments) or None,
+                    stage=stage,
+                    layer=layer,
+                    start=start,
+                    end=end,
+                    method=method,
+                    force_recompute=force_recompute,
+                )
+                if not analysis_path.exists():
+                    raise WorkflowContractError(
+                        "project sample analysis returned without publishing its output"
+                    )
+                outcome = "success"
+        except Exception as exc:
+            failure = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+                "stage": "project.sample_analysis",
+            }
+        artifacts = []
+        if analysis_path.exists():
+            artifacts.append(
+                _relative_artifact(
+                    run_root,
+                    analysis_path,
+                    artifact_id="project:sample-analysis",
+                    schema_version=SAMPLE_ANALYSIS_SCHEMA_VERSION,
+                    checksum=_sha256(analysis_path),
+                )
+            )
+        if versions_path is not None and versions_path.is_file():
+            artifacts.append(
+                _relative_artifact(
+                    run_root,
+                    versions_path,
+                    artifact_id="workflow:versions",
+                    schema_version=WORKFLOW_VERSIONS_SCHEMA_VERSION,
+                    checksum=_sha256(versions_path),
+                )
+            )
+        payload: dict[str, Any] = {
+            "schema_version": WORKFLOW_RESULT_SCHEMA_VERSION,
+            "result_id": uuid4().hex,
+            "run_id": run_id,
+            "command": "project.sample-analysis",
+            "target": "sample-analysis",
+            "outcome": outcome,
+            "started_at": started_at,
+            "completed_at": _now(),
+            "timings": {"elapsed_seconds": perf_counter() - started},
+            "run_root": ".",
+            "output_root": ".",
+            "runtime_config": None,
+            "plan": plan_payload,
+            "post_plan": plan_payload,
+            "generation_ids": {},
+            "artifacts": artifacts,
+            "schemas": {"project:sample-analysis": SAMPLE_ANALYSIS_SCHEMA_VERSION},
+            "resources": resources,
+            "sources": {
+                "project": {
+                    "kind": "project_registry",
+                    "fingerprint": _project_plan_identity(plan_payload),
+                }
+            },
+            "strict": False,
+            "failure": failure,
+            "request": request,
+            "summary": summary,
         }
         contract_issues = workflow_result_contract_issues(payload)
         if contract_issues:
@@ -1350,6 +1595,46 @@ def validate_workflow_output(
                     layers=request.get("layers"),
                     read_metrics=bool(request.get("read_metrics")),
                     partitioned=bool(request.get("partitioned")),
+                )
+            except Exception as exc:
+                issues.append(_validation_issue("project_plan_failed", str(exc)))
+            else:
+                if _project_plan_identity(current.to_dict()) != _project_plan_identity(
+                    result.get("plan")
+                ):
+                    issues.append(
+                        _validation_issue(
+                            "project_source_stale",
+                            "current project selection no longer matches the published result",
+                        )
+                    )
+    elif command == "project.sample-analysis":
+        if not any(
+            artifact.get("artifact_id") == "project:sample-analysis"
+            for artifact in result.get("artifacts", [])
+            if isinstance(artifact, Mapping)
+        ):
+            issues.append(
+                _validation_issue(
+                    "project_output_missing",
+                    "project result does not declare its sample-analysis artifact",
+                )
+            )
+        if project_dir is not None:
+            from ..cli.project_cmd import project_plan
+
+            request = result.get("request", {})
+            try:
+                current = project_plan(
+                    project_dir,
+                    "sample-analysis",
+                    request["canonical_reference"],
+                    set_name=request.get("set_name"),
+                    modality=request.get("modality"),
+                    experiments=request.get("experiments"),
+                    stage=request.get("stage"),
+                    start=request.get("start"),
+                    end=request.get("end"),
                 )
             except Exception as exc:
                 issues.append(_validation_issue("project_plan_failed", str(exc)))

@@ -140,6 +140,16 @@ def _patch_project_execution(monkeypatch, *, token="source-a", failure=None):
         return output
 
     monkeypatch.setattr("smftools.cli.project_cmd.project_materialize", materialize)
+
+    def sample_analysis(_project, _reference, output, **_kwargs):
+        if failure is not None:
+            raise failure
+        output = Path(output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"sample-analysis")
+        return {"schema_version": 1, "n_partitions": 2, "n_reads": 12, "partitions": []}
+
+    monkeypatch.setattr("smftools.cli.project_cmd.project_sample_analysis", sample_analysis)
     monkeypatch.setattr(
         workflow_contract,
         "_project_resource_decision",
@@ -737,3 +747,88 @@ def test_project_failure_writes_structured_result(tmp_path, monkeypatch):
     )
     assert result["outcome"] == "failed"
     assert result["failure"]["stage"] == "project.materialization"
+
+
+def test_project_sample_analysis_workflow_success_skip_and_validation(tmp_path, monkeypatch):
+    """Sample analysis is a workflow product, not a Python-only API.
+
+    The `sample-analysis` target has been advertised by `project plan` with no
+    matching executable, so a planner could ask for something no CLI could run
+    or validate. This covers that lifecycle end to end.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    output = tmp_path / "analysis-output"
+    _patch_project_execution(monkeypatch)
+
+    first = workflow_contract.run_project_sample_analysis_workflow(
+        project,
+        "uid-ref",
+        output_root=output,
+    )
+    result = json.loads(first.read_text(encoding="utf-8"))
+    assert result["command"] == "project.sample-analysis"
+    assert result["target"] == "sample-analysis"
+    assert result["outcome"] == "success"
+    assert result["artifacts"][0]["artifact_id"] == "project:sample-analysis"
+    assert result["artifacts"][0]["path"] == "sample_analysis.parquet"
+    assert result["summary"]["n_partitions"] == 2
+
+    second = workflow_contract.run_project_sample_analysis_workflow(
+        project,
+        "uid-ref",
+        output_root=output,
+    )
+    assert json.loads(second.read_text(encoding="utf-8"))["outcome"] == "compatible_skip"
+    assert workflow_contract.validate_workflow_output(output, project_dir=project)["valid"]
+
+    _patch_project_execution(monkeypatch, token="source-b")
+    validation = workflow_contract.validate_workflow_output(output, project_dir=project)
+    assert validation["valid"] is False
+    assert "project_source_stale" in {issue["code"] for issue in validation["issues"]}
+
+
+def test_project_sample_analysis_failure_writes_structured_result(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    output = tmp_path / "analysis-output"
+    _patch_project_execution(monkeypatch, failure=ValueError("no partitions"))
+
+    with pytest.raises(workflow_contract.WorkflowContractError, match="no partitions"):
+        workflow_contract.run_project_sample_analysis_workflow(
+            project,
+            "uid-ref",
+            output_root=output,
+        )
+
+    result = json.loads(
+        (output / workflow_contract.WORKFLOW_RESULT_FILENAME).read_text(encoding="utf-8")
+    )
+    assert result["outcome"] == "failed"
+    assert result["command"] == "project.sample-analysis"
+    assert result["failure"]["stage"] == "project.sample_analysis"
+
+
+def test_one_project_product_never_satisfies_another_in_the_same_root(tmp_path, monkeypatch):
+    """Two products share an output root only if neither can skip on the other.
+
+    Both write `workflow_result.json`, so reuse has to key on the command and
+    artifact ID, not just the request and plan -- otherwise a materialized
+    selection would silently stand in for an unrun sample analysis.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    output = tmp_path / "shared-output"
+    _patch_project_execution(monkeypatch)
+
+    workflow_contract.run_project_materialization_workflow(project, "uid-ref", output_root=output)
+    analysis = workflow_contract.run_project_sample_analysis_workflow(
+        project,
+        "uid-ref",
+        output_root=output,
+    )
+
+    result = json.loads(analysis.read_text(encoding="utf-8"))
+    assert result["command"] == "project.sample-analysis"
+    assert result["outcome"] == "success"
+    assert (output / "sample_analysis.parquet").is_file()

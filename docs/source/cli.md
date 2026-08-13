@@ -99,3 +99,14 @@ An unchanged project selection and projection request reuses a checksum-valid
 materialization with the `compatible_skip` outcome. Project validation compares
 the current semantic source plan with the published plan and reports stale
 membership or feature inputs.
+
+Project sample analysis is a separate product under the same contract, with its
+own command name and artifact ID so neither can be skipped against the other:
+
+```shell
+smftools project sample-analysis PROJECT_DIR CANONICAL_REFERENCE \
+  --output-root "${TASK_OUTPUT}" \
+  --layer C_site_binary
+
+smftools project validate PROJECT_DIR "${TASK_OUTPUT}" --json
+```

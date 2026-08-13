@@ -362,6 +362,19 @@ canonical name even if experiments called it something different.
   `TASK_OUTPUT`. An identical valid request returns `compatible_skip`.
   `project validate PROJECT_DIR TASK_OUTPUT --json` checks artifact integrity
   and compares the current project source plan with the published plan.
+- `project sample-analysis PROJECT_DIR CANONICAL_REFERENCE --output-root TASK_OUTPUT` executes the
+  `sample-analysis` target that `project plan` advertises, under the same workflow result contract
+  as `project run`. Selection works per `(experiment, reference_strand, sample)` partition -- one
+  scope finer than materialization -- so the selection resolves to experiments first and then
+  expands through the per-sample store. Each partition's per-read periodicity is computed and
+  cached in the project under its own definition hash, and the task-local
+  `sample_analysis.parquet` joins them with `experiment`/`reference_strand`/`sample` kept explicit
+  so reads from different experiments never become indistinguishable rows. `--layer`, `--start`,
+  `--end`, and `--method` select what is analyzed; `--force-recompute` bypasses the per-partition
+  caches. An identical request against an unchanged project returns `compatible_skip`, and
+  `project validate PROJECT_DIR TASK_OUTPUT` checks the artifact and re-plans to detect a project
+  that has moved on. A selection matching no cataloged partition fails with a structured result
+  rather than writing an empty table.
 - `project export-latent PROJECT_DIR OUTPUT_DIR` exports one Zarr artifact per experiment/core
   latent coordinate owner plus a portable catalog and completion manifest. Filters include
   `--canonical-reference`, repeatable `--experiment`, `--molecule-uid`, and

@@ -982,6 +982,114 @@ def project_run_cmd(
     click.echo(path)
 
 
+@project_group.command("sample-analysis")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("canonical_reference")
+@click.option(
+    "--output-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Exclusive task-local root for every generated artifact.",
+)
+@click.option(
+    "--output-name",
+    default=None,
+    help="Result table name inside OUTPUT_ROOT (default: sample_analysis.parquet).",
+)
+@click.option(
+    "--result-json",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Result path inside OUTPUT_ROOT (default: workflow_result.json).",
+)
+@click.option("--set", "set_name", default=None, help="Restrict to a named experiment set.")
+@click.option("--modality", default=None, help="Restrict to a modality.")
+@click.option(
+    "--experiment",
+    "experiments",
+    multiple=True,
+    help="Restrict to an experiment ID; repeat for multiple experiments.",
+)
+@click.option("--stage", default=None, help="Select one experiment pipeline stage.")
+@click.option("--start", type=int, default=None, help="Genomic window start (with --end).")
+@click.option("--end", type=int, default=None, help="Genomic window end (with --start).")
+@click.option("--layer", default=None, help="Layer to analyze (default: X).")
+@click.option(
+    "--method",
+    default="direct",
+    show_default=True,
+    help="Periodicity method: 'direct' single-molecule, or an ACF-intermediate method.",
+)
+@click.option(
+    "--force-recompute",
+    is_flag=True,
+    help="Recompute each partition instead of reusing its cached per-sample result.",
+)
+@click.option("--cpus", type=click.IntRange(min=1), default=None, help="Task-local CPU ceiling.")
+@click.option(
+    "--memory-gb",
+    type=click.FloatRange(min=0.001),
+    default=None,
+    help="Task-local memory ceiling in GiB.",
+)
+@click.option(
+    "--max-memory-percent",
+    "memory_percent",
+    type=click.FloatRange(min=1, max=100),
+    default=60.0,
+    show_default=True,
+    help="Ceiling as a percentage of available memory.",
+)
+def project_sample_analysis_cmd(
+    project_dir,
+    canonical_reference,
+    output_root,
+    output_name,
+    result_json,
+    set_name,
+    modality,
+    experiments,
+    stage,
+    start,
+    end,
+    layer,
+    method,
+    force_recompute,
+    cpus,
+    memory_gb,
+    memory_percent,
+):
+    """Run per-sample periodicity across a project selection, task-locally."""
+    from .cli.workflow_contract import (
+        WorkflowContractError,
+        run_project_sample_analysis_workflow,
+    )
+
+    try:
+        path = run_project_sample_analysis_workflow(
+            project_dir,
+            canonical_reference,
+            output_root=output_root,
+            output_name=output_name,
+            result_json=result_json,
+            set_name=set_name,
+            modality=modality,
+            experiments=experiments,
+            stage=stage,
+            start=start,
+            end=end,
+            layer=layer,
+            method=method,
+            force_recompute=force_recompute,
+            cpus=cpus,
+            memory_gb=memory_gb,
+            memory_percent=memory_percent,
+        )
+    except WorkflowContractError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(path)
+
+
 @project_group.command("validate")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("output_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
