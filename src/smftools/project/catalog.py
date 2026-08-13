@@ -93,14 +93,11 @@ class ProjectCatalog:
         if experiments is not None:
             ids = {str(e) for e in experiments}
         if set_name is not None:
-            from .registry import resolve_set
+            from .registry import resolve_set_membership
 
-            saved = resolve_set(self.project_dir, set_name)
-            if saved["kind"] == "list":
-                set_ids = set(saved["experiments"])
-            else:
-                result = self.query(f"SELECT DISTINCT experiment FROM refs WHERE {saved['sql']}")
-                set_ids = set(result["experiment"].astype(str))
+            # Same resolution path as `project show-set`, so the membership a
+            # user is shown is the membership this filter applies.
+            set_ids = set(resolve_set_membership(self.project_dir, set_name, catalog=self).resolved)
             ids = set_ids if ids is None else (ids & set_ids)
         return ids
 

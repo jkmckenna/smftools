@@ -33,7 +33,7 @@ from smftools.project.reference_registry import (
     REFERENCE_REGISTRY_FILENAME,
     ReferenceRegistry,
 )
-from smftools.project.registry import list_experiments, resolve_set
+from smftools.project.registry import list_experiments, resolve_set_membership
 
 from .plan import DatasetSpec, MLPlan, PhysicalChannelSource
 
@@ -334,16 +334,9 @@ def _project_metadata(
     by_id = {str(entry["id"]): entry for entry in entries}
     selected_ids = set(by_id)
     if set_name is not None:
-        saved = resolve_set(project_dir, set_name)
-        if saved.get("kind") == "list":
-            selected_ids &= {str(item) for item in saved.get("experiments", ())}
-        else:
-            from smftools.project.catalog import ProjectCatalog
-
-            result = ProjectCatalog.open(project_dir).query(
-                f"SELECT DISTINCT experiment FROM refs WHERE {saved['sql']}"
-            )
-            selected_ids &= set(result["experiment"].astype(str))
+        # Shared with the project catalog and `project show-set`, so an ML
+        # selection narrows to exactly the membership the CLI reports.
+        selected_ids &= set(resolve_set_membership(project_dir, set_name).resolved)
     if dataset.experiments.include:
         selected_ids &= set(dataset.experiments.include)
     selected_ids -= set(dataset.experiments.exclude)

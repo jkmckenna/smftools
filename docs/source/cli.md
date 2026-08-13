@@ -19,6 +19,15 @@ read-only experiment plan. The compatibility states, force behavior, and
 semantic-versus-execution distinction are described in
 [](tutorials/semantic_variant_workflows.md).
 
+## Named experiment sets
+
+`--set NAME` restricts a project command to a saved subset of the registered
+experiments. Manage those subsets with `project add-set`, `project list-sets`,
+`project show-set`, and `project remove-set`; membership is validated when the
+set is defined, and `show-set` resolves through the same path `--set` applies,
+so what it prints is what a plan or materialize will use. See
+[](tutorials/cli_usage.md#smftools-project).
+
 ## External workflow contract
 
 Workflow engines should use `smftools experiment run` instead of rewriting an

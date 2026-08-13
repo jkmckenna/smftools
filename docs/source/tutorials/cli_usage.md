@@ -321,6 +321,25 @@ canonical name even if experiments called it something different.
   [Registering legacy (pre-partitioned-store) runs](directory_organization.md#registering-legacy-pre-partitioned-store-runs).
 - `project list PROJECT_DIR` lists registered experiments (including which stages each has
   reached) and the harmonized reference table.
+- `project add-set PROJECT_DIR NAME` defines a named experiment set for the `--set` flag that
+  `plan`, `materialize`, `export-fastq`, `export-latent`, and the ML selection layer accept. Give
+  it either explicit membership (`--experiment expA --experiment expB`, repeatable) or a saved
+  query over the harmonized reference table (`--query "modality='direct'"`, which needs DuckDB).
+  Definition is validated: naming an experiment that is not registered, has been deactivated, or is
+  repeated fails without writing anything, since a set that silently selects fewer experiments than
+  it names is indistinguishable from a correct one at use time. Pass `--allow-unresolved` to define
+  it anyway, which is what you want when the set is written before the experiments it names are
+  registered.
+- `project list-sets PROJECT_DIR` lists the defined sets without resolving them (cheap; no DuckDB
+  needed even when a query set exists).
+- `project show-set PROJECT_DIR NAME` resolves one set to the experiments it selects, and reports
+  anything declared that does not resolve -- unregistered, deactivated, or duplicated. The
+  resolution shown here is the same code path `--set` applies, so a `materialize --set NAME` pools
+  exactly the experiments listed. A query set can only ever resolve to active experiments, since
+  the harmonized table it queries is built from active registrations.
+- `project remove-set PROJECT_DIR NAME` deletes a set definition. Unlike `project remove`, which
+  deactivates an experiment in the append-only registry, this is a real deletion -- a set is a
+  saved selection, not registered data -- and no experiment registration is touched.
 - `project materialize PROJECT_DIR CANONICAL_REFERENCE -o OUTPUT.h5ad.gz` resolves the canonical
   reference back to each matching experiment's own reference name(s), materializes each
   experiment's slice independently, and concatenates them (adding an `obs["experiment"]` column) --

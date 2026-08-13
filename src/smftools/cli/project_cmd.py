@@ -87,6 +87,82 @@ def project_list(project_dir: str | Path):
     return catalog.experiments(), catalog.references()
 
 
+def project_add_set(
+    project_dir: str | Path,
+    name: str,
+    *,
+    experiments: list[str] | None = None,
+    query: str | None = None,
+    allow_unresolved: bool = False,
+):
+    """Define a named experiment set and return its resolved membership.
+
+    Args:
+        project_dir: Project root.
+        name: Set name, as later passed to ``--set``.
+        experiments: Explicit membership. Mutually exclusive with *query*.
+        query: Saved SQL predicate over the harmonized ``refs`` table. Mutually
+            exclusive with *experiments*.
+        allow_unresolved: Define the set even when it names an experiment that is
+            not registered, is deactivated, or is repeated. Useful when the set
+            is written before the experiments it names are registered.
+
+    Returns:
+        The stored :class:`~smftools.project.registry.SetMembership`.
+    """
+    from ..project.registry import add_set, resolve_set_membership
+
+    add_set(
+        project_dir,
+        name,
+        experiments=experiments,
+        query=query,
+        validate=not allow_unresolved,
+    )
+    return resolve_set_membership(project_dir, name)
+
+
+def project_list_sets(project_dir: str | Path) -> list[dict]:
+    """Return one display record per named set, most useful fields first.
+
+    A query set is described but not executed here, so listing stays cheap and
+    does not require DuckDB; use :func:`project_show_set` to resolve one.
+    """
+    from ..project.registry import list_sets
+
+    records = []
+    for name, definition in sorted(list_sets(project_dir).items()):
+        kind = str(definition.get("kind", ""))
+        records.append(
+            {
+                "name": name,
+                "kind": kind,
+                "n_declared": len(definition.get("experiments", ())) if kind == "list" else None,
+                "query": str(definition.get("sql", "")) if kind == "query" else None,
+            }
+        )
+    return records
+
+
+def project_show_set(project_dir: str | Path, name: str):
+    """Return one named set's resolved membership.
+
+    Returns:
+        The :class:`~smftools.project.registry.SetMembership` that every ``--set``
+        consumer resolves to.
+    """
+    from ..project.registry import resolve_set_membership
+
+    return resolve_set_membership(project_dir, name)
+
+
+def project_remove_set(project_dir: str | Path, name: str) -> None:
+    """Delete a named set. No experiment registration is affected."""
+    from ..project.registry import remove_set
+
+    remove_set(project_dir, name)
+
+
 def project_plan(
     project_dir: str | Path,
     target: str,
