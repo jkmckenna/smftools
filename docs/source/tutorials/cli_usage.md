@@ -375,6 +375,26 @@ canonical name even if experiments called it something different.
   `project validate PROJECT_DIR TASK_OUTPUT` checks the artifact and re-plans to detect a project
   that has moved on. A selection matching no cataloged partition fails with a structured result
   rather than writing an empty table.
+- `project embedding PROJECT_DIR CANONICAL_REFERENCE --output-root TASK_OUTPUT` executes the
+  `embedding` target, fitting or extending one shared cross-experiment coordinate system. The
+  durable product is an immutable, checksummed generation inside the project, selected by the
+  embedding's own current pointer; the task-local `embedding.parquet` exports per-molecule UMAP/PCA
+  coordinates and cluster assignments. The estimator pickles are never copied into the task output.
+  This is a different product from `export-latent`: experiment-local latent coordinates are fitted
+  per experiment/core and cannot be pooled, whereas this fits one space across the selection.
+  - An identical request against an unchanged project returns `compatible_skip` without loading any
+    model.
+  - Growing the selection (registering another experiment) transforms only the new molecules onto
+    the existing space, which requires loading this project's persisted PCA/UMAP estimators. Those
+    are pickle files, so the run fails with `EmbeddingTrustError` unless you pass
+    `--trust-local-models`. Pass it only for a project tree you trust; unpickling executes code from
+    those files.
+  - Removing molecules, or changing the feature values of ones already embedded, cannot be
+    reconciled incrementally and requires `--force-recompute`, which refits from scratch and retains
+    the prior generation.
+  - `--feature-kind`, `--layer`, `--start`, `--end`, `--leiden-resolution`, `--n-neighbors`,
+    `--min-reads`, and `--random-state` are all part of the embedding's identity, so changing any of
+    them selects a different generation rather than overwriting one.
 - `project export-latent PROJECT_DIR OUTPUT_DIR` exports one Zarr artifact per experiment/core
   latent coordinate owner plus a portable catalog and completion manifest. Filters include
   `--canonical-reference`, repeatable `--experiment`, `--molecule-uid`, and

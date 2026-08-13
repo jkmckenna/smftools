@@ -1090,6 +1090,141 @@ def project_sample_analysis_cmd(
     click.echo(path)
 
 
+@project_group.command("embedding")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("canonical_reference")
+@click.option(
+    "--output-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Exclusive task-local root for every generated artifact.",
+)
+@click.option(
+    "--output-name",
+    default=None,
+    help="Coordinate table name inside OUTPUT_ROOT (default: embedding.parquet).",
+)
+@click.option(
+    "--result-json",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Result path inside OUTPUT_ROOT (default: workflow_result.json).",
+)
+@click.option("--set", "set_name", default=None, help="Restrict to a named experiment set.")
+@click.option("--modality", default=None, help="Restrict to a modality.")
+@click.option(
+    "--experiment",
+    "experiments",
+    multiple=True,
+    help="Restrict to an experiment ID; repeat for multiple experiments.",
+)
+@click.option("--stage", default=None, help="Select one experiment pipeline stage.")
+@click.option("--start", type=int, default=None, help="Genomic window start (with --end).")
+@click.option("--end", type=int, default=None, help="Genomic window end (with --start).")
+@click.option("--layer", default=None, help="Layer to embed (default: X).")
+@click.option(
+    "--feature-kind",
+    type=click.Choice(["raw", "acf"]),
+    default="raw",
+    show_default=True,
+    help="Feature construction for the shared space.",
+)
+@click.option(
+    "--leiden-resolution", type=float, default=0.5, show_default=True, help="Leiden resolution."
+)
+@click.option(
+    "--n-neighbors", type=int, default=15, show_default=True, help="UMAP/cluster neighborhood size."
+)
+@click.option(
+    "--min-reads", type=int, default=10, show_default=True, help="Minimum reads required to fit."
+)
+@click.option("--random-state", type=int, default=42, show_default=True, help="Deterministic seed.")
+@click.option(
+    "--force-recompute",
+    is_flag=True,
+    help="Refit from scratch. Required when molecules were removed or their features changed.",
+)
+@click.option(
+    "--trust-local-models",
+    is_flag=True,
+    help=(
+        "Permit loading this project's persisted PCA/UMAP estimator pickles, which "
+        "extending an existing embedding requires. Pass this only for a project tree "
+        "you trust; unpickling executes code from those files."
+    ),
+)
+@click.option("--cpus", type=click.IntRange(min=1), default=None, help="Task-local CPU ceiling.")
+@click.option(
+    "--memory-gb",
+    type=click.FloatRange(min=0.001),
+    default=None,
+    help="Task-local memory ceiling in GiB.",
+)
+@click.option(
+    "--max-memory-percent",
+    "memory_percent",
+    type=click.FloatRange(min=1, max=100),
+    default=60.0,
+    show_default=True,
+    help="Ceiling as a percentage of available memory.",
+)
+def project_embedding_cmd(
+    project_dir,
+    canonical_reference,
+    output_root,
+    output_name,
+    result_json,
+    set_name,
+    modality,
+    experiments,
+    stage,
+    start,
+    end,
+    layer,
+    feature_kind,
+    leiden_resolution,
+    n_neighbors,
+    min_reads,
+    random_state,
+    force_recompute,
+    trust_local_models,
+    cpus,
+    memory_gb,
+    memory_percent,
+):
+    """Fit or extend one shared project embedding, task-locally."""
+    from .cli.workflow_contract import WorkflowContractError, run_project_embedding_workflow
+
+    try:
+        path = run_project_embedding_workflow(
+            project_dir,
+            canonical_reference,
+            output_root=output_root,
+            output_name=output_name,
+            result_json=result_json,
+            set_name=set_name,
+            modality=modality,
+            experiments=experiments,
+            stage=stage,
+            start=start,
+            end=end,
+            layer=layer,
+            feature_kind=feature_kind,
+            leiden_resolution=leiden_resolution,
+            n_neighbors=n_neighbors,
+            min_reads=min_reads,
+            random_state=random_state,
+            force_recompute=force_recompute,
+            trust_local_models=trust_local_models,
+            cpus=cpus,
+            memory_gb=memory_gb,
+            memory_percent=memory_percent,
+        )
+    except WorkflowContractError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(path)
+
+
 @project_group.command("validate")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("output_root", type=click.Path(exists=True, file_okay=False, path_type=Path))

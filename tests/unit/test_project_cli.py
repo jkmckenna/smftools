@@ -791,3 +791,120 @@ def test_sample_analysis_reports_an_empty_selection_as_a_structured_failure(tmp_
     result = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
     assert result["outcome"] == "failed"
     assert "no per-sample-store partition" in result["failure"]["message"]
+
+
+def _embeddable_experiment(tmp_path, name, uid, *, sample, seed, n=30, npos=300):
+    """One experiment with enough reads and structure to fit a shared embedding."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    out_dir = tmp_path / name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for i in range(n):
+        phase = int(rng.integers(0, 2))
+        rows.append(
+            {
+                "read_id": f"{name}_{sample}_r{i}",
+                "reference": "geneA",
+                "Reference_strand": "geneA_top",
+                "sample": sample,
+                "barcode": sample,
+                "strand": "top",
+                "mapping_direction": "fwd",
+                "reference_start": 0,
+                "cigar": f"{npos}M",
+                "aligned_length": npos,
+                "sequence": [i % 4 for _ in range(npos)],
+                "quality": [30] * npos,
+                "mismatch": [4] * npos,
+                "modification_signal": [float(((p // 15) + phase) % 2) for p in range(npos)],
+            }
+        )
+    write_raw_store(
+        pd.DataFrame(rows),
+        out_dir,
+        reference_lengths={"geneA_top": npos},
+        extra_uns={
+            "reference_uids": {"geneA_top": uid},
+            "modality": "direct",
+            "experiment": name,
+        },
+    )
+    return out_dir
+
+
+def test_embedding_cli_fits_skips_and_requires_trust_before_growing(tmp_path):
+    """Growth unpickles this project's estimators, so it needs an explicit decision."""
+    uid = reference_uid("A" * 300, 300)
+    _embeddable_experiment(tmp_path, "expA", uid, sample="bc01", seed=1)
+    _embeddable_experiment(tmp_path, "expB", uid, sample="bc02", seed=2)
+    proj = tmp_path / "project"
+    output = tmp_path / "embedding-out"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    assert (
+        runner.invoke(
+            cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expA")]
+        ).exit_code
+        == 0
+    )
+
+    command = [
+        "project",
+        "embedding",
+        str(proj),
+        uid,
+        "--output-root",
+        str(output),
+        "--min-reads",
+        "5",
+        "--n-neighbors",
+        "5",
+    ]
+    r = runner.invoke(cli_entry.cli, command)
+    assert r.exit_code == 0, r.output
+    result = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
+    assert result["command"] == "project.embedding"
+    assert result["summary"]["fit_kind"] == "full"
+    assert result["summary"]["n_molecules"] == 30
+    assert result["trust_local_models"] is False
+    table = pd.read_parquet(output / "embedding.parquet")
+    assert {"molecule_uid", "cluster", "umap_1", "umap_2"} <= set(table.columns)
+    assert len(table) == 30
+    # Estimator pickles are trusted-local project artifacts; exporting coordinates
+    # must not spread them into a task output other steps will consume.
+    assert not list(output.rglob("*.pkl"))
+
+    r = runner.invoke(cli_entry.cli, ["project", "validate", str(proj), str(output), "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["valid"] is True
+
+    assert runner.invoke(cli_entry.cli, command).exit_code == 0
+    assert (
+        json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))["outcome"]
+        == "compatible_skip"
+    )
+
+    # Registering another experiment grows the selection, which needs the models.
+    assert (
+        runner.invoke(
+            cli_entry.cli, ["project", "add", str(proj), str(tmp_path / "expB")]
+        ).exit_code
+        == 0
+    )
+    r = runner.invoke(cli_entry.cli, command)
+    assert r.exit_code == 1
+    blocked = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
+    assert blocked["outcome"] == "failed"
+    assert blocked["failure"]["type"] == "EmbeddingTrustError"
+
+    r = runner.invoke(cli_entry.cli, [*command, "--trust-local-models"])
+    assert r.exit_code == 0, r.output
+    grown = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
+    assert grown["trust_local_models"] is True
+    assert grown["summary"]["fit_kind"] == "extended"
+    assert grown["summary"]["n_molecules"] == 60
+    assert grown["summary"]["n_new_molecules"] == 30
+    assert grown["summary"]["prior_generation_id"]
+    assert len(pd.read_parquet(output / "embedding.parquet")) == 60

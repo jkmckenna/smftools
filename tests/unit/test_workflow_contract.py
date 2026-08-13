@@ -150,6 +150,22 @@ def _patch_project_execution(monkeypatch, *, token="source-a", failure=None):
         return {"schema_version": 1, "n_partitions": 2, "n_reads": 12, "partitions": []}
 
     monkeypatch.setattr("smftools.cli.project_cmd.project_sample_analysis", sample_analysis)
+
+    def embedding(_project, _reference, output, **kwargs):
+        if failure is not None:
+            raise failure
+        output = Path(output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"embedding")
+        return {
+            "schema_version": 1,
+            "generation_id": "generation-embed",
+            "fit_kind": "extended" if kwargs.get("trust_local_models") else "full",
+            "n_molecules": 30,
+            "n_new_molecules": 10 if kwargs.get("trust_local_models") else 0,
+        }
+
+    monkeypatch.setattr("smftools.cli.project_cmd.project_embedding", embedding)
     monkeypatch.setattr(
         workflow_contract,
         "_project_resource_decision",
@@ -832,3 +848,92 @@ def test_one_project_product_never_satisfies_another_in_the_same_root(tmp_path, 
     assert result["command"] == "project.sample-analysis"
     assert result["outcome"] == "success"
     assert (output / "sample_analysis.parquet").is_file()
+
+
+def test_project_embedding_workflow_success_skip_and_validation(tmp_path, monkeypatch):
+    """The `embedding` plan target needs a matching executable and validation path."""
+    project = tmp_path / "project"
+    project.mkdir()
+    output = tmp_path / "embedding-output"
+    _patch_project_execution(monkeypatch)
+
+    first = workflow_contract.run_project_embedding_workflow(
+        project,
+        "uid-ref",
+        output_root=output,
+    )
+    result = json.loads(first.read_text(encoding="utf-8"))
+    assert result["command"] == "project.embedding"
+    assert result["target"] == "embedding"
+    assert result["outcome"] == "success"
+    assert result["artifacts"][0]["artifact_id"] == "project:embedding"
+    # The shared coordinate system is a project-scoped generation; the result
+    # names it so a task output can be traced back to it.
+    assert result["generation_ids"] == {"project.embedding": "generation-embed"}
+    assert result["trust_local_models"] is False
+
+    second = workflow_contract.run_project_embedding_workflow(
+        project,
+        "uid-ref",
+        output_root=output,
+    )
+    assert json.loads(second.read_text(encoding="utf-8"))["outcome"] == "compatible_skip"
+    assert workflow_contract.validate_workflow_output(output, project_dir=project)["valid"]
+
+    _patch_project_execution(monkeypatch, token="source-b")
+    validation = workflow_contract.validate_workflow_output(output, project_dir=project)
+    assert validation["valid"] is False
+    assert "project_source_stale" in {issue["code"] for issue in validation["issues"]}
+
+
+def test_project_embedding_records_the_trust_decision_it_ran_under(tmp_path, monkeypatch):
+    """Unpickling this project's estimators is a decision, so the result records it."""
+    project = tmp_path / "project"
+    project.mkdir()
+    output = tmp_path / "embedding-output"
+    _patch_project_execution(monkeypatch)
+
+    path = workflow_contract.run_project_embedding_workflow(
+        project,
+        "uid-ref",
+        output_root=output,
+        trust_local_models=True,
+    )
+
+    result = json.loads(path.read_text(encoding="utf-8"))
+    assert result["trust_local_models"] is True
+    assert result["summary"]["fit_kind"] == "extended"
+    assert result["summary"]["n_new_molecules"] == 10
+
+
+def test_project_embedding_failure_writes_structured_result(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    output = tmp_path / "embedding-output"
+    _patch_project_execution(monkeypatch, failure=RuntimeError("trust required"))
+
+    with pytest.raises(workflow_contract.WorkflowContractError, match="trust required"):
+        workflow_contract.run_project_embedding_workflow(project, "uid-ref", output_root=output)
+
+    result = json.loads(
+        (output / workflow_contract.WORKFLOW_RESULT_FILENAME).read_text(encoding="utf-8")
+    )
+    assert result["outcome"] == "failed"
+    assert result["command"] == "project.embedding"
+    assert result["failure"]["stage"] == "project.embedding"
+
+
+def test_no_project_product_skips_against_another_in_one_root(tmp_path, monkeypatch):
+    """Three products, one output root: each must run on its own terms."""
+    project = tmp_path / "project"
+    project.mkdir()
+    output = tmp_path / "shared-output"
+    _patch_project_execution(monkeypatch)
+
+    workflow_contract.run_project_materialization_workflow(project, "uid-ref", output_root=output)
+    workflow_contract.run_project_sample_analysis_workflow(project, "uid-ref", output_root=output)
+    path = workflow_contract.run_project_embedding_workflow(project, "uid-ref", output_root=output)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["outcome"] == "success"
+    for name in ("materialized.h5ad.gz", "sample_analysis.parquet", "embedding.parquet"):
+        assert (output / name).exists(), name
