@@ -4,6 +4,7 @@ import anndata as ad
 import pandas as pd
 import pytest
 
+from smftools.informatics.reference_identity import reference_uid as reg_reference_uid
 from smftools.project import registry as reg
 from smftools.project.reference_registry import (
     ReferenceRegistry,
@@ -594,3 +595,73 @@ def test_reference_registry_yaml_round_trip(tmp_path):
     assert loaded.canonical_reference("uid1") == "A"
     assert loaded.canonical_reference("uid2") == "B"
     assert loaded.canonical_reference("unknown") == "unknown"
+
+
+def _write_raw_run(run_root):
+    """Write one experiment's raw store into its own run root, as the pipeline does."""
+    from smftools.informatics.raw_store import write_raw_store
+
+    npos = 8
+    rows = [
+        {
+            "read_id": f"read{index}",
+            "reference": "gene",
+            "Reference_strand": "gene_top",
+            "sample": "bc01",
+            "barcode": "bc01",
+            "strand": "top",
+            "mapping_direction": "fwd",
+            "reference_start": 0,
+            "cigar": f"{npos}M",
+            "aligned_length": npos,
+            "sequence": [index % 4] * npos,
+            "quality": [30] * npos,
+            "mismatch": [4] * npos,
+            "modification_signal": [0.5] * npos,
+        }
+        for index in range(2)
+    ]
+    write_raw_store(
+        pd.DataFrame(rows),
+        run_root / "raw_outputs",
+        reference_lengths={"gene_top": npos},
+        extra_uns={
+            "reference_uids": {"gene_top": reg_reference_uid("ACGTACGT", npos)},
+            "modality": "direct",
+            "experiment": run_root.name,
+        },
+    )
+    return run_root
+
+
+def test_registering_one_run_under_two_ids_is_refused(tmp_path):
+    """Two ids sharing an identity would make their molecules indistinguishable.
+
+    The experiment identity is persisted per run root, so this is what happens
+    when the same run is registered twice under different ids -- and pooling the
+    result would double-count reads that carry one molecule_uid.
+    """
+    run_root = _write_raw_run(tmp_path / "expA")
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    reg.add_experiment(proj, run_root, experiment_id="expA")
+
+    with pytest.raises(ValueError, match="already registered as 'expA'"):
+        reg.add_experiment(proj, run_root, experiment_id="expA-again")
+
+    assert sorted(entry["id"] for entry in reg.list_experiments(proj)) == ["expA"]
+    # Re-registering under the original id stays idempotent.
+    reg.add_experiment(proj, run_root, experiment_id="expA")
+    assert sorted(entry["id"] for entry in reg.list_experiments(proj)) == ["expA"]
+
+
+def test_separate_runs_keep_separate_identities(tmp_path):
+    """Two genuine runs must register cleanly, each owning its run root."""
+    proj = tmp_path / "project"
+    reg.init_project(proj)
+    for name in ("expA", "expB"):
+        reg.add_experiment(proj, _write_raw_run(tmp_path / name), experiment_id=name)
+
+    entries = reg.list_experiments(proj)
+    assert sorted(entry["id"] for entry in entries) == ["expA", "expB"]
+    assert len({entry["experiment_uid"] for entry in entries}) == 2

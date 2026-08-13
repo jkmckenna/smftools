@@ -14,8 +14,7 @@ CATALOG_PATH = Path("tests/acceptance/project_cli_criteria.json")
 EXPECTED_CATEGORY_COUNTS = {
     "finding": 1,
     "item": 4,
-    "property": 12,
-    "gap": 1,
+    "property": 13,
 }
 STATUSES = {"automated", "deferred"}
 
@@ -63,4 +62,5 @@ def test_every_pcli_item_and_required_property_appears():
         "property.force_behavior",
         "property.named_set_selection",
         "property.duplicate_bare_read_identity",
+        "property.distinct_experiment_identity",
     } <= identifiers

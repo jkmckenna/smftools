@@ -32,7 +32,10 @@ def _make_raw_experiment(out_dir, *, reference_strand, uid, npos=12, n=4, sample
     ]
     write_raw_store(
         pd.DataFrame(rows),
-        out_dir,
+        # Each experiment owns a run root, exactly as the pipeline lays one out.
+        # The persisted experiment identity is keyed on that root, so sibling raw
+        # stores under one parent would be one experiment rather than two.
+        out_dir / "raw_outputs",
         reference_lengths={reference_strand: npos},
         extra_uns={
             "reference_uids": {reference_strand: uid},

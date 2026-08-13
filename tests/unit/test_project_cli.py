@@ -35,7 +35,10 @@ def _make_raw_experiment(out_dir, *, reference_strand, uid, npos=12, n=4):
     ]
     write_raw_store(
         pd.DataFrame(rows),
-        out_dir,
+        # Each experiment owns a run root, exactly as the pipeline lays one out.
+        # The persisted experiment identity is keyed on that root, so sibling raw
+        # stores under one parent would be one experiment rather than two.
+        out_dir / "raw_outputs",
         reference_lengths={reference_strand: npos},
         extra_uns={
             "reference_uids": {reference_strand: uid},
@@ -676,7 +679,7 @@ def _analyzable_project(tmp_path):
     npos = 160
     uid = reference_uid("ACGT" * 40, npos)
     for name, sample in (("expA", "bc01"), ("expB", "bc02")):
-        out_dir = tmp_path / name
+        out_dir = tmp_path / name / "raw_outputs"
         out_dir.mkdir(parents=True, exist_ok=True)
         rows = [
             {
@@ -798,7 +801,7 @@ def _embeddable_experiment(tmp_path, name, uid, *, sample, seed, n=30, npos=300)
     import numpy as np
 
     rng = np.random.default_rng(seed)
-    out_dir = tmp_path / name
+    out_dir = tmp_path / name / "raw_outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     for i in range(n):
@@ -831,7 +834,7 @@ def _embeddable_experiment(tmp_path, name, uid, *, sample, seed, n=30, npos=300)
             "experiment": name,
         },
     )
-    return out_dir
+    return out_dir.parent
 
 
 def test_embedding_cli_fits_skips_and_requires_trust_before_growing(tmp_path):
