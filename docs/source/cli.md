@@ -110,3 +110,9 @@ smftools project sample-analysis PROJECT_DIR CANONICAL_REFERENCE \
 
 smftools project validate PROJECT_DIR "${TASK_OUTPUT}" --json
 ```
+
+`smftools project embedding` completes the set of executable plan targets. It
+publishes the shared coordinate system as a project-scoped immutable generation
+and exports the coordinates task-locally. Extending an existing embedding loads
+this project's persisted estimator pickles, so it fails unless the run opts in
+with `--trust-local-models`; that decision is recorded in the result.

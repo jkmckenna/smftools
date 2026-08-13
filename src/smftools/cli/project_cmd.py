@@ -477,6 +477,122 @@ def project_sample_analysis(
     }
 
 
+EMBEDDING_EXPORT_SCHEMA_VERSION = 1
+
+
+def project_embedding(
+    project_dir: str | Path,
+    canonical_reference: str,
+    output_path: str | Path,
+    *,
+    set_name: str | None = None,
+    modality: str | None = None,
+    experiments=None,
+    stage: str | None = None,
+    layer: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    feature_kind: str = "raw",
+    leiden_resolution: float = 0.5,
+    n_neighbors: int = 15,
+    min_reads: int = 10,
+    random_state: int = 42,
+    force_recompute: bool = False,
+    trust_local_models: bool = False,
+) -> dict:
+    """Fit or extend one shared project embedding and export its coordinates.
+
+    The durable product stays where it belongs: an immutable, checksummed
+    generation inside the project, selected by the embedding's own current
+    pointer. What lands in *output_path* is a portable table of the coordinates
+    and cluster assignments -- never the estimator pickles, which are
+    trusted-local runtime artifacts and must not be spread into task outputs by
+    a workflow that merely read them.
+
+    Args:
+        project_dir: Project root.
+        canonical_reference: Harmonized reference to embed.
+        output_path: Task-local parquet path for the exported coordinates.
+        set_name: Optional named set restricting the experiments.
+        modality: Optional modality restriction.
+        experiments: Optional explicit experiment IDs.
+        stage: Optional pipeline stage for spine resolution.
+        layer: Layer to embed; ``None`` uses ``X``.
+        start: Optional genomic window start.
+        end: Optional genomic window end.
+        feature_kind: ``"raw"`` or ``"acf"`` feature construction.
+        leiden_resolution: Leiden clustering resolution.
+        n_neighbors: Neighborhood size for UMAP and clustering.
+        min_reads: Minimum reads required to fit.
+        random_state: Deterministic seed.
+        force_recompute: Refit from scratch, retaining prior generations.
+        trust_local_models: Permit loading this project's persisted estimator
+            pickles, which incremental growth requires.
+
+    Returns:
+        A summary with the selected generation, fit kind, and molecule counts.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from ..project.embedding_store import fit_or_extend_embedding
+
+    result = fit_or_extend_embedding(
+        project_dir,
+        canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+        layer=layer,
+        start=start,
+        end=end,
+        feature_kind=feature_kind,
+        leiden_resolution=leiden_resolution,
+        n_neighbors=n_neighbors,
+        min_reads=min_reads,
+        random_state=random_state,
+        force_recompute=force_recompute,
+        trust_local_models=trust_local_models,
+    )
+    obs_names = [str(name) for name in result["obs_names"]]
+    umap = np.asarray(result["X_umap"], dtype=np.float64)
+    pca = np.asarray(result["X_pca"], dtype=np.float64)
+    frame = pd.DataFrame({"molecule_uid": obs_names, "cluster": np.asarray(result["clusters"])})
+    for index in range(umap.shape[1]):
+        frame[f"umap_{index + 1}"] = umap[:, index]
+    for index in range(pca.shape[1]):
+        frame[f"pca_{index + 1}"] = pca[:, index]
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(output_path, index=False)
+    # Generation identity lives on the published manifest the store returns as
+    # `meta`, not on the coordinate payload.
+    meta = result.get("meta", {}) or {}
+    summary = {
+        "schema_version": EMBEDDING_EXPORT_SCHEMA_VERSION,
+        "canonical_reference": str(canonical_reference),
+        "generation_id": str(meta.get("generation_id", "")),
+        "fit_kind": str(meta.get("fit_kind", "")),
+        "prior_generation_id": meta.get("prior_generation_id"),
+        "n_molecules": int(len(obs_names)),
+        # From the published manifest rather than the in-memory fit result: the
+        # generation read back after publication does not carry the growth
+        # counters, so sourcing them there silently reports zero new molecules.
+        "n_new_molecules": int(meta.get("n_new_reads", 0) or 0),
+        "n_clusters": int(len(set(map(str, result["clusters"])))),
+        "feature_kind": str(feature_kind),
+    }
+    logger.info(
+        "Exported project embedding generation %s (%s fit, %d molecules) -> %s",
+        summary["generation_id"] or "unknown",
+        summary["fit_kind"] or "unknown",
+        summary["n_molecules"],
+        output_path,
+    )
+    return summary
+
+
 def project_sample_store_list(
     project_dir: str | Path, experiment_id: str | None = None
 ) -> list[dict]:

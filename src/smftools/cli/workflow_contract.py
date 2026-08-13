@@ -1418,6 +1418,266 @@ def run_project_sample_analysis_workflow(
     return result_path
 
 
+def _embedding_request(
+    canonical_reference: str,
+    *,
+    output_name: str,
+    set_name: str | None,
+    modality: str | None,
+    experiments: tuple[str, ...],
+    stage: str | None,
+    start: int | None,
+    end: int | None,
+    layer: str | None,
+    feature_kind: str,
+    leiden_resolution: float,
+    n_neighbors: int,
+    min_reads: int,
+    random_state: int,
+) -> dict[str, Any]:
+    return {
+        "canonical_reference": str(canonical_reference),
+        "output_name": output_name,
+        "set_name": set_name,
+        "modality": modality,
+        "experiments": list(experiments) if experiments else None,
+        "stage": stage,
+        "start": start,
+        "end": end,
+        "layer": layer,
+        "feature_kind": str(feature_kind),
+        "leiden_resolution": float(leiden_resolution),
+        "n_neighbors": int(n_neighbors),
+        "min_reads": int(min_reads),
+        "random_state": int(random_state),
+    }
+
+
+def run_project_embedding_workflow(
+    project_dir: str | Path,
+    canonical_reference: str,
+    *,
+    output_root: str | Path,
+    output_name: str | None = None,
+    result_json: str | Path | None = None,
+    set_name: str | None = None,
+    modality: str | None = None,
+    experiments: tuple[str, ...] = (),
+    stage: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    layer: str | None = None,
+    feature_kind: str = "raw",
+    leiden_resolution: float = 0.5,
+    n_neighbors: int = 15,
+    min_reads: int = 10,
+    random_state: int = 42,
+    force_recompute: bool = False,
+    trust_local_models: bool = False,
+    cpus: int | None = None,
+    memory_gb: float | None = None,
+    memory_percent: float | None = 60.0,
+) -> Path:
+    """Fit or extend a shared project embedding under the workflow contract.
+
+    The embedding generation itself is published inside the project, since a
+    shared coordinate system is a project-scoped product; the task-local root
+    receives the exported coordinates and the result contract. Task-local latent
+    coordinates are a different product entirely and are never pooled here.
+    """
+    from ..cli.project_cmd import EMBEDDING_EXPORT_SCHEMA_VERSION, project_embedding, project_plan
+
+    source_project = _local_path(project_dir, label="project")
+    run_root = _local_path(output_root, label="output root")
+    if run_root.is_relative_to(source_project):
+        raise WorkflowContractError(
+            "project workflow output root must be outside the source project directory"
+        )
+    run_root.mkdir(parents=True, exist_ok=True)
+    result_path = _result_path(run_root, result_json)
+    name = output_name or "embedding.parquet"
+    embedding_path = _require_within(
+        run_root / name,
+        run_root,
+        label="project embedding output",
+    )
+    reserved = (
+        result_path,
+        run_root / WORKFLOW_VERSIONS_FILENAME,
+        run_root / WORKFLOW_RUNTIME_DIRECTORY,
+    )
+    if any(
+        embedding_path == path
+        or embedding_path.is_relative_to(path)
+        or path.is_relative_to(embedding_path)
+        for path in reserved
+    ):
+        raise WorkflowContractError(
+            f"project output name overlaps workflow-owned control artifacts: {name!r}"
+        )
+    request = _embedding_request(
+        canonical_reference,
+        output_name=name,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+        start=start,
+        end=end,
+        layer=layer,
+        feature_kind=feature_kind,
+        leiden_resolution=leiden_resolution,
+        n_neighbors=n_neighbors,
+        min_reads=min_reads,
+        random_state=random_state,
+    )
+    started = perf_counter()
+    started_at = _now()
+    run_id = uuid4().hex
+    failure: dict[str, Any] | None = None
+    plan_payload: dict[str, Any] | None = None
+    versions_path: Path | None = None
+    resources: dict[str, Any] = {}
+    summary: dict[str, Any] | None = None
+    outcome = "failed"
+
+    with _exclusive_run(run_root):
+        try:
+            plan = project_plan(
+                source_project,
+                "embedding",
+                canonical_reference,
+                set_name=set_name,
+                modality=modality,
+                experiments=experiments,
+                stage=stage,
+                start=start,
+                end=end,
+            )
+            plan_payload = plan.to_dict()
+            resources = _project_resource_decision(
+                cpus=cpus,
+                memory_gb=memory_gb,
+                memory_percent=memory_percent,
+            )
+            versions_path, _ = _write_versions(
+                run_root,
+                tools=(),
+                cfg=SimpleNamespace(),
+                strict=False,
+            )
+            if not force_recompute and _project_output_is_compatible(
+                result_path,
+                run_root,
+                request=request,
+                plan=plan_payload,
+                command="project.embedding",
+                artifact_id="project:embedding",
+            ):
+                outcome = "compatible_skip"
+            else:
+                summary = project_embedding(
+                    source_project,
+                    canonical_reference,
+                    embedding_path,
+                    set_name=set_name,
+                    modality=modality,
+                    experiments=list(experiments) or None,
+                    stage=stage,
+                    layer=layer,
+                    start=start,
+                    end=end,
+                    feature_kind=feature_kind,
+                    leiden_resolution=leiden_resolution,
+                    n_neighbors=n_neighbors,
+                    min_reads=min_reads,
+                    random_state=random_state,
+                    force_recompute=force_recompute,
+                    trust_local_models=trust_local_models,
+                )
+                if not embedding_path.exists():
+                    raise WorkflowContractError(
+                        "project embedding returned without publishing its output"
+                    )
+                outcome = "success"
+        except Exception as exc:
+            failure = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+                "stage": "project.embedding",
+            }
+        artifacts = []
+        if embedding_path.exists():
+            artifacts.append(
+                _relative_artifact(
+                    run_root,
+                    embedding_path,
+                    artifact_id="project:embedding",
+                    schema_version=EMBEDDING_EXPORT_SCHEMA_VERSION,
+                    checksum=_sha256(embedding_path),
+                )
+            )
+        if versions_path is not None and versions_path.is_file():
+            artifacts.append(
+                _relative_artifact(
+                    run_root,
+                    versions_path,
+                    artifact_id="workflow:versions",
+                    schema_version=WORKFLOW_VERSIONS_SCHEMA_VERSION,
+                    checksum=_sha256(versions_path),
+                )
+            )
+        payload: dict[str, Any] = {
+            "schema_version": WORKFLOW_RESULT_SCHEMA_VERSION,
+            "result_id": uuid4().hex,
+            "run_id": run_id,
+            "command": "project.embedding",
+            "target": "embedding",
+            "outcome": outcome,
+            "started_at": started_at,
+            "completed_at": _now(),
+            "timings": {"elapsed_seconds": perf_counter() - started},
+            "run_root": ".",
+            "output_root": ".",
+            "runtime_config": None,
+            "plan": plan_payload,
+            "post_plan": plan_payload,
+            "generation_ids": (
+                {"project.embedding": summary["generation_id"]}
+                if summary and summary.get("generation_id")
+                else {}
+            ),
+            "artifacts": artifacts,
+            "schemas": {"project:embedding": EMBEDDING_EXPORT_SCHEMA_VERSION},
+            "resources": resources,
+            "sources": {
+                "project": {
+                    "kind": "project_registry",
+                    "fingerprint": _project_plan_identity(plan_payload),
+                }
+            },
+            "strict": False,
+            "failure": failure,
+            "request": request,
+            "summary": summary,
+            # Recorded because it changes what the run is permitted to load: the
+            # growth path unpickles this project's estimator state.
+            "trust_local_models": bool(trust_local_models),
+        }
+        contract_issues = workflow_result_contract_issues(payload)
+        if contract_issues:
+            raise WorkflowContractError(
+                f"refusing to publish invalid workflow result: {contract_issues}"
+            )
+        atomic_write_json(result_path, payload)
+        if failure is not None:
+            raise WorkflowContractError(
+                f"project workflow failed; structured result written to {result_path}: "
+                f"{failure['type']}: {failure['message']}"
+            )
+    return result_path
+
+
 def _project_plan_identity(plan: Mapping[str, Any] | None) -> str | None:
     if not isinstance(plan, Mapping):
         return None
@@ -1608,16 +1868,21 @@ def validate_workflow_output(
                             "current project selection no longer matches the published result",
                         )
                     )
-    elif command == "project.sample-analysis":
+    elif command in {"project.sample-analysis", "project.embedding"}:
+        target, artifact_id = (
+            ("sample-analysis", "project:sample-analysis")
+            if command == "project.sample-analysis"
+            else ("embedding", "project:embedding")
+        )
         if not any(
-            artifact.get("artifact_id") == "project:sample-analysis"
+            artifact.get("artifact_id") == artifact_id
             for artifact in result.get("artifacts", [])
             if isinstance(artifact, Mapping)
         ):
             issues.append(
                 _validation_issue(
                     "project_output_missing",
-                    "project result does not declare its sample-analysis artifact",
+                    f"project result does not declare its {target} artifact",
                 )
             )
         if project_dir is not None:
@@ -1627,7 +1892,7 @@ def validate_workflow_output(
             try:
                 current = project_plan(
                     project_dir,
-                    "sample-analysis",
+                    target,
                     request["canonical_reference"],
                     set_name=request.get("set_name"),
                     modality=request.get("modality"),
