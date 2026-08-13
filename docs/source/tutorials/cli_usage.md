@@ -408,6 +408,25 @@ smftools project export-bundle /path/to/project_dir --outdir ./bundle --format b
   whether the export is unfiltered, source experiment/generation identities, modality, trim state,
   namespaces, and paired layout.
 
+### Re-ingesting a bundle
+
+Point `input_manifest_path` at the bundle's `bundle_manifest.json` and set the alignment mode the
+bundle's declared sources require. The bundle kind decides what the new experiment can do:
+
+| Bundle kind | `alignment_mode` | What re-ingestion gets |
+| --- | --- | --- |
+| `sequence_only` (`--format fastq`) | `align` | Sequence and quality only. The reads are aligned again by the configured aligner, and the new experiment's alignment provenance is its own, not the exporting run's. |
+| `lossless_bam` (`--format bam`) | `existing` | The exported alignment is carried forward and validated, not recomputed. No aligner runs, the source run's `@PG` records survive, coordinates are identical to the exporting generation, and BC/RG/MM/ML tags are preserved. |
+
+A `lossless_bam` bundle re-ingested with `alignment_mode: align` is rejected: its rows declare an
+alignment source role, which conflicts with the read role that `align` expects. A `sequence_only`
+bundle cannot satisfy a direct-modification experiment at all, because sequence carries no MM/ML.
+
+When a bundle is used as the staged input to `experiment run`, `workflow_result.json` records its
+kind, scope, modality, dropped capabilities, and source generation IDs alongside the ordinary file
+fingerprint -- a checksum alone cannot express that re-ingesting a `sequence_only` bundle gives up
+direct-modification capability.
+
 
 ## Batch processing
 

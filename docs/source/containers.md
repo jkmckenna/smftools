@@ -104,6 +104,25 @@ image name begin with `experiment`, `project`, or `versions`; do not repeat
 `smftools`. `apptainer exec` executes the command supplied to it directly, so
 its example includes the executable.
 
+## Handing an output tree to a later task
+
+A completed output root can be mounted read-only by a later task that runs as a
+different, arbitrary UID and owns none of the files. Validation is defined to
+work under exactly those conditions:
+
+- Every published pointer is relative to the run root, so the tree can be
+  mounted at a different path than the one that produced it.
+- `smftools experiment validate` and raw-generation selection read only; neither
+  needs write access anywhere in the tree.
+- Published artifacts keep their write bit. Immutability is enforced by
+  checksum at selection time rather than by file permissions, precisely so an
+  arbitrary non-owning UID can still manage the directory. See
+  [Immutability, relocation, and container execution](tutorials/pipeline_lifecycle.md#immutability-relocation-and-container-execution).
+
+A task that resumes work in a mounted tree needs it writable, and needs nothing
+else: an earlier task killed mid-stage leaves a resumable record, not a
+directory that has to be discarded.
+
 ## Included and excluded tools
 
 The image is intentionally limited to the CPU BAM-entry profile:
