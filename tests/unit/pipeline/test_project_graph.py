@@ -49,7 +49,9 @@ def _make_raw_experiment(path, *, experiment, reference_strand, reference_id):
     ]
     write_raw_store(
         pd.DataFrame(rows),
-        path,
+        # One run root per experiment: the persisted experiment identity is keyed
+        # on it, so sibling raw stores under one parent would be one experiment.
+        path / "raw_outputs",
         reference_lengths={reference_strand: 8},
         extra_uns={
             "experiment": experiment,

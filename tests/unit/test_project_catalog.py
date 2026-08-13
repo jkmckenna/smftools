@@ -46,7 +46,10 @@ def _make_raw_experiment(out_dir, *, reference_strand, uid, npos=12, n=4):
     ]
     write_raw_store(
         pd.DataFrame(rows),
-        out_dir,
+        # Each experiment owns a run root, exactly as the pipeline lays one out.
+        # The persisted experiment identity is keyed on that root, so sibling raw
+        # stores under one parent would be one experiment rather than two.
+        out_dir / "raw_outputs",
         reference_lengths={reference_strand: npos},
         extra_uns={
             "reference_uids": {reference_strand: uid},
@@ -83,7 +86,7 @@ def test_catalog_harmonizes_different_names(project_with_two_experiments):
 def test_project_catalog_reads_registered_region_and_reference_maps(tmp_path):
     uid = reference_uid(SEQUENCE, 12)
     run_root = tmp_path / "expA"
-    _make_raw_experiment(run_root / "raw_outputs", reference_strand="geneA_top", uid=uid, n=1)
+    _make_raw_experiment(run_root, reference_strand="geneA_top", uid=uid, n=1)
     pd.DataFrame(
         {
             "stored_reference": ["geneA_top"],
@@ -222,7 +225,7 @@ def test_molecule_lookup_traces_all_indexed_stages_without_task_stores(tmp_path,
 
     uid = reference_uid(SEQUENCE, 12)
     run_root = tmp_path / "experiment"
-    _make_raw_experiment(run_root / "raw_outputs", reference_strand="gene_top", uid=uid, n=1)
+    _make_raw_experiment(run_root, reference_strand="gene_top", uid=uid, n=1)
     raw_spine, _ = safe_read_h5ad(run_root / "raw_outputs" / "spine.h5ad", verbose=False)
     task = SimpleNamespace(
         task_id="gene_top|bc01|0-12|00000",
@@ -453,7 +456,7 @@ def test_project_adata_concat_handles_mismatched_obs_index_names(tmp_path):
 
     # Give expB's spine a named obs index, simulating a modern spine's "read_id"
     # (expA's, from write_raw_store, is left unnamed -- the legacy shape).
-    spine_path = tmp_path / "expB" / "spine.h5ad"
+    spine_path = tmp_path / "expB" / "raw_outputs" / "spine.h5ad"
     spine, _ = safe_read_h5ad(spine_path, verbose=False)
     spine.obs.index.name = "legacy_read_index"
     safe_write_h5ad(spine, spine_path, backup=False, verbose=False)
@@ -511,14 +514,11 @@ def test_project_adata_stage_selection(tmp_path):
     from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
 
     uid = reference_uid(SEQUENCE, 12)
-    # Real nested layout (run_dir/raw_outputs/, run_dir/preprocess_adata_outputs/,
-    # ...), not the flat single-dir shorthand `_make_raw_experiment` normally
-    # uses, since this test needs sibling stage dirs under one run root.
+    # This test needs sibling stage dirs under one run root; `_make_raw_experiment`
+    # already writes the raw stage into <run_root>/raw_outputs.
     run_dir = tmp_path / "expA_run"
-    _make_raw_experiment(run_dir / "raw_outputs", reference_strand="geneA_top", uid=uid, n=4)
-    _make_raw_experiment(
-        tmp_path / "expB_run" / "raw_outputs", reference_strand="geneB_top", uid=uid, n=3
-    )
+    _make_raw_experiment(run_dir, reference_strand="geneA_top", uid=uid, n=4)
+    _make_raw_experiment(tmp_path / "expB_run", reference_strand="geneB_top", uid=uid, n=3)
 
     # Give expA a "preprocess" stage too: a spine.copy() with one marker obs
     # column added and source_base_dir pointing back at the raw stage (so

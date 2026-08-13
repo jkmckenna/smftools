@@ -441,6 +441,27 @@ def add_experiment(
         if validate_experiment_uid(stored_uid) != validate_experiment_uid(artifact_uid):
             raise ValueError(f"experiment id '{exp_id}' conflicts with its registered identity")
     experiment_uid = validate_experiment_uid(artifact_uid or stored_uid or new_experiment_uid())
+    # Molecule identity is derived from the experiment identity, so two ids
+    # sharing one uid make their molecules indistinguishable across the project
+    # -- pooling them would silently double-count reads that look like one
+    # molecule. Reject that at registration, where the cause is still visible.
+    # An experiment's identity is persisted per run root, so this normally means
+    # the same run is being registered twice under different ids.
+    claimed_by = next(
+        (
+            other_id
+            for other_id, entry in registry["experiments"].items()
+            if other_id != exp_id and entry.get("experiment_uid") == experiment_uid
+        ),
+        None,
+    )
+    if claimed_by is not None:
+        raise ValueError(
+            f"experiment identity {experiment_uid} is already registered as '{claimed_by}'; "
+            f"registering it again as '{exp_id}' would give both the same molecule "
+            "identities. Register the intended run, or re-run raw ingestion so this run "
+            "has its own identity."
+        )
     if existing and "spines" in existing and not is_legacy_call:
         # Directory-discovered entries are anchored at run_root, so a mismatch
         # means this id is already used by a different run -- refuse to merge.

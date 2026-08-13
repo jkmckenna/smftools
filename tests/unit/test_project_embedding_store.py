@@ -54,7 +54,8 @@ def _make_clustered_raw_experiment(
         )
     write_raw_store(
         pd.DataFrame(rows),
-        out_dir,
+        # One run root per experiment; the experiment identity is keyed on it.
+        out_dir / "raw_outputs",
         reference_lengths={reference_strand: NPOS},
         extra_uns={
             "reference_uids": {reference_strand: uid},
@@ -102,7 +103,10 @@ def test_fit_or_extend_embedding_full_fit(tmp_path):
     assert result["meta"]["source"]["ordered_molecule_membership_digest"]
     assert result["meta"]["dependencies"]["scikit-learn"]
     source_member = result["meta"]["source"]["members"][0]
-    assert source_member["stage"] == "raw"
+    # write_raw_store also publishes the consolidated experiment spine into the
+    # run root, and registration prefers that superset over the raw stage --
+    # the same selection a real registration makes.
+    assert source_member["stage"] == "experiment"
     assert source_member["spine_sha256"]
     assert set(source_member["source_channels"]) == {
         "membership",
