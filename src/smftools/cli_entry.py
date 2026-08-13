@@ -880,19 +880,82 @@ def project_plan_cmd(
     click.echo(plan.to_json() if as_json else format_project_plan(plan))
 
 
+# Which target each `project run` option applies to. `run` is the engine-facing
+# entry point for every executable project product, so it accepts the union of
+# their options and rejects the ones that do not apply -- silently ignoring a
+# flag would publish a result that does not describe what was requested.
+_PROJECT_RUN_TARGET_OPTIONS = {
+    "materialization": {"layers", "read_metrics", "allow_large", "partitioned"},
+    "sample-analysis": {"layer", "method", "force_recompute"},
+    "embedding": {
+        "layer",
+        "feature_kind",
+        "leiden_resolution",
+        "n_neighbors",
+        "min_reads",
+        "random_state",
+        "force_recompute",
+        "trust_local_models",
+    },
+}
+_PROJECT_RUN_OPTION_FLAGS = {
+    "layers": "--layers",
+    "read_metrics": "--read-metrics",
+    "allow_large": "--allow-large",
+    "partitioned": "--partitioned",
+    "layer": "--layer",
+    "method": "--method",
+    "force_recompute": "--force-recompute",
+    "feature_kind": "--feature-kind",
+    "leiden_resolution": "--leiden-resolution",
+    "n_neighbors": "--n-neighbors",
+    "min_reads": "--min-reads",
+    "random_state": "--random-state",
+    "trust_local_models": "--trust-local-models",
+}
+
+
+def _reject_project_run_options(context, target: str) -> None:
+    """Fail when an explicitly passed option does not apply to *target*."""
+    from click.core import ParameterSource
+
+    allowed = _PROJECT_RUN_TARGET_OPTIONS[target]
+    offending = sorted(
+        flag
+        for name, flag in _PROJECT_RUN_OPTION_FLAGS.items()
+        if name not in allowed and context.get_parameter_source(name) is ParameterSource.COMMANDLINE
+    )
+    if offending:
+        raise click.ClickException(
+            f"{', '.join(offending)} do(es) not apply to --target {target}; "
+            f"applicable options are: "
+            f"{', '.join(sorted(_PROJECT_RUN_OPTION_FLAGS[name] for name in allowed))}"
+        )
+
+
 @project_group.command("run")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("canonical_reference")
 @click.option(
+    "--target",
+    type=click.Choice(["materialization", "sample-analysis", "embedding"]),
+    default="materialization",
+    show_default=True,
+    help=(
+        "Project product to execute. `selection` is a planning-only dependency of "
+        "these three and has no artifact of its own."
+    ),
+)
+@click.option(
     "--output-root",
     type=click.Path(path_type=Path, file_okay=False),
     required=True,
-    help="Exclusive task-local root for the materialization and result contract.",
+    help="Exclusive task-local root for the artifact and result contract.",
 )
 @click.option(
     "--output-name",
     default=None,
-    help="Artifact name inside OUTPUT_ROOT (default depends on --partitioned).",
+    help="Artifact name inside OUTPUT_ROOT (default depends on the target).",
 )
 @click.option(
     "--result-json",
@@ -911,10 +974,66 @@ def project_plan_cmd(
 @click.option("--stage", default=None, help="Select one experiment pipeline stage.")
 @click.option("--start", type=int, default=None, help="Genomic window start (with --end).")
 @click.option("--end", type=int, default=None, help="Genomic window end (with --start).")
-@click.option("--layers", default=None, help="Comma-separated materialization layer subset.")
-@click.option("--read-metrics", is_flag=True, help="Include spatial per-read outputs.")
-@click.option("--allow-large", is_flag=True, help="Acknowledge the pooled-object soft limit.")
-@click.option("--partitioned", is_flag=True, help="Write bounded Zarr parts.")
+@click.option("--layers", default=None, help="[materialization] Comma-separated layer subset.")
+@click.option(
+    "--read-metrics", is_flag=True, help="[materialization] Include spatial per-read outputs."
+)
+@click.option(
+    "--allow-large",
+    is_flag=True,
+    help="[materialization] Acknowledge the pooled-object soft limit.",
+)
+@click.option("--partitioned", is_flag=True, help="[materialization] Write bounded Zarr parts.")
+@click.option(
+    "--layer", default=None, help="[sample-analysis, embedding] Layer to analyze (default: X)."
+)
+@click.option(
+    "--method", default="direct", show_default=True, help="[sample-analysis] Periodicity method."
+)
+@click.option(
+    "--feature-kind",
+    type=click.Choice(["raw", "acf"]),
+    default="raw",
+    show_default=True,
+    help="[embedding] Feature construction.",
+)
+@click.option(
+    "--leiden-resolution",
+    type=float,
+    default=0.5,
+    show_default=True,
+    help="[embedding] Leiden resolution.",
+)
+@click.option(
+    "--n-neighbors",
+    type=int,
+    default=15,
+    show_default=True,
+    help="[embedding] Neighborhood size.",
+)
+@click.option(
+    "--min-reads", type=int, default=10, show_default=True, help="[embedding] Minimum reads to fit."
+)
+@click.option(
+    "--random-state",
+    type=int,
+    default=42,
+    show_default=True,
+    help="[embedding] Deterministic seed.",
+)
+@click.option(
+    "--force-recompute",
+    is_flag=True,
+    help="[sample-analysis, embedding] Recompute instead of reusing cached results.",
+)
+@click.option(
+    "--trust-local-models",
+    is_flag=True,
+    help=(
+        "[embedding] Permit loading this project's persisted estimator pickles, which "
+        "extending an existing embedding requires. Unpickling executes code from those files."
+    ),
+)
 @click.option("--cpus", type=click.IntRange(min=1), default=None, help="Task-local CPU ceiling.")
 @click.option(
     "--memory-gb",
@@ -929,9 +1048,12 @@ def project_plan_cmd(
     show_default=True,
     help="Task-local memory ceiling as a percentage of physical memory.",
 )
+@click.pass_context
 def project_run_cmd(
+    context,
     project_dir,
     canonical_reference,
+    target,
     output_root,
     output_name,
     result_json,
@@ -945,38 +1067,76 @@ def project_run_cmd(
     read_metrics,
     allow_large,
     partitioned,
+    layer,
+    method,
+    feature_kind,
+    leiden_resolution,
+    n_neighbors,
+    min_reads,
+    random_state,
+    force_recompute,
+    trust_local_models,
     cpus,
     memory_gb,
     memory_percent,
 ):
-    """Materialize one project analysis with the stable workflow contract."""
+    """Execute one project product with the stable workflow contract."""
     from .cli.workflow_contract import (
         WorkflowContractError,
+        run_project_embedding_workflow,
         run_project_materialization_workflow,
+        run_project_sample_analysis_workflow,
     )
 
-    layer_list = None if layers is None else [item for item in layers.split(",") if item]
+    _reject_project_run_options(context, target)
+    shared = {
+        "output_root": output_root,
+        "output_name": output_name,
+        "result_json": result_json,
+        "set_name": set_name,
+        "modality": modality,
+        "experiments": experiments,
+        "stage": stage,
+        "start": start,
+        "end": end,
+        "cpus": cpus,
+        "memory_gb": memory_gb,
+        "memory_percent": memory_percent,
+    }
     try:
-        path = run_project_materialization_workflow(
-            project_dir,
-            canonical_reference,
-            output_root=output_root,
-            output_name=output_name,
-            result_json=result_json,
-            set_name=set_name,
-            modality=modality,
-            experiments=experiments,
-            stage=stage,
-            start=start,
-            end=end,
-            layers=layer_list,
-            read_metrics=read_metrics,
-            allow_large=allow_large,
-            partitioned=partitioned,
-            cpus=cpus,
-            memory_gb=memory_gb,
-            memory_percent=memory_percent,
-        )
+        if target == "materialization":
+            path = run_project_materialization_workflow(
+                project_dir,
+                canonical_reference,
+                layers=None if layers is None else [item for item in layers.split(",") if item],
+                read_metrics=read_metrics,
+                allow_large=allow_large,
+                partitioned=partitioned,
+                **shared,
+            )
+        elif target == "sample-analysis":
+            path = run_project_sample_analysis_workflow(
+                project_dir,
+                canonical_reference,
+                layer=layer,
+                method=method,
+                force_recompute=force_recompute,
+                **shared,
+            )
+        else:
+            path = run_project_embedding_workflow(
+                project_dir,
+                canonical_reference,
+                layer=layer,
+                feature_kind=feature_kind,
+                leiden_resolution=leiden_resolution,
+                n_neighbors=n_neighbors,
+                min_reads=min_reads,
+                random_state=random_state,
+                force_recompute=force_recompute,
+                trust_local_models=trust_local_models,
+                **shared,
+            )
     except WorkflowContractError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(path)

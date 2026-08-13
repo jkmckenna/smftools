@@ -9,10 +9,24 @@
 
 Use `smftools project plan PROJECT_DIR TARGET CANONICAL_REFERENCE` to inspect a
 project analysis dependency plan without publishing artifacts or changing the
-project registry. Targets are `selection`, `materialization`,
-`sample-analysis`, and `embedding`. Add `--json` for deterministic
-machine-readable output; the other selection and projection options mirror
-project materialization.
+project registry. Add `--json` for deterministic machine-readable output; the
+other selection and projection options mirror project materialization.
+
+Each plan target maps to one execution and validation lifecycle:
+
+| Plan target | Execute with | Task-local artifact | Validate with |
+| --- | --- | --- | --- |
+| `selection` | *(not executable)* | none -- it is the membership/feature dependency the other three consume | -- |
+| `materialization` | `project run` (default), or `project materialize` for a non-task-local pool | `materialized.h5ad.gz`, or a partitioned directory | `project validate` |
+| `sample-analysis` | `project run --target sample-analysis`, or `project sample-analysis` | `sample_analysis.parquet` | `project validate` |
+| `embedding` | `project run --target embedding`, or `project embedding` | `embedding.parquet` | `project validate` |
+
+`project run` is the engine-facing entry point for every executable target, the
+same way `experiment run --target` is for experiment stages; the named
+subcommands remain for interactive use. `run` accepts the union of the targets'
+options and rejects any that do not apply to the chosen target rather than
+ignoring them, since a silently dropped flag would publish a result that does not
+describe what was requested.
 
 Use `smftools experiment plan CONFIG --target TARGET` for the corresponding
 read-only experiment plan. The compatibility states, force behavior, and

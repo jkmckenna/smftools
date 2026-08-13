@@ -908,3 +908,236 @@ def test_embedding_cli_fits_skips_and_requires_trust_before_growing(tmp_path):
     assert grown["summary"]["n_new_molecules"] == 30
     assert grown["summary"]["prior_generation_id"]
     assert len(pd.read_parquet(output / "embedding.parquet")) == 60
+
+
+def test_named_set_selects_the_cohort_for_every_project_product(tmp_path):
+    """`--set` has to mean the same thing to run, sample-analysis, and embedding."""
+    proj, uid, runner = _analyzable_project(tmp_path)
+    assert (
+        runner.invoke(
+            cli_entry.cli, ["project", "add-set", str(proj), "cohort", "--experiment", "expB"]
+        ).exit_code
+        == 0
+    )
+
+    materialized = tmp_path / "mat-out"
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "run", str(proj), uid, "--output-root", str(materialized), "--set", "cohort"],
+    )
+    assert r.exit_code == 0, r.output
+    combined, _ = safe_read_h5ad(materialized / "materialized.h5ad.gz")
+    assert set(combined.obs["experiment"]) == {"expB"}
+
+    analysis = tmp_path / "sa-out"
+    r = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "run",
+            str(proj),
+            uid,
+            "--target",
+            "sample-analysis",
+            "--output-root",
+            str(analysis),
+            "--set",
+            "cohort",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    summary = json.loads((analysis / "workflow_result.json").read_text(encoding="utf-8"))["summary"]
+    assert [item["experiment"] for item in summary["partitions"]] == ["expB"]
+
+
+def test_duplicate_bare_read_ids_stay_distinct_through_sample_analysis(tmp_path):
+    """Two experiments can share an instrument read ID; the rows must not merge."""
+    import pandas as pd
+
+    uid = reference_uid("ACGT" * 40, 160)
+    for name in ("expA", "expB"):
+        # Each experiment gets its own run root, exactly as the pipeline lays one
+        # out. The persisted experiment identity is keyed on the run root, so
+        # sibling raw stores under one parent would be one experiment, not two.
+        out_dir = tmp_path / name / "raw_outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {
+                # Deliberately identical across experiments.
+                "read_id": f"shared_read_{i}",
+                "reference": "geneA",
+                "Reference_strand": "geneA_top",
+                "sample": "bc01",
+                "barcode": "bc01",
+                "strand": "top",
+                "mapping_direction": "fwd",
+                "reference_start": 0,
+                "cigar": "160M",
+                "aligned_length": 160,
+                "sequence": [i % 4 for _ in range(160)],
+                "quality": [30] * 160,
+                "mismatch": [4] * 160,
+                "modification_signal": [float((p // 10) % 2) for p in range(160)],
+            }
+            for i in range(6)
+        ]
+        write_raw_store(
+            pd.DataFrame(rows),
+            out_dir,
+            reference_lengths={"geneA_top": 160},
+            extra_uns={
+                "reference_uids": {"geneA_top": uid},
+                "modality": "direct",
+                "experiment": name,
+            },
+        )
+    proj = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    for name in ("expA", "expB"):
+        assert (
+            runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / name)])
+        ).exit_code == 0
+
+    output = tmp_path / "sa-out"
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "sample-analysis", str(proj), uid, "--output-root", str(output)],
+    )
+    assert r.exit_code == 0, r.output
+
+    table = pd.read_parquet(output / "sample_analysis.parquet")
+    assert set(table["experiment"]) == {"expA", "expB"}
+    # The bare read ID repeats; molecule identity does not.
+    assert table["read_id"].duplicated().any()
+    assert not table["molecule_uid"].duplicated().any()
+    assert table.groupby("experiment")["molecule_uid"].nunique().to_dict() == {
+        "expA": 6,
+        "expB": 6,
+    }
+
+
+def test_force_recompute_reruns_instead_of_reporting_a_compatible_skip(tmp_path):
+    """Force has to defeat the skip, or a recompute request silently does nothing."""
+    proj, uid, runner = _analyzable_project(tmp_path)
+    output = tmp_path / "sa-out"
+    command = ["project", "sample-analysis", str(proj), uid, "--output-root", str(output)]
+
+    assert runner.invoke(cli_entry.cli, command).exit_code == 0
+    assert runner.invoke(cli_entry.cli, command).exit_code == 0
+    assert (
+        json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))["outcome"]
+        == "compatible_skip"
+    )
+
+    r = runner.invoke(cli_entry.cli, [*command, "--force-recompute"])
+    assert r.exit_code == 0, r.output
+    assert (
+        json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))["outcome"]
+        == "success"
+    )
+
+
+def test_project_run_rejects_options_that_do_not_apply_to_the_target(tmp_path):
+    """A flag that cannot apply must fail, not be dropped from what runs."""
+    proj, uid, runner = _analyzable_project(tmp_path)
+
+    r = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "run",
+            str(proj),
+            uid,
+            "--target",
+            "materialization",
+            "--output-root",
+            str(tmp_path / "out"),
+            "--trust-local-models",
+        ],
+    )
+    assert r.exit_code == 1
+    assert "--trust-local-models" in r.output
+    assert "does not apply" in r.output or "do(es) not apply" in r.output
+
+    r = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "run",
+            str(proj),
+            uid,
+            "--target",
+            "sample-analysis",
+            "--output-root",
+            str(tmp_path / "out"),
+            "--partitioned",
+        ],
+    )
+    assert r.exit_code == 1
+    assert "--partitioned" in r.output
+
+
+def test_project_run_dispatches_every_executable_target(tmp_path):
+    """One engine-facing entry point reaches all three products.
+
+    `experiment run --target` already coexists with the per-stage commands, so
+    `project run --target` is the same shape: engines get one command, humans
+    keep the named subcommands. `selection` is a planning-only dependency and is
+    deliberately not offered here.
+    """
+    proj, uid, runner = _analyzable_project(tmp_path)
+    expected = {
+        "materialization": ("project.materialize", "materialized.h5ad.gz"),
+        "sample-analysis": ("project.sample-analysis", "sample_analysis.parquet"),
+        "embedding": ("project.embedding", "embedding.parquet"),
+    }
+    for target, (command, artifact) in expected.items():
+        output = tmp_path / f"run-{target}"
+        args = ["project", "run", str(proj), uid, "--target", target, "--output-root", str(output)]
+        if target == "embedding":
+            args += ["--min-reads", "5", "--n-neighbors", "5"]
+        r = runner.invoke(cli_entry.cli, args)
+        assert r.exit_code == 0, r.output
+        result = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
+        assert result["command"] == command, target
+        assert result["target"] == target
+        assert (output / artifact).exists(), target
+        r = runner.invoke(cli_entry.cli, ["project", "validate", str(proj), str(output), "--json"])
+        assert json.loads(r.output)["valid"] is True, target
+
+    # The default is unchanged, so existing invocations keep materializing.
+    output = tmp_path / "run-default"
+    r = runner.invoke(
+        cli_entry.cli, ["project", "run", str(proj), uid, "--output-root", str(output)]
+    )
+    assert r.exit_code == 0, r.output
+    assert (
+        json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))["command"]
+        == "project.materialize"
+    )
+
+
+def test_project_plan_targets_map_to_documented_execution_paths():
+    """Every plan target is either executable through `run` or documented as plan-only."""
+    import click
+
+    plan_targets = set(
+        next(
+            param
+            for param in cli_entry.project_group.commands["plan"].params
+            if param.name == "target"
+        ).type.choices
+    )
+    run_target = next(
+        param for param in cli_entry.project_group.commands["run"].params if param.name == "target"
+    )
+    assert isinstance(run_target.type, click.Choice)
+    executable = set(run_target.type.choices)
+
+    assert executable <= plan_targets
+    # `selection` is the shared dependency node the other three consume; it has
+    # no artifact of its own, which is why it is planned but never run.
+    assert plan_targets - executable == {"selection"}
+    for target in executable:
+        assert target in {"materialization", "sample-analysis", "embedding"}

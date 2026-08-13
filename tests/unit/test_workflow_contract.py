@@ -937,3 +937,42 @@ def test_no_project_product_skips_against_another_in_one_root(tmp_path, monkeypa
     assert json.loads(path.read_text(encoding="utf-8"))["outcome"] == "success"
     for name in ("materialized.h5ad.gz", "sample_analysis.parquet", "embedding.parquet"):
         assert (output / name).exists(), name
+
+
+def test_every_project_product_validates_after_relocation(tmp_path, monkeypatch):
+    """A finished project task output is handed onward, often at another path.
+
+    Project validation re-plans against the source project, so it has to tolerate
+    the output tree itself having moved -- every artifact pointer inside the
+    result is relative for exactly that reason.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    _patch_project_execution(monkeypatch)
+    runners = {
+        "materialization": workflow_contract.run_project_materialization_workflow,
+        "sample-analysis": workflow_contract.run_project_sample_analysis_workflow,
+        "embedding": workflow_contract.run_project_embedding_workflow,
+    }
+    for name, runner in runners.items():
+        output = tmp_path / f"{name}-output"
+        runner(project, "uid-ref", output_root=output)
+        assert workflow_contract.validate_workflow_output(output, project_dir=project)["valid"]
+
+        relocated = tmp_path / "moved" / name
+        relocated.parent.mkdir(exist_ok=True)
+        shutil.move(str(output), str(relocated))
+
+        validation = workflow_contract.validate_workflow_output(relocated, project_dir=project)
+        assert validation["valid"] is True, (name, validation["issues"])
+        # And the relocated tree still detects a tampered artifact.
+        result = json.loads(
+            (relocated / workflow_contract.WORKFLOW_RESULT_FILENAME).read_text(encoding="utf-8")
+        )
+        artifact = next(
+            item for item in result["artifacts"] if item["artifact_id"].startswith("project:")
+        )
+        (relocated / artifact["path"]).write_bytes(b"tampered")
+        tampered = workflow_contract.validate_workflow_output(relocated, project_dir=project)
+        assert tampered["valid"] is False, name
+        assert "artifact_checksum_mismatch" in {issue["code"] for issue in tampered["issues"]}
