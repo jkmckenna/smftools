@@ -355,9 +355,14 @@ canonical name even if experiments called it something different.
   For larger selections, pass `--partitioned` and make `--output` a new directory. This writes
   independently readable experiment/barcode/read-chunk Zarr parts, `catalog.parquet`, and a
   completion manifest without constructing a final pooled AnnData.
-- `project run PROJECT_DIR CANONICAL_REFERENCE --output-root TASK_OUTPUT`
-  exposes materialization through the same stable workflow result schema as
-  `experiment run`. The materialized H5AD (or partitioned directory), versions,
+- `project run PROJECT_DIR CANONICAL_REFERENCE --output-root TASK_OUTPUT` is the engine-facing
+  entry point for every executable target, through the same stable workflow result schema as
+  `experiment run`. `--target` selects the product: `materialization` (the default, so existing
+  invocations are unchanged), `sample-analysis`, or `embedding`. The `selection` plan target is a
+  dependency of those three and has no artifact of its own, so it is planned but never run. Options
+  that belong to another target are rejected rather than ignored -- `--partitioned` with
+  `--target embedding` is an error, not a silently dropped flag. The named subcommands
+  (`materialize`, `sample-analysis`, `embedding`) do the same work for interactive use. The materialized H5AD (or partitioned directory), versions,
   checksums, plan, resource decision, and structured failure are confined to
   `TASK_OUTPUT`. An identical valid request returns `compatible_skip`.
   `project validate PROJECT_DIR TASK_OUTPUT --json` checks artifact integrity
