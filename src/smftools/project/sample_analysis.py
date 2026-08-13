@@ -305,7 +305,13 @@ def compute_periodicity(
     )
     result = compute_fn(mat, positions, **kwargs)
     input_read_ids = _read_ids(adata)
-    read_ids = input_read_ids[result["row_index"].to_numpy()]
+    # A partition where no read clears the coverage and site thresholds is an
+    # ordinary outcome -- a small sample, or a narrow window -- and yields an
+    # empty frame whose `row_index` column carries no dtype. Index with an
+    # explicit integer array so that case produces an empty result rather than
+    # failing the whole analysis on a numpy indexing error.
+    row_index = np.asarray(result["row_index"].to_numpy(), dtype=np.int64)
+    read_ids = input_read_ids[row_index]
     result = result.drop(columns=[c for c in _DROP_BEFORE_CACHE if c in result.columns])
     result = result.drop(columns="row_index")
     result.insert(0, READ_ID_COLUMN, read_ids)

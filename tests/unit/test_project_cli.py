@@ -642,3 +642,152 @@ def test_deactivated_experiment_drops_out_of_a_set_visibly(tmp_path):
     assert r.exit_code == 0, r.output
     combined, _ = safe_read_h5ad(out)
     assert set(combined.obs["experiment"]) == {"expA"}
+
+
+def test_project_run_honors_the_experiment_filter_it_publishes(tmp_path):
+    """A published request naming one experiment must not pool every experiment.
+
+    `--experiment` reached the plan and the result's request but never reached
+    materialization, so the artifact silently pooled the whole project while the
+    result claimed a subset -- the wrong cohort, with provenance that looked right.
+    """
+    proj, uid, runner = _project_with_two_experiments(tmp_path)
+    output = tmp_path / "task-out"
+
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "run", str(proj), uid, "--output-root", str(output), "--experiment", "expA"],
+    )
+    assert r.exit_code == 0, r.output
+
+    result = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
+    assert result["request"]["experiments"] == ["expA"]
+    combined, _ = safe_read_h5ad(output / "materialized.h5ad.gz")
+    assert set(combined.obs["experiment"]) == {"expA"}
+
+
+def _analyzable_project(tmp_path):
+    """Two experiments with enough positions and periodic signal to analyze.
+
+    The 12-position fixture used elsewhere in this file is deliberately tiny; a
+    periodicity analysis over it legitimately returns no reads, which would make
+    these assertions vacuous.
+    """
+    npos = 160
+    uid = reference_uid("ACGT" * 40, npos)
+    for name, sample in (("expA", "bc01"), ("expB", "bc02")):
+        out_dir = tmp_path / name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {
+                "read_id": f"{name}_{sample}_r{i}",
+                "reference": "geneA",
+                "Reference_strand": "geneA_top",
+                "sample": sample,
+                "barcode": sample,
+                "strand": "top",
+                "mapping_direction": "fwd",
+                "reference_start": 0,
+                "cigar": f"{npos}M",
+                "aligned_length": npos,
+                "sequence": [i % 4 for _ in range(npos)],
+                "quality": [30] * npos,
+                "mismatch": [4] * npos,
+                "modification_signal": [float((position // 10) % 2) for position in range(npos)],
+            }
+            for i in range(6)
+        ]
+        write_raw_store(
+            pd.DataFrame(rows),
+            out_dir,
+            reference_lengths={"geneA_top": npos},
+            extra_uns={
+                "reference_uids": {"geneA_top": uid},
+                "modality": "direct",
+                "experiment": name,
+            },
+        )
+    proj = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    for name in ("expA", "expB"):
+        result = runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / name)])
+        assert result.exit_code == 0, result.output
+    return proj, uid, runner
+
+
+def test_sample_analysis_cli_runs_validates_and_skips(tmp_path):
+    """The full task-local lifecycle for the sample-analysis product."""
+    import pandas as pd
+
+    proj, uid, runner = _analyzable_project(tmp_path)
+    output = tmp_path / "analysis-out"
+
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "sample-analysis", str(proj), uid, "--output-root", str(output)],
+    )
+    assert r.exit_code == 0, r.output
+
+    result = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
+    assert result["command"] == "project.sample-analysis"
+    assert result["outcome"] == "success"
+    assert result["summary"]["n_partitions"] == 2
+    table = pd.read_parquet(output / "sample_analysis.parquet")
+    # Partition identity stays explicit, so reads from different experiments
+    # never become indistinguishable rows.
+    assert {"experiment", "reference_strand", "sample", "molecule_uid"} <= set(table.columns)
+    assert set(table["experiment"]) == {"expA", "expB"}
+
+    r = runner.invoke(cli_entry.cli, ["project", "validate", str(proj), str(output), "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)["valid"] is True
+
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "sample-analysis", str(proj), uid, "--output-root", str(output)],
+    )
+    assert r.exit_code == 0, r.output
+    assert (
+        json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))["outcome"]
+        == "compatible_skip"
+    )
+
+
+def test_sample_analysis_selection_narrows_to_the_requested_experiment(tmp_path):
+    """Selection flags reach the per-partition scope, not just the plan."""
+    proj, uid, runner = _analyzable_project(tmp_path)
+    output = tmp_path / "analysis-out"
+
+    r = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "sample-analysis",
+            str(proj),
+            uid,
+            "--output-root",
+            str(output),
+            "--experiment",
+            "expB",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+
+    result = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
+    assert result["summary"]["n_partitions"] == 1
+    assert [item["experiment"] for item in result["summary"]["partitions"]] == ["expB"]
+
+
+def test_sample_analysis_reports_an_empty_selection_as_a_structured_failure(tmp_path):
+    proj, _uid, runner = _analyzable_project(tmp_path)
+    output = tmp_path / "analysis-out"
+
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "sample-analysis", str(proj), "not-a-reference", "--output-root", str(output)],
+    )
+    assert r.exit_code == 1
+    result = json.loads((output / "workflow_result.json").read_text(encoding="utf-8"))
+    assert result["outcome"] == "failed"
+    assert "no per-sample-store partition" in result["failure"]["message"]
