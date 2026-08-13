@@ -1674,6 +1674,7 @@ def raw_adata(config_path: str):
     # when a current generation is corrupt.
     paths = get_adata_paths(cfg, allow_invalid_raw=True)
     required = PARTITIONED_STAGE_REQUIRED_ARTIFACTS["raw"]
+    from ..informatics.experiment_manifest import restore_previous_complete_state
     from ..informatics.input_manifest import (
         input_manifest_artifact_paths,
         resolve_input_manifest_readonly,
@@ -1790,6 +1791,12 @@ def raw_adata(config_path: str):
         ):
             spine, _ = safe_read_h5ad(current_spine)
             logger.info("Raw generation is already complete: %s", current_generation[0])
+            # The skip may have been authorized by a retained complete record
+            # after an attempt that was killed before it could write a terminal
+            # state. The artifacts it describes were just validated, so make it
+            # the live record rather than leaving the stage reported as running.
+            if restore_previous_complete_state(cfg.output_directory, "raw"):
+                logger.info("Restored the retained complete raw record after an abandoned attempt")
             mark_stage_outcome("skipped", reason="compatible raw generation is already complete")
             return spine, current_spine, cfg
         requested_manifest = resolve_input_manifest_readonly(

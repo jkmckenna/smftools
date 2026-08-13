@@ -12,6 +12,7 @@ from smftools.informatics.experiment_manifest import (
     read_experiment_manifest,
     record_stage_completion,
     record_stage_state,
+    restore_previous_complete_state,
     stage_is_complete,
     update_experiment_manifest,
 )
@@ -213,6 +214,109 @@ def test_failed_replacement_preserves_previous_complete_record(tmp_path):
         extra_matches={"generation_id": "generation-two"},
         allow_previous_complete=True,
     )
+
+
+def test_restart_supersedes_an_abandoned_attempt_and_keeps_the_prior_result(tmp_path):
+    """A killed run must not leave the experiment permanently unrunnable.
+
+    A process killed mid-stage (OOM, evicted container, hard interrupt) leaves
+    the record in `running` with no chance to write a terminal state. Planning
+    the next attempt over it is the restart path, and the last complete record
+    has to survive the restart -- otherwise a crash silently discards a valid
+    published generation and forces a full recompute of work still on disk.
+    """
+    artifact = tmp_path / "spine.h5ad"
+    ad.AnnData().write_h5ad(artifact)
+    with StageLifecycle(tmp_path, "raw", config_hash="first") as lifecycle:
+        lifecycle.complete(
+            artifacts={"spine": artifact_record(artifact, tmp_path)},
+            generation_id="generation-one",
+        )
+    record_stage_state(tmp_path, "raw", "planned", config_hash="second")
+    record_stage_state(tmp_path, "raw", "running")
+
+    record_stage_state(tmp_path, "raw", "planned", config_hash="third")
+
+    entry = read_experiment_manifest(tmp_path)["stages"]["raw"]
+    assert entry["state"] == "planned"
+    assert entry["superseded_attempt"]["state"] == "running"
+    assert entry["superseded_attempt"]["started_at"]
+    assert entry["previous_complete"]["generation_id"] == "generation-one"
+    # The abandoned attempt authorizes nothing; only the prior complete record does.
+    assert not stage_is_complete(tmp_path, "raw", config_hash="third")
+    assert stage_is_complete(
+        tmp_path,
+        "raw",
+        config_hash="first",
+        required_artifacts=("spine",),
+        extra_matches={"generation_id": "generation-one"},
+        allow_previous_complete=True,
+    )
+
+
+def test_restoring_a_retained_complete_record_makes_the_stage_report_complete(tmp_path):
+    """Reusing a retained result must also repair how the stage reads.
+
+    Callers that reuse the retained complete record leave the manifest saying the
+    stage is still running, so workflow validation and project discovery report an
+    incomplete stage whose artifacts are in fact present and valid.
+    """
+    artifact = tmp_path / "spine.h5ad"
+    ad.AnnData().write_h5ad(artifact)
+    with StageLifecycle(tmp_path, "raw", config_hash="first") as lifecycle:
+        lifecycle.complete(
+            artifacts={"spine": artifact_record(artifact, tmp_path)},
+            generation_id="generation-one",
+        )
+    record_stage_state(tmp_path, "raw", "planned", config_hash="second")
+    record_stage_state(tmp_path, "raw", "running")
+    assert not stage_is_complete(tmp_path, "raw", required_artifacts=("spine",))
+
+    assert restore_previous_complete_state(tmp_path, "raw")
+
+    entry = read_experiment_manifest(tmp_path)["stages"]["raw"]
+    assert entry["state"] == "complete"
+    assert entry["generation_id"] == "generation-one"
+    assert entry["restored_from_previous_complete"] is True
+    assert entry["superseded_attempt"]["state"] == "running"
+    assert stage_is_complete(tmp_path, "raw", config_hash="first", required_artifacts=("spine",))
+    # Nothing to restore once the live record is the complete one.
+    assert not restore_previous_complete_state(tmp_path, "raw")
+
+
+def test_restore_declines_when_no_complete_record_was_retained(tmp_path):
+    record_stage_state(tmp_path, "raw", "planned", config_hash="first")
+    record_stage_state(tmp_path, "raw", "running")
+
+    assert not restore_previous_complete_state(tmp_path, "raw")
+    assert not restore_previous_complete_state(tmp_path, "preprocess")
+    assert read_experiment_manifest(tmp_path)["stages"]["raw"]["state"] == "running"
+
+
+def test_failure_bookkeeping_never_replaces_the_reported_exception(tmp_path, monkeypatch):
+    """The stage's own failure must survive a manifest that cannot be written.
+
+    Recording the failed state is bookkeeping. If it raises -- an unwritable
+    manifest, or one another process changed underneath the run -- reporting that
+    instead of the real error sends whoever is debugging to the wrong place.
+    """
+    import smftools.informatics.experiment_manifest as manifest_module
+
+    original = manifest_module.record_stage_state
+    calls = []
+
+    def failing_record(run_root, stage, state, **fields):
+        if state == "failed":
+            calls.append(state)
+            raise OSError("manifest is not writable")
+        return original(run_root, stage, state, **fields)
+
+    monkeypatch.setattr(manifest_module, "record_stage_state", failing_record)
+    with pytest.raises(RuntimeError, match="simulated task failure"):
+        with StageLifecycle(tmp_path, "hmm", config_hash="abc123"):
+            raise RuntimeError("simulated task failure")
+
+    assert calls == ["failed"]
 
 
 def test_stage_completion_validates_directory_checksum_and_extra_fields(tmp_path):

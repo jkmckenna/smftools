@@ -969,3 +969,91 @@ def test_owned_output_validates_after_relocation_under_a_foreign_container_uid(t
     molecules.write_bytes(molecules.read_bytes() + b"\0")
     with pytest.raises(RawGenerationError, match="missing or corrupt"):
         resolve_current_raw_generation(relocated / "raw_outputs")
+
+
+@pytest.mark.e2e
+def test_run_interrupted_mid_stage_restarts_onto_its_published_generation(tmp_path: Path):
+    """A killed run must be resumable, not a run directory that has to be deleted.
+
+    A process killed mid-stage never writes a terminal state, so the next
+    invocation meets a stage record still marked ``running``. That prior pattern
+    has to resolve to a restart that reuses the published generation, rather than
+    to a lifecycle error that leaves the experiment unrunnable until someone
+    hand-edits the manifest.
+    """
+    if shutil.which("minimap2") is None:
+        pytest.skip("minimap2 is required to publish the generation being restarted onto")
+    from smftools.constants import PARTITIONED_STAGE_REQUIRED_ARTIFACTS
+    from smftools.informatics.experiment_manifest import (
+        read_experiment_manifest,
+        record_stage_state,
+        stage_is_complete,
+    )
+    from smftools.informatics.raw_generation import resolve_current_raw_generation
+
+    rng = random.Random(67)
+    reference_sequence = "".join(rng.choices("ACGT", k=2600))
+    fasta = tmp_path / "reference.fasta"
+    fasta.write_text(f">ref\n{reference_sequence}\n", encoding="utf-8")
+    reads = tmp_path / "reads.fastq"
+    reads.write_text(
+        f"@read-1\n{reference_sequence[400:1000]}\n+\n{'I' * 600}\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "inputs.csv"
+    with manifest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["path", "sample", "barcode"])
+        writer.writeheader()
+        writer.writerow({"path": reads.name, "sample": "sample-one", "barcode": "bc01"})
+
+    output = tmp_path / "output"
+    config = _write_experiment_config(
+        tmp_path / "config.csv",
+        {
+            "smf_modality": "conversion",
+            "alignment_mode": "align",
+            "aligner": "minimap2",
+            "align_from_bam": "False",
+            "input_manifest_path": str(manifest),
+            "fasta": str(fasta),
+            "output_directory": str(output),
+            "experiment_name": "interrupted-e2e",
+            "samtools_backend": "python",
+            "skip_bam_split": "True",
+            "skip_bam_qc": "True",
+            "input_already_demuxed": "True",
+            "make_beds": "False",
+            "make_bigwigs": "False",
+            "threads": "1",
+            "max_memory_gb": "4",
+        },
+    )
+    raw_adata(str(config))
+    generation, generation_manifest = resolve_current_raw_generation(output / "raw_outputs")
+
+    # Exactly what a killed process leaves behind: a second attempt that recorded
+    # planned and running, then died before it could write a terminal state.
+    record_stage_state(output, "raw", "planned")
+    record_stage_state(output, "raw", "running")
+    assert read_experiment_manifest(output)["stages"]["raw"]["state"] == "running"
+    # While the abandoned attempt is live, the stage reads as incomplete -- which
+    # is what workflow validation and project discovery would report.
+    assert not stage_is_complete(
+        output, "raw", required_artifacts=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["raw"]
+    )
+
+    spine, spine_path, _cfg = raw_adata(str(config))
+
+    restarted_generation, restarted_manifest = resolve_current_raw_generation(
+        output / "raw_outputs"
+    )
+    assert spine.n_obs == 1
+    assert spine_path.is_file()
+    assert restarted_generation == generation
+    assert restarted_manifest["generation_id"] == generation_manifest["generation_id"]
+    entry = read_experiment_manifest(output)["stages"]["raw"]
+    assert entry["state"] == "complete"
+    assert entry["superseded_attempt"]["state"] == "running"
+    assert stage_is_complete(
+        output, "raw", required_artifacts=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["raw"]
+    )
