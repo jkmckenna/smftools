@@ -8,6 +8,7 @@ import importlib.resources as resources
 import json
 import random
 import shutil
+import stat
 import sys
 import types
 from importlib.machinery import ModuleSpec
@@ -859,3 +860,112 @@ def test_lossless_bam_bundle_reingests_with_modification_capability_intact(tmp_p
         assert int(replayed["reference_start"]) == int(original["reference_start"])
         assert int(replayed["mapped_length"]) == int(original["mapped_length"])
         assert str(replayed["Reference_strand"]) == str(original["Reference_strand"])
+
+
+def _restore_writable(root: Path) -> None:
+    for path in [root, *root.rglob("*")]:
+        path.chmod(path.stat().st_mode | stat.S_IWUSR | (stat.S_IXUSR if path.is_dir() else 0))
+
+
+@pytest.mark.e2e
+def test_owned_output_validates_after_relocation_under_a_foreign_container_uid(tmp_path: Path):
+    """A completed run must validate from a new path, read-only, and unowned.
+
+    Container tasks stage outputs somewhere, then hand the directory to another
+    step that mounts it elsewhere, often read-only and under an arbitrary UID that
+    owns none of the files. Validation therefore may not depend on the original
+    absolute location, on write access, or on ownership -- and immutability is
+    detect-not-prevent, so the published tree stays writable rather than being
+    chmod'd read-only, which is what makes an arbitrary UID workable at all.
+    """
+    if shutil.which("minimap2") is None:
+        pytest.skip("minimap2 is required to produce an owned alignment to relocate")
+    from smftools.cli.workflow_contract import run_experiment_workflow, validate_workflow_output
+    from smftools.informatics.raw_generation import (
+        RawGenerationError,
+        resolve_current_raw_generation,
+    )
+
+    rng = random.Random(53)
+    reference_sequence = "".join(rng.choices("ACGT", k=2600))
+    fasta = tmp_path / "reference.fasta"
+    fasta.write_text(f">ref\n{reference_sequence}\n", encoding="utf-8")
+    reads = tmp_path / "reads.fastq"
+    reads.write_text(
+        "".join(
+            f"@read-{index + 1}\n{reference_sequence[400 + index * 600 : 1000 + index * 600]}\n"
+            f"+\n{'I' * 600}\n"
+            for index in range(2)
+        ),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "inputs.csv"
+    with manifest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["path", "sample", "barcode"])
+        writer.writeheader()
+        writer.writerow({"path": reads.name, "sample": "sample-one", "barcode": "bc01"})
+
+    origin = tmp_path / "origin"
+    config = _write_experiment_config(
+        tmp_path / "config.csv",
+        {
+            "smf_modality": "conversion",
+            "alignment_mode": "align",
+            "aligner": "minimap2",
+            "align_from_bam": "False",
+            "input_manifest_path": str(manifest),
+            "fasta": str(fasta),
+            "output_directory": str(origin),
+            "experiment_name": "relocation-e2e",
+            "samtools_backend": "python",
+            "skip_bam_split": "True",
+            "skip_bam_qc": "True",
+            "input_already_demuxed": "True",
+            "make_beds": "False",
+            "make_bigwigs": "False",
+            "threads": "1",
+            "max_memory_gb": "4",
+        },
+    )
+    result_path = run_experiment_workflow(str(config), target="raw", output_root=origin)
+    assert validate_workflow_output(origin)["valid"]
+
+    generation, generation_manifest = resolve_current_raw_generation(origin / "raw_outputs")
+    # Immutability is enforced by checksum, not by permissions: an owned artifact
+    # that lost its write bit would be unmanageable for a UID that does not own it.
+    published = [path for path in generation.rglob("*") if path.is_file()]
+    assert published
+    assert all(path.stat().st_mode & stat.S_IWUSR for path in published)
+    # Nothing may pin the original absolute location, or the move below breaks.
+    assert str(origin) not in (generation / "generation_manifest.json").read_text(encoding="utf-8")
+    assert str(origin) not in result_path.read_text(encoding="utf-8")
+
+    relocated = tmp_path / "consumer" / "mounted" / "run"
+    relocated.parent.mkdir(parents=True)
+    shutil.move(str(origin), str(relocated))
+
+    moved_generation, moved_manifest = resolve_current_raw_generation(relocated / "raw_outputs")
+    assert moved_manifest["generation_id"] == generation_manifest["generation_id"]
+    assert moved_generation == relocated / generation.relative_to(origin)
+    assert validate_workflow_output(relocated)["valid"]
+
+    # A read-only mount is the container case that write access would silently
+    # pass: validation must complete without needing to write anywhere.
+    try:
+        for path in sorted(relocated.rglob("*"), reverse=True):
+            path.chmod(0o555 if path.is_dir() else 0o444)
+        relocated.chmod(0o555)
+        assert validate_workflow_output(relocated)["valid"]
+        read_only_generation, read_only_manifest = resolve_current_raw_generation(
+            relocated / "raw_outputs"
+        )
+        assert read_only_generation == moved_generation
+        assert read_only_manifest["generation_id"] == moved_manifest["generation_id"]
+    finally:
+        _restore_writable(relocated)
+
+    # Detect-not-prevent: nothing stopped the edit, so validation must catch it.
+    molecules = moved_generation / "molecules.parquet"
+    molecules.write_bytes(molecules.read_bytes() + b"\0")
+    with pytest.raises(RawGenerationError, match="missing or corrupt"):
+        resolve_current_raw_generation(relocated / "raw_outputs")
