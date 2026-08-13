@@ -478,6 +478,82 @@ def test_sets_list_and_query(tmp_path):
         reg.add_set(proj, "bad", experiments=["a"], query="x")
 
 
+def _register_stub_experiments(project_dir, **statuses):
+    """Register experiments directly, for set tests that need no real spines."""
+    registry = reg.load_registry(project_dir)
+    for exp_id, status in statuses.items():
+        registry["experiments"][exp_id] = {
+            "path": ".",
+            "status": status,
+            "modality": "direct",
+            "references": {},
+            "n_reads": 1,
+            "date_added": "now",
+            "schema_version": reg.SCHEMA_VERSION,
+            "spines": {},
+            "catalogs": {},
+        }
+    reg.save_registry(project_dir, registry)
+
+
+def test_set_membership_separates_resolved_from_unresolvable_members(tmp_path):
+    """A set that names an unusable experiment must say so, not quietly shrink.
+
+    Nothing downstream can distinguish a set that selects two experiments on
+    purpose from one that named four and lost two to a typo or a deactivation,
+    so the resolution reports both halves.
+    """
+    proj = tmp_path / "p"
+    reg.init_project(proj)
+    _register_stub_experiments(proj, expA="active", expB="active", expOld="inactive")
+    reg.add_set(proj, "mixed", experiments=["expB", "expA", "expOld", "ghost", "expA"])
+
+    membership = reg.resolve_set_membership(proj, "mixed")
+
+    assert membership.kind == "list"
+    # Sorted, deduplicated, and restricted to active registrations.
+    assert membership.resolved == ("expA", "expB")
+    assert membership.declared == ("expB", "expA", "expOld", "ghost", "expA")
+    assert membership.missing == ("ghost",)
+    assert membership.inactive == ("expOld",)
+    assert membership.duplicates == ("expA",)
+    assert not membership.is_clean
+    assert "not registered: ghost" in membership.problem_summary()
+
+
+def test_validated_set_is_rejected_without_being_written(tmp_path):
+    """A rejected definition must not land in the registry as a half-accepted set."""
+    proj = tmp_path / "p"
+    reg.init_project(proj)
+    _register_stub_experiments(proj, expA="active")
+
+    with pytest.raises(reg.SetMembershipError, match="not registered: ghost"):
+        reg.add_set(proj, "typo", experiments=["expA", "ghost"], validate=True)
+
+    assert reg.list_sets(proj) == {}
+    # The same definition is still storable when the caller accepts it knowingly.
+    reg.add_set(proj, "typo", experiments=["expA", "ghost"])
+    assert reg.resolve_set_membership(proj, "typo").resolved == ("expA",)
+
+
+def test_removing_a_set_leaves_every_experiment_registered(tmp_path):
+    """Sets are saved selections; deleting one must not touch registered data."""
+    proj = tmp_path / "p"
+    reg.init_project(proj)
+    _register_stub_experiments(proj, expA="active", expB="active")
+    reg.add_set(proj, "cohort", experiments=["expA"], validate=True)
+    reg.add_set(proj, "other", experiments=["expB"], validate=True)
+
+    reg.remove_set(proj, "cohort")
+
+    assert sorted(reg.list_sets(proj)) == ["other"]
+    assert sorted(entry["id"] for entry in reg.list_experiments(proj)) == ["expA", "expB"]
+    with pytest.raises(KeyError):
+        reg.remove_set(proj, "cohort")
+    with pytest.raises(KeyError):
+        reg.resolve_set_membership(proj, "cohort")
+
+
 def test_reference_harmonization_same_sequence_different_names():
     experiments = [
         {"id": "A", "references": {"myGene_top": "uidX", "myGene_bottom": "uidX"}},

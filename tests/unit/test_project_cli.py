@@ -480,3 +480,165 @@ def test_project_cli_registers_and_materializes_legacy_monolithic_file(tmp_path)
     combined, _ = safe_read_h5ad(out)
     assert combined.n_obs == 3
     assert set(combined.obs["experiment"]) == {"legacyExp"}
+
+
+def _project_with_two_experiments(tmp_path):
+    """Register two real single-reference experiments and return the project dir."""
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)
+    _make_raw_experiment(tmp_path / "expB", reference_strand="geneA_top", uid=uid, n=4)
+    proj = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(proj)]).exit_code == 0
+    for name in ("expA", "expB"):
+        result = runner.invoke(cli_entry.cli, ["project", "add", str(proj), str(tmp_path / name)])
+        assert result.exit_code == 0, result.output
+    return proj, uid, runner
+
+
+def test_set_commands_define_list_show_and_remove_without_python(tmp_path):
+    """The `--set` flag is only usable if sets can be managed from the CLI alone."""
+    proj, _uid, runner = _project_with_two_experiments(tmp_path)
+
+    r = runner.invoke(cli_entry.cli, ["project", "list-sets", str(proj)])
+    assert r.exit_code == 0, r.output
+    assert "No named sets defined" in r.output
+
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "add-set", str(proj), "cohort", "--experiment", "expA"],
+    )
+    assert r.exit_code == 0, r.output
+    assert "Defined set 'cohort' (list)." in r.output
+    assert "resolves to 1 experiment(s):" in r.output
+
+    r = runner.invoke(cli_entry.cli, ["project", "list-sets", str(proj)])
+    assert r.exit_code == 0, r.output
+    assert "cohort  (list) 1 declared experiment(s)" in r.output
+
+    r = runner.invoke(cli_entry.cli, ["project", "show-set", str(proj), "cohort"])
+    assert r.exit_code == 0, r.output
+    assert "expA" in r.output and "expB" not in r.output
+
+    r = runner.invoke(cli_entry.cli, ["project", "remove-set", str(proj), "cohort"])
+    assert r.exit_code == 0, r.output
+    assert "No experiment registration was changed." in r.output
+
+    # The set is gone; both experiments remain registered.
+    assert runner.invoke(cli_entry.cli, ["project", "show-set", str(proj), "cohort"]).exit_code == 1
+    r = runner.invoke(cli_entry.cli, ["project", "list", str(proj)])
+    assert "expA" in r.output and "expB" in r.output
+
+
+def test_add_set_rejects_an_unresolvable_member_unless_allowed(tmp_path):
+    """A typo in a set name must fail at definition, not silently narrow later."""
+    proj, _uid, runner = _project_with_two_experiments(tmp_path)
+
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "add-set", str(proj), "typo", "--experiment", "expA", "--experiment", "ghost"],
+    )
+    assert r.exit_code == 1
+    assert "not registered: ghost" in r.output
+    assert "--allow-unresolved" in r.output
+    # Nothing was written, so the next command does not see a half-accepted set.
+    assert (
+        "No named sets defined"
+        in runner.invoke(cli_entry.cli, ["project", "list-sets", str(proj)]).output
+    )
+
+    r = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "add-set",
+            str(proj),
+            "typo",
+            "--experiment",
+            "expA",
+            "--experiment",
+            "ghost",
+            "--allow-unresolved",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    assert "not registered: ghost" in r.output
+
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "add-set", str(proj), "both", "--experiment", "expA", "--query", "x=1"],
+    )
+    assert r.exit_code == 1
+    assert "exactly one of --experiment or --query" in r.output
+
+
+def test_set_consumers_select_exactly_the_shown_membership(tmp_path):
+    """What `show-set` prints has to be what `--set` applies, including a query set."""
+    from smftools.project.catalog import ProjectCatalog
+    from smftools.project.registry import resolve_set_membership
+
+    proj, uid, runner = _project_with_two_experiments(tmp_path)
+    assert (
+        runner.invoke(
+            cli_entry.cli,
+            ["project", "add-set", str(proj), "cohort", "--experiment", "expB"],
+        ).exit_code
+        == 0
+    )
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "add-set", str(proj), "direct", "--query", "modality='direct'"],
+    )
+    assert r.exit_code == 0, r.output
+
+    catalog = ProjectCatalog.open(proj)
+    for name in ("cohort", "direct"):
+        shown = resolve_set_membership(proj, name).resolved
+        selected = catalog.select(canonical_reference=uid, set_name=name)
+        assert tuple(sorted(set(selected["experiment"]))) == shown, name
+
+    # A materialize through the same filter pools exactly those experiments.
+    out = tmp_path / "cohort.h5ad"
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "materialize", str(proj), uid, "-o", str(out), "--set", "cohort"],
+    )
+    assert r.exit_code == 0, r.output
+    combined, _ = safe_read_h5ad(out)
+    assert set(combined.obs["experiment"]) == {"expB"}
+
+
+def test_deactivated_experiment_drops_out_of_a_set_visibly(tmp_path):
+    """`project remove` narrows a set; the CLI has to show that, not hide it."""
+    proj, uid, runner = _project_with_two_experiments(tmp_path)
+    assert (
+        runner.invoke(
+            cli_entry.cli,
+            [
+                "project",
+                "add-set",
+                str(proj),
+                "cohort",
+                "--experiment",
+                "expA",
+                "--experiment",
+                "expB",
+            ],
+        ).exit_code
+        == 0
+    )
+    assert runner.invoke(cli_entry.cli, ["project", "remove", str(proj), "expB"]).exit_code == 0
+
+    r = runner.invoke(cli_entry.cli, ["project", "show-set", str(proj), "cohort"])
+    assert r.exit_code == 0, r.output
+    assert "resolves to 1 experiment(s):" in r.output
+    assert "inactive: expB" in r.output
+
+    out = tmp_path / "cohort.h5ad"
+    r = runner.invoke(
+        cli_entry.cli,
+        ["project", "materialize", str(proj), uid, "-o", str(out), "--set", "cohort"],
+    )
+    assert r.exit_code == 0, r.output
+    combined, _ = safe_read_h5ad(out)
+    assert set(combined.obs["experiment"]) == {"expA"}

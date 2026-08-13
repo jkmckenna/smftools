@@ -1214,6 +1214,125 @@ def project_sample_store_list_cmd(project_dir: Path, experiment_id):
 ##########################################
 
 
+####### named experiment sets ###########
+@project_group.command("add-set")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("name")
+@click.option(
+    "--experiment",
+    "experiments",
+    multiple=True,
+    help="Experiment ID to include; repeat for multiple. Mutually exclusive with --query.",
+)
+@click.option(
+    "--query",
+    default=None,
+    help="Saved SQL predicate over the harmonized refs table, e.g. \"modality='direct'\".",
+)
+@click.option(
+    "--allow-unresolved",
+    is_flag=True,
+    help="Define the set even if it names an unregistered, inactive, or repeated experiment.",
+)
+def project_add_set_cmd(project_dir: Path, name, experiments, query, allow_unresolved):
+    """Define a named experiment set usable as --set by other project commands."""
+    from .cli.project_cmd import project_add_set
+    from .project.registry import SetMembershipError
+
+    if bool(experiments) == bool(query):
+        raise click.ClickException("provide exactly one of --experiment or --query")
+    try:
+        membership = project_add_set(
+            project_dir,
+            name,
+            experiments=list(experiments) if experiments else None,
+            query=query,
+            allow_unresolved=allow_unresolved,
+        )
+    except SetMembershipError as exc:
+        raise click.ClickException(
+            f"{exc}. Register the experiments first, correct the name, "
+            f"or pass --allow-unresolved to define the set anyway."
+        ) from exc
+    click.echo(f"Defined set '{name}' ({membership.kind}).")
+    _echo_set_membership(membership)
+
+
+@project_group.command("list-sets")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def project_list_sets_cmd(project_dir: Path):
+    """List named experiment sets without resolving them."""
+    from .cli.project_cmd import project_list_sets
+
+    records = project_list_sets(project_dir)
+    if not records:
+        click.echo("No named sets defined. Create one with `smftools project add-set`.")
+        return
+    click.echo(f"{len(records)} set(s):")
+    for record in records:
+        detail = (
+            f"query: {record['query']}"
+            if record["kind"] == "query"
+            else f"{record['n_declared']} declared experiment(s)"
+        )
+        click.echo(f"  {record['name']}  ({record['kind']}) {detail}")
+    click.echo("Run `smftools project show-set PROJECT_DIR NAME` to resolve one.")
+
+
+@project_group.command("show-set")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("name")
+def project_show_set_cmd(project_dir: Path, name):
+    """Show the experiments a named set resolves to, exactly as --set applies it."""
+    from .cli.project_cmd import project_show_set
+
+    try:
+        membership = project_show_set(project_dir, name)
+    except KeyError as exc:
+        raise click.ClickException(
+            f"no set {name!r} in project; `smftools project list-sets` shows the defined sets"
+        ) from exc
+    click.echo(f"Set '{membership.name}' ({membership.kind})")
+    if membership.query is not None:
+        click.echo(f"  query: {membership.query}")
+    _echo_set_membership(membership)
+
+
+@project_group.command("remove-set")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("name")
+def project_remove_set_cmd(project_dir: Path, name):
+    """Delete a named set. Registered experiments are never affected."""
+    from .cli.project_cmd import project_remove_set
+
+    try:
+        project_remove_set(project_dir, name)
+    except KeyError as exc:
+        raise click.ClickException(
+            f"no set {name!r} in project; `smftools project list-sets` shows the defined sets"
+        ) from exc
+    click.echo(f"Removed set '{name}'. No experiment registration was changed.")
+
+
+def _echo_set_membership(membership) -> None:
+    """Print resolved membership plus anything declared that does not resolve."""
+    if membership.resolved:
+        click.echo(f"  resolves to {len(membership.resolved)} experiment(s):")
+        for experiment_id in membership.resolved:
+            click.echo(f"    {experiment_id}")
+    else:
+        click.echo("  resolves to no experiments; --set would select nothing.")
+    if membership.missing:
+        click.echo(f"  not registered: {', '.join(membership.missing)}", err=True)
+    if membership.inactive:
+        click.echo(f"  inactive: {', '.join(membership.inactive)}", err=True)
+    if membership.duplicates:
+        click.echo(f"  listed more than once: {', '.join(membership.duplicates)}", err=True)
+
+
+##########################################
+
+
 ####### FASTQ export ###########
 @experiment_group.command("export-fastq")
 @click.argument("config_path", type=click.Path(exists=True, path_type=Path))

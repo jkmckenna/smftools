@@ -15,6 +15,8 @@ harmonize references without opening matrices.
 from __future__ import annotations
 
 import json
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -570,14 +572,81 @@ def resolve_experiment_spine(entry: dict, stage: str | None = None) -> tuple[str
     return None
 
 
+class SetMembershipError(ValueError):
+    """Raised when a named set's declared membership cannot be honored."""
+
+
+@dataclass(frozen=True)
+class SetMembership:
+    """One named set resolved to the experiments a ``--set`` consumer will select.
+
+    Fields:
+        name: The set name.
+        kind: ``"list"`` for an explicit membership, ``"query"`` for a saved query.
+        resolved: Sorted active experiment IDs the set selects. This is exactly
+            what ``--set`` narrows to, so displaying it cannot drift from what a
+            materialize or plan will use.
+        declared: What the set names, before dropping anything. Equal to
+            ``resolved`` for a query, whose results can only be active
+            experiments in the first place.
+        missing: Declared IDs that are not registered in this project at all.
+        inactive: Declared IDs registered but deactivated by ``project remove``.
+        duplicates: Declared IDs written more than once.
+        query: The saved SQL for a query set, otherwise ``None``.
+    """
+
+    name: str
+    kind: str
+    resolved: tuple[str, ...]
+    declared: tuple[str, ...]
+    missing: tuple[str, ...]
+    inactive: tuple[str, ...]
+    duplicates: tuple[str, ...]
+    query: str | None = None
+
+    @property
+    def is_clean(self) -> bool:
+        """Whether every declared experiment resolves to an active registration."""
+        return not (self.missing or self.inactive or self.duplicates)
+
+    def problem_summary(self) -> str:
+        """Return a one-line description of what does not resolve, or ``""``."""
+        parts = []
+        if self.missing:
+            parts.append(f"not registered: {', '.join(self.missing)}")
+        if self.inactive:
+            parts.append(f"inactive: {', '.join(self.inactive)}")
+        if self.duplicates:
+            parts.append(f"listed more than once: {', '.join(self.duplicates)}")
+        return "; ".join(parts)
+
+
 def add_set(
     project_dir: str | Path,
     name: str,
     *,
     experiments: list[str] | None = None,
     query: str | None = None,
+    validate: bool = False,
 ) -> None:
-    """Define a named set as an explicit experiment list OR a saved query."""
+    """Define a named set as an explicit experiment list OR a saved query.
+
+    Args:
+        project_dir: Project root holding ``registry.json``.
+        name: Set name, as later passed to ``--set``.
+        experiments: Explicit membership. Mutually exclusive with *query*.
+        query: Saved SQL predicate over the harmonized ``refs`` table. Mutually
+            exclusive with *experiments*.
+        validate: Reject a set that names an unregistered, deactivated, or
+            repeated experiment, or a query that does not resolve. Off by
+            default so existing API callers keep their behavior; the CLI turns
+            it on, since a set that silently selects fewer experiments than it
+            names is indistinguishable from a correct one at use time.
+
+    Raises:
+        ValueError: Neither or both of *experiments* and *query* were given.
+        SetMembershipError: *validate* is set and the membership does not resolve.
+    """
     if (experiments is None) == (query is None):
         raise ValueError("provide exactly one of experiments= or query=")
     registry = load_registry(project_dir)
@@ -586,6 +655,14 @@ def add_set(
         if experiments is not None
         else {"kind": "query", "sql": str(query)}
     )
+    if validate:
+        # Resolve against the pending definition so nothing is written when it
+        # does not hold, rather than saving first and reporting afterwards.
+        membership = _membership_from_definition(
+            project_dir, name, registry["sets"][name], registry
+        )
+        if not membership.is_clean:
+            raise SetMembershipError(f"set {name!r} {membership.problem_summary()}")
     save_registry(project_dir, registry)
 
 
@@ -595,3 +672,93 @@ def resolve_set(project_dir: str | Path, name: str) -> dict:
     if the_set is None:
         raise KeyError(f"no set '{name}' in project")
     return the_set
+
+
+def list_sets(project_dir: str | Path) -> dict[str, dict]:
+    """Return every named set definition, keyed by name."""
+    return dict(load_registry(project_dir).get("sets", {}))
+
+
+def remove_set(project_dir: str | Path, name: str) -> None:
+    """Delete a named set definition.
+
+    Sets are saved selections over the registry, not registered data, so unlike
+    :func:`remove_experiment` this is a real deletion rather than a status flip.
+    No experiment registration is touched.
+
+    Raises:
+        KeyError: No set by that name exists.
+    """
+    registry = load_registry(project_dir)
+    if name not in registry.get("sets", {}):
+        raise KeyError(f"no set '{name}' in project")
+    del registry["sets"][name]
+    save_registry(project_dir, registry)
+
+
+def _membership_from_definition(
+    project_dir: str | Path,
+    name: str,
+    definition: dict,
+    registry: dict,
+    *,
+    catalog=None,
+) -> SetMembership:
+    experiments = registry.get("experiments", {})
+    active = {exp_id for exp_id, entry in experiments.items() if entry.get("status") == "active"}
+    kind = str(definition.get("kind", ""))
+    query = None
+    if kind == "list":
+        declared = tuple(str(item) for item in definition.get("experiments", ()))
+    elif kind == "query":
+        query = str(definition.get("sql", ""))
+        if catalog is None:
+            from .catalog import ProjectCatalog
+
+            catalog = ProjectCatalog.open(project_dir)
+        # The harmonized `refs` table is built from active registrations only,
+        # so a query can never name a missing or deactivated experiment.
+        result = catalog.query(f"SELECT DISTINCT experiment FROM refs WHERE {query}")
+        declared = tuple(sorted({str(value) for value in result["experiment"]}))
+    else:
+        raise SetMembershipError(f"set {name!r} has unsupported kind {kind!r}")
+    counts = Counter(declared)
+    duplicates = tuple(sorted(item for item, count in counts.items() if count > 1))
+    unique = set(declared)
+    return SetMembership(
+        name=str(name),
+        kind=kind,
+        resolved=tuple(sorted(unique & active)),
+        declared=declared,
+        missing=tuple(sorted(unique - set(experiments))),
+        inactive=tuple(sorted((unique & set(experiments)) - active)),
+        duplicates=duplicates,
+        query=query,
+    )
+
+
+def resolve_set_membership(project_dir: str | Path, name: str, *, catalog=None) -> SetMembership:
+    """Resolve one named set to the active experiments a ``--set`` filter selects.
+
+    This is the single resolution path: the project catalog, the ML selection
+    layer, and ``project show-set`` all route through it, so what the CLI
+    displays is by construction what a materialize, plan, or embedding
+    selection will use.
+
+    Args:
+        project_dir: Project root holding ``registry.json``.
+        name: Set name.
+        catalog: Optional already-open :class:`~smftools.project.catalog.ProjectCatalog`,
+            used only for a query set. Opened on demand when omitted.
+
+    Returns:
+        The resolved membership, including anything declared that does not resolve.
+
+    Raises:
+        KeyError: No set by that name exists.
+    """
+    registry = load_registry(project_dir)
+    definition = registry.get("sets", {}).get(name)
+    if definition is None:
+        raise KeyError(f"no set '{name}' in project")
+    return _membership_from_definition(project_dir, name, definition, registry, catalog=catalog)
