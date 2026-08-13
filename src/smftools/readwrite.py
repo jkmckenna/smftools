@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import warnings
 from pathlib import Path
@@ -944,6 +945,60 @@ def _sanitize_adata_for_write(adata, *, backup, backup_dir, verbose):
         "X": X_to_use,
         "report": report,
     }
+
+
+#: ``uns`` keys whose values are string lists and must keep list semantics.
+UNS_STRING_LIST_KEYS = ("ragged_store", "signal_columns")
+
+
+def uns_string_list(value: Any) -> list[str]:
+    """Coerce one ``uns`` string-list entry back into a plain list of strings.
+
+    AnnData reads string lists back from HDF5 as numpy arrays, and older writes
+    degraded them further into a string *representation* (numpy's repr omits
+    commas, so ``"['a' 'b']"`` is possible alongside ``"['a', 'b']"``). Accept
+    all three forms so already-published artifacts stay readable.
+
+    Args:
+        value: The raw ``uns`` value, possibly ``None``, a string, an array, or
+            an already-correct list.
+
+    Returns:
+        The entry as a plain list of strings; empty when ``value`` is ``None``.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        if value.startswith("["):
+            # Parse quoted items directly rather than splitting on commas, since
+            # a numpy repr has no commas and Python would concatenate adjacent
+            # string literals.
+            quoted = re.findall(r"['\"]([^'\"]+)['\"]", value)
+            if quoted or value.strip() in {"[]", "[ ]"}:
+                return quoted
+        return [value]
+    return [str(item) for item in value]
+
+
+def normalize_uns_string_lists(adata, keys: Sequence[str] = UNS_STRING_LIST_KEYS) -> None:
+    """Restore plain-list semantics for string-list ``uns`` entries, in place.
+
+    Call this immediately before :func:`safe_write_h5ad` on any AnnData that was
+    read back from disk. The sanitizer keeps JSON-serializable values verbatim
+    but stringifies a numpy array, so a read/modify/write cycle silently
+    degrades these entries unless they are normalized first.
+
+    Args:
+        adata: The AnnData whose ``uns`` should be normalized in place.
+        keys: The ``uns`` keys to normalize; defaults to
+            :data:`UNS_STRING_LIST_KEYS`.
+
+    Returns:
+        None
+    """
+    for key in keys:
+        if key in adata.uns:
+            adata.uns[key] = uns_string_list(adata.uns[key])
 
 
 def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None, verbose=True):

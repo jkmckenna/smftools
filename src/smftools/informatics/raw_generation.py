@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
-from ..readwrite import atomic_write_json, safe_read_h5ad, safe_write_h5ad
+from ..readwrite import (
+    atomic_write_json,
+    normalize_uns_string_lists,
+    safe_read_h5ad,
+    safe_write_h5ad,
+)
 from .experiment_manifest import artifact_record
 from .partition_read import relative_uns_path, resolve_relative_path
 from .sidecar_manifest import register_sidecar, resolve_sidecar, sidecar_manifest_path
@@ -188,6 +193,9 @@ def _bind_generation_spine(
         for scope, relative in sorted(region_artifacts.items())
     }
     spine.uns["raw_generation_id"] = generation_id
+    # The spine was just read from disk, so its string-list uns entries are numpy
+    # arrays that the writer's sanitizer would store as string representations.
+    normalize_uns_string_lists(spine)
     safe_write_h5ad(spine, spine_path, backup=False, verbose=False)
 
 

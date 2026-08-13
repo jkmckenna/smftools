@@ -110,6 +110,36 @@ def test_publish_selects_valid_relocatable_generation(tmp_path):
     assert moved_manifest["generation_id"] == "generation-a"
 
 
+def test_publication_preserves_uns_string_list_semantics(tmp_path):
+    """Publishing rereads and rewrites the spine; string lists must stay lists.
+
+    The write sanitizer keeps JSON-serializable values verbatim but stringifies a
+    numpy array, and AnnData reads stored lists back as arrays. Without
+    normalization, publication degraded these entries into a string repr such as
+    ``"['mod_a' 'mod_b']"`` (numpy's repr omits commas).
+    """
+    sources, dependencies, regions = _publication_sources(tmp_path)
+    spine, _ = safe_read_h5ad(sources["spine"], verbose=False)
+    spine.uns["signal_columns"] = ["mod_a", "mod_b"]
+    spine.uns["ragged_store"] = ["raw/part-00000.parquet"]
+    safe_write_h5ad(spine, sources["spine"], backup=False, verbose=False)
+
+    outputs = publish_raw_generation(
+        tmp_path,
+        sources,
+        config_hash="config-a",
+        input_artifact_ids=["input-manifest:abc"],
+        dependencies=dependencies,
+        region_artifacts=regions,
+        generation_id="generation-a",
+    )
+
+    published, _ = safe_read_h5ad(Path(outputs["generation"]) / "spine.h5ad", verbose=False)
+    assert not isinstance(published.uns["signal_columns"], str)
+    assert list(published.uns["signal_columns"]) == ["mod_a", "mod_b"]
+    assert list(published.uns["ragged_store"]) == ["raw/part-00000.parquet"]
+
+
 def test_schema_one_generation_remains_valid_without_segment_artifacts(tmp_path):
     outputs = _publish(tmp_path, generation_id="generation-a")
     generation = Path(outputs["generation"])

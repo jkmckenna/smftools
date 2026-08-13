@@ -16,7 +16,12 @@ import pandas as pd
 
 from smftools.constants import RAW_DIR
 
-from ..readwrite import safe_read_h5ad, safe_write_h5ad
+from ..readwrite import (
+    normalize_uns_string_lists,
+    safe_read_h5ad,
+    safe_write_h5ad,
+    uns_string_list,
+)
 from .input_manifest import (
     InputManifestTransition,
     ResolvedInputManifest,
@@ -215,6 +220,10 @@ def _combine_spines(
     if duplicate_obs:
         preview = ", ".join(map(repr, duplicate_obs[:5]))
         raise RawAppendError(f"raw append has colliding molecule rows: {preview}")
+    # Column sets legitimately differ between generations: optional columns like
+    # source_read_id only appear for namespaced sources, so the union with null
+    # fill is the correct semantic ("this molecule has no source read id") rather
+    # than schema drift to reject. Do not turn this into an equality check.
     obs = pd.concat([previous.obs, added_obs], axis=0, sort=False)
     if "canonical_row" in obs:
         obs["canonical_row"] = range(len(obs))
@@ -230,6 +239,20 @@ def _combine_spines(
             **(dict(previous_partitions) if isinstance(previous_partitions, Mapping) else {}),
             **(dict(added_partitions) if isinstance(added_partitions, Mapping) else {}),
         }
+    # signal_columns is discovered from the data rather than the reference, so an
+    # append whose new sources lack a channel the prior generation observed would
+    # otherwise narrow the combined list. Keep the prior order and append only
+    # genuinely new channels.
+    previous_signal = previous.uns.get("signal_columns")
+    added_signal = added.uns.get("signal_columns")
+    if previous_signal is not None or added_signal is not None:
+        combined_signal = uns_string_list(previous_signal)
+        known_signal = set(combined_signal)
+        for column in uns_string_list(added_signal):
+            if column not in known_signal:
+                known_signal.add(column)
+                combined_signal.append(column)
+        spine.uns["signal_columns"] = combined_signal
     plans = plan_references(
         obs,
         previous_lengths,
@@ -241,6 +264,7 @@ def _combine_spines(
     )
     spine.uns["reference_plans"] = {plan.reference: plan.to_dict() for plan in plans}
     spine.uns["raw_append_transition"] = dict(transition)
+    normalize_uns_string_lists(spine)
     safe_write_h5ad(spine, destination, backup=False, verbose=False)
     return int(previous.n_obs), int(added.n_obs)
 
@@ -346,6 +370,7 @@ def assemble_raw_append(
             np.asarray([str(value) for value in combined_spine.obs_names], dtype=str)
         )
         combined_spine.uns["ragged_store"] = sorted(catalog["group_path"].astype(str).unique())
+        normalize_uns_string_lists(combined_spine)
         safe_write_h5ad(combined_spine, spine_path, backup=False, verbose=False)
         obs_path = write_stage_obs(assembly, combined_spine.obs)
 

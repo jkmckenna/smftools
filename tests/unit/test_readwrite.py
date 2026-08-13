@@ -1,7 +1,12 @@
 import anndata as ad
 import numpy as np
 
-from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
+from smftools.readwrite import (
+    normalize_uns_string_lists,
+    safe_read_h5ad,
+    safe_write_h5ad,
+    uns_string_list,
+)
 
 
 def test_safe_readwrite_restores_varm_backups(tmp_path):
@@ -34,3 +39,32 @@ def test_safe_write_h5ad_keys_csv_includes_varm(tmp_path):
         keys_df = np.array([keys_df])
 
     assert any(row[0] == "varm" and row[1] == "components" for row in keys_df)
+
+
+def test_uns_string_list_accepts_every_degraded_form():
+    """Already-published artifacts carry several encodings of the same list."""
+    assert uns_string_list(None) == []
+    assert uns_string_list(["a", "b"]) == ["a", "b"]
+    assert uns_string_list(np.array(["a", "b"], dtype=object)) == ["a", "b"]
+    # Numpy's repr omits commas; a plain str repr keeps them. Both must parse.
+    assert uns_string_list("['a' 'b']") == ["a", "b"]
+    assert uns_string_list("['a', 'b']") == ["a", "b"]
+    assert uns_string_list("[]") == []
+    # A bare string that is not a list repr stays a single item.
+    assert uns_string_list("mod_a") == ["mod_a"]
+
+
+def test_normalize_uns_string_lists_survives_a_write_read_cycle(tmp_path):
+    adata = ad.AnnData(X=np.zeros((1, 1)))
+    adata.uns["signal_columns"] = ["mod_a", "mod_b"]
+    path = tmp_path / "spine.h5ad"
+    safe_write_h5ad(adata, path, backup=False, verbose=False)
+
+    # Reading returns an array; rewriting it unnormalized is what degraded it.
+    reread, _ = safe_read_h5ad(path, verbose=False)
+    normalize_uns_string_lists(reread)
+    safe_write_h5ad(reread, path, backup=False, verbose=False)
+
+    final, _ = safe_read_h5ad(path, verbose=False)
+    assert not isinstance(final.uns["signal_columns"], str)
+    assert list(final.uns["signal_columns"]) == ["mod_a", "mod_b"]
