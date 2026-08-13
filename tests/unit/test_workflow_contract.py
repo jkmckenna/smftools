@@ -453,7 +453,8 @@ def _write_bundle(root: Path, *, bundle_kind: str = "sequence_only") -> Path:
         scope="experiment",
         modality="conversion",
         selection={},
-        source_generations=[{"generation_id": "generation-a"}],
+        # `raw_generation_id` is the field both exporters actually write.
+        source_generations=[{"raw_generation_id": "generation-a"}],
         artifacts=[artifact_record(root, reads)],
         lost_capabilities=["direct_modification"],
     )
@@ -498,6 +499,18 @@ def test_source_snapshot_records_bundle_kind_and_lost_capabilities(tmp_path):
     assert bundle["modality"] == "conversion"
     # The ordinary fingerprint contract still applies to the manifest file.
     assert records["input_manifest"]["fingerprint"] == snapshot["input_manifest"]["fingerprint"]
+
+
+def test_source_snapshot_accepts_the_legacy_generation_id_field(tmp_path):
+    """A bundle naming its origin `generation_id` is still recorded, not dropped."""
+    bundle_manifest = _write_bundle(tmp_path / "bundle")
+    payload = json.loads(bundle_manifest.read_text(encoding="utf-8"))
+    payload["source_generations"] = [{"generation_id": "generation-b"}]
+    bundle_manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    snapshot = workflow_contract._snapshot_sources({"input_manifest": bundle_manifest})
+
+    assert snapshot["input_manifest"]["bundle"]["source_generation_ids"] == ["generation-b"]
 
 
 def test_non_bundle_sources_carry_no_bundle_provenance(tmp_path):

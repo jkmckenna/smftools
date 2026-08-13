@@ -694,3 +694,168 @@ def test_sequence_export_bundle_reingests_as_fresh_raw_generation(tmp_path: Path
     assert spine.n_obs == 1
     assert spine.obs.iloc[0]["template_id"] == identity["bundle_template_id"]
     assert spine.obs.iloc[0]["Sample"] == "sample-one"
+
+
+@pytest.mark.e2e
+def test_lossless_bam_bundle_reingests_with_modification_capability_intact(tmp_path: Path):
+    """The two bundle kinds must differ in what a re-ingestion can still do.
+
+    ``sequence_only`` and ``lossless_bam`` are both re-ingestible, so a round trip
+    that only checks "it loads" cannot tell them apart. What separates them is
+    capability: the BAM bundle carries the owned alignment forward, so re-ingesting
+    it declares alignment-grade sources and reproduces the source coordinates
+    without an aligner ever running; the FASTQ bundle declares those capabilities
+    lost and must realign from sequence alone.
+    """
+    if shutil.which("minimap2") is None:
+        pytest.skip("minimap2 is required to produce the owned alignment being bundled")
+    pytest.importorskip("pysam")
+    from smftools.cli.export_bundle import export_bundle_for_experiment
+    from smftools.informatics.export_bundle import read_bundle_manifest
+    from smftools.informatics.input_manifest import input_manifest_artifact_paths
+    from smftools.informatics.raw_generation import resolve_current_raw_generation
+
+    rng = random.Random(37)
+    reference_sequence = "".join(rng.choices("ACGT", k=2600))
+    fasta = tmp_path / "reference.fasta"
+    fasta.write_text(f">ref\n{reference_sequence}\n", encoding="utf-8")
+    reads = tmp_path / "reads.fastq"
+    reads.write_text(
+        "".join(
+            f"@read-{index + 1}\n{reference_sequence[400 + index * 600 : 1000 + index * 600]}\n"
+            f"+\n{'I' * 600}\n"
+            for index in range(3)
+        ),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "inputs.csv"
+    with manifest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["path", "sample", "barcode"])
+        writer.writeheader()
+        writer.writerow({"path": reads.name, "sample": "sample-one", "barcode": "bc01"})
+
+    source_config = _write_experiment_config(
+        tmp_path / "source.csv",
+        {
+            "smf_modality": "conversion",
+            "alignment_mode": "align",
+            "aligner": "minimap2",
+            "align_from_bam": "False",
+            "input_manifest_path": str(manifest),
+            "fasta": str(fasta),
+            "output_directory": str(tmp_path / "source"),
+            "experiment_name": "bundle-source",
+            "samtools_backend": "python",
+            "skip_bam_split": "True",
+            "skip_bam_qc": "True",
+            "input_already_demuxed": "True",
+            "make_beds": "False",
+            "make_bigwigs": "False",
+            "threads": "1",
+            "max_memory_gb": "4",
+        },
+    )
+    source_spine, _source_path, _cfg = raw_adata(str(source_config))
+    assert source_spine.n_obs == 3
+
+    lossless_dir = tmp_path / "lossless-bundle"
+    sequence_dir = tmp_path / "sequence-bundle"
+    export_bundle_for_experiment(
+        str(source_config), lossless_dir, bundle_format="bam", allow_unfiltered=True
+    )
+    export_bundle_for_experiment(
+        str(source_config),
+        sequence_dir,
+        bundle_format="fastq",
+        allow_unfiltered=True,
+        gzip_output=False,
+    )
+
+    lossless = read_bundle_manifest(lossless_dir)
+    sequence_only = read_bundle_manifest(sequence_dir)
+    assert lossless["bundle_kind"] == "lossless_bam"
+    assert lossless["lost_capabilities"] == []
+    assert sequence_only["bundle_kind"] == "sequence_only"
+    assert "alignment" in sequence_only["lost_capabilities"]
+    assert "mm_ml" in sequence_only["lost_capabilities"]
+    # Both kinds must name the generation they came from; a bundle whose origin is
+    # unrecorded cannot be audited back to the experiment that produced it.
+    assert {str(item["raw_generation_id"]) for item in lossless["source_generations"]} == {
+        str(source_spine.uns["raw_generation_id"])
+    }
+
+    declarations = pd.read_csv(lossless_dir / "inputs.csv")
+    assert set(declarations["source_kind"]) == {"aligned_bam"}
+    assert set(declarations["source_role"]) == {"alignment"}
+    assert set(declarations["modification_capability"]) == {"conversion_sequence"}
+    assert set(pd.read_csv(sequence_dir / "inputs.csv")["modification_capability"]) == {
+        "sequence_only"
+    }
+
+    reingest_output = tmp_path / "reingested"
+    reingest_config = _write_experiment_config(
+        tmp_path / "reingest.csv",
+        {
+            "smf_modality": "conversion",
+            "alignment_mode": "existing",
+            "input_manifest_path": str(lossless_dir / "bundle_manifest.json"),
+            "fasta": str(fasta),
+            "output_directory": str(reingest_output),
+            "experiment_name": "bundle-reingested",
+            "samtools_backend": "python",
+            "skip_bam_split": "True",
+            "skip_bam_qc": "True",
+            "input_already_demuxed": "True",
+            "make_beds": "False",
+            "make_bigwigs": "False",
+            "threads": "1",
+            "max_memory_gb": "4",
+        },
+    )
+    spine, spine_path, _cfg = raw_adata(str(reingest_config))
+    generation, generation_manifest = resolve_current_raw_generation(
+        reingest_output / "raw_outputs"
+    )
+
+    assert spine_path.is_file()
+    assert generation.is_dir()
+    assert generation_manifest["generation_id"]
+    assert spine.n_obs == source_spine.n_obs
+
+    # The re-ingested run resolves its own source identity from the bundle. That
+    # record -- not the bundle's own declaration -- is what proves the capability
+    # survived the round trip into a fresh experiment.
+    resolved = json.loads(
+        input_manifest_artifact_paths(reingest_output)["input_manifest_json"].read_text(
+            encoding="utf-8"
+        )
+    )
+    assert {row["modification_capability"] for row in resolved["sources"]} == {
+        "conversion_sequence"
+    }
+    assert {row["source_role"] for row in resolved["sources"]} == {"alignment"}
+
+    # No aligner ran here, so the coordinates must be the ones the source
+    # generation already established rather than a fresh alignment that happens to
+    # agree. The re-ingested alignment manifest proves that: it declares no adapter
+    # of its own and still carries the source run's minimap2 @PG record.
+    dependency = generation_manifest["dependencies"]["sidecar:alignment_manifest"]
+    alignment_manifest = json.loads(
+        (reingest_output / dependency["path"]).read_text(encoding="utf-8")
+    )
+    assert alignment_manifest["alignment_mode"] == "existing"
+    assert "adapter" not in alignment_manifest
+    normalized = alignment_manifest["validation"]["normalized"]
+    assert normalized["external_aligner"] == "minimap2"
+    assert normalized["mapped_primary_records"] == source_spine.n_obs
+
+    identity = pd.read_csv(lossless_dir / "identity_map.csv")
+    source_by_read = source_spine.obs.set_index(source_spine.obs["template_id"].astype(str))
+    reingested_by_read = spine.obs.set_index(spine.obs["template_id"].astype(str))
+    assert set(reingested_by_read.index) == set(identity["source_read_id"].astype(str))
+    for read_id in reingested_by_read.index:
+        original = source_by_read.loc[read_id]
+        replayed = reingested_by_read.loc[read_id]
+        assert int(replayed["reference_start"]) == int(original["reference_start"])
+        assert int(replayed["mapped_length"]) == int(original["mapped_length"])
+        assert str(replayed["Reference_strand"]) == str(original["Reference_strand"])
