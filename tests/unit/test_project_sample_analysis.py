@@ -189,6 +189,29 @@ def test_compute_periodicity_legacy_experiment_uses_cached_partition(tmp_path):
     assert result["experiment_uid"].nunique() == 1
 
 
+def test_partition_with_no_analyzable_read_yields_an_empty_result(tmp_path):
+    """No read clearing the thresholds is an ordinary outcome, not a crash.
+
+    A small sample or a narrow window can leave nothing to analyze. The compute
+    function returns an empty frame whose row_index column has no dtype, which
+    used to fail the whole analysis on a numpy indexing error rather than
+    reporting that this partition contributed no rows.
+    """
+    project_dir = tmp_path / "project"
+    spine_path = _modern_periodic_spine(tmp_path / "run")
+    backfill_per_sample_store(project_dir, "expA", spine_path)
+    _register_modern(project_dir, "expA", spine_path)
+
+    # min_sites far above what any read can supply, so every read is filtered out.
+    result = compute_periodicity(project_dir, "expA", "ref0_top", "bc00", min_sites=10_000)
+
+    assert result.empty
+    assert result.index.name == "molecule_uid"
+    assert {"read_id", "experiment_uid"}.issubset(result.columns)
+    # Cached like any other result, so the next call does not recompute it.
+    assert compute_periodicity(project_dir, "expA", "ref0_top", "bc00", min_sites=10_000).empty
+
+
 def test_compute_periodicity_missing_partition_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         compute_periodicity(tmp_path / "project", "nope", "ref0_top", "bc00")
