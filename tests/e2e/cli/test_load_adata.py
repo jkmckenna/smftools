@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import importlib
 import importlib.resources as resources
+import json
 import random
 import shutil
 import sys
@@ -25,9 +26,48 @@ CONFIGS = [
 ]
 
 
+def _config_values(config_path: Path) -> dict[str, str]:
+    """Read a test experiment config without loading or mutating anything."""
+    with config_path.open(newline="", encoding="utf-8-sig") as handle:
+        return {
+            str(row["variable"]).strip(): str(row.get("value", "")).strip()
+            for row in csv.DictReader(handle)
+            if row.get("variable")
+        }
+
+
+def _skip_without_basecalling_prerequisites(config_path: Path) -> None:
+    """Skip rather than fail when this config's external prerequisites are absent.
+
+    A basecalling config needs the dorado executable, a populated model directory,
+    and (for the direct modality) modkit. None of these are in the repository, and
+    the model directory is gitignored, so a fresh checkout cannot satisfy them.
+    Reporting that as a skip keeps an absent external tool an explicit deferment
+    instead of a failure indistinguishable from a real regression.
+    """
+    values = _config_values(config_path)
+    missing = []
+    if shutil.which("dorado") is None:
+        missing.append("the dorado executable")
+    model_dir = values.get("model_dir", "")
+    # Checked separately from the executables: a missing model directory is not
+    # visible to a PATH lookup, so nothing else in the stack catches it early.
+    if model_dir and not Path(model_dir).is_dir():
+        missing.append(f"a dorado model directory at {model_dir}")
+    if (
+        values.get("smf_modality") == "direct"
+        and values.get("direct_signal_backend", "modkit") == "modkit"
+        and shutil.which("modkit") is None
+    ):
+        missing.append("the modkit executable")
+    if missing:
+        pytest.skip(f"{config_path.name} requires {', '.join(missing)}")
+
+
 @pytest.mark.e2e
 @pytest.mark.parametrize("config_path", CONFIGS, ids=lambda p: p.name)
 def test_load_adata_e2e(config_path: Path):
+    _skip_without_basecalling_prerequisites(config_path)
     adata, adata_path, _cfg = load_adata(str(config_path))
 
     # `load_adata` returns `adata=None` only when a later pipeline stage's output
@@ -219,6 +259,245 @@ def test_existing_bam_source_append_publishes_new_complete_generation(tmp_path: 
     assert second_manifest["source_transition"]["kind"] == "append_only"
     assert len(second_manifest["source_transition"]["added_source_ids"]) == 1
     assert second_manifest["reuse"]["reused_files"] > 0
+
+
+def _write_experiment_config(path: Path, values: dict[str, str]) -> Path:
+    """Write a minimal experiment config, inferring each value's declared type."""
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["variable", "value", "type"])
+        writer.writeheader()
+        for variable, value in values.items():
+            if value in {"True", "False"}:
+                value_type = "bool"
+            elif variable == "threads":
+                value_type = "int"
+            elif variable == "max_memory_gb":
+                value_type = "float"
+            else:
+                value_type = "str"
+            writer.writerow({"variable": variable, "value": value, "type": value_type})
+    return path
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    ("aligner", "required_tools"),
+    [
+        ("minimap2", ("minimap2",)),
+        ("bwa-mem2", ("bwa-mem2",)),
+        # bowtie2 builds its native index with a separate binary.
+        ("bowtie2", ("bowtie2", "bowtie2-build")),
+    ],
+)
+def test_every_supported_aligner_produces_a_complete_raw_generation(
+    tmp_path: Path, aligner: str, required_tools: tuple[str, ...]
+):
+    """Each adapter must drive a full raw ingestion, not just an isolated call.
+
+    The adapter-level integration tests exercise ``execute`` directly; this covers
+    the configured end-to-end path so an aligner cannot be selectable in config
+    yet unusable through the pipeline.
+    """
+    missing = [tool for tool in required_tools if shutil.which(tool) is None]
+    if missing:
+        pytest.skip(f"{aligner} requires {', '.join(missing)}")
+    from smftools.informatics.raw_generation import resolve_current_raw_generation
+
+    rng = random.Random(21)
+    reference_sequence = "".join(rng.choices("ACGT", k=2600))
+    fasta = tmp_path / "reference.fasta"
+    fasta.write_text(f">ref\n{reference_sequence}\n", encoding="utf-8")
+    reads = tmp_path / "reads.fastq"
+    records = []
+    for index in range(2):
+        sequence = reference_sequence[400 + index * 700 : 1000 + index * 700]
+        records.append(f"@read-{index + 1}\n{sequence}\n+\n{'I' * len(sequence)}\n")
+    reads.write_text("".join(records), encoding="utf-8")
+
+    manifest = tmp_path / "inputs.csv"
+    with manifest.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["path", "sample", "barcode"])
+        writer.writeheader()
+        writer.writerow({"path": reads.name, "sample": "sample", "barcode": "sample"})
+
+    config = _write_experiment_config(
+        tmp_path / "config.csv",
+        {
+            "smf_modality": "conversion",
+            "alignment_mode": "align",
+            "aligner": aligner,
+            "align_from_bam": "False",
+            "input_manifest_path": str(manifest),
+            "fasta": str(fasta),
+            "output_directory": str(tmp_path / "output"),
+            "experiment_name": f"aligner-{aligner}",
+            "samtools_backend": "python",
+            "skip_bam_split": "True",
+            "skip_bam_qc": "True",
+            "input_already_demuxed": "True",
+            "make_beds": "False",
+            "make_bigwigs": "False",
+            "threads": "1",
+            "max_memory_gb": "4",
+        },
+    )
+
+    spine, spine_path, _cfg = raw_adata(str(config))
+    generation, generation_manifest = resolve_current_raw_generation(
+        tmp_path / "output" / "raw_outputs"
+    )
+
+    assert spine_path.is_file()
+    assert spine.n_obs == 2
+    assert spine.obs_names.is_unique
+    assert generation.is_dir()
+    assert generation_manifest["generation_id"]
+
+    # The generation pins its alignment provenance as a checksummed dependency
+    # rather than copying it in, so follow that record to the adapter that really
+    # ran. A configured-but-unused aligner would not appear here.
+    dependency = generation_manifest["dependencies"]["sidecar:alignment_manifest"]
+    assert dependency["anchor"] == "run_root"
+    alignment_manifest_path = tmp_path / "output" / dependency["path"]
+    assert alignment_manifest_path.is_file()
+    alignment_manifest = json.loads(alignment_manifest_path.read_text(encoding="utf-8"))
+    assert alignment_manifest["adapter"]["name"] == aligner
+    assert alignment_manifest["adapter"]["normalized_argv"][0] == aligner
+    if aligner != "minimap2":
+        # Short-read adapters build a native index; record which one produced it.
+        assert alignment_manifest["adapter"]["reference_index"]["adapter"] == aligner
+
+
+_COMPLEMENT = str.maketrans("ACGT", "TGCA")
+
+
+def _reverse_complement(sequence: str) -> str:
+    return sequence.translate(_COMPLEMENT)[::-1]
+
+
+@pytest.mark.e2e
+def test_fastq_directory_input_discovers_and_ingests_every_source(tmp_path: Path):
+    """A directory of FASTQs is one homogeneous source set, not one file.
+
+    Covers the discovery path (``input_data_path`` pointing at a directory)
+    rather than an explicit manifest, and asserts the mixed-type guard still
+    rejects a directory holding more than one recognized input kind.
+    """
+    if shutil.which("minimap2") is None:
+        pytest.skip("minimap2 is required for the FASTQ directory round trip")
+    from smftools.informatics.raw_generation import resolve_current_raw_generation
+
+    rng = random.Random(31)
+    reference_sequence = "".join(rng.choices("ACGT", k=2600))
+    fasta = tmp_path / "reference.fasta"
+    fasta.write_text(f">ref\n{reference_sequence}\n", encoding="utf-8")
+    reads_dir = tmp_path / "reads"
+    reads_dir.mkdir()
+    # Names deliberately without a trailing mate token so auto-pairing leaves
+    # them as two independent unpaired sources.
+    for index, stem in enumerate(("alpha", "beta")):
+        sequence = reference_sequence[400 + index * 700 : 1000 + index * 700]
+        (reads_dir / f"{stem}.fastq").write_text(
+            f"@{stem}-read\n{sequence}\n+\n{'I' * len(sequence)}\n", encoding="utf-8"
+        )
+
+    base_values = {
+        "smf_modality": "conversion",
+        "alignment_mode": "align",
+        "aligner": "minimap2",
+        "align_from_bam": "False",
+        "input_data_path": str(reads_dir),
+        "fasta": str(fasta),
+        "output_directory": str(tmp_path / "output"),
+        "experiment_name": "fastq-directory",
+        "samtools_backend": "python",
+        "skip_bam_split": "True",
+        "skip_bam_qc": "True",
+        "input_already_demuxed": "True",
+        "make_beds": "False",
+        "make_bigwigs": "False",
+        "threads": "1",
+        "max_memory_gb": "4",
+    }
+    config = _write_experiment_config(tmp_path / "config.csv", base_values)
+
+    spine, _path, _cfg = raw_adata(str(config))
+    generation, _manifest = resolve_current_raw_generation(tmp_path / "output" / "raw_outputs")
+
+    assert spine.n_obs == 2
+    assert spine.obs_names.is_unique
+    assert generation.is_dir()
+
+    # A directory mixing recognized input kinds must fail before any execution.
+    (reads_dir / "stray.bam").write_bytes(b"not-a-real-bam")
+    mixed_config = _write_experiment_config(
+        tmp_path / "mixed.csv",
+        {**base_values, "output_directory": str(tmp_path / "mixed-output")},
+    )
+    with pytest.raises(ValueError, match="mixed recognized input types"):
+        raw_adata(str(mixed_config))
+
+
+@pytest.mark.e2e
+def test_paired_illumina_overlap_becomes_one_consensus_molecule(tmp_path: Path):
+    """One paired template must become one molecule with two segments.
+
+    This is the IAR-08/IAR-10 contract end to end: mate layout survives
+    alignment, both mates keep distinct segment identity, and the overlap is
+    reconciled into a single molecule rather than two independent reads.
+    """
+    missing = [tool for tool in ("bwa-mem2",) if shutil.which(tool) is None]
+    if missing:
+        pytest.skip(f"paired alignment requires {', '.join(missing)}")
+    from smftools.informatics.raw_generation import resolve_current_raw_generation
+
+    rng = random.Random(37)
+    reference_sequence = "".join(rng.choices("ACGT", k=2600))
+    fasta = tmp_path / "reference.fasta"
+    fasta.write_text(f">ref\n{reference_sequence}\n", encoding="utf-8")
+    # Mates overlap across reference[700:900]; the insert spans [400, 1200).
+    forward = reference_sequence[400:900]
+    reverse = _reverse_complement(reference_sequence[700:1200])
+    reads_dir = tmp_path / "reads"
+    reads_dir.mkdir()
+    for name, sequence in (("sample_R1.fastq", forward), ("sample_R2.fastq", reverse)):
+        (reads_dir / name).write_text(
+            f"@pair-one\n{sequence}\n+\n{'I' * len(sequence)}\n", encoding="utf-8"
+        )
+
+    config = _write_experiment_config(
+        tmp_path / "config.csv",
+        {
+            "smf_modality": "conversion",
+            "alignment_mode": "align",
+            "aligner": "bwa-mem2",
+            "align_from_bam": "False",
+            "input_data_path": str(reads_dir),
+            "fastq_auto_pairing": "True",
+            "fasta": str(fasta),
+            "output_directory": str(tmp_path / "output"),
+            "experiment_name": "paired-illumina",
+            "samtools_backend": "python",
+            "skip_bam_split": "True",
+            "skip_bam_qc": "True",
+            "input_already_demuxed": "True",
+            "make_beds": "False",
+            "make_bigwigs": "False",
+            "threads": "1",
+            "max_memory_gb": "4",
+        },
+    )
+
+    spine, _path, _cfg = raw_adata(str(config))
+    generation, _manifest = resolve_current_raw_generation(tmp_path / "output" / "raw_outputs")
+    segments = pd.read_parquet(generation / "segments.parquet")
+
+    # One template collapses to one molecule, still backed by two segments.
+    assert spine.n_obs == 1
+    assert len(segments) == 2
+    assert segments["segment_uid"].is_unique
+    assert segments["molecule_uid"].nunique() == 1
+    assert int(spine.obs.iloc[0]["segment_count"]) == 2
 
 
 @pytest.mark.e2e
