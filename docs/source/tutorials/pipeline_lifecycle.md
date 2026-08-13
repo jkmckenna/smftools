@@ -71,6 +71,46 @@ pointer advances. The generation manifest records the transition, reused and
 added source IDs, prior generation ID, and reused/new file and byte counts.
 An interrupted append leaves the prior generation selected.
 
+### Resuming an interrupted run
+
+A process that dies mid-stage -- an out-of-memory kill, an evicted container, a
+hard interrupt -- never writes a terminal state, so it leaves the stage record
+in `running`. That is a resumable state, not a corrupt one:
+
+- The next invocation supersedes the abandoned attempt and records it under
+  `superseded_attempt` in the stage entry, so the manifest still shows that
+  something was tried and did not finish.
+- The last complete stage record is retained across the restart. If its
+  published generation still satisfies the request, the run reuses it and
+  promotes that record back to the live state instead of recomputing; the entry
+  is marked `restored_from_previous_complete`.
+- Nothing is skipped on the strength of a non-complete record, so a half-written
+  attempt can never authorize reuse of its own artifacts.
+
+Deleting the run directory or hand-editing `experiment_manifest.json` is not
+part of the recovery path. Re-run the same stage command.
+
+## Immutability, relocation, and container execution
+
+A published raw generation is immutable by validation, not by permissions.
+Every artifact carries a size and SHA-256 checksum, and the current-generation
+pointer carries the manifest checksum, so an edited or truncated artifact is
+detected when the generation is selected and the run refuses it. Artifacts are
+deliberately **not** made read-only on disk: a file whose write bit was stripped
+is unmanageable for the arbitrary, non-owning UID that a container task usually
+runs as.
+
+Because of that, an owned output tree is portable:
+
+- Every pointer inside a generation manifest, the workflow result, and the spine
+  is relative and anchored to the run root, so moving the complete directory to
+  another path -- or another machine -- keeps it selectable and valid.
+- Validation reads only. `smftools experiment validate` works against a
+  read-only mount, and against a tree owned by a different user.
+- Detection is the guarantee, not prevention. Anything that edits a published
+  artifact in place will be caught at selection time rather than blocked at
+  write time.
+
 Partitioned latent output is published as immutable generations. A generation
 becomes current only after its task stores, model bundles, indexes, plots,
 spine pointers, checksums, schemas, source provenance, and completion manifest
@@ -120,6 +160,9 @@ features require `force_recompute=True`.
 
 | Existing artifact or script | Current behavior | Migration |
 | --- | --- | --- |
+| Raw output predating immutable generations (canonical `raw_outputs/spine.h5ad`, no `generations/`) | Migrated into a generation without recomputing when the recorded stage is lifecycle-compatible and every required artifact validates; otherwise recomputed from the declared inputs | Re-run `smftools experiment raw`; keep the original inputs reachable, since an incompatible layout is rebuilt rather than converted |
+| Stage record left in `running` by a killed process | Superseded by the next attempt, which reuses the retained complete generation when it still satisfies the request | Re-run the same stage command; do not delete the run directory |
+| Corrupt or unreadable `current.json` | Fails closed for every downstream consumer rather than falling back to the canonical working files | Re-run `smftools experiment raw`, the one stage authorized to replace an invalid selector |
 | Periodicity cache without experiment and molecule identity | Migrated only when its registered experiment owner is unambiguous | Re-run with `force_recompute=True` if ownership is ambiguous or the cache is rejected |
 | Legacy in-place project embedding directory such as one containing only `meta.json` | Never accepted as a current immutable generation | Refit with `force_recompute=True`; the old directory is retained |
 | Latent output without a completed generation manifest, read index, or model provenance | Never treated as a valid restart or scoped project source | Re-run `smftools experiment latent` in `auto` or `partitioned` mode, then re-run `project add` |
