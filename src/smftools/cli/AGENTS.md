@@ -41,6 +41,10 @@ raw ingestion and dense-cache loading share the same underlying function.
 | `concatenate` | `cli_entry.py` | — | Merge multiple `.h5ad` files into one. |
 | `export-fastq` | `export_fastq.py` | `export_fastq_for_experiment` | FASTQ export of QC-passed reads, per experiment. |
 | `plot-current` | `plot_current.py` | — | Plot nanopore current traces for specified reads. |
+| `plan` | `cli_entry.py` | `pipeline/experiment_graph.plan_experiment` | Read-only compatibility/recomputation plan for a target. |
+| `run` | `workflow_contract.py` | `run_experiment_workflow` | Engine-facing task-local execution with a stable result contract. |
+| `validate` | `workflow_contract.py` | `validate_workflow_output` | Validate a completed or relocated workflow output without writing. |
+| `export-bundle` | `export_bundle.py` | `export_bundle_for_experiment` | Sequence-only or lossless-BAM re-ingestion bundle. |
 
 ### `smftools project <project_dir>` — registering and querying across experiments
 
@@ -49,11 +53,23 @@ raw ingestion and dense-cache loading share the same underlying function.
 | `init` | Initialize a project directory + registry. |
 | `add` / `remove` | Register or deactivate an experiment in the project. |
 | `list` | List registered experiments and harmonized references. |
+| `add-set` / `list-sets` / `show-set` / `remove-set` | Define and inspect named experiment sets used by `--set`. |
+| `plan` | Read-only dependency plan for one target (`selection`, `materialization`, `sample-analysis`, `embedding`). |
+| `run` | Execute one product task-locally; `--target` selects materialization (default), sample-analysis, or embedding. |
+| `validate` | Validate a published project result against artifacts and the current source plan. |
 | `materialize` | Pool a canonical reference across matching experiments into one AnnData. |
+| `sample-analysis` | Per-sample periodicity across a selection, cached per partition. |
+| `embedding` | Fit or extend one shared cross-experiment embedding. |
 | `sample-store-list` | List cataloged per-sample-store partitions. |
 | `export-fastq` | FASTQ export of QC-passed reads, across every registered experiment. |
+| `export-latent` | One scoped artifact per experiment/core latent coordinate owner. |
+| `export-bundle` | Project-scoped re-ingestion bundle. |
 
-All `project_*` commands live in `project_cmd.py`.
+Project command logic lives in `project_cmd.py`, except `plan`/`run`/`validate`, whose
+task-local execution and result/validation contracts live in `workflow_contract.py`.
+`run --target` dispatches to `run_project_{materialization,sample_analysis,embedding}_workflow`
+there; `selection` is a planning-only dependency of the other three and is deliberately
+not executable.
 
 ## Shared helpers
 
@@ -70,3 +86,9 @@ All `project_*` commands live in `project_cmd.py`.
 2. If it does real work beyond a thin wrapper, follow the `<name>(...)` / `<name>_core(...)`
    split so the logic is testable independent of Click.
 3. Update the table above and `docs/source/cli.md`.
+4. For a new *project product* (something `project plan` can name as a target), it also
+   needs an entry in `tests/acceptance/project_cli_criteria.json` and a row in the plan
+   target table in `docs/source/cli.md`, which asserts that every plan target maps to one
+   execution and validation lifecycle. `tests/unit/test_project_cli.py::
+   test_project_plan_targets_map_to_documented_execution_paths` fails if a plan target
+   gains no executor.
