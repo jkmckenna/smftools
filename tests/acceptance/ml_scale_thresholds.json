@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "work_package": "ML-700",
-  "source": "dev/in-progress/ml700_benchmark_plan.md",
+  "source": "dev/completed/ml700_benchmark_plan.md",
   "purpose": "Committed limits and regression thresholds for the ML data plane. ML-701 writes user-facing prose from this file; it is the machine-readable half of ML-700's published limits.",
   "baseline_environment": {
     "note": "Baselines were captured on a developer laptop. CI must compare ratios and structure, never absolute byte counts or wall times, because hardware differs.",
