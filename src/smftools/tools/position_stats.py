@@ -65,6 +65,14 @@ def calculate_relative_risk_on_activity(
     import numpy as np
     import pandas as pd
     from scipy.stats import fisher_exact
+
+    # statsmodels imports its submodules lazily, so require() only guarantees the
+    # package is present; the submodule import below is what actually binds it.
+    require(
+        "statsmodels",
+        extra="analysis",
+        purpose="multiple-testing correction for relative-risk analysis",
+    )
     from statsmodels.stats.multitest import multipletests
 
     def compute_risk_df(ref, site_subset, positions_list, relative_risks, p_values):

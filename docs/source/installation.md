@@ -26,7 +26,7 @@ Install profiles individually or combine them in one command, such as
 | `umi` | Edit-distance-based UMI and barcode processing |
 | `genome-io` | pybedtools and pyBigWig genome-format backends |
 | `project` | DuckDB catalogs and lazy xarray-backed project reads |
-| `analysis` | Clustering, UMAP, tensor, graph, and XGBoost analyses |
+| `analysis` | Clustering, UMAP, tensor, graph, XGBoost, and multiple-testing analyses |
 | `ml-extended` | Captum, Lightning, SHAP, Weights & Biases, and related ML tools |
 | `qc` | MultiQC report generation |
 | `all` | Every optional runtime capability |
