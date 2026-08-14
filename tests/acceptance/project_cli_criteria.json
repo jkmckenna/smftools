@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source": "dev/in-progress/input_ingestion_alignment_implementation_plan.md#pcli-04--project-analysis-acceptance",
+  "source": "dev/completed/input_ingestion_alignment_implementation_plan.md#pcli-04--project-analysis-acceptance",
   "criteria": [
     {"id": "finding.iar_m6", "title": "Named sets and planned analysis targets lacked CLI execution surfaces", "status": "automated", "evidence": ["tests/unit/test_project_cli.py::test_set_commands_define_list_show_and_remove_without_python", "tests/unit/test_project_cli.py::test_sample_analysis_cli_runs_validates_and_skips", "tests/unit/test_project_cli.py::test_embedding_cli_fits_skips_and_requires_trust_before_growing"]},
     {"id": "item.pcli_01", "title": "Named set add/list/show/remove commands", "status": "automated", "evidence": ["tests/unit/test_project_cli.py::test_set_commands_define_list_show_and_remove_without_python", "tests/unit/test_project_cli.py::test_add_set_rejects_an_unresolvable_member_unless_allowed", "tests/unit/test_project_registry.py::test_set_membership_separates_resolved_from_unresolvable_members", "tests/unit/test_project_registry.py::test_removing_a_set_leaves_every_experiment_registered"]},

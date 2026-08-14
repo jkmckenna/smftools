@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source": "dev/experiment_project_partitioned_pipeline_audit.md#proposed-acceptance-criteria",
+  "source": "dev/completed/experiment_project_partitioned_pipeline_audit.md#proposed-acceptance-criteria",
   "criteria": [
     {"id": "correctness.full_modality_mode_matrix", "status": "deferred", "evidence": ["tests/unit/test_partitioned_pipeline_fixture.py::test_acceptance_fixture_covers_modality_mode_matrix_and_multiple_chunks"], "owner": "smftools maintainers", "reason": "Synthetic raw-store coverage is automated; fresh external-tool experiment full runs for the three protected real datasets require the local validation program."},
     {"id": "correctness.genome_bed_and_legacy_modes", "status": "automated", "evidence": ["tests/unit/config/test_LoadExperimentConfig.py::test_spatial_regions_bed_is_not_promoted_to_new_scopes", "tests/unit/informatics/test_analysis_region_plan.py::test_partitioned_stages_share_core_plan_and_provenance"]},

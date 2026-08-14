@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source": "dev/in-progress/input_ingestion_alignment_audit.md#test-and-acceptance-gaps",
+  "source": "dev/completed/input_ingestion_alignment_audit.md#test-and-acceptance-gaps",
   "criteria": [
     {"id": "finding.iar_c1", "title": "A discovered BAM directory is passed downstream as though it were one BAM", "status": "automated", "evidence": ["tests/unit/config/test_input_contract.py::test_bam_directory_fails_before_output_directory_creation", "tests/unit/informatics/test_input_manifest.py::test_multiple_alignment_paths_require_explicit_manifest", "tests/e2e/cli/test_load_adata.py::test_partitioned_existing_bams_produce_one_raw_generation"]},
     {"id": "finding.iar_c2", "title": "Paired mates are neither one molecule nor compatible with unique row identity", "status": "automated", "evidence": ["tests/unit/informatics/test_raw_store.py::test_paired_segments_share_one_molecule_and_materialize_losslessly", "tests/unit/informatics/test_molecule_identity.py::test_segment_identity_is_unique_within_shared_template_and_across_experiments", "tests/e2e/cli/test_load_adata.py::test_paired_illumina_overlap_becomes_one_consensus_molecule"]},
