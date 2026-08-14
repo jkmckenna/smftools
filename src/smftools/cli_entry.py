@@ -326,6 +326,23 @@ def experiment_validate(output_root, result_json, as_json):
         raise click.exceptions.Exit(1)
 
 
+@experiment_group.command("generations")
+@click.argument("output_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--size",
+    "include_size",
+    is_flag=True,
+    help="Total each generation's bytes on disk (slower on large stores).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the stable machine-readable schema.")
+def experiment_generations_cmd(output_root, include_size, as_json):
+    """List published immutable generations for one experiment, without writing."""
+    from .cli.generations import experiment_generations, render_json, render_table
+
+    records = experiment_generations(output_root, include_size=include_size)
+    click.echo(render_json(records) if as_json else render_table(records))
+
+
 ##########################################
 
 
@@ -819,6 +836,32 @@ def project_list_cmd(project_dir: Path):
     if not references.empty:
         n_canon = references["canonical_reference"].nunique()
         click.echo(f"{n_canon} canonical reference(s) across the project.")
+
+
+@project_group.command("generations")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--size",
+    "include_size",
+    is_flag=True,
+    help="Total each generation's bytes on disk (slower on large stores).",
+)
+@click.option(
+    "--project-only",
+    is_flag=True,
+    help="List only project-owned generations, skipping registered experiments.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the stable machine-readable schema.")
+def project_generations_cmd(project_dir: Path, include_size, project_only, as_json):
+    """List published immutable generations across a project, without writing."""
+    from .cli.generations import project_generations, render_json, render_table
+
+    records = project_generations(
+        project_dir,
+        include_size=include_size,
+        include_experiments=not project_only,
+    )
+    click.echo(render_json(records) if as_json else render_table(records))
 
 
 @project_group.command("plan")
