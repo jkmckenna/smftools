@@ -1,5 +1,9 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+# hatchling 1.32 defaults to Metadata-Version 2.5, which twine 6.2 still rejects
+# (it monkeypatches packaging's allowed list to stop at 2.4), so `twine check`
+# fails and an upload would be refused. Pinned below that until the packaging
+# tooling catches up.
+requires = ["hatchling<1.32", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
