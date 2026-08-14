@@ -41,6 +41,9 @@ def test_input_alignment_acceptance_catalog_is_complete_and_traceable():
         assert entry["title"], entry["id"]
         if entry["status"] == "automated":
             assert entry["evidence"], entry["id"]
+            # `reason` is the vocabulary of a deferment. An automated entry that
+            # carries one is either mislabelled or excusing a gap it claims not
+            # to have; context that outlives the deferment goes in `note`.
             assert "reason" not in entry, entry["id"]
         elif entry["status"] == "deferred":
             # A deferment names who owns it and why, so it stays a decision
@@ -49,6 +52,8 @@ def test_input_alignment_acceptance_catalog_is_complete_and_traceable():
             assert entry.get("reason"), entry["id"]
         else:
             assert entry.get("reason"), entry["id"]
+        if "note" in entry:
+            assert isinstance(entry["note"], str) and entry["note"], entry["id"]
         for reference in entry["evidence"]:
             relative_path, separator, symbol = reference.partition("::")
             assert separator and symbol, reference
