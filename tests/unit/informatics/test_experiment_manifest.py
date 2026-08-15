@@ -3,6 +3,10 @@ import hashlib
 import anndata as ad
 import pytest
 
+from smftools import metadata
+from smftools._version import __version__
+from smftools.constants import SEMANTIC_GRAPH_DEFINITION_VERSION
+from smftools.informatics import experiment_manifest
 from smftools.informatics.experiment_manifest import (
     MANIFEST_SCHEMA_VERSION,
     StageLifecycle,
@@ -52,6 +56,86 @@ def test_record_stage_completion_appends_without_removing_earlier_stages(tmp_pat
     assert manifest["stages"]["raw"]["n_molecules"] == 100
     assert "completed_at" in manifest["stages"]["raw"]
     assert manifest["stages"]["preprocess"]["n_molecules"] == 80
+
+
+def test_smftools_code_identity_uses_installed_version_graph_and_git_commit(monkeypatch):
+    monkeypatch.setattr(metadata, "get_git_commit", lambda: "commit-abc")
+
+    assert metadata.smftools_code_identity() == {
+        "smftools_version": __version__,
+        "graph_definition_version": SEMANTIC_GRAPH_DEFINITION_VERSION,
+        "git_commit": "commit-abc",
+    }
+
+
+def test_successful_stage_completion_stamps_top_level_code_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        experiment_manifest,
+        "smftools_code_identity",
+        lambda: {
+            "smftools_version": "2.21.0.dev0",
+            "graph_definition_version": 7,
+            "git_commit": "commit-one",
+        },
+    )
+
+    record_stage_completion(tmp_path, "raw")
+
+    manifest = read_experiment_manifest(tmp_path)
+    assert manifest["smftools_version"] == "2.21.0.dev0"
+    assert manifest["graph_definition_version"] == 7
+    assert manifest["git_commit"] == "commit-one"
+
+
+def test_noncomplete_attempt_preserves_last_successful_code_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        experiment_manifest,
+        "smftools_code_identity",
+        lambda: {
+            "smftools_version": "first-version",
+            "graph_definition_version": 1,
+            "git_commit": "first-commit",
+        },
+    )
+    record_stage_completion(tmp_path, "spatial")
+
+    def unexpected_identity_read():
+        raise AssertionError("noncomplete transitions must not refresh code identity")
+
+    monkeypatch.setattr(experiment_manifest, "smftools_code_identity", unexpected_identity_read)
+    record_stage_state(tmp_path, "spatial", "planned")
+    record_stage_state(tmp_path, "spatial", "running")
+    record_stage_state(tmp_path, "spatial", "failed", outcome="simulated failure")
+
+    manifest = read_experiment_manifest(tmp_path)
+    assert manifest["smftools_version"] == "first-version"
+    assert manifest["graph_definition_version"] == 1
+    assert manifest["git_commit"] == "first-commit"
+
+
+def test_completion_without_git_metadata_removes_prior_commit(tmp_path, monkeypatch):
+    identities = iter(
+        (
+            {
+                "smftools_version": "source-version",
+                "graph_definition_version": 1,
+                "git_commit": "source-commit",
+            },
+            {
+                "smftools_version": "wheel-version",
+                "graph_definition_version": 2,
+            },
+        )
+    )
+    monkeypatch.setattr(experiment_manifest, "smftools_code_identity", lambda: next(identities))
+
+    record_stage_completion(tmp_path, "raw")
+    record_stage_completion(tmp_path, "preprocess")
+
+    manifest = read_experiment_manifest(tmp_path)
+    assert manifest["smftools_version"] == "wheel-version"
+    assert manifest["graph_definition_version"] == 2
+    assert "git_commit" not in manifest
 
 
 def test_record_stage_completion_overwrites_same_stage_on_rerun(tmp_path):

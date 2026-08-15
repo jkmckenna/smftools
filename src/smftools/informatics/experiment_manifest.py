@@ -25,6 +25,7 @@ from time import perf_counter
 from typing import Any
 
 from ..logging_utils import get_logger
+from ..metadata import smftools_code_identity
 from ..readwrite import atomic_write_json
 
 logger = get_logger(__name__)
@@ -74,6 +75,20 @@ def _save(path: Path, manifest: dict[str, Any]) -> None:
     manifest = dict(manifest)
     manifest["schema_version"] = MANIFEST_SCHEMA_VERSION
     atomic_write_json(path, manifest)
+
+
+def _stamp_code_identity(manifest: dict[str, Any]) -> None:
+    """Refresh top-level identity for the code that last completed a stage."""
+    identity = smftools_code_identity()
+    manifest["smftools_version"] = identity["smftools_version"]
+    manifest["graph_definition_version"] = identity["graph_definition_version"]
+    if git_commit := identity.get("git_commit"):
+        manifest["git_commit"] = git_commit
+    else:
+        # The top-level identity describes the latest successful completion. A
+        # commit retained from an earlier checkout would misattribute a later
+        # completion performed from an installed wheel or source archive.
+        manifest.pop("git_commit", None)
 
 
 def _artifact_path(run_root: Path, artifact: dict[str, Any]) -> Path | None:
@@ -244,6 +259,8 @@ def record_stage_state(
     entry.update({key: value for key, value in optional_fields.items() if value is not None})
     entry.update(extra)
     stages[stage] = entry
+    if state == "complete":
+        _stamp_code_identity(manifest)
     _save(path, manifest)
     return path
 

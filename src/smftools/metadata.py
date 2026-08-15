@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from ._version import __version__
+from .constants import SEMANTIC_GRAPH_DEFINITION_VERSION
 from .schema import SCHEMA_REGISTRY_RESOURCE, SCHEMA_REGISTRY_VERSION
 
 _DEPENDENCIES = ("anndata", "numpy", "pandas", "umap-learn", "pynndescent", "torch")
@@ -33,7 +34,8 @@ def _find_git_root(start: Path) -> Optional[Path]:
     return None
 
 
-def _get_git_commit() -> Optional[str]:
+def get_git_commit() -> Optional[str]:
+    """Return the source checkout's current commit when Git metadata is available."""
     root = _find_git_root(Path(__file__).resolve())
     if root is None:
         return None
@@ -50,6 +52,17 @@ def _get_git_commit() -> Optional[str]:
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
+
+
+def smftools_code_identity() -> dict[str, Any]:
+    """Return the installed smftools code identity for durable provenance."""
+    identity: dict[str, Any] = {
+        "smftools_version": __version__,
+        "graph_definition_version": SEMANTIC_GRAPH_DEFINITION_VERSION,
+    }
+    if git_commit := get_git_commit():
+        identity["git_commit"] = git_commit
+    return identity
 
 
 def _hash_file(path: Path, *, max_full_bytes: int = 50 * 1024 * 1024) -> dict[str, Any]:
@@ -373,7 +386,7 @@ def record_smftools_metadata(
         smftools_uns["created_by"] = {
             "version": __version__,
             "time": timestamp,
-            "git_commit": _get_git_commit(),
+            "git_commit": get_git_commit(),
         }
 
     smftools_uns.setdefault("environment", _environment_snapshot())

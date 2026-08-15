@@ -41,6 +41,7 @@ One directory per sequencing run, holding the experiment config and everything
 ├── <ref>.fasta                  # Reference FASTA used for this run
 ├── <date>_outputs/
 │   ├── full_summary.json          # Linked outcomes/logs from experiment full
+│   ├── experiment_manifest.json   # Stage lifecycle, provenance, and code identity
 │   ├── raw_outputs/             # smftools experiment raw
 │   ├── preprocess_adata_outputs/  # smftools experiment preprocess
 │   ├── spatial_adata_outputs/     # smftools experiment spatial

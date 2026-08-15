@@ -90,6 +90,20 @@ in `running`. That is a resumable state, not a corrupt one:
 Deleting the run directory or hand-editing `experiment_manifest.json` is not
 part of the recovery path. Re-run the same stage command.
 
+### Code identity of the latest successful completion
+
+Every successful stage completion refreshes three top-level fields in
+`experiment_manifest.json`: `smftools_version`, `graph_definition_version`, and
+`git_commit` when the installation is running from a Git checkout. This applies
+equally to direct stage commands and `smftools experiment full`, since all
+partitioned stages publish through the same lifecycle record.
+
+Planned, running, failed, and superseded attempts do not change these fields;
+they continue to describe the code that produced the last successfully
+published stage result. An installation without Git metadata omits
+`git_commit` rather than retaining and misattributing a commit from an earlier
+completion.
+
 ## Immutability, relocation, and container execution
 
 A published raw generation is immutable by validation, not by permissions.
