@@ -8,6 +8,7 @@ from smftools.informatics.experiment_spine import (
     experiment_spine_path,
     write_experiment_spine,
 )
+from smftools.informatics.generation import staged_generation
 from smftools.informatics.partition_read import materialize
 from smftools.informatics.raw_store import write_raw_store
 from smftools.preprocessing.partitioned_executor import execute_partitioned_preprocessing
@@ -162,6 +163,78 @@ def test_write_experiment_spine_unions_latent_catalog_pointer(tmp_path):
     assert experiment_spine.uns["latent_task_catalog"] == (
         "latent_adata_outputs/task_catalog.parquet"
     )
+
+
+def test_experiment_spine_uses_current_owner_instead_of_stale_descendant_copy(tmp_path):
+    """A stale HMM copy cannot replace pointers owned by current spatial."""
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / RAW_DIR,
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+    )
+    raw_spine, _ = safe_read_h5ad(raw["spine"])
+
+    hmm_dir = tmp_path / HMM_DIR
+    with staged_generation(hmm_dir, generation_id="hmm-older") as staged:
+        hmm_spine = raw_spine.copy()
+        hmm_spine.uns["spatial_task_catalog"] = (
+            "spatial_adata_outputs/generations/spatial-old/task_catalog.parquet"
+        )
+        hmm_spine.uns["hmm_catalog"] = (
+            "hmm_adata_outputs/generations/hmm-older/task_catalog.parquet"
+        )
+        hmm_spine.uns["reference_lengths"] = {"ref_top": 999}
+        safe_write_h5ad(
+            hmm_spine,
+            staged.artifact("spine.h5ad"),
+            backup=False,
+            verbose=False,
+        )
+        staged.record_manifest({"schema_version": 1, "status": "complete"})
+    canonical_hmm_spine = hmm_spine.copy()
+    canonical_hmm_spine.uns["hmm_catalog"] = "hmm_adata_outputs/stale-canonical.parquet"
+    safe_write_h5ad(
+        canonical_hmm_spine,
+        hmm_dir / "spine.h5ad",
+        backup=False,
+        verbose=False,
+    )
+
+    spatial_dir = tmp_path / SPATIAL_DIR
+    with staged_generation(spatial_dir, generation_id="spatial-current") as staged:
+        spatial_spine = raw_spine.copy()
+        spatial_spine.uns["spatial_task_catalog"] = (
+            "spatial_adata_outputs/generations/spatial-current/task_catalog.parquet"
+        )
+        safe_write_h5ad(
+            spatial_spine,
+            staged.artifact("spine.h5ad"),
+            backup=False,
+            verbose=False,
+        )
+        staged.record_manifest({"schema_version": 1, "status": "complete"})
+    canonical_spatial_spine = spatial_spine.copy()
+    canonical_spatial_spine.uns["spatial_task_catalog"] = (
+        "spatial_adata_outputs/stale-canonical.parquet"
+    )
+    safe_write_h5ad(
+        canonical_spatial_spine,
+        spatial_dir / "spine.h5ad",
+        backup=False,
+        verbose=False,
+    )
+
+    write_experiment_spine(tmp_path)
+
+    experiment_spine, _ = safe_read_h5ad(experiment_spine_path(tmp_path))
+    assert experiment_spine.uns["spatial_task_catalog"] == (
+        "spatial_adata_outputs/generations/spatial-current/task_catalog.parquet"
+    )
+    assert experiment_spine.uns["hmm_catalog"] == (
+        "hmm_adata_outputs/generations/hmm-older/task_catalog.parquet"
+    )
+    assert experiment_spine.uns["reference_lengths"] == {"ref_top": 12}
 
 
 def test_experiment_spine_resolves_sibling_branch_layers_together(tmp_path, monkeypatch):

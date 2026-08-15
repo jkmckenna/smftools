@@ -216,6 +216,70 @@ def resolve_current_generation(
     return generation, manifest
 
 
+def resolve_stage_generation(
+    stage_dir: str | Path,
+    lineage: str | None = None,
+) -> tuple[Path, dict[str, Any]] | None:
+    """Resolve the selected generation for one experiment stage.
+
+    Args:
+        stage_dir: Directory that owns the stage's ``current.json`` and
+            ``generations/`` tree.
+        lineage: Optional generation ID pinned for this stage by a processing
+            lineage. When omitted, resolve the stage's current pointer.
+
+    Returns:
+        ``(generation_dir, manifest)`` for the selected generation, or ``None``
+        when the stage still uses the legacy in-place layout and no lineage was
+        requested.
+
+    Raises:
+        GenerationError: If a requested lineage generation is unsafe, missing,
+            or inconsistent with its manifest.
+    """
+    stage_dir = Path(stage_dir)
+    if lineage is None:
+        return resolve_current_generation(stage_dir)
+
+    generation_id = str(lineage).strip()
+    relative = Path(generation_id)
+    if (
+        not generation_id
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or len(relative.parts) != 1
+    ):
+        raise GenerationError(f"{stage_dir.name} lineage generation id is not portable")
+
+    generation = (stage_dir / GENERATIONS_SUBDIR / relative).resolve()
+    generations_root = (stage_dir / GENERATIONS_SUBDIR).resolve()
+    if generation.parent != generations_root or not generation.is_dir():
+        raise GenerationError(
+            f"{stage_dir.name} lineage generation {generation_id!r} does not exist"
+        )
+
+    manifest_path = generation / GENERATION_MANIFEST
+    if not manifest_path.is_file():
+        raise GenerationError(
+            f"{stage_dir.name} lineage generation {generation_id!r} has no manifest"
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GenerationError(
+            f"{stage_dir.name} lineage generation {generation_id!r} manifest is unreadable"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise GenerationError(
+            f"{stage_dir.name} lineage generation {generation_id!r} manifest is not an object"
+        )
+    if str(manifest.get("generation_id", "")) != generation_id:
+        raise GenerationError(
+            f"{stage_dir.name} lineage generation {generation_id!r} disagrees with its manifest"
+        )
+    return generation, manifest
+
+
 def remap_staged_paths(outputs: dict[str, Any], staged: StagedGeneration) -> dict[str, Any]:
     """Rebase artifact paths from the staging directory to the published one.
 
