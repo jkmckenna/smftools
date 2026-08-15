@@ -7,8 +7,9 @@ this module is purely the project-level plumbing around it: load a partition's
 molecules (from the per-sample store's cache, or through the registry +
 ``materialize()`` for a modern pointer partition), run the requested analysis, and
 cache the result keyed by a hash of its full definition (layer, window, method,
-LS parameters) so a different read-span definition never collides with -- or gets
-silently served by -- a stale one.
+LS parameters, analysis algorithm version, and semantic graph version) so a
+different read-span or code definition never collides with -- or gets silently
+served by -- a stale one.
 
 ``join_periodicity`` is the read side: it attaches an already-computed analysis
 (never computes one itself) onto a materialized selection by molecule UID, the mechanism
@@ -30,6 +31,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..constants import SEMANTIC_GRAPH_DEFINITION_VERSION
 from ..informatics.molecule_identity import (
     EXPERIMENT_UID_COLUMN,
     MOLECULE_UID_COLUMN,
@@ -43,6 +45,7 @@ RESULT_FILENAME = "result.parquet"
 DEFINITION_FILENAME = "definition.json"
 PERIODICITY_ANALYSIS_NAME = "periodicity"
 PERIODICITY_CACHE_SCHEMA_VERSION = 2
+PERIODICITY_ALGORITHM_VERSION = "1"
 SCHEMA_VERSION_COLUMN = "schema_version"
 _CACHE_IDENTITY_COLUMNS = (
     SCHEMA_VERSION_COLUMN,
@@ -77,9 +80,11 @@ def _analysis_dir(
     )
 
 
-def _periodicity_definition(*, layer, start, end, method, kwargs) -> dict:
+def _periodicity_definition(*, layer, start, end, method, kwargs) -> dict[str, object]:
     return {
         "analysis": PERIODICITY_ANALYSIS_NAME,
+        "algorithm_version": PERIODICITY_ALGORITHM_VERSION,
+        "graph_definition_version": SEMANTIC_GRAPH_DEFINITION_VERSION,
         "layer": layer,
         "start": start,
         "end": end,
@@ -254,8 +259,9 @@ def compute_periodicity(
     straight through to the underlying compute function -- see its docstring.
 
     Cached under this partition's ``analyses/periodicity/<definition_hash>/``, keyed
-    by every parameter that changes the result, so a different read-span/analysis
-    definition never collides with -- or is silently served by -- an old cache entry.
+    by every parameter and code-identity version that changes the result, so a
+    different read-span/analysis definition never collides with -- or is silently
+    served by -- an old cache entry.
 
     Returns a DataFrame with one row per surviving read, indexed by ``molecule_uid``
     (not the positional ``row_index`` the underlying compute function returns).

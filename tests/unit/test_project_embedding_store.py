@@ -108,6 +108,8 @@ def test_fit_or_extend_embedding_full_fit(tmp_path):
     assert result["meta"]["source"]["feature_input_digest"]
     assert result["meta"]["source"]["ordered_molecule_membership_digest"]
     assert result["meta"]["dependencies"]["scikit-learn"]
+    assert result["meta"]["definition"]["algorithm_version"] == "1"
+    assert result["meta"]["definition"]["graph_definition_version"] >= 1
     source_member = result["meta"]["source"]["members"][0]
     # write_raw_store also publishes the consolidated experiment spine into the
     # run root, and registration prefers that superset over the raw stage --

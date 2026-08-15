@@ -100,6 +100,20 @@ recent, and newest generations. Even older policy matches remain blocked until
 their byte-level reproducibility from retained inputs is represented
 authoritatively; this phase does not expose deletion or force behavior.
 
+### Analysis caches across smftools versions
+
+Project periodicity and embedding caches include two forms of code identity in
+their definition hashes: an independently bumpable version for that analysis's
+algorithm and the shared semantic graph definition version. A change confined
+to periodicity therefore creates a new periodicity cache key without invalidating
+embedding caches, and the reverse is also true. A semantic graph change creates
+new keys for both.
+
+Existing cache directories are never rewritten or deleted during an upgrade.
+They simply stop matching the current definition, and the next requested
+analysis computes under a new key. This preserves old results for inspection
+while preventing changed code from silently serving them as current output.
+
 ### `analyses/projects/<project_name>/`
 
 A project **references** runs — it never copies or merges their data.

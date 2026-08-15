@@ -1,9 +1,9 @@
 """Transactional project-wide embeddings with explicit provenance.
 
-An embedding definition identifies the semantic query and algorithm, but never
-its currently resolved membership. Each fit or extension is published as an
-immutable generation beneath that definition. A small atomic ``current.json``
-selects the only generation readers may consume.
+An embedding definition identifies the semantic query, scoped algorithm version,
+and semantic graph version, but never its currently resolved membership. Each
+fit or extension is published as an immutable generation beneath that definition.
+A small atomic ``current.json`` selects the only generation readers may consume.
 
 PCA and UMAP estimators are Python pickle files. They are project-local trusted
 artifacts, not a stable interchange format. Coordinate-only cache reads do not
@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..constants import SEMANTIC_GRAPH_DEFINITION_VERSION
 from ..informatics.generation import (
     CURRENT_FILENAME,
     GENERATION_MANIFEST,
@@ -53,6 +54,7 @@ IDENTITY_SCHEMA_VERSION = 2
 SOURCE_SCHEMA_VERSION = 2
 GENERATION_SCHEMA_VERSION = 1
 EMBEDDING_IMPLEMENTATION_VERSION = 1
+EMBEDDING_ALGORITHM_VERSION = "1"
 _ARTIFACT_FILENAMES = (
     PCA_MODEL_FILENAME,
     UMAP_MODEL_FILENAME,
@@ -129,6 +131,8 @@ def _embedding_definition(
     return {
         "identity_schema_version": IDENTITY_SCHEMA_VERSION,
         "implementation_version": EMBEDDING_IMPLEMENTATION_VERSION,
+        "algorithm_version": EMBEDDING_ALGORITHM_VERSION,
+        "graph_definition_version": SEMANTIC_GRAPH_DEFINITION_VERSION,
         "canonical_reference": str(canonical_reference),
         "selection": {
             "set_name": None if set_name is None else str(set_name),
