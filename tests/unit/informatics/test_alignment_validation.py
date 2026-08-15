@@ -295,8 +295,10 @@ def test_missing_external_aligner_provenance_is_recorded_as_unknown(tmp_path):
 @pytest.mark.parametrize(
     ("field", "kwargs", "message"),
     [
-        ("sequence", {"sequence": False, "qualities": False}, "no query sequence"),
-        ("qualities", {"qualities": False}, "no base qualities"),
+        # A wholly sequenceless file is 100% sequenceless -- far above the tolerated
+        # fraction -- so it is still rejected, now by the fraction check.
+        ("sequence", {"sequence": False, "qualities": False}, "without SEQ or base qualities"),
+        ("qualities", {"qualities": False}, "without SEQ or base qualities"),
         ("CIGAR", {"cigar": False}, "no CIGAR"),
     ],
 )
@@ -306,6 +308,61 @@ def test_required_alignment_fields_fail(tmp_path, field, kwargs, message):
 
     with pytest.raises(AlignmentValidationError, match=message):
         validate_existing_alignment(source, fasta, modality="conversion")
+
+
+def _bam_with_sequenceless(path, *, total, sequenceless, reference_length=12):
+    """Write a BAM whose first ``sequenceless`` primary records carry no SEQ/QUAL."""
+    header = {
+        "HD": {"VN": "1.6", "SO": "coordinate"},
+        "SQ": [{"SN": "ref", "LN": reference_length}],
+        "PG": [{"ID": "minimap2", "PN": "minimap2", "VN": "2.28"}],
+    }
+    with pysam.AlignmentFile(str(path), "wb", header=header) as bam:
+        for index in range(total):
+            read = pysam.AlignedSegment()
+            read.query_name = f"read-{index}"
+            read.reference_id = 0
+            read.reference_start = 1
+            read.mapping_quality = 60
+            read.flag = 0
+            if index >= sequenceless:
+                read.query_sequence = "ACGT"
+                read.query_qualities = array("B", [30, 30, 30, 30])
+                read.cigarstring = "4M"
+            bam.write(read)
+    return path
+
+
+def test_rare_sequenceless_records_are_dropped_and_counted(tmp_path):
+    """Aligner noise must not abort a run: 1 of 200 is below the tolerated fraction."""
+    fasta = _fasta(tmp_path / "reference.fa")
+    source = _bam_with_sequenceless(tmp_path / "noisy.bam", total=200, sequenceless=1)
+
+    summary = validate_existing_alignment(source, fasta, modality="conversion")
+
+    assert summary.sequenceless_primary_records == 1
+    assert summary.primary_records == 200
+    # The dropped record never reaches the ingested/mapped counts.
+    assert summary.mapped_primary_records == 199
+    assert summary.to_dict()["sequenceless_primary_records"] == 1
+
+
+def test_many_sequenceless_records_still_fail(tmp_path):
+    """A wholesale-unusable file is what the original hard failure protected against."""
+    fasta = _fasta(tmp_path / "reference.fa")
+    source = _bam_with_sequenceless(tmp_path / "broken.bam", total=100, sequenceless=50)
+
+    with pytest.raises(AlignmentValidationError, match="above the"):
+        validate_existing_alignment(source, fasta, modality="conversion")
+
+
+def test_clean_alignment_reports_zero_sequenceless(tmp_path):
+    fasta = _fasta(tmp_path / "reference.fa")
+    source = _bam_with_sequenceless(tmp_path / "clean.bam", total=10, sequenceless=0)
+
+    summary = validate_existing_alignment(source, fasta, modality="conversion")
+
+    assert summary.sequenceless_primary_records == 0
 
 
 def test_invalid_paired_flags_fail_early(tmp_path):
