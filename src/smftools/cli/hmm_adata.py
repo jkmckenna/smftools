@@ -51,40 +51,6 @@ mpl_colors = require("matplotlib.colors", extra="plotting", purpose="HMM plottin
 # =============================================================================
 
 
-def _remap_staged_outputs(outputs: dict, staged) -> dict:
-    """Rewrite artifact paths from the staging directory to the published one.
-
-    The stage executor writes into ``staged.staging_dir``; ``os.replace`` then
-    moves that whole tree to ``staged.final_dir``. Paths inside the tree stay
-    valid relative to their own root, but the absolute paths the executor
-    returned no longer exist, so they are rebased here. Anything outside the
-    staged tree (a source spine, for instance) is passed through untouched.
-    """
-    staging = staged.staging_dir.resolve()
-    remapped = {}
-    for key, value in outputs.items():
-        if isinstance(value, Path):
-            resolved = value.resolve()
-            if resolved == staging or staging in resolved.parents:
-                remapped[key] = staged.final_dir / resolved.relative_to(staging)
-                continue
-        remapped[key] = value
-    return remapped
-
-
-def _publish_canonical_spine(generation_spine: Path, canonical_path: Path) -> None:
-    """Copy the published generation spine to the stage root, atomically."""
-    import os
-    import shutil
-
-    temporary = canonical_path.with_name(f".{canonical_path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        shutil.copy2(generation_spine, temporary)
-        os.replace(temporary, canonical_path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _strip_hmm_layer_prefix(layer: str) -> str:
     """Strip methbase prefixes and length suffixes from an HMM layer name.
 
@@ -857,6 +823,22 @@ def hmm_adata(config_path: str):
         or getattr(cfg, "force_redo_hmm_plots", False)
     )
     partitioned_output = getattr(paths, "hmm_spine", None)
+    # Resolved before the skip check so completeness can be judged against the
+    # source hmm would actually consume. Without it a republished spatial
+    # generation leaves hmm skipping while `experiment plan` reports
+    # `stale_input` -- the planner and the stage disagreeing about the same run.
+    # preprocess already passes source_path for this reason.
+    skip_source = next(
+        (
+            Path(candidate)
+            for candidate in (
+                getattr(paths, "spatial_spine", None),
+                getattr(paths, "preprocess_spine", None),
+            )
+            if candidate is not None and Path(candidate).exists()
+        ),
+        None,
+    )
     if (
         execution_mode != "legacy"
         and partitioned_output is not None
@@ -866,6 +848,7 @@ def hmm_adata(config_path: str):
             cfg,
             "hmm",
             required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["hmm"],
+            source_path=skip_source,
         )
     ):
         logger.info("Skipping HMM. Partitioned HMM spine found: %s", partitioned_output)
@@ -905,7 +888,9 @@ def hmm_adata(config_path: str):
         from ..informatics.experiment_spine import write_experiment_spine
         from ..informatics.generation import (
             GENERATION_MANIFEST,
+            publish_canonical_spine,
             rebind_staged_spine_pointers,
+            remap_staged_paths,
             staged_generation,
         )
         from ..perf_log import perf_substep
@@ -948,15 +933,19 @@ def hmm_adata(config_path: str):
                             "rebound_spine_pointers": rebound,
                         }
                     )
-            outputs = _remap_staged_outputs(outputs, staged)
+            outputs = remap_staged_paths(outputs, staged)
             # Republish the canonical stage-root spine so existing readers of
             # paths.hmm_spine keep resolving. It sits two levels below the run
             # root, so its run-root-relative uns pointers resolve unchanged.
-            _publish_canonical_spine(outputs["spine"], hmm_root / HMM_SPINE_FILENAME)
+            canonical_spine = hmm_root / HMM_SPINE_FILENAME
+            publish_canonical_spine(outputs["spine"], canonical_spine)
             outputs["generation"] = staged.final_dir
             outputs["generation_spine"] = outputs["spine"]
             outputs["generation_manifest"] = staged.final_dir / GENERATION_MANIFEST
             outputs["current"] = hmm_root / "current.json"
+            # `spine` stays the stable stage-root path readers resolve;
+            # `generation_spine` records the copy inside this generation.
+            outputs["spine"] = canonical_spine
             publish_stage_outputs(
                 lifecycle,
                 outputs,

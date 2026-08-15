@@ -26,6 +26,45 @@ def _cfg(tmp_path, *, mode="auto", force=False):
     )
 
 
+def _with_generation_artifacts(outputs, stage_dir):
+    """Add the artifacts an immutable generation publishes to a fixture output.
+
+    Spatial now publishes through a generation, so a fixture standing in for an
+    already-complete stage must produce the same four artifacts a real run does,
+    or ``publish_stage_outputs`` rejects it.
+    """
+    import json
+    import uuid
+
+    stage_dir = Path(stage_dir)
+    generation_id = uuid.uuid4().hex
+    generation_dir = stage_dir / "generations" / generation_id
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    manifest = generation_dir / "generation_manifest.json"
+    manifest.write_text(
+        json.dumps({"schema_version": 1, "status": "complete", "generation_id": generation_id}),
+        encoding="utf-8",
+    )
+    current = stage_dir / "current.json"
+    current.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generation_id": generation_id,
+                "generation_path": f"generations/{generation_id}",
+            }
+        ),
+        encoding="utf-8",
+    )
+    generation_spine = generation_dir / "spine.h5ad"
+    ad.AnnData().write_h5ad(generation_spine)
+    outputs["generation"] = generation_dir
+    outputs["generation_manifest"] = manifest
+    outputs["generation_spine"] = generation_spine
+    outputs["current"] = current
+    return outputs
+
+
 def _spatial_outputs(output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -73,7 +112,8 @@ def test_spatial_cli_auto_selects_partitioned_preprocess_spine(tmp_path, monkeyp
     assert adata is None
     assert output_path == paths.spatial_spine
     assert captured["source"] == paths.preprocess_spine
-    assert captured["output"] == paths.spatial_spine.parent
+    # The executor now runs inside a staging directory under the stage root.
+    assert captured["output"].parent == paths.spatial_spine.parent / ".staging"
     entry = read_experiment_manifest(tmp_path)["stages"]["spatial"]
     assert entry["state"] == "complete"
     assert entry["expected_tasks"] == entry["successful_tasks"] == 1
@@ -112,7 +152,9 @@ def test_spatial_cli_reruns_when_completed_artifact_is_missing(tmp_path, monkeyp
     paths = helpers.get_adata_paths(cfg)
     paths.preprocess_spine.parent.mkdir(parents=True)
     paths.preprocess_spine.touch()
-    outputs = _spatial_outputs(paths.spatial_spine.parent)
+    outputs = _with_generation_artifacts(
+        _spatial_outputs(paths.spatial_spine.parent), paths.spatial_spine.parent
+    )
     required = PARTITIONED_STAGE_REQUIRED_ARTIFACTS["spatial"]
     with helpers.stage_lifecycle(cfg, "spatial", paths.preprocess_spine) as lifecycle:
         helpers.publish_stage_outputs(
@@ -142,7 +184,9 @@ def test_spatial_cli_reruns_when_semantic_config_changes(tmp_path, monkeypatch):
     paths = helpers.get_adata_paths(cfg)
     paths.preprocess_spine.parent.mkdir(parents=True)
     paths.preprocess_spine.touch()
-    outputs = _spatial_outputs(paths.spatial_spine.parent)
+    outputs = _with_generation_artifacts(
+        _spatial_outputs(paths.spatial_spine.parent), paths.spatial_spine.parent
+    )
     required = PARTITIONED_STAGE_REQUIRED_ARTIFACTS["spatial"]
     with helpers.stage_lifecycle(cfg, "spatial", paths.preprocess_spine) as lifecycle:
         helpers.publish_stage_outputs(
