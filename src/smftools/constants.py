@@ -172,12 +172,16 @@ _private_partitioned_stage_required_artifacts = {
     ),
     "hmm": (
         "spine",
+        "generation_spine",
         "task_catalog",
         "read_index",
         "store",
         "models",
         "plot_catalog",
         "manifest",
+        "generation_manifest",
+        "generation",
+        "current",
     ),
     "latent": (
         "spine",

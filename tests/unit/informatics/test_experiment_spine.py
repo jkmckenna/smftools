@@ -198,6 +198,11 @@ def test_experiment_spine_resolves_sibling_branch_layers_together(tmp_path, monk
     monkeypatch.setattr(partitioned_hmm, "_annotate_task", annotate)
     hmm_cfg = SimpleNamespace(target_task_memory_mb=1)
     execute_partitioned_hmm(preprocess["spine"], hmm_cfg, tmp_path / HMM_DIR)
+    # The hmm executor no longer regenerates the superset spine itself; its
+    # caller does, after the generation is published, so a generation rejected
+    # by validation is never unioned in. Matches latent (cli/latent_adata.py),
+    # raw (cli/raw_adata.py), and preprocess (preprocess_generation.py).
+    write_experiment_spine(tmp_path)
 
     experiment_spine, _ = safe_read_h5ad(experiment_spine_path(tmp_path))
     assert experiment_spine.uns["spatial_task_catalog"]
