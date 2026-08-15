@@ -42,6 +42,32 @@ set is defined, and `show-set` resolves through the same path `--set` applies,
 so what it prints is what a plan or materialize will use. See
 [](tutorials/cli_usage.md#smftools-project).
 
+## Renaming an experiment
+
+Use `smftools experiment rename-id` to change a human-readable experiment ID
+without changing its durable `experiment_uid`:
+
+```shell
+smftools experiment rename-id /data/runs/old-id new-id \
+  --project /data/projects/project-a \
+  --project /data/projects/project-b
+```
+
+The command performs complete collision and identity preflight before writing,
+then transactionally updates the experiment manifest, the standard
+`experiment_config.csv` when present, every explicitly supplied project
+registry, explicit-list named sets, and project per-sample pointers. It moves
+the experiment directory and per-sample state to the new ID and rolls the
+completed writes and moves back if publication fails. A durable journal also
+restores a prepared transaction before a retry after process interruption.
+Supply `--config PATH` for a config stored outside the experiment directory.
+
+Projects are not globally discoverable, so repeat `--project` for every project
+that registers the experiment. Query-defined named sets are stored SQL and are
+left unchanged and reported for review; update a query explicitly if its SQL
+names the old ID. Published stage generations and historical provenance are
+immutable and are not rewritten.
+
 ## Generation inventory and retention
 
 Use `smftools experiment generations OUTPUT_ROOT` to inventory every immutable
