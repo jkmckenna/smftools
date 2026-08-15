@@ -12,6 +12,7 @@ from smftools.constants import (
     PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
 )
 from smftools.informatics.experiment_manifest import read_experiment_manifest
+from smftools.informatics.generation import resolve_stage_generation
 from smftools.tools import partitioned_spatial
 
 
@@ -195,6 +196,7 @@ def test_spatial_cli_reruns_when_semantic_config_changes(tmp_path, monkeypatch):
             required=required,
             nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["spatial"],
         )
+    first_generation_id = outputs["generation"].name
     cfg.autocorr_max_lag = 8
     calls = []
     monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
@@ -208,6 +210,14 @@ def test_spatial_cli_reruns_when_semantic_config_changes(tmp_path, monkeypatch):
     spatial_adata("config.csv")
 
     assert calls == [paths.preprocess_spine]
+    stage_dir = paths.spatial_spine.parent
+    current = resolve_stage_generation(stage_dir)
+    previous = resolve_stage_generation(stage_dir, lineage=first_generation_id)
+    assert current is not None
+    assert previous is not None
+    assert current[1]["generation_id"] != first_generation_id
+    assert previous[0] == stage_dir / "generations" / first_generation_id
+    assert previous[1]["generation_id"] == first_generation_id
 
 
 def test_spatial_cli_records_failed_stage_when_executor_raises(tmp_path, monkeypatch):
