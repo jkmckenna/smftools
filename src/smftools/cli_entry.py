@@ -72,6 +72,55 @@ def experiment_group():
     """Run pipeline stages for a single experiment (one config path in)."""
 
 
+@experiment_group.command("rename-id")
+@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("new_id")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Config CSV to update (defaults to experiment_config.csv inside the experiment).",
+)
+@click.option(
+    "--project",
+    "project_dirs",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    multiple=True,
+    help="Project registry to update; repeat for every project containing this experiment.",
+)
+def rename_experiment_id_cmd(
+    experiment_dir: Path,
+    new_id: str,
+    config_path: Path | None,
+    project_dirs: tuple[Path, ...],
+):
+    """Transactionally rename an experiment while preserving its durable UID."""
+    from .cli.experiment_rename import rename_experiment_id
+
+    try:
+        result = rename_experiment_id(
+            experiment_dir,
+            new_id,
+            config_path=config_path,
+            project_dirs=project_dirs,
+        )
+    except Exception as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(
+        f"Renamed experiment {result.old_id!r} to {result.new_id!r} at "
+        f"{result.experiment_dir} (UID {result.experiment_uid})."
+    )
+    if result.config_path is None:
+        click.echo("No experiment config was found; no config file was updated.")
+    if not result.project_dirs:
+        click.echo("No projects were supplied; external project registries were not searched.")
+    if result.query_sets_unchanged:
+        click.echo(
+            "Query-defined sets were left unchanged: " + ", ".join(result.query_sets_unchanged)
+        )
+
+
 ####### Load anndata from raw data ###########
 @experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
