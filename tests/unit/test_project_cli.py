@@ -214,6 +214,18 @@ def test_project_plan_cli_is_read_only_and_emits_json(tmp_path):
         cli_entry.cli,
         ["project", "plan", str(project), "embedding", uid, "--json"],
     )
+    impact = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "plan",
+            str(project),
+            "embedding",
+            uid,
+            "--upgrade-impact",
+            "--json",
+        ],
+    )
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -223,6 +235,12 @@ def test_project_plan_cli_is_read_only_and_emits_json(tmp_path):
         "project.embedding.feature_matrix",
         "project.embedding.generation",
     ]
+    assert impact.exit_code == 0, impact.output
+    impact_payload = json.loads(impact.output)
+    assert impact_payload["schema_version"] == 1
+    assert impact_payload["scope"] == "project"
+    assert impact_payload["requested_target"] == "project.embedding.generation"
+    assert impact_payload["recompute_cost"]["estimated_seconds"] is None
     after = {
         path.relative_to(project): (path.stat().st_mtime_ns, path.stat().st_size)
         for path in project.rglob("*")

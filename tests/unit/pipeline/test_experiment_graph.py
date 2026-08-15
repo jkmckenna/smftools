@@ -440,6 +440,29 @@ def test_plan_cli_supports_human_and_machine_readable_output(tmp_path, monkeypat
         cli_entry.cli,
         ["experiment", "plan", str(config_path), "--target", "hmm", "--json"],
     )
+    impact_human = CliRunner().invoke(
+        cli_entry.cli,
+        [
+            "experiment",
+            "plan",
+            str(config_path),
+            "--target",
+            "hmm",
+            "--upgrade-impact",
+        ],
+    )
+    impact_machine = CliRunner().invoke(
+        cli_entry.cli,
+        [
+            "experiment",
+            "plan",
+            str(config_path),
+            "--target",
+            "hmm",
+            "--upgrade-impact",
+            "--json",
+        ],
+    )
 
     assert human.exit_code == 0, human.output
     assert "Experiment target: experiment.hmm.complete" in human.output
@@ -448,6 +471,45 @@ def test_plan_cli_supports_human_and_machine_readable_output(tmp_path, monkeypat
     payload = json.loads(machine.output)
     assert payload["requested_target"] == experiment_graph.EXPERIMENT_NODE_IDS["hmm"]
     assert payload["topological_order"][-1] == experiment_graph.EXPERIMENT_NODE_IDS["hmm"]
+    assert impact_human.exit_code == 0, impact_human.output
+    assert "Estimated recompute cost: unknown" in impact_human.output
+    assert "Plan states:" in impact_human.output
+    assert impact_machine.exit_code == 0, impact_machine.output
+    impact_payload = json.loads(impact_machine.output)
+    assert impact_payload["schema_version"] == 1
+    assert impact_payload["scope"] == "experiment"
+    assert impact_payload["requested_target"] == experiment_graph.EXPERIMENT_NODE_IDS["hmm"]
+
+
+def test_experiment_upgrade_impact_uses_prior_stage_elapsed_time(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    record_stage_state(
+        cfg.output_directory,
+        "raw",
+        "complete",
+        config_hash=helpers.stage_config_hash(cfg, "raw"),
+        input_artifact_ids=[],
+        schema_versions={"raw": 3},
+        semantic_algorithm_version="0",
+        timings={"elapsed_seconds": 12.5},
+    )
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+    before = (tmp_path / "experiment_manifest.json").read_bytes()
+
+    report = experiment_graph.build_experiment_upgrade_impact(cfg, "raw", paths=paths)
+
+    assert report.plan.decisions[0].state is PlanState.STALE_ALGORITHM
+    assert report.to_dict()["recompute_cost"] == {
+        "basis": "historical_elapsed_seconds",
+        "estimated_seconds": 12.5,
+        "complete": True,
+        "recompute_node_count": 1,
+        "known_node_count": 1,
+        "known_nodes": [experiment_graph.EXPERIMENT_NODE_IDS["raw"]],
+        "unknown_nodes": [],
+    }
+    assert (tmp_path / "experiment_manifest.json").read_bytes() == before
 
 
 @pytest.mark.parametrize("target", ["raw", "preprocess", "spatial", "hmm", "latent"])

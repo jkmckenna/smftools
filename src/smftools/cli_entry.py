@@ -249,12 +249,26 @@ def full(config_path):
     is_flag=True,
     help="Emit the stable machine-readable plan schema.",
 )
-def experiment_plan(config_path, target: str, as_json: bool):
+@click.option(
+    "--upgrade-impact",
+    is_flag=True,
+    help="Group installed-code impact and report historical recompute cost.",
+)
+def experiment_plan(config_path, target: str, as_json: bool, upgrade_impact: bool):
     """Explain experiment compatibility and required recomputation without writes."""
-    from .pipeline.experiment_graph import format_experiment_plan, plan_experiment
+    from .pipeline.experiment_graph import (
+        format_experiment_plan,
+        plan_experiment,
+        plan_experiment_upgrade_impact,
+    )
+    from .pipeline.upgrade_impact import format_upgrade_impact
 
-    plan = plan_experiment(config_path, target)
-    click.echo(plan.to_json() if as_json else format_experiment_plan(plan))
+    if upgrade_impact:
+        report = plan_experiment_upgrade_impact(config_path, target)
+        click.echo(report.to_json() if as_json else format_upgrade_impact(report))
+    else:
+        plan = plan_experiment(config_path, target)
+        click.echo(plan.to_json() if as_json else format_experiment_plan(plan))
 
 
 ##########################################
@@ -1125,6 +1139,11 @@ def project_generations_cmd(project_dir: Path, include_size, project_only, as_js
 @click.option("--read-metrics", is_flag=True, help="Include spatial per-read outputs.")
 @click.option("--partitioned", is_flag=True, help="Plan partitioned materialization.")
 @click.option("--json", "as_json", is_flag=True, help="Emit stable machine-readable JSON.")
+@click.option(
+    "--upgrade-impact",
+    is_flag=True,
+    help="Group installed-code impact; unavailable historical costs remain explicit.",
+)
 def project_plan_cmd(
     project_dir,
     target,
@@ -1139,13 +1158,16 @@ def project_plan_cmd(
     read_metrics,
     partitioned,
     as_json,
+    upgrade_impact,
 ):
     """Explain reuse and recomputation for a project analysis without writing."""
-    from .cli.project_cmd import project_plan
+    from .cli.project_cmd import project_plan, project_upgrade_impact
     from .pipeline.project_graph import format_project_plan
+    from .pipeline.upgrade_impact import format_upgrade_impact
 
     layer_list = None if layers is None else [item for item in layers.split(",") if item]
-    plan = project_plan(
+    planner = project_upgrade_impact if upgrade_impact else project_plan
+    result = planner(
         project_dir,
         target,
         canonical_reference,
@@ -1159,7 +1181,10 @@ def project_plan_cmd(
         read_metrics=read_metrics,
         partitioned=partitioned,
     )
-    click.echo(plan.to_json() if as_json else format_project_plan(plan))
+    if upgrade_impact:
+        click.echo(result.to_json() if as_json else format_upgrade_impact(result))
+    else:
+        click.echo(result.to_json() if as_json else format_project_plan(result))
 
 
 # Which target each `project run` option applies to. `run` is the engine-facing

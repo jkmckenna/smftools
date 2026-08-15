@@ -33,6 +33,24 @@ read-only experiment plan. The compatibility states, force behavior, and
 semantic-versus-execution distinction are described in
 [](tutorials/semantic_variant_workflows.md).
 
+Add `--upgrade-impact` to either plan command to group the same compatibility
+decisions by `PlanState`, separate triggering nodes from downstream dependent
+recomputation, and summarize recompute cost. This mode is a read-only projection
+over the existing planner; it does not add or relax invalidation rules:
+
+```shell
+smftools experiment plan experiment.csv --target full --upgrade-impact
+smftools project plan PROJECT_DIR embedding REFERENCE_UID --upgrade-impact --json
+```
+
+Experiment cost estimates sum previously observed `elapsed_seconds` values from
+the experiment manifest. Coverage is explicit: nodes without a prior timing are
+listed as unknown and any numeric total is marked partial. Project products are
+task-local and project cache definitions are more detailed than the coarse plan
+arguments, so project impact reports cost as unknown rather than guessing from
+artifact size or treating a cache as a generic compatible result. The JSON
+report is schema-versioned independently from the source semantic plan.
+
 ## Named experiment sets
 
 `--set NAME` restricts a project command to a saved subset of the registered
