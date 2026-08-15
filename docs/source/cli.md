@@ -80,6 +80,21 @@ reclaimable bytes, until retained inputs and provenance can prove byte-level
 reproducibility. `--json` emits a versioned plan with `dry_run: true` and
 `deletion_supported: false`; there is no delete or force mode in this phase.
 
+## Project analysis cache inventory
+
+Use `smftools project analyses list PROJECT_DIR` to inspect periodicity and
+embedding caches without loading result tables, arrays, or persisted estimator
+pickles. Each entry reports its project-relative path, analysis scope, size, and
+stored versus installed algorithm and semantic-graph versions.
+
+Entries are `current` when both code-identity versions match, `stale` when an
+upgrade changed or introduced either version, and `invalid` when the cache's
+definition or current-generation metadata is incomplete or unreadable. Legacy
+caches without code-identity fields are therefore visible as stale rather than
+being silently reused. Add `--stale` to show only stale or invalid entries, or
+`--json` for the versioned machine-readable inventory. The command never rewrites
+or removes caches.
+
 ## External workflow contract
 
 Workflow engines should use `smftools experiment run` instead of rewriting an

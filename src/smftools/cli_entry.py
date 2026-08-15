@@ -965,6 +965,57 @@ def project_list_cmd(project_dir: Path):
         click.echo(f"{n_canon} canonical reference(s) across the project.")
 
 
+@project_group.group("analyses")
+def project_analyses_group():
+    """Inspect project-owned analysis caches without loading their results."""
+
+
+@project_analyses_group.command("list")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--stale",
+    "stale_only",
+    is_flag=True,
+    help="Show only stale or invalid caches that require attention.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the stable machine-readable schema.")
+def project_analyses_list_cmd(project_dir: Path, stale_only: bool, as_json: bool):
+    """List periodicity and embedding caches, their code identity, and size."""
+    import json
+
+    from .project.analysis_inventory import analysis_cache_inventory
+
+    inventory = analysis_cache_inventory(project_dir, stale_only=stale_only)
+    if as_json:
+        click.echo(json.dumps(inventory, sort_keys=True, separators=(",", ":"), indent=2))
+        return
+
+    entries = inventory["entries"]
+    if not entries:
+        message = (
+            "No stale or invalid project analysis caches found."
+            if stale_only
+            else "No project analysis caches found."
+        )
+        click.echo(message)
+        return
+    click.echo("STATUS   ANALYSIS     SIZE (bytes)  SCOPE                         CACHE")
+    for entry in entries:
+        scope = (
+            f"{entry['experiment_id']}/{entry['reference_strand']}/{entry['sample']}"
+            if entry["scope"] == "partition"
+            else str(entry["set_label"])
+        )
+        reasons = ",".join(entry["reasons"]) or "-"
+        size = "?" if entry["size_bytes"] is None else str(entry["size_bytes"])
+        click.echo(
+            f"{entry['status']:<8} {entry['analysis']:<12} {size:>12}  "
+            f"{scope:<29} {entry['cache_path']}"
+        )
+        if entry["status"] != "current":
+            click.echo(f"  reason: {reasons}")
+
+
 @project_group.command("generations")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option(

@@ -114,6 +114,17 @@ They simply stop matching the current definition, and the next requested
 analysis computes under a new key. This preserves old results for inspection
 while preventing changed code from silently serving them as current output.
 
+Inventory the retained definitions before recomputing with:
+
+```shell
+smftools project analyses list PROJECT_DIR --stale
+```
+
+The read-only listing reports stale and structurally invalid caches, their
+project-relative paths and sizes, and why their stored code identity does not
+match the installed version. Add `--json` for the stable schema. The inventory
+does not read analysis result tables or unpickle embedding models.
+
 ### `analyses/projects/<project_name>/`
 
 A project **references** runs — it never copies or merges their data.
